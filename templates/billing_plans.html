@@ -1,0 +1,328 @@
+{% extends "base.html" %}
+
+{% block page_title %}Billing &amp; Plans{% endblock %}
+{% block page_subtitle %}
+  All clients with plan allocation date (start of using that package), amount due, and days left.
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto w-full max-w-7xl px-3 py-4 sm:px-4 sm:py-6 md:px-6 md:py-8 lg:px-8">
+    <section class="rounded-2xl border border-slate-200/90 bg-white/95 shadow-xl shadow-slate-200/20 dark:border-slate-700/90 dark:bg-slate-900/95 dark:shadow-slate-950/30 overflow-hidden">
+      <div class="border-b border-slate-200/80 bg-gradient-to-r from-slate-50 to-white px-4 py-5 dark:border-slate-700/80 dark:from-slate-800/50 dark:to-slate-900/50 sm:px-6 md:px-8 md:py-6">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-start gap-3 min-w-0">
+            <div class="flex-shrink-0 flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400 sm:h-12 sm:w-12">
+              <svg class="h-5 w-5 sm:h-6 sm:w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+              </svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <h2 class="text-lg font-bold tracking-tight text-slate-900 dark:text-white sm:text-xl md:text-2xl">Billing Overview</h2>
+              <p class="mt-0.5 text-xs text-slate-500 dark:text-slate-400 sm:text-sm">
+                All clients — when each was allocated the plan (start of using that package), amount to pay, days left.
+              </p>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 self-start sm:self-center">
+            <span class="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-slate-50/90 px-3 py-2 text-xs font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-800/50 dark:text-slate-400 sm:px-4">
+              {{ clients|length }} client{{ 's' if clients|length != 1 else '' }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="border-b border-slate-200/80 px-4 py-3 dark:border-slate-700/80 sm:px-6 md:px-8">
+        <div class="inline-flex rounded-xl border border-slate-200 bg-slate-50/80 p-1 dark:border-slate-700 dark:bg-slate-800/60">
+          <button
+            type="button"
+            class="billing-tab-btn rounded-lg px-3 py-1.5 text-xs font-semibold transition sm:px-4"
+            data-tab="billing-overview"
+          >
+            Billing Overview
+          </button>
+          <button
+            type="button"
+            class="billing-tab-btn rounded-lg px-3 py-1.5 text-xs font-semibold transition sm:px-4"
+            data-tab="payments-overview"
+          >
+            Payments Overview
+          </button>
+        </div>
+      </div>
+
+      <div id="billing-overview-panel" class="billing-tab-panel p-4 sm:p-5 md:p-6 lg:p-8">
+        <p class="mb-3 flex items-center justify-center gap-1.5 rounded-lg bg-slate-100/80 py-2 text-xs text-slate-500 dark:bg-slate-800/50 dark:text-slate-400 sm:hidden" aria-hidden="true">
+          <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
+          Scroll to see all columns
+        </p>
+        <div class="relative -mx-2 overflow-x-auto rounded-xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-700/90 dark:bg-slate-800/50 sm:mx-0 sm:shadow-md" role="region" aria-label="Billing table">
+          <table class="w-full min-w-[640px] text-left text-sm" role="grid">
+            <thead class="sticky top-0 z-10 border-b-2 border-slate-200 bg-slate-50/98 dark:border-slate-700 dark:bg-slate-800/98 backdrop-blur-sm">
+              <tr>
+                <th scope="col" class="px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 sm:px-4 sm:py-3.5 text-xs">Client</th>
+                <th scope="col" class="hidden px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 md:table-cell sm:px-4 sm:py-3.5 text-xs">Router</th>
+                <th scope="col" class="px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 sm:px-4 sm:py-3.5 text-xs whitespace-nowrap">Plan allocated (editable)</th>
+                <th scope="col" class="hidden px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 md:table-cell sm:px-4 sm:py-3.5 text-xs whitespace-nowrap">Plan expiry date</th>
+                <th scope="col" class="hidden px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 lg:table-cell sm:px-4 sm:py-3.5 text-xs whitespace-nowrap">Account expires on</th>
+                <th scope="col" class="hidden px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 md:table-cell sm:px-4 sm:py-3.5 text-xs">Plan</th>
+                <th scope="col" class="px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 sm:px-4 sm:py-3.5 text-xs whitespace-nowrap">Amount to pay</th>
+                <th scope="col" class="px-3 py-3 font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400 sm:px-4 sm:py-3.5 text-xs whitespace-nowrap">Days left</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200/80 bg-white dark:divide-slate-700/80 dark:bg-slate-800/50">
+              {% if payment_clients %}
+                {% for c in payment_clients %}
+                  <tr class="group border-l-2 border-l-transparent transition-colors hover:border-l-emerald-500 hover:bg-emerald-50/50 dark:hover:bg-slate-700/50 dark:hover:border-l-emerald-500">
+                    <td class="min-w-[120px] cursor-pointer px-3 py-2.5 sm:min-w-0 sm:px-4 sm:py-3" onclick="window.location.href='{{ url_for('client_detail', user_id=c.id) }}'">
+                      <div class="flex flex-col gap-1 min-w-0">
+                        <div class="truncate font-semibold {% if c.status == 'suspended' %}text-red-600 dark:text-red-400 group-hover:text-red-500{% else %}text-slate-900 text-emerald-600 dark:text-white dark:text-emerald-400 group-hover:text-emerald-500{% endif %}" title="{{ c.customer_name }}">{{ c.customer_name }}</div>
+                        <div class="text-xs text-slate-500 dark:text-slate-400 truncate" title="{{ c.phone_number }}">{{ c.phone_number }}</div>
+                        <div class="font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate" title="{{ c.pppoe_username }}">{{ c.pppoe_username }}</div>
+                      </div>
+                    </td>
+                    <td class="hidden px-3 py-2.5 sm:px-4 sm:py-3 md:table-cell text-slate-600 dark:text-slate-400">
+                      {{ c.router_name or '—' }}
+                    </td>
+                    <td class="whitespace-nowrap px-3 py-2.5 text-slate-700 dark:text-slate-300 sm:px-4 sm:py-3">
+                      <div class="flex min-w-[210px] flex-col gap-1.5">
+                        <span id="plan-allocated-display-{{ c.id }}" class="text-xs text-slate-500 dark:text-slate-400">{{ c.plan_allocated_at_display }}</span>
+                        <div class="flex items-center gap-1.5">
+                          <input
+                            id="plan-allocated-input-{{ c.id }}"
+                            type="date"
+                            value="{{ c.plan_allocated_at_input }}"
+                            class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                          />
+                          <button
+                            type="button"
+                            class="save-plan-start-btn inline-flex items-center rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-emerald-700/60 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+                            data-user-id="{{ c.id }}"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="hidden whitespace-nowrap px-3 py-2.5 text-slate-600 dark:text-slate-400 md:table-cell sm:px-4 sm:py-3">
+                      <span id="plan-expiry-display-{{ c.id }}">{{ c.plan_expiration_date_display or '—' }}</span>
+                    </td>
+                    <td class="hidden whitespace-nowrap px-3 py-2.5 text-slate-600 dark:text-slate-400 lg:table-cell sm:px-4 sm:py-3">
+                      <span id="account-expiry-display-{{ c.id }}">{{ c.expiration_date_display or '—' }}</span>
+                    </td>
+                    <td class="hidden px-3 py-2.5 sm:px-4 sm:py-3 md:table-cell text-slate-600 dark:text-slate-400">
+                      {{ c.plan_name or '—' }}
+                    </td>
+                    <td class="px-3 py-2.5 sm:px-4 sm:py-3 font-semibold text-slate-800 dark:text-slate-200">
+                      {% if c.amount_to_pay is not none %}
+                        {{ "%.2f"|format(c.amount_to_pay) }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </td>
+                    <td class="px-3 py-2.5 sm:px-4 sm:py-3">
+                      {% if c.days_left is not none %}
+                        {% if c.days_left < 0 %}
+                          <span class="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-xs font-semibold text-red-700 dark:border-red-800/50 dark:bg-red-900/30 dark:text-red-300">Expired</span>
+                        {% elif c.days_left == 0 %}
+                          <span class="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300">Today</span>
+                        {% elif c.days_left <= 7 %}
+                          <span class="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300">{{ c.days_left }} day{{ 's' if c.days_left != 1 else '' }}</span>
+                        {% else %}
+                          <span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-xs font-semibold text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300">{{ c.days_left }} day{{ 's' if c.days_left != 1 else '' }}</span>
+                        {% endif %}
+                      {% else %}
+                        <span class="text-slate-400 dark:text-slate-500">—</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr>
+                  <td colspan="8" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
+                    No clients found. Register PPPoE users on a router to see them here.
+                  </td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="payments-overview-panel" class="billing-tab-panel hidden p-4 sm:p-5 md:p-6 lg:p-8">
+        <div class="mb-3 flex items-center justify-between gap-3">
+          <h3 class="text-sm font-semibold text-slate-700 dark:text-slate-300">Monthly payment checklist</h3>
+          <span class="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600 dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300">
+            Year {{ payment_year }}
+          </span>
+        </div>
+
+        <div class="relative -mx-2 overflow-x-auto rounded-xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-700/90 dark:bg-slate-800/50 sm:mx-0 sm:shadow-md">
+          <table class="w-full min-w-[980px] text-left text-sm">
+            <thead class="border-b border-slate-200 bg-slate-50/95 text-xs uppercase tracking-wider text-slate-600 dark:border-slate-700 dark:bg-slate-800/95 dark:text-slate-400">
+              <tr>
+                <th class="sticky left-0 z-10 bg-slate-50/95 px-3 py-3 sm:px-4 dark:bg-slate-800/95">Name</th>
+                {% for m in payment_months %}
+                  <th class="px-3 py-3 text-center">{{ m.label }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-200/80 dark:divide-slate-700/80">
+              {% if clients %}
+                {% for c in clients %}
+                  <tr class="hover:bg-slate-50/60 dark:hover:bg-slate-700/40">
+                    <td class="sticky left-0 z-10 bg-white px-3 py-2.5 sm:px-4 sm:py-3 dark:bg-slate-800/50">
+                      <a href="{{ url_for('client_detail', user_id=c.id) }}" class="font-semibold {% if c.status == 'suspended' %}text-red-600 dark:text-red-400 hover:text-red-500{% else %}text-emerald-700 dark:text-emerald-300{% endif %} hover:underline">{{ c.customer_name }}</a>
+                    </td>
+                    {% for m in payment_months %}
+                      {% set payment_key = c.id|string ~ '-' ~ m.month|string %}
+                      <td class="px-3 py-2.5 text-center sm:py-3">
+                        <input
+                          type="checkbox"
+                          class="payment-check h-4 w-4 cursor-pointer rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700"
+                          data-user-id="{{ c.id }}"
+                          data-month="{{ m.month }}"
+                          data-year="{{ payment_year }}"
+                          {{ 'checked' if payment_state_map.get(payment_key) else '' }}
+                        />
+                      </td>
+                    {% endfor %}
+                  </tr>
+                {% endfor %}
+              {% else %}
+                <tr>
+                  <td colspan="13" class="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
+                    No clients found. Register PPPoE users on a router to see them here.
+                  </td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const showDaysBadge = (daysLeft) => {
+        if (daysLeft === null || daysLeft === undefined || Number.isNaN(daysLeft)) {
+          return '<span class="text-slate-400 dark:text-slate-500">—</span>';
+        }
+        if (daysLeft < 0) {
+          return '<span class="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-xs font-semibold text-red-700 dark:border-red-800/50 dark:bg-red-900/30 dark:text-red-300">Expired</span>';
+        }
+        if (daysLeft === 0) {
+          return '<span class="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300">Today</span>';
+        }
+        if (daysLeft <= 7) {
+          return `<span class="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-xs font-semibold text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</span>`;
+        }
+        return `<span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-xs font-semibold text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300">${daysLeft} day${daysLeft !== 1 ? "s" : ""}</span>`;
+      };
+
+      const handleSave = async (button) => {
+        const userId = button.dataset.userId;
+        const input = document.getElementById(`plan-allocated-input-${userId}`);
+        const display = document.getElementById(`plan-allocated-display-${userId}`);
+        const planExpiryDisplay = document.getElementById(`plan-expiry-display-${userId}`);
+        const accountExpiryDisplay = document.getElementById(`account-expiry-display-${userId}`);
+        const daysCell = button.closest("tr")?.children?.[7];
+
+        if (!input || !input.value) {
+          alert("Select a valid plan allocated date first.");
+          return;
+        }
+
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Saving...";
+
+        try {
+          const response = await fetch(`/api/billing/users/${userId}/plan-start-date`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ plan_allocated_at: input.value }),
+          });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Failed to update plan start date.");
+          }
+
+          if (display && data.plan_allocated_at_display) {
+            display.textContent = data.plan_allocated_at_display;
+          }
+          if (planExpiryDisplay) {
+            planExpiryDisplay.textContent = data.plan_expiration_date_display || "—";
+          }
+          if (accountExpiryDisplay) {
+            accountExpiryDisplay.textContent = data.account_expiration_date_display || "—";
+          }
+          if (daysCell) {
+            const daysValue = data.days_left === null || data.days_left === undefined ? null : Number(data.days_left);
+            daysCell.innerHTML = showDaysBadge(daysValue);
+          }
+        } catch (error) {
+          alert(error.message || "Failed to update plan start date.");
+        } finally {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+      };
+
+      document.querySelectorAll(".save-plan-start-btn").forEach((button) => {
+        button.addEventListener("click", () => handleSave(button));
+      });
+
+      document.querySelectorAll(".payment-check").forEach((checkbox) => {
+        checkbox.addEventListener("change", async () => {
+          const userId = checkbox.dataset.userId;
+          const month = checkbox.dataset.month;
+          const year = checkbox.dataset.year;
+          const paid = checkbox.checked;
+          checkbox.disabled = true;
+          try {
+            const response = await fetch(`/api/billing/users/${userId}/payments`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ month, year, paid }),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+              throw new Error(data.error || "Failed to update payment status.");
+            }
+          } catch (error) {
+            checkbox.checked = !paid;
+            alert(error.message || "Failed to update payment status.");
+          } finally {
+            checkbox.disabled = false;
+          }
+        });
+      });
+
+      const tabButtons = document.querySelectorAll(".billing-tab-btn");
+      const tabPanels = document.querySelectorAll(".billing-tab-panel");
+
+      const activateTab = (tabId) => {
+        tabButtons.forEach((btn) => {
+          const active = btn.dataset.tab === tabId;
+          btn.classList.toggle("bg-emerald-600", active);
+          btn.classList.toggle("text-white", active);
+          btn.classList.toggle("shadow-sm", active);
+          btn.classList.toggle("bg-transparent", !active);
+          btn.classList.toggle("text-slate-600", !active);
+          btn.classList.toggle("dark:text-slate-300", !active);
+        });
+
+        tabPanels.forEach((panel) => {
+          panel.classList.toggle("hidden", panel.id !== `${tabId}-panel`);
+        });
+      };
+
+      tabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+      });
+
+      activateTab("billing-overview");
+    })();
+  </script>
+{% endblock %}

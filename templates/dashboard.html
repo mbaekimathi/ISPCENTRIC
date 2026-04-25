@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block page_title %}All Routers{% endblock %}
+{% block page_subtitle %}
+  Manage all PPPoE customers, credentials, and access status.
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto max-w-6xl">
+    <section class="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 shadow-lg shadow-slate-200/50 dark:border-slate-800 dark:bg-slate-900 dark:shadow-slate-900/50">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
+        <div class="flex-1 min-w-0">
+          <h2 class="text-2xl font-bold text-slate-900 dark:text-white mb-2">Registered Routers</h2>
+          <p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">Search, filter, and manage PPPoE accounts.</p>
+        </div>
+        <a class="inline-flex items-center rounded-xl border border-emerald-500 bg-gradient-to-r from-emerald-500 to-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-emerald-500/25 transition-all hover:from-emerald-600 hover:to-emerald-700 hover:shadow-lg hover:shadow-emerald-500/30 hover:-translate-y-0.5 active:scale-95 dark:shadow-emerald-900/50 whitespace-nowrap" href="{{ url_for('register_router_page') }}">
+          Register Router
+        </a>
+      </div>
+
+      <div class="mb-6 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.5fr_0.5fr_0.5fr]">
+        <input
+          id="searchInput"
+          class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+          type="text"
+          placeholder="Search by name, phone, or username"
+        />
+        <select
+          id="statusFilter"
+          class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+        >
+          <option value="all">All Status</option>
+          <option value="active">Active</option>
+          <option value="suspended">Suspended</option>
+        </select>
+        <select
+          id="sortSelect"
+          class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+        >
+          <option value="created_at">Sort by Date</option>
+          <option value="customer_name">Sort by Name</option>
+          <option value="status">Sort by Status</option>
+        </select>
+      </div>
+
+      <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-md -mx-4 sm:mx-0">
+        <div class="inline-block min-w-full align-middle">
+          <table class="min-w-full divide-y divide-slate-200 text-left text-sm text-slate-700 dark:divide-slate-800 dark:text-slate-300">
+            <thead class="bg-gradient-to-r from-slate-50 to-slate-100 text-xs font-bold uppercase tracking-wider text-slate-700 dark:from-slate-800 dark:to-slate-900 dark:text-slate-300">
+              <tr>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">Customer Name</th>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">Phone</th>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">PPPoE User</th>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">Status</th>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap hidden md:table-cell">Date</th>
+                <th class="px-3 py-2 sm:px-4 sm:py-3 whitespace-nowrap">Days Left</th>
+              </tr>
+            </thead>
+            <tbody id="routerTable" class="divide-y divide-slate-200 dark:divide-slate-800 bg-white dark:bg-slate-900"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="mt-6 flex flex-wrap items-center justify-between gap-4 pt-6 border-t border-slate-200 dark:border-slate-800">
+        <span id="paginationInfo" class="text-sm font-medium text-slate-600 dark:text-slate-400 whitespace-nowrap">Showing 0 of 0</span>
+        <div class="flex gap-2">
+          <button id="prevPage" class="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50 hover:border-slate-400 hover:shadow-md active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 whitespace-nowrap shadow-sm">Prev</button>
+          <button id="nextPage" class="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50 hover:border-slate-400 hover:shadow-md active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700 whitespace-nowrap shadow-sm">Next</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="pointer-events-none fixed right-6 top-6 hidden rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-900 shadow-lg dark:border-slate-800 dark:bg-slate-950/90 dark:text-slate-200"></div>
+
+  <script>
+    const tableBody = document.getElementById("routerTable");
+    const searchInput = document.getElementById("searchInput");
+    const statusFilter = document.getElementById("statusFilter");
+    const sortSelect = document.getElementById("sortSelect");
+    const paginationInfo = document.getElementById("paginationInfo");
+    const prevPage = document.getElementById("prevPage");
+    const nextPage = document.getElementById("nextPage");
+
+    let routers = [];
+    let currentPage = 1;
+    const pageSize = 20;
+
+    const fetchRouters = async () => {
+      const response = await fetch("/api/routers");
+      if (!response.ok) {
+        console.error("Failed to fetch routers.");
+        return;
+      }
+      routers = await response.json();
+      renderTable();
+    };
+
+    const renderTable = () => {
+      const query = searchInput.value.toLowerCase();
+      let filtered = routers.filter((router) => {
+        const haystack = `${router.customer_name} ${router.phone_number} ${router.pppoe_username}`.toLowerCase();
+        const matchesQuery = haystack.includes(query);
+        const matchesStatus = statusFilter.value === "all" || router.status === statusFilter.value;
+        return matchesQuery && matchesStatus;
+      });
+
+      filtered.sort((a, b) => {
+        const field = sortSelect.value;
+        if (field === "created_at") {
+          return new Date(b.created_at) - new Date(a.created_at);
+        }
+        return String(a[field]).localeCompare(String(b[field]));
+      });
+
+      const total = filtered.length;
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      currentPage = Math.min(currentPage, totalPages);
+      const start = (currentPage - 1) * pageSize;
+      const pageItems = filtered.slice(start, start + pageSize);
+
+      tableBody.innerHTML = "";
+      pageItems.forEach((router) => {
+        const statusBadge = router.status === "active"
+          ? '<span class="inline-flex items-center rounded-full border border-emerald-200 bg-gradient-to-r from-emerald-50 to-emerald-50/50 px-3 py-1 text-xs font-semibold text-emerald-700 shadow-sm dark:border-emerald-800/50 dark:from-emerald-900/30 dark:to-emerald-900/20 dark:text-emerald-300">Active</span>'
+          : '<span class="inline-flex items-center rounded-full border border-red-200 bg-gradient-to-r from-red-50 to-red-50/50 px-3 py-1 text-xs font-semibold text-red-700 shadow-sm dark:border-red-800/50 dark:from-red-900/30 dark:to-red-900/20 dark:text-red-300">Suspended</span>';
+        
+        // Calculate days remaining
+        let daysLeftHtml = '<span class="text-slate-500 dark:text-slate-400 font-medium">No expiration</span>';
+        if (router.expiration_date) {
+          const expirationDate = new Date(router.expiration_date);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          expirationDate.setHours(0, 0, 0, 0);
+          const daysDiff = Math.ceil((expirationDate - today) / (1000 * 60 * 60 * 24));
+          
+          if (daysDiff > 7) {
+            daysLeftHtml = `<span class="inline-flex items-center rounded-full border border-emerald-200 bg-gradient-to-r from-emerald-50 to-emerald-50/50 px-3 py-1 text-xs font-semibold text-emerald-700 shadow-sm dark:border-emerald-800/50 dark:from-emerald-900/30 dark:to-emerald-900/20 dark:text-emerald-300">${daysDiff} days</span>`;
+          } else if (daysDiff > 0) {
+            daysLeftHtml = `<span class="inline-flex items-center rounded-full border border-amber-200 bg-gradient-to-r from-amber-50 to-amber-50/50 px-3 py-1 text-xs font-semibold text-amber-700 shadow-sm dark:border-amber-800/50 dark:from-amber-900/30 dark:to-amber-900/20 dark:text-amber-300">${daysDiff} days</span>`;
+          } else if (daysDiff === 0) {
+            daysLeftHtml = `<span class="inline-flex items-center rounded-full border border-red-200 bg-gradient-to-r from-red-50 to-red-50/50 px-3 py-1 text-xs font-semibold text-red-700 shadow-sm dark:border-red-800/50 dark:from-red-900/30 dark:to-red-900/20 dark:text-red-300">Expires today</span>`;
+          } else {
+            daysLeftHtml = `<span class="inline-flex items-center rounded-full border border-red-200 bg-gradient-to-r from-red-50 to-red-50/50 px-3 py-1 text-xs font-semibold text-red-700 shadow-sm dark:border-red-800/50 dark:from-red-900/30 dark:to-red-900/20 dark:text-red-300">Expired ${Math.abs(daysDiff)} days ago</span>`;
+          }
+        }
+        
+        tableBody.insertAdjacentHTML(
+          "beforeend",
+          `<tr class="bg-white hover:bg-slate-50/80 dark:bg-slate-900 dark:hover:bg-slate-800/50 transition-colors">
+            <td class="px-4 py-3 font-semibold text-slate-900 dark:text-white">
+              <div class="truncate max-w-[120px] sm:max-w-none">${router.customer_name}</div>
+            </td>
+            <td class="px-4 py-3 whitespace-nowrap font-medium">${router.phone_number}</td>
+            <td class="px-4 py-3 font-mono text-xs whitespace-nowrap font-medium">${router.pppoe_username}</td>
+            <td class="px-4 py-3">${statusBadge}</td>
+            <td class="px-4 py-3 hidden md:table-cell whitespace-nowrap text-xs font-medium">${new Date(router.created_at).toLocaleDateString()}</td>
+            <td class="px-4 py-3">${daysLeftHtml}</td>
+          </tr>`
+        );
+      });
+
+      paginationInfo.textContent = `Showing ${pageItems.length} of ${total}`;
+    };
+
+    searchInput.addEventListener("input", () => {
+      currentPage = 1;
+      renderTable();
+    });
+    statusFilter.addEventListener("change", () => {
+      currentPage = 1;
+      renderTable();
+    });
+    sortSelect.addEventListener("change", renderTable);
+
+    prevPage.addEventListener("click", () => {
+      currentPage = Math.max(1, currentPage - 1);
+      renderTable();
+    });
+    nextPage.addEventListener("click", () => {
+      currentPage += 1;
+      renderTable();
+    });
+
+    fetchRouters();
+  </script>
+{% endblock %}
+
+

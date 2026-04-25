@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+
+{% block page_title %}Network Monitoring{% endblock %}
+{% block page_subtitle %}
+  Real-time network monitoring, data usage analytics, and connection status for all clients.
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    <!-- Stats cards -->
+    <div class="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <div class="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-lg shadow-slate-200/20 dark:border-slate-700/80 dark:bg-slate-800/60 dark:shadow-slate-950/30">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-slate-600 dark:bg-slate-700/80 dark:text-slate-300">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Clients</p>
+            <p class="mt-0.5 text-2xl font-bold text-slate-900 dark:text-white sm:text-3xl">{{ stats.total_clients }}</p>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Registered users</p>
+      </div>
+      <div class="rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/80 to-white p-5 shadow-lg shadow-emerald-100/30 dark:border-emerald-800/50 dark:from-emerald-900/20 dark:to-slate-800/60 dark:shadow-none">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/50 dark:text-emerald-400">
+            <span class="h-2.5 w-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Connected</p>
+            <p class="mt-0.5 text-2xl font-bold text-emerald-700 dark:text-emerald-200 sm:text-3xl">{{ stats.connected_clients }}</p>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-emerald-600/90 dark:text-emerald-300/80">{{ "%.1f"|format((stats.connected_clients / stats.total_clients * 100) if stats.total_clients > 0 else 0) }}% online</p>
+      </div>
+      <div class="rounded-2xl border border-emerald-200/80 bg-white p-5 shadow-md dark:border-slate-700/80 dark:bg-slate-800/60">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-emerald-100/80 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Data Sent</p>
+            <p class="mt-0.5 text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{{ stats.total_bytes_sent_formatted }}</p>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Upload</p>
+      </div>
+      <div class="rounded-2xl border border-blue-200/80 bg-white p-5 shadow-md dark:border-slate-700/80 dark:bg-slate-800/60">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-100/80 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l4-4m-4 4V4"></path></svg>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Data Received</p>
+            <p class="mt-0.5 text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{{ stats.total_bytes_received_formatted }}</p>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Download</p>
+      </div>
+      <div class="rounded-2xl border border-violet-200/80 bg-white p-5 shadow-md dark:border-slate-700/80 dark:bg-slate-800/60">
+        <div class="flex items-center gap-3">
+          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-violet-100/80 text-violet-600 dark:bg-violet-900/40 dark:text-violet-400">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+          </div>
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Usage</p>
+            <p class="mt-0.5 text-xl font-bold text-slate-900 dark:text-white sm:text-2xl">{{ stats.total_data_formatted }}</p>
+          </div>
+        </div>
+        <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">Combined</p>
+      </div>
+    </div>
+
+    {% if usage_reset_ok %}
+      <div class="mb-6 flex items-start gap-3 rounded-xl border border-emerald-300/80 bg-emerald-50/90 p-4 dark:border-emerald-700/50 dark:bg-emerald-900/25">
+        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-200/80 text-emerald-700 dark:bg-emerald-800/50 dark:text-emerald-300">
+          <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+        </span>
+        <div>
+          <p class="font-semibold text-emerald-800 dark:text-emerald-200">Usage data cleared</p>
+          <p class="mt-0.5 text-sm text-emerald-700 dark:text-emerald-300/90">All stored sent/received totals for this router were removed. New usage will accumulate from the next refresh. Plan data caps are unchanged.</p>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if error %}
+      <div class="mb-6 flex items-start gap-3 rounded-xl border border-amber-300/80 bg-amber-50/90 p-4 dark:border-amber-600/50 dark:bg-amber-900/20">
+        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-200/80 text-amber-700 dark:bg-amber-800/50 dark:text-amber-300">
+          <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+        </span>
+        <div>
+          <p class="font-semibold text-amber-800 dark:text-amber-200">Connection warning</p>
+          <p class="mt-0.5 text-sm text-amber-700 dark:text-amber-300/90">Could not fetch live status from MikroTik: {{ error }}</p>
+          <p class="mt-1 text-xs text-amber-600 dark:text-amber-400/80">Showing registered clients from database only.</p>
+        </div>
+      </div>
+    {% endif %}
+
+    <!-- Period filter -->
+    <div class="mb-6 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-lg shadow-slate-200/20 dark:border-slate-700/80 dark:bg-slate-800/50 dark:shadow-slate-950/30">
+      <form method="get" action="{{ url_for('network_monitoring') }}" id="periodForm" class="flex flex-col gap-4">
+        <div class="flex flex-wrap items-end gap-4">
+          <label class="flex flex-col gap-1.5">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Period</span>
+            <select name="filter" id="filterSelect" class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 dark:focus:border-emerald-500 min-w-[160px]">
+              <option value="all" {{ 'selected' if filter_type == 'all' else '' }}>All time</option>
+              <option value="day" {{ 'selected' if filter_type == 'day' else '' }}>Per day</option>
+              <option value="range" {{ 'selected' if filter_type == 'range' else '' }}>Date range</option>
+              <option value="month" {{ 'selected' if filter_type == 'month' else '' }}>Per month</option>
+            </select>
+          </label>
+          <label class="filter-date-only flex flex-col gap-1.5" style="{{ 'display:none' if filter_type != 'day' else '' }}">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Date</span>
+            <input type="date" name="date" value="{{ filter_date }}" class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100"
+              min="2020-01-01" max="{{ today or '2030-12-31' }}">
+          </label>
+          <span class="filter-range-only flex items-end gap-3" style="{{ 'display:none' if filter_type != 'range' else '' }}">
+            <label class="flex flex-col gap-1.5">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">From</span>
+              <input type="date" name="start" value="{{ start_date }}" class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100">
+            </label>
+            <label class="flex flex-col gap-1.5">
+              <span class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">To</span>
+              <input type="date" name="end" value="{{ end_date }}" class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100">
+            </label>
+          </span>
+          <label class="filter-month-only flex flex-col gap-1.5" style="{{ 'display:none' if filter_type != 'month' else '' }}">
+            <span class="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400">Month</span>
+            <select name="month" class="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 min-w-[160px]">
+              {% for month in month_options %}
+                <option value="{{ month }}" {{ 'selected' if filter_month == month else '' }}>{{ month }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <div class="flex items-center gap-2">
+            <button type="submit" class="rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+              Apply
+            </button>
+            <a href="{{ url_for('network_monitoring') }}" class="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-200 dark:hover:bg-slate-700">
+              Reset
+            </a>
+          </div>
+        </div>
+      </form>
+      <div class="flex flex-col gap-3 border-t border-slate-200/80 pt-4 dark:border-slate-600/50 sm:flex-row sm:items-center sm:justify-between">
+        <p class="text-xs text-slate-500 dark:text-slate-400">Usage is cumulative until you clear it. Data is recorded each time this page or the Users page is loaded.</p>
+        <form method="post" action="{{ url_for('network_monitoring_reset_usage') }}" class="shrink-0" onsubmit="return confirm('Clear all stored usage (sent/received) for this router? Client accounts and data caps are not changed.');">
+          <button type="submit" class="rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-xs font-semibold text-rose-800 transition hover:bg-rose-100 dark:border-rose-700/60 dark:bg-rose-900/25 dark:text-rose-200 dark:hover:bg-rose-900/40">
+            Clear usage data
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Search and filters -->
+    <div class="mb-6 rounded-2xl border border-slate-200/90 bg-white p-4 shadow-md dark:border-slate-700/80 dark:bg-slate-800/50">
+      <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div class="relative flex-1">
+          <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+          </span>
+          <input
+            type="text"
+            id="searchInput"
+            placeholder="Search by customer name, phone, or username..."
+            class="w-full rounded-xl border border-slate-300 bg-slate-50 py-2.5 pl-10 pr-4 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 dark:placeholder-slate-500"
+          />
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <select
+            id="statusFilter"
+            class="rounded-xl border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100"
+          >
+            <option value="all">All Status</option>
+            <option value="connected">Connected Only</option>
+            <option value="disconnected">Disconnected Only</option>
+          </select>
+          <button
+            onclick="refreshData()"
+            class="inline-flex items-center gap-2 rounded-xl border border-emerald-500/60 bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+          >
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+            Refresh
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clients table -->
+    <div class="rounded-2xl border border-slate-200/90 bg-white shadow-xl shadow-slate-200/20 dark:border-slate-700/80 dark:bg-slate-800/50 dark:shadow-slate-950/30 overflow-hidden">
+      <div class="border-b border-slate-200/80 bg-slate-50/80 px-5 py-4 dark:border-slate-700/80 dark:bg-slate-800/80">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-lg font-bold text-slate-900 dark:text-white">Client network monitoring</h2>
+          <span class="rounded-full bg-slate-200/80 px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-slate-600 dark:bg-slate-700/80 dark:text-slate-300">
+            {% if filter_type == 'day' and filter_date %}Day: {{ filter_date }}{% elif filter_type == 'range' and start_date and end_date %}{{ start_date }} – {{ end_date }}{% elif filter_type == 'month' and filter_month %}Month: {{ filter_month }}{% else %}All time{% endif %}
+          </span>
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="min-w-full text-left text-sm" role="grid">
+          <thead class="sticky top-0 z-10 border-b-2 border-slate-200 bg-slate-50 font-semibold uppercase tracking-wider text-slate-600 dark:border-slate-700 dark:bg-slate-800/95 dark:text-slate-400">
+            <tr>
+              <th scope="col" class="px-4 py-3.5">Customer</th>
+              <th scope="col" class="px-4 py-3.5">Status</th>
+              <th scope="col" class="px-4 py-3.5">IP</th>
+              <th scope="col" class="px-4 py-3.5">Uptime</th>
+              <th scope="col" class="px-4 py-3.5">Data Sent</th>
+              <th scope="col" class="px-4 py-3.5">Data Received</th>
+              <th scope="col" class="px-4 py-3.5">Total</th>
+              <th scope="col" class="px-4 py-3.5">Speed</th>
+              <th scope="col" class="px-4 py-3.5">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clientsTableBody" class="divide-y divide-slate-200/80 bg-white dark:divide-slate-700/80 dark:bg-slate-800/30">
+            {% if clients %}
+              {% for client in clients %}
+                <tr class="client-row transition-colors hover:bg-emerald-50/50 dark:hover:bg-slate-700/40 border-l-2 border-l-transparent hover:border-l-emerald-500"
+                    data-name="{{ client.customer_name|lower }}"
+                    data-phone="{{ client.phone_number }}"
+                    data-username="{{ client.pppoe_username|lower }}"
+                    data-status="{{ 'connected' if client.is_connected else 'disconnected' }}">
+                  <td class="px-4 py-3">
+                    <div class="flex flex-col gap-0.5">
+                      <span class="font-semibold text-slate-900 dark:text-white">{{ client.customer_name }}</span>
+                      <span class="text-xs text-slate-500 dark:text-slate-400">{{ client.phone_number }}</span>
+                      <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ client.pppoe_username }}</span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3">
+                    {% if client.is_connected %}
+                      <span class="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-900/30 dark:text-emerald-300">
+                        <span class="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Online
+                      </span>
+                    {% else %}
+                      <span class="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-400">Offline</span>
+                    {% endif %}
+                  </td>
+                  <td class="px-4 py-3 font-mono text-xs text-slate-700 dark:text-slate-300">
+                    {{ client.connection_address or '—' }}
+                  </td>
+                  <td class="px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
+                    {{ client.connection_uptime or '—' }}
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="font-semibold text-emerald-600 dark:text-emerald-400">{{ client.bytes_sent_formatted }}</span>
+                    <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">↑</span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="font-semibold text-blue-600 dark:text-blue-400">{{ client.bytes_received_formatted }}</span>
+                    <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">↓</span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="font-bold text-slate-900 dark:text-white">{{ format_bytes(client.total_bytes) }}</span>
+                  </td>
+                  <td class="px-4 py-3 text-xs">
+                    {% if client.download_speed_mbps or client.upload_speed_mbps %}
+                      <span class="text-slate-600 dark:text-slate-400">↓{{ client.download_speed_mbps or '∞' }} ↑{{ client.upload_speed_mbps or '∞' }} Mbps</span>
+                    {% else %}
+                      <span class="text-slate-500 dark:text-slate-400">Unlimited</span>
+                    {% endif %}
+                  </td>
+                  <td class="px-4 py-3">
+                    <a href="{{ url_for('client_detail', user_id=client.id) }}" class="inline-flex items-center rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800">
+                      View
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="9" class="px-4 py-16 text-center">
+                  <div class="mx-auto flex max-w-sm flex-col items-center gap-4">
+                    <div class="flex h-14 w-14 items-center justify-center rounded-full bg-slate-200 text-slate-500 dark:bg-slate-600 dark:text-slate-400">
+                      <svg class="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path></svg>
+                    </div>
+                    <p class="text-sm font-medium text-slate-600 dark:text-slate-400">No clients found</p>
+                  </div>
+                </td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex flex-col gap-3 border-t border-slate-200/80 bg-slate-50/60 px-5 py-4 dark:border-slate-700/80 dark:bg-slate-800/50 sm:flex-row sm:items-center sm:justify-between">
+        <div class="flex flex-wrap gap-4 text-xs">
+          <span class="text-slate-500 dark:text-slate-400">Total: <strong class="text-slate-700 dark:text-slate-200" id="totalCount">{{ clients|length }}</strong></span>
+          <span class="text-slate-500 dark:text-slate-400">Connected: <strong class="text-emerald-600 dark:text-emerald-400" id="connectedCount">{{ stats.connected_clients }}</strong></span>
+          <span class="text-slate-500 dark:text-slate-400">Offline: <strong class="text-slate-700 dark:text-slate-200" id="disconnectedCount">{{ stats.disconnected_clients }}</strong></span>
+        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400">
+          Auto-refresh in <span id="refreshTimer" class="font-semibold text-slate-700 dark:text-slate-300">60</span>s
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Filter and search functionality
+    const searchInput = document.getElementById('searchInput');
+    const statusFilter = document.getElementById('statusFilter');
+    const clientsTableBody = document.getElementById('clientsTableBody');
+    const clientRows = Array.from(document.querySelectorAll('.client-row'));
+
+    function filterClients() {
+      const searchTerm = searchInput.value.toLowerCase();
+      const statusFilterValue = statusFilter.value;
+
+      let visibleCount = 0;
+      let connectedCount = 0;
+      let disconnectedCount = 0;
+
+      clientRows.forEach(row => {
+        const name = row.getAttribute('data-name');
+        const phone = row.getAttribute('data-phone');
+        const username = row.getAttribute('data-username');
+        const status = row.getAttribute('data-status');
+
+        const matchesSearch = !searchTerm || 
+          name.includes(searchTerm) || 
+          phone.includes(searchTerm) || 
+          username.includes(searchTerm);
+
+        const matchesStatus = statusFilterValue === 'all' || 
+          (statusFilterValue === 'connected' && status === 'connected') ||
+          (statusFilterValue === 'disconnected' && status === 'disconnected');
+
+        if (matchesSearch && matchesStatus) {
+          row.style.display = '';
+          visibleCount++;
+          if (status === 'connected') connectedCount++;
+          else disconnectedCount++;
+        } else {
+          row.style.display = 'none';
+        }
+      });
+
+      document.getElementById('totalCount').textContent = visibleCount;
+      document.getElementById('connectedCount').textContent = connectedCount;
+      document.getElementById('disconnectedCount').textContent = disconnectedCount;
+    }
+
+    searchInput.addEventListener('input', filterClients);
+    statusFilter.addEventListener('change', filterClients);
+
+    // Auto-refresh functionality
+    let refreshInterval;
+    let timerInterval;
+    let secondsLeft = 60;
+
+    function refreshData() {
+      window.location.reload();
+    }
+
+    function startAutoRefresh() {
+      timerInterval = setInterval(() => {
+        secondsLeft--;
+        document.getElementById('refreshTimer').textContent = secondsLeft;
+        
+        if (secondsLeft <= 0) {
+          secondsLeft = 60;
+          refreshData();
+        }
+      }, 1000);
+    }
+
+    // Start auto-refresh timer
+    startAutoRefresh();
+
+    // Period filter: show/hide date, range, or month inputs
+    const filterSelect = document.getElementById('filterSelect');
+    const dateBlock = document.querySelector('.filter-date-only');
+    const rangeBlock = document.querySelector('.filter-range-only');
+    const monthBlock = document.querySelector('.filter-month-only');
+    function togglePeriodInputs() {
+      const v = filterSelect ? filterSelect.value : 'all';
+      if (dateBlock) dateBlock.style.display = v === 'day' ? 'flex' : 'none';
+      if (rangeBlock) rangeBlock.style.display = v === 'range' ? 'flex' : 'none';
+      if (monthBlock) monthBlock.style.display = v === 'month' ? 'flex' : 'none';
+    }
+    if (filterSelect) filterSelect.addEventListener('change', togglePeriodInputs);
+    togglePeriodInputs();
+  </script>
+{% endblock %}

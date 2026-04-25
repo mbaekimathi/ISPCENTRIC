@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block page_title %}Reports &amp; Analytics{% endblock %}
+{% block page_subtitle %}
+  Track FUP (Fair Usage Policy) status, cap usage, and overage per client (daily view).
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+    {% if error %}
+      <div class="mb-6 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/30 dark:text-amber-200">
+        {{ error }}
+      </div>
+    {% endif %}
+
+    <div class="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div class="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm dark:border-slate-700/80 dark:bg-slate-800/60">
+        <p class="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Total clients</p>
+        <p class="mt-1 text-2xl font-bold text-slate-900 dark:text-white">{{ summary.total_clients }}</p>
+      </div>
+      <div class="rounded-2xl border border-blue-200/80 bg-white p-4 shadow-sm dark:border-blue-700/40 dark:bg-slate-800/60">
+        <p class="text-xs font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-300">With data cap</p>
+        <p class="mt-1 text-2xl font-bold text-blue-700 dark:text-blue-200">{{ summary.with_data_cap }}</p>
+      </div>
+      <div class="rounded-2xl border border-red-200/80 bg-white p-4 shadow-sm dark:border-red-700/40 dark:bg-slate-800/60">
+        <p class="text-xs font-semibold uppercase tracking-wider text-red-600 dark:text-red-300">Hitting FUP</p>
+        <p class="mt-1 text-2xl font-bold text-red-700 dark:text-red-200">{{ summary.hitting_fup }}</p>
+      </div>
+      <div class="rounded-2xl border border-amber-200/80 bg-white p-4 shadow-sm dark:border-amber-700/40 dark:bg-slate-800/60">
+        <p class="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">Total overage</p>
+        <p class="mt-1 text-2xl font-bold text-amber-700 dark:text-amber-200">{{ format_bytes(summary.total_overage_bytes) }}</p>
+      </div>
+    </div>
+
+    <div class="mb-4 rounded-xl border border-slate-200/90 bg-slate-50/80 px-4 py-3 text-xs text-slate-600 dark:border-slate-700/80 dark:bg-slate-800/40 dark:text-slate-300">
+      FUP action policy:
+      <span class="font-semibold uppercase">{{ over_limit_action }}</span>
+      {% if over_limit_action == 'disable' %}
+        (users over cap are suspended)
+      {% else %}
+        (users over cap are speed-downgraded)
+      {% endif %}
+      {% if report_date %}
+        <span class="ml-2 inline-flex items-center rounded-full border border-slate-300 bg-white px-2 py-0.5 font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-300">
+          Usage date: {{ report_date }}
+        </span>
+      {% endif %}
+    </div>
+
+    <form method="get" action="{{ url_for('reports_analytics') }}" class="mb-4 grid gap-3 rounded-xl border border-slate-200/90 bg-white p-4 dark:border-slate-700/80 dark:bg-slate-800/60 md:grid-cols-[1.5fr_1fr_1fr_auto]">
+      <input
+        type="text"
+        name="q"
+        value="{{ search_query or '' }}"
+        placeholder="Search by client, username, or plan..."
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+      />
+      <select
+        name="fup"
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+      >
+        <option value="all" {{ 'selected' if fup_filter == 'all' else '' }}>All FUP</option>
+        <option value="hit" {{ 'selected' if fup_filter == 'hit' else '' }}>Hit FUP</option>
+        <option value="within" {{ 'selected' if fup_filter == 'within' else '' }}>Within cap</option>
+        <option value="no_cap" {{ 'selected' if fup_filter == 'no_cap' else '' }}>No cap</option>
+      </select>
+      <select
+        name="action"
+        class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+      >
+        <option value="all" {{ 'selected' if action_filter == 'all' else '' }}>All actions</option>
+        <option value="suspended" {{ 'selected' if action_filter == 'suspended' else '' }}>Suspended</option>
+        <option value="limited" {{ 'selected' if action_filter == 'limited' else '' }}>Limited</option>
+        <option value="normal" {{ 'selected' if action_filter == 'normal' else '' }}>Normal</option>
+      </select>
+      <div class="flex items-center gap-2">
+        <button type="submit" class="rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500">Filter</button>
+        <a href="{{ url_for('reports_analytics') }}" class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Reset</a>
+      </div>
+    </form>
+
+    <div class="overflow-x-auto rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-700/80 dark:bg-slate-800/60">
+      <table class="min-w-full text-left text-sm">
+        <thead class="border-b border-slate-200 bg-slate-50/90 text-xs uppercase tracking-wider text-slate-600 dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-400">
+          <tr>
+            <th class="px-4 py-3">Client</th>
+            <th class="px-4 py-3">Plan</th>
+            <th class="px-4 py-3">Data cap</th>
+            <th class="px-4 py-3">Usage today</th>
+            <th class="px-4 py-3">FUP status</th>
+            <th class="px-4 py-3">Over by</th>
+            <th class="px-4 py-3">Action state</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-200/80 dark:divide-slate-700/80">
+          {% if fup_rows %}
+            {% for row in fup_rows %}
+              <tr class="hover:bg-slate-50/70 dark:hover:bg-slate-700/30">
+                <td class="px-4 py-3">
+                  <div class="flex flex-col">
+                    <a href="{{ url_for('client_detail', user_id=row.id) }}" class="font-semibold text-emerald-700 hover:underline dark:text-emerald-300">{{ row.customer_name }}</a>
+                    <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{{ row.pppoe_username }}</span>
+                  </div>
+                </td>
+                <td class="px-4 py-3 text-slate-700 dark:text-slate-300">{{ row.plan_name }}</td>
+                <td class="px-4 py-3 text-slate-700 dark:text-slate-300">
+                  {% if row.cap_gb is not none %}
+                    {{ "%.2f"|format(row.cap_gb) }} GB
+                    {% if row.reset_days %}
+                      <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">/ day</span>
+                    {% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3 text-slate-700 dark:text-slate-300">
+                  {{ format_bytes(row.usage_bytes) }}
+                  {% if row.usage_pct is not none %}
+                    <span class="ml-1 text-xs text-slate-500 dark:text-slate-400">({{ row.usage_pct }}%)</span>
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                  {% if row.cap_gb is none %}
+                    <span class="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600 dark:border-slate-600 dark:bg-slate-700/60 dark:text-slate-300">No cap</span>
+                  {% elif row.is_hitting_fup %}
+                    <span class="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 dark:border-red-700/50 dark:bg-red-900/30 dark:text-red-300">Hit FUP</span>
+                  {% else %}
+                    <span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300">Within cap</span>
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3 font-semibold">
+                  {% if row.is_hitting_fup %}
+                    <span class="text-red-700 dark:text-red-300">{{ format_bytes(row.overage_bytes) }}</span>
+                  {% else %}
+                    <span class="text-slate-400 dark:text-slate-500">—</span>
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                  {% if row.is_hitting_fup and row.over_cap_suspended %}
+                    <span class="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 dark:border-red-700/50 dark:bg-red-900/30 dark:text-red-300">Suspended</span>
+                  {% elif row.is_hitting_fup %}
+                    <span class="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700 dark:border-amber-700/50 dark:bg-amber-900/30 dark:text-amber-300">Limited</span>
+                  {% else %}
+                    <span class="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300">Normal</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="px-4 py-10 text-center text-slate-500 dark:text-slate-400">No users found for this router.</td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
+
+

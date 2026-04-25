@@ -1,0 +1,336 @@
+{% extends "base.html" %}
+
+{% block page_title %}Subscription Settings{% endblock %}
+
+{% block content %}
+  <div class="mx-auto max-w-7xl px-4 py-6 sm:px-6 md:px-8">
+    <!-- Navigation Tabs -->
+    <div class="mb-6 flex flex-wrap gap-3 border-b border-slate-200 dark:border-slate-700 pb-4">
+      <a class="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition-all hover:border-emerald-300 hover:bg-emerald-50/50 hover:text-emerald-700 active:scale-95 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-emerald-700 dark:hover:bg-emerald-900/20 dark:hover:text-emerald-300 touch-manipulation" href="{{ url_for('system_configuration') }}">
+        System Settings
+      </a>
+      <a class="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 to-emerald-50/50 px-4 py-2.5 text-sm font-semibold text-emerald-700 shadow-sm dark:border-emerald-800/50 dark:from-emerald-900/30 dark:to-emerald-900/20 dark:text-emerald-300" href="{{ url_for('subscription_settings') }}">
+        Subscription Settings
+      </a>
+    </div>
+    <!-- Data cap policy: when user exceeds data limit -->
+    <div class="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50/50 p-4 mb-6 shadow-lg shadow-slate-200/50 dark:border-slate-700 dark:from-slate-800 dark:to-slate-900/50 dark:shadow-slate-900/50 sm:p-6 md:p-8">
+      <h2 class="text-xl font-bold text-slate-900 dark:text-white mb-2 sm:text-2xl">When data cap is exceeded</h2>
+      <p class="text-xs text-slate-600 dark:text-slate-400 sm:text-sm leading-relaxed mb-4">
+        Choose what happens when a user reaches their plan’s daily data limit (e.g. 10 GB/day). Applies until the next day reset.
+      </p>
+      <form action="{{ url_for('save_data_cap_policy') }}" method="POST" class="space-y-4">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+          <label class="inline-flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="over_limit_action" value="disable" {{ 'checked' if over_limit_action == 'disable' else '' }} class="rounded-full border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800" />
+            <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Disable internet</span>
+          </label>
+          <span class="text-xs text-slate-500 dark:text-slate-400 sm:max-w-xs">Suspend PPPoE user until next day reset.</span>
+        </div>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
+          <label class="inline-flex items-center gap-2 cursor-pointer">
+            <input type="radio" name="over_limit_action" value="downgrade" {{ 'checked' if over_limit_action == 'downgrade' else '' }} class="rounded-full border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-800" />
+            <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Downgrade speed</span>
+          </label>
+          <span class="inline-flex items-center gap-2">
+            <input type="number" name="downgrade_speed_kbps" value="{{ downgrade_speed_kbps }}" min="64" max="10000" step="1" class="w-24 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+            <span class="text-sm text-slate-600 dark:text-slate-400">kbps until next day reset</span>
+          </span>
+        </div>
+        <button type="submit" class="rounded-xl border border-emerald-500 bg-gradient-to-r from-emerald-500 to-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:from-emerald-600 hover:to-emerald-700 active:scale-95 dark:shadow-emerald-900/50">
+          Save data cap policy
+        </button>
+      </form>
+    </div>
+
+    <!-- Create Subscription Plan Form -->
+    <div class="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50/50 p-4 mb-6 shadow-lg shadow-slate-200/50 dark:border-slate-700 dark:from-slate-800 dark:to-slate-900/50 dark:shadow-slate-900/50 sm:p-6 md:p-8">
+      <h2 class="text-xl font-bold text-slate-900 dark:text-white mb-2 sm:text-2xl">Create Subscription Plan</h2>
+      <p class="text-xs text-slate-600 dark:text-slate-400 sm:text-sm leading-relaxed mb-6">
+        Create a new subscription plan with duration, speeds, and pricing.
+      </p>
+
+      {% if error %}
+        <div class="mb-6 rounded-xl border border-red-200 bg-red-50/50 p-4 text-sm text-red-800 dark:border-red-800/50 dark:bg-red-900/20 dark:text-red-300">
+          <strong class="font-semibold">Error:</strong> {{ error }}
+        </div>
+      {% endif %}
+
+      {% if success %}
+        <div class="mb-6 rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 text-sm text-emerald-800 dark:border-emerald-800/50 dark:bg-emerald-900/20 dark:text-emerald-300">
+          <strong class="font-semibold">Success:</strong> {{ success }}
+        </div>
+      {% endif %}
+
+      <form class="mt-6 grid gap-5" action="{{ url_for('create_subscription_plan') }}" method="POST">
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Plan Name
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="text"
+              name="plan_name"
+              placeholder="e.g., Basic Plan, Premium Plan"
+              required
+            />
+          </label>
+
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Duration (Days)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="duration_days"
+              placeholder="30"
+              min="1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Number of days the subscription will last.</span>
+          </label>
+        </div>
+
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Download Speed (Mbps)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="download_speed_mbps"
+              placeholder="10"
+              step="0.1"
+              min="0.1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Download speed in Mbps for registered routers.</span>
+          </label>
+
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Upload Speed (Mbps)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="upload_speed_mbps"
+              placeholder="5"
+              step="0.1"
+              min="0.1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Upload speed in Mbps for registered routers.</span>
+          </label>
+        </div>
+
+        <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          Cost
+          <input
+            class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+            type="number"
+            name="cost"
+            placeholder="5000"
+            step="0.01"
+            min="0"
+            required
+          />
+          <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Cost of the subscription plan.</span>
+        </label>
+
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Data cap (GB) <span class="text-slate-500 font-normal">optional</span>
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="data_cap_gb"
+              placeholder="e.g. 10"
+              step="0.1"
+              min="0"
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Leave empty for unlimited. Data cap is enforced per day and resets the following day.</span>
+          </label>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-4">
+          <button
+            class="inline-flex items-center justify-center rounded-xl border border-emerald-500 bg-gradient-to-r from-emerald-500 to-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-500/25 transition-all hover:from-emerald-600 hover:to-emerald-700 hover:shadow-lg hover:shadow-emerald-500/30 hover:-translate-y-0.5 active:scale-95 dark:shadow-emerald-900/50"
+            type="submit"
+          >
+            Create Subscription Plan
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Edit Subscription Plan (shown when edit_plan is set) -->
+    {% if edit_plan %}
+    <div class="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50/50 to-white p-4 mb-6 shadow-lg shadow-slate-200/50 dark:border-amber-800/50 dark:from-amber-900/20 dark:to-slate-900/50 dark:shadow-slate-900/50 sm:p-6 md:p-8">
+      <h2 class="text-xl font-bold text-slate-900 dark:text-white mb-2 sm:text-2xl">Edit Subscription Plan</h2>
+      <p class="text-xs text-slate-600 dark:text-slate-400 sm:text-sm leading-relaxed mb-6">
+        Update plan &quot;{{ edit_plan.plan_name }}&quot;. Change any field and save.
+      </p>
+      {% if error %}
+        <div class="mb-6 rounded-xl border border-red-200 bg-red-50/50 p-4 text-sm text-red-800 dark:border-red-800/50 dark:bg-red-900/20 dark:text-red-300">
+          <strong class="font-semibold">Error:</strong> {{ error }}
+        </div>
+      {% endif %}
+      <form class="mt-6 grid gap-5" action="{{ url_for('update_subscription_plan', plan_id=edit_plan.id) }}" method="POST">
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Plan Name
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="text"
+              name="plan_name"
+              value="{{ edit_plan.plan_name }}"
+              placeholder="e.g., Basic Plan, Premium Plan"
+              required
+            />
+          </label>
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Duration (Days)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="duration_days"
+              value="{{ edit_plan.duration_days }}"
+              placeholder="30"
+              min="1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Number of days the subscription will last.</span>
+          </label>
+        </div>
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Download Speed (Mbps)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="download_speed_mbps"
+              value="{{ edit_plan.download_speed_mbps }}"
+              placeholder="10"
+              step="0.1"
+              min="0.1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Download speed in Mbps for registered routers.</span>
+          </label>
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Upload Speed (Mbps)
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="upload_speed_mbps"
+              value="{{ edit_plan.upload_speed_mbps }}"
+              placeholder="5"
+              step="0.1"
+              min="0.1"
+              required
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Upload speed in Mbps for registered routers.</span>
+          </label>
+        </div>
+        <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+          Cost
+          <input
+            class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+            type="number"
+            name="cost"
+            value="{{ edit_plan.cost }}"
+            placeholder="5000"
+            step="0.01"
+            min="0"
+            required
+          />
+          <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Cost of the subscription plan.</span>
+        </label>
+        <div class="grid gap-5 lg:grid-cols-2">
+          <label class="grid gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+            Data cap (GB) <span class="text-slate-500 font-normal">optional</span>
+            <input
+              class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none ring-2 ring-transparent focus:border-emerald-500 focus:ring-emerald-500/20 transition-all shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:focus:border-emerald-500"
+              type="number"
+              name="data_cap_gb"
+              value="{{ edit_plan.data_cap_gb if (edit_plan.data_cap_gb is not none and edit_plan.data_cap_gb != '') else '' }}"
+              placeholder="e.g. 10"
+              step="0.1"
+              min="0"
+            />
+            <span class="text-xs text-slate-600 dark:text-slate-400 font-normal">Leave empty for unlimited. Data cap is enforced per day and resets the following day.</span>
+          </label>
+        </div>
+        <div class="flex flex-wrap items-center gap-4">
+          <button class="inline-flex items-center justify-center rounded-xl border border-emerald-500 bg-gradient-to-r from-emerald-500 to-emerald-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-emerald-500/25 transition-all hover:from-emerald-600 hover:to-emerald-700 active:scale-95 dark:shadow-emerald-900/50" type="submit">
+            Save changes
+          </button>
+          <a href="{{ url_for('subscription_settings') }}" class="rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Cancel</a>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+
+    <!-- Existing Subscription Plans -->
+    <div class="rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-slate-50/50 p-4 shadow-lg shadow-slate-200/50 dark:border-slate-700 dark:from-slate-800 dark:to-slate-900/50 dark:shadow-slate-900/50 sm:p-6 md:p-8">
+      <h2 class="text-xl font-bold text-slate-900 dark:text-white mb-2 sm:text-2xl">Existing Subscription Plans</h2>
+      <p class="text-xs text-slate-600 dark:text-slate-400 sm:text-sm leading-relaxed mb-6">
+        Manage your subscription plans.
+      </p>
+
+      {% if plans %}
+      <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800 shadow-md -mx-4 sm:mx-0">
+        <div class="inline-block min-w-full align-middle">
+          <table class="min-w-full divide-y divide-slate-200 text-left text-sm text-slate-700 dark:divide-slate-800 dark:text-slate-300">
+            <thead class="bg-gradient-to-r from-slate-50 to-slate-100 text-xs font-bold uppercase tracking-wider text-slate-700 dark:from-slate-800 dark:to-slate-900 dark:text-slate-300">
+            <tr>
+              <th class="px-4 py-3">Plan Name</th>
+              <th class="px-4 py-3">Duration</th>
+              <th class="px-4 py-3">Download</th>
+              <th class="px-4 py-3">Upload</th>
+              <th class="px-4 py-3">Cost</th>
+              <th class="px-4 py-3">Data cap</th>
+              <th class="px-4 py-3">Cap period</th>
+              <th class="px-4 py-3">Created</th>
+              <th class="px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+            <tbody class="divide-y divide-slate-200 dark:divide-slate-800 bg-white dark:bg-slate-900">
+              {% for plan in plans %}
+              <tr class="bg-white hover:bg-slate-50/80 dark:bg-slate-900 dark:hover:bg-slate-800/50 transition-colors">
+                <td class="px-4 py-3 font-semibold whitespace-nowrap">{{ plan.plan_name }}</td>
+                <td class="px-4 py-3 whitespace-nowrap font-medium">{{ plan.duration_days }} days</td>
+                <td class="px-4 py-3 whitespace-nowrap font-medium">{{ plan.download_speed_mbps }} Mbps</td>
+                <td class="px-4 py-3 whitespace-nowrap font-medium">{{ plan.upload_speed_mbps }} Mbps</td>
+                <td class="px-4 py-3 whitespace-nowrap font-semibold">{{ "%.2f"|format(plan.cost) }}</td>
+                <td class="px-4 py-3 whitespace-nowrap font-medium">{{ "%.1f GB"|format(plan.data_cap_gb) if plan.data_cap_gb is not none and plan.data_cap_gb else "—" }}</td>
+                <td class="px-4 py-3 whitespace-nowrap font-medium">{{ "Daily" if plan.data_cap_gb is not none and plan.data_cap_gb else "—" }}</td>
+                <td class="px-4 py-3 whitespace-nowrap text-xs font-medium">
+                {% if plan.created_at %}
+                  {% if plan.created_at is string %}
+                    {{ plan.created_at[:10] }}
+                  {% else %}
+                    {{ plan.created_at.strftime('%Y-%m-%d') }}
+                  {% endif %}
+                {% else %}
+                  N/A
+                {% endif %}
+              </td>
+              <td class="px-4 py-3">
+                <div class="flex flex-wrap items-center gap-2">
+                  <a href="{{ url_for('edit_subscription_plan', plan_id=plan.id) }}" class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 transition-all hover:bg-slate-100 hover:border-slate-300 active:scale-95 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700">Edit</a>
+                  <form action="{{ url_for('delete_subscription_plan', plan_id=plan.id) }}" method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this subscription plan?');">
+                    <button class="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 transition-all hover:bg-red-100 hover:border-red-300 active:scale-95 dark:border-red-800/50 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30" type="submit">Delete</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-8 text-center shadow-sm dark:border-slate-700 dark:from-slate-800 dark:to-slate-900">
+        <p class="text-sm font-medium text-slate-600 dark:text-slate-400">No subscription plans created yet. Create your first plan above.</p>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+

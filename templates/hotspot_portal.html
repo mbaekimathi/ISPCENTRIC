@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+
+{% block page_title %}Hotspot Plan Selection{% endblock %}
+{% block page_subtitle %}
+  Select your internet plan to request hotspot access.
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6 lg:px-8">
+    <div class="mb-6 rounded-2xl border border-emerald-200/80 bg-emerald-50/70 p-4 dark:border-emerald-800/50 dark:bg-emerald-900/20">
+      <p class="text-sm text-emerald-800 dark:text-emerald-200">
+        Connected to <strong>{{ hotspot_ssid }}</strong>. Select a plan below to request access.
+      </p>
+    </div>
+
+    <form id="portalPlanForm" class="space-y-5">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <label class="grid gap-1.5">
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">Your name</span>
+          <input
+            type="text"
+            id="customerName"
+            name="customer_name"
+            placeholder="Enter your name"
+            class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+            required
+          />
+        </label>
+        <label class="grid gap-1.5">
+          <span class="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">Phone number (optional)</span>
+          <input
+            type="text"
+            id="phoneNumber"
+            name="phone_number"
+            placeholder="07xx xxx xxx"
+            class="rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+          />
+        </label>
+      </div>
+
+      <div class="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm dark:border-slate-700/80 dark:bg-slate-800/50">
+        <div class="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:text-slate-300">
+          Available plans
+        </div>
+        <div class="divide-y divide-slate-200 dark:divide-slate-700">
+          {% if plans %}
+            {% for p in plans %}
+              <label class="flex cursor-pointer items-start gap-3 px-4 py-3 hover:bg-slate-50/80 dark:hover:bg-slate-700/40">
+                <input
+                  type="radio"
+                  name="plan_id"
+                  value="{{ p.id }}"
+                  class="mt-1 h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700"
+                  required
+                />
+                <span class="flex-1">
+                  <span class="block font-semibold text-slate-900 dark:text-slate-100">{{ p.plan_name }}</span>
+                  <span class="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                    {{ p.download_speed_mbps }} Mbps down / {{ p.upload_speed_mbps }} Mbps up
+                    · {{ p.duration_days }} days
+                    · {{ "%.2f"|format(p.cost) }}
+                  </span>
+                </span>
+              </label>
+            {% endfor %}
+          {% else %}
+            <div class="px-4 py-8 text-center text-sm text-slate-500 dark:text-slate-400">
+              No plans are available right now.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        id="submitPlanBtn"
+        class="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 dark:focus:ring-offset-slate-900"
+      >
+        Continue with selected plan
+      </button>
+    </form>
+
+    <div id="portalResult" class="mt-4 hidden rounded-xl border px-4 py-3 text-sm"></div>
+  </div>
+
+  <script>
+    (() => {
+      const form = document.getElementById("portalPlanForm");
+      const btn = document.getElementById("submitPlanBtn");
+      const result = document.getElementById("portalResult");
+
+      const mac = "{{ mac }}";
+      const clientIp = "{{ client_ip }}";
+      const dst = "{{ dst }}";
+
+      const showResult = (message, isError) => {
+        result.textContent = message;
+        result.classList.remove("hidden");
+        if (isError) {
+          result.className = "mt-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-700/50 dark:bg-red-900/30 dark:text-red-300";
+        } else {
+          result.className = "mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-700/50 dark:bg-emerald-900/30 dark:text-emerald-300";
+        }
+      };
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        const payload = {
+          plan_id: fd.get("plan_id"),
+          customer_name: (fd.get("customer_name") || "").toString().trim(),
+          phone_number: (fd.get("phone_number") || "").toString().trim(),
+          mac,
+          client_ip: clientIp,
+          dst,
+        };
+
+        btn.disabled = true;
+        btn.textContent = "Submitting...";
+        try {
+          const res = await fetch("/api/hotspot/portal/select-plan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "Failed to submit plan.");
+          showResult(data.message || "Plan submitted successfully.", false);
+          if (data.redirect_to) {
+            setTimeout(() => {
+              window.location.href = data.redirect_to;
+            }, 1500);
+          }
+        } catch (err) {
+          showResult(err.message || "Failed to submit plan.", true);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Continue with selected plan";
+        }
+      });
+    })();
+  </script>
+{% endblock %}

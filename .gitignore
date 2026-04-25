@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+data/
+instance/
+
+# Databases / dumps
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+
+# Archives / large bundles
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.rar
+
+# Logs
+*.log
+logs/
+
+# IDE / OS
+.vscode/
+.idea/
+.qodo/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Flask
+flask_session/

@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+
+{% block page_title %}Hotspot / Free WiFi (Client Routers){% endblock %}
+{% block page_subtitle %}
+  Set the hotspot network (guest/second SSID) for client routers. It does not change clients’ own WiFi; when users connect to this SSID they get internet.
+{% endblock %}
+
+{% block content %}
+  <div class="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 lg:px-8">
+    {% if error %}
+      <div class="mb-6 flex items-start gap-3 rounded-xl border border-amber-300/80 bg-amber-50/90 p-4 dark:border-amber-600/50 dark:bg-amber-900/20">
+        <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-200/80 text-amber-700 dark:bg-amber-800/50 dark:text-amber-300">
+          <svg class="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+        </span>
+        <p class="text-sm text-amber-800 dark:text-amber-200">{{ error }}</p>
+      </div>
+    {% endif %}
+
+    <div class="rounded-2xl border border-slate-200/90 bg-white shadow-xl shadow-slate-200/20 dark:border-slate-700/80 dark:bg-slate-800/50 dark:shadow-slate-950/30 overflow-hidden">
+      <div class="border-b border-slate-200/80 bg-gradient-to-r from-slate-50 to-white px-5 py-4 dark:border-slate-700/80 dark:from-slate-800/50 dark:to-slate-900/50">
+        <div class="flex items-center gap-3">
+          <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400">
+            <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"></path></svg>
+          </div>
+          <div>
+            <h2 class="text-lg font-bold text-slate-900 dark:text-white">Hotspot network (guest SSID)</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Router: <span class="font-medium text-slate-700 dark:text-slate-300">{{ router_name }}</span> — Broadcast by client CPEs as a <strong>separate</strong> SSID; does not change the client’s own WiFi.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="p-5 sm:p-6">
+        <div class="mb-6 rounded-xl border border-blue-200/80 bg-blue-50/60 p-4 dark:border-blue-800/50 dark:bg-blue-900/20">
+          <p class="text-sm text-blue-800 dark:text-blue-200">
+            <strong>How it works:</strong> Set the SSID and guest security mode here. For captive portal flow, enable <strong>Captive portal mode</strong> and provide your portal URL; this forces open guest WiFi and users should be redirected to your hotspot website to select a plan before internet access.
+          </p>
+        </div>
+
+        <form id="hotspotForm" class="space-y-5">
+          <div>
+            <label for="freeWifiSsid" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-300">Hotspot network name (SSID)</label>
+            <input
+              id="freeWifiSsid"
+              name="free_wifi_ssid"
+              type="text"
+              value="{{ hotspot_ssid }}"
+              placeholder="Free WiFi"
+              class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder-slate-400 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 dark:placeholder-slate-500"
+              required
+            />
+          </div>
+          <div>
+            <label class="mb-2 flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200/80 bg-slate-50/60 p-3 dark:border-slate-700/80 dark:bg-slate-800/40">
+              <input
+                id="captivePortalEnabled"
+                name="captive_portal_enabled"
+                type="checkbox"
+                {{ 'checked' if captive_portal_enabled else '' }}
+                class="mt-0.5 h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 dark:border-slate-600 dark:bg-slate-700"
+              />
+              <span class="text-sm text-slate-700 dark:text-slate-300">
+                <strong>Captive portal mode</strong><br />
+                Make hotspot WiFi open (no WiFi password) and use portal redirect workflow.
+              </span>
+            </label>
+          </div>
+          <div>
+            <label for="captivePortalUrl" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-300">Captive portal URL</label>
+            <input
+              id="captivePortalUrl"
+              name="captive_portal_url"
+              type="url"
+              value="{{ captive_portal_url or '' }}"
+              placeholder="https://portal.example.com/hotspot"
+              class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder-slate-400 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 dark:placeholder-slate-500"
+            />
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">Used only when captive portal mode is enabled.</p>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Built-in portal URL:
+              <code class="rounded bg-slate-100 px-1 py-0.5 text-[11px] dark:bg-slate-800">{{ default_portal_url }}</code>
+            </p>
+          </div>
+          <div>
+            <label for="hotspotEnforcementMode" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-300">Access enforcement mode</label>
+            <select
+              id="hotspotEnforcementMode"
+              name="hotspot_enforcement_mode"
+              class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100"
+            >
+              <option value="portal_only" {{ 'selected' if hotspot_enforcement_mode == 'portal_only' else '' }}>Portal Only (recommended for Tenda/F3)</option>
+              <option value="mikrotik_enforced" {{ 'selected' if hotspot_enforcement_mode == 'mikrotik_enforced' else '' }}>MikroTik Enforced (gateway required)</option>
+            </select>
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Portal Only captures plan requests and redirects users; MikroTik Enforced auto-grants/blocks access via RouterOS hotspot bindings.
+            </p>
+          </div>
+          <div>
+            <label for="freeWifiPassword" class="mb-1.5 block text-sm font-semibold text-slate-700 dark:text-slate-300">Password <span class="font-normal text-slate-500 dark:text-slate-400">(optional – leave blank for open network)</span></label>
+            <input
+              id="freeWifiPassword"
+              name="free_wifi_password"
+              type="password"
+              placeholder="{% if hotspot_password_set %}Leave blank to keep current password{% else %}Min 8 characters for WPA2{% endif %}"
+              class="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 placeholder-slate-400 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-600 dark:bg-slate-700/50 dark:text-slate-100 dark:placeholder-slate-500"
+            />
+            <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">If set, use WPA2 for the hotspot. If empty, the hotspot can be open. Client’s own WiFi settings are not changed.</p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3">
+            <button
+              type="submit"
+              id="enableHotspotBtn"
+              class="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800"
+            >
+              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+              Save hotspot network
+            </button>
+          </div>
+        </form>
+
+        <p class="mt-6 text-xs text-slate-500 dark:text-slate-400">
+          No changes are made to the MikroTik or to any customer’s existing WiFi. Use these credentials to configure the <strong>guest/hotspot SSID</strong> on each client’s router (second broadcast only). Users who connect to this SSID get internet; the client’s own network is unaffected.
+        </p>
+      </div>
+    </div>
+
+    <div class="mt-8 rounded-2xl border border-slate-200/90 bg-white shadow-xl shadow-slate-200/20 dark:border-slate-700/80 dark:bg-slate-800/50 dark:shadow-slate-950/30 overflow-hidden">
+      <div class="border-b border-slate-200/80 bg-gradient-to-r from-slate-50 to-white px-5 py-4 dark:border-slate-700/80 dark:from-slate-800/50 dark:to-slate-900/50">
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+          </div>
+          <div>
+            <h2 class="text-base font-bold text-slate-900 dark:text-white">Routers (customers) with guest network activated</h2>
+            <p class="text-sm text-slate-500 dark:text-slate-400">Track which client routers are configured to broadcast the hotspot. Toggling here does not change the CPE; it only records status.</p>
+          </div>
+        </div>
+      </div>
+      <div class="p-5 sm:p-6">
+        <div id="guestListContainer">
+          {% if customers_with_guest %}
+            <div class="overflow-x-auto rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+              <table class="w-full min-w-[320px] text-left text-sm">
+                <thead class="sticky top-0 border-b border-slate-200 bg-slate-50/90 font-semibold uppercase tracking-wider text-slate-600 dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-300">
+                  <tr>
+                    <th class="px-3 py-2.5 sm:px-4 sm:py-3">Customer</th>
+                    <th class="px-3 py-2.5 sm:px-4 sm:py-3">PPPoE username</th>
+                    <th class="hidden sm:table-cell px-3 py-2.5 sm:px-4 sm:py-3">Phone</th>
+                    <th class="px-3 py-2.5 sm:px-4 sm:py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200 dark:divide-slate-700">
+                  {% for c in customers_with_guest %}
+                  <tr class="guest-row hover:bg-emerald-50/50 dark:hover:bg-slate-700/30" data-customer-id="{{ c.id }}">
+                    <td class="px-3 py-2.5 sm:px-4 sm:py-3 font-medium text-slate-900 dark:text-white">{{ c.customer_name }}</td>
+                    <td class="px-3 py-2.5 sm:px-4 sm:py-3 text-slate-600 dark:text-slate-300">{{ c.pppoe_username }}</td>
+                    <td class="hidden sm:table-cell px-3 py-2.5 sm:px-4 sm:py-3 text-slate-500 dark:text-slate-400">{{ c.phone_number or '—' }}</td>
+                    <td class="px-3 py-2.5 sm:px-4 sm:py-3 text-right">
+                      <button type="button" class="guest-deactivate inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50" data-customer-id="{{ c.id }}">Deactivate</button>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 py-6 text-center text-sm text-slate-500 dark:border-slate-600 dark:bg-slate-800/30 dark:text-slate-400">No customers marked with guest network activated yet. Add one below.</p>
+          {% endif %}
+        </div>
+
+        {% if customers_without_guest %}
+          <div class="mt-5 flex flex-wrap items-end gap-3 rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-700/80 dark:bg-slate-800/30">
+            <div class="min-w-0 flex-1">
+              <label for="addGuestCustomer" class="mb-1 block text-xs font-semibold text-slate-600 dark:text-slate-400">Add customer (mark guest activated)</label>
+              <select id="addGuestCustomer" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 sm:min-w-[200px]">
+                <option value="">Select customer…</option>
+                {% for c in customers_without_guest %}
+                <option value="{{ c.id }}">{{ c.customer_name }} ({{ c.pppoe_username }})</option>
+                {% endfor %}
+              </select>
+            </div>
+            <button type="button" id="addGuestBtn" class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 dark:bg-emerald-600 dark:hover:bg-emerald-500">
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+              Mark as guest activated
+            </button>
+          </div>
+        {% elif all_customers %}
+          <p class="mt-4 text-sm text-slate-500 dark:text-slate-400">All customers are marked with guest network activated.</p>
+        {% else %}
+          <p class="mt-4 text-sm text-slate-500 dark:text-slate-400">Register customers on the Users page to mark them here.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="pointer-events-none fixed right-4 top-20 z-50 hidden max-w-[calc(100vw-2rem)] rounded-xl border px-4 py-3 text-sm shadow-lg sm:right-6 sm:top-6" role="status" aria-live="polite"></div>
+
+  <script>
+    const form = document.getElementById("hotspotForm");
+    const btn = document.getElementById("enableHotspotBtn");
+    const toast = document.getElementById("toast");
+    const captivePortalEnabledEl = document.getElementById("captivePortalEnabled");
+    const passwordEl = document.getElementById("freeWifiPassword");
+
+    function showToast(message, isError) {
+      toast.textContent = message;
+      toast.classList.remove("hidden");
+      if (isError) {
+        toast.classList.add("border-red-500", "bg-red-50", "text-red-800", "dark:border-red-800", "dark:bg-red-900/20", "dark:text-red-300");
+        toast.classList.remove("border-emerald-500", "bg-emerald-50", "text-emerald-800", "dark:border-emerald-800", "dark:bg-emerald-900/20", "dark:text-emerald-300");
+      } else {
+        toast.classList.add("border-emerald-500", "bg-emerald-50", "text-emerald-800", "dark:border-emerald-800", "dark:bg-emerald-900/20", "dark:text-emerald-300");
+        toast.classList.remove("border-red-500", "bg-red-50", "text-red-800", "dark:border-red-800", "dark:bg-red-900/20", "dark:text-red-300");
+      }
+      setTimeout(function () {
+        toast.classList.add("hidden");
+        toast.classList.remove("border-red-500", "bg-red-50", "text-red-800", "dark:border-red-800", "dark:bg-red-900/20", "dark:text-red-300", "border-emerald-500", "bg-emerald-50", "text-emerald-800", "dark:border-emerald-800", "dark:bg-emerald-900/20", "dark:text-emerald-300");
+      }, 5000);
+    }
+
+    async function toggleGuest(customerId, enabled) {
+      try {
+        const res = await fetch("{{ url_for('api_hotspot_toggle_customer') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ customer_id: customerId, enabled: enabled }),
+        });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          showToast(data.error || "Request failed.", true);
+          return;
+        }
+        showToast(data.message || (enabled ? "Guest activated." : "Guest deactivated."));
+        setTimeout(function () { window.location.reload(); }, 1000);
+      } catch (err) {
+        showToast("Request failed. Try again.", true);
+      }
+    }
+
+    document.querySelectorAll(".guest-deactivate").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const id = btn.getAttribute("data-customer-id");
+        if (id) toggleGuest(parseInt(id, 10), false);
+      });
+    });
+
+    const addGuestBtn = document.getElementById("addGuestBtn");
+    const addGuestSelect = document.getElementById("addGuestCustomer");
+    if (addGuestBtn && addGuestSelect) {
+      addGuestBtn.addEventListener("click", function () {
+        const id = addGuestSelect.value;
+        if (!id) {
+          showToast("Select a customer first.", true);
+          return;
+        }
+        toggleGuest(parseInt(id, 10), true);
+      });
+    }
+
+    function syncSecurityInputs() {
+      if (!captivePortalEnabledEl || !passwordEl) return;
+      const captiveEnabled = captivePortalEnabledEl.checked;
+      passwordEl.disabled = captiveEnabled;
+      if (captiveEnabled) {
+        passwordEl.value = "";
+        passwordEl.placeholder = "Disabled in captive portal mode (open hotspot WiFi)";
+      } else {
+        passwordEl.placeholder = "{% if hotspot_password_set %}Leave blank to keep current password{% else %}Min 8 characters for WPA2{% endif %}";
+      }
+    }
+    if (captivePortalEnabledEl) {
+      captivePortalEnabledEl.addEventListener("change", syncSecurityInputs);
+    }
+    syncSecurityInputs();
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const ssid = document.getElementById("freeWifiSsid").value.trim() || "Free WiFi";
+      const password = document.getElementById("freeWifiPassword").value;
+      const hotspotEnforcementMode = document.getElementById("hotspotEnforcementMode").value;
+      const captivePortalEnabled = document.getElementById("captivePortalEnabled").checked;
+      const captivePortalUrl = document.getElementById("captivePortalUrl").value.trim();
+      if (captivePortalEnabled && !captivePortalUrl) {
+        showToast("Captive portal URL is required when captive portal mode is enabled.", true);
+        return;
+      }
+      if (!captivePortalEnabled && password && password.length < 8) {
+        showToast("Password must be at least 8 characters for WPA2.", true);
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      try {
+        const res = await fetch("{{ url_for('api_hotspot_configure') }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            free_wifi_ssid: ssid,
+            free_wifi_password: password,
+            captive_portal_enabled: captivePortalEnabled,
+            captive_portal_url: captivePortalUrl,
+            hotspot_enforcement_mode: hotspotEnforcementMode,
+          }),
+        });
+        const data = await res.json().catch(function () { return {}; });
+        if (!res.ok) {
+          showToast(data.error || "Failed to save.", true);
+          return;
+        }
+        showToast(data.message || "Hotspot network saved.");
+        setTimeout(function () { window.location.reload(); }, 1800);
+      } catch (err) {
+        showToast("Request failed. Try again.", true);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Save hotspot network';
+      }
+    });
+  </script>
+{% endblock %}
