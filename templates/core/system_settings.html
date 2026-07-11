@@ -1,0 +1,36 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}My system settings — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  <div class="stat-grid">
+    <div class="stat">
+      <div class="label">Status</div>
+      <div class="value" style="font-size:1.15rem;">{{ organization.get_status_display }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Join code</div>
+      <div class="value" style="font-size:1.15rem;">{{ organization.join_code }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Created</div>
+      <div class="value" style="font-size:1.05rem;">{{ organization.created_at|date:"M j, Y" }}</div>
+    </div>
+  </div>
+
+  <section class="panel" style="margin-top:1.15rem;">
+    <h2>Workspace preferences</h2>
+    <p class="empty">Additional system preferences (notifications, billing defaults, and integrations) will appear here.</p>
+    <div class="form-actions" style="margin-top:1rem;">
+      <a class="btn btn-primary" href="{% url 'core:my_account' %}">Edit account details</a>
+    </div>
+  </section>
+{% else %}
+  <section class="panel">
+    <p class="empty">No organization settings available.</p>
+  </section>
+{% endif %}
+{% endblock %}

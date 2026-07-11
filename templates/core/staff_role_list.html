@@ -1,0 +1,46 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel">
+  <h2>Team ({{ members|length }})</h2>
+  {% if members %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Username</th>
+          <th>Phone</th>
+          <th>Status</th>
+          <th>Login code</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for member in members %}
+          <tr>
+            <td>
+              <div class="org-identity">
+                {% if member.profile_photo %}
+                  <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+                {% else %}
+                  <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
+                {% endif %}
+                <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
+              </div>
+            </td>
+            <td>{{ member.user.username }}</td>
+            <td>{{ member.phone|default:"—" }}</td>
+            <td><span class="badge">{{ member.get_status_display }}</span></td>
+            <td>{{ member.login_code }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">{{ empty_text }}</p>
+  {% endif %}
+</section>
+{% endblock %}

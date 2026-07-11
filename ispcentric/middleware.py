@@ -28,3 +28,30 @@ class AutoCsrfOriginMiddleware:
                 if origin not in trusted:
                     trusted.append(origin)
         return self.get_response(request)
+
+
+class PrefetchEmployeeMiddleware:
+    """Load employee + organization once per request to avoid repeated FK hits."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            from accounts.models import Employee
+
+            try:
+                employee = (
+                    Employee.objects.select_related("organization")
+                    .filter(user_id=user.id)
+                    .first()
+                )
+                # Cache on the reverse OneToOne (including None) so later getattr
+                # does not issue another query.
+                Employee._meta.get_field("user").remote_field.set_cached_value(
+                    user, employee
+                )
+            except Exception:
+                pass
+        return self.get_response(request)

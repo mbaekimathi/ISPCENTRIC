@@ -1,0 +1,71 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}My account — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  <section class="panel org-edit-panel">
+    <div class="org-edit-hero">
+      {% if organization.profile_photo %}
+        <img class="org-edit-avatar" src="{{ organization.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
+      {% else %}
+        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
+      {% endif %}
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Organization</p>
+        <h2>{{ organization.name }}</h2>
+        <p>{{ organization.get_status_display }} · Join code {{ organization.join_code }}</p>
+      </div>
+    </div>
+
+    {% if form and can_edit %}
+      <form method="post" enctype="multipart/form-data" class="org-edit-form" style="margin-top:1.25rem;">
+        {% csrf_token %}
+        <div class="form-grid">
+          <div class="field">
+            <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+            {{ form.name }}
+            {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+            {{ form.phone }}
+            {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
+            {{ form.status }}
+            {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field org-edit-photo-field">
+            <span class="org-edit-file-label">Profile photo</span>
+            {% if organization.profile_photo %}
+              <img class="org-edit-photo-preview" src="{{ organization.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
+            {% endif %}
+            <label class="org-edit-file" for="{{ form.profile_photo.id_for_label }}">
+              Choose photo
+            </label>
+            {{ form.profile_photo }}
+            {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:1rem;">
+          <button type="submit" class="btn btn-primary">Save account</button>
+        </div>
+      </form>
+    {% else %}
+      <dl class="account-session-rows" style="margin-top:1rem;">
+        <div class="account-session-row"><span>Phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
+        <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
+        <div class="account-session-row"><span>Email</span><strong>{{ organization.owner.email|default:"—" }}</strong></div>
+      </dl>
+    {% endif %}
+  </section>
+{% else %}
+  <section class="panel">
+    <p class="empty">No organization is linked to this account yet.</p>
+  </section>
+{% endif %}
+{% endblock %}

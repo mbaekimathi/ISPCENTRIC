@@ -8,21 +8,41 @@
       <a class="brand staff-brand" href="{% url dashboard_url_name %}">ISP<span>CENTRIC</span></a>
       <button type="button" class="staff-nav-close" id="staff-nav-close" aria-label="Close menu">×</button>
     </div>
-    {% if staff_nav_items %}
+    {% if staff_nav_main or staff_nav_end %}
     <p class="staff-nav-label">Workspace</p>
-    <nav>
-      {% block staff_nav %}
-        {% for item in staff_nav_items %}
-          <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
+    <div class="staff-sidebar-nav-stack">
+      <nav class="staff-sidebar-nav-main">
+        {% block staff_nav %}
+          {% for item in staff_nav_main %}
+            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
+          {% endfor %}
+        {% endblock %}
+      </nav>
+      <div class="staff-sidebar-meta">
+        <span class="staff-sidebar-meta-label">Signed in</span>
+        <strong>{{ user.get_full_name|default:user.username }}</strong>
+        <span>{{ actual_role_label }}</span>
+      </div>
+      <nav class="staff-sidebar-nav-end">
+        {% for item in staff_nav_end %}
+          {% if item.action == "logout" %}
+            <form method="post" action="{% url 'accounts:logout' %}" class="staff-sidebar-logout">
+              {% csrf_token %}
+              <button type="submit">{{ item.label }}</button>
+            </form>
+          {% else %}
+            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
+          {% endif %}
         {% endfor %}
-      {% endblock %}
-    </nav>
-    {% endif %}
+      </nav>
+    </div>
+    {% else %}
     <div class="staff-sidebar-meta">
       <span class="staff-sidebar-meta-label">Signed in</span>
       <strong>{{ user.get_full_name|default:user.username }}</strong>
       <span>{{ actual_role_label }}</span>
     </div>
+    {% endif %}
   </aside>
 
   <div class="staff-workspace">
@@ -57,7 +77,9 @@
           <span class="account-menu-copy">
             <span class="account-menu-name">{{ user.get_full_name|default:user.username }}</span>
             <span class="account-menu-meta">
-              {% if can_switch_roles and is_viewing_as %}
+              {% if can_switch_roles and is_viewing_as_client %}
+                Viewing {{ viewed_client.name|default:"Client" }}
+              {% elif can_switch_roles and is_viewing_as %}
                 Viewing {{ role_label }}
               {% else %}
                 {{ actual_role_label }}
@@ -85,7 +107,12 @@
               <span class="role-view-hint">Logged in</span>
               <span class="role-chip role-chip-login">{{ actual_role_label }}</span>
             </div>
-            {% if can_switch_roles and is_viewing_as %}
+            {% if can_switch_roles and is_viewing_as_client %}
+              <div class="role-identity-row">
+                <span class="role-view-hint">Viewing</span>
+                <span class="role-chip role-chip-view">Client · {{ viewed_client.name|default:"Client" }}</span>
+              </div>
+            {% elif can_switch_roles and is_viewing_as %}
               <div class="role-identity-row">
                 <span class="role-view-hint">Viewing</span>
                 <span class="role-chip role-chip-view">{{ role_label }}</span>
@@ -138,37 +165,7 @@
 </div>
 
 {% if can_switch_roles %}
-<div class="role-modal" id="role-switch-modal" hidden aria-hidden="true">
-  <div class="role-modal-backdrop" data-close-role-switch></div>
-  <div class="role-modal-panel" role="dialog" aria-modal="true" aria-labelledby="role-switch-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">IT Support</p>
-        <h2 id="role-switch-title">Switch role view</h2>
-        <p class="role-modal-sub">Choose which role workspace to open. Your assigned role stays IT Support.</p>
-      </div>
-      <button type="button" class="role-modal-close" data-close-role-switch aria-label="Close">×</button>
-    </header>
-    <form method="post" action="{% url 'roles:switch_role' %}" class="role-switch-form">
-      {% csrf_token %}
-      <div class="role-switch-grid" role="listbox" aria-label="Roles">
-        {% for option in switchable_roles %}
-          <label class="role-switch-option{% if option.selected %} is-selected{% endif %}">
-            <input type="radio" name="role" value="{{ option.value }}" {% if option.selected %}checked{% endif %} required>
-            <span class="role-switch-option-body">
-              <span class="role-switch-option-label">{{ option.label }}</span>
-              <span class="role-switch-option-path">/{{ option.slug }}/dashboard/</span>
-            </span>
-          </label>
-        {% endfor %}
-      </div>
-      <div class="role-modal-actions">
-        <button type="button" class="btn btn-ghost" data-close-role-switch>Cancel</button>
-        <button type="submit" class="btn btn-primary">Apply role view</button>
-      </div>
-    </form>
-  </div>
-</div>
+{% include "accounts/includes/role_switch_modal.html" %}
 {% endif %}
 
 <script>

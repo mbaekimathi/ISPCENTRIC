@@ -1,0 +1,88 @@
+{% if can_switch_roles %}
+<div class="role-modal" id="role-switch-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-role-switch></div>
+  <div class="role-modal-panel" role="dialog" aria-modal="true" aria-labelledby="role-switch-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">IT Support</p>
+        <h2 id="role-switch-title">Switch role view</h2>
+        <p class="role-modal-sub">Choose a staff role or a client workspace. Your assigned role stays IT Support.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-role-switch aria-label="Close">×</button>
+    </header>
+    <form method="post" action="{% url 'roles:switch_role' %}" class="role-switch-form" id="role-switch-form">
+      {% csrf_token %}
+      <div class="role-switch-grid" role="listbox" aria-label="Roles">
+        {% for option in switchable_roles %}
+          <label class="role-switch-option{% if option.selected %} is-selected{% endif %}">
+            <input
+              type="radio"
+              name="role"
+              value="{{ option.value }}"
+              {% if option.selected %}checked{% endif %}
+              data-needs-client="{% if option.needs_client %}1{% else %}0{% endif %}"
+              required
+            >
+            <span class="role-switch-option-body">
+              <span class="role-switch-option-label">{{ option.label }}</span>
+              <span class="role-switch-option-path">{{ option.path }}</span>
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+
+      <div class="role-switch-client-picker" id="role-switch-client-picker" hidden>
+        <label class="role-switch-client-label" for="role-switch-organization">Client organization</label>
+        <select
+          class="form-control role-switch-client-select"
+          name="organization_id"
+          id="role-switch-organization"
+          {% if selected_client_id %}data-selected="{{ selected_client_id }}"{% endif %}
+        >
+          <option value="">Select a client…</option>
+          {% for client in switchable_clients %}
+            <option value="{{ client.id }}" {% if selected_client_id == client.id %}selected{% endif %}>
+              {{ client.name }}
+            </option>
+          {% endfor %}
+        </select>
+        <p class="role-switch-client-hint">Opens that client’s workspace at /app/.</p>
+      </div>
+
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-role-switch>Cancel</button>
+        <button type="submit" class="btn btn-primary">Apply view</button>
+      </div>
+    </form>
+  </div>
+</div>
+<script>
+(function () {
+  var form = document.getElementById("role-switch-form");
+  var picker = document.getElementById("role-switch-client-picker");
+  var select = document.getElementById("role-switch-organization");
+  if (!form || !picker || !select) return;
+
+  function syncClientPicker() {
+    var checked = form.querySelector('input[name="role"]:checked');
+    var needsClient = checked && checked.getAttribute("data-needs-client") === "1";
+    picker.hidden = !needsClient;
+    select.required = !!needsClient;
+    if (!needsClient) select.value = "";
+  }
+
+  form.querySelectorAll('input[name="role"]').forEach(function (input) {
+    input.addEventListener("change", syncClientPicker);
+  });
+  syncClientPicker();
+
+  form.addEventListener("submit", function (e) {
+    var checked = form.querySelector('input[name="role"]:checked');
+    if (checked && checked.getAttribute("data-needs-client") === "1" && !select.value) {
+      e.preventDefault();
+      select.focus();
+    }
+  });
+})();
+</script>
+{% endif %}

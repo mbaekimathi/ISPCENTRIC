@@ -1,0 +1,269 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}My clients — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel clients-panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Clients</h2>
+      <p class="panel-sub">Browse subscribers by how they connect to your network.</p>
+    </div>
+    {% if active_tab == 'pppoe' %}
+      <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+        Register PPPoE client
+      </button>
+    {% endif %}
+  </div>
+
+  <div class="client-type-tabs" role="tablist" aria-label="Client service types">
+    <a
+      class="client-type-tab{% if active_tab == 'pppoe' %} is-active{% endif %}"
+      role="tab"
+      href="?tab=pppoe"
+      aria-selected="{% if active_tab == 'pppoe' %}true{% else %}false{% endif %}"
+      id="tab-pppoe"
+    >
+      <span class="client-type-tab-label">PPPoE clients</span>
+      <span class="client-type-tab-count">{{ pppoe_count }}</span>
+    </a>
+    <a
+      class="client-type-tab{% if active_tab == 'static' %} is-active{% endif %}"
+      role="tab"
+      href="?tab=static"
+      aria-selected="{% if active_tab == 'static' %}true{% else %}false{% endif %}"
+      id="tab-static"
+    >
+      <span class="client-type-tab-label">Static clients</span>
+      <span class="client-type-tab-count">{{ static_count }}</span>
+    </a>
+    <a
+      class="client-type-tab{% if active_tab == 'hotspot' %} is-active{% endif %}"
+      role="tab"
+      href="?tab=hotspot"
+      aria-selected="{% if active_tab == 'hotspot' %}true{% else %}false{% endif %}"
+      id="tab-hotspot"
+    >
+      <span class="client-type-tab-label">Hotspot clients</span>
+      <span class="client-type-tab-count">{{ hotspot_count }}</span>
+    </a>
+  </div>
+
+  {% if active_tab == 'pppoe' %}
+    {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." service_label="PPPoE" show_pppoe=1 show_router=1 %}
+  {% elif active_tab == 'static' %}
+    {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." service_label="Static" show_router=1 %}
+  {% else %}
+    {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 %}
+  {% endif %}
+</section>
+
+{# —— Register PPPoE client —— #}
+<div class="role-modal client-action-modal" id="pppoe-register-modal" {% if open_client_modal != "pppoe-register-modal" %}hidden{% endif %} aria-hidden="{% if open_client_modal == "pppoe-register-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="pppoe-register-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">PPPoE</p>
+        <h2 id="pppoe-register-title">Register PPPoE client</h2>
+        <p class="role-modal-sub">Add a new PPPoE subscriber to this organization. An account number is created automatically.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="register_pppoe">
+      <div class="mikrotik-action-scroll">
+        {% if pppoe_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ pppoe_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label for="{{ pppoe_form.full_name.id_for_label }}">{{ pppoe_form.full_name.label }}</label>
+            {{ pppoe_form.full_name }}
+            {% if pppoe_form.full_name.errors %}<div class="field-error">{{ pppoe_form.full_name.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.phone.id_for_label }}">{{ pppoe_form.phone.label }}</label>
+            {{ pppoe_form.phone }}
+            {% if pppoe_form.phone.errors %}<div class="field-error">{{ pppoe_form.phone.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.email.id_for_label }}">{{ pppoe_form.email.label }}</label>
+            {{ pppoe_form.email }}
+            {% if pppoe_form.email.errors %}<div class="field-error">{{ pppoe_form.email.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ pppoe_form.address.id_for_label }}">{{ pppoe_form.address.label }}</label>
+            {{ pppoe_form.address }}
+            {% if pppoe_form.address.errors %}<div class="field-error">{{ pppoe_form.address.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ pppoe_form.plan.id_for_label }}">{{ pppoe_form.plan.label }}</label>
+            {{ pppoe_form.plan }}
+            {% if pppoe_form.plan.errors %}<div class="field-error">{{ pppoe_form.plan.errors|striptags }}</div>{% endif %}
+            {% if not billing_plans_exist %}
+              <p class="field-hint">No active billing plans yet — you can still register and assign a plan later.</p>
+            {% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
+            {{ pppoe_form.router }}
+            {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
+            <p class="field-hint">Assign the MikroTik this client connects through for live status.</p>
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.pppoe_username.id_for_label }}">{{ pppoe_form.pppoe_username.label }}</label>
+            {{ pppoe_form.pppoe_username }}
+            {% if pppoe_form.pppoe_username.errors %}<div class="field-error">{{ pppoe_form.pppoe_username.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.pppoe_password.id_for_label }}">{{ pppoe_form.pppoe_password.label }}</label>
+            <div class="password-field">
+              {{ pppoe_form.pppoe_password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ pppoe_form.pppoe_password.id_for_label }}" aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if pppoe_form.pppoe_password.errors %}<div class="field-error">{{ pppoe_form.pppoe_password.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Register client</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  function openModal(id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    closeAll();
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal(modal) {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  function closeAll() {
+    document.querySelectorAll(".client-action-modal").forEach(closeModal);
+  }
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal(btn.getAttribute("data-open-modal"));
+    });
+  });
+
+  document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeModal(el.closest(".client-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var open = document.querySelector(".client-action-modal:not([hidden])");
+    if (open) closeModal(open);
+  });
+
+  {% if open_client_modal %}
+  openModal("{{ open_client_modal|escapejs }}");
+  {% endif %}
+
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+})();
+</script>
+{% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}
+<script>
+(function () {
+  if (!document.querySelector("[data-router-status]")) return;
+  var statusUrl = "{% url 'core:mikrotik_status' %}";
+  var timer = null;
+  var started = false;
+
+  function setStatus(el, online) {
+    if (!el) return;
+    el.classList.remove("is-checking", "is-connected", "is-disconnected");
+    el.classList.add(online ? "is-connected" : "is-disconnected");
+    var label = el.querySelector(".mikrotik-link-label");
+    if (label) label.textContent = online ? "Connected" : "Disconnected";
+  }
+
+  function refreshStatus(force) {
+    if (document.hidden) return;
+    var url = statusUrl;
+    if (force) url += (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !data.routers) return;
+        data.routers.forEach(function (item) {
+          document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
+            setStatus(el, !!item.online);
+          });
+        });
+      })
+      .catch(function () {
+        document.querySelectorAll("[data-router-status]").forEach(function (el) {
+          if (el.classList.contains("is-checking")) setStatus(el, false);
+        });
+      });
+  }
+
+  function startPolling() {
+    if (started) return;
+    started = true;
+    refreshStatus(true);
+    timer = setInterval(function () { refreshStatus(false); }, 30000);
+  }
+
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(startPolling, { timeout: 1200 });
+  } else {
+    setTimeout(startPolling, 400);
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshStatus(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

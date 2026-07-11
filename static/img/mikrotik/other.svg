@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="Other MikroTik">
+  <rect width="160" height="120" rx="12" fill="#f4f6f8"/>
+  <rect x="38" y="28" width="84" height="48" rx="6" fill="#293239"/>
+  <circle cx="52" cy="52" r="4" fill="#2ecc71"/>
+  <rect x="64" y="46" width="42" height="6" rx="2" fill="#6b7780"/>
+  <rect x="64" y="58" width="28" height="6" rx="2" fill="#6b7780"/>
+  <text x="80" y="102" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#293239">Other</text>
+</svg>

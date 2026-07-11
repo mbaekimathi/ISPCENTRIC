@@ -749,6 +749,1228 @@ a {
   gap: 1rem;
 }
 
+.module-grid-8 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (min-width: 1100px) {
+  .module-grid-8 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.staff-sidebar-action {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.55rem 0.9rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.staff-app .staff-sidebar .staff-sidebar-action:hover,
+.staff-app .staff-sidebar .staff-sidebar-action.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.panel-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.panel-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.panel-head-row h2 {
+  margin: 0;
+}
+
+.field-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  opacity: 0.72;
+}
+
+.mikrotik-onboard-modal {
+  place-items: end center;
+  padding: 0;
+  overflow: hidden;
+}
+
+.mikrotik-onboard-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100% - 1.25rem, 26.5rem);
+  max-width: 26.5rem;
+  max-height: min(92dvh, 40rem);
+  height: auto;
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 18px 18px 0 0;
+  background:
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(46, 204, 113, 0.14), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.18), transparent 50%),
+    linear-gradient(180deg, #173039 0%, #101c23 48%, #0d171d 100%);
+  box-shadow:
+    0 -16px 40px rgba(0, 0, 0, 0.35),
+    0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.mikrotik-onboard-panel::before {
+  content: "";
+  display: block;
+  width: 2.25rem;
+  height: 0.25rem;
+  margin: 0.45rem auto 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  flex: 0 0 auto;
+}
+
+.role-modal-panel.mikrotik-onboard-panel {
+  overflow: hidden;
+  width: min(100% - 1.25rem, 26.5rem);
+  max-height: min(92dvh, 40rem);
+  padding: 0;
+}
+
+.mikrotik-onboard-head {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0.7rem 1rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 16, 22, 0.22);
+}
+
+.mikrotik-onboard-title-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-onboard-head .role-modal-kicker {
+  margin-bottom: 0.15rem;
+  color: #7ddea0;
+}
+
+.mikrotik-onboard-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
+.mikrotik-onboard-sub {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: rgba(232, 242, 244, 0.62);
+}
+
+.mikrotik-onboard-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 0.75rem 1rem 0.85rem;
+}
+
+.mikrotik-discover-live {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.mikrotik-discover-pulse {
+  flex: 0 0 auto;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #2ecc71;
+  box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.55);
+  animation: mikrotik-pulse 1.6s ease-out infinite;
+}
+
+.mikrotik-discover-live:has(.mikrotik-discover-status.is-error) .mikrotik-discover-pulse {
+  background: #ff8e8e;
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes mikrotik-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.5); }
+  70% { box-shadow: 0 0 0 8px rgba(46, 204, 113, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
+}
+
+.mikrotik-discover-refresh {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  cursor: pointer;
+  line-height: 1;
+  font-size: 0.85rem;
+}
+
+.mikrotik-discover-refresh:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.mikrotik-discover-refresh:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.mikrotik-discover-status {
+  margin: 0;
+  max-width: 7.5rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: rgba(232, 242, 244, 0.72);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mikrotik-discover-status.is-error {
+  color: #ffb4b4;
+}
+
+.mikrotik-discover-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #2ecc71;
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.25);
+}
+
+.mikrotik-discover-ip {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #9af0bc;
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-host-field {
+  position: relative;
+  z-index: 22;
+}
+
+.mikrotik-host-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.28rem;
+}
+
+.mikrotik-host-label-row label {
+  margin-bottom: 0 !important;
+}
+
+.mikrotik-host-combo {
+  position: relative;
+  display: grid;
+}
+
+.mikrotik-host-combo .mikrotik-host-input {
+  padding-right: 2.5rem;
+}
+
+.mikrotik-host-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  z-index: 2;
+  width: 2rem;
+  height: 2rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(232, 242, 244, 0.7);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.mikrotik-host-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.mikrotik-host-picker {
+  display: grid;
+  gap: 0.25rem;
+  max-height: 10rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 0.4rem;
+  padding: 0.35rem;
+  border-radius: 10px;
+  border: 1px solid rgba(46, 204, 113, 0.28);
+  background: rgba(8, 18, 24, 0.92);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.24);
+  scrollbar-width: thin;
+}
+
+.mikrotik-host-picker[hidden] {
+  display: none !important;
+}
+
+.mikrotik-host-empty {
+  margin: 0;
+  padding: 0.65rem 0.55rem;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(232, 242, 244, 0.62);
+}
+
+.mikrotik-host-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.55rem 0.6rem;
+  border: 1.5px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #e8f2f4;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mikrotik-host-option.is-new {
+  border-color: rgba(46, 204, 113, 0.4);
+  background: rgba(46, 204, 113, 0.1);
+}
+
+.mikrotik-host-option.is-new .mikrotik-discover-dot {
+  background: #2ecc71;
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.25);
+}
+
+.mikrotik-host-option.is-new .mikrotik-discover-ip {
+  color: #9af0bc;
+}
+
+.mikrotik-host-option.is-new:hover,
+.mikrotik-host-option.is-new.is-selected {
+  border-color: #2ecc71;
+  background: rgba(46, 204, 113, 0.2);
+}
+
+.mikrotik-host-option.is-onboarded {
+  border-color: rgba(231, 76, 60, 0.45);
+  background: rgba(231, 76, 60, 0.12);
+}
+
+.mikrotik-host-option.is-onboarded .mikrotik-discover-dot {
+  background: #e74c3c;
+  box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.25);
+}
+
+.mikrotik-host-option.is-onboarded .mikrotik-discover-ip {
+  color: #ffb4b4;
+}
+
+.mikrotik-host-option.is-onboarded:hover,
+.mikrotik-host-option.is-onboarded.is-selected {
+  border-color: #e74c3c;
+  background: rgba(231, 76, 60, 0.22);
+}
+
+.mikrotik-host-option-text {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.mikrotik-host-option-text strong {
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mikrotik-host-badge {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mikrotik-host-option.is-new .mikrotik-host-badge {
+  background: rgba(46, 204, 113, 0.22);
+  color: #9af0bc;
+}
+
+.mikrotik-host-option.is-onboarded .mikrotik-host-badge {
+  background: rgba(231, 76, 60, 0.22);
+  color: #ffb4b4;
+}
+
+.mikrotik-host-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(232, 242, 244, 0.58);
+}
+
+.mikrotik-connect-status {
+  margin: 0.85rem 0 0;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: rgba(232, 242, 244, 0.82);
+}
+
+.mikrotik-connect-status.is-error {
+  border-color: rgba(255, 140, 140, 0.35);
+  background: rgba(192, 57, 43, 0.16);
+  color: #ffc9c9;
+}
+
+.mikrotik-connect-status.is-ok {
+  border-color: rgba(46, 204, 113, 0.35);
+  background: rgba(46, 204, 113, 0.12);
+  color: #b8f5d0;
+}
+
+.mikrotik-connected-banner {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 0 0.95rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid rgba(46, 204, 113, 0.35);
+  background: rgba(46, 204, 113, 0.12);
+}
+
+.mikrotik-connected-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: #2ecc71;
+  box-shadow: 0 0 0 4px rgba(46, 204, 113, 0.2);
+}
+
+.mikrotik-connected-banner strong {
+  display: block;
+  font-size: 0.9rem;
+  color: #eafff2;
+}
+
+.mikrotik-connected-banner p {
+  margin: 0.15rem 0 0;
+  font-size: 0.75rem;
+  color: rgba(232, 242, 244, 0.68);
+}
+
+.mikrotik-onboard-panel .password-toggle {
+  color: rgba(232, 242, 244, 0.65);
+}
+
+.mikrotik-onboard-panel .password-toggle:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mikrotik-section-label {
+  margin: 0.35rem 0 0.15rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.78);
+}
+
+.mikrotik-section-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: rgba(232, 242, 244, 0.55);
+}
+
+.mikrotik-wifi-block {
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-onboard-panel .password-toggle {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-onboard-panel .password-toggle:hover {
+  color: var(--sea-deep);
+  background: rgba(14, 124, 134, 0.08);
+}
+
+[data-theme="light"] .mikrotik-section-label {
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-section-hint {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-wifi-block {
+  border-top-color: var(--border);
+}
+
+.mikrotik-onboard-form {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+.mikrotik-onboard-form .form-grid.mikrotik-simple-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.65rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.mikrotik-onboard-form .field {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mikrotik-onboard-form .field label {
+  display: block;
+  margin-bottom: 0.28rem;
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  color: rgba(232, 242, 244, 0.78);
+}
+
+.mikrotik-onboard-form .form-control {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 2.45rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(8, 18, 24, 0.55);
+  color: #e8f2f4;
+  font-size: 0.88rem;
+}
+
+.mikrotik-onboard-form .form-control::placeholder {
+  color: rgba(232, 242, 244, 0.38);
+}
+
+.mikrotik-onboard-form .form-control:focus {
+  border-color: rgba(61, 184, 194, 0.75);
+  box-shadow: 0 0 0 3px rgba(61, 184, 194, 0.18);
+}
+
+.mikrotik-model-select {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mikrotik-model-field {
+  position: relative;
+  z-index: 25;
+}
+
+.mikrotik-model-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mikrotik-model-trigger.is-open {
+  border-color: rgba(46, 204, 113, 0.55);
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.16);
+}
+
+.mikrotik-model-trigger-thumb {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.5rem;
+  height: 1.85rem;
+  border-radius: 6px;
+  background: #f4f7f8;
+  overflow: hidden;
+}
+
+.mikrotik-model-trigger-thumb[hidden] {
+  display: none !important;
+}
+
+.mikrotik-model-trigger-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mikrotik-model-trigger-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.mikrotik-model-trigger-caret {
+  flex: 0 0 auto;
+  opacity: 0.65;
+  font-size: 0.85rem;
+  transition: transform 0.15s ease;
+}
+
+.mikrotik-model-trigger.is-open .mikrotik-model-trigger-caret {
+  transform: rotate(180deg);
+}
+
+.mikrotik-model-picker {
+  display: grid;
+  gap: 0.2rem;
+  max-height: 9.5rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  margin-top: 0.4rem;
+  padding: 0.35rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(8, 18, 24, 0.88);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+  scrollbar-width: thin;
+}
+
+.mikrotik-model-picker[hidden] {
+  display: none !important;
+}
+
+.mikrotik-model-option {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1.5px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.mikrotik-model-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mikrotik-model-option.is-selected {
+  border-color: #2ecc71;
+  background: rgba(46, 204, 113, 0.14);
+}
+
+.mikrotik-model-option:active {
+  transform: scale(0.995);
+}
+
+.mikrotik-model-thumb {
+  display: grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 2.55rem;
+  border-radius: 8px;
+  background: #f4f7f8;
+  overflow: hidden;
+}
+
+.mikrotik-model-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 0.15rem;
+}
+
+.mikrotik-model-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: rgba(232, 242, 244, 0.95);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mikrotik-onboard-actions {
+  flex: 0 0 auto;
+  z-index: 5;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: stretch;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  max-width: 100%;
+  padding: 0.7rem 1rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 18, 24, 0.94);
+  backdrop-filter: blur(8px);
+}
+
+.mikrotik-onboard-actions[hidden] {
+  display: none !important;
+}
+
+.mikrotik-onboard-actions .btn {
+  min-height: 2.4rem;
+  padding-inline: 0.95rem;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.mikrotik-onboard-actions .btn-primary {
+  flex: 1.35 1 0;
+}
+
+.mikrotik-coords {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #9af0bc;
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-location-field {
+  position: relative;
+  z-index: 20;
+}
+
+.mikrotik-location-combo {
+  position: relative;
+}
+
+.mikrotik-location-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(232, 242, 244, 0.62);
+}
+
+.mikrotik-location-suggest {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 0.2rem);
+  display: none;
+  gap: 0.15rem;
+  max-width: 100%;
+  max-height: 10rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0.3rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #102028;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+}
+
+.mikrotik-location-suggest.is-open {
+  display: grid;
+}
+
+.mikrotik-location-suggest[hidden] {
+  display: none !important;
+}
+
+.mikrotik-location-option {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #e8f2f4;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.mikrotik-location-option:hover,
+.mikrotik-location-option.is-active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (min-width: 480px) {
+  .mikrotik-onboard-form .form-grid.mikrotik-simple-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.65rem 0.6rem;
+  }
+
+  .mikrotik-onboard-form .field-span-2 {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 720px) {
+  .mikrotik-onboard-modal {
+    place-items: center;
+    justify-items: center;
+    align-items: center;
+    padding: 2rem;
+  }
+
+  .mikrotik-onboard-panel,
+  .role-modal-panel.mikrotik-onboard-panel {
+    width: min(100%, 36rem);
+    max-width: 36rem;
+    max-height: min(86vh, 44rem);
+    margin: 0 auto;
+    border-radius: 18px;
+    box-shadow:
+      0 28px 64px rgba(0, 0, 0, 0.4),
+      0 0 0 1px rgba(255, 255, 255, 0.06);
+    animation: mikrotik-modal-in 0.26s ease;
+  }
+
+  .mikrotik-onboard-panel::before {
+    display: none;
+  }
+
+  .mikrotik-onboard-head {
+    padding: 1.15rem 1.35rem 1rem;
+  }
+
+  .mikrotik-onboard-head h2 {
+    font-size: 1.35rem;
+  }
+
+  .mikrotik-onboard-sub {
+    font-size: 0.88rem;
+  }
+
+  .mikrotik-onboard-scroll {
+    padding: 1.1rem 1.35rem 1.15rem;
+  }
+
+  .mikrotik-onboard-form .form-grid.mikrotik-simple-grid {
+    gap: 0.85rem 0.8rem;
+  }
+
+  .mikrotik-onboard-form .field label {
+    font-size: 0.8rem;
+    margin-bottom: 0.35rem;
+  }
+
+  .mikrotik-onboard-form .form-control {
+    min-height: 2.7rem;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.94rem;
+  }
+
+  .mikrotik-host-picker {
+    max-height: 12rem;
+  }
+
+  .mikrotik-model-picker {
+    max-height: 12rem;
+  }
+
+  .mikrotik-onboard-actions {
+    gap: 0.65rem;
+    justify-content: flex-end;
+    padding: 0.95rem 1.35rem 1.15rem;
+  }
+
+  .mikrotik-onboard-actions .btn {
+    flex: 0 0 auto;
+    min-width: 7.5rem;
+    min-height: 2.55rem;
+  }
+
+  .mikrotik-onboard-actions .btn-primary {
+    min-width: 9.5rem;
+  }
+}
+
+@keyframes mikrotik-modal-in {
+  from {
+    opacity: 0.65;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+[data-theme="light"] .mikrotik-onboard-panel {
+  background:
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(46, 204, 113, 0.12), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.1), transparent 50%),
+    linear-gradient(180deg, #ffffff 0%, #f4f8f9 100%);
+  color: var(--ink);
+  box-shadow:
+    0 -18px 40px rgba(11, 31, 42, 0.14),
+    0 0 0 1px rgba(11, 31, 42, 0.08);
+}
+
+[data-theme="light"] .mikrotik-onboard-panel::before {
+  background: rgba(11, 31, 42, 0.18);
+}
+
+[data-theme="light"] .mikrotik-onboard-head {
+  border-bottom-color: rgba(11, 31, 42, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="light"] .mikrotik-onboard-head .role-modal-kicker {
+  color: #1b7a45;
+}
+
+[data-theme="light"] .mikrotik-onboard-sub,
+[data-theme="light"] .mikrotik-location-hint,
+[data-theme="light"] .mikrotik-host-hint {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-connect-status {
+  border-color: var(--border);
+  background: rgba(20, 40, 50, 0.03);
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-connect-status.is-error {
+  border-color: rgba(192, 57, 43, 0.25);
+  background: rgba(192, 57, 43, 0.08);
+  color: #9c2b22;
+}
+
+[data-theme="light"] .mikrotik-connected-banner {
+  border-color: rgba(27, 122, 69, 0.28);
+  background: rgba(46, 204, 113, 0.1);
+}
+
+[data-theme="light"] .mikrotik-connected-banner strong {
+  color: #1a2b33;
+}
+
+[data-theme="light"] .mikrotik-connected-banner p {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-discover-status {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-discover-refresh {
+  color: var(--ink);
+  border-color: var(--border);
+  background: #fff;
+}
+
+[data-theme="light"] .mikrotik-host-toggle {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-host-toggle:hover {
+  background: rgba(20, 32, 40, 0.06);
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-host-picker {
+  border-color: rgba(27, 122, 69, 0.25);
+  background: #fff;
+  box-shadow: 0 10px 22px rgba(11, 31, 42, 0.1);
+}
+
+[data-theme="light"] .mikrotik-host-empty {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-host-option {
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-host-option.is-new {
+  border-color: rgba(27, 122, 69, 0.35);
+  background: rgba(46, 204, 113, 0.1);
+}
+
+[data-theme="light"] .mikrotik-host-option.is-onboarded {
+  border-color: rgba(192, 57, 43, 0.35);
+  background: rgba(231, 76, 60, 0.1);
+}
+
+[data-theme="light"] .mikrotik-host-option.is-new .mikrotik-host-badge {
+  color: #1b7a45;
+  background: rgba(46, 204, 113, 0.18);
+}
+
+[data-theme="light"] .mikrotik-host-option.is-onboarded .mikrotik-host-badge {
+  color: #9c2b22;
+  background: rgba(231, 76, 60, 0.16);
+}
+
+[data-theme="light"] .mikrotik-host-option.is-onboarded .mikrotik-discover-ip {
+  color: #c0392b;
+}
+
+[data-theme="light"] .mikrotik-onboard-form .field label {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-onboard-form .form-control {
+  border-color: var(--border);
+  background: #fff;
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-onboard-form .form-control::placeholder {
+  color: rgba(74, 101, 115, 0.7);
+}
+
+[data-theme="light"] .mikrotik-model-picker {
+  border-color: var(--border);
+  background: #fff;
+  box-shadow: 0 10px 22px rgba(11, 31, 42, 0.1);
+}
+
+[data-theme="light"] .mikrotik-model-option:hover {
+  background: rgba(20, 40, 50, 0.05);
+}
+
+[data-theme="light"] .mikrotik-model-option.is-selected {
+  border-color: #1b7a45;
+  background: rgba(46, 204, 113, 0.12);
+}
+
+[data-theme="light"] .mikrotik-model-name {
+  color: #1a2b33;
+}
+
+[data-theme="light"] .mikrotik-coords {
+  color: #1b7a45;
+}
+
+[data-theme="light"] .mikrotik-location-suggest {
+  background: #fff;
+  border-color: var(--border);
+}
+
+[data-theme="light"] .mikrotik-location-option {
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-location-option:hover,
+[data-theme="light"] .mikrotik-location-option.is-active {
+  background: rgba(20, 32, 40, 0.06);
+}
+
+[data-theme="light"] .mikrotik-onboard-actions {
+  border-top-color: rgba(11, 31, 42, 0.08);
+  background: rgba(244, 248, 249, 0.96);
+}
+
+[data-theme="light"] .mikrotik-onboard-actions .btn-ghost {
+  color: var(--ink);
+  border-color: var(--border);
+}
+
+@media (max-width: 419px) {
+  .mikrotik-onboard-panel,
+  .role-modal-panel.mikrotik-onboard-panel {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .mikrotik-onboard-head {
+    padding: 0.65rem 0.85rem 0.7rem;
+  }
+
+  .mikrotik-onboard-scroll {
+    padding: 0.7rem 0.85rem 0.8rem;
+  }
+
+  .mikrotik-onboard-actions {
+    padding-inline: 0.85rem;
+  }
+}
+
+.client-app .staff-sidebar-meta-label {
+  letter-spacing: 0.06em;
+}
+
+.staff-sidebar-nav-stack {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 0.85rem;
+}
+
+.staff-sidebar-nav-main {
+  display: grid;
+  gap: 0.2rem;
+  align-content: start;
+  flex: 1 1 auto;
+}
+
+.staff-sidebar-nav-end {
+  display: grid;
+  gap: 0.2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex: 0 0 auto;
+}
+
+.staff-sidebar-nav-stack .staff-sidebar-meta {
+  flex: 0 0 auto;
+}
+
+.client-sidebar-nav a {
+  font-size: 0.9rem;
+  line-height: 1.25;
+  padding-top: 0.55rem;
+  padding-bottom: 0.55rem;
+}
+
+.client-sidebar-logout {
+  margin: 0;
+}
+
+.client-sidebar-logout button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.55rem 0.9rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.staff-sidebar-logout {
+  margin: 0;
+}
+
+.staff-sidebar-logout button {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.client-app .staff-sidebar .client-sidebar-logout button:hover,
+.staff-app .staff-sidebar .client-sidebar-logout button:hover,
+.staff-app .staff-sidebar .staff-sidebar-logout button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.module-highlights {
+  display: grid;
+  gap: 0.65rem;
+}
+
+@media (min-width: 720px) {
+  .module-highlights {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.module-highlight {
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
 .module-card {
   display: grid;
   gap: 0.45rem;
@@ -1991,6 +3213,37 @@ body.staff-nav-lock {
   word-break: break-all;
 }
 
+.role-switch-client-picker {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1.5px solid rgba(232, 163, 23, 0.35);
+  border-radius: 14px;
+  background: rgba(232, 163, 23, 0.08);
+}
+
+.role-switch-client-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.75);
+}
+
+.role-switch-client-select {
+  width: 100%;
+  background: rgba(8, 18, 24, 0.85);
+  color: #e8f2f4;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.role-switch-client-hint {
+  margin: 0.55rem 0 0;
+  font-size: 0.78rem;
+  color: rgba(232, 242, 244, 0.55);
+}
+
 .role-modal-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2774,6 +4027,373 @@ body.staff-nav-lock {
   color: var(--chip-signal-fg);
 }
 
+.clients-panel .panel-sub {
+  margin: 0.25rem 0 0;
+}
+
+.client-type-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 1rem 0 1.15rem;
+  padding: 0.3rem;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .client-type-tabs {
+  background: rgba(16, 36, 44, 0.04);
+  border-color: rgba(16, 36, 44, 0.08);
+}
+
+.client-type-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 0.95rem;
+  border-radius: 10px;
+  text-decoration: none;
+  color: inherit;
+  opacity: 0.78;
+  transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease;
+}
+
+.client-type-tab:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .client-type-tab:hover {
+  background: rgba(16, 36, 44, 0.05);
+}
+
+.client-type-tab.is-active {
+  opacity: 1;
+  background: rgba(56, 189, 248, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28);
+}
+
+[data-theme="light"] .client-type-tab.is-active {
+  background: rgba(14, 116, 144, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(14, 116, 144, 0.22);
+}
+
+.client-type-tab-label {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.client-type-tab-count {
+  min-width: 1.5rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .client-type-tab-count {
+  background: rgba(16, 36, 44, 0.08);
+}
+
+.client-type-tab.is-active .client-type-tab-count {
+  background: rgba(56, 189, 248, 0.22);
+}
+
+.clients-name {
+  display: block;
+  font-weight: 700;
+}
+
+.clients-name-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.clients-name-link:hover .clients-name,
+.clients-name-link:focus-visible .clients-name {
+  text-decoration: underline;
+}
+
+.clients-phone {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  opacity: 0.72;
+}
+
+.clients-router-cell {
+  min-width: 9.5rem;
+}
+
+.clients-router-name {
+  display: block;
+  font-weight: 650;
+  color: inherit;
+  text-decoration: none;
+  margin-bottom: 0.25rem;
+}
+
+.clients-router-name:hover,
+.clients-router-name:focus-visible {
+  text-decoration: underline;
+}
+
+.clients-router-none {
+  opacity: 0.65;
+  font-size: 0.88rem;
+}
+
+.clients-row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.clients-view-btn {
+  padding: 0.28rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.client-detail-back {
+  margin: 0 0 1rem;
+}
+
+.client-detail-back a {
+  color: inherit;
+  opacity: 0.8;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.client-detail-back a:hover,
+.client-detail-back a:focus-visible {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+.client-user-profile {
+  z-index: 40;
+}
+
+.client-user-avatar {
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
+  font-weight: 800;
+  font-size: 0.85rem;
+}
+
+[data-theme="light"] .client-user-avatar {
+  background: rgba(14, 116, 144, 0.12);
+  color: #0e7490;
+}
+
+.client-user-avatar-lg {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 1rem;
+}
+
+.client-user-profile-panel {
+  width: min(92vw, 24rem);
+  max-height: min(78vh, 36rem);
+  overflow: auto;
+  padding-bottom: 0.85rem;
+}
+
+.client-user-profile-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 0.15rem;
+}
+
+.client-user-profile-session {
+  padding-top: 0.35rem;
+}
+
+.client-usage-panel {
+  margin-bottom: 1.25rem;
+}
+
+.client-usage-head {
+  margin-top: 0.85rem;
+}
+
+.client-usage-grid {
+  margin-top: 0.85rem;
+}
+
+.client-usage-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  letter-spacing: 0.01em;
+}
+
+.client-usage-panel.is-online [data-metric="session"] .mikrotik-live-value {
+  color: #1f8a5b;
+}
+
+.client-usage-panel.is-offline [data-metric="session"] .mikrotik-live-value {
+  color: #c0392b;
+}
+
+.client-billing-analysis {
+  margin-bottom: 1rem;
+}
+
+.client-usage-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+}
+
+.client-usage-stat {
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.65rem;
+  background: var(--surface-2);
+}
+
+.client-usage-stat span {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 700;
+  opacity: 0.6;
+  margin-bottom: 0.3rem;
+}
+
+.client-usage-stat strong {
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.client-billing-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+
+.client-billing-subhead {
+  margin: 0 0 0.65rem;
+  font-size: 0.95rem;
+  font-weight: 750;
+}
+
+@media (max-width: 900px) {
+  .client-billing-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.client-detail-rows {
+  margin-top: 1rem;
+}
+
+.client-detail-router {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+}
+
+.client-detail-router a {
+  color: inherit;
+}
+
+.clients-router-host {
+  opacity: 0.7;
+  font-weight: 500;
+  font-size: 0.9em;
+}
+
+.client-secret {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+
+.clients-empty {
+  padding: 1.25rem 0.15rem 0.35rem;
+}
+
+.clients-empty-title {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+@media (max-width: 720px) {
+  .client-type-tabs {
+    flex-direction: column;
+  }
+
+  .client-type-tab {
+    justify-content: space-between;
+  }
+}
+
+.mikrotik-link-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+}
+
+.mikrotik-link-dot {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #8a9aa3;
+  flex: 0 0 auto;
+}
+
+.mikrotik-link-status.is-checking .mikrotik-link-dot {
+  background: #8a9aa3;
+  box-shadow: 0 0 0 0 rgba(138, 154, 163, 0.5);
+  animation: mikrotik-status-pulse 1.2s ease-out infinite;
+}
+
+.mikrotik-link-status.is-connected {
+  color: #1f8a5b;
+}
+
+.mikrotik-link-status.is-connected .mikrotik-link-dot {
+  background: #2ecc71;
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+}
+
+.mikrotik-link-status.is-disconnected {
+  color: #c0392b;
+}
+
+.mikrotik-link-status.is-disconnected .mikrotik-link-dot {
+  background: #e74c3c;
+  box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.16);
+}
+
+@keyframes mikrotik-status-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(138, 154, 163, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(138, 154, 163, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(138, 154, 163, 0); }
+}
+
+[data-theme="light"] .mikrotik-link-status.is-connected {
+  color: #1a7a4c;
+}
+
+[data-theme="light"] .mikrotik-link-status.is-disconnected {
+  color: #b03a2e;
+}
+
 .badge-muted {
   background: var(--surface-3);
   color: var(--ink-soft);
@@ -2976,6 +4596,76 @@ body.staff-nav-lock {
   height: 100%;
   opacity: 0;
   cursor: pointer;
+}
+
+.package-image-upload {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.package-image-preview {
+  width: 72px;
+  height: 72px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+[data-theme="light"] .package-image-preview {
+  border-color: rgba(16, 36, 44, 0.1);
+  background: rgba(16, 36, 44, 0.04);
+}
+
+.package-image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.package-image-preview-empty {
+  font-size: 0.72rem;
+  font-weight: 700;
+  opacity: 0.55;
+}
+
+.package-image-fields {
+  position: relative;
+  min-width: 12rem;
+  flex: 1 1 12rem;
+}
+
+.package-row-name {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.package-row-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.package-row-thumb-empty {
+  display: inline-grid;
+  place-items: center;
+  background: rgba(56, 189, 248, 0.14);
+  color: inherit;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+[data-theme="light"] .package-row-thumb {
+  border-color: rgba(16, 36, 44, 0.1);
 }
 
 .org-edit-grid {
@@ -3723,5 +5413,813 @@ body.staff-nav-lock {
     opacity: 0.45;
     right: -30%;
     top: 0;
+  }
+}
+
+/* MikroTik router list + detail */
+.mikrotik-router-name {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.mikrotik-router-name:hover {
+  color: var(--accent, #2bb0b8);
+  text-decoration: underline;
+}
+
+.mikrotik-router-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.mikrotik-view-btn {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+.mikrotik-detail-panel {
+  overflow: hidden;
+}
+
+.mikrotik-detail-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem 1.25rem;
+  margin-bottom: 1.15rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-detail-toolbar {
+  border-bottom-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-detail-toolbar-copy h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.mikrotik-router-profile {
+  z-index: 40;
+}
+
+.mikrotik-router-profile-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+[data-theme="light"] .mikrotik-router-profile-avatar {
+  background: rgba(16, 36, 44, 0.05);
+  border-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-router-profile-avatar img {
+  max-width: 78%;
+  max-height: 70%;
+  object-fit: contain;
+}
+
+.mikrotik-router-profile-avatar-lg {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.mikrotik-router-profile-panel {
+  width: min(92vw, 24rem);
+  max-height: min(78vh, 36rem);
+  overflow: auto;
+  padding-bottom: 0.85rem;
+}
+
+.mikrotik-router-profile-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+  padding: 0 0 0.75rem;
+}
+
+.mikrotik-router-profile-facts {
+  margin: 0;
+  padding: 0.15rem 0 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.mikrotik-router-profile-facts .mikrotik-live-fact {
+  padding: 0.2rem 0;
+}
+
+.mikrotik-router-profile-session {
+  padding-top: 0.35rem;
+}
+
+.mikrotik-router-profile-group {
+  margin: 0.85rem 0 0.35rem;
+  padding: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  opacity: 0.55;
+}
+
+.mikrotik-router-profile-group:first-child {
+  margin-top: 0.35rem;
+}
+
+.mikrotik-router-profile .account-session-row strong {
+  text-align: right;
+  max-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
+.mikrotik-router-profile .is-warn {
+  color: #ff8a7a;
+}
+
+.mikrotik-detail-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-detail-hero {
+  border-bottom-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-detail-thumb {
+  display: grid;
+  place-items: center;
+  width: 6.5rem;
+  height: 4.75rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+[data-theme="light"] .mikrotik-detail-thumb {
+  background: rgba(16, 36, 44, 0.04);
+  border-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-detail-thumb img {
+  max-width: 88%;
+  max-height: 88%;
+  object-fit: contain;
+}
+
+.mikrotik-detail-hero-copy {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.mikrotik-detail-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+
+.mikrotik-detail-hero-copy h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+}
+
+.mikrotik-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  margin: 0;
+  font-size: 0.92rem;
+  opacity: 0.9;
+}
+
+.mikrotik-detail-sep {
+  opacity: 0.45;
+}
+
+.mikrotik-detail-actions {
+  margin-left: auto;
+}
+
+.mikrotik-detail-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.15rem 1.5rem;
+}
+
+.mikrotik-detail-section h3 {
+  margin: 0 0 0.65rem;
+  font-size: 0.95rem;
+}
+
+.mikrotik-detail-map-link {
+  color: var(--accent, #2bb0b8);
+  text-decoration: none;
+}
+
+.mikrotik-detail-map-link:hover {
+  text-decoration: underline;
+}
+
+.mikrotik-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.mikrotik-secret-mask,
+.mikrotik-secret-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.04em;
+}
+
+.mikrotik-secret-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--accent, #2bb0b8);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mikrotik-secret-toggle:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 800px) {
+  .mikrotik-detail-sections {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-detail-actions {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+.mikrotik-account-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.mikrotik-account-pill.is-active {
+  background: rgba(46, 204, 113, 0.16);
+  color: #3dd68c;
+}
+
+.mikrotik-account-pill.is-suspended {
+  background: rgba(231, 76, 60, 0.16);
+  color: #ff8a7a;
+}
+
+[data-theme="light"] .mikrotik-account-pill.is-active {
+  background: rgba(39, 174, 96, 0.12);
+  color: #1e7a4a;
+}
+
+[data-theme="light"] .mikrotik-account-pill.is-suspended {
+  background: rgba(192, 57, 43, 0.12);
+  color: #a83226;
+}
+
+.mikrotik-detail-panel .is-warn {
+  color: #ff8a7a;
+}
+
+.mikrotik-action-modal .mikrotik-action-panel {
+  width: min(100% - 1.25rem, 28rem);
+  max-width: 28rem;
+  max-height: min(92dvh, 38rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.mikrotik-action-form {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.mikrotik-action-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 1.15rem 0.85rem;
+}
+
+.mikrotik-confirm-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.mikrotik-form-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  background: rgba(231, 76, 60, 0.12);
+  border: 1px solid rgba(231, 76, 60, 0.28);
+  color: #ff8a7a;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+[data-theme="light"] .mikrotik-form-banner {
+  color: #a83226;
+  background: rgba(192, 57, 43, 0.08);
+}
+
+.mikrotik-wifi-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.mikrotik-wifi-pill.is-on {
+  color: #7dffb3;
+  background: rgba(46, 204, 113, 0.14);
+  border: 1px solid rgba(46, 204, 113, 0.35);
+}
+
+.mikrotik-wifi-pill.is-off {
+  color: #ffb4a8;
+  background: rgba(231, 76, 60, 0.12);
+  border: 1px solid rgba(231, 76, 60, 0.28);
+}
+
+[data-theme="light"] .mikrotik-wifi-pill.is-on {
+  color: #1e7a45;
+  background: rgba(46, 204, 113, 0.12);
+}
+
+[data-theme="light"] .mikrotik-wifi-pill.is-off {
+  color: #a83226;
+  background: rgba(192, 57, 43, 0.08);
+}
+
+.mikrotik-wifi-off-note strong {
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.mikrotik-live {
+  margin: 0 0 1.35rem;
+  padding: 1rem 0 1.2rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-live {
+  border-bottom-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-live-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  margin-bottom: 0.95rem;
+}
+
+.mikrotik-live-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.mikrotik-live-sub {
+  margin: 0;
+  font-size: 0.88rem;
+  opacity: 0.72;
+}
+
+.mikrotik-live-stamp {
+  font-size: 0.78rem;
+  opacity: 0.55;
+  white-space: nowrap;
+}
+
+.mikrotik-live-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mikrotik-live-card {
+  padding: 0.9rem 0.95rem 0.85rem;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  min-height: 7.1rem;
+}
+
+[data-theme="light"] .mikrotik-live-card {
+  background: linear-gradient(180deg, #fff, #f5f8f9);
+  border-color: rgba(16, 36, 44, 0.08);
+  box-shadow: 0 1px 0 rgba(16, 36, 44, 0.03);
+}
+
+.mikrotik-live.is-offline .mikrotik-live-card[data-metric="status"] {
+  border-color: rgba(231, 76, 60, 0.35);
+}
+
+.mikrotik-live.is-online .mikrotik-live-card[data-metric="status"] {
+  border-color: rgba(46, 204, 113, 0.35);
+}
+
+.mikrotik-live-card-speed {
+  border-color: rgba(56, 189, 248, 0.28);
+  background:
+    linear-gradient(180deg, rgba(56, 189, 248, 0.1), rgba(255, 255, 255, 0.02));
+}
+
+[data-theme="light"] .mikrotik-live-card-speed {
+  border-color: rgba(14, 116, 144, 0.22);
+  background: linear-gradient(180deg, rgba(14, 116, 144, 0.08), #fff);
+}
+
+.mikrotik-live-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  opacity: 0.62;
+  font-weight: 700;
+}
+
+.mikrotik-live-value {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.4vw, 1.7rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.mikrotik-live-hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.78rem;
+  opacity: 0.62;
+  line-height: 1.35;
+}
+
+.mikrotik-meter {
+  margin-top: 0.55rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+[data-theme="light"] .mikrotik-meter {
+  background: rgba(16, 36, 44, 0.08);
+}
+
+.mikrotik-meter > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #1aa7b0, #2ecc71);
+  transition: width 0.45s ease;
+}
+
+.mikrotik-meter.is-hot > span {
+  background: linear-gradient(90deg, #f39c12, #e74c3c);
+}
+
+.mikrotik-live-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem 1rem;
+  margin-top: 0.9rem;
+}
+
+.mikrotik-live-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.55rem 0.15rem;
+}
+
+.mikrotik-live-fact span {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  font-weight: 700;
+}
+
+.mikrotik-live-fact strong {
+  font-size: 0.92rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mikrotik-uplink {
+  margin-top: 1.15rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-uplink {
+  border-top-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-uplink-head {
+  margin-bottom: 0.75rem;
+}
+
+.mikrotik-uplink-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.mikrotik-uplink-sub {
+  margin: 0;
+  font-size: 0.86rem;
+  opacity: 0.72;
+  line-height: 1.4;
+}
+
+.mikrotik-uplink-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mikrotik-uplink-grid-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.mikrotik-uplink-card {
+  min-width: 0;
+  padding: 0.85rem 0.9rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mikrotik-uplink-card-provider {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.28);
+}
+
+[data-theme="light"] .mikrotik-uplink-card {
+  background: rgba(16, 36, 44, 0.03);
+  border-color: rgba(16, 36, 44, 0.08);
+}
+
+[data-theme="light"] .mikrotik-uplink-card-provider {
+  background: rgba(14, 116, 144, 0.08);
+  border-color: rgba(14, 116, 144, 0.22);
+}
+
+.mikrotik-uplink-value {
+  font-size: 1.05rem !important;
+  word-break: break-word;
+}
+
+@media (max-width: 1100px) {
+  .mikrotik-uplink-grid-5 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .mikrotik-uplink-grid,
+  .mikrotik-uplink-grid-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .mikrotik-uplink-grid,
+  .mikrotik-uplink-grid-5 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mikrotik-live-empty {
+  padding: 1.15rem 1rem;
+  border-radius: 14px;
+  border: 1px dashed rgba(231, 76, 60, 0.35);
+  background: rgba(231, 76, 60, 0.06);
+}
+
+.mikrotik-live-empty strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.mikrotik-live-empty p {
+  margin: 0;
+  opacity: 0.75;
+  font-size: 0.9rem;
+}
+
+.mikrotik-live-blocked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.85rem 1rem;
+  padding: 1rem 1.05rem;
+  border-radius: 16px;
+  border: 1px solid rgba(243, 156, 18, 0.28);
+  background:
+    radial-gradient(ellipse 70% 90% at 0% 0%, rgba(243, 156, 18, 0.16), transparent 55%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015));
+}
+
+[data-theme="light"] .mikrotik-live-blocked {
+  background:
+    radial-gradient(ellipse 70% 90% at 0% 0%, rgba(243, 156, 18, 0.14), transparent 55%),
+    linear-gradient(180deg, #fff8ef, #fff);
+  border-color: rgba(192, 120, 20, 0.22);
+}
+
+.mikrotik-live-blocked[hidden] {
+  display: none;
+}
+
+.mikrotik-live-blocked-icon {
+  display: grid;
+  place-items: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 999px;
+  font-weight: 800;
+  color: #f0b45a;
+  background: rgba(243, 156, 18, 0.16);
+  border: 1px solid rgba(243, 156, 18, 0.3);
+  flex: 0 0 auto;
+}
+
+.mikrotik-live-blocked strong {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.98rem;
+}
+
+.mikrotik-live-blocked p {
+  margin: 0;
+  font-size: 0.88rem;
+  opacity: 0.78;
+  max-width: 36rem;
+}
+
+.mikrotik-live-blocked .btn {
+  margin-left: auto;
+}
+
+.mikrotik-notice-modal .mikrotik-notice-panel {
+  position: relative;
+  width: min(100% - 1.25rem, 26rem);
+  max-width: 26rem;
+  overflow: hidden;
+  padding: 0;
+}
+
+.mikrotik-notice-glow {
+  position: absolute;
+  inset: -20% auto auto -10%;
+  width: 12rem;
+  height: 12rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(243, 156, 18, 0.28), transparent 68%);
+  pointer-events: none;
+}
+
+.mikrotik-notice-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1.15rem 1.15rem 0.35rem;
+}
+
+.mikrotik-notice-badge {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 14px;
+  color: #f0b45a;
+  background: rgba(243, 156, 18, 0.14);
+  border: 1px solid rgba(243, 156, 18, 0.28);
+  animation: mikrotik-notice-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes mikrotik-notice-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(243, 156, 18, 0.25); }
+  50% { transform: scale(1.03); box-shadow: 0 0 0 10px rgba(243, 156, 18, 0); }
+}
+
+.mikrotik-notice-body {
+  padding: 0.35rem 1.2rem 0.4rem;
+}
+
+.mikrotik-notice-kicker {
+  margin: 0 0 0.25rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  font-weight: 700;
+}
+
+.mikrotik-notice-body h2 {
+  margin: 0 0 0.45rem;
+  font-size: 1.2rem;
+  line-height: 1.25;
+}
+
+.mikrotik-notice-text {
+  margin: 0 0 0.7rem;
+  font-size: 0.95rem;
+  opacity: 0.85;
+  line-height: 1.45;
+}
+
+.mikrotik-notice-reason {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-notice-reason {
+  background: rgba(16, 36, 44, 0.04);
+  border-color: rgba(16, 36, 44, 0.08);
+}
+
+.mikrotik-notice-actions {
+  padding: 0.85rem 1.15rem 1.15rem;
+}
+
+.mikrotik-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+@media (max-width: 960px) {
+  .mikrotik-live-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mikrotik-live-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .mikrotik-live-grid,
+  .mikrotik-live-facts {
+    grid-template-columns: 1fr;
   }
 }

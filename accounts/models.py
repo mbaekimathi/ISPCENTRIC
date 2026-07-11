@@ -53,6 +53,15 @@ class Organization(models.Model):
             self.join_code = Organization.generate_join_code()
         self.profile_photo = maybe_optimize_image_field(self.profile_photo)
         super().save(*args, **kwargs)
+        from accounts.routing import invalidate_switchable_clients_cache
+
+        invalidate_switchable_clients_cache()
+
+    def delete(self, *args, **kwargs):
+        super().delete(*args, **kwargs)
+        from accounts.routing import invalidate_switchable_clients_cache
+
+        invalidate_switchable_clients_cache()
 
     def __str__(self):
         return self.name

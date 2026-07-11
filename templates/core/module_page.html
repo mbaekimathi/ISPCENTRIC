@@ -1,0 +1,20 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if highlights %}
+  <div class="module-highlights">
+    {% for item in highlights %}
+      <div class="module-highlight">{{ item }}</div>
+    {% endfor %}
+  </div>
+{% endif %}
+
+<section class="panel" style="margin-top:1.15rem;">
+  <h2>{{ empty_title }}</h2>
+  <p class="empty">{{ empty_text }}</p>
+</section>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% if packages %}
+  <div class="clients-table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Package</th>
+          <th>Download</th>
+          <th>Upload</th>
+          <th>General</th>
+          <th>Price</th>
+          <th>Period</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for plan in packages %}
+          <tr>
+            <td>
+              <div class="package-row-name">
+                {% if plan.image %}
+                  <img class="package-row-thumb" src="{{ plan.image.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
+                {% else %}
+                  <span class="package-row-thumb package-row-thumb-empty" aria-hidden="true">{{ plan.name|slice:":1"|upper }}</span>
+                {% endif %}
+                <strong>{{ plan.name }}</strong>
+              </div>
+            </td>
+            <td>{{ plan.download_speed_mbps }} Mbps</td>
+            <td>{{ plan.upload_speed_mbps }} Mbps</td>
+            <td>{{ plan.speed_label }}</td>
+            <td>{{ plan.price }}</td>
+            <td>{{ plan.get_duration_display }}</td>
+            <td>
+              <span class="badge{% if plan.is_active %} badge-success{% else %} badge-muted{% endif %}">
+                {% if plan.is_active %}Active{% else %}Inactive{% endif %}
+              </span>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <p class="empty">{{ empty_text|default:"No packages yet. Use Register package to add one." }}</p>
+{% endif %}

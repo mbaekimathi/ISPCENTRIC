@@ -1,144 +1,32 @@
-{% extends "base.html" %}
+{% extends "core/client_base.html" %}
 
 {% block title %}Workspace — ISPCENTRIC{% endblock %}
 
-{% block body %}
-<div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href="{% url 'core:workspace' %}">ISP<span>CENTRIC</span></a>
-    {% if organization and organization.profile_photo %}
-      <div class="sidebar-profile">
-        <img src="{{ organization.profile_photo.url }}" alt="{{ organization.name }} profile" width="42" height="42" decoding="async" fetchpriority="low">
-        <span>{{ organization.name }}</span>
-      </div>
-    {% elif organization %}
-      <div class="sidebar-profile">
-        <span>{{ organization.name }}</span>
-      </div>
-    {% endif %}
-    <nav>
-      <a class="active" href="{% url 'core:workspace' %}">Workspace</a>
-      <a href="{% url 'billing:dashboard' %}">Billing</a>
-    </nav>
-    <div class="sidebar-foot">
-      <form method="post" action="{% url 'accounts:logout' %}">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-ghost" style="color:#fff;border-color:rgba(255,255,255,.25);">Logout</button>
-      </form>
-    </div>
-  </aside>
+{% block client_content %}
+<p class="page-sub client-page-lead">
+  {% if organization %}
+    {{ organization.name }} — use the sidebar to open a module.
+  {% else %}
+    Welcome, {{ user.username }}.
+  {% endif %}
+</p>
 
-  <main class="main">
-    <h1 class="page-title">Workspace</h1>
-    <p class="page-sub">
-      {% if organization %}
-        {{ organization.name }} — ISP operations hub. Open a module to continue.
-      {% else %}
-        Welcome, {{ user.username }}.
-      {% endif %}
-    </p>
-
-    <div class="module-grid">
-      {% for module in modules %}
-        {% if module.url_name and module.status == 'active' %}
-          <a class="module-card" href="{% url module.url_name %}{% if module.anchor %}#{{ module.anchor }}{% endif %}">
-            <div class="module-kicker">Module</div>
-            <h2>{{ module.name }}</h2>
-            <p>{{ module.description }}</p>
-            <span class="module-cta">Open</span>
-          </a>
-        {% else %}
-          <div class="module-card is-soon">
-            <div class="module-kicker">Coming soon</div>
-            <h2>{{ module.name }}</h2>
-            <p>{{ module.description }}</p>
-            <span class="module-cta">Soon</span>
-          </div>
-        {% endif %}
-      {% endfor %}
-    </div>
-
-    <div class="stat-grid" style="margin-top:1.5rem;">
-      <div class="stat">
-        <div class="label">Staff</div>
-        <div class="value">{{ stats.employees }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Pending staff</div>
-        <div class="value">{{ stats.pending_staff }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Customers</div>
-        <div class="value">{{ stats.customers }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Revenue</div>
-        <div class="value">{{ stats.revenue }}</div>
-      </div>
-    </div>
-
-    <div id="staff"></div>
-
-    {% if organization and is_owner and unassigned_pending %}
-      <section class="panel" style="margin-top:1.25rem;">
-        <h2>Unassigned pending employees ({{ unassigned_pending|length }})</h2>
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Username</th>
-              <th>Login code</th>
-              <th>Status</th>
-              <th>Role</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for emp in unassigned_pending %}
-              <tr>
-                <td>{{ emp.user.get_full_name|default:emp.user.username }}</td>
-                <td>{{ emp.user.username }}</td>
-                <td>{{ emp.login_code }}</td>
-                <td><span class="badge">{{ emp.get_status_display }}</span></td>
-                <td>{{ emp.get_role_display }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-        <p class="empty">Assign a company, approve status, and set a role in Admin → Employees.</p>
-      </section>
-    {% endif %}
-
-    {% if organization and is_owner %}
-      <section class="panel" style="margin-top:1.25rem;">
-        <h2>Company employees ({{ company_employees|length }})</h2>
-        {% if company_employees %}
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Username</th>
-                <th>Login code</th>
-                <th>Status</th>
-                <th>Role</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for emp in company_employees %}
-                <tr>
-                  <td>{{ emp.user.get_full_name|default:emp.user.username }}</td>
-                  <td>{{ emp.user.username }}</td>
-                  <td>{{ emp.login_code }}</td>
-                  <td><span class="badge">{{ emp.get_status_display }}</span></td>
-                  <td>{{ emp.get_role_display }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="empty">No employees assigned to this company yet.</p>
-        {% endif %}
-      </section>
-    {% endif %}
-  </main>
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Staff</div>
+    <div class="value">{{ stats.employees }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Customers</div>
+    <div class="value">{{ stats.customers }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Pending invoices</div>
+    <div class="value">{{ stats.pending_invoices }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Revenue</div>
+    <div class="value">{{ stats.revenue }}</div>
+  </div>
 </div>
 {% endblock %}

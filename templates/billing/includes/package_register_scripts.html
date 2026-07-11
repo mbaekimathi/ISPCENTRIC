@@ -1,0 +1,89 @@
+<script>
+(function () {
+  function openModal(id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    closeAll();
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal(modal) {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  function closeAll() {
+    document.querySelectorAll(".client-action-modal").forEach(closeModal);
+  }
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal(btn.getAttribute("data-open-modal"));
+    });
+  });
+
+  document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeModal(el.closest(".client-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var open = document.querySelector(".client-action-modal:not([hidden])");
+    if (open) closeModal(open);
+  });
+
+  {% if open_billing_modal %}
+  openModal("{{ open_billing_modal|escapejs }}");
+  {% endif %}
+
+  var imageInput = document.getElementById("id_package_image");
+  var preview = document.getElementById("package-image-preview");
+  var previewImg = document.getElementById("package-image-preview-img");
+  var previewEmpty = preview ? preview.querySelector(".package-image-preview-empty") : null;
+  var fileName = document.getElementById("package-image-file-name");
+  if (imageInput) {
+    imageInput.addEventListener("change", function () {
+      var file = imageInput.files && imageInput.files[0];
+      if (!file) {
+        if (fileName) fileName.textContent = "PNG, JPG, or WebP · optional · max 5 MB";
+        if (previewImg) {
+          previewImg.hidden = true;
+          previewImg.removeAttribute("src");
+        }
+        if (previewEmpty) previewEmpty.hidden = false;
+        if (preview) preview.classList.remove("has-image");
+        return;
+      }
+      if (fileName) fileName.textContent = file.name;
+      if (!previewImg) return;
+      var url = URL.createObjectURL(file);
+      previewImg.onload = function () { URL.revokeObjectURL(url); };
+      previewImg.src = url;
+      previewImg.hidden = false;
+      if (previewEmpty) previewEmpty.hidden = true;
+      if (preview) preview.classList.add("has-image");
+    });
+  }
+
+  var downInput = document.getElementById("id_package_download_speed");
+  var upInput = document.getElementById("id_package_upload_speed");
+  var generalHint = document.getElementById("package-general-speed-hint");
+  function updateGeneralSpeedHint() {
+    if (!generalHint) return;
+    var down = downInput && downInput.value ? downInput.value : "—";
+    var up = upInput && upInput.value ? upInput.value : "—";
+    generalHint.textContent = "General speed: " + down + "/" + up + " Mbps (from download/upload).";
+  }
+  if (downInput) downInput.addEventListener("input", updateGeneralSpeedHint);
+  if (upInput) upInput.addEventListener("input", updateGeneralSpeedHint);
+  updateGeneralSpeedHint();
+})();
+</script>

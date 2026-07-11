@@ -1,118 +1,109 @@
-{% extends "base.html" %}
+{% extends "core/client_base.html" %}
 
 {% block title %}Billing — ISPCENTRIC{% endblock %}
 
-{% block body %}
-<div class="app-shell">
-  <aside class="sidebar">
-    <a class="brand" href="{% url 'core:workspace' %}">ISP<span>CENTRIC</span></a>
-    {% if organization and organization.profile_photo %}
-      <div class="sidebar-profile">
-        <img src="{{ organization.profile_photo.url }}" alt="{{ organization.name }} profile" width="42" height="42" decoding="async" fetchpriority="low">
-        <span>{{ organization.name }}</span>
-      </div>
-    {% elif organization %}
-      <div class="sidebar-profile">
-        <span>{{ organization.name }}</span>
-      </div>
-    {% endif %}
-    <nav>
-      <a href="{% url 'core:workspace' %}">Workspace</a>
-      <a class="active" href="{% url 'billing:dashboard' %}">Billing</a>
-    </nav>
-    <div class="sidebar-foot">
-      <form method="post" action="{% url 'accounts:logout' %}">
-        {% csrf_token %}
-        <button type="submit" class="btn btn-ghost" style="color:#fff;border-color:rgba(255,255,255,.25);">Logout</button>
-      </form>
-    </div>
-  </aside>
+{% block client_content %}
+<p class="page-sub client-page-lead">
+  {% if organization %}
+    {{ organization.name }} — customers, plans, invoices, and payments.
+  {% else %}
+    Billing module overview.
+  {% endif %}
+</p>
 
-  <main class="main">
-    <div class="module-banner">
-      <span class="module-kicker">Module</span>
-      <h1 class="page-title">Billing</h1>
-      <p class="page-sub">
-        {% if organization %}
-          {{ organization.name }} — customers, plans, invoices, and payments.
-        {% else %}
-          Billing module overview.
-        {% endif %}
-      </p>
-    </div>
-
-    <div class="stat-grid">
-      <div class="stat">
-        <div class="label">Customers</div>
-        <div class="value">{{ stats.customers }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Active</div>
-        <div class="value">{{ stats.active_customers }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Pending invoices</div>
-        <div class="value">{{ stats.pending_invoices }}</div>
-      </div>
-      <div class="stat">
-        <div class="label">Revenue</div>
-        <div class="value">{{ stats.revenue }}</div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <section class="panel">
-        <h2>Recent customers</h2>
-        {% if recent_customers %}
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Account</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for c in recent_customers %}
-                <tr>
-                  <td>{{ c.full_name }}</td>
-                  <td>{{ c.account_number }}</td>
-                  <td><span class="badge">{{ c.get_status_display }}</span></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="empty">No customers yet. Add plans and customers from Admin to get started.</p>
-        {% endif %}
-      </section>
-
-      <section class="panel">
-        <h2>Recent invoices</h2>
-        {% if recent_invoices %}
-          <table class="table">
-            <thead>
-              <tr>
-                <th>Invoice</th>
-                <th>Customer</th>
-                <th>Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for inv in recent_invoices %}
-                <tr>
-                  <td>{{ inv.invoice_number }}</td>
-                  <td>{{ inv.customer.full_name }}</td>
-                  <td>{{ inv.amount }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        {% else %}
-          <p class="empty">No invoices yet. They will appear here once billing starts.</p>
-        {% endif %}
-      </section>
-    </div>
-  </main>
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Customers</div>
+    <div class="value">{{ stats.customers }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Active</div>
+    <div class="value">{{ stats.active_customers }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Packages</div>
+    <div class="value">{{ stats.packages }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Pending invoices</div>
+    <div class="value">{{ stats.pending_invoices }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Revenue</div>
+    <div class="value">{{ stats.revenue }}</div>
+  </div>
 </div>
+
+<div class="grid-2">
+  <section class="panel">
+    <div class="panel-head-row">
+      <h2>Packages</h2>
+      <div class="panel-head-actions">
+        <a class="btn btn-ghost" href="{% url 'billing:packages' %}">View all</a>
+        <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
+          Register package
+        </button>
+      </div>
+    </div>
+    {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Open Packages in the sidebar to register one." %}
+  </section>
+
+  <section class="panel">
+    <h2>Recent customers</h2>
+    {% if recent_customers %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Account</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in recent_customers %}
+            <tr>
+              <td>{{ c.full_name }}</td>
+              <td>{{ c.account_number }}</td>
+              <td><span class="badge">{{ c.get_status_display }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="empty">No customers yet. Add packages, then register clients.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel" style="margin-top: 1rem;">
+  <h2>Recent invoices</h2>
+  {% if recent_invoices %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Invoice</th>
+          <th>Customer</th>
+          <th>Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for inv in recent_invoices %}
+          <tr>
+            <td>{{ inv.invoice_number }}</td>
+            <td>{{ inv.customer.full_name }}</td>
+            <td>{{ inv.amount }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No invoices yet. They will appear here once billing starts.</p>
+  {% endif %}
+</section>
+
+{% include "billing/includes/package_register_modal.html" %}
+{% endblock %}
+
+{% block client_extra_js %}
+{% include "billing/includes/package_register_scripts.html" %}
 {% endblock %}

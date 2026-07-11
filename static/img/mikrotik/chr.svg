@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 120" role="img" aria-label="CHR">
+  <rect width="160" height="120" rx="12" fill="#f4f6f8"/>
+  <ellipse cx="80" cy="48" rx="36" ry="18" fill="#d0d7de"/>
+  <ellipse cx="80" cy="48" rx="36" ry="18" fill="none" stroke="#293239" stroke-width="2"/>
+  <path d="M44 48v16c0 10 16 18 36 18s36-8 36-18V48" fill="#e8ecef" stroke="#293239" stroke-width="2"/>
+  <text x="80" y="102" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#293239">CHR</text>
+</svg>

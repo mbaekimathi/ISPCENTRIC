@@ -1,0 +1,1060 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}MikroTik — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel">
+  <div class="panel-head-row">
+    <h2>Routers ({{ routers|length }})</h2>
+    <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
+  </div>
+
+  {% if routers %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Status</th>
+          <th>Model</th>
+          <th>Location</th>
+          <th>IP / Host</th>
+          <th>Wi‑Fi</th>
+          <th>Username</th>
+          <th>Account</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for router in routers %}
+          <tr data-router-row="{{ router.id }}" class="mikrotik-router-row">
+            <td>
+              <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
+            </td>
+            <td>
+              <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+                <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                <span class="mikrotik-link-label">Checking…</span>
+              </span>
+            </td>
+            <td>{{ router.get_model_display }}</td>
+            <td>{{ router.location|default:"—" }}</td>
+            <td>{{ router.host }}</td>
+            <td>{{ router.wifi_ssid|default:"—" }}</td>
+            <td>{{ router.username }}</td>
+            <td>
+              <span class="mikrotik-account-pill{% if router.account_status == 'suspended' %} is-suspended{% else %} is-active{% endif %}">
+                {{ router.get_account_status_display }}
+              </span>
+            </td>
+            <td class="mikrotik-router-actions">
+              <a class="btn btn-ghost mikrotik-view-btn" href="{% url 'core:mikrotik_detail' router.id %}">View</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No routers onboarded yet. Use <strong>Connect to a New MikroTik</strong> to add one.</p>
+  {% endif %}
+</section>
+
+<div class="role-modal mikrotik-onboard-modal" id="mikrotik-onboard-modal" {% if not open_mikrotik_onboard %}hidden{% endif %} aria-hidden="{% if open_mikrotik_onboard %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-onboard></div>
+  <div class="role-modal-panel mikrotik-onboard-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-onboard-title">
+    <header class="role-modal-head mikrotik-onboard-head">
+      <div class="mikrotik-onboard-title-block">
+        <p class="role-modal-kicker" id="mikrotik-step-kicker">Step 1 of 2</p>
+        <h2 id="mikrotik-onboard-title">Connect to a New MikroTik</h2>
+        <p class="mikrotik-onboard-sub" id="mikrotik-onboard-sub">Select or enter the router IP, then sign in with its username and password.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-onboard aria-label="Close">×</button>
+    </header>
+
+    <form method="post" action="{% url 'core:mikrotik' %}" class="mikrotik-onboard-form" id="mikrotik-onboard-form" novalidate>
+      {% csrf_token %}
+      {{ onboard_form.location_lat }}
+      {{ onboard_form.location_lng }}
+      {{ onboard_form.place_id }}
+      {{ onboard_form.model }}
+      <input type="hidden" name="wifi_ssid_original" id="id_mikrotik_wifi_ssid_original" value="{{ request.POST.wifi_ssid_original|default:'' }}">
+      <input type="hidden" name="wifi_password_original" id="id_mikrotik_wifi_password_original" value="{{ request.POST.wifi_password_original|default:'' }}">
+      <input type="hidden" name="wifi_mode" id="id_mikrotik_wifi_mode" value="{{ request.POST.wifi_mode|default:'' }}">
+
+      <div class="mikrotik-onboard-scroll">
+        <section class="mikrotik-step" id="mikrotik-step-connect" data-step="connect">
+          <div class="form-grid mikrotik-simple-grid">
+            <div class="field field-span-2 mikrotik-host-field">
+              <div class="mikrotik-host-label-row">
+                <label for="id_mikrotik_host">MikroTik IP</label>
+                <div class="mikrotik-discover-live">
+                  <span class="mikrotik-discover-pulse" aria-hidden="true"></span>
+                  <span class="mikrotik-discover-status" id="mikrotik-discover-status">Scanning…</span>
+                  <button type="button" class="mikrotik-discover-refresh" id="mikrotik-discover-refresh" aria-label="Refresh scan">↻</button>
+                </div>
+              </div>
+              <div class="mikrotik-host-combo">
+                {{ onboard_form.host }}
+                <button type="button" class="mikrotik-host-toggle" id="mikrotik-host-toggle" aria-label="Show found routers" aria-expanded="false" aria-controls="mikrotik-host-picker">▾</button>
+                <div class="mikrotik-host-picker" id="mikrotik-host-picker" hidden role="listbox" aria-label="Found MikroTik routers"></div>
+              </div>
+              <p class="mikrotik-host-hint" id="mikrotik-host-hint">Select a found router or type an IP address.</p>
+              {% if onboard_form.host.errors %}<div class="field-error">{{ onboard_form.host.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_username">Username</label>
+              {{ onboard_form.username }}
+              {% if onboard_form.username.errors %}<div class="field-error">{{ onboard_form.username.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_password">Password</label>
+              <div class="password-field">
+                {{ onboard_form.password }}
+                <button type="button" class="password-toggle" data-toggle-password="id_mikrotik_password" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if onboard_form.password.errors %}<div class="field-error">{{ onboard_form.password.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+          <p class="mikrotik-connect-status" id="mikrotik-connect-status" hidden></p>
+        </section>
+
+        <section class="mikrotik-step" id="mikrotik-step-onboard" data-step="onboard" hidden>
+          <div class="mikrotik-connected-banner" id="mikrotik-connected-banner">
+            <span class="mikrotik-connected-dot" aria-hidden="true"></span>
+            <div>
+              <strong id="mikrotik-connected-title">Connected</strong>
+              <p id="mikrotik-connected-meta">Ready to onboard</p>
+            </div>
+          </div>
+
+          <div class="form-grid mikrotik-simple-grid">
+            <div class="field field-span-2">
+              <label for="{{ onboard_form.name.id_for_label }}">Name your MikroTik</label>
+              {{ onboard_form.name }}
+              {% if onboard_form.name.errors %}<div class="field-error">{{ onboard_form.name.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2 mikrotik-model-field">
+              <label id="mikrotik-model-label">Model</label>
+              <button
+                type="button"
+                class="mikrotik-model-trigger form-control"
+                id="mikrotik-model-trigger"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+                aria-labelledby="mikrotik-model-label mikrotik-model-trigger"
+              >
+                <span class="mikrotik-model-trigger-thumb" id="mikrotik-model-trigger-thumb" hidden>
+                  <img src="" alt="" width="40" height="30" id="mikrotik-model-trigger-img">
+                </span>
+                <span class="mikrotik-model-trigger-label" id="mikrotik-model-trigger-label">Select model…</span>
+                <span class="mikrotik-model-trigger-caret" aria-hidden="true">▾</span>
+              </button>
+              <div class="mikrotik-model-picker" id="mikrotik-model-picker" role="listbox" aria-labelledby="mikrotik-model-label" hidden>
+                {% for item in mikrotik_models %}
+                  <button
+                    type="button"
+                    class="mikrotik-model-option{% if onboard_form.model.value == item.value %} is-selected{% endif %}"
+                    role="option"
+                    data-model="{{ item.value }}"
+                    data-label="{{ item.label }}"
+                    data-image="{{ item.image }}"
+                    aria-selected="{% if onboard_form.model.value == item.value %}true{% else %}false{% endif %}"
+                  >
+                    <span class="mikrotik-model-thumb">
+                      <img alt="" width="56" height="42" decoding="async" data-src="{{ item.image }}">
+                    </span>
+                    <span class="mikrotik-model-name">{{ item.label }}</span>
+                  </button>
+                {% endfor %}
+              </div>
+              {% if onboard_form.model.errors %}<div class="field-error">{{ onboard_form.model.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2 mikrotik-location-field">
+              <label for="{{ onboard_form.location.id_for_label }}">Set location</label>
+              <div class="mikrotik-location-combo">
+                {{ onboard_form.location }}
+                <div class="mikrotik-location-suggest" id="mikrotik-location-suggest" hidden role="listbox" aria-label="Location suggestions"></div>
+              </div>
+              <p class="mikrotik-location-hint" id="mikrotik-location-hint" hidden></p>
+              <p class="mikrotik-coords" id="mikrotik-coords" hidden></p>
+              {% if onboard_form.location.errors %}<div class="field-error">{{ onboard_form.location.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label for="id_mikrotik_host_onboard">Change IP</label>
+              <input type="text" class="form-control" id="id_mikrotik_host_onboard" autocomplete="off" placeholder="192.168.88.1">
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_username_onboard">Username</label>
+              <input type="text" class="form-control" id="id_mikrotik_username_onboard" autocomplete="username" placeholder="admin">
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_password_onboard">Password</label>
+              <div class="password-field">
+                <input type="password" class="form-control password-input" id="id_mikrotik_password_onboard" autocomplete="new-password" placeholder="Router password">
+                <button type="button" class="password-toggle" data-toggle-password="id_mikrotik_password_onboard" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="field field-span-2 mikrotik-wifi-block">
+              <p class="mikrotik-section-label">Wi‑Fi</p>
+              <p class="mikrotik-section-hint" id="mikrotik-wifi-hint">Current values load from the router after connect — edit only if you want to change them.</p>
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_wifi_ssid">Wi‑Fi name</label>
+              {{ onboard_form.wifi_ssid }}
+              {% if onboard_form.wifi_ssid.errors %}<div class="field-error">{{ onboard_form.wifi_ssid.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="id_mikrotik_wifi_password">Wi‑Fi password</label>
+              <div class="password-field">
+                {{ onboard_form.wifi_password }}
+                <button type="button" class="password-toggle" data-toggle-password="id_mikrotik_wifi_password" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if onboard_form.wifi_password.errors %}<div class="field-error">{{ onboard_form.wifi_password.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="role-modal-actions mikrotik-onboard-actions" id="mikrotik-actions-connect">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-onboard>Cancel</button>
+        <button type="button" class="btn btn-primary" id="mikrotik-connect-btn">Connect</button>
+      </div>
+      <div class="role-modal-actions mikrotik-onboard-actions" id="mikrotik-actions-onboard" hidden>
+        <button type="button" class="btn btn-ghost" id="mikrotik-back-btn">Back</button>
+        <button type="submit" class="btn btn-primary" id="mikrotik-save-btn">Onboard router</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("mikrotik-onboard-modal");
+  if (!modal) return;
+
+  var openBtns = document.querySelectorAll("[data-open-mikrotik-onboard]");
+  var closeBtns = modal.querySelectorAll("[data-close-mikrotik-onboard]");
+  var form = document.getElementById("mikrotik-onboard-form");
+  var stepConnect = document.getElementById("mikrotik-step-connect");
+  var stepOnboard = document.getElementById("mikrotik-step-onboard");
+  var actionsConnect = document.getElementById("mikrotik-actions-connect");
+  var actionsOnboard = document.getElementById("mikrotik-actions-onboard");
+  var titleEl = document.getElementById("mikrotik-onboard-title");
+  var subEl = document.getElementById("mikrotik-onboard-sub");
+  var kickerEl = document.getElementById("mikrotik-step-kicker");
+  var connectBtn = document.getElementById("mikrotik-connect-btn");
+  var backBtn = document.getElementById("mikrotik-back-btn");
+  var connectStatus = document.getElementById("mikrotik-connect-status");
+  var connectedTitle = document.getElementById("mikrotik-connected-title");
+  var connectedMeta = document.getElementById("mikrotik-connected-meta");
+
+  var locationInput = document.getElementById("id_mikrotik_location");
+  var latInput = document.getElementById("id_mikrotik_location_lat");
+  var lngInput = document.getElementById("id_mikrotik_location_lng");
+  var placeIdInput = document.getElementById("id_mikrotik_place_id");
+  var coordsEl = document.getElementById("mikrotik-coords");
+  var suggest = document.getElementById("mikrotik-location-suggest");
+  var hintEl = document.getElementById("mikrotik-location-hint");
+  var searchTimer = null;
+  var searchSeq = 0;
+  var searchAbort = null;
+  var activeIndex = -1;
+  var placesUrl = "{% url 'core:mikrotik_places' %}";
+  var placeDetailsUrl = "{% url 'core:mikrotik_place_details' %}";
+  var discoverUrl = "{% url 'core:mikrotik_discover' %}";
+  var connectUrl = "{% url 'core:mikrotik_connect' %}";
+  var statusEl = document.getElementById("mikrotik-discover-status");
+  var hostPicker = document.getElementById("mikrotik-host-picker");
+  var hostToggle = document.getElementById("mikrotik-host-toggle");
+  var hostHint = document.getElementById("mikrotik-host-hint");
+  var refreshBtn = document.getElementById("mikrotik-discover-refresh");
+  var discoverTimer = null;
+  var discoverInFlight = false;
+  var discoveredDevices = [];
+  var latestSuggestions = [];
+  var connected = false;
+
+  var nameInput = document.getElementById("{{ onboard_form.name.id_for_label }}");
+  var modelInput = document.getElementById("id_mikrotik_model");
+  var modelPicker = document.getElementById("mikrotik-model-picker");
+  var modelTrigger = document.getElementById("mikrotik-model-trigger");
+  var modelTriggerThumb = document.getElementById("mikrotik-model-trigger-thumb");
+  var modelTriggerImg = document.getElementById("mikrotik-model-trigger-img");
+  var modelTriggerLabel = document.getElementById("mikrotik-model-trigger-label");
+  var hostInput = document.getElementById("id_mikrotik_host");
+  var usernameInput = document.getElementById("id_mikrotik_username");
+  var passwordInput = document.getElementById("id_mikrotik_password");
+  var hostOnboard = document.getElementById("id_mikrotik_host_onboard");
+  var usernameOnboard = document.getElementById("id_mikrotik_username_onboard");
+  var passwordOnboard = document.getElementById("id_mikrotik_password_onboard");
+  var wifiSsidInput = document.getElementById("id_mikrotik_wifi_ssid");
+  var wifiPasswordInput = document.getElementById("id_mikrotik_wifi_password");
+  var wifiSsidOriginal = document.getElementById("id_mikrotik_wifi_ssid_original");
+  var wifiPasswordOriginal = document.getElementById("id_mikrotik_wifi_password_original");
+  var wifiModeInput = document.getElementById("id_mikrotik_wifi_mode");
+  var wifiHint = document.getElementById("mikrotik-wifi-hint");
+  var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function csrfToken() {
+    return csrfInput ? csrfInput.value : "";
+  }
+
+  function showConnectStatus(text, isError) {
+    if (!connectStatus) return;
+    if (!text) {
+      connectStatus.hidden = true;
+      connectStatus.textContent = "";
+      connectStatus.classList.remove("is-error", "is-ok");
+      return;
+    }
+    connectStatus.hidden = false;
+    connectStatus.textContent = text;
+    connectStatus.classList.toggle("is-error", !!isError);
+    connectStatus.classList.toggle("is-ok", !isError);
+  }
+
+  function setStep(step) {
+    var onboard = step === "onboard";
+    connected = onboard;
+    if (stepConnect) stepConnect.hidden = onboard;
+    if (stepOnboard) stepOnboard.hidden = !onboard;
+    if (actionsConnect) actionsConnect.hidden = onboard;
+    if (actionsOnboard) actionsOnboard.hidden = !onboard;
+    if (kickerEl) kickerEl.textContent = onboard ? "Step 2 of 2" : "Step 1 of 2";
+    if (titleEl) titleEl.textContent = onboard ? "Onboard MikroTik" : "Connect to a New MikroTik";
+    if (subEl) {
+      subEl.textContent = onboard
+        ? "Name the router, set its location, Wi‑Fi, and adjust IP or credentials if needed."
+        : "Select or enter the router IP, then sign in with its username and password.";
+    }
+  }
+
+  function syncOnboardCredentialsFromConnect() {
+    if (hostOnboard && hostInput) hostOnboard.value = hostInput.value;
+    if (usernameOnboard && usernameInput) usernameOnboard.value = usernameInput.value;
+    if (passwordOnboard && passwordInput) passwordOnboard.value = passwordInput.value;
+  }
+
+  function setPasswordVisible(inputId, visible) {
+    var input = document.getElementById(inputId);
+    var btn = modal.querySelector('[data-toggle-password="' + inputId + '"]');
+    if (!input) return;
+    input.type = visible ? "text" : "password";
+    if (!btn) return;
+    btn.setAttribute("aria-label", visible ? "Hide password" : "Show password");
+    var eye = btn.querySelector(".icon-eye");
+    var eyeOff = btn.querySelector(".icon-eye-off");
+    if (eye && eyeOff) {
+      eye.hidden = visible;
+      eyeOff.hidden = !visible;
+    }
+  }
+
+  function fillWifiFromRouter(data) {
+    var ssid = (data && data.wifi_ssid) ? String(data.wifi_ssid) : "";
+    var pass = (data && data.wifi_password) ? String(data.wifi_password) : "";
+    var mode = (data && data.wifi_mode) ? String(data.wifi_mode) : "";
+    if (wifiSsidInput) {
+      wifiSsidInput.value = ssid;
+      wifiSsidInput.placeholder = ssid ? "Current Wi‑Fi name" : "e.g. ISPCENTRIC-WiFi";
+    }
+    if (wifiPasswordInput) {
+      wifiPasswordInput.value = pass;
+      setPasswordVisible("id_mikrotik_wifi_password", !!pass);
+      wifiPasswordInput.placeholder = pass ? "Current Wi‑Fi password" : "Wi‑Fi password (min 8 characters)";
+    }
+    if (wifiSsidOriginal) wifiSsidOriginal.value = ssid;
+    if (wifiPasswordOriginal) wifiPasswordOriginal.value = pass;
+    if (wifiModeInput) wifiModeInput.value = mode;
+    if (!wifiHint) return;
+    if (ssid && pass) {
+      wifiHint.textContent = "Showing the current Wi‑Fi name and password from this router — edit only if you want to change them.";
+    } else if (ssid) {
+      wifiHint.textContent = "Showing the current Wi‑Fi name. The password could not be read from this router — enter it only if you want to change it.";
+    } else if (pass) {
+      wifiHint.textContent = "Showing the current Wi‑Fi password. Enter or confirm the Wi‑Fi name, then edit if needed.";
+    } else {
+      wifiHint.textContent = "No Wi‑Fi settings were found on this router. Enter a name and password to set them, or leave blank.";
+    }
+  }
+
+  function syncConnectCredentialsFromOnboard() {
+    if (hostInput && hostOnboard) hostInput.value = hostOnboard.value;
+    if (usernameInput && usernameOnboard) usernameInput.value = usernameOnboard.value;
+    if (passwordInput && passwordOnboard) passwordInput.value = passwordOnboard.value;
+  }
+
+  function closeModelPicker() {
+    if (!modelPicker || !modelTrigger) return;
+    modelPicker.hidden = true;
+    modelTrigger.setAttribute("aria-expanded", "false");
+    modelTrigger.classList.remove("is-open");
+  }
+
+  function hydrateModelImages() {
+    if (!modelPicker || modelPicker.dataset.hydrated === "1") return;
+    Array.prototype.forEach.call(modelPicker.querySelectorAll("img[data-src]"), function (img) {
+      var src = img.getAttribute("data-src");
+      if (src && !img.getAttribute("src")) img.setAttribute("src", src);
+    });
+    modelPicker.dataset.hydrated = "1";
+  }
+
+  function openModelPicker() {
+    if (!modelPicker || !modelTrigger) return;
+    hydrateModelImages();
+    modelPicker.hidden = false;
+    modelTrigger.setAttribute("aria-expanded", "true");
+    modelTrigger.classList.add("is-open");
+  }
+
+  function updateModelTrigger(option) {
+    if (!modelTriggerLabel) return;
+    if (!option) {
+      modelTriggerLabel.textContent = "Select model…";
+      if (modelTriggerThumb) modelTriggerThumb.hidden = true;
+      if (modelTriggerImg) modelTriggerImg.removeAttribute("src");
+      return;
+    }
+    modelTriggerLabel.textContent = option.getAttribute("data-label") || "Select model…";
+    var image = option.getAttribute("data-image") || "";
+    if (modelTriggerImg && image) {
+      modelTriggerImg.src = image;
+      if (modelTriggerThumb) modelTriggerThumb.hidden = false;
+    } else if (modelTriggerThumb) {
+      modelTriggerThumb.hidden = true;
+    }
+  }
+
+  function setSelectedModel(value, closeAfter) {
+    if (!modelInput) return;
+    var next = value || "";
+    if (next && modelInput.querySelector('option[value="' + next + '"]')) {
+      modelInput.value = next;
+    } else if (next) {
+      modelInput.value = "other";
+      next = "other";
+    } else {
+      modelInput.value = "";
+      next = "";
+    }
+    var matched = null;
+    if (modelPicker) {
+      Array.prototype.forEach.call(modelPicker.querySelectorAll(".mikrotik-model-option"), function (option) {
+        var selected = next && option.getAttribute("data-model") === next;
+        option.classList.toggle("is-selected", selected);
+        option.setAttribute("aria-selected", selected ? "true" : "false");
+        if (selected) matched = option;
+      });
+    }
+    updateModelTrigger(matched);
+    if (closeAfter !== false) closeModelPicker();
+  }
+
+  if (modelPicker && modelInput) {
+    if (modelTrigger) {
+      modelTrigger.addEventListener("click", function (e) {
+        e.preventDefault();
+        if (modelPicker.hidden) openModelPicker();
+        else closeModelPicker();
+      });
+    }
+    Array.prototype.forEach.call(modelPicker.querySelectorAll(".mikrotik-model-option"), function (option) {
+      option.addEventListener("click", function () {
+        setSelectedModel(option.getAttribute("data-model"), true);
+      });
+    });
+    document.addEventListener("click", function (e) {
+      if (!modelPicker || modelPicker.hidden) return;
+      if (modelTrigger && modelTrigger.contains(e.target)) return;
+      if (modelPicker.contains(e.target)) return;
+      closeModelPicker();
+    });
+    if (modelInput.value) setSelectedModel(modelInput.value, false);
+    else updateModelTrigger(null);
+  }
+
+  function setStatus(text, isError) {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.classList.toggle("is-error", !!isError);
+  }
+
+  function setHostHint(text) {
+    if (!hostHint) return;
+    hostHint.textContent = text || "Select a found router or type an IP address.";
+  }
+
+  function closeHostPicker() {
+    if (!hostPicker) return;
+    hostPicker.hidden = true;
+    if (hostToggle) hostToggle.setAttribute("aria-expanded", "false");
+    if (hostInput) hostInput.setAttribute("aria-expanded", "false");
+  }
+
+  function openHostPicker() {
+    if (!hostPicker) return;
+    hostPicker.hidden = false;
+    if (hostToggle) hostToggle.setAttribute("aria-expanded", "true");
+    if (hostInput) hostInput.setAttribute("aria-expanded", "true");
+  }
+
+  function applyDevice(device) {
+    if (!device || !hostInput) return;
+    hostInput.value = device.host || "";
+    if (device.model) setSelectedModel(device.model, false);
+    if (nameInput && device.name && !nameInput.value) nameInput.value = device.name;
+    closeHostPicker();
+    if (device.onboarded) {
+      setHostHint("Already onboarded — reconnect or pick a green (new) router.");
+      showConnectStatus("This MikroTik is already onboarded.", true);
+    } else {
+      setHostHint("Selected new router " + (device.name || device.host));
+      showConnectStatus("");
+    }
+  }
+
+  function renderDevices(devices) {
+    var seenHosts = {};
+    discoveredDevices = [];
+    (devices || []).forEach(function (d) {
+      if (!d || !d.host) return;
+      var key = String(d.host).trim().toLowerCase();
+      if (!key || seenHosts[key]) return;
+      seenHosts[key] = true;
+      discoveredDevices.push(d);
+    });
+    if (!hostPicker) return;
+    if (!discoveredDevices.length) {
+      hostPicker.innerHTML = '<p class="mikrotik-host-empty">No connected MikroTik found on the network. Type an IP instead.</p>';
+      setStatus("None online");
+      return;
+    }
+    var newCount = discoveredDevices.filter(function (d) { return !d.onboarded; }).length;
+    var onboardedCount = discoveredDevices.length - newCount;
+    setStatus(newCount + " new · " + onboardedCount + " onboarded");
+    var currentHost = hostInput ? hostInput.value.trim() : "";
+    hostPicker.innerHTML = discoveredDevices.map(function (device, idx) {
+      var selected = currentHost && currentHost === device.host ? " is-selected" : "";
+      var stateClass = device.onboarded ? " is-onboarded" : " is-new";
+      var badge = device.onboarded ? "Onboarded" : "New";
+      return (
+        '<button type="button" class="mikrotik-host-option' + stateClass + selected + '" role="option" data-idx="' + idx + '" data-host="' + escapeHtml(device.host) + '" data-onboarded="' + (device.onboarded ? "1" : "0") + '">' +
+          '<span class="mikrotik-discover-dot" aria-hidden="true"></span>' +
+          '<span class="mikrotik-host-option-text">' +
+            '<strong>' + escapeHtml(device.name || device.host) + '</strong>' +
+            '<span class="mikrotik-discover-ip">' + escapeHtml(device.host) + '</span>' +
+          '</span>' +
+          '<span class="mikrotik-host-badge">' + badge + '</span>' +
+        '</button>'
+      );
+    }).join("");
+    Array.prototype.forEach.call(hostPicker.querySelectorAll(".mikrotik-host-option"), function (btn) {
+      btn.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        applyDevice(discoveredDevices[Number(btn.getAttribute("data-idx"))]);
+      });
+    });
+  }
+
+  function runDiscovery(full) {
+    if (discoverInFlight) return;
+    discoverInFlight = true;
+    setStatus(full ? "Deep scanning…" : "Scanning…");
+    if (refreshBtn) refreshBtn.disabled = true;
+    var url = discoverUrl + (full ? (discoverUrl.indexOf("?") >= 0 ? "&" : "?") + "full=1" : "");
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok) {
+          setStatus((data && data.error) || "Scan failed", true);
+          if (hostPicker) hostPicker.innerHTML = '<p class="mikrotik-host-empty">Scan failed. Type an IP instead.</p>';
+          return;
+        }
+        renderDevices(data.devices || []);
+      })
+      .catch(function () {
+        setStatus("Scan failed", true);
+      })
+      .finally(function () {
+        discoverInFlight = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+      });
+  }
+
+  function startLiveDiscovery() {
+    runDiscovery(false);
+    clearInterval(discoverTimer);
+    discoverTimer = setInterval(function () {
+      if (document.hidden) return;
+      runDiscovery(false);
+    }, 15000);
+  }
+
+  function stopLiveDiscovery() {
+    clearInterval(discoverTimer);
+    discoverTimer = null;
+  }
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    setStep("connect");
+    showConnectStatus("");
+    startLiveDiscovery();
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    stopLiveDiscovery();
+    hideSuggest();
+    closeModelPicker();
+    closeHostPicker();
+    showConnectStatus("");
+    setStep("connect");
+  }
+
+  function connectRouter() {
+    if (!hostInput || !usernameInput || !passwordInput) return;
+    var host = hostInput.value.trim();
+    var username = usernameInput.value.trim();
+    var password = passwordInput.value;
+    if (!host) {
+      showConnectStatus("Enter or select a MikroTik IP.", true);
+      hostInput.focus();
+      return;
+    }
+    if (!username) {
+      showConnectStatus("Enter the router username.", true);
+      usernameInput.focus();
+      return;
+    }
+
+    connectBtn.disabled = true;
+    showConnectStatus("Connecting to " + host + "…");
+
+    var body = new FormData();
+    body.append("host", host);
+    body.append("username", username);
+    body.append("password", password);
+    body.append("csrfmiddlewaretoken", csrfToken());
+
+    fetch(connectUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.ok) {
+          showConnectStatus((result.data && result.data.error) || "Could not connect.", true);
+          return;
+        }
+        var data = result.data;
+        if (nameInput) nameInput.value = data.name || nameInput.value || "";
+        if (data.model) setSelectedModel(data.model, false);
+        syncOnboardCredentialsFromConnect();
+        fillWifiFromRouter(data);
+        if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || host);
+        if (connectedMeta) {
+          var bits = [data.host || host];
+          if (data.board) bits.push(data.board);
+          if (data.version) bits.push("RouterOS " + data.version);
+          connectedMeta.textContent = bits.join(" · ");
+        }
+        showConnectStatus("");
+        setStep("onboard");
+        if (nameInput) nameInput.focus();
+      })
+      .catch(function () {
+        showConnectStatus("Connection request failed. Try again.", true);
+      })
+      .finally(function () {
+        connectBtn.disabled = false;
+      });
+  }
+
+  openBtns.forEach(function (btn) {
+    btn.addEventListener("click", openModal);
+  });
+  closeBtns.forEach(function (btn) {
+    btn.addEventListener("click", closeModal);
+  });
+  if (refreshBtn) refreshBtn.addEventListener("click", function () { runDiscovery(true); });
+  if (connectBtn) connectBtn.addEventListener("click", connectRouter);
+
+  modal.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+  if (backBtn) {
+    backBtn.addEventListener("click", function () {
+      syncConnectCredentialsFromOnboard();
+      setStep("connect");
+      showConnectStatus("Edit connection details and connect again if needed.");
+    });
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || modal.hidden) return;
+    if (hostPicker && !hostPicker.hidden) { e.preventDefault(); closeHostPicker(); return; }
+    if (modelPicker && !modelPicker.hidden) { e.preventDefault(); closeModelPicker(); return; }
+    if (suggest && !suggest.hidden && latestSuggestions.length) { e.preventDefault(); hideSuggest(); return; }
+    closeModal();
+  });
+
+  if (hostInput) {
+    hostInput.addEventListener("focus", openHostPicker);
+    hostInput.addEventListener("input", function () {
+      setHostHint("Select a found router or type an IP address.");
+    });
+  }
+  if (hostToggle) {
+    hostToggle.addEventListener("click", function (e) {
+      e.preventDefault();
+      if (hostPicker.hidden) openHostPicker();
+      else closeHostPicker();
+      if (hostInput && hostPicker && !hostPicker.hidden) hostInput.focus();
+    });
+  }
+  document.addEventListener("click", function (e) {
+    if (!hostPicker || hostPicker.hidden) return;
+    var field = document.querySelector(".mikrotik-host-field");
+    if (field && field.contains(e.target)) return;
+    closeHostPicker();
+  });
+
+  if (!modal.hidden) {
+    document.body.classList.add("role-modal-open");
+    var reopenOnboard = !!(nameInput && nameInput.value.trim()) ||
+      !!(wifiSsidInput && wifiSsidInput.value.trim()) ||
+      !!(wifiPasswordInput && wifiPasswordInput.value) ||
+      !!modal.querySelector("#mikrotik-step-onboard .field-error");
+    if (reopenOnboard) {
+      syncOnboardCredentialsFromConnect();
+      setStep("onboard");
+    } else {
+      setStep("connect");
+      startLiveDiscovery();
+    }
+  } else if (/(?:^\?|&)onboard=1(?:&|$)/.test(window.location.search || "")) {
+    openModal();
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  } else {
+    setStep("connect");
+  }
+
+  function setHint(text) {
+    if (!hintEl) return;
+    if (!text) { hintEl.hidden = true; hintEl.textContent = ""; return; }
+    hintEl.hidden = false;
+    hintEl.textContent = text;
+  }
+
+  function hideSuggest() {
+    if (!suggest) return;
+    suggest.hidden = true;
+    suggest.classList.remove("is-open");
+    suggest.innerHTML = "";
+    latestSuggestions = [];
+    activeIndex = -1;
+    setHint("");
+  }
+
+  function setCoords(lat, lng, placeId) {
+    function fmt(value) {
+      if (value == null || value === "") return "";
+      var num = Number(value);
+      if (!isFinite(num)) return "";
+      return num.toFixed(6);
+    }
+    var latValue = fmt(lat);
+    var lngValue = fmt(lng);
+    if (latInput) latInput.value = latValue;
+    if (lngInput) lngInput.value = lngValue;
+    if (placeIdInput && placeId !== undefined) placeIdInput.value = placeId || "";
+    if (coordsEl) {
+      if (latValue && lngValue) {
+        coordsEl.hidden = false;
+        coordsEl.textContent = "Lat " + latValue + ", Lng " + lngValue;
+      } else {
+        coordsEl.hidden = true;
+        coordsEl.textContent = "";
+      }
+    }
+  }
+
+  function highlightOption(index) {
+    activeIndex = index;
+    if (!suggest) return;
+    Array.prototype.forEach.call(suggest.querySelectorAll(".mikrotik-location-option"), function (btn, idx) {
+      btn.classList.toggle("is-active", idx === activeIndex);
+    });
+  }
+
+  function chooseSuggestion(item) {
+    if (!item || !locationInput) return;
+    locationInput.value = item.label || "";
+    if (item.lat != null && item.lng != null && item.lat !== "" && item.lng !== "") {
+      setCoords(item.lat, item.lng, item.place_id || "");
+      hideSuggest();
+      return;
+    }
+    if (item.place_id) {
+      setHint("Resolving coordinates…");
+      fetch(placeDetailsUrl + "?place_id=" + encodeURIComponent(item.place_id) + "&q=" + encodeURIComponent(item.label || ""), {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.ok && data.lat != null && data.lng != null) {
+            if (data.label) locationInput.value = data.label;
+            setCoords(data.lat, data.lng, item.place_id || data.place_id || "");
+            hideSuggest();
+            return;
+          }
+          setCoords("", "", "");
+          setHint("Could not resolve that place. Try another suggestion.");
+        })
+        .catch(function () {
+          setCoords("", "", "");
+          setHint("Could not resolve that place. Try another suggestion.");
+        });
+      return;
+    }
+    setCoords("", "", "");
+    hideSuggest();
+  }
+
+  function renderSuggest(items) {
+    if (!suggest) return;
+    latestSuggestions = items || [];
+    activeIndex = -1;
+    if (!latestSuggestions.length) {
+      suggest.hidden = true;
+      suggest.classList.remove("is-open");
+      suggest.innerHTML = "";
+      setHint("No matching places. Keep typing or try a different name.");
+      return;
+    }
+    setHint("");
+    suggest.innerHTML = latestSuggestions.map(function (item, idx) {
+      return '<button type="button" class="mikrotik-location-option" role="option" data-idx="' + idx + '">' +
+        escapeHtml(item.label) +
+        "</button>";
+    }).join("");
+    suggest.hidden = false;
+    suggest.classList.add("is-open");
+    Array.prototype.forEach.call(suggest.querySelectorAll(".mikrotik-location-option"), function (btn) {
+      btn.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        chooseSuggestion(latestSuggestions[Number(btn.getAttribute("data-idx"))]);
+      });
+    });
+  }
+
+  function searchPlaces(query) {
+    if (searchAbort) { try { searchAbort.abort(); } catch (err) {} }
+    searchAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var seq = ++searchSeq;
+    setHint("Searching places…");
+    fetch(placesUrl + "?q=" + encodeURIComponent(query), {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      signal: searchAbort ? searchAbort.signal : undefined
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("search failed");
+        return res.json();
+      })
+      .then(function (data) {
+        if (seq !== searchSeq) return;
+        renderSuggest((data && data.suggestions) || []);
+      })
+      .catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        if (seq !== searchSeq) return;
+        hideSuggest();
+        setHint("Could not search places. Check your connection and try again.");
+      });
+  }
+
+  if (locationInput) {
+    locationInput.setAttribute("autocomplete", "off");
+    hideSuggest();
+    locationInput.addEventListener("input", function () {
+      setCoords("", "", "");
+      var q = locationInput.value.trim();
+      clearTimeout(searchTimer);
+      if (searchAbort) { try { searchAbort.abort(); } catch (err) {} searchAbort = null; }
+      if (q.length < 2) { hideSuggest(); return; }
+      setHint("Searching places…");
+      searchTimer = setTimeout(function () { searchPlaces(q); }, 180);
+    });
+    locationInput.addEventListener("keydown", function (e) {
+      if (!suggest || suggest.hidden || !latestSuggestions.length) {
+        if (e.key === "Escape") hideSuggest();
+        return;
+      }
+      if (e.key === "ArrowDown") { e.preventDefault(); highlightOption(Math.min(activeIndex + 1, latestSuggestions.length - 1)); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); highlightOption(Math.max(activeIndex - 1, 0)); }
+      else if (e.key === "Enter" && activeIndex >= 0) { e.preventDefault(); chooseSuggestion(latestSuggestions[activeIndex]); }
+      else if (e.key === "Escape") { e.preventDefault(); hideSuggest(); }
+    });
+    locationInput.addEventListener("blur", function () {
+      setTimeout(function () {
+        if (document.activeElement && suggest && suggest.contains(document.activeElement)) return;
+        if (suggest && !suggest.hidden) {
+          suggest.hidden = true;
+          suggest.classList.remove("is-open");
+        }
+      }, 180);
+    });
+    document.addEventListener("click", function (e) {
+      if (!suggest || suggest.hidden) return;
+      if (e.target === locationInput || suggest.contains(e.target)) return;
+      hideSuggest();
+    });
+  }
+
+  if (form) {
+    form.addEventListener("submit", function (e) {
+      if (!connected) {
+        e.preventDefault();
+        connectRouter();
+        return;
+      }
+      syncConnectCredentialsFromOnboard();
+
+      var locationValue = locationInput ? locationInput.value.trim() : "";
+      var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
+      if (!locationValue || hasCoords) return;
+
+      e.preventDefault();
+      var url = placeDetailsUrl + "?q=" + encodeURIComponent(locationValue);
+      if (placeIdInput && placeIdInput.value) {
+        url += "&place_id=" + encodeURIComponent(placeIdInput.value);
+      }
+      fetch(url, {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.ok && data.lat != null && data.lng != null) {
+            if (data.label) locationInput.value = data.label;
+            setCoords(data.lat, data.lng, data.place_id || (placeIdInput && placeIdInput.value) || "");
+            form.submit();
+            return;
+          }
+          alert("Choose a suggested location so latitude and longitude can be saved.");
+          if (locationInput) locationInput.focus();
+        })
+        .catch(function () {
+          alert("Could not resolve location coordinates. Try choosing a suggestion.");
+        });
+    });
+  }
+})();
+</script>
+{% if routers %}
+<script>
+(function () {
+  var statusUrl = "{% url 'core:mikrotik_status' %}";
+  var timer = null;
+  var started = false;
+
+  function setStatus(el, online) {
+    if (!el) return;
+    el.classList.remove("is-checking", "is-connected", "is-disconnected");
+    el.classList.add(online ? "is-connected" : "is-disconnected");
+    var label = el.querySelector(".mikrotik-link-label");
+    if (label) label.textContent = online ? "Connected" : "Disconnected";
+  }
+
+  function refreshStatus(force) {
+    if (document.hidden) return;
+    var url = statusUrl;
+    if (force) url += (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !data.routers) return;
+        data.routers.forEach(function (item) {
+          document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
+            setStatus(el, !!item.online);
+          });
+        });
+      })
+      .catch(function () {
+        document.querySelectorAll("[data-router-status]").forEach(function (el) {
+          if (el.classList.contains("is-checking")) setStatus(el, false);
+        });
+      });
+  }
+
+  function startPolling() {
+    if (started) return;
+    started = true;
+    refreshStatus(true);
+    timer = setInterval(function () { refreshStatus(false); }, 30000);
+  }
+
+  // Let the page paint first; status probes can wait briefly.
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(startPolling, { timeout: 1200 });
+  } else {
+    setTimeout(startPolling, 400);
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshStatus(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

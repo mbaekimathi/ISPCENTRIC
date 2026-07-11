@@ -4,9 +4,12 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from accounts.image_utils import maybe_optimize_image_field
+
 
 class BillingPlan(models.Model):
     class Duration(models.TextChoices):
+        HOURLY = "hourly", "Per hour"
         DAILY = "daily", "Daily"
         WEEKLY = "weekly", "Weekly"
         MONTHLY = "monthly", "Monthly"
@@ -20,8 +23,21 @@ class BillingPlan(models.Model):
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True)
     price = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
-    speed_mbps = models.PositiveIntegerField(default=10)
+    download_speed_mbps = models.PositiveIntegerField("Download speed (Mbps)", default=10)
+    upload_speed_mbps = models.PositiveIntegerField("Upload speed (Mbps)", default=5)
+    speed_mbps = models.PositiveIntegerField(
+        "General speed (Mbps)",
+        default=10,
+        help_text="Derived from download/upload speeds for summaries and legacy displays.",
+    )
     duration = models.CharField(max_length=20, choices=Duration.choices, default=Duration.MONTHLY)
+    image = models.ImageField(
+        "Package image",
+        upload_to="billing/packages/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Optional package image shown on billing screens.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -32,12 +48,36 @@ class BillingPlan(models.Model):
     def __str__(self):
         return f"{self.name} ({self.price})"
 
+    @property
+    def speed_label(self) -> str:
+        down = self.download_speed_mbps or self.speed_mbps or 0
+        up = self.upload_speed_mbps or 0
+        if down and up:
+            return f"{down}/{up} Mbps"
+        if down:
+            return f"{down} Mbps"
+        return "—"
+
+    def sync_general_speed(self) -> None:
+        """General speed follows the package download rate."""
+        self.speed_mbps = self.download_speed_mbps or self.upload_speed_mbps or self.speed_mbps or 1
+
+    def save(self, *args, **kwargs):
+        self.sync_general_speed()
+        self.image = maybe_optimize_image_field(self.image)
+        super().save(*args, **kwargs)
+
 
 class Customer(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         SUSPENDED = "suspended", "Suspended"
         INACTIVE = "inactive", "Inactive"
+
+    class ServiceType(models.TextChoices):
+        PPPOE = "pppoe", "PPPoE"
+        STATIC = "static", "Static"
+        HOTSPOT = "hotspot", "Hotspot"
 
     organization = models.ForeignKey(
         "accounts.Organization",
@@ -49,6 +89,14 @@ class Customer(models.Model):
     email = models.EmailField(blank=True)
     address = models.CharField(max_length=255, blank=True)
     account_number = models.CharField(max_length=40, unique=True)
+    service_type = models.CharField(
+        max_length=20,
+        choices=ServiceType.choices,
+        default=ServiceType.PPPOE,
+        db_index=True,
+    )
+    pppoe_username = models.CharField("PPPoE username", max_length=64, blank=True)
+    pppoe_password = models.CharField("PPPoE password", max_length=128, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     plan = models.ForeignKey(
         BillingPlan,
@@ -57,11 +105,26 @@ class Customer(models.Model):
         blank=True,
         related_name="customers",
     )
+    router = models.ForeignKey(
+        "core.MikroTikRouter",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="customers",
+        help_text="MikroTik this client is provisioned on.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "billing_customer"
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "status"], name="bill_cust_org_status_idx"),
+            models.Index(
+                fields=["organization", "service_type"],
+                name="bill_cust_org_svc_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.full_name} ({self.account_number})"
@@ -92,6 +155,9 @@ class Invoice(models.Model):
     class Meta:
         db_table = "billing_invoice"
         ordering = ["-issued_at"]
+        indexes = [
+            models.Index(fields=["organization", "status"], name="bill_inv_org_status_idx"),
+        ]
 
     def __str__(self):
         return self.invoice_number

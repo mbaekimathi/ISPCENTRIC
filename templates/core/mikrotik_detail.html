@@ -1,0 +1,893 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ router.name }} — MikroTik — ISPCENTRIC{% endblock %}
+
+{% block topbar_extra %}
+<div class="account-menu mikrotik-router-profile" id="mikrotik-router-profile" data-topbar-profile>
+  <button
+    type="button"
+    class="account-menu-trigger mikrotik-router-profile-trigger"
+    id="mikrotik-router-profile-trigger"
+    data-topbar-profile-trigger
+    aria-haspopup="menu"
+    aria-expanded="true"
+    aria-controls="mikrotik-router-profile-panel"
+  >
+    <span class="mikrotik-router-profile-avatar">
+      <img src="{{ router_model_image }}" alt="" width="32" height="24" decoding="async">
+    </span>
+    <span class="account-menu-copy">
+      <span class="account-menu-name">{{ router.name }}</span>
+      <span class="account-menu-meta">{{ router.get_model_display }} · {{ router.host }}</span>
+    </span>
+    <span class="account-menu-caret" aria-hidden="true"></span>
+  </button>
+
+  <div class="account-menu-panel mikrotik-router-profile-panel" id="mikrotik-router-profile-panel" data-topbar-profile-panel role="menu">
+    <div class="account-menu-head">
+      <span class="mikrotik-router-profile-avatar mikrotik-router-profile-avatar-lg">
+        <img src="{{ router_model_image }}" alt="" width="40" height="30" loading="lazy" decoding="async">
+      </span>
+      <div>
+        <strong>{{ router.name }}</strong>
+        <p>{{ router.get_model_display }} · {{ router.host }}</p>
+      </div>
+    </div>
+
+    <div class="mikrotik-router-profile-status">
+      <span class="mikrotik-link-status is-checking" id="mikrotik-hero-link" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+        <span class="mikrotik-link-dot" aria-hidden="true"></span>
+        <span class="mikrotik-link-label">Checking…</span>
+      </span>
+      <span class="mikrotik-account-pill{% if is_suspended %} is-suspended{% else %} is-active{% endif %}">
+        {{ router.get_account_status_display }}
+      </span>
+    </div>
+
+    <div class="mikrotik-live-facts mikrotik-router-profile-facts" id="mikrotik-live-facts">
+      <div class="mikrotik-live-fact">
+        <span>Router identity</span>
+        <strong data-live="identity">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>Board</span>
+        <strong data-live="board">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>RouterOS</span>
+        <strong data-live="version">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>Wi‑Fi</span>
+        <strong data-live="wifi">—</strong>
+      </div>
+    </div>
+
+    <div class="account-menu-session mikrotik-router-profile-session">
+      <p class="mikrotik-router-profile-group">Saved details</p>
+      <div class="account-session-row"><span>Name</span><strong>{{ router.name }}</strong></div>
+      <div class="account-session-row"><span>Model</span><strong>{{ router.get_model_display }}</strong></div>
+      <div class="account-session-row"><span>IP / Host</span><strong>{{ router.host }}</strong></div>
+      <div class="account-session-row">
+        <span>Account</span>
+        <strong class="{% if is_suspended %}is-warn{% endif %}">{{ router.get_account_status_display }}</strong>
+      </div>
+
+      <p class="mikrotik-router-profile-group">Access</p>
+      <div class="account-session-row"><span>Username</span><strong>{{ router.username }}</strong></div>
+      <div class="account-session-row">
+        <span>Password</span>
+        <strong class="mikrotik-secret">
+          <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+          <span class="mikrotik-secret-value" data-secret-value hidden>{{ router.password }}</span>
+          <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>
+        </strong>
+      </div>
+
+      <p class="mikrotik-router-profile-group">Location</p>
+      <div class="account-session-row"><span>Place</span><strong>{{ router.location|default:"—" }}</strong></div>
+      <div class="account-session-row">
+        <span>Coordinates</span>
+        <strong>
+          {% if router.location_lat is not None and router.location_lng is not None %}
+            {{ router.location_lat }}, {{ router.location_lng }}
+          {% else %}
+            —
+          {% endif %}
+        </strong>
+      </div>
+      {% if router.location_lat is not None and router.location_lng is not None %}
+        <div class="account-session-row">
+          <span>Map</span>
+          <strong>
+            <a
+              class="mikrotik-detail-map-link"
+              href="https://www.openstreetmap.org/?mlat={{ router.location_lat }}&amp;mlon={{ router.location_lng }}#map=16/{{ router.location_lat }}/{{ router.location_lng }}"
+              target="_blank"
+              rel="noopener noreferrer"
+            >Open in OpenStreetMap</a>
+          </strong>
+        </div>
+      {% endif %}
+
+      <p class="mikrotik-router-profile-group">Wi‑Fi</p>
+      <div class="account-session-row">
+        <span>Status</span>
+        <strong>
+          <span class="mikrotik-wifi-pill{% if wifi_enabled %} is-on{% else %} is-off{% endif %}">
+            {% if wifi_enabled %}On{% else %}Off{% endif %}
+          </span>
+        </strong>
+      </div>
+      {% if wifi_enabled %}
+        <div class="account-session-row"><span>Wi‑Fi name</span><strong>{{ wifi_ssid_display|default:"—" }}</strong></div>
+        <div class="account-session-row">
+          <span>Wi‑Fi password</span>
+          <strong class="mikrotik-secret">
+            {% if wifi_password_display %}
+              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+              <span class="mikrotik-secret-value" data-secret-value hidden>{{ wifi_password_display }}</span>
+              <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">Show</button>
+            {% else %}
+              —
+            {% endif %}
+          </strong>
+        </div>
+      {% else %}
+        <div class="account-session-row">
+          <span>Credentials</span>
+          <strong>Hidden while Wi‑Fi is off.</strong>
+        </div>
+      {% endif %}
+
+      <p class="mikrotik-router-profile-group">Record</p>
+      <div class="account-session-row"><span>Onboarded</span><strong>{{ router.created_at|date:"M j, Y g:i A" }}</strong></div>
+      <div class="account-session-row"><span>Last updated</span><strong>{{ router.updated_at|date:"M j, Y g:i A" }}</strong></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel mikrotik-detail-panel">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="mikrotik-detail-kicker">Live router</p>
+      <h2>{{ router.name }}</h2>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <button type="button" class="btn btn-ghost" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>Refresh live</button>
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik' %}">Back to routers</a>
+    </div>
+  </div>
+
+  <section class="mikrotik-live" id="mikrotik-live" aria-live="polite" data-live-url="{% url 'core:mikrotik_live' router.id %}" data-suspended="{% if is_suspended %}1{% else %}0{% endif %}">
+    <div class="mikrotik-live-head">
+      <div>
+        <h3>Live overview</h3>
+        <p class="mikrotik-live-sub" id="mikrotik-live-sub">{% if is_suspended %}Live access is paused while this account is suspended.{% else %}Reading the router…{% endif %}</p>
+      </div>
+      <span class="mikrotik-live-stamp" id="mikrotik-live-stamp">—</span>
+    </div>
+
+    <div class="mikrotik-live-blocked" id="mikrotik-live-blocked" {% if not is_suspended %}hidden{% endif %}>
+      <div class="mikrotik-live-blocked-icon" aria-hidden="true">!</div>
+      <div>
+        <strong id="mikrotik-live-blocked-title">{% if is_suspended %}Cannot access this MikroTik{% else %}Live data unavailable{% endif %}</strong>
+        <p id="mikrotik-live-blocked-text">
+          {% if is_suspended %}
+            You cannot access live data because this MikroTik account is suspended.
+          {% else %}
+            Waiting for a connection…
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="btn btn-ghost" id="mikrotik-live-blocked-why" {% if not is_suspended %}hidden{% endif %}>View reason</button>
+    </div>
+
+    <div class="mikrotik-live-grid" id="mikrotik-live-grid" {% if is_suspended %}hidden{% endif %}>
+      <article class="mikrotik-live-card" data-metric="status">
+        <p class="mikrotik-live-label">Connection</p>
+        <p class="mikrotik-live-value" data-live="status">…</p>
+        <p class="mikrotik-live-hint" data-live="status-hint">Checking reachability</p>
+      </article>
+      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
+        <p class="mikrotik-live-label">Download</p>
+        <p class="mikrotik-live-value" data-live="wan-download">—</p>
+        <p class="mikrotik-live-hint" data-live="wan-download-hint">Live inbound speed</p>
+      </article>
+      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
+        <p class="mikrotik-live-label">Upload</p>
+        <p class="mikrotik-live-value" data-live="wan-upload">—</p>
+        <p class="mikrotik-live-hint" data-live="wan-upload-hint">Live outbound speed</p>
+      </article>
+      <article class="mikrotik-live-card" data-metric="uptime">
+        <p class="mikrotik-live-label">Uptime</p>
+        <p class="mikrotik-live-value" data-live="uptime">—</p>
+        <p class="mikrotik-live-hint">How long the router has been running</p>
+      </article>
+      <article class="mikrotik-live-card" data-metric="cpu">
+        <p class="mikrotik-live-label">CPU load</p>
+        <p class="mikrotik-live-value" data-live="cpu">—</p>
+        <div class="mikrotik-meter" aria-hidden="true"><span data-live-bar="cpu"></span></div>
+        <p class="mikrotik-live-hint">Processor usage right now</p>
+      </article>
+      <article class="mikrotik-live-card" data-metric="memory">
+        <p class="mikrotik-live-label">Memory used</p>
+        <p class="mikrotik-live-value" data-live="memory">—</p>
+        <div class="mikrotik-meter" aria-hidden="true"><span data-live-bar="memory"></span></div>
+        <p class="mikrotik-live-hint" data-live="memory-hint">Free / total</p>
+      </article>
+      <article class="mikrotik-live-card" data-metric="ports">
+        <p class="mikrotik-live-label">Ports online</p>
+        <p class="mikrotik-live-value" data-live="ports">—</p>
+        <p class="mikrotik-live-hint">Network interfaces currently running</p>
+      </article>
+      <article class="mikrotik-live-card" data-metric="users">
+        <p class="mikrotik-live-label">Online users</p>
+        <p class="mikrotik-live-value" data-live="users">—</p>
+        <p class="mikrotik-live-hint" data-live="users-hint">PPPoE + Hotspot sessions</p>
+      </article>
+    </div>
+
+    <section class="mikrotik-uplink" id="mikrotik-uplink" {% if is_suspended %}hidden{% endif %}>
+      <div class="mikrotik-uplink-head">
+        <h3>Internet source</h3>
+        <p class="mikrotik-uplink-sub" data-live="wan-summary">Where upstream internet enters this MikroTik.</p>
+      </div>
+      <div class="mikrotik-uplink-grid mikrotik-uplink-grid-5">
+        <article class="mikrotik-uplink-card mikrotik-uplink-card-provider">
+          <p class="mikrotik-live-label">Internet company</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-provider">—</p>
+          <p class="mikrotik-live-hint" data-live="wan-provider-hint">ISP or upstream provider</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">Coming from</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-gateway">—</p>
+          <p class="mikrotik-live-hint">Upstream gateway / ISP next hop</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">Entering on port</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-port">—</p>
+          <p class="mikrotik-live-hint">Physical port where the cable arrives</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">Router interface</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-interface">—</p>
+          <p class="mikrotik-live-hint">Logical interface used by the default route</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">How connected</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-source">—</p>
+          <p class="mikrotik-live-hint" data-live="wan-address-hint">WAN address on this router</p>
+        </article>
+      </div>
+    </section>
+  </section>
+</section>
+
+{# —— Access notice popup —— #}
+<div class="role-modal mikrotik-notice-modal" id="mikrotik-access-notice" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-access-notice></div>
+  <div class="role-modal-panel mikrotik-notice-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-access-notice-title" aria-describedby="mikrotik-access-notice-text">
+    <div class="mikrotik-notice-glow" aria-hidden="true"></div>
+    <header class="mikrotik-notice-head">
+      <div class="mikrotik-notice-badge" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="28" height="28" fill="none">
+          <circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2.2"/>
+          <path d="M24 14v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          <circle cx="24" cy="34" r="1.8" fill="currentColor"/>
+        </svg>
+      </div>
+      <button type="button" class="role-modal-close" data-close-access-notice aria-label="Close">×</button>
+    </header>
+    <div class="mikrotik-notice-body">
+      <p class="mikrotik-notice-kicker">Live access</p>
+      <h2 id="mikrotik-access-notice-title">Cannot access this MikroTik</h2>
+      <p id="mikrotik-access-notice-text" class="mikrotik-notice-text">Live data is unavailable right now.</p>
+      <p id="mikrotik-access-notice-reason" class="mikrotik-notice-reason"></p>
+    </div>
+    <div class="role-modal-actions mikrotik-notice-actions">
+      <button type="button" class="btn btn-ghost" data-close-access-notice>Dismiss</button>
+      <button type="button" class="btn btn-primary" id="mikrotik-access-notice-retry">Try again</button>
+    </div>
+  </div>
+</div>
+
+<div class="role-modal mikrotik-action-modal" id="mikrotik-edit-modal" {% if open_mikrotik_modal != "mikrotik-edit-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-edit-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-edit-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">MikroTik</p>
+        <h2 id="mikrotik-edit-title">Edit details</h2>
+        <p class="role-modal-sub">Update name, model, and location for this router.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="edit_details">
+      {{ edit_form.place_id }}
+      {{ edit_form.location_lat }}
+      {{ edit_form.location_lng }}
+      <div class="mikrotik-action-scroll">
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label for="{{ edit_form.name.id_for_label }}">{{ edit_form.name.label }}</label>
+            {{ edit_form.name }}
+            {% if edit_form.name.errors %}<div class="field-error">{{ edit_form.name.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.model.id_for_label }}">{{ edit_form.model.label }}</label>
+            {{ edit_form.model }}
+            {% if edit_form.model.errors %}<div class="field-error">{{ edit_form.model.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.location.id_for_label }}">{{ edit_form.location.label }}</label>
+            {{ edit_form.location }}
+            {% if edit_form.location.errors %}<div class="field-error">{{ edit_form.location.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.internet_provider.id_for_label }}">{{ edit_form.internet_provider.label }}</label>
+            {{ edit_form.internet_provider }}
+            {% if edit_form.internet_provider.errors %}<div class="field-error">{{ edit_form.internet_provider.errors|striptags }}</div>{% endif %}
+            <p class="field-hint">Optional. Name of the ISP or upstream company feeding this router.</p>
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save details</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Credentials modal —— #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-credentials-modal" {% if open_mikrotik_modal != "mikrotik-credentials-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-credentials-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-credentials-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Access</p>
+        <h2 id="mikrotik-credentials-title">Login credentials</h2>
+        <p class="role-modal-sub">Update access and Wi‑Fi credentials for this router.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="change_credentials">
+      <div class="mikrotik-action-scroll">
+        {% if credentials_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ credentials_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label for="{{ credentials_form.host.id_for_label }}">{{ credentials_form.host.label }}</label>
+            {{ credentials_form.host }}
+            {% if credentials_form.host.errors %}<div class="field-error">{{ credentials_form.host.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ credentials_form.username.id_for_label }}">{{ credentials_form.username.label }}</label>
+            {{ credentials_form.username }}
+            {% if credentials_form.username.errors %}<div class="field-error">{{ credentials_form.username.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ credentials_form.password.id_for_label }}">{{ credentials_form.password.label }}</label>
+            <div class="password-field">
+              {{ credentials_form.password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.password.id_for_label }}" aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if credentials_form.password.errors %}<div class="field-error">{{ credentials_form.password.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ credentials_form.wifi_ssid.id_for_label }}">{{ credentials_form.wifi_ssid.label }}</label>
+            {{ credentials_form.wifi_ssid }}
+            {% if credentials_form.wifi_ssid.errors %}<div class="field-error">{{ credentials_form.wifi_ssid.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ credentials_form.wifi_password.id_for_label }}">{{ credentials_form.wifi_password.label }}</label>
+            <div class="password-field">
+              {{ credentials_form.wifi_password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.wifi_password.id_for_label }}" aria-label="Show Wi‑Fi password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if credentials_form.wifi_password.errors %}<div class="field-error">{{ credentials_form.wifi_password.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save credentials</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Activate / deactivate Wi‑Fi modal —— #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-wifi-modal" {% if open_mikrotik_modal != "mikrotik-wifi-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-wifi-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-wifi-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Wi‑Fi</p>
+        <h2 id="mikrotik-wifi-title">{% if wifi_enabled %}Deactivate Wi‑Fi{% else %}Activate Wi‑Fi{% endif %}</h2>
+        <p class="role-modal-sub">
+          {% if wifi_enabled %}
+            Turn off the Wi‑Fi radio on “{{ router.name }}”. Credentials stay saved and will show again when Wi‑Fi is activated.
+          {% else %}
+            Turn on the Wi‑Fi radio on “{{ router.name }}”{% if wifi_ssid_display %} using network “{{ wifi_ssid_display }}”{% endif %}.
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="toggle_wifi">
+      <div class="mikrotik-action-scroll">
+        {% if wifi_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ wifi_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <label class="mikrotik-confirm-check">
+          {{ wifi_form.confirm }}
+          <span>
+            {% if wifi_enabled %}
+              I confirm I want to deactivate Wi‑Fi on this MikroTik.
+            {% else %}
+              I confirm I want to activate Wi‑Fi on this MikroTik.
+            {% endif %}
+          </span>
+        </label>
+        {% if wifi_form.confirm.errors %}<div class="field-error">{{ wifi_form.confirm.errors|striptags }}</div>{% endif %}
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
+        <button type="submit" class="btn {% if wifi_enabled %}btn-danger{% else %}btn-primary{% endif %}">
+          {% if wifi_enabled %}Deactivate Wi‑Fi{% else %}Activate Wi‑Fi{% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Suspend / activate modal —— #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-suspend-modal" {% if open_mikrotik_modal != "mikrotik-suspend-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-suspend-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-suspend-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Account</p>
+        <h2 id="mikrotik-suspend-title">{% if is_suspended %}Activate account{% else %}Suspend account{% endif %}</h2>
+        <p class="role-modal-sub">
+          {% if is_suspended %}
+            Restore “{{ router.name }}” so it is active again in this workspace.
+          {% else %}
+            Suspend “{{ router.name }}” to mark it inactive in this workspace. You can activate it again later.
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="suspend_account">
+      <div class="mikrotik-action-scroll">
+        <label class="mikrotik-confirm-check">
+          {{ suspend_form.confirm }}
+          <span>
+            {% if is_suspended %}
+              I confirm I want to activate this MikroTik account.
+            {% else %}
+              I confirm I want to suspend this MikroTik account.
+            {% endif %}
+          </span>
+        </label>
+        {% if suspend_form.confirm.errors %}<div class="field-error">{{ suspend_form.confirm.errors|striptags }}</div>{% endif %}
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
+        <button type="submit" class="btn {% if is_suspended %}btn-primary{% else %}btn-danger{% endif %}">
+          {% if is_suspended %}Activate account{% else %}Suspend account{% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  function openModal(id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    closeAllModals();
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal(modal) {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".mikrotik-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  function closeAllModals() {
+    document.querySelectorAll(".mikrotik-action-modal").forEach(closeModal);
+  }
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal(btn.getAttribute("data-open-modal"));
+    });
+  });
+
+  document.querySelectorAll("[data-close-mikrotik-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeModal(el.closest(".mikrotik-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var open = document.querySelector(".mikrotik-action-modal:not([hidden])");
+    if (open) closeModal(open);
+  });
+
+  {% if open_mikrotik_modal %}
+  openModal("{{ open_mikrotik_modal|escapejs }}");
+  {% endif %}
+
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+
+  document.querySelectorAll("[data-toggle-secret]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var wrap = btn.closest(".mikrotik-secret");
+      if (!wrap) return;
+      var mask = wrap.querySelector("[data-secret-mask]");
+      var value = wrap.querySelector("[data-secret-value]");
+      if (!mask || !value) return;
+      var showing = !value.hidden;
+      value.hidden = showing;
+      mask.hidden = !showing;
+      btn.textContent = showing ? "Show" : "Hide";
+      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+    });
+  });
+
+  document.querySelectorAll(".mikrotik-secret").forEach(function (wrap) {
+    var mask = wrap.querySelector("[data-secret-mask]");
+    var value = wrap.querySelector("[data-secret-value]");
+    if (!mask || !value) return;
+    var len = (value.textContent || "").length;
+    mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
+  });
+
+  var profile = document.getElementById("mikrotik-router-profile");
+  var profileTrigger = document.getElementById("mikrotik-router-profile-trigger");
+  var profilePanel = document.getElementById("mikrotik-router-profile-panel");
+
+  function setProfileOpen(open) {
+    if (!profile || !profileTrigger || !profilePanel) return;
+    if (open) {
+      var accountMenu = document.getElementById("account-menu");
+      var accountPanel = document.getElementById("account-menu-panel");
+      var accountTrigger = document.getElementById("account-menu-trigger");
+      if (accountMenu && accountPanel && accountTrigger) {
+        accountPanel.hidden = true;
+        accountTrigger.setAttribute("aria-expanded", "false");
+        accountMenu.classList.remove("is-open");
+      }
+    }
+    profile.classList.toggle("is-open", open);
+    profileTrigger.setAttribute("aria-expanded", open ? "true" : "false");
+    profilePanel.hidden = !open;
+  }
+
+  if (profile && profileTrigger && profilePanel) {
+    profile.classList.add("is-open");
+    profilePanel.hidden = false;
+    profileTrigger.setAttribute("aria-expanded", "true");
+
+    profileTrigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      setProfileOpen(profilePanel.hidden);
+    });
+
+    document.addEventListener("click", function (e) {
+      if (!profile.contains(e.target)) setProfileOpen(false);
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !profilePanel.hidden) setProfileOpen(false);
+    });
+  }
+})();
+</script>
+<script>
+(function () {
+  var liveRoot = document.getElementById("mikrotik-live");
+  if (!liveRoot) return;
+
+  var liveUrl = liveRoot.getAttribute("data-live-url");
+  var suspended = liveRoot.getAttribute("data-suspended") === "1";
+  var refreshBtn = document.getElementById("mikrotik-live-refresh");
+  var subEl = document.getElementById("mikrotik-live-sub");
+  var stampEl = document.getElementById("mikrotik-live-stamp");
+  var hero = document.getElementById("mikrotik-hero-link");
+  var grid = document.getElementById("mikrotik-live-grid");
+  var facts = document.getElementById("mikrotik-live-facts");
+  var uplink = document.getElementById("mikrotik-uplink");
+  var blocked = document.getElementById("mikrotik-live-blocked");
+  var blockedTitle = document.getElementById("mikrotik-live-blocked-title");
+  var blockedText = document.getElementById("mikrotik-live-blocked-text");
+  var blockedWhy = document.getElementById("mikrotik-live-blocked-why");
+  var notice = document.getElementById("mikrotik-access-notice");
+  var noticeText = document.getElementById("mikrotik-access-notice-text");
+  var noticeReason = document.getElementById("mikrotik-access-notice-reason");
+  var noticeRetry = document.getElementById("mikrotik-access-notice-retry");
+  var timer = null;
+  var inFlight = false;
+  var lastReason = "";
+  var noticeShownFor = "";
+
+  function $(sel) {
+    return liveRoot.querySelector(sel) || (facts && facts.querySelector(sel)) || document.querySelector(sel);
+  }
+
+  function setText(sel, value) {
+    var el = $(sel);
+    if (el) el.textContent = value == null || value === "" ? "—" : String(value);
+  }
+
+  function setBar(sel, pct) {
+    var el = $(sel);
+    if (!el) return;
+    var n = typeof pct === "number" ? Math.max(0, Math.min(100, pct)) : 0;
+    el.style.width = n + "%";
+    if (el.parentElement) el.parentElement.classList.toggle("is-hot", n >= 85);
+  }
+
+  function setHero(online) {
+    if (!hero) return;
+    hero.classList.remove("is-checking", "is-connected", "is-disconnected");
+    hero.classList.add(online ? "is-connected" : "is-disconnected");
+    var label = hero.querySelector(".mikrotik-link-label");
+    if (label) label.textContent = online ? "Connected" : "Disconnected";
+  }
+
+  function stampNow() {
+    try {
+      return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function friendlyReason(data) {
+    var err = ((data && data.error) || "").toString();
+    var low = err.toLowerCase();
+    if (data && data.suspended) {
+      return "This MikroTik account is suspended in ISPCENTRIC.";
+    }
+    if (low.indexOf("timed out") >= 0) {
+      return "The router did not respond in time. Check that it is powered on and on the same network as this PC.";
+    }
+    if (low.indexOf("8728") >= 0 || low.indexOf("could not reach") >= 0) {
+      return "Cannot reach the router on API port 8728. Enable RouterOS API (IP → Services) or verify the saved IP address.";
+    }
+    if (low.indexOf("login") >= 0 || low.indexOf("invalid user") >= 0 || low.indexOf("password") >= 0) {
+      return "Login failed. The saved username or password may be incorrect — update credentials from the sidebar.";
+    }
+    if (low.indexOf("missing") >= 0) {
+      return "Router credentials are incomplete.";
+    }
+    if (low.indexOf("live data service") >= 0) {
+      return "ISPCENTRIC could not contact the live-data service. Refresh and try again.";
+    }
+    if (err) return err;
+    return "Live access to this MikroTik is unavailable right now.";
+  }
+
+  function openNotice(reason) {
+    if (!notice) return;
+    lastReason = reason || "Live access is unavailable right now.";
+    if (noticeText) {
+      noticeText.textContent = "You cannot access live data for this MikroTik right now.";
+    }
+    if (noticeReason) {
+      noticeReason.textContent = "Reason: " + lastReason;
+    }
+    notice.hidden = false;
+    notice.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    noticeShownFor = lastReason;
+  }
+
+  function closeNotice() {
+    if (!notice) return;
+    notice.hidden = true;
+    notice.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".mikrotik-action-modal:not([hidden]), .mikrotik-notice-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  function showBlocked(reason, openPopup) {
+    setHero(false);
+    liveRoot.classList.add("is-offline");
+    liveRoot.classList.remove("is-online");
+    if (grid) grid.hidden = true;
+    if (uplink) uplink.hidden = true;
+    if (blocked) blocked.hidden = false;
+    if (blockedTitle) blockedTitle.textContent = "Cannot access this MikroTik";
+    if (blockedText) blockedText.textContent = "You cannot access live data due to a connection or account issue.";
+    if (blockedWhy) blockedWhy.hidden = false;
+    if (subEl) subEl.textContent = "Live overview is paused until the router can be reached.";
+    if (stampEl) stampEl.textContent = "Checked " + stampNow();
+    lastReason = reason;
+    if (openPopup && noticeShownFor !== reason) openNotice(reason);
+  }
+
+  function showLiveLayout() {
+    if (blocked) blocked.hidden = true;
+    if (grid) grid.hidden = false;
+    if (uplink) uplink.hidden = false;
+  }
+
+  function renderLive(data) {
+    if (!data || !data.ok || !data.online) {
+      showBlocked(friendlyReason(data || {}), true);
+      return;
+    }
+    noticeShownFor = "";
+    closeNotice();
+    showLiveLayout();
+    liveRoot.classList.add("is-online");
+    liveRoot.classList.remove("is-offline");
+    setHero(true);
+    setText('[data-live="status"]', "Online");
+    setText('[data-live="status-hint"]', "API connected");
+    setText('[data-live="wan-download"]', data.wan_download_label || "—");
+    setText(
+      '[data-live="wan-download-hint"]',
+      data.wan_speed_interface
+        ? ("Live on " + data.wan_speed_interface)
+        : "Live inbound speed"
+    );
+    setText('[data-live="wan-upload"]', data.wan_upload_label || "—");
+    setText(
+      '[data-live="wan-upload-hint"]',
+      data.wan_speed_interface
+        ? ("Live on " + data.wan_speed_interface)
+        : "Live outbound speed"
+    );
+    setText('[data-live="uptime"]', data.uptime || "—");
+    setText('[data-live="cpu"]', data.cpu_load == null ? "—" : data.cpu_load + "%");
+    setText('[data-live="memory"]', data.memory_used_pct == null ? "—" : data.memory_used_pct + "%");
+    setText(
+      '[data-live="memory-hint"]',
+      (data.memory_free || "—") + " free of " + (data.memory_total || "—")
+    );
+    setText(
+      '[data-live="ports"]',
+      (data.ports_up != null ? data.ports_up : "—") + " / " + (data.ports_total != null ? data.ports_total : "—")
+    );
+    setText('[data-live="users"]', data.online_users != null ? data.online_users : "—");
+    setText(
+      '[data-live="users-hint"]',
+      "PPPoE " + (data.pppoe_active || 0) + " · Hotspot " + (data.hotspot_active || 0)
+    );
+    setText('[data-live="identity"]', data.identity || "—");
+    setText('[data-live="board"]', data.board || "—");
+    setText('[data-live="version"]', data.version || "—");
+    setText('[data-live="wifi"]', data.wifi_label || "—");
+    setText('[data-live="wan-summary"]', data.wan_summary || "Where upstream internet enters this MikroTik.");
+    setText('[data-live="wan-provider"]', data.wan_provider_label || data.wan_provider || "—");
+    setText(
+      '[data-live="wan-provider-hint"]',
+      data.wan_provider_hint || "ISP or upstream provider"
+    );
+    setText('[data-live="wan-gateway"]', data.wan_gateway_label || data.wan_gateway || "—");
+    setText('[data-live="wan-port"]', data.wan_port_label || data.wan_port || "—");
+    setText('[data-live="wan-interface"]', data.wan_interface || "—");
+    setText('[data-live="wan-source"]', data.wan_source_label || "—");
+    setText(
+      '[data-live="wan-address-hint"]',
+      data.wan_address
+        ? ("Router WAN IP " + data.wan_address)
+        : "WAN address on this router"
+    );
+    setBar('[data-live-bar="cpu"]', data.cpu_load);
+    setBar('[data-live-bar="memory"]', data.memory_used_pct);
+    if (subEl) subEl.textContent = "Live data from the router — refreshes automatically.";
+    if (stampEl) stampEl.textContent = "Updated " + stampNow();
+  }
+
+  function loadLive(force) {
+    if (suspended) {
+      showBlocked("This MikroTik account is suspended in ISPCENTRIC.", force || !noticeShownFor);
+      return;
+    }
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    if (refreshBtn) refreshBtn.disabled = true;
+    if (subEl && force) subEl.textContent = "Refreshing…";
+    var url = liveUrl + (force ? (liveUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1" : "");
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        renderLive(result.data || { ok: false, error: "Could not read live data from the router." });
+      })
+      .catch(function () {
+        showBlocked("ISPCENTRIC could not contact the live-data service. Refresh and try again.", true);
+      })
+      .finally(function () {
+        inFlight = false;
+        if (refreshBtn) refreshBtn.disabled = false;
+      });
+  }
+
+  document.querySelectorAll("[data-close-access-notice]").forEach(function (el) {
+    el.addEventListener("click", closeNotice);
+  });
+  if (blockedWhy) {
+    blockedWhy.addEventListener("click", function () {
+      openNotice(lastReason || "Live access is unavailable right now.");
+    });
+  }
+  if (noticeRetry) {
+    noticeRetry.addEventListener("click", function () {
+      closeNotice();
+      loadLive(true);
+    });
+  }
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () { loadLive(true); });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && notice && !notice.hidden) closeNotice();
+  });
+
+  loadLive(true);
+  if (!suspended) {
+    timer = setInterval(function () { loadLive(false); }, 10000);
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) loadLive(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+{% endblock %}

@@ -5,16 +5,51 @@ from .models import BillingPlan, Customer, Invoice, Payment
 
 @admin.register(BillingPlan)
 class BillingPlanAdmin(admin.ModelAdmin):
-    list_display = ("name", "organization", "price", "speed_mbps", "duration", "is_active")
+    list_display = (
+        "name",
+        "organization",
+        "download_speed_mbps",
+        "upload_speed_mbps",
+        "speed_mbps",
+        "price",
+        "duration",
+        "is_active",
+    )
     list_filter = ("duration", "is_active")
     search_fields = ("name", "organization__name")
+    readonly_fields = ("created_at", "speed_mbps")
+    fields = (
+        "organization",
+        "name",
+        "description",
+        "image",
+        "price",
+        "download_speed_mbps",
+        "upload_speed_mbps",
+        "speed_mbps",
+        "duration",
+        "is_active",
+        "created_at",
+    )
 
 
 @admin.register(Customer)
 class CustomerAdmin(admin.ModelAdmin):
-    list_display = ("full_name", "account_number", "phone", "status", "plan", "organization")
-    list_filter = ("status",)
-    search_fields = ("full_name", "account_number", "phone")
+    list_display = (
+        "full_name",
+        "account_number",
+        "service_type",
+        "pppoe_username",
+        "router",
+        "phone",
+        "status",
+        "plan",
+        "organization",
+    )
+    list_filter = ("status", "service_type")
+    search_fields = ("full_name", "account_number", "phone", "pppoe_username")
+    autocomplete_fields = ("plan",)
+    raw_id_fields = ("router", "organization")
 
 
 @admin.register(Invoice)

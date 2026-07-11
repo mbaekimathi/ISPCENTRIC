@@ -8,12 +8,16 @@ from django.views.decorators.http import require_POST
 from accounts.forms import EmployeeAdminEditForm, OrganizationEditForm
 from accounts.models import Employee, Organization
 from accounts.routing import (
+    CLIENT_VIEW_VALUE,
     ROLE_DASHBOARD_NAMES,
     ROLE_SLUGS,
     SWITCHABLE_ROLES,
     can_switch_roles,
     home_url_for_user,
+    set_client_view,
     set_role_view,
+    switchable_clients_list,
+    switchable_role_options,
 )
 
 
@@ -127,16 +131,9 @@ def _role_dashboard(request, role):
             "current_page": "dashboard",
             "can_switch_roles": switcher,
             "is_viewing_as": switcher and role != employee.role,
-            "switchable_roles": [
-                {
-                    "value": r,
-                    "label": role_labels[r],
-                    "url_name": ROLE_DASHBOARD_NAMES[r],
-                    "slug": ROLE_SLUGS[r],
-                    "selected": r == role,
-                }
-                for r in SWITCHABLE_ROLES
-            ],
+            "switchable_roles": switchable_role_options(request, employee, selected=role),
+            "switchable_clients": switchable_clients_list() if switcher else [],
+            "selected_client_id": None,
         },
     )
 
@@ -150,6 +147,20 @@ def switch_role_view(request):
         return redirect(home_url_for_user(request.user, request))
 
     role = (request.POST.get("role") or "").strip()
+    if role == CLIENT_VIEW_VALUE:
+        raw_org = (request.POST.get("organization_id") or "").strip()
+        try:
+            org_id = int(raw_org)
+        except (TypeError, ValueError):
+            org_id = None
+        org = Organization.objects.filter(pk=org_id).first() if org_id else None
+        if org is None:
+            messages.error(request, "Choose a client organization to view.")
+            return redirect(home_url_for_user(request.user, request))
+        set_client_view(request, org.pk)
+        messages.success(request, f"Now viewing as client {org.name}.")
+        return redirect("core:workspace")
+
     if role not in SWITCHABLE_ROLES:
         messages.error(request, "Choose a valid role to view.")
         return redirect(home_url_for_user(request.user, request))

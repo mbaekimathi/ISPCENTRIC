@@ -1,0 +1,495 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ customer.full_name }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_extra %}
+<div class="account-menu client-user-profile" id="client-user-profile" data-topbar-profile>
+  <button
+    type="button"
+    class="account-menu-trigger client-user-profile-trigger"
+    id="client-user-profile-trigger"
+    data-topbar-profile-trigger
+    aria-haspopup="menu"
+    aria-expanded="false"
+    aria-controls="client-user-profile-panel"
+  >
+    <span class="account-menu-avatar account-menu-avatar-fallback client-user-avatar" aria-hidden="true">
+      {{ customer.full_name|slice:":1"|upper }}
+    </span>
+    <span class="account-menu-copy">
+      <span class="account-menu-name">{{ customer.full_name }}</span>
+      <span class="account-menu-meta">{{ customer.account_number }} · {{ customer.get_status_display }}</span>
+    </span>
+    <span class="account-menu-caret" aria-hidden="true"></span>
+  </button>
+
+  <div class="account-menu-panel client-user-profile-panel" id="client-user-profile-panel" data-topbar-profile-panel role="menu" hidden>
+    <div class="account-menu-head">
+      <span class="account-menu-avatar account-menu-avatar-fallback client-user-avatar client-user-avatar-lg" aria-hidden="true">
+        {{ customer.full_name|slice:":1"|upper }}
+      </span>
+      <div>
+        <strong>{{ customer.full_name }}</strong>
+        <p>{{ customer.account_number }} · {{ customer.get_service_type_display }}</p>
+      </div>
+    </div>
+
+    <div class="client-user-profile-status">
+      <span class="badge">{{ customer.get_status_display }}</span>
+      {% if customer.router %}
+        <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
+          <span class="mikrotik-link-dot" aria-hidden="true"></span>
+          <span class="mikrotik-link-label">Checking…</span>
+        </span>
+      {% endif %}
+    </div>
+
+    <div class="account-menu-session client-user-profile-session">
+      <p class="mikrotik-router-profile-group">Contact</p>
+      <div class="account-session-row"><span>Phone</span><strong>{{ customer.phone|default:"—" }}</strong></div>
+      <div class="account-session-row"><span>Email</span><strong>{{ customer.email|default:"—" }}</strong></div>
+      <div class="account-session-row"><span>Address</span><strong>{{ customer.address|default:"—" }}</strong></div>
+
+      <p class="mikrotik-router-profile-group">Service</p>
+      <div class="account-session-row"><span>Type</span><strong>{{ customer.get_service_type_display }}</strong></div>
+      <div class="account-session-row">
+        <span>Plan</span>
+        <strong>
+          {% if customer.plan %}
+            {{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </strong>
+      </div>
+      {% if customer.service_type == "pppoe" %}
+        <div class="account-session-row"><span>PPPoE user</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
+        <div class="account-session-row">
+          <span>PPPoE password</span>
+          <strong class="mikrotik-secret">
+            {% if customer.pppoe_password %}
+              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+              <span class="mikrotik-secret-value" data-secret-value hidden>{{ customer.pppoe_password }}</span>
+              <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>
+            {% else %}
+              —
+            {% endif %}
+          </strong>
+        </div>
+      {% endif %}
+
+      <p class="mikrotik-router-profile-group">Router</p>
+      <div class="account-session-row">
+        <span>Assigned</span>
+        <strong>
+          {% if customer.router %}
+            <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
+          {% else %}
+            No router
+          {% endif %}
+        </strong>
+      </div>
+      {% if customer.router %}
+        <div class="account-session-row"><span>Host</span><strong>{{ customer.router.host }}</strong></div>
+      {% endif %}
+
+      <p class="mikrotik-router-profile-group">Record</p>
+      <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y g:i A" }}</strong></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<p class="client-detail-back">
+  <a href="{{ back_url }}">&larr; Back to clients</a>
+</p>
+
+<section
+  class="panel client-usage-panel"
+  id="client-usage"
+  data-usage-url="{% url 'core:client_usage' customer.id %}"
+  data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
+>
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="mikrotik-detail-kicker">Usage analysis</p>
+      <h2>{{ customer.full_name }}</h2>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <button type="button" class="btn btn-ghost" id="client-usage-refresh" {% if not can_live_usage %}disabled{% endif %}>
+        Refresh live
+      </button>
+    </div>
+  </div>
+
+  <div class="mikrotik-live-head client-usage-head">
+    <div>
+      <h3>Live session</h3>
+      <p class="mikrotik-live-sub" id="client-usage-sub">
+        {% if can_live_usage %}
+          Reading session from {{ customer.router.name }}…
+        {% elif not customer.router %}
+          Assign a MikroTik router to this client to see live usage.
+        {% elif customer.service_type != "pppoe" %}
+          Live session metrics are available for PPPoE clients.
+        {% else %}
+          Add a PPPoE username to enable live usage.
+        {% endif %}
+      </p>
+    </div>
+    <span class="mikrotik-live-stamp" id="client-usage-stamp">—</span>
+  </div>
+
+  <div class="mikrotik-live-grid client-usage-grid" id="client-usage-grid">
+    <article class="mikrotik-live-card" data-metric="session">
+      <p class="mikrotik-live-label">Session</p>
+      <p class="mikrotik-live-value" data-usage="session">…</p>
+      <p class="mikrotik-live-hint" data-usage="session-hint">PPPoE online status</p>
+    </article>
+    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
+      <p class="mikrotik-live-label">Download</p>
+      <p class="mikrotik-live-value" data-usage="download">—</p>
+      <p class="mikrotik-live-hint">Live inbound speed</p>
+    </article>
+    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
+      <p class="mikrotik-live-label">Upload</p>
+      <p class="mikrotik-live-value" data-usage="upload">—</p>
+      <p class="mikrotik-live-hint">Live outbound speed</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="uptime">
+      <p class="mikrotik-live-label">Session uptime</p>
+      <p class="mikrotik-live-value" data-usage="uptime">—</p>
+      <p class="mikrotik-live-hint">Current connection length</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="bytes-in">
+      <p class="mikrotik-live-label">Downloaded</p>
+      <p class="mikrotik-live-value" data-usage="bytes-in">—</p>
+      <p class="mikrotik-live-hint">Traffic this session</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="bytes-out">
+      <p class="mikrotik-live-label">Uploaded</p>
+      <p class="mikrotik-live-value" data-usage="bytes-out">—</p>
+      <p class="mikrotik-live-hint">Traffic this session</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="ip">
+      <p class="mikrotik-live-label">Assigned IP</p>
+      <p class="mikrotik-live-value client-usage-mono" data-usage="address">—</p>
+      <p class="mikrotik-live-hint" data-usage="caller">Caller / MAC</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="plan">
+      <p class="mikrotik-live-label">Plan speed</p>
+      <p class="mikrotik-live-value">
+        {% if customer.plan %}{{ customer.plan.speed_label }}{% else %}—{% endif %}
+      </p>
+      <p class="mikrotik-live-hint">
+        {% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}
+      </p>
+    </article>
+  </div>
+</section>
+
+<section class="panel client-billing-analysis">
+  <div class="panel-head-row">
+    <div>
+      <h2>Billing analysis</h2>
+      <p class="panel-sub">Invoices and payments for this subscriber.</p>
+    </div>
+  </div>
+
+  <div class="client-usage-stats">
+    <div class="client-usage-stat">
+      <span>Invoices</span>
+      <strong>{{ invoice_total }}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Pending</span>
+      <strong>{{ invoice_pending }}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Paid</span>
+      <strong>{{ invoice_paid }}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Overdue</span>
+      <strong>{{ invoice_overdue }}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Billed</span>
+      <strong>{{ amount_billed }}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Collected</span>
+      <strong>{{ amount_paid }}</strong>
+    </div>
+  </div>
+
+  <div class="client-billing-split">
+    <div>
+      <h3 class="client-billing-subhead">Recent invoices</h3>
+      {% if invoices %}
+        <div class="clients-table-wrap">
+          <table class="table clients-type-table">
+            <thead>
+              <tr>
+                <th>Invoice</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Due</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for inv in invoices %}
+                <tr>
+                  <td>{{ inv.invoice_number }}</td>
+                  <td>{{ inv.amount }}</td>
+                  <td><span class="badge">{{ inv.get_status_display }}</span></td>
+                  <td>{{ inv.due_date|date:"M j, Y" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="empty">No invoices yet for this client.</p>
+      {% endif %}
+    </div>
+    <div>
+      <h3 class="client-billing-subhead">Recent payments</h3>
+      {% if payments %}
+        <div class="clients-table-wrap">
+          <table class="table clients-type-table">
+            <thead>
+              <tr>
+                <th>Reference</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Received</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for pay in payments %}
+                <tr>
+                  <td>{{ pay.reference|default:pay.invoice.invoice_number }}</td>
+                  <td>{{ pay.amount }}</td>
+                  <td>{{ pay.get_method_display }}</td>
+                  <td>{{ pay.received_at|date:"M j, Y" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="empty">No payments recorded yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  var profile = document.getElementById("client-user-profile");
+  var profileTrigger = document.getElementById("client-user-profile-trigger");
+  var profilePanel = document.getElementById("client-user-profile-panel");
+
+  function setProfileOpen(open) {
+    if (!profile || !profileTrigger || !profilePanel) return;
+    if (open) {
+      var accountMenu = document.getElementById("account-menu");
+      var accountPanel = document.getElementById("account-menu-panel");
+      var accountTrigger = document.getElementById("account-menu-trigger");
+      if (accountMenu && accountPanel && accountTrigger) {
+        accountPanel.hidden = true;
+        accountTrigger.setAttribute("aria-expanded", "false");
+        accountMenu.classList.remove("is-open");
+      }
+    }
+    profile.classList.toggle("is-open", open);
+    profileTrigger.setAttribute("aria-expanded", open ? "true" : "false");
+    profilePanel.hidden = !open;
+  }
+
+  if (profile && profileTrigger && profilePanel) {
+    profileTrigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      setProfileOpen(profilePanel.hidden);
+    });
+    document.addEventListener("click", function (e) {
+      if (!profile.contains(e.target)) setProfileOpen(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !profilePanel.hidden) setProfileOpen(false);
+    });
+  }
+
+  document.querySelectorAll(".mikrotik-secret").forEach(function (wrap) {
+    var mask = wrap.querySelector("[data-secret-mask]");
+    var value = wrap.querySelector("[data-secret-value]");
+    var btn = wrap.querySelector("[data-toggle-secret]");
+    if (!mask || !value || !btn) return;
+    var len = (value.textContent || "").length;
+    mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var showing = !value.hidden;
+      value.hidden = showing;
+      mask.hidden = !showing;
+      btn.textContent = showing ? "Show" : "Hide";
+      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+    });
+  });
+})();
+</script>
+
+{% if customer.router %}
+<script>
+(function () {
+  var statusUrl = "{% url 'core:mikrotik_status' %}";
+  function setStatus(el, online) {
+    if (!el) return;
+    el.classList.remove("is-checking", "is-connected", "is-disconnected");
+    el.classList.add(online ? "is-connected" : "is-disconnected");
+    var label = el.querySelector(".mikrotik-link-label");
+    if (label) label.textContent = online ? "Connected" : "Disconnected";
+  }
+  function refreshStatus() {
+    if (document.hidden) return;
+    fetch(statusUrl + "?refresh=1", {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !data.routers) return;
+        data.routers.forEach(function (item) {
+          document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
+            setStatus(el, !!item.online);
+          });
+        });
+      })
+      .catch(function () {
+        document.querySelectorAll("[data-router-status]").forEach(function (el) {
+          if (el.classList.contains("is-checking")) setStatus(el, false);
+        });
+      });
+  }
+  refreshStatus();
+  setInterval(refreshStatus, 30000);
+})();
+</script>
+{% endif %}
+
+<script>
+(function () {
+  var root = document.getElementById("client-usage");
+  if (!root) return;
+  var usageUrl = root.getAttribute("data-usage-url");
+  var canLive = root.getAttribute("data-can-live") === "1";
+  var subEl = document.getElementById("client-usage-sub");
+  var stampEl = document.getElementById("client-usage-stamp");
+  var refreshBtn = document.getElementById("client-usage-refresh");
+  var timer = null;
+  var inFlight = false;
+
+  function setText(sel, value) {
+    var el = root.querySelector('[data-usage="' + sel + '"]');
+    if (el) el.textContent = value == null || value === "" ? "—" : value;
+  }
+
+  function stampNow() {
+    if (!stampEl) return;
+    var d = new Date();
+    stampEl.textContent = "Updated " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function applyOffline(message) {
+    setText("session", "Offline");
+    setText("session-hint", message || "Not connected");
+    setText("download", "—");
+    setText("upload", "—");
+    setText("uptime", "—");
+    setText("bytes-in", "—");
+    setText("bytes-out", "—");
+    setText("address", "—");
+    setText("caller", "Caller / MAC");
+    root.classList.remove("is-online");
+    root.classList.add("is-offline");
+  }
+
+  function refresh(force) {
+    if (!canLive || !usageUrl || document.hidden || inFlight) return;
+    inFlight = true;
+    if (refreshBtn) refreshBtn.disabled = true;
+    var url = usageUrl;
+    if (force) url += (usageUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data) return;
+        if (!data.ok && data.error) {
+          applyOffline(data.error);
+          if (subEl) subEl.textContent = data.error;
+          stampNow();
+          return;
+        }
+        if (data.session_active) {
+          root.classList.add("is-online");
+          root.classList.remove("is-offline");
+          setText("session", "Online");
+          setText("session-hint", (data.service || "PPPoE") + (data.interface ? " · " + data.interface : ""));
+          setText("download", data.download_label || "—");
+          setText("upload", data.upload_label || "—");
+          setText("uptime", data.uptime || "—");
+          setText("bytes-in", data.bytes_in_label || "—");
+          setText("bytes-out", data.bytes_out_label || "—");
+          setText("address", data.address || "—");
+          setText("caller", data.caller_id ? ("Caller " + data.caller_id) : "Caller / MAC");
+          if (subEl) {
+            subEl.textContent = "Live from " + (data.router_name || "router") +
+              (data.pppoe_username ? " · " + data.pppoe_username : "");
+          }
+        } else {
+          applyOffline(data.hint || "Subscriber is not online right now.");
+          if (subEl) {
+            subEl.textContent = data.hint ||
+              ("Router reachable" + (data.online ? "" : " issue") + " — session idle.");
+          }
+        }
+        stampNow();
+      })
+      .catch(function () {
+        applyOffline("Could not load live usage.");
+        if (subEl) subEl.textContent = "Could not load live usage.";
+        stampNow();
+      })
+      .finally(function () {
+        inFlight = false;
+        if (refreshBtn && canLive) refreshBtn.disabled = false;
+      });
+  }
+
+  if (canLive) {
+    refresh(true);
+    timer = setInterval(function () { refresh(false); }, 10000);
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", function () { refresh(true); });
+    }
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden) refresh(true);
+    });
+    window.addEventListener("beforeunload", function () {
+      if (timer) clearInterval(timer);
+    });
+  } else {
+    applyOffline(subEl ? subEl.textContent : "Live usage unavailable.");
+  }
+})();
+</script>
+{% endblock %}

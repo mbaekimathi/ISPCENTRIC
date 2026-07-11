@@ -1,0 +1,27 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Packages — Billing — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Packages{% if package_count %} ({{ package_count }}){% endif %}</h2>
+      <p class="panel-sub">Internet packages available for customers in this organization.</p>
+    </div>
+    <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
+      Register package
+    </button>
+  </div>
+
+  {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package in the sidebar to add one." %}
+</section>
+
+{% include "billing/includes/package_register_modal.html" %}
+{% endblock %}
+
+{% block client_extra_js %}
+{% include "billing/includes/package_register_scripts.html" %}
+{% endblock %}

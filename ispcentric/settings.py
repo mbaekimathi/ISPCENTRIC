@@ -92,6 +92,7 @@ MIDDLEWARE = [
     "ispcentric.middleware.AutoCsrfOriginMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "ispcentric.middleware.PrefetchEmployeeMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -128,10 +129,22 @@ DATABASES = {
         "PASSWORD": os.getenv("MYSQL_PASSWORD", ""),
         "HOST": os.getenv("MYSQL_HOST", _mysql_host_default),
         "PORT": os.getenv("MYSQL_PORT", "3306"),
+        # Reuse connections across requests (avoids TCP/auth handshake each time).
+        "CONN_MAX_AGE": int(os.getenv("MYSQL_CONN_MAX_AGE", "60")),
         "OPTIONS": {
             "charset": "utf8mb4",
             "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
         },
+    }
+}
+
+# Local-memory cache is enough for single-worker / low-traffic; swap for Redis when scaled.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "ispcentric-default",
+        "TIMEOUT": 60,
+        "OPTIONS": {"MAX_ENTRIES": 1000},
     }
 }
 
@@ -169,6 +182,8 @@ else:
     SERVE_MEDIA = True if HOSTED else DEBUG
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+GOOGLE_MAPS_API_KEY = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
 
 LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "core:workspace"
