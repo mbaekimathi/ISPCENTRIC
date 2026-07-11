@@ -123,8 +123,8 @@ That installs new packages, runs migrations, rebuilds static files, and restarts
 | `media/` | Uploads; gitignored — back up separately |
 | `staticfiles/` | Built by `collectstatic`; gitignored |
 | Auto DB create | Off on cPanel (`MYSQL_AUTO_CREATE_DB=false`) |
-| Auto migrate | On by default; still run `scripts/cpanel_after_pull.sh` after each pull |
-| Error log | `logs/django.log` on the server when a page 500s |
+| Auto migrate | On by default — checks missing tables + pending migrations on boot and after schema errors |
+| Error log | `logs/django.log` and `logs/passenger.log` on the server when a page 500s |
 
 ## Modules
 

@@ -70,7 +70,7 @@ class PrefetchEmployeeMiddleware:
 
 
 class SchemaErrorMiddleware:
-    """Turn missing-table / missing-column DB errors into an actionable page."""
+    """On missing-table / missing-column errors, auto-migrate then ask for a reload."""
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -89,6 +89,28 @@ class SchemaErrorMiddleware:
             return None
 
         logger.exception("Database schema is behind the application code")
+
+        repaired = False
+        try:
+            from ispcentric.db_bootstrap import repair_schema_if_needed
+
+            repaired = bool(repair_schema_if_needed())
+        except Exception:
+            logger.exception("Automatic schema repair failed")
+
+        if repaired:
+            body = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Database updated</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;line-height:1.5}
+a.button{display:inline-block;margin-top:1rem;padding:.65rem 1rem;background:#0e7490;color:#fff;text-decoration:none;border-radius:.4rem;font-weight:700}
+</style></head><body>
+<h1>Database updated</h1>
+<p>Missing tables or columns were detected and migrations were applied automatically.</p>
+<p><a class="button" href="">Reload this page</a></p>
+</body></html>"""
+            return HttpResponseServerError(body)
+
         body = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Database update needed</title>
 <style>
@@ -97,15 +119,11 @@ code{background:#f3f4f6;padding:.15rem .35rem;border-radius:.25rem}
 pre{background:#111827;color:#f9fafb;padding:1rem;border-radius:.5rem;overflow:auto}
 </style></head><body>
 <h1>Database update needed</h1>
-<p>This page failed because the hosted MySQL schema is behind the latest code
-(missing tables or columns). That usually happens after a <code>git pull</code>
-without running migrations.</p>
-<p>In cPanel Terminal, from the app root with the virtualenv active:</p>
-<pre>git pull origin main
-bash scripts/cpanel_after_pull.sh</pre>
-<p>Or only migrate + restart:</p>
+<p>Automatic migration could not finish. Check MySQL credentials in <code>.env</code>
+and <code>logs/django.log</code> / <code>logs/passenger.log</code>.</p>
+<p>In cPanel Terminal (app root + virtualenv):</p>
 <pre>python manage.py migrate --noinput
 mkdir -p tmp &amp;&amp; touch tmp/restart.txt</pre>
-<p>Then reload this page. Error detail is also written to <code>logs/django.log</code>.</p>
+<p>Then reload this page.</p>
 </body></html>"""
         return HttpResponseServerError(body)
