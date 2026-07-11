@@ -56,11 +56,11 @@ else:
     DEBUG = not HOSTED
 
 _hosts_raw = (os.getenv("DJANGO_ALLOWED_HOSTS") or "").strip()
-if _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
-    ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
-elif HOSTED:
-    # Accept the cPanel domain / subdomain automatically
+if HOSTED:
+    # Always accept the cPanel domain/subdomain (ignore leftover localhost .env values)
     ALLOWED_HOSTS = ["*"]
+elif _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
+    ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
 else:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
