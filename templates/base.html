@@ -11,12 +11,10 @@
       try {
         var key = "ispcentric-theme";
         var stored = localStorage.getItem(key);
-        var theme = stored === "light" || stored === "dark"
-          ? stored
-          : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var theme = stored === "light" || stored === "dark" ? stored : "dark";
         document.documentElement.setAttribute("data-theme", theme);
       } catch (e) {
-        document.documentElement.setAttribute("data-theme", "light");
+        document.documentElement.setAttribute("data-theme", "dark");
       }
     })();
   </script>
