@@ -50,7 +50,7 @@
         <div class="account-menu" id="account-menu">
         <button type="button" class="account-menu-trigger" id="account-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel">
           {% if employee.profile_photo %}
-            <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="">
+            <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="" width="32" height="32" decoding="async" fetchpriority="high">
           {% else %}
             <span class="account-menu-avatar account-menu-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
           {% endif %}
@@ -70,7 +70,7 @@
         <div class="account-menu-panel" id="account-menu-panel" role="menu" hidden>
           <div class="account-menu-head">
             {% if employee.profile_photo %}
-              <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="">
+              <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
             {% else %}
               <span class="account-menu-avatar account-menu-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
             {% endif %}

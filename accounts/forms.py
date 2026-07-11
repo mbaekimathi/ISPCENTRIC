@@ -432,7 +432,8 @@ class EmployeeProfileForm(forms.Form):
         widget=forms.FileInput(
             attrs={
                 "accept": "image/*",
-                "class": "form-control form-file",
+                "class": "org-edit-file-input",
+                "id": "id_profile_photo",
             }
         ),
     )

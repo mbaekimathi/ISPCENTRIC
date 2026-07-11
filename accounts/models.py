@@ -1,7 +1,9 @@
 import secrets
 
-from django.db import models
 from django.contrib.auth.models import User
+from django.db import models
+
+from .image_utils import maybe_optimize_image_field
 
 
 class Organization(models.Model):
@@ -49,6 +51,7 @@ class Organization(models.Model):
     def save(self, *args, **kwargs):
         if not self.join_code:
             self.join_code = Organization.generate_join_code()
+        self.profile_photo = maybe_optimize_image_field(self.profile_photo)
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -121,6 +124,10 @@ class Employee(models.Model):
     @property
     def can_access_workspace(self):
         return self.status == self.Status.ACTIVE and self.role != self.Role.PENDING
+
+    def save(self, *args, **kwargs):
+        self.profile_photo = maybe_optimize_image_field(self.profile_photo)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         if self.organization_id:

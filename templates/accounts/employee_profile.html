@@ -8,34 +8,72 @@
 {% endblock %}
 
 {% block staff_content %}
-<div class="list-page">
-  <div class="list-page-head">
-    <p class="list-page-sub">Update your details · login code {{ employee.login_code }}</p>
+<section class="org-edit">
+  <div class="org-edit-intro">
+    {% if dashboard_url_name %}
+    <a class="org-edit-back" href="{% url dashboard_url_name %}">← Back to dashboard</a>
+    {% endif %}
+    <div class="org-edit-hero">
+      {% if employee.profile_photo %}
+        <img class="org-edit-avatar" src="{{ employee.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
+      {% else %}
+        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+      {% endif %}
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Your account</p>
+        <h2>{{ user.get_full_name|default:user.username }}</h2>
+        <div class="org-edit-meta">
+          <span class="org-status org-status-{{ employee.status }}">{{ employee.get_status_display }}</span>
+          <span class="org-code">{{ employee.login_code }}</span>
+          <span class="org-edit-meta-item">{{ employee.get_role_display }}</span>
+        </div>
+        <p class="org-edit-owner">
+          {% if employee.organization %}
+            {{ employee.organization.name }}
+          {% else %}
+            No organization
+          {% endif %}
+          {% if user.email %}<span>{{ user.email }}</span>{% endif %}
+        </p>
+      </div>
+    </div>
   </div>
 
-  <form method="post" enctype="multipart/form-data" class="profile-form" novalidate>
+  <form method="post" enctype="multipart/form-data" class="org-edit-form" novalidate>
     {% csrf_token %}
 
     {% if form.non_field_errors %}
       <div class="notice notice-error">{{ form.non_field_errors }}</div>
     {% endif %}
 
-    <div class="profile-section">
-      <h2 class="profile-section-title">Photo & identity</h2>
-      <div class="profile-photo-row">
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Profile photo</h3>
+        <p>Shown in the account menu and staff directory.</p>
+      </header>
+      <div class="org-edit-photo">
         {% if employee.profile_photo %}
-          <img class="profile-photo-preview" src="{{ employee.profile_photo.url }}" alt="Current photo">
+          <img class="org-edit-photo-preview" src="{{ employee.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
         {% else %}
-          <span class="profile-photo-preview profile-photo-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+          <span class="org-edit-photo-preview org-edit-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
         {% endif %}
-        <div class="form-group" style="margin:0;flex:1;">
-          <label for="{{ form.profile_photo.id_for_label }}">{{ form.profile_photo.label }}</label>
+        <div class="org-edit-photo-fields">
+          <label class="org-edit-file" for="{{ form.profile_photo.id_for_label }}">
+            <span class="org-edit-file-btn">Choose image</span>
+            <span class="org-edit-file-hint" id="org-edit-file-name">PNG or JPG, optional</span>
+          </label>
           {{ form.profile_photo }}
           {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
         </div>
       </div>
+    </div>
 
-      <div class="grid-2">
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Identity</h3>
+        <p>Update the name others see across ISPCENTRIC.</p>
+      </header>
+      <div class="org-edit-grid">
         <div class="form-group">
           <label for="{{ form.first_name.id_for_label }}">{{ form.first_name.label }}</label>
           {{ form.first_name }}
@@ -49,24 +87,31 @@
       </div>
     </div>
 
-    <div class="profile-section">
-      <h2 class="profile-section-title">Contact</h2>
-      <div class="form-group">
-        <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label>
-        {{ form.email }}
-        {% if form.email.errors %}<div class="field-error">{{ form.email.errors|striptags }}</div>{% endif %}
-      </div>
-      <div class="form-group">
-        <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
-        {{ form.phone }}
-        {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Contact</h3>
+        <p>Email and phone used for account recovery and notices.</p>
+      </header>
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label>
+          {{ form.email }}
+          {% if form.email.errors %}<div class="field-error">{{ form.email.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+          {{ form.phone }}
+          {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+        </div>
       </div>
     </div>
 
-    <div class="profile-section">
-      <h2 class="profile-section-title">Change password</h2>
-      <p class="list-page-sub" style="margin-bottom:0.85rem;">Optional — leave blank to keep your current password.</p>
-      <div class="grid-2">
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Change password</h3>
+        <p>Optional — leave blank to keep your current password.</p>
+      </header>
+      <div class="org-edit-grid">
         <div class="form-group">
           <label for="{{ form.password1.id_for_label }}">{{ form.password1.label }}</label>
           {{ form.password1 }}
@@ -80,10 +125,24 @@
       </div>
     </div>
 
-    <div class="profile-actions">
+    <div class="org-edit-actions">
       <button type="submit" class="btn btn-primary">Save settings</button>
-      <a class="btn btn-ghost" href="{% url dashboard_url_name %}">Back to dashboard</a>
+      {% if dashboard_url_name %}
+      <a class="btn btn-ghost" href="{% url dashboard_url_name %}">Cancel</a>
+      {% endif %}
     </div>
   </form>
-</div>
+</section>
+<script>
+(function () {
+  var input = document.getElementById("{{ form.profile_photo.id_for_label }}");
+  var nameEl = document.getElementById("org-edit-file-name");
+  if (!input || !nameEl) return;
+  input.addEventListener("change", function () {
+    nameEl.textContent = input.files && input.files[0]
+      ? input.files[0].name
+      : "PNG or JPG, optional";
+  });
+})();
+</script>
 {% endblock %}

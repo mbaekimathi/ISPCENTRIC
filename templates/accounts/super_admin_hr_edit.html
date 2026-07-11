@@ -13,7 +13,7 @@
     <a class="org-edit-back" href="{% url 'roles:super_admin_hr' %}">← Back to employees</a>
     <div class="org-edit-hero">
       {% if member.profile_photo %}
-        <img class="org-edit-avatar" src="{{ member.profile_photo.url }}" alt="">
+        <img class="org-edit-avatar" src="{{ member.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
       {% else %}
         <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
       {% endif %}
@@ -52,7 +52,7 @@
       </header>
       <div class="org-edit-photo">
         {% if member.profile_photo %}
-          <img class="org-edit-photo-preview" src="{{ member.profile_photo.url }}" alt="Current photo">
+          <img class="org-edit-photo-preview" src="{{ member.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
         {% else %}
           <span class="org-edit-photo-preview org-edit-avatar-fallback" aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
         {% endif %}

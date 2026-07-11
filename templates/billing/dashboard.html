@@ -8,7 +8,7 @@
     <a class="brand" href="{% url 'core:workspace' %}">ISP<span>CENTRIC</span></a>
     {% if organization and organization.profile_photo %}
       <div class="sidebar-profile">
-        <img src="{{ organization.profile_photo.url }}" alt="{{ organization.name }} profile">
+        <img src="{{ organization.profile_photo.url }}" alt="{{ organization.name }} profile" width="42" height="42" decoding="async" fetchpriority="low">
         <span>{{ organization.name }}</span>
       </div>
     {% elif organization %}

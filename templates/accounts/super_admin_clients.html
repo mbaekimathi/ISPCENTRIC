@@ -51,7 +51,7 @@
           <td>
             <div class="org-identity">
               {% if client.profile_photo %}
-                <img src="{{ client.profile_photo.url }}" alt="">
+                <img src="{{ client.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
               {% else %}
                 <span aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
               {% endif %}
