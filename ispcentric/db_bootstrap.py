@@ -1,8 +1,7 @@
 """
 Ensure the ISPCENTRIC MySQL database and Django tables exist.
 
-On cPanel, leave MYSQL_AUTO_CREATE_DB=false and DJANGO_AUTO_MIGRATE=false —
-create the database in cPanel MySQL, then run migrate after each git pull.
+On cPanel (hosted), auto-create DB and auto-migrate stay off unless forced.
 """
 
 from __future__ import annotations
@@ -14,21 +13,21 @@ from pathlib import Path
 import pymysql
 from dotenv import load_dotenv
 
+from ispcentric.envutil import env_flag, is_hosted
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=False)
 
 _tables_ready = False
-
-
-def _env_flag(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes")
+_HOSTED = is_hosted(BASE_DIR)
 
 
 def _mysql_settings() -> dict:
+    host_default = "localhost" if _HOSTED else "127.0.0.1"
     return {
-        "host": os.getenv("MYSQL_HOST", "127.0.0.1"),
+        "host": os.getenv("MYSQL_HOST", host_default),
         "port": int(os.getenv("MYSQL_PORT", "3306")),
         "user": os.getenv("MYSQL_USER", "root"),
         "password": os.getenv("MYSQL_PASSWORD", ""),
@@ -39,7 +38,8 @@ def _mysql_settings() -> dict:
 
 def ensure_database() -> None:
     """Create the application database if allowed and missing."""
-    if not _env_flag("MYSQL_AUTO_CREATE_DB", "true"):
+    default = "false" if _HOSTED else "true"
+    if not env_flag("MYSQL_AUTO_CREATE_DB", default):
         return
 
     cfg = _mysql_settings()
@@ -70,7 +70,9 @@ def ensure_tables() -> None:
     global _tables_ready
     if _tables_ready:
         return
-    if not _env_flag("DJANGO_AUTO_MIGRATE", "true"):
+
+    default = "false" if _HOSTED else "true"
+    if not env_flag("DJANGO_AUTO_MIGRATE", default):
         return
 
     from django.core.management import call_command

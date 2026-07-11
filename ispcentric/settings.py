@@ -6,34 +6,71 @@ import os
 from dotenv import load_dotenv
 
 from ispcentric.db_bootstrap import ensure_database
+from ispcentric.envutil import env_flag, is_hosted
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+# Do not override real process env (cPanel Python App env vars win)
+load_dotenv(BASE_DIR / ".env", override=False)
 
-# Local/XAMPP only — disabled on cPanel via MYSQL_AUTO_CREATE_DB=false
+HOSTED = is_hosted(BASE_DIR)
+
+# Local/XAMPP only unless MYSQL_AUTO_CREATE_DB is forced on
 ensure_database()
 
 
-def _env_flag(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes")
+def _secret_key() -> str:
+    raw = (os.getenv("DJANGO_SECRET_KEY") or "").strip()
+    if raw and raw not in {
+        "change-me-in-production",
+        "generate-a-long-random-string",
+        "django-insecure-ispcentric-dev-only-change-me",
+    }:
+        return raw
+
+    secret_file = BASE_DIR / ".secret_key"
+    if secret_file.exists():
+        stored = secret_file.read_text(encoding="utf-8").strip()
+        if stored:
+            return stored
+
+    try:
+        from django.core.management.utils import get_random_secret_key
+
+        key = get_random_secret_key()
+    except Exception:
+        key = "django-insecure-ispcentric-fallback-change-me"
+
+    try:
+        secret_file.write_text(key, encoding="utf-8")
+    except OSError:
+        pass
+    return key
 
 
-SECRET_KEY = os.getenv(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-ispcentric-dev-only-change-me",
-)
-DEBUG = _env_flag("DJANGO_DEBUG", "True")
-ALLOWED_HOSTS = [
-    h.strip()
-    for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
-    if h.strip()
-]
+SECRET_KEY = _secret_key()
+
+# Hosted defaults to production; local defaults to debug
+if os.getenv("DJANGO_DEBUG") is not None:
+    DEBUG = env_flag("DJANGO_DEBUG", "False")
+else:
+    DEBUG = not HOSTED
+
+_hosts_raw = (os.getenv("DJANGO_ALLOWED_HOSTS") or "").strip()
+if _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
+    ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
+elif HOSTED:
+    # Accept the cPanel domain / subdomain automatically
+    ALLOWED_HOSTS = ["*"]
+else:
+    ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
 CSRF_TRUSTED_ORIGINS = [
     o.strip()
-    for o in os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",")
+    for o in (os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS") or "").split(",")
     if o.strip()
 ]
+# On hosted, middleware adds https://<current-host> per request
+AUTO_CSRF_ORIGINS = HOSTED or env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -52,6 +89,7 @@ MIDDLEWARE = [
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "ispcentric.middleware.AutoCsrfOriginMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -79,13 +117,16 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "ispcentric.wsgi.application"
 
+# Hosted MySQL defaults to localhost; only user/password/database need .env
+_mysql_host_default = "localhost" if HOSTED else "127.0.0.1"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",
         "NAME": os.getenv("MYSQL_DATABASE", "ISPCENTRIC"),
         "USER": os.getenv("MYSQL_USER", "root"),
         "PASSWORD": os.getenv("MYSQL_PASSWORD", ""),
-        "HOST": os.getenv("MYSQL_HOST", "127.0.0.1"),
+        "HOST": os.getenv("MYSQL_HOST", _mysql_host_default),
         "PORT": os.getenv("MYSQL_PORT", "3306"),
         "OPTIONS": {
             "charset": "utf8mb4",
@@ -121,8 +162,11 @@ WHITENOISE_USE_FINDERS = DEBUG
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
-# cPanel: set DJANGO_SERVE_MEDIA=true so uploaded images work without Apache aliases
-SERVE_MEDIA = _env_flag("DJANGO_SERVE_MEDIA", "true" if DEBUG else "false")
+# Hosted: serve uploads through Django/Passenger by default
+if os.getenv("DJANGO_SERVE_MEDIA") is not None:
+    SERVE_MEDIA = env_flag("DJANGO_SERVE_MEDIA", "false")
+else:
+    SERVE_MEDIA = True if HOSTED else DEBUG
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -132,7 +176,7 @@ LOGOUT_REDIRECT_URL = "core:landing"
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SESSION_COOKIE_SECURE = _env_flag("DJANGO_SESSION_COOKIE_SECURE", "true")
-    CSRF_COOKIE_SECURE = _env_flag("DJANGO_CSRF_COOKIE_SECURE", "true")
+    SESSION_COOKIE_SECURE = env_flag("DJANGO_SESSION_COOKIE_SECURE", "true")
+    CSRF_COOKIE_SECURE = env_flag("DJANGO_CSRF_COOKIE_SECURE", "true")
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"

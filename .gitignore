@@ -4,6 +4,7 @@ __pycache__/
 *.so
 .Python
 .env
+.secret_key
 .venv/
 venv/
 env/
