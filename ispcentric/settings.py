@@ -3,14 +3,13 @@
 from pathlib import Path
 import os
 
-from dotenv import load_dotenv
-
 from ispcentric.db_bootstrap import ensure_database
+from ispcentric.env_file import load_project_env
 from ispcentric.envutil import env_flag, is_hosted
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 # Do not override real process env (cPanel Python App env vars win)
-load_dotenv(BASE_DIR / ".env", override=False)
+load_project_env(BASE_DIR, override=False)
 
 HOSTED = is_hosted(BASE_DIR)
 

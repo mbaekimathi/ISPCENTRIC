@@ -12,14 +12,14 @@ import os
 from pathlib import Path
 
 import pymysql
-from dotenv import load_dotenv
 
+from ispcentric.env_file import load_project_env
 from ispcentric.envutil import env_flag, is_hosted
 
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env", override=False)
+load_project_env(BASE_DIR, override=False)
 
 _tables_ready = False
 _HOSTED = is_hosted(BASE_DIR)
