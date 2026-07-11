@@ -1,0 +1,111 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit">
+  <div class="org-edit-intro">
+    <a class="org-edit-back" href="{% url 'roles:super_admin_clients' %}">← Back to clients</a>
+    <div class="org-edit-hero">
+      {% if client.profile_photo %}
+        <img class="org-edit-avatar" src="{{ client.profile_photo.url }}" alt="">
+      {% else %}
+        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
+      {% endif %}
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Organization</p>
+        <h2>{{ client.name }}</h2>
+        <div class="org-edit-meta">
+          <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+          {% if client.join_code %}<span class="org-code">{{ client.join_code }}</span>{% endif %}
+          <span class="org-edit-meta-item">Joined {{ client.created_at|date:"d M Y" }}</span>
+        </div>
+        {% if client.owner %}
+        <p class="org-edit-owner">
+          Owner · {{ client.owner.get_full_name|default:client.owner.username }}
+          {% if client.owner.email %}<span>{{ client.owner.email }}</span>{% endif %}
+        </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" class="org-edit-form" novalidate>
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="notice notice-error">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Profile photo</h3>
+        <p>Shown on the clients list and organization profile.</p>
+      </header>
+      <div class="org-edit-photo">
+        {% if client.profile_photo %}
+          <img class="org-edit-photo-preview" src="{{ client.profile_photo.url }}" alt="Current photo">
+        {% else %}
+          <span class="org-edit-photo-preview org-edit-avatar-fallback" aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
+        {% endif %}
+        <div class="org-edit-photo-fields">
+          <label class="org-edit-file" for="{{ form.profile_photo.id_for_label }}">
+            <span class="org-edit-file-btn">Choose image</span>
+            <span class="org-edit-file-hint" id="org-edit-file-name">PNG or JPG, optional</span>
+          </label>
+          {{ form.profile_photo }}
+          {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Details</h3>
+        <p>Update the company name, contact number, and account status.</p>
+      </header>
+
+      <div class="form-group">
+        <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+        {{ form.name }}
+        {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
+      </div>
+
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+          {{ form.phone }}
+          {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
+          {{ form.status }}
+          {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="org-edit-actions">
+      <button type="submit" class="btn btn-primary">Save changes</button>
+      <a class="btn btn-ghost" href="{% url 'roles:super_admin_clients' %}">Cancel</a>
+    </div>
+  </form>
+</section>
+<script>
+(function () {
+  var input = document.getElementById("{{ form.profile_photo.id_for_label }}");
+  var nameEl = document.getElementById("org-edit-file-name");
+  if (!input || !nameEl) return;
+  input.addEventListener("change", function () {
+    nameEl.textContent = input.files && input.files[0]
+      ? input.files[0].name
+      : "PNG or JPG, optional";
+  });
+})();
+</script>
+{% endblock %}

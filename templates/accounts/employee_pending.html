@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Pending Approval — ISPCENTRIC{% endblock %}
+
+{% block body %}
+<div class="staff-shell">
+  <aside class="staff-rail">
+    <div class="staff-rail-inner">
+      <p class="staff-kicker">Awaiting access</p>
+      <a class="staff-logo" href="{% url 'core:landing' %}">ISP<span>CENTRIC</span></a>
+      <h2 class="staff-rail-title">Almost there.</h2>
+      <p class="staff-rail-copy">
+        Your registration is in the queue. An administrator must approve you and assign a role before you can work.
+      </p>
+    </div>
+  </aside>
+
+  <main class="staff-main">
+    <div class="staff-card">
+      <div class="staff-badge">Pending</div>
+      <h1>Approval required</h1>
+      <p class="lede">
+        Thanks for registering. Your account is not active yet.
+      </p>
+
+      {% if messages %}
+        {% for message in messages %}
+          <div class="notice notice-info">{{ message }}</div>
+        {% endfor %}
+      {% else %}
+        <div class="notice notice-info">
+          Your account is pending approval and role allocation. You will get access once activated.
+        </div>
+      {% endif %}
+
+      <div class="pending-meta">
+        <div>
+          <span class="meta-label">Login code</span>
+          <span class="meta-value">{{ employee.login_code }}</span>
+        </div>
+        <div>
+          <span class="meta-label">Status</span>
+          <span class="meta-value">{{ employee.get_status_display }}</span>
+        </div>
+        <div>
+          <span class="meta-label">Role</span>
+          <span class="meta-value">{{ employee.get_role_display }}</span>
+        </div>
+        <div>
+          <span class="meta-label">Name</span>
+          <span class="meta-value">{{ user.get_full_name|default:user.username }}</span>
+        </div>
+        <div>
+          <span class="meta-label">Username</span>
+          <span class="meta-value">{{ user.username }}</span>
+        </div>
+      </div>
+
+      <form method="post" action="{% url 'accounts:logout' %}">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-staff btn-block">Sign out</button>
+      </form>
+    </div>
+  </main>
+</div>
+{% endblock %}

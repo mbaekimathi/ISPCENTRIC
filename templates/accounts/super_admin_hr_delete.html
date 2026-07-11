@@ -1,0 +1,31 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-page">
+  <header class="org-page-header">
+    <div>
+      <h2>Delete {{ member.user.get_full_name|default:member.user.username }}</h2>
+      <p>This permanently removes the employee account and login access.</p>
+    </div>
+  </header>
+
+  <div class="org-delete-box">
+    <p><strong>{{ member.user.get_full_name|default:member.user.username }}</strong>{% if member.organization %} at {{ member.organization.name }}{% endif %} will be deleted. Their user login is removed with the employee profile.</p>
+    {% if owned_org %}
+    <p class="org-delete-warn">This person owns <strong>{{ owned_org.name }}</strong>. Deleting them will also delete that organization and its billing data.</p>
+    {% endif %}
+    <form method="post" class="org-delete-actions">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger">Delete employee</button>
+      <a class="btn btn-ghost" href="{% url 'roles:super_admin_hr' %}">Cancel</a>
+    </form>
+  </div>
+</section>
+{% endblock %}

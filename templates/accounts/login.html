@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+
+{% block title %}Owner Login — ISPCENTRIC{% endblock %}
+
+{% block body %}
+<div class="auth-shell">
+  <div class="auth-panel">
+    <div class="auth-role">Company owner</div>
+    <div class="auth-brand">ISPCENTRIC</div>
+    <h1>Welcome back</h1>
+    <p class="lede">Sign in to manage your ISP workspace and modules.</p>
+
+    <form method="post" novalidate>
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="non-field-errors">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      {% for field in form %}
+        <div class="form-group">
+          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          {{ field }}
+          {{ field.errors }}
+        </div>
+      {% endfor %}
+
+      <button type="submit" class="btn btn-primary btn-block">Owner login</button>
+    </form>
+
+    <p class="auth-footer">
+      New company?
+      <a href="{% url 'accounts:register' %}">Register owner account</a>
+    </p>
+    <p class="auth-footer">
+      Staff member?
+      <a href="{% url 'accounts:employee_login' %}">Employee login</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

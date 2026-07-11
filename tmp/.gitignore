@@ -1,0 +1,4 @@
+# Restart Passenger after git pull by touching this directory:
+#   mkdir -p tmp && touch tmp/restart.txt
+*
+!.gitignore

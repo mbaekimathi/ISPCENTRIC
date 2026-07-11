@@ -1,56 +1,21 @@
-# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-dist/
-*.egg-info/
-.eggs/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Virtual environments
+.env
+.venv/
 venv/
 env/
-.venv/
-ENV/
-
-# Environment / secrets
-.env
-.env.*
-!.env.example
-*.key
-*.pem
-data/
-instance/
-
-# Databases / dumps
-*.db
-*.sqlite
 *.sqlite3
-*.sql
-
-# Archives / large bundles
-*.zip
-*.tar
-*.tar.gz
-*.7z
-*.rar
-
-# Logs
-*.log
-logs/
-
-# IDE / OS
-.vscode/
-.idea/
-.qodo/
+db.sqlite3
+staticfiles/
+media/
 .DS_Store
-Thumbs.db
-desktop.ini
+.idea/
+.vscode/
+*.log
+.qodo/
+tmp/*
+!tmp/.gitignore
 
-# Flask
-flask_session/

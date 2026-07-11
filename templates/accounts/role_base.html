@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="app-shell staff-app" id="staff-app">
+  <div class="staff-nav-scrim" id="staff-nav-scrim" hidden></div>
+  <aside class="sidebar staff-sidebar" id="staff-sidebar">
+    <div class="staff-sidebar-top">
+      <a class="brand staff-brand" href="{% url dashboard_url_name %}">ISP<span>CENTRIC</span></a>
+      <button type="button" class="staff-nav-close" id="staff-nav-close" aria-label="Close menu">×</button>
+    </div>
+    {% if staff_nav_items %}
+    <p class="staff-nav-label">Workspace</p>
+    <nav>
+      {% block staff_nav %}
+        {% for item in staff_nav_items %}
+          <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
+        {% endfor %}
+      {% endblock %}
+    </nav>
+    {% endif %}
+    <div class="staff-sidebar-meta">
+      <span class="staff-sidebar-meta-label">Signed in</span>
+      <strong>{{ user.get_full_name|default:user.username }}</strong>
+      <span>{{ actual_role_label }}</span>
+    </div>
+  </aside>
+
+  <div class="staff-workspace">
+    <header class="staff-topbar">
+      <div class="staff-topbar-left">
+        <button type="button" class="staff-nav-toggle" id="staff-nav-toggle" aria-label="Open menu" aria-controls="staff-sidebar" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="staff-topbar-page">
+          {% block topbar_title %}{% endblock %}
+        </div>
+      </div>
+
+      <div class="staff-topbar-right">
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle color theme" title="Toggle light / dark mode">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M21 14.5A8.5 8.5 0 0 1 9.5 3a7 7 0 1 0 11.5 11.5z"></path>
+          </svg>
+        </button>
+
+        <div class="account-menu" id="account-menu">
+        <button type="button" class="account-menu-trigger" id="account-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="account-menu-panel">
+          {% if employee.profile_photo %}
+            <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="">
+          {% else %}
+            <span class="account-menu-avatar account-menu-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+          {% endif %}
+          <span class="account-menu-copy">
+            <span class="account-menu-name">{{ user.get_full_name|default:user.username }}</span>
+            <span class="account-menu-meta">
+              {% if can_switch_roles and is_viewing_as %}
+                Viewing {{ role_label }}
+              {% else %}
+                {{ actual_role_label }}
+              {% endif %}
+            </span>
+          </span>
+          <span class="account-menu-caret" aria-hidden="true"></span>
+        </button>
+
+        <div class="account-menu-panel" id="account-menu-panel" role="menu" hidden>
+          <div class="account-menu-head">
+            {% if employee.profile_photo %}
+              <img class="account-menu-avatar" src="{{ employee.profile_photo.url }}" alt="">
+            {% else %}
+              <span class="account-menu-avatar account-menu-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+            {% endif %}
+            <div>
+              <strong>{{ user.get_full_name|default:user.username }}</strong>
+              <p>{{ user.username }}</p>
+            </div>
+          </div>
+
+          <div class="account-menu-roles">
+            <div class="role-identity-row">
+              <span class="role-view-hint">Logged in</span>
+              <span class="role-chip role-chip-login">{{ actual_role_label }}</span>
+            </div>
+            {% if can_switch_roles and is_viewing_as %}
+              <div class="role-identity-row">
+                <span class="role-view-hint">Viewing</span>
+                <span class="role-chip role-chip-view">{{ role_label }}</span>
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="account-menu-session">
+            <div class="account-session-row">
+              <span>Login code</span>
+              <strong>{{ employee.login_code }}</strong>
+            </div>
+            <div class="account-session-row">
+              <span>Status</span>
+              <strong>{{ employee.get_status_display }}</strong>
+            </div>
+            <div class="account-session-row">
+              <span>Company</span>
+              <strong>{% if organization %}{{ organization.name }}{% else %}Unassigned{% endif %}</strong>
+            </div>
+            {% if user.email %}
+              <div class="account-session-row">
+                <span>Email</span>
+                <strong>{{ user.email }}</strong>
+              </div>
+            {% endif %}
+          </div>
+
+          <div class="account-menu-links">
+            <a href="{% url 'accounts:employee_profile' %}" role="menuitem" class="{% if current_page == 'profile' %}is-active{% endif %}">My profile settings</a>
+            {% if can_switch_roles %}
+              <button type="button" class="account-menu-link-btn" id="open-role-switch" role="menuitem" aria-haspopup="dialog" aria-controls="role-switch-modal">
+                Role switch
+              </button>
+            {% endif %}
+            <form method="post" action="{% url 'accounts:logout' %}" class="account-menu-logout">
+              {% csrf_token %}
+              <button type="submit" role="menuitem">Log out</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      </div>
+    </header>
+
+    <main class="main staff-main">
+      {% block staff_content %}{% endblock %}
+    </main>
+  </div>
+</div>
+
+{% if can_switch_roles %}
+<div class="role-modal" id="role-switch-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-role-switch></div>
+  <div class="role-modal-panel" role="dialog" aria-modal="true" aria-labelledby="role-switch-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">IT Support</p>
+        <h2 id="role-switch-title">Switch role view</h2>
+        <p class="role-modal-sub">Choose which role workspace to open. Your assigned role stays IT Support.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-role-switch aria-label="Close">×</button>
+    </header>
+    <form method="post" action="{% url 'roles:switch_role' %}" class="role-switch-form">
+      {% csrf_token %}
+      <div class="role-switch-grid" role="listbox" aria-label="Roles">
+        {% for option in switchable_roles %}
+          <label class="role-switch-option{% if option.selected %} is-selected{% endif %}">
+            <input type="radio" name="role" value="{{ option.value }}" {% if option.selected %}checked{% endif %} required>
+            <span class="role-switch-option-body">
+              <span class="role-switch-option-label">{{ option.label }}</span>
+              <span class="role-switch-option-path">/{{ option.slug }}/dashboard/</span>
+            </span>
+          </label>
+        {% endfor %}
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-role-switch>Cancel</button>
+        <button type="submit" class="btn btn-primary">Apply role view</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+<script>
+(function () {
+  var themeKey = "ispcentric-theme";
+  var themeBtn = document.getElementById("theme-toggle");
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    try { localStorage.setItem(themeKey, theme); } catch (e) {}
+    if (themeBtn) {
+      themeBtn.setAttribute("aria-label", theme === "dark" ? "Switch to light mode" : "Switch to dark mode");
+      themeBtn.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+    }
+  }
+
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      applyTheme(currentTheme() === "dark" ? "light" : "dark");
+    });
+    applyTheme(currentTheme());
+  }
+
+  var app = document.getElementById("staff-app");
+  var sidebar = document.getElementById("staff-sidebar");
+  var scrim = document.getElementById("staff-nav-scrim");
+  var openNav = document.getElementById("staff-nav-toggle");
+  var closeNav = document.getElementById("staff-nav-close");
+
+  function setNav(open) {
+    if (!app || !openNav) return;
+    app.classList.toggle("nav-open", open);
+    openNav.setAttribute("aria-expanded", open ? "true" : "false");
+    openNav.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+    if (scrim) scrim.hidden = !open;
+    document.body.classList.toggle("staff-nav-lock", open);
+  }
+
+  if (openNav) {
+    openNav.addEventListener("click", function () {
+      setNav(!(app && app.classList.contains("nav-open")));
+    });
+  }
+  if (closeNav) closeNav.addEventListener("click", function () { setNav(false); });
+  if (scrim) scrim.addEventListener("click", function () { setNav(false); });
+  if (sidebar) {
+    sidebar.querySelectorAll("nav a").forEach(function (link) {
+      link.addEventListener("click", function () {
+        if (window.innerWidth <= 960) setNav(false);
+      });
+    });
+  }
+  window.addEventListener("resize", function () {
+    if (window.innerWidth > 960) setNav(false);
+  });
+
+  var menu = document.getElementById("account-menu");
+  var trigger = document.getElementById("account-menu-trigger");
+  var panel = document.getElementById("account-menu-panel");
+  if (menu && trigger && panel) {
+    function closeMenu() {
+      panel.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      menu.classList.remove("is-open");
+    }
+    function openMenu() {
+      panel.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      menu.classList.add("is-open");
+    }
+    trigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (panel.hidden) openMenu();
+      else closeMenu();
+    });
+    document.addEventListener("click", function (e) {
+      if (!menu.contains(e.target)) closeMenu();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") {
+        if (!panel.hidden) closeMenu();
+        if (app && app.classList.contains("nav-open")) setNav(false);
+      }
+    });
+  }
+
+  var modal = document.getElementById("role-switch-modal");
+  var openBtn = document.getElementById("open-role-switch");
+  if (modal && openBtn) {
+    function openModal() {
+      if (panel && !panel.hidden) {
+        panel.hidden = true;
+        trigger.setAttribute("aria-expanded", "false");
+        menu.classList.remove("is-open");
+      }
+      modal.hidden = false;
+      modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("role-modal-open");
+      var selected = modal.querySelector('input[name="role"]:checked');
+      if (selected) selected.focus();
+    }
+    function closeModal() {
+      modal.hidden = true;
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("role-modal-open");
+      openBtn.focus();
+    }
+    openBtn.addEventListener("click", openModal);
+    modal.querySelectorAll("[data-close-role-switch]").forEach(function (el) {
+      el.addEventListener("click", closeModal);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !modal.hidden) closeModal();
+    });
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}ISPCENTRIC — ISP Operations Platform{% endblock %}
+
+{% block body %}
+<header class="site-header">
+  <a class="brand" href="/accounts/employee/login/">ISP<span>CENTRIC</span></a>
+  <div class="nav-actions">
+    <a class="btn btn-ghost" href="{% url 'accounts:login' %}">Login</a>
+    <a class="btn btn-primary" href="{% url 'accounts:register' %}">Register</a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-visual" aria-hidden="true">
+    <div class="orbit"></div>
+  </div>
+  <div class="hero-inner">
+    <a
+      class="hero-brand hero-brand-link"
+      href="/accounts/employee/login/"
+      title="Employee login"
+      id="employee-login-brand"
+    >
+      ISP<em>CENTRIC</em>
+    </a>
+    <p class="hero-copy">
+      The ISP operations platform — staff, network, hotspot, and billing modules
+      in one responsive workspace for phone, tablet, and desktop.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn btn-signal" href="{% url 'accounts:register' %}">Register</a>
+      <a class="btn btn-ghost" href="{% url 'accounts:login' %}">Login</a>
+    </div>
+  </div>
+</section>
+<script>
+  document.getElementById("employee-login-brand")?.addEventListener("click", function (e) {
+    e.preventDefault();
+    window.location.assign("/accounts/employee/login/");
+  });
+</script>
+{% endblock %}

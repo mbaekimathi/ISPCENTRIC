@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+
+{% block title %}Register Employee — ISPCENTRIC{% endblock %}
+
+{% block body %}
+<div class="staff-shell">
+  <aside class="staff-rail">
+    <div class="staff-rail-inner">
+      <p class="staff-kicker">Staff onboarding</p>
+      <a class="staff-logo" href="{% url 'core:landing' %}">ISP<span>CENTRIC</span></a>
+      <h2 class="staff-rail-title">Create your staff login.</h2>
+      <p class="staff-rail-copy">
+        Choose a unique 6-digit code — that code plus your password is how you sign in. No company link required.
+      </p>
+      <ul class="staff-points">
+        <li>Pick an available login code</li>
+        <li>Await approval &amp; role</li>
+        <li>Optional profile photo</li>
+      </ul>
+    </div>
+  </aside>
+
+  <main class="staff-main">
+    <div class="staff-card staff-card-wide">
+      <div class="staff-badge">Employee</div>
+      <h1>Register employee</h1>
+      <p class="lede">Create your account with a 6-digit login code.</p>
+
+      <form method="post" enctype="multipart/form-data" novalidate id="register-form">
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+          <div class="non-field-errors">{{ form.non_field_errors }}</div>
+        {% endif %}
+
+        {% for field in form %}
+          {% if field.name == 'country_code' %}
+            {# with phone #}
+          {% elif field.name == 'phone' %}
+            <div class="form-group">
+              <label for="{{ form.phone.id_for_label }}">Phone number</label>
+              <div class="phone-row">
+                <div class="flag-select" id="flag-select">
+                  {{ form.country_code }}
+                  <button type="button" class="flag-select-trigger" id="flag-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <img class="flag-img" id="flag-select-img" src="{{ form.selected_country.flag }}" srcset="{{ form.selected_country.flag }} 1x, {{ form.selected_country.flag_2x }} 2x" alt="" width="28" height="21">
+                    <span class="flag-select-dial" id="flag-select-dial">+{{ form.selected_country.dial }}</span>
+                    <span class="flag-select-caret" aria-hidden="true"></span>
+                  </button>
+                  <div class="flag-select-menu" id="flag-select-menu" role="listbox" hidden>
+                    <input type="search" class="flag-select-search" id="flag-select-search" placeholder="Search country…" autocomplete="off">
+                    <div class="flag-select-list" id="flag-select-list">
+                      {% for c in form.country_options %}
+                        <button type="button" class="flag-select-option{% if c.value == form.selected_country.value %} is-selected{% endif %}" role="option" data-value="{{ c.value }}" data-dial="{{ c.dial }}" data-flag="{{ c.flag }}" data-flag2x="{{ c.flag_2x }}" data-name="{{ c.name|lower }}">
+                          <img class="flag-img" src="{{ c.flag }}" srcset="{{ c.flag }} 1x, {{ c.flag_2x }} 2x" alt="" width="28" height="21" loading="lazy">
+                          <span class="flag-select-name">{{ c.name }}</span>
+                          <span class="flag-select-code">+{{ c.dial }}</span>
+                        </button>
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+                {{ form.phone }}
+              </div>
+              {{ form.country_code.errors }}
+              {{ form.phone.errors }}
+            </div>
+          {% elif field.name == 'login_code' %}
+            <div class="form-group">
+              <label for="{{ field.id_for_label }}">6-digit login code</label>
+              {{ field }}
+              <p class="field-hint">This code is what you will use to log in (with your password).</p>
+              <p class="code-status" id="login-code-status" aria-live="polite">Choose a unique 6-digit code</p>
+              {{ field.errors }}
+            </div>
+          {% elif field.name == 'password1' %}
+            <div class="form-group">
+              <label for="{{ form.password1.id_for_label }}">Password</label>
+              <div class="password-field">
+                {{ form.password1 }}
+                <button type="button" class="password-toggle" data-toggle-password="id_password1" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {{ form.password1.errors }}
+              <ul class="password-rules" id="password-rules" aria-live="polite">
+                <li data-rule="length">At least 8 characters</li>
+                <li data-rule="not-numeric">Not entirely numeric</li>
+                <li data-rule="not-common">Not a commonly used password</li>
+                <li data-rule="not-similar">Not too similar to your name, username, or email</li>
+                <li data-rule="match">Passwords match</li>
+              </ul>
+            </div>
+          {% elif field.name == 'password2' %}
+            <div class="form-group">
+              <label for="{{ form.password2.id_for_label }}">Confirm password</label>
+              <div class="password-field">
+                {{ form.password2 }}
+                <button type="button" class="password-toggle" data-toggle-password="id_password2" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {{ form.password2.errors }}
+            </div>
+          {% elif field.name == 'profile_photo' %}
+            <div class="form-group form-group-photo">
+              <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+              <div class="photo-upload">
+                <div class="photo-preview" id="photo-preview" aria-hidden="true"></div>
+                {{ field }}
+                <p class="field-hint">JPG, PNG, or WebP — optional</p>
+              </div>
+              {{ field.errors }}
+            </div>
+          {% else %}
+            <div class="form-group">
+              <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+              {{ field }}
+              {{ field.errors }}
+            </div>
+          {% endif %}
+        {% endfor %}
+
+        <button type="submit" class="btn btn-staff btn-block" id="register-submit">Create employee account</button>
+      </form>
+
+      <p class="auth-footer staff-footer">
+        Already an employee?
+        <a href="{% url 'accounts:employee_login' %}">Staff sign in</a>
+      </p>
+    </div>
+  </main>
+</div>
+<script>
+  (function () {
+    var checkUrl = "{% url 'accounts:check_login_code' %}";
+    var codeInput = document.getElementById("id_login_code");
+    var codeStatus = document.getElementById("login-code-status");
+    var codeTimer = null;
+
+    function setCodeStatus(text, state) {
+      if (!codeStatus) return;
+      codeStatus.textContent = text;
+      codeStatus.classList.remove("is-ok", "is-bad", "is-pending");
+      if (state) codeStatus.classList.add(state);
+      if (codeInput) {
+        codeInput.classList.toggle("is-valid", state === "is-ok");
+        codeInput.classList.toggle("is-invalid", state === "is-bad");
+      }
+    }
+
+    function checkCode() {
+      if (!codeInput) return;
+      var digits = (codeInput.value || "").replace(/\D/g, "").slice(0, 6);
+      if (codeInput.value !== digits) codeInput.value = digits;
+      if (digits.length === 0) {
+        setCodeStatus("Choose a unique 6-digit code", "");
+        return;
+      }
+      if (digits.length < 6) {
+        setCodeStatus("Enter all 6 digits (" + digits.length + "/6)", "is-pending");
+        return;
+      }
+      setCodeStatus("Checking availability…", "is-pending");
+      fetch(checkUrl + "?code=" + encodeURIComponent(digits))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          setCodeStatus(data.message || (data.available ? "Code available" : "Code not available"), data.available ? "is-ok" : "is-bad");
+        })
+        .catch(function () {
+          setCodeStatus("Could not check code right now", "is-bad");
+        });
+    }
+
+    if (codeInput) {
+      codeInput.addEventListener("input", function () {
+        clearTimeout(codeTimer);
+        codeTimer = setTimeout(checkCode, 250);
+      });
+      codeInput.addEventListener("blur", checkCode);
+    }
+
+    var photoInput = document.getElementById("id_profile_photo");
+    var preview = document.getElementById("photo-preview");
+    if (photoInput && preview) {
+      photoInput.addEventListener("change", function () {
+        var file = photoInput.files && photoInput.files[0];
+        if (!file) {
+          preview.style.backgroundImage = "";
+          preview.classList.remove("has-image");
+          return;
+        }
+        preview.style.backgroundImage = "url(" + URL.createObjectURL(file) + ")";
+        preview.classList.add("has-image");
+      });
+    }
+
+    var root = document.getElementById("flag-select");
+    var hidden = document.getElementById("id_country_code");
+    var trigger = document.getElementById("flag-select-trigger");
+    var menu = document.getElementById("flag-select-menu");
+    var list = document.getElementById("flag-select-list");
+    var search = document.getElementById("flag-select-search");
+    var img = document.getElementById("flag-select-img");
+    var dialEl = document.getElementById("flag-select-dial");
+    var phone = document.getElementById("id_phone");
+    if (root && hidden && trigger && menu && list) {
+      function dialCode() { return (hidden.value || "254|Kenya").split("|")[0]; }
+      function updatePlaceholder() { if (phone) phone.placeholder = "7XX XXX XXX (+" + dialCode() + ")"; }
+      function setOpen(open) {
+        menu.hidden = !open;
+        trigger.setAttribute("aria-expanded", open ? "true" : "false");
+        root.classList.toggle("is-open", open);
+        if (open) { search.value = ""; filterOptions(""); search.focus(); }
+      }
+      function filterOptions(query) {
+        var q = (query || "").toLowerCase().trim();
+        list.querySelectorAll(".flag-select-option").forEach(function (opt) {
+          var hay = (opt.dataset.name || "") + " " + (opt.dataset.dial || "");
+          opt.hidden = q && hay.indexOf(q) === -1;
+        });
+      }
+      function selectOption(opt) {
+        hidden.value = opt.dataset.value;
+        img.src = opt.dataset.flag;
+        img.srcset = opt.dataset.flag + " 1x, " + opt.dataset.flag2x + " 2x";
+        dialEl.textContent = "+" + opt.dataset.dial;
+        list.querySelectorAll(".flag-select-option").forEach(function (el) { el.classList.toggle("is-selected", el === opt); });
+        updatePlaceholder();
+        setOpen(false);
+      }
+      trigger.addEventListener("click", function (e) { e.preventDefault(); setOpen(menu.hidden); });
+      search.addEventListener("input", function () { filterOptions(search.value); });
+      list.addEventListener("click", function (e) {
+        var opt = e.target.closest(".flag-select-option");
+        if (opt) selectOption(opt);
+      });
+      document.addEventListener("click", function (e) { if (!root.contains(e.target)) setOpen(false); });
+      document.addEventListener("keydown", function (e) { if (e.key === "Escape") setOpen(false); });
+      updatePlaceholder();
+    }
+
+    document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+        if (!input) return;
+        var show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        var eye = btn.querySelector(".icon-eye");
+        var eyeOff = btn.querySelector(".icon-eye-off");
+        if (eye && eyeOff) { eye.hidden = show; eyeOff.hidden = !show; }
+      });
+    });
+
+    var COMMON = {"password":1,"password1":1,"password123":1,"12345678":1,"123456789":1,"qwerty":1,"qwerty123":1,"abc123":1,"admin":1,"admin123":1,"welcome":1,"letmein":1,"passw0rd":1,"11111111":1,"00000000":1,"ispcentric":1};
+    var p1 = document.getElementById("id_password1");
+    var p2 = document.getElementById("id_password2");
+    var rules = document.getElementById("password-rules");
+    var username = document.getElementById("id_username");
+    var email = document.getElementById("id_email");
+    var firstName = document.getElementById("id_first_name");
+    var lastName = document.getElementById("id_last_name");
+
+    function setRule(name, ok) {
+      var item = rules && rules.querySelector('[data-rule="' + name + '"]');
+      if (!item) return;
+      item.classList.toggle("is-ok", ok);
+      item.classList.toggle("is-bad", !ok);
+    }
+    function similar(password, value) {
+      if (!value) return false;
+      var p = password.toLowerCase();
+      var v = String(value).toLowerCase().trim();
+      if (v.length < 3) return false;
+      if (p.indexOf(v) !== -1 || v.indexOf(p) !== -1) return true;
+      var local = v.split("@")[0];
+      return !!(local && local.length >= 3 && p.indexOf(local) !== -1);
+    }
+    function checkPasswords() {
+      if (!p1 || !rules) return;
+      var password = p1.value || "";
+      var confirm = p2 ? p2.value || "" : "";
+      var hasInput = password.length > 0;
+      rules.classList.toggle("is-active", hasInput || confirm.length > 0);
+      var lengthOk = password.length >= 8;
+      var notNumeric = password.length > 0 && !/^\d+$/.test(password);
+      var notCommon = password.length > 0 && !COMMON[password.toLowerCase()];
+      var notSimilar = password.length > 0 && !similar(password, username && username.value) && !similar(password, email && email.value) && !similar(password, firstName && firstName.value) && !similar(password, lastName && lastName.value);
+      var matchOk = password.length > 0 && confirm.length > 0 && password === confirm;
+      setRule("length", lengthOk);
+      setRule("not-numeric", notNumeric);
+      setRule("not-common", notCommon);
+      setRule("not-similar", notSimilar);
+      setRule("match", matchOk);
+      p1.classList.toggle("is-valid", lengthOk && notNumeric && notCommon && notSimilar);
+      p1.classList.toggle("is-invalid", hasInput && !(lengthOk && notNumeric && notCommon && notSimilar));
+      if (p2) {
+        p2.classList.toggle("is-valid", matchOk);
+        p2.classList.toggle("is-invalid", confirm.length > 0 && !matchOk);
+      }
+    }
+    [p1, p2, username, email, firstName, lastName].forEach(function (el) {
+      if (!el) return;
+      el.addEventListener("input", checkPasswords);
+      el.addEventListener("change", checkPasswords);
+    });
+    checkPasswords();
+  })();
+</script>
+{% endblock %}

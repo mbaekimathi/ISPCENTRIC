@@ -1,0 +1,78 @@
+{% if messages %}
+<div class="toast-host" id="toast-host" aria-live="polite" aria-relevant="additions">
+  {% for message in messages %}
+  {% with tag=message.tags|default:"info" %}
+  <div class="toast toast-{{ tag }}" role="{% if 'error' in tag %}alert{% else %}status{% endif %}" data-toast data-toast-ms="5200">
+    <div class="toast-icon" aria-hidden="true">
+      {% if 'success' in tag %}
+      <svg class="toast-svg" viewBox="0 0 48 48" fill="none">
+        <circle class="toast-ring" cx="24" cy="24" r="20" />
+        <path class="toast-check" d="M14 24.5l6.5 6.5L34 17" />
+      </svg>
+      {% elif 'error' in tag %}
+      <svg class="toast-svg" viewBox="0 0 48 48" fill="none">
+        <circle class="toast-ring" cx="24" cy="24" r="20" />
+        <path class="toast-x" d="M17 17l14 14M31 17L17 31" />
+      </svg>
+      {% elif 'warning' in tag %}
+      <svg class="toast-svg" viewBox="0 0 48 48" fill="none">
+        <path class="toast-tri" d="M24 8l18 32H6L24 8z" />
+        <path class="toast-bang" d="M24 20v9" />
+        <circle class="toast-dot" cx="24" cy="34" r="1.8" />
+      </svg>
+      {% else %}
+      <svg class="toast-svg" viewBox="0 0 48 48" fill="none">
+        <circle class="toast-ring" cx="24" cy="24" r="20" />
+        <path class="toast-bang" d="M24 22v10" />
+        <circle class="toast-dot" cx="24" cy="16.5" r="1.8" />
+      </svg>
+      {% endif %}
+    </div>
+    <div class="toast-copy">
+      <p class="toast-title">
+        {% if 'success' in tag %}Success
+        {% elif 'error' in tag %}Error
+        {% elif 'warning' in tag %}Warning
+        {% else %}Notice{% endif %}
+      </p>
+      <p class="toast-text">{{ message }}</p>
+    </div>
+    <button type="button" class="toast-dismiss" data-toast-dismiss aria-label="Dismiss">×</button>
+    <span class="toast-progress" aria-hidden="true"></span>
+  </div>
+  {% endwith %}
+  {% endfor %}
+</div>
+<script>
+(function () {
+  document.querySelectorAll("[data-toast]").forEach(function (toast) {
+    var ms = parseInt(toast.getAttribute("data-toast-ms") || "5200", 10);
+    var timer;
+    function dismiss() {
+      if (toast.classList.contains("is-leaving")) return;
+      toast.classList.add("is-leaving");
+      window.clearTimeout(timer);
+      window.setTimeout(function () {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+        var host = document.getElementById("toast-host");
+        if (host && !host.children.length && host.parentNode) {
+          host.parentNode.removeChild(host);
+        }
+      }, 320);
+    }
+    toast.querySelectorAll("[data-toast-dismiss]").forEach(function (btn) {
+      btn.addEventListener("click", dismiss);
+    });
+    timer = window.setTimeout(dismiss, ms);
+    toast.addEventListener("mouseenter", function () {
+      window.clearTimeout(timer);
+      toast.classList.add("is-paused");
+    });
+    toast.addEventListener("mouseleave", function () {
+      toast.classList.remove("is-paused");
+      timer = window.setTimeout(dismiss, Math.max(1800, ms * 0.4));
+    });
+  });
+})();
+</script>
+{% endif %}

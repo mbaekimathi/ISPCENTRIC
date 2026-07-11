@@ -1,0 +1,28 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-page">
+  <header class="org-page-header">
+    <div>
+      <h2>Delete {{ client.name }}</h2>
+      <p>This permanently removes the organization and its related billing data.</p>
+    </div>
+  </header>
+
+  <div class="org-delete-box">
+    <p><strong>{{ client.name }}</strong> will be deleted. Staff accounts stay in the system but lose this organization link. Customers and plans under this client are removed.</p>
+    <form method="post" class="org-delete-actions">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger">Delete client</button>
+      <a class="btn btn-ghost" href="{% url 'roles:super_admin_clients' %}">Cancel</a>
+    </form>
+  </div>
+</section>
+{% endblock %}

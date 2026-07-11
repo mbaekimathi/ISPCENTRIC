@@ -1,0 +1,138 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-page" id="org-clients">
+  <header class="org-page-header">
+    <div>
+      <h2>Registered organizations</h2>
+      <p>Company accounts currently in ISPCENTRIC.</p>
+    </div>
+    <p class="org-page-count"><strong id="org-visible-count">{{ clients_count }}</strong> <span id="org-count-label">{% if clients_count == 1 %}client{% else %}clients{% endif %}</span></p>
+  </header>
+
+  {% if clients %}
+  <div class="org-search-bar">
+    <label class="visually-hidden" for="org-search">Search clients</label>
+    <input
+      type="search"
+      id="org-search"
+      class="org-search-input"
+      placeholder="Search by name, owner, email, phone, join code, or status…"
+      autocomplete="off"
+      spellcheck="false"
+    >
+  </div>
+
+  <div class="org-table-shell">
+    <table class="org-table org-table-clients" id="org-table">
+      <thead>
+        <tr>
+          <th>Organization</th>
+          <th>Owner</th>
+          <th>Contact</th>
+          <th>Join code</th>
+          <th>Status</th>
+          <th>Staff</th>
+          <th>Customers</th>
+          <th>Registered</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for client in clients %}
+        <tr data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}">
+          <td>
+            <div class="org-identity">
+              {% if client.profile_photo %}
+                <img src="{{ client.profile_photo.url }}" alt="">
+              {% else %}
+                <span aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
+              {% endif %}
+              <strong>{{ client.name }}</strong>
+            </div>
+          </td>
+          <td>
+            {% if client.owner %}
+              <div class="org-owner">
+                <strong>{{ client.owner.get_full_name|default:client.owner.username }}</strong>
+                {% if client.owner.email %}<small>{{ client.owner.email }}</small>{% endif %}
+              </div>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>{{ client.phone|default:"—" }}</td>
+          <td><span class="org-code">{{ client.join_code|default:"—" }}</span></td>
+          <td>
+            <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+          </td>
+          <td class="org-metric">{{ client.staff_count }}</td>
+          <td class="org-metric">{{ client.customer_count }}</td>
+          <td class="org-date">{{ client.created_at|date:"d M Y" }}</td>
+          <td>
+            <div class="org-actions">
+              <a href="{% url 'roles:super_admin_client_edit' client.pk %}">Edit</a>
+              {% if client.status == "suspended" %}
+              <form method="post" action="{% url 'roles:super_admin_client_unsuspend' client.pk %}">
+                {% csrf_token %}
+                <button type="submit">Unsuspend</button>
+              </form>
+              {% else %}
+              <form method="post" action="{% url 'roles:super_admin_client_suspend' client.pk %}">
+                {% csrf_token %}
+                <button type="submit">Suspend</button>
+              </form>
+              {% endif %}
+              <a class="org-action-danger" href="{% url 'roles:super_admin_client_delete' client.pk %}">Delete</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="org-empty org-search-empty" id="org-search-empty" hidden>No clients match your search.</p>
+  {% else %}
+  <p class="org-empty">No organization accounts registered yet.</p>
+  {% endif %}
+</section>
+
+{% if clients %}
+<script>
+(function () {
+  var input = document.getElementById("org-search");
+  var rows = Array.prototype.slice.call(document.querySelectorAll("#org-table tbody tr"));
+  var countEl = document.getElementById("org-visible-count");
+  var labelEl = document.getElementById("org-count-label");
+  var emptyEl = document.getElementById("org-search-empty");
+  var shell = document.querySelector(".org-table-shell");
+
+  function applyFilter() {
+    var q = (input.value || "").trim().toLowerCase();
+    var visible = 0;
+    rows.forEach(function (row) {
+      var hay = (row.getAttribute("data-search") || "").toLowerCase();
+      var show = !q || hay.indexOf(q) !== -1;
+      row.hidden = !show;
+      if (show) visible += 1;
+    });
+    countEl.textContent = String(visible);
+    labelEl.textContent = visible === 1 ? "client" : "clients";
+    var none = visible === 0;
+    emptyEl.hidden = !none;
+    if (shell) shell.hidden = none;
+  }
+
+  input.addEventListener("input", applyFilter);
+  input.addEventListener("search", applyFilter);
+})();
+</script>
+{% endif %}
+{% endblock %}

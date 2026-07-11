@@ -1,0 +1,89 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}My profile settings — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">Account</p>
+  <h1 class="staff-topbar-heading">My profile settings</h1>
+{% endblock %}
+
+{% block staff_content %}
+<div class="list-page">
+  <div class="list-page-head">
+    <p class="list-page-sub">Update your details · login code {{ employee.login_code }}</p>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" class="profile-form" novalidate>
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="notice notice-error">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="profile-section">
+      <h2 class="profile-section-title">Photo & identity</h2>
+      <div class="profile-photo-row">
+        {% if employee.profile_photo %}
+          <img class="profile-photo-preview" src="{{ employee.profile_photo.url }}" alt="Current photo">
+        {% else %}
+          <span class="profile-photo-preview profile-photo-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+        {% endif %}
+        <div class="form-group" style="margin:0;flex:1;">
+          <label for="{{ form.profile_photo.id_for_label }}">{{ form.profile_photo.label }}</label>
+          {{ form.profile_photo }}
+          {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="{{ form.first_name.id_for_label }}">{{ form.first_name.label }}</label>
+          {{ form.first_name }}
+          {% if form.first_name.errors %}<div class="field-error">{{ form.first_name.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.last_name.id_for_label }}">{{ form.last_name.label }}</label>
+          {{ form.last_name }}
+          {% if form.last_name.errors %}<div class="field-error">{{ form.last_name.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="profile-section">
+      <h2 class="profile-section-title">Contact</h2>
+      <div class="form-group">
+        <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label>
+        {{ form.email }}
+        {% if form.email.errors %}<div class="field-error">{{ form.email.errors|striptags }}</div>{% endif %}
+      </div>
+      <div class="form-group">
+        <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+        {{ form.phone }}
+        {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="profile-section">
+      <h2 class="profile-section-title">Change password</h2>
+      <p class="list-page-sub" style="margin-bottom:0.85rem;">Optional — leave blank to keep your current password.</p>
+      <div class="grid-2">
+        <div class="form-group">
+          <label for="{{ form.password1.id_for_label }}">{{ form.password1.label }}</label>
+          {{ form.password1 }}
+          {% if form.password1.errors %}<div class="field-error">{{ form.password1.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.password2.id_for_label }}">{{ form.password2.label }}</label>
+          {{ form.password2 }}
+          {% if form.password2.errors %}<div class="field-error">{{ form.password2.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="profile-actions">
+      <button type="submit" class="btn btn-primary">Save settings</button>
+      <a class="btn btn-ghost" href="{% url dashboard_url_name %}">Back to dashboard</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
