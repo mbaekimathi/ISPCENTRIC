@@ -95,6 +95,7 @@ MIDDLEWARE = [
     "ispcentric.middleware.PrefetchEmployeeMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "ispcentric.middleware.SchemaErrorMiddleware",
 ]
 
 ROOT_URLCONF = "ispcentric.urls"
@@ -195,3 +196,48 @@ if not DEBUG:
     CSRF_COOKIE_SECURE = env_flag("DJANGO_CSRF_COOKIE_SECURE", "true")
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"
+
+# Hosted / production: write errors to logs/django.log (check this on 500s).
+_LOG_DIR = BASE_DIR / "logs"
+try:
+    _LOG_DIR.mkdir(exist_ok=True)
+except OSError:
+    _LOG_DIR = BASE_DIR
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+        "file": {
+            "class": "logging.FileHandler",
+            "filename": str(_LOG_DIR / "django.log"),
+            "formatter": "verbose",
+        },
+    },
+    "root": {
+        "handlers": ["console", "file"] if (HOSTED or not DEBUG) else ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console", "file"] if (HOSTED or not DEBUG) else ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        "django.db.backends": {
+            "handlers": ["file"] if (HOSTED or not DEBUG) else ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}

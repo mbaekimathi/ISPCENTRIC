@@ -1,7 +1,8 @@
 """
 Ensure the ISPCENTRIC MySQL database and Django tables exist.
 
-On cPanel (hosted), auto-create DB and auto-migrate stay off unless forced.
+On cPanel (hosted), auto-create DB stays off unless forced.
+Auto-migrate defaults on so git pulls do not leave the schema behind the code.
 """
 
 from __future__ import annotations
@@ -71,14 +72,14 @@ def ensure_tables() -> None:
     if _tables_ready:
         return
 
-    default = "false" if _HOSTED else "true"
-    if not env_flag("DJANGO_AUTO_MIGRATE", default):
+    # Defaults ON (local + hosted) so schema stays aligned with the code.
+    if not env_flag("DJANGO_AUTO_MIGRATE", "true"):
         return
 
     from django.core.management import call_command
 
     try:
-        call_command("migrate", interactive=False, verbosity=0, run_syncdb=True)
+        call_command("migrate", interactive=False, verbosity=1, run_syncdb=True)
         _tables_ready = True
         logger.info("ISPCENTRIC tables are up to date.")
     except Exception:

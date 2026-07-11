@@ -80,7 +80,7 @@ DJANGO_DEBUG=False
 DJANGO_ALLOWED_HOSTS=yourdomain.com,www.yourdomain.com
 DJANGO_CSRF_TRUSTED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 DJANGO_SERVE_MEDIA=true
-DJANGO_AUTO_MIGRATE=false
+DJANGO_AUTO_MIGRATE=true
 MYSQL_AUTO_CREATE_DB=false
 
 MYSQL_HOST=localhost
@@ -123,7 +123,8 @@ That installs new packages, runs migrations, rebuilds static files, and restarts
 | `media/` | Uploads; gitignored — back up separately |
 | `staticfiles/` | Built by `collectstatic`; gitignored |
 | Auto DB create | Off on cPanel (`MYSQL_AUTO_CREATE_DB=false`) |
-| Auto migrate | Off on cPanel; use the pull script |
+| Auto migrate | On by default; still run `scripts/cpanel_after_pull.sh` after each pull |
+| Error log | `logs/django.log` on the server when a page 500s |
 
 ## Modules
 
