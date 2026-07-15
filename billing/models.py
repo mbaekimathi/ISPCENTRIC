@@ -71,6 +71,7 @@ class BillingPlan(models.Model):
 class Customer(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
+        PAUSED = "paused", "Paused"
         SUSPENDED = "suspended", "Suspended"
         INACTIVE = "inactive", "Inactive"
 
@@ -113,6 +114,30 @@ class Customer(models.Model):
         related_name="customers",
         help_text="MikroTik this client is provisioned on.",
     )
+    service_start = models.DateField(
+        "Service start",
+        null=True,
+        blank=True,
+        help_text="First day of the current paid surfing period.",
+    )
+    service_until = models.DateField(
+        "Service until",
+        null=True,
+        blank=True,
+        help_text="Last day of the current paid surfing period.",
+    )
+    paused_days_remaining = models.PositiveIntegerField(
+        "Paused days remaining",
+        null=True,
+        blank=True,
+        help_text="Inclusive paid days frozen while the subscription is paused.",
+    )
+    paused_at = models.DateField(
+        "Paused on",
+        null=True,
+        blank=True,
+        help_text="Date the subscription was paused.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -148,6 +173,18 @@ class Invoice(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     due_date = models.DateField()
+    period_start = models.DateField(
+        "Billing period start",
+        null=True,
+        blank=True,
+        help_text="First day of the billed surfing cycle.",
+    )
+    period_end = models.DateField(
+        "Billing period end",
+        null=True,
+        blank=True,
+        help_text="Last day of the billed surfing cycle.",
+    )
     issued_at = models.DateTimeField(default=timezone.now)
     paid_at = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True)
@@ -157,6 +194,10 @@ class Invoice(models.Model):
         ordering = ["-issued_at"]
         indexes = [
             models.Index(fields=["organization", "status"], name="bill_inv_org_status_idx"),
+            models.Index(
+                fields=["customer", "period_start", "period_end"],
+                name="bill_inv_cust_period_idx",
+            ),
         ]
 
     def __str__(self):

@@ -1,6 +1,6 @@
 {% if customers %}
   <div class="clients-table-wrap">
-    <table class="table clients-type-table">
+    <table class="table clients-type-table{% if pppoe_compulsory %} is-live-status{% endif %}">
       <thead>
         <tr>
           <th>Name</th>
@@ -9,12 +9,13 @@
           <th>Plan</th>
           {% if show_router %}<th>Router</th>{% endif %}
           <th>Status</th>
+          {% if pppoe_compulsory %}<th>Surfing</th>{% endif %}
           <th></th>
         </tr>
       </thead>
       <tbody>
         {% for c in customers %}
-          <tr>
+          <tr data-client-row="{{ c.id }}">
             <td>
               <a class="clients-name-link" href="{% url 'core:client_detail' c.id %}">
                 <strong class="clients-name">{{ c.full_name }}</strong>
@@ -30,16 +31,35 @@
               <td class="clients-router-cell">
                 {% if c.router %}
                   <a class="clients-router-name" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
-                  <span class="mikrotik-link-status is-checking" data-router-status="{{ c.router.id }}" data-router-host="{{ c.router.host }}">
+                  <span
+                    class="mikrotik-link-status is-checking"
+                    data-router-status="{{ c.router.id }}"
+                    data-router-host="{{ c.router.host }}"
+                    data-client-router="{{ c.id }}"
+                  >
                     <span class="mikrotik-link-dot" aria-hidden="true"></span>
                     <span class="mikrotik-link-label">Checking…</span>
                   </span>
                 {% else %}
-                  <span class="clients-router-none">No router</span>
+                  <span class="clients-router-none" data-client-router="{{ c.id }}">No router</span>
                 {% endif %}
               </td>
             {% endif %}
-            <td><span class="badge">{{ c.get_status_display }}</span></td>
+            <td>
+              <span
+                class="badge{% if c.status == 'active' %} badge-success{% elif c.status == 'suspended' %} badge-warn{% else %} badge-muted{% endif %}"
+                data-client-status="{{ c.id }}"
+              >{{ c.get_status_display }}</span>
+            </td>
+            {% if pppoe_compulsory %}
+              <td>
+                <span
+                  class="client-surf-pill is-checking"
+                  data-client-surf="{{ c.id }}"
+                  data-eligible="{% if c.receives_internet %}1{% else %}0{% endif %}"
+                >Checking…</span>
+              </td>
+            {% endif %}
             <td class="clients-row-actions">
               <a class="btn btn-ghost clients-view-btn" href="{% url 'core:client_detail' c.id %}">View</a>
             </td>

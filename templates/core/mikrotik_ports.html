@@ -1,0 +1,255 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Ports — {{ router.name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel mikrotik-ports-panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Ports</h2>
+      <p class="panel-sub">
+        Live interfaces on <strong>{{ router.name }}</strong>
+        <span class="mikrotik-ports-host">({{ router.host }})</span>.
+        Set each port’s role here first — bonding and failover use those roles automatically.
+      </p>
+    </div>
+    <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back to router</a>
+  </div>
+
+  <div class="mikrotik-uplink-mode-banner">
+    <div>
+      <span class="mikrotik-uplink-mode-label">Current uplink mode</span>
+      <strong>{{ uplink_mode_label }}</strong>
+      {% if uplink_mode == "bond" and router.uplink_ports %}
+        <span class="mikrotik-uplink-mode-meta">
+          {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
+        </span>
+      {% elif uplink_mode == "failover" and router.uplink_ports %}
+        <span class="mikrotik-uplink-mode-meta">
+          Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
+        </span>
+      {% elif router.wan_interface %}
+        <span class="mikrotik-uplink-mode-meta">WAN {{ router.wan_interface }}</span>
+      {% endif %}
+      {% if uplink_live.bonds %}
+        <span class="mikrotik-uplink-mode-meta">
+          Live bond:
+          {% for b in uplink_live.bonds %}
+            {{ b.name }} ({% if b.running %}up{% else %}down{% endif %}){% if not forloop.last %}, {% endif %}
+          {% endfor %}
+        </span>
+      {% elif uplink_live.failover_clients %}
+        <span class="mikrotik-uplink-mode-meta">
+          Live DHCP:
+          {% for c in uplink_live.failover_clients %}
+            {{ c.interface }} dist {{ c.distance }} · {{ c.status|default:"—" }}{% if not forloop.last %}; {% endif %}
+          {% endfor %}
+        </span>
+      {% endif %}
+    </div>
+    {% if uplink_mode != "single" and not is_suspended %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="clear_multi_uplink">
+        <button type="submit" class="btn btn-ghost btn-sm">Clear bond / failover</button>
+      </form>
+    {% endif %}
+  </div>
+
+  {% if ports_error %}
+    <div class="mikrotik-ports-error" role="alert">
+      <p>{{ ports_error }}</p>
+      {% if not is_suspended %}
+        <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Retry</a>
+      {% endif %}
+    </div>
+  {% elif ports %}
+    <div class="clients-table-wrap mikrotik-ports-table-wrap">
+      <table class="table mikrotik-ports-table">
+        <thead>
+          <tr>
+            <th>Port</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Role</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for port in ports %}
+            <tr class="{% if port.disabled %}is-disabled{% elif port.running %}is-up{% else %}is-down{% endif %}">
+              <td>
+                <strong class="mikrotik-port-name">{{ port.name }}</strong>
+                {% if port.comment %}
+                  <span class="mikrotik-port-comment">{{ port.comment }}</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="mikrotik-port-type">{{ port.type }}</span>
+              </td>
+              <td>
+                {% if port.disabled %}
+                  <span class="mikrotik-wifi-pill is-off">Disabled</span>
+                {% elif port.running %}
+                  <span class="mikrotik-wifi-pill is-on">Running</span>
+                {% else %}
+                  <span class="badge badge-muted">Link down</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if port.is_bond_iface %}
+                  <span class="badge badge-muted">Bond interface</span>
+                {% else %}
+                  <form method="post" class="mikrotik-port-role-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="set_port_role">
+                    <input type="hidden" name="port_name" value="{{ port.name }}">
+                    <label class="visually-hidden" for="role-{{ forloop.counter }}">Role for {{ port.name }}</label>
+                    <select
+                      id="role-{{ forloop.counter }}"
+                      name="role"
+                      class="mikrotik-port-role-select"
+                      {% if is_suspended %}disabled{% endif %}
+                      onchange="this.form.submit()"
+                    >
+                      {% for value, label in role_choices %}
+                        <option value="{{ value }}" {% if port.role == value %}selected{% endif %}>{{ label }}</option>
+                      {% endfor %}
+                    </select>
+                  </form>
+                {% endif %}
+              </td>
+              <td class="mikrotik-port-actions">
+                <form method="post">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="toggle_port">
+                  <input type="hidden" name="port_name" value="{{ port.name }}">
+                  {% if port.disabled %}
+                    <button type="submit" class="btn btn-primary btn-sm" {% if is_suspended %}disabled{% endif %}>
+                      Enable
+                    </button>
+                  {% else %}
+                    <button type="submit" class="btn btn-ghost btn-sm" {% if is_suspended %}disabled{% endif %}>
+                      Disable
+                    </button>
+                  {% endif %}
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="clients-empty">
+      <p class="clients-empty-title">No ports found</p>
+      <p class="empty">This MikroTik did not report any ethernet or wireless ports.</p>
+    </div>
+  {% endif %}
+</section>
+
+{% if physical_ports and not is_suspended %}
+<section class="panel mikrotik-ports-panel mikrotik-uplink-config-panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Multi-uplink</h2>
+      <p class="panel-sub">
+        Roles from the table above drive these actions — no need to pick ports again here.
+      </p>
+    </div>
+  </div>
+
+  <div class="mikrotik-uplink-config-grid">
+    <form method="post" class="mikrotik-uplink-card">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="apply_bond">
+      <h3>Bond same provider</h3>
+      <p class="mikrotik-uplink-step">1. Set <strong>Bond member</strong> on two or more ports in the table.</p>
+      <p class="mikrotik-uplink-step">2. Choose bond settings and apply.</p>
+
+      <div class="mikrotik-uplink-role-block">
+        <span class="mikrotik-uplink-role-label">Bond members</span>
+        {% if bond_member_ports %}
+          <ul class="mikrotik-uplink-port-list">
+            {% for name in bond_member_ports %}
+              <li><span class="mikrotik-uplink-port-chip">{{ name }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mikrotik-uplink-empty">No bond members yet. Assign the Bond member role above.</p>
+        {% endif %}
+      </div>
+
+      <label class="mikrotik-uplink-field">
+        <span>Bond name</span>
+        <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
+      </label>
+
+      <label class="mikrotik-uplink-field">
+        <span>Bond mode</span>
+        <select name="bond_mode">
+          {% for value, label in bond_mode_choices %}
+            <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <button type="submit" class="btn btn-primary" {% if not can_apply_bond %}disabled{% endif %}>
+        Apply bonding
+      </button>
+      {% if not can_apply_bond %}
+        <p class="mikrotik-uplink-hint">Need at least 2 ports with Bond member role.</p>
+      {% endif %}
+    </form>
+
+    <form method="post" class="mikrotik-uplink-card">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="apply_failover">
+      <h3>Failover different providers</h3>
+      <p class="mikrotik-uplink-step">1. Set one port to <strong>WAN / Internet (primary)</strong>.</p>
+      <p class="mikrotik-uplink-step">2. Set one or more other ports to <strong>WAN backup</strong>, then apply.</p>
+
+      <div class="mikrotik-uplink-role-block">
+        <span class="mikrotik-uplink-role-label">Primary WAN</span>
+        {% if primary_wan_ports|length == 1 %}
+          <ul class="mikrotik-uplink-port-list">
+            <li><span class="mikrotik-uplink-port-chip is-primary">{{ primary_wan_ports.0 }}</span></li>
+          </ul>
+        {% elif primary_wan_ports|length > 1 %}
+          <p class="mikrotik-uplink-warn">Only one primary WAN is allowed. Keep one WAN role in the table.</p>
+          <ul class="mikrotik-uplink-port-list">
+            {% for name in primary_wan_ports %}
+              <li><span class="mikrotik-uplink-port-chip is-primary">{{ name }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mikrotik-uplink-empty">No primary WAN yet. Assign WAN / Internet (primary) above.</p>
+        {% endif %}
+      </div>
+
+      <div class="mikrotik-uplink-role-block">
+        <span class="mikrotik-uplink-role-label">Backup WAN ports</span>
+        {% if backup_wan_ports %}
+          <ul class="mikrotik-uplink-port-list">
+            {% for name in backup_wan_ports %}
+              <li><span class="mikrotik-uplink-port-chip is-backup">{{ name }}</span></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="mikrotik-uplink-empty">No backup WAN yet. Assign WAN backup on other ports above.</p>
+        {% endif %}
+      </div>
+
+      <button type="submit" class="btn btn-primary" {% if not can_apply_failover %}disabled{% endif %}>
+        Apply failover
+      </button>
+      {% if not can_apply_failover %}
+        <p class="mikrotik-uplink-hint">Need exactly 1 primary WAN and at least 1 backup WAN.</p>
+      {% endif %}
+    </form>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

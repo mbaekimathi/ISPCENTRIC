@@ -1,0 +1,92 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Client settings — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  <section class="panel settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
+    <div class="settings-policy-head">
+      <div>
+        <p class="mikrotik-section-label">Access policy</p>
+        <h2>PPPoE compulsory check</h2>
+        <p class="settings-policy-copy">
+          When this is on, only customers who have been registered as PPPoE clients
+          receive internet. Other clients stay offline until they are registered with PPPoE credentials.
+        </p>
+      </div>
+      <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}">
+        {% if pppoe_compulsory %}On{% else %}Off{% endif %}
+      </span>
+    </div>
+
+    {% if form and can_edit %}
+      <form method="post" class="settings-policy-form" id="client-settings-form">
+        {% csrf_token %}
+        <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.pppoe_compulsory.id_for_label }}">
+          {{ form.pppoe_compulsory }}
+          <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+          <span class="mikrotik-wifi-switch-text" id="pppoe-compulsory-label">
+            {% if pppoe_compulsory %}On{% else %}Off{% endif %}
+          </span>
+        </label>
+        {% if form.pppoe_compulsory.errors %}
+          <div class="field-error">{{ form.pppoe_compulsory.errors|striptags }}</div>
+        {% endif %}
+        <p class="settings-policy-hint">{{ form.pppoe_compulsory.help_text }}</p>
+        <noscript>
+          <div class="form-actions" style="margin-top:1rem;">
+            <button type="submit" class="btn btn-primary">Save settings</button>
+          </div>
+        </noscript>
+      </form>
+    {% elif not can_edit %}
+      <p class="empty" style="margin-top:1rem;">You do not have permission to change client settings.</p>
+    {% endif %}
+
+    <div class="stat-grid settings-policy-stats">
+      <div class="stat">
+        <div class="label">Policy</div>
+        <div class="value" style="font-size:1.05rem;">
+          {% if pppoe_compulsory %}PPPoE clients only{% else %}All active clients{% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="label">Eligible PPPoE clients</div>
+        <div class="value">{{ pppoe_eligible_count }}</div>
+      </div>
+    </div>
+  </section>
+{% else %}
+  <section class="panel">
+    <p class="empty">No organization is linked to this workspace.</p>
+  </section>
+{% endif %}
+{% endblock %}
+
+{% block client_extra_js %}
+{% if form and can_edit %}
+<script>
+(function () {
+  var form = document.getElementById("client-settings-form");
+  var input = document.getElementById("id_pppoe_compulsory");
+  var label = document.getElementById("pppoe-compulsory-label");
+  var panel = document.querySelector(".settings-policy-panel");
+  if (!form || !input) return;
+
+  function syncUi() {
+    var on = !!input.checked;
+    if (label) label.textContent = on ? "On" : "Off";
+    if (panel) panel.classList.toggle("is-policy-on", on);
+  }
+
+  input.addEventListener("change", function () {
+    syncUi();
+    form.submit();
+  });
+  syncUi();
+})();
+</script>
+{% endif %}
+{% endblock %}

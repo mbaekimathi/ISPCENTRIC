@@ -36,6 +36,16 @@
 
     <div class="client-user-profile-status">
       <span class="badge">{{ customer.get_status_display }}</span>
+      <span class="mikrotik-wifi-pill{% if surfing_on %} is-on{% else %} is-off{% endif %}">
+        {% if surfing_on %}Surfing on{% elif subscription_paused %}Paused{% else %}Surfing off{% endif %}
+      </span>
+      {% if pppoe_compulsory %}
+        {% if receives_internet %}
+          <span class="mikrotik-wifi-pill is-on">Internet eligible</span>
+        {% else %}
+          <span class="mikrotik-wifi-pill is-off">Internet blocked</span>
+        {% endif %}
+      {% endif %}
       {% if customer.router %}
         <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
           <span class="mikrotik-link-dot" aria-hidden="true"></span>
@@ -45,13 +55,8 @@
     </div>
 
     <div class="account-menu-session client-user-profile-session">
-      <p class="mikrotik-router-profile-group">Contact</p>
       <div class="account-session-row"><span>Phone</span><strong>{{ customer.phone|default:"—" }}</strong></div>
       <div class="account-session-row"><span>Email</span><strong>{{ customer.email|default:"—" }}</strong></div>
-      <div class="account-session-row"><span>Address</span><strong>{{ customer.address|default:"—" }}</strong></div>
-
-      <p class="mikrotik-router-profile-group">Service</p>
-      <div class="account-session-row"><span>Type</span><strong>{{ customer.get_service_type_display }}</strong></div>
       <div class="account-session-row">
         <span>Plan</span>
         <strong>
@@ -63,9 +68,9 @@
         </strong>
       </div>
       {% if customer.service_type == "pppoe" %}
-        <div class="account-session-row"><span>PPPoE user</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
+        <div class="account-session-row"><span>PPPoE</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
         <div class="account-session-row">
-          <span>PPPoE password</span>
+          <span>Password</span>
           <strong class="mikrotik-secret">
             {% if customer.pppoe_password %}
               <span class="mikrotik-secret-mask" data-secret-mask>•</span>
@@ -77,10 +82,8 @@
           </strong>
         </div>
       {% endif %}
-
-      <p class="mikrotik-router-profile-group">Router</p>
       <div class="account-session-row">
-        <span>Assigned</span>
+        <span>Router</span>
         <strong>
           {% if customer.router %}
             <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
@@ -89,207 +92,669 @@
           {% endif %}
         </strong>
       </div>
-      {% if customer.router %}
-        <div class="account-session-row"><span>Host</span><strong>{{ customer.router.host }}</strong></div>
-      {% endif %}
+    </div>
 
-      <p class="mikrotik-router-profile-group">Record</p>
-      <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y g:i A" }}</strong></div>
+    <div class="client-user-profile-actions">
+      <button type="button" class="btn btn-ghost btn-sm" data-open-modal="client-edit-modal">Edit account</button>
+      <button type="button" class="btn btn-danger btn-sm" data-open-modal="client-delete-modal">Delete account</button>
     </div>
   </div>
 </div>
 {% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="client-detail-page">
+  <p class="client-detail-back">
+    <a href="{{ back_url }}">&larr; Clients</a>
+  </p>
 
-<p class="client-detail-back">
-  <a href="{{ back_url }}">&larr; Back to clients</a>
-</p>
+  <section class="client-hero{% if surfing_on %} is-on{% elif subscription_paused %} is-paused{% else %} is-off{% endif %}{% if surfing_on %} is-policy-on{% endif %} client-surfing-panel">
+    <div class="client-hero-main">
+      <div class="client-hero-identity">
+        <span class="client-hero-avatar" aria-hidden="true">{{ customer.full_name|slice:":1"|upper }}</span>
+        <div>
+          <p class="client-hero-kicker">{{ customer.account_number }} · {{ customer.get_service_type_display }}</p>
+          <h2 class="client-hero-name">{{ customer.full_name }}</h2>
+          <p class="client-hero-meta">
+            {% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}No plan{% endif %}
+            {% if customer.router %} · <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>{% endif %}
+          </p>
+        </div>
+      </div>
+
+      <div class="client-hero-controls">
+        <form method="post" action="" class="client-surfing-toggle" id="client-surfing-form">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="set_internet">
+          <label class="mikrotik-wifi-switch settings-policy-switch" for="id_internet_surfing">
+            <input
+              type="checkbox"
+              name="internet_enabled"
+              value="1"
+              id="id_internet_surfing"
+              {% if surfing_on %}checked{% endif %}
+              {% if subscription_paused %}disabled{% endif %}
+            >
+            <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+            <span class="mikrotik-wifi-switch-text" id="client-surfing-label">
+              {% if surfing_on %}On{% elif subscription_paused %}Paused{% else %}Off{% endif %}
+            </span>
+          </label>
+          <span class="mikrotik-wifi-pill{% if surfing_on %} is-on{% elif subscription_paused %} is-paused{% else %} is-off{% endif %}" id="client-surfing-pill">
+            {% if surfing_on %}Surfing{% elif subscription_paused %}Paused{% else %}Blocked{% endif %}
+          </span>
+          <noscript>
+            <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          </noscript>
+        </form>
+
+        <div class="client-subscription-actions">
+          {% if can_pause_subscription %}
+            <form method="post" action="" class="clients-sync-form">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="pause_subscription">
+              <button type="submit" class="btn btn-ghost btn-sm">Pause</button>
+            </form>
+          {% endif %}
+          {% if can_continue_subscription %}
+            <form method="post" action="" class="clients-sync-form">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="continue_subscription">
+              <button type="submit" class="btn btn-primary btn-sm">Continue · {{ days_remaining }}d</button>
+            </form>
+          {% endif %}
+          {% if customer.service_type == "pppoe" and can_sync_pppoe %}
+            <form method="post" action="" class="clients-sync-form">
+              {% csrf_token %}
+              <input type="hidden" name="action" value="sync_pppoe">
+              <button type="submit" class="btn btn-ghost btn-sm">Sync PPPoE</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="client-hero-facts">
+      <div class="client-hero-fact">
+        <span>Status</span>
+        <strong>{{ customer.get_status_display }}</strong>
+      </div>
+      <div class="client-hero-fact">
+        <span>Period</span>
+        <strong>
+          {% if subscription_paused %}
+            {{ days_remaining }}d frozen
+          {% elif customer.service_until %}
+            {% if days_remaining %}{{ days_remaining }}d left{% else %}Ends {{ customer.service_until|date:"M j" }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </strong>
+      </div>
+      <div class="client-hero-fact">
+        <span>Contact</span>
+        <strong>{{ customer.phone|default:customer.email|default:"—" }}</strong>
+      </div>
+    </div>
+  </section>
+
+{# —— Enable surfing: choose service period —— #}
+<div
+  class="role-modal client-action-modal"
+  id="surfing-period-modal"
+  {% if not open_surfing_modal %}hidden{% endif %}
+  aria-hidden="{% if open_surfing_modal %}false{% else %}true{% endif %}"
+  data-plan-duration="{{ plan_duration|default:'monthly' }}"
+>
+  <div class="role-modal-backdrop" data-close-surfing-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="surfing-period-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Internet access</p>
+        <h2 id="surfing-period-title">Turn surfing on</h2>
+        <p class="role-modal-sub">
+          Choose when this client’s paid period starts. The end date is calculated from
+          {% if customer.plan %}{{ customer.plan.name }} ({{ plan_duration_label }}){% else %}a monthly period{% endif %}
+          and you can edit it before enabling.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-surfing-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" action="" class="mikrotik-action-form" id="surfing-period-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="set_internet">
+      <input type="hidden" name="internet_enabled" value="1">
+      <div class="mikrotik-action-scroll">
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field">
+            <label for="id_service_start">Start date</label>
+            <input
+              type="date"
+              name="service_start"
+              id="id_service_start"
+              required
+              value="{% if customer.service_start %}{{ customer.service_start|date:'Y-m-d' }}{% else %}{{ today_iso }}{% endif %}"
+            >
+            <p class="field-hint">First day the client may surf.</p>
+          </div>
+          <div class="field">
+            <label for="id_service_until">End date</label>
+            <input
+              type="date"
+              name="service_until"
+              id="id_service_until"
+              required
+              value="{% if customer.service_until %}{{ customer.service_until|date:'Y-m-d' }}{% endif %}"
+            >
+            <p class="field-hint">Auto-filled from the plan — edit if needed.</p>
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-surfing-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Enable surfing</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Edit client account —— #}
+<div
+  class="role-modal client-action-modal"
+  id="client-edit-modal"
+  {% if open_client_modal != "client-edit-modal" %}hidden{% endif %}
+  aria-hidden="{% if open_client_modal == 'client-edit-modal' %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-edit-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Client account</p>
+        <h2 id="client-edit-title">Edit account</h2>
+        <p class="role-modal-sub">
+          Update contact details, plan, and
+          {% if customer.service_type == "pppoe" %}PPPoE / router settings{% else %}router assignment{% endif %}
+          for {{ customer.full_name }}.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" action="" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="edit_client">
+      <div class="mikrotik-action-scroll">
+        {% if edit_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ edit_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label for="{{ edit_form.full_name.id_for_label }}">{{ edit_form.full_name.label }}</label>
+            {{ edit_form.full_name }}
+            {% if edit_form.full_name.errors %}<div class="field-error">{{ edit_form.full_name.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.phone.id_for_label }}">{{ edit_form.phone.label }}</label>
+            {{ edit_form.phone }}
+            {% if edit_form.phone.errors %}<div class="field-error">{{ edit_form.phone.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.email.id_for_label }}">{{ edit_form.email.label }}</label>
+            {{ edit_form.email }}
+            {% if edit_form.email.errors %}<div class="field-error">{{ edit_form.email.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.address.id_for_label }}">{{ edit_form.address.label }}</label>
+            {{ edit_form.address }}
+            {% if edit_form.address.errors %}<div class="field-error">{{ edit_form.address.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.plan.id_for_label }}">{{ edit_form.plan.label }}</label>
+            {{ edit_form.plan }}
+            {% if edit_form.plan.errors %}<div class="field-error">{{ edit_form.plan.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.router.id_for_label }}">{{ edit_form.router.label }}</label>
+            {{ edit_form.router }}
+            {% if edit_form.router.errors %}<div class="field-error">{{ edit_form.router.errors|striptags }}</div>{% endif %}
+          </div>
+          {% if edit_form.pppoe_username %}
+            <div class="field">
+              <label for="{{ edit_form.pppoe_username.id_for_label }}">{{ edit_form.pppoe_username.label }}</label>
+              {{ edit_form.pppoe_username }}
+              {% if edit_form.pppoe_username.errors %}<div class="field-error">{{ edit_form.pppoe_username.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ edit_form.pppoe_password.id_for_label }}">{{ edit_form.pppoe_password.label }}</label>
+              <div class="password-field">
+                {{ edit_form.pppoe_password }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ edit_form.pppoe_password.id_for_label }}" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if edit_form.pppoe_password.errors %}<div class="field-error">{{ edit_form.pppoe_password.errors|striptags }}</div>{% endif %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Delete client account —— #}
+<div
+  class="role-modal client-action-modal"
+  id="client-delete-modal"
+  {% if open_client_modal != "client-delete-modal" %}hidden{% endif %}
+  aria-hidden="{% if open_client_modal == 'client-delete-modal' %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-delete-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Danger zone</p>
+        <h2 id="client-delete-title">Delete account</h2>
+        <p class="role-modal-sub">
+          This permanently removes {{ customer.full_name }} ({{ customer.account_number }}) from ISPCENTRIC,
+          including invoices linked to this client. Surfing access is stopped first when possible.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" action="" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="delete_client">
+      <div class="mikrotik-action-scroll">
+        <div class="mikrotik-form-banner mikrotik-delete-summary">
+          <strong>{{ customer.full_name }}</strong>
+          · {{ customer.account_number }}
+          · {{ customer.get_service_type_display }}
+        </div>
+        <label class="mikrotik-confirm-check">
+          {{ delete_form.confirm }}
+          <span>I confirm I want to permanently delete this client account.</span>
+        </label>
+        {% if delete_form.confirm.errors %}
+          <div class="field-error">{{ delete_form.confirm.errors|striptags }}</div>
+        {% endif %}
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-danger">Delete account</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <section
-  class="panel client-usage-panel"
+  class="client-section client-usage-panel"
   id="client-usage"
   data-usage-url="{% url 'core:client_usage' customer.id %}"
   data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
 >
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="mikrotik-detail-kicker">Usage analysis</p>
-      <h2>{{ customer.full_name }}</h2>
+  <div class="client-section-head">
+    <div>
+      <h3>Live session</h3>
+      <p class="client-section-sub" id="client-usage-sub">
+        {% if can_live_usage %}
+          Reading from {{ customer.router.name }}…
+        {% elif not customer.router %}
+          Assign a router to see live usage.
+        {% elif customer.service_type != "pppoe" %}
+          Live metrics available for PPPoE clients.
+        {% else %}
+          Add a PPPoE username for live usage.
+        {% endif %}
+      </p>
     </div>
-    <div class="mikrotik-detail-actions">
-      <button type="button" class="btn btn-ghost" id="client-usage-refresh" {% if not can_live_usage %}disabled{% endif %}>
-        Refresh live
+    <div class="client-section-actions">
+      <span class="client-live-stamp" id="client-usage-stamp">—</span>
+      <button type="button" class="btn btn-ghost btn-sm" id="client-usage-refresh" {% if not can_live_usage %}disabled{% endif %}>
+        Refresh
       </button>
     </div>
   </div>
 
-  <div class="mikrotik-live-head client-usage-head">
+  <div class="client-metrics" id="client-usage-grid">
+    <div class="client-metric" data-metric="session">
+      <span>Session</span>
+      <strong data-usage="session">…</strong>
+      <em data-usage="session-hint">Status</em>
+    </div>
+    <div class="client-metric client-metric-speed" data-metric="download">
+      <span>Download</span>
+      <strong data-usage="download">—</strong>
+    </div>
+    <div class="client-metric client-metric-speed" data-metric="upload">
+      <span>Upload</span>
+      <strong data-usage="upload">—</strong>
+    </div>
+    <div class="client-metric" data-metric="uptime">
+      <span>Uptime</span>
+      <strong data-usage="uptime">—</strong>
+    </div>
+    <div class="client-metric" data-metric="ip">
+      <span>IP</span>
+      <strong class="client-usage-mono" data-usage="address">—</strong>
+      <em data-usage="caller">MAC</em>
+    </div>
+  </div>
+  {# Hidden fields kept for live JS compatibility #}
+  <span hidden data-usage="bytes-in">—</span>
+  <span hidden data-usage="bytes-out">—</span>
+</section>
+
+<section class="client-section client-billing-analysis">
+  <div class="client-section-head">
     <div>
-      <h3>Live session</h3>
-      <p class="mikrotik-live-sub" id="client-usage-sub">
-        {% if can_live_usage %}
-          Reading session from {{ customer.router.name }}…
-        {% elif not customer.router %}
-          Assign a MikroTik router to this client to see live usage.
-        {% elif customer.service_type != "pppoe" %}
-          Live session metrics are available for PPPoE clients.
+      <h3>Billing</h3>
+      <p class="client-section-sub">
+        {% if current_cycle %}
+          Current: {{ current_cycle.start|date:"M j" }} → {{ current_cycle.end|date:"M j, Y" }}
+          · {{ current_cycle.payment_label }}
+          {% if current_cycle.amount is not None %} · {{ current_cycle.amount }}{% endif %}
         {% else %}
-          Add a PPPoE username to enable live usage.
+          No active cycle yet.
         {% endif %}
       </p>
     </div>
-    <span class="mikrotik-live-stamp" id="client-usage-stamp">—</span>
   </div>
 
-  <div class="mikrotik-live-grid client-usage-grid" id="client-usage-grid">
-    <article class="mikrotik-live-card" data-metric="session">
-      <p class="mikrotik-live-label">Session</p>
-      <p class="mikrotik-live-value" data-usage="session">…</p>
-      <p class="mikrotik-live-hint" data-usage="session-hint">PPPoE online status</p>
-    </article>
-    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
-      <p class="mikrotik-live-label">Download</p>
-      <p class="mikrotik-live-value" data-usage="download">—</p>
-      <p class="mikrotik-live-hint">Live inbound speed</p>
-    </article>
-    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
-      <p class="mikrotik-live-label">Upload</p>
-      <p class="mikrotik-live-value" data-usage="upload">—</p>
-      <p class="mikrotik-live-hint">Live outbound speed</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="uptime">
-      <p class="mikrotik-live-label">Session uptime</p>
-      <p class="mikrotik-live-value" data-usage="uptime">—</p>
-      <p class="mikrotik-live-hint">Current connection length</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="bytes-in">
-      <p class="mikrotik-live-label">Downloaded</p>
-      <p class="mikrotik-live-value" data-usage="bytes-in">—</p>
-      <p class="mikrotik-live-hint">Traffic this session</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="bytes-out">
-      <p class="mikrotik-live-label">Uploaded</p>
-      <p class="mikrotik-live-value" data-usage="bytes-out">—</p>
-      <p class="mikrotik-live-hint">Traffic this session</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="ip">
-      <p class="mikrotik-live-label">Assigned IP</p>
-      <p class="mikrotik-live-value client-usage-mono" data-usage="address">—</p>
-      <p class="mikrotik-live-hint" data-usage="caller">Caller / MAC</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="plan">
-      <p class="mikrotik-live-label">Plan speed</p>
-      <p class="mikrotik-live-value">
-        {% if customer.plan %}{{ customer.plan.speed_label }}{% else %}—{% endif %}
-      </p>
-      <p class="mikrotik-live-hint">
-        {% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}
-      </p>
-    </article>
+  <div class="client-billing-summary">
+    <div><span>Paid</span><strong>{{ cycles_paid }}</strong></div>
+    <div><span>Unpaid</span><strong>{{ cycles_unpaid }}</strong></div>
+    <div><span>Collected</span><strong>{{ amount_paid }}</strong></div>
+    <div><span>Billed</span><strong>{{ amount_billed }}</strong></div>
   </div>
+
+  {% if billing_cycles %}
+    <div class="clients-table-wrap client-billing-table-wrap">
+      <table class="table clients-type-table client-billing-cycles-table">
+        <thead>
+          <tr>
+            <th>Period</th>
+            <th>Amount</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for cycle in billing_cycles %}
+            <tr class="{% if cycle.is_current %}is-current-cycle{% endif %}">
+              <td>
+                {{ cycle.start|date:"M j, Y" }} → {{ cycle.end|date:"M j, Y" }}
+                {% if cycle.is_current %}<span class="mikrotik-wifi-pill is-on client-cycle-pill">Now</span>{% endif %}
+              </td>
+              <td>{% if cycle.amount is not None %}{{ cycle.amount }}{% else %}—{% endif %}</td>
+              <td>
+                <span class="badge badge-{% if cycle.payment_code == 'paid' %}success{% elif cycle.payment_code == 'overdue' %}warn{% elif cycle.is_current %}info{% else %}muted{% endif %}">
+                  {{ cycle.payment_label }}
+                </span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty client-empty">No billing cycles yet.</p>
+  {% endif %}
 </section>
-
-<section class="panel client-billing-analysis">
-  <div class="panel-head-row">
-    <div>
-      <h2>Billing analysis</h2>
-      <p class="panel-sub">Invoices and payments for this subscriber.</p>
-    </div>
-  </div>
-
-  <div class="client-usage-stats">
-    <div class="client-usage-stat">
-      <span>Invoices</span>
-      <strong>{{ invoice_total }}</strong>
-    </div>
-    <div class="client-usage-stat">
-      <span>Pending</span>
-      <strong>{{ invoice_pending }}</strong>
-    </div>
-    <div class="client-usage-stat">
-      <span>Paid</span>
-      <strong>{{ invoice_paid }}</strong>
-    </div>
-    <div class="client-usage-stat">
-      <span>Overdue</span>
-      <strong>{{ invoice_overdue }}</strong>
-    </div>
-    <div class="client-usage-stat">
-      <span>Billed</span>
-      <strong>{{ amount_billed }}</strong>
-    </div>
-    <div class="client-usage-stat">
-      <span>Collected</span>
-      <strong>{{ amount_paid }}</strong>
-    </div>
-  </div>
-
-  <div class="client-billing-split">
-    <div>
-      <h3 class="client-billing-subhead">Recent invoices</h3>
-      {% if invoices %}
-        <div class="clients-table-wrap">
-          <table class="table clients-type-table">
-            <thead>
-              <tr>
-                <th>Invoice</th>
-                <th>Amount</th>
-                <th>Status</th>
-                <th>Due</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for inv in invoices %}
-                <tr>
-                  <td>{{ inv.invoice_number }}</td>
-                  <td>{{ inv.amount }}</td>
-                  <td><span class="badge">{{ inv.get_status_display }}</span></td>
-                  <td>{{ inv.due_date|date:"M j, Y" }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <p class="empty">No invoices yet for this client.</p>
-      {% endif %}
-    </div>
-    <div>
-      <h3 class="client-billing-subhead">Recent payments</h3>
-      {% if payments %}
-        <div class="clients-table-wrap">
-          <table class="table clients-type-table">
-            <thead>
-              <tr>
-                <th>Reference</th>
-                <th>Amount</th>
-                <th>Method</th>
-                <th>Received</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for pay in payments %}
-                <tr>
-                  <td>{{ pay.reference|default:pay.invoice.invoice_number }}</td>
-                  <td>{{ pay.amount }}</td>
-                  <td>{{ pay.get_method_display }}</td>
-                  <td>{{ pay.received_at|date:"M j, Y" }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <p class="empty">No payments recorded yet.</p>
-      {% endif %}
-    </div>
-  </div>
-</section>
+</div>
 {% endblock %}
 
 {% block client_extra_js %}
+<script>
+(function () {
+  function openClientModal(id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    document.querySelectorAll(".client-action-modal").forEach(function (el) {
+      if (el === modal) return;
+      el.hidden = true;
+      el.setAttribute("aria-hidden", "true");
+    });
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    var profile = document.getElementById("client-user-profile");
+    if (profile) profile.classList.remove("is-open");
+    var first = modal.querySelector("input, select, textarea, button.btn-primary, button.btn-danger");
+    if (first) first.focus();
+  }
+
+  function closeClientModal(modal) {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openClientModal(btn.getAttribute("data-open-modal"));
+    });
+  });
+
+  document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeClientModal(el.closest(".client-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    document.querySelectorAll(".client-action-modal:not([hidden])").forEach(closeClientModal);
+  });
+
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var id = btn.getAttribute("data-toggle-password");
+      var input = id ? document.getElementById(id) : null;
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye) eye.hidden = show;
+      if (eyeOff) eyeOff.hidden = !show;
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    });
+  });
+
+  {% if open_client_modal %}
+  openClientModal("{{ open_client_modal|escapejs }}");
+  {% endif %}
+})();
+</script>
+
+<script>
+(function () {
+  var toggleForm = document.getElementById("client-surfing-form");
+  var input = document.getElementById("id_internet_surfing");
+  var label = document.getElementById("client-surfing-label");
+  var pill = document.getElementById("client-surfing-pill");
+  var panel = document.querySelector(".client-surfing-panel");
+  var modal = document.getElementById("surfing-period-modal");
+  var periodForm = document.getElementById("surfing-period-form");
+  var startInput = document.getElementById("id_service_start");
+  var endInput = document.getElementById("id_service_until");
+  var wasOn = !!(input && input.checked);
+  var isPaused = {% if subscription_paused %}true{% else %}false{% endif %};
+  var endTouched = false;
+
+  function syncSurfingUi(on) {
+    if (isPaused) {
+      if (label) label.textContent = "Paused";
+      if (pill) {
+        pill.textContent = "Paused";
+        pill.classList.remove("is-on", "is-off");
+        pill.classList.add("is-paused");
+      }
+      if (panel) {
+        panel.classList.remove("is-policy-on", "is-on", "is-off");
+        panel.classList.add("is-paused");
+      }
+      return;
+    }
+    if (label) label.textContent = on ? "On" : "Off";
+    if (pill) {
+      pill.textContent = on ? "Surfing" : "Blocked";
+      pill.classList.remove("is-paused");
+      pill.classList.toggle("is-on", on);
+      pill.classList.toggle("is-off", !on);
+    }
+    if (panel) {
+      panel.classList.remove("is-paused");
+      panel.classList.toggle("is-policy-on", on);
+      panel.classList.toggle("is-on", on);
+      panel.classList.toggle("is-off", !on);
+    }
+  }
+
+  function pad(n) {
+    return n < 10 ? "0" + n : String(n);
+  }
+
+  function toIso(d) {
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function parseIso(value) {
+    if (!value) return null;
+    var parts = value.split("-");
+    if (parts.length !== 3) return null;
+    var y = parseInt(parts[0], 10);
+    var m = parseInt(parts[1], 10);
+    var day = parseInt(parts[2], 10);
+    if (!y || !m || !day) return null;
+    return new Date(y, m - 1, day);
+  }
+
+  function addMonths(d, months) {
+    var y = d.getFullYear();
+    var m = d.getMonth() + months;
+    y += Math.floor(m / 12);
+    m = ((m % 12) + 12) % 12;
+    var day = d.getDate();
+    var last = new Date(y, m + 1, 0).getDate();
+    return new Date(y, m, Math.min(day, last));
+  }
+
+  function calcEnd(start, duration) {
+    if (!start) return null;
+    var d = duration || "monthly";
+    if (d === "hourly") return new Date(start.getTime());
+    if (d === "daily") {
+      var daily = new Date(start.getTime());
+      daily.setDate(daily.getDate() + 1);
+      return daily;
+    }
+    if (d === "weekly") {
+      var weekly = new Date(start.getTime());
+      weekly.setDate(weekly.getDate() + 7);
+      return weekly;
+    }
+    if (d === "yearly") return addMonths(start, 12);
+    return addMonths(start, 1);
+  }
+
+  function refreshEndDate(force) {
+    if (!startInput || !endInput) return;
+    if (endTouched && !force) return;
+    var start = parseIso(startInput.value);
+    var duration = modal ? modal.getAttribute("data-plan-duration") : "monthly";
+    var end = calcEnd(start, duration);
+    if (end) endInput.value = toIso(end);
+  }
+
+  function openSurfingModal() {
+    if (!modal) return;
+    endTouched = false;
+    if (startInput && !startInput.value) {
+      startInput.value = "{{ today_iso }}";
+    }
+    refreshEndDate(true);
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (startInput) startInput.focus();
+  }
+
+  function closeSurfingModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+    if (input) {
+      input.checked = wasOn;
+      syncSurfingUi(wasOn);
+    }
+  }
+
+  if (toggleForm && input) {
+    input.addEventListener("change", function () {
+      if (isPaused) {
+        input.checked = false;
+        syncSurfingUi(false);
+        return;
+      }
+      if (input.checked) {
+        // Turning on: ask for service period first.
+        input.checked = false;
+        syncSurfingUi(false);
+        openSurfingModal();
+        return;
+      }
+      // Turning off: cut access immediately.
+      syncSurfingUi(false);
+      toggleForm.submit();
+    });
+    syncSurfingUi(!!input.checked);
+  }
+
+  if (startInput) {
+    startInput.addEventListener("change", function () {
+      refreshEndDate(false);
+    });
+    startInput.addEventListener("input", function () {
+      refreshEndDate(false);
+    });
+  }
+  if (endInput) {
+    endInput.addEventListener("input", function () {
+      endTouched = true;
+    });
+    endInput.addEventListener("change", function () {
+      endTouched = true;
+    });
+  }
+
+  document.querySelectorAll("[data-close-surfing-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeSurfingModal();
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal && !modal.hidden) closeSurfingModal();
+  });
+
+  if (modal && !modal.hidden) {
+    openSurfingModal();
+  } else if (startInput && endInput && !endInput.value) {
+    refreshEndDate(true);
+  }
+})();
+</script>
+
 <script>
 (function () {
   var profile = document.getElementById("client-user-profile");

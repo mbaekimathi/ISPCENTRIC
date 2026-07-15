@@ -140,6 +140,20 @@
         </div>
       {% endif %}
 
+      <p class="mikrotik-router-profile-group">Clean uplink</p>
+      <div class="account-session-row">
+        <span>Status</span>
+        <strong>
+          <span class="mikrotik-wifi-pill{% if clean_uplink_enabled %} is-on{% else %} is-off{% endif %}">
+            {% if clean_uplink_enabled %}On{% else %}Off{% endif %}
+          </span>
+        </strong>
+      </div>
+      {% if clean_uplink_enabled %}
+        <div class="account-session-row"><span>Mode</span><strong>{{ router.get_clean_uplink_mode_display }}</strong></div>
+        <div class="account-session-row"><span>WAN</span><strong>{{ router.wan_interface }}</strong></div>
+      {% endif %}
+
       <p class="mikrotik-router-profile-group">Record</p>
       <div class="account-session-row"><span>Onboarded</span><strong>{{ router.created_at|date:"M j, Y g:i A" }}</strong></div>
       <div class="account-session-row"><span>Last updated</span><strong>{{ router.updated_at|date:"M j, Y g:i A" }}</strong></div>
@@ -158,6 +172,13 @@
       <h2>{{ router.name }}</h2>
     </div>
     <div class="mikrotik-detail-actions">
+      <button
+        type="button"
+        class="btn btn-ghost"
+        id="mikrotik-detail-reconnect"
+        data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
+        {% if is_suspended %}disabled{% endif %}
+      >Reconnect</button>
       <button type="button" class="btn btn-ghost" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>Refresh live</button>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik' %}">Back to routers</a>
     </div>
@@ -187,21 +208,48 @@
       <button type="button" class="btn btn-ghost" id="mikrotik-live-blocked-why" {% if not is_suspended %}hidden{% endif %}>View reason</button>
     </div>
 
+    <section class="mikrotik-wan-speeds" id="mikrotik-wan-speeds" {% if is_suspended %}hidden{% endif %}>
+      <div class="mikrotik-wan-speeds-head">
+        <h3>WAN speeds</h3>
+        <p class="mikrotik-uplink-sub">Live download and upload from the configured WAN port(s).</p>
+      </div>
+      <div class="mikrotik-wan-speeds-grid" id="mikrotik-wan-speeds-grid">
+        <article class="mikrotik-wan-speed-panel" data-wan-speed="primary">
+          <p class="mikrotik-live-label" data-live="wan-speed-primary-label">Primary WAN</p>
+          <div class="mikrotik-wan-speed-metrics">
+            <div class="mikrotik-wan-speed-metric">
+              <span>Download</span>
+              <strong data-live="wan-speed-primary-download">—</strong>
+            </div>
+            <div class="mikrotik-wan-speed-metric">
+              <span>Upload</span>
+              <strong data-live="wan-speed-primary-upload">—</strong>
+            </div>
+          </div>
+          <p class="mikrotik-live-hint" data-live="wan-speed-primary-hint">Reading configured WAN…</p>
+        </article>
+        <article class="mikrotik-wan-speed-panel" data-wan-speed="secondary" hidden>
+          <p class="mikrotik-live-label" data-live="wan-speed-secondary-label">Secondary WAN</p>
+          <div class="mikrotik-wan-speed-metrics">
+            <div class="mikrotik-wan-speed-metric">
+              <span>Download</span>
+              <strong data-live="wan-speed-secondary-download">—</strong>
+            </div>
+            <div class="mikrotik-wan-speed-metric">
+              <span>Upload</span>
+              <strong data-live="wan-speed-secondary-upload">—</strong>
+            </div>
+          </div>
+          <p class="mikrotik-live-hint" data-live="wan-speed-secondary-hint">Secondary / backup uplink</p>
+        </article>
+      </div>
+    </section>
+
     <div class="mikrotik-live-grid" id="mikrotik-live-grid" {% if is_suspended %}hidden{% endif %}>
       <article class="mikrotik-live-card" data-metric="status">
         <p class="mikrotik-live-label">Connection</p>
         <p class="mikrotik-live-value" data-live="status">…</p>
         <p class="mikrotik-live-hint" data-live="status-hint">Checking reachability</p>
-      </article>
-      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
-        <p class="mikrotik-live-label">Download</p>
-        <p class="mikrotik-live-value" data-live="wan-download">—</p>
-        <p class="mikrotik-live-hint" data-live="wan-download-hint">Live inbound speed</p>
-      </article>
-      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
-        <p class="mikrotik-live-label">Upload</p>
-        <p class="mikrotik-live-value" data-live="wan-upload">—</p>
-        <p class="mikrotik-live-hint" data-live="wan-upload-hint">Live outbound speed</p>
       </article>
       <article class="mikrotik-live-card" data-metric="uptime">
         <p class="mikrotik-live-label">Uptime</p>
@@ -265,6 +313,75 @@
         </article>
       </div>
     </section>
+
+    <section class="mikrotik-clean-uplink" id="mikrotik-clean-uplink">
+      <div class="mikrotik-clean-uplink-head">
+        <div>
+          <h3>Clean uplink</h3>
+          <p class="mikrotik-uplink-sub">
+            Pass only internet through this MikroTik and block provider settings (Starlink Bypass or behind their router).
+          </p>
+        </div>
+        <span class="mikrotik-wifi-pill{% if clean_uplink_enabled %} is-on{% else %} is-off{% endif %}">
+          {% if clean_uplink_enabled %}On{% else %}Off{% endif %}
+        </span>
+      </div>
+
+      <div class="mikrotik-clean-uplink-grid">
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">Mode</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value">
+            {% if clean_uplink_enabled %}
+              {{ router.get_clean_uplink_mode_display }}
+            {% else %}
+              —
+            {% endif %}
+          </p>
+          <p class="mikrotik-live-hint">Bypass vs behind provider</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">WAN port</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value">{{ router.wan_interface|default:"ether1" }}</p>
+          <p class="mikrotik-live-hint">Cable from Starlink / ISP</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">LAN bridge</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value">{{ router.lan_bridge|default:"bridgeLocal" }}</p>
+          <p class="mikrotik-live-hint">Customer ports stay here</p>
+        </article>
+        <article class="mikrotik-uplink-card">
+          <p class="mikrotik-live-label">Provider block</p>
+          <p class="mikrotik-live-value mikrotik-uplink-value">
+            {% if clean_uplink_enabled and router.clean_uplink_mode == "behind" %}
+              {{ router.provider_gateway|default:"—" }}
+            {% elif clean_uplink_enabled %}
+              Not needed (bypass)
+            {% else %}
+              —
+            {% endif %}
+          </p>
+          <p class="mikrotik-live-hint">Admin IP blocked for users</p>
+        </article>
+      </div>
+
+      <div class="mikrotik-clean-uplink-actions">
+        <button
+          type="button"
+          class="btn {% if clean_uplink_enabled %}btn-danger{% else %}btn-primary{% endif %}"
+          data-open-modal="mikrotik-clean-uplink-modal"
+          {% if is_suspended %}disabled{% endif %}
+        >
+          {% if clean_uplink_enabled %}Disable clean uplink{% else %}Enable clean uplink{% endif %}
+        </button>
+        <p class="mikrotik-clean-uplink-note">
+          {% if is_suspended %}
+            Activate the account first to change clean uplink.
+          {% else %}
+            Choose Bypass or Behind provider, then enable. Keep “Separate WAN from bridge” OFF unless your PC is on ether2–ether5 — otherwise Winbox/API through Starlink will disconnect.
+          {% endif %}
+        </p>
+      </div>
+    </section>
   </section>
 </section>
 
@@ -291,8 +408,42 @@
     </div>
     <div class="role-modal-actions mikrotik-notice-actions">
       <button type="button" class="btn btn-ghost" data-close-access-notice>Dismiss</button>
+      <button type="button" class="btn btn-ghost" id="mikrotik-access-notice-reconnect" data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}" {% if is_suspended %}disabled{% endif %}>Repair &amp; reconnect</button>
       <button type="button" class="btn btn-primary" id="mikrotik-access-notice-retry">Try again</button>
     </div>
+  </div>
+</div>
+
+<div class="role-modal mikrotik-action-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-password-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-password-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Login required</p>
+        <h2 id="mikrotik-password-title">Enter MikroTik password</h2>
+        <p class="role-modal-sub" id="mikrotik-password-sub">The saved password does not match. Enter the Winbox username and password.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">×</button>
+    </header>
+    <form id="mikrotik-password-form" class="mikrotik-action-form" novalidate>
+      <div class="mikrotik-action-scroll">
+        <div class="field-error mikrotik-form-banner" id="mikrotik-password-error" hidden></div>
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field">
+            <label for="mikrotik-password-username">Username</label>
+            <input class="input form-control" id="mikrotik-password-username" type="text" value="{{ router.username }}" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="mikrotik-password-input">Password</label>
+            <input class="input form-control" id="mikrotik-password-input" type="password" autocomplete="current-password" required placeholder="Winbox password">
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-password-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="mikrotik-password-submit">Save &amp; reconnect</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -460,6 +611,90 @@
   </div>
 </div>
 
+{# —— Clean uplink modal (bypass / behind provider) —— #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-clean-uplink-modal" {% if open_mikrotik_modal != "mikrotik-clean-uplink-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-clean-uplink-modal" %}false{% else %}true{% endif %}">
+  <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-clean-uplink-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Uplink</p>
+        <h2 id="mikrotik-clean-uplink-title">{% if clean_uplink_enabled %}Disable clean uplink{% else %}Enable clean uplink{% endif %}</h2>
+        <p class="role-modal-sub">
+          {% if clean_uplink_enabled %}
+            Remove ISPCENTRIC firewall, DNS-force, and provider-block rules from “{{ router.name }}”.
+          {% else %}
+            Push clean-internet rules to “{{ router.name }}”. Pick Bypass if Starlink bypass is on, or Behind provider if their router is still routing.
+            <strong>Plug this PC into ether2–ether5 before enabling “Separate WAN from bridge”.</strong>
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="toggle_clean_uplink">
+      <div class="mikrotik-action-scroll">
+        {% if clean_uplink_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ clean_uplink_form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <fieldset class="mikrotik-clean-mode-fieldset">
+          <legend>Mode</legend>
+          {% for radio in clean_uplink_form.mode %}
+            <label class="mikrotik-clean-mode-option">
+              {{ radio.tag }}
+              <span>{{ radio.choice_label }}</span>
+            </label>
+          {% endfor %}
+          {% if clean_uplink_form.mode.errors %}<div class="field-error">{{ clean_uplink_form.mode.errors|striptags }}</div>{% endif %}
+        </fieldset>
+
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field">
+            <label for="{{ clean_uplink_form.wan_interface.id_for_label }}">{{ clean_uplink_form.wan_interface.label }}</label>
+            {{ clean_uplink_form.wan_interface }}
+            {% if clean_uplink_form.wan_interface.errors %}<div class="field-error">{{ clean_uplink_form.wan_interface.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ clean_uplink_form.lan_bridge.id_for_label }}">{{ clean_uplink_form.lan_bridge.label }}</label>
+            {{ clean_uplink_form.lan_bridge }}
+            {% if clean_uplink_form.lan_bridge.errors %}<div class="field-error">{{ clean_uplink_form.lan_bridge.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2" data-clean-gateway-field>
+            <label for="{{ clean_uplink_form.provider_gateway.id_for_label }}">{{ clean_uplink_form.provider_gateway.label }}</label>
+            {{ clean_uplink_form.provider_gateway }}
+            <p class="field-hint">{{ clean_uplink_form.provider_gateway.help_text }}</p>
+            {% if clean_uplink_form.provider_gateway.errors %}<div class="field-error">{{ clean_uplink_form.provider_gateway.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+
+        <label class="mikrotik-confirm-check">
+          {{ clean_uplink_form.separate_wan }}
+          <span>{{ clean_uplink_form.separate_wan.label }} — {{ clean_uplink_form.separate_wan.help_text }}</span>
+        </label>
+
+        <label class="mikrotik-confirm-check">
+          {{ clean_uplink_form.confirm }}
+          <span>
+            {% if clean_uplink_enabled %}
+              I confirm I want to disable clean uplink on this MikroTik.
+            {% else %}
+              I confirm I want to enable clean uplink on this MikroTik (cable Starlink to ether1 / WAN first).
+            {% endif %}
+          </span>
+        </label>
+        {% if clean_uplink_form.confirm.errors %}<div class="field-error">{{ clean_uplink_form.confirm.errors|striptags }}</div>{% endif %}
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
+        <button type="submit" class="btn {% if clean_uplink_enabled %}btn-danger{% else %}btn-primary{% endif %}">
+          {% if clean_uplink_enabled %}Disable clean uplink{% else %}Enable clean uplink{% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
 {# —— Suspend / activate modal —— #}
 <div class="role-modal mikrotik-action-modal" id="mikrotik-suspend-modal" {% if open_mikrotik_modal != "mikrotik-suspend-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-suspend-modal" %}false{% else %}true{% endif %}">
   <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
@@ -549,6 +784,21 @@
   {% if open_mikrotik_modal %}
   openModal("{{ open_mikrotik_modal|escapejs }}");
   {% endif %}
+
+  (function syncCleanGatewayField() {
+    var modal = document.getElementById("mikrotik-clean-uplink-modal");
+    if (!modal) return;
+    var gatewayField = modal.querySelector("[data-clean-gateway-field]");
+    if (!gatewayField) return;
+    function update() {
+      var behind = modal.querySelector('input[name="mode"][value="behind"]');
+      gatewayField.hidden = !(behind && behind.checked);
+    }
+    modal.querySelectorAll('input[name="mode"]').forEach(function (input) {
+      input.addEventListener("change", update);
+    });
+    update();
+  })();
 
   document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -644,6 +894,7 @@
   var grid = document.getElementById("mikrotik-live-grid");
   var facts = document.getElementById("mikrotik-live-facts");
   var uplink = document.getElementById("mikrotik-uplink");
+  var wanSpeeds = document.getElementById("mikrotik-wan-speeds");
   var blocked = document.getElementById("mikrotik-live-blocked");
   var blockedTitle = document.getElementById("mikrotik-live-blocked-title");
   var blockedText = document.getElementById("mikrotik-live-blocked-text");
@@ -696,14 +947,17 @@
     if (data && data.suspended) {
       return "This MikroTik account is suspended in ISPCENTRIC.";
     }
-    if (low.indexOf("timed out") >= 0) {
-      return "The router did not respond in time. Check that it is powered on and on the same network as this PC.";
+    if (data && data.auth_error) {
+      return "Login failed. The saved username or password is incorrect — open Login credentials in the sidebar and save the Winbox password.";
+    }
+    if (low.indexOf("login") >= 0 || low.indexOf("invalid user") >= 0 || low.indexOf("password") >= 0 || low.indexOf("cannot log in") >= 0) {
+      return "Login failed. The saved username or password may be incorrect — update credentials from the sidebar.";
+    }
+    if (low.indexOf("timed out") >= 0 || low.indexOf("no response") >= 0) {
+      return "No response from the router. Check that it is powered on, on the same network as this PC, and that RouterOS API (port 8728) is enabled. If Winbox also fails, reboot the MikroTik.";
     }
     if (low.indexOf("8728") >= 0 || low.indexOf("could not reach") >= 0) {
       return "Cannot reach the router on API port 8728. Enable RouterOS API (IP → Services) or verify the saved IP address.";
-    }
-    if (low.indexOf("login") >= 0 || low.indexOf("invalid user") >= 0 || low.indexOf("password") >= 0) {
-      return "Login failed. The saved username or password may be incorrect — update credentials from the sidebar.";
     }
     if (low.indexOf("missing") >= 0) {
       return "Router credentials are incomplete.";
@@ -745,6 +999,7 @@
     liveRoot.classList.remove("is-online");
     if (grid) grid.hidden = true;
     if (uplink) uplink.hidden = true;
+    if (wanSpeeds) wanSpeeds.hidden = true;
     if (blocked) blocked.hidden = false;
     if (blockedTitle) blockedTitle.textContent = "Cannot access this MikroTik";
     if (blockedText) blockedText.textContent = "You cannot access live data due to a connection or account issue.";
@@ -759,6 +1014,7 @@
     if (blocked) blocked.hidden = true;
     if (grid) grid.hidden = false;
     if (uplink) uplink.hidden = false;
+    if (wanSpeeds) wanSpeeds.hidden = false;
   }
 
   function renderLive(data) {
@@ -774,20 +1030,85 @@
     setHero(true);
     setText('[data-live="status"]', "Online");
     setText('[data-live="status-hint"]', "API connected");
-    setText('[data-live="wan-download"]', data.wan_download_label || "—");
-    setText(
-      '[data-live="wan-download-hint"]',
-      data.wan_speed_interface
-        ? ("Live on " + data.wan_speed_interface)
-        : "Live inbound speed"
-    );
-    setText('[data-live="wan-upload"]', data.wan_upload_label || "—");
-    setText(
-      '[data-live="wan-upload-hint"]',
-      data.wan_speed_interface
-        ? ("Live on " + data.wan_speed_interface)
-        : "Live outbound speed"
-    );
+
+    var speeds = Array.isArray(data.wan_speeds) ? data.wan_speeds : [];
+    var primarySpeed =
+      speeds.find(function (row) { return row && row.role === "primary"; }) ||
+      speeds[0] ||
+      null;
+    var secondarySpeed =
+      speeds.find(function (row) { return row && row.role === "secondary"; }) ||
+      null;
+    var secondaryPanel = document.querySelector('[data-wan-speed="secondary"]');
+    var speedsRoot = wanSpeeds;
+
+    if (primarySpeed) {
+      setText(
+        '[data-live="wan-speed-primary-label"]',
+        primarySpeed.label || ("Primary WAN · " + (primarySpeed.interface || ""))
+      );
+      setText(
+        '[data-live="wan-speed-primary-download"]',
+        primarySpeed.download_label || "—"
+      );
+      setText(
+        '[data-live="wan-speed-primary-upload"]',
+        primarySpeed.upload_label || "—"
+      );
+      setText(
+        '[data-live="wan-speed-primary-hint"]',
+        primarySpeed.interface
+          ? ("Live on " + primarySpeed.interface)
+          : "Configured WAN port"
+      );
+    } else {
+      setText(
+        '[data-live="wan-speed-primary-label"]',
+        data.wan_speed_interface
+          ? ("WAN · " + data.wan_speed_interface)
+          : "Primary WAN"
+      );
+      setText('[data-live="wan-speed-primary-download"]', data.wan_download_label || "—");
+      setText('[data-live="wan-speed-primary-upload"]', data.wan_upload_label || "—");
+      setText(
+        '[data-live="wan-speed-primary-hint"]',
+        data.wan_speed_interface
+          ? ("Live on " + data.wan_speed_interface)
+          : "No WAN port configured"
+      );
+    }
+
+    if (secondaryPanel) {
+      if (secondarySpeed) {
+        secondaryPanel.hidden = false;
+        setText(
+          '[data-live="wan-speed-secondary-label"]',
+          secondarySpeed.label || ("Secondary WAN · " + (secondarySpeed.interface || ""))
+        );
+        setText(
+          '[data-live="wan-speed-secondary-download"]',
+          secondarySpeed.download_label || "—"
+        );
+        setText(
+          '[data-live="wan-speed-secondary-upload"]',
+          secondarySpeed.upload_label || "—"
+        );
+        setText(
+          '[data-live="wan-speed-secondary-hint"]',
+          secondarySpeed.interface
+            ? ("Live on " + secondarySpeed.interface)
+            : "Secondary / backup uplink"
+        );
+      } else {
+        secondaryPanel.hidden = true;
+      }
+    }
+    var speedsGrid = document.getElementById("mikrotik-wan-speeds-grid");
+    if (speedsGrid) {
+      speedsGrid.classList.toggle("has-secondary", Boolean(secondarySpeed));
+    }
+    if (speedsRoot) speedsRoot.hidden = false;
+
     setText('[data-live="uptime"]', data.uptime || "—");
     setText('[data-live="cpu"]', data.cpu_load == null ? "—" : data.cpu_load + "%");
     setText('[data-live="memory"]', data.memory_used_pct == null ? "—" : data.memory_used_pct + "%");
@@ -871,6 +1192,146 @@
       loadLive(true);
     });
   }
+  var noticeReconnect = document.getElementById("mikrotik-access-notice-reconnect");
+  var detailReconnect = document.getElementById("mikrotik-detail-reconnect");
+
+  function runReconnect(btn, onSuccess, credentials) {
+    var url = btn.getAttribute("data-reconnect-url");
+    if (!url || btn.disabled) return;
+    var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    var token = match ? decodeURIComponent(match[1]) : "";
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = "Repairing…";
+    if (noticeReason) {
+      noticeReason.textContent = "Scanning LAN and restoring bridge/firewall access…";
+    }
+    var body = new URLSearchParams();
+    if (credentials) {
+      if (credentials.username) body.set("username", credentials.username);
+      if (credentials.password) body.set("password", credentials.password);
+    }
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRFToken": token,
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      credentials: "same-origin",
+      body: body.toString()
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { okHttp: res.ok, data: data || {} };
+        });
+      })
+      .then(function (result) {
+        var data = result.data;
+        if (!result.okHttp || !data.ok) {
+          if (data.auth_error) {
+            var pwModal = document.getElementById("mikrotik-password-modal");
+            var pwErr = document.getElementById("mikrotik-password-error");
+            if (pwErr) {
+              pwErr.hidden = false;
+              pwErr.textContent = data.error || "Wrong username or password.";
+            }
+            if (pwModal) {
+              closeNotice();
+              pwModal.hidden = false;
+              pwModal.setAttribute("aria-hidden", "false");
+              document.body.classList.add("role-modal-open");
+              var pw = document.getElementById("mikrotik-password-input");
+              if (pw) pw.focus();
+            }
+            return;
+          }
+          if (noticeReason) {
+            noticeReason.textContent = data.error || "Could not reconnect. Plug into ether2–ether5 and try again.";
+          }
+          if (!notice || notice.hidden) {
+            openNotice(data.error || "Could not reconnect to this MikroTik.");
+          }
+          return;
+        }
+        var pwModal = document.getElementById("mikrotik-password-modal");
+        if (pwModal) {
+          pwModal.hidden = true;
+          pwModal.setAttribute("aria-hidden", "true");
+        }
+        if (typeof onSuccess === "function") onSuccess(data);
+      })
+      .catch(function () {
+        var msg = "Network error while repairing. Check the cable and try again.";
+        if (noticeReason) noticeReason.textContent = msg;
+        if (!notice || notice.hidden) openNotice(msg);
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = original || "Reconnect";
+        var pwSubmit = document.getElementById("mikrotik-password-submit");
+        if (pwSubmit) {
+          pwSubmit.disabled = false;
+          pwSubmit.textContent = "Save & reconnect";
+        }
+      });
+  }
+
+  if (noticeReconnect) {
+    noticeReconnect.addEventListener("click", function () {
+      runReconnect(noticeReconnect, function (data) {
+        closeNotice();
+        if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
+        loadLive(true);
+      });
+    });
+  }
+  if (detailReconnect) {
+    detailReconnect.addEventListener("click", function () {
+      runReconnect(detailReconnect, function (data) {
+        closeNotice();
+        if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
+        loadLive(true);
+      });
+    });
+  }
+  var passwordForm = document.getElementById("mikrotik-password-form");
+  if (passwordForm) {
+    passwordForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var username = (document.getElementById("mikrotik-password-username").value || "").trim();
+      var password = document.getElementById("mikrotik-password-input").value || "";
+      var pwErr = document.getElementById("mikrotik-password-error");
+      if (!username || !password) {
+        if (pwErr) {
+          pwErr.hidden = false;
+          pwErr.textContent = "Enter both username and password.";
+        }
+        return;
+      }
+      var btn = detailReconnect || noticeReconnect;
+      if (!btn) return;
+      var pwSubmit = document.getElementById("mikrotik-password-submit");
+      if (pwSubmit) {
+        pwSubmit.disabled = true;
+        pwSubmit.textContent = "Checking…";
+      }
+      runReconnect(btn, function (data) {
+        closeNotice();
+        if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
+        loadLive(true);
+      }, { username: username, password: password });
+    });
+  }
+  document.querySelectorAll("[data-close-password-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      var pwModal = document.getElementById("mikrotik-password-modal");
+      if (!pwModal) return;
+      pwModal.hidden = true;
+      pwModal.setAttribute("aria-hidden", "true");
+    });
+  });
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () { loadLive(true); });
   }

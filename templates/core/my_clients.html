@@ -5,16 +5,39 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
+{% if pppoe_compulsory %}
+  <div class="settings-policy-banner">
+    <strong>PPPoE compulsory check is on.</strong>
+    Only registered PPPoE clients receive internet.
+    <a href="{% url 'core:client_settings' %}">Manage in client settings</a>
+  </div>
+{% endif %}
+
 <section class="panel clients-panel">
   <div class="panel-head-row">
     <div>
       <h2>Clients</h2>
-      <p class="panel-sub">Browse subscribers by how they connect to your network.</p>
+      <p class="panel-sub">
+        {% if pppoe_compulsory %}
+          Live view: who is surfing, whether their router is connected, and each client’s status.
+        {% else %}
+          Browse subscribers by how they connect to your network.
+        {% endif %}
+      </p>
     </div>
     {% if active_tab == 'pppoe' %}
-      <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
-        Register PPPoE client
-      </button>
+      <div class="clients-toolbar-actions">
+        <form method="post" class="clients-sync-form">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="sync_pppoe_secrets">
+          <button type="submit" class="btn btn-ghost">
+            Enable PPPoE + sync secrets
+          </button>
+        </form>
+        <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+          Register PPPoE client
+        </button>
+      </div>
     {% endif %}
   </div>
 
@@ -54,9 +77,9 @@
   {% if active_tab == 'pppoe' %}
     {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." service_label="PPPoE" show_pppoe=1 show_router=1 %}
   {% elif active_tab == 'static' %}
-    {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." service_label="Static" show_router=1 %}
+    {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text=static_empty service_label="Static" show_router=1 %}
   {% else %}
-    {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 %}
+    {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text=hotspot_empty service_label="Hotspot" show_router=1 %}
   {% endif %}
 </section>
 
@@ -68,7 +91,7 @@
       <div>
         <p class="role-modal-kicker">PPPoE</p>
         <h2 id="pppoe-register-title">Register PPPoE client</h2>
-        <p class="role-modal-sub">Add a new PPPoE subscriber to this organization. An account number is created automatically.</p>
+        <p class="role-modal-sub">Add a new PPPoE subscriber. Username and password are created on the assigned MikroTik under PPP → Secrets so the client can dial and get internet.</p>
       </div>
       <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
     </header>
@@ -112,7 +135,9 @@
             <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
             {{ pppoe_form.router }}
             {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
-            <p class="field-hint">Assign the MikroTik this client connects through for live status.</p>
+            <p class="field-hint">
+              Required — ISPCENTRIC creates the PPPoE server, secret, and NAT on this MikroTik so the client can surf.
+            </p>
           </div>
           <div class="field">
             <label for="{{ pppoe_form.pppoe_username.id_for_label }}">{{ pppoe_form.pppoe_username.label }}</label>
@@ -205,7 +230,119 @@
   });
 })();
 </script>
-{% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}
+{% if pppoe_compulsory %}
+<script>
+(function () {
+  var liveUrl = "{% url 'core:clients_live_status' %}";
+  var timer = null;
+  var started = false;
+
+  function setRouterEl(el, online, label) {
+    if (!el) return;
+    if (!el.classList.contains("mikrotik-link-status")) {
+      el.textContent = label || "No router";
+      return;
+    }
+    el.classList.remove("is-checking", "is-connected", "is-disconnected");
+    if (label === "Suspended") {
+      el.classList.add("is-disconnected");
+    } else {
+      el.classList.add(online ? "is-connected" : "is-disconnected");
+    }
+    var text = el.querySelector(".mikrotik-link-label");
+    if (text) text.textContent = label || (online ? "Connected" : "Disconnected");
+  }
+
+  function setSurfPill(el, surfing, label) {
+    if (!el) return;
+    el.classList.remove("is-checking", "is-surfing", "is-idle", "is-blocked", "is-unknown");
+    var text = label || "Not surfing";
+    if (text === "Surfing" || surfing) {
+      el.classList.add("is-surfing");
+      text = "Surfing";
+    } else if (text === "Blocked") {
+      el.classList.add("is-blocked");
+    } else if (text === "Unknown") {
+      el.classList.add("is-unknown");
+    } else {
+      el.classList.add("is-idle");
+      text = "Not surfing";
+    }
+    el.textContent = text;
+  }
+
+  function setStatusBadge(el, status, label) {
+    if (!el) return;
+    el.classList.remove("badge-success", "badge-warn", "badge-muted", "badge-info");
+    if (status === "active") el.classList.add("badge-success");
+    else if (status === "suspended") el.classList.add("badge-warn");
+    else if (status === "paused") el.classList.add("badge-info");
+    else el.classList.add("badge-muted");
+    if (label) el.textContent = label;
+  }
+
+  function applyLive(data) {
+    if (!data || !data.ok || !data.clients) return;
+    data.clients.forEach(function (item) {
+      var id = String(item.id);
+      document.querySelectorAll('[data-client-surf="' + id + '"]').forEach(function (el) {
+        setSurfPill(el, !!item.surfing, item.surfing_label);
+      });
+      document.querySelectorAll('[data-client-router="' + id + '"]').forEach(function (el) {
+        setRouterEl(el, !!item.router_online, item.router_label);
+      });
+      document.querySelectorAll('[data-client-status="' + id + '"]').forEach(function (el) {
+        setStatusBadge(el, item.status, item.status_label);
+      });
+      if (item.router_id) {
+        document.querySelectorAll('[data-router-status="' + item.router_id + '"]').forEach(function (el) {
+          setRouterEl(el, !!item.router_online, item.router_label);
+        });
+      }
+    });
+  }
+
+  function refreshLive(force) {
+    if (document.hidden) return;
+    var url = liveUrl;
+    if (force) url += (liveUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(applyLive)
+      .catch(function () {
+        document.querySelectorAll("[data-client-surf].is-checking").forEach(function (el) {
+          setSurfPill(el, false, "Unknown");
+        });
+        document.querySelectorAll("[data-client-router].is-checking, [data-router-status].is-checking").forEach(function (el) {
+          setRouterEl(el, false, "Disconnected");
+        });
+      });
+  }
+
+  function startPolling() {
+    if (started) return;
+    started = true;
+    refreshLive(true);
+    timer = setInterval(function () { refreshLive(false); }, 25000);
+  }
+
+  if (window.requestIdleCallback) {
+    window.requestIdleCallback(startPolling, { timeout: 800 });
+  } else {
+    setTimeout(startPolling, 300);
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshLive(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+{% elif active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}
 <script>
 (function () {
   if (!document.querySelector("[data-router-status]")) return;

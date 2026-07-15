@@ -17,6 +17,7 @@ _IMAGE_FILES = {
     MikroTikRouter.ModelChoice.HEX: "img/mikrotik/rb750gr3.webp",
     MikroTikRouter.ModelChoice.HEX_S: "img/mikrotik/rb760igs.webp",
     MikroTikRouter.ModelChoice.L009: "img/mikrotik/l009.webp",
+    MikroTikRouter.ModelChoice.RB951: "img/mikrotik/hap_lite.webp",
     MikroTikRouter.ModelChoice.RB2011: "img/mikrotik/rb2011.webp",
     MikroTikRouter.ModelChoice.RB3011: "img/mikrotik/rb3011.webp",
     MikroTikRouter.ModelChoice.RB4011: "img/mikrotik/rb4011.webp",
@@ -41,7 +42,9 @@ def mikrotik_model_image(model_value: str) -> str:
 def mikrotik_model_catalog() -> list[dict]:
     """Choices with short labels and image URLs for the visual model picker."""
     global _cached_catalog
-    if _cached_catalog is not None:
+    # Rebuild when choice set changes (e.g. new model added).
+    expected = len(MikroTikRouter.ModelChoice.choices)
+    if _cached_catalog is not None and len(_cached_catalog) == expected:
         return _cached_catalog
 
     catalog = []

@@ -8,7 +8,10 @@
 <section class="panel">
   <div class="panel-head-row">
     <h2>Routers ({{ routers|length }})</h2>
-    <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
+    <div class="mikrotik-list-actions">
+      <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>Refresh status</button>
+      <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
+    </div>
   </div>
 
   {% if routers %}
@@ -28,7 +31,7 @@
       </thead>
       <tbody>
         {% for router in routers %}
-          <tr data-router-row="{{ router.id }}" class="mikrotik-router-row">
+          <tr data-router-row="{{ router.id }}" class="mikrotik-router-row{% if router.account_status == 'suspended' %} is-suspended{% endif %}">
             <td>
               <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
             </td>
@@ -40,7 +43,7 @@
             </td>
             <td>{{ router.get_model_display }}</td>
             <td>{{ router.location|default:"—" }}</td>
-            <td>{{ router.host }}</td>
+            <td data-router-host-cell="{{ router.id }}">{{ router.host }}</td>
             <td>{{ router.wifi_ssid|default:"—" }}</td>
             <td>{{ router.username }}</td>
             <td>
@@ -49,16 +52,117 @@
               </span>
             </td>
             <td class="mikrotik-router-actions">
+              <button
+                type="button"
+                class="btn btn-ghost mikrotik-reconnect-btn"
+                data-reconnect-router="{{ router.id }}"
+                data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
+                data-router-name="{{ router.name }}"
+                data-router-host="{{ router.host }}"
+                data-router-username="{{ router.username }}"
+                {% if router.account_status == 'suspended' %}disabled title="Activate account first"{% else %}title="Repair connection and bring this MikroTik back online"{% endif %}
+              >Reconnect</button>
               <a class="btn btn-ghost mikrotik-view-btn" href="{% url 'core:mikrotik_detail' router.id %}">View</a>
+              <button
+                type="button"
+                class="btn btn-danger mikrotik-delete-btn"
+                data-open-mikrotik-delete
+                data-delete-url="{% url 'core:mikrotik_delete' router.id %}"
+                data-router-name="{{ router.name }}"
+                data-router-host="{{ router.host }}"
+                data-customer-count="{{ router.customer_count }}"
+                title="Remove this MikroTik from the system"
+              >Delete</button>
             </td>
           </tr>
         {% endfor %}
       </tbody>
     </table>
+    <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
   {% else %}
     <p class="empty">No routers onboarded yet. Use <strong>Connect to a New MikroTik</strong> to add one.</p>
   {% endif %}
 </section>
+
+{# Password popup when Reconnect hits wrong credentials #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-password-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-password-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Login required</p>
+        <h2 id="mikrotik-password-title">Enter MikroTik password</h2>
+        <p class="role-modal-sub" id="mikrotik-password-sub">
+          The saved password does not match this router. Enter the Winbox username and password to reconnect.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">×</button>
+    </header>
+    <form id="mikrotik-password-form" class="mikrotik-action-form" novalidate>
+      <input type="hidden" id="mikrotik-password-router-id" value="">
+      <input type="hidden" id="mikrotik-password-reconnect-url" value="">
+      <div class="mikrotik-action-scroll">
+        <div class="field-error mikrotik-form-banner" id="mikrotik-password-error" hidden></div>
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label for="mikrotik-password-host">Router</label>
+            <input class="input form-control" id="mikrotik-password-host" type="text" readonly>
+          </div>
+          <div class="field">
+            <label for="mikrotik-password-username">Username</label>
+            <input class="input form-control" id="mikrotik-password-username" name="username" type="text" autocomplete="username" required>
+          </div>
+          <div class="field">
+            <label for="mikrotik-password-input">Password</label>
+            <div class="password-field">
+              <input class="input form-control password-input" id="mikrotik-password-input" name="password" type="password" autocomplete="current-password" required placeholder="Winbox password">
+              <button type="button" class="password-toggle" data-toggle-password="mikrotik-password-input" aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-password-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="mikrotik-password-submit">Save &amp; reconnect</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# Confirm permanently removing a MikroTik from this workspace #}
+<div class="role-modal mikrotik-action-modal" id="mikrotik-delete-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-mikrotik-delete></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-delete-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Danger zone</p>
+        <h2 id="mikrotik-delete-title">Delete MikroTik</h2>
+        <p class="role-modal-sub" id="mikrotik-delete-sub">
+          This permanently removes the router from ISPCENTRIC. The physical device is not reset.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-mikrotik-delete aria-label="Close">×</button>
+    </header>
+    <form method="post" id="mikrotik-delete-form" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <div class="mikrotik-action-scroll">
+        <div class="mikrotik-form-banner mikrotik-delete-summary" id="mikrotik-delete-summary"></div>
+        <p class="mikrotik-delete-clients-note" id="mikrotik-delete-clients-note" hidden></p>
+        <label class="mikrotik-confirm-check">
+          <input type="checkbox" name="confirm" id="id_delete_mikrotik_confirm" required>
+          <span>I confirm I want to delete this MikroTik from the system.</span>
+        </label>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-mikrotik-delete>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="mikrotik-delete-submit">Delete MikroTik</button>
+      </div>
+    </form>
+  </div>
+</div>
 
 <div class="role-modal mikrotik-onboard-modal" id="mikrotik-onboard-modal" {% if not open_mikrotik_onboard %}hidden{% endif %} aria-hidden="{% if open_mikrotik_onboard %}false{% else %}true{% endif %}">
   <div class="role-modal-backdrop" data-close-mikrotik-onboard></div>
@@ -81,6 +185,7 @@
       <input type="hidden" name="wifi_ssid_original" id="id_mikrotik_wifi_ssid_original" value="{{ request.POST.wifi_ssid_original|default:'' }}">
       <input type="hidden" name="wifi_password_original" id="id_mikrotik_wifi_password_original" value="{{ request.POST.wifi_password_original|default:'' }}">
       <input type="hidden" name="wifi_mode" id="id_mikrotik_wifi_mode" value="{{ request.POST.wifi_mode|default:'' }}">
+      <input type="hidden" name="wifi_activate" id="id_mikrotik_wifi_activate" value="{{ request.POST.wifi_activate|default:'0' }}">
 
       <div class="mikrotik-onboard-scroll">
         <section class="mikrotik-step" id="mikrotik-step-connect" data-step="connect">
@@ -150,9 +255,10 @@
                 <span class="mikrotik-model-trigger-thumb" id="mikrotik-model-trigger-thumb" hidden>
                   <img src="" alt="" width="40" height="30" id="mikrotik-model-trigger-img">
                 </span>
-                <span class="mikrotik-model-trigger-label" id="mikrotik-model-trigger-label">Select model…</span>
+                <span class="mikrotik-model-trigger-label" id="mikrotik-model-trigger-label">Auto-detecting…</span>
                 <span class="mikrotik-model-trigger-caret" aria-hidden="true">▾</span>
               </button>
+              <p class="mikrotik-model-auto" id="mikrotik-model-auto">Model is picked automatically from the router board name after Connect.</p>
               <div class="mikrotik-model-picker" id="mikrotik-model-picker" role="listbox" aria-labelledby="mikrotik-model-label" hidden>
                 {% for item in mikrotik_models %}
                   <button
@@ -201,16 +307,25 @@
                 </button>
               </div>
             </div>
-            <div class="field field-span-2 mikrotik-wifi-block">
-              <p class="mikrotik-section-label">Wi‑Fi</p>
-              <p class="mikrotik-section-hint" id="mikrotik-wifi-hint">Current values load from the router after connect — edit only if you want to change them.</p>
+            <div class="field field-span-2 mikrotik-wifi-block" id="mikrotik-wifi-block">
+              <div class="mikrotik-wifi-head">
+                <div>
+                  <p class="mikrotik-section-label">Wi‑Fi</p>
+                  <p class="mikrotik-section-hint" id="mikrotik-wifi-hint">Turn on to activate Wi‑Fi and edit the name or password.</p>
+                </div>
+                <label class="mikrotik-wifi-switch" for="id_mikrotik_wifi_toggle">
+                  <input type="checkbox" id="id_mikrotik_wifi_toggle" {% if request.POST.wifi_activate == '1' %}checked{% endif %}>
+                  <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+                  <span class="mikrotik-wifi-switch-text" id="mikrotik-wifi-toggle-label">Off</span>
+                </label>
+              </div>
             </div>
-            <div class="field">
+            <div class="field mikrotik-wifi-fields" id="mikrotik-wifi-fields">
               <label for="id_mikrotik_wifi_ssid">Wi‑Fi name</label>
               {{ onboard_form.wifi_ssid }}
               {% if onboard_form.wifi_ssid.errors %}<div class="field-error">{{ onboard_form.wifi_ssid.errors|striptags }}</div>{% endif %}
             </div>
-            <div class="field">
+            <div class="field mikrotik-wifi-fields" id="mikrotik-wifi-password-field">
               <label for="id_mikrotik_wifi_password">Wi‑Fi password</label>
               <div class="password-field">
                 {{ onboard_form.wifi_password }}
@@ -291,6 +406,7 @@
   var modelTriggerThumb = document.getElementById("mikrotik-model-trigger-thumb");
   var modelTriggerImg = document.getElementById("mikrotik-model-trigger-img");
   var modelTriggerLabel = document.getElementById("mikrotik-model-trigger-label");
+  var modelAuto = document.getElementById("mikrotik-model-auto");
   var hostInput = document.getElementById("id_mikrotik_host");
   var usernameInput = document.getElementById("id_mikrotik_username");
   var passwordInput = document.getElementById("id_mikrotik_password");
@@ -302,7 +418,11 @@
   var wifiSsidOriginal = document.getElementById("id_mikrotik_wifi_ssid_original");
   var wifiPasswordOriginal = document.getElementById("id_mikrotik_wifi_password_original");
   var wifiModeInput = document.getElementById("id_mikrotik_wifi_mode");
+  var wifiActivateInput = document.getElementById("id_mikrotik_wifi_activate");
+  var wifiToggle = document.getElementById("id_mikrotik_wifi_toggle");
+  var wifiToggleLabel = document.getElementById("mikrotik-wifi-toggle-label");
   var wifiHint = document.getElementById("mikrotik-wifi-hint");
+  var wifiBlock = document.getElementById("mikrotik-wifi-block");
   var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
 
   function escapeHtml(value) {
@@ -368,10 +488,37 @@
     }
   }
 
+  function setWifiToggle(on, opts) {
+    var enabled = !!on;
+    opts = opts || {};
+    if (wifiToggle) wifiToggle.checked = enabled;
+    if (wifiActivateInput) wifiActivateInput.value = enabled ? "1" : "0";
+    if (wifiToggleLabel) wifiToggleLabel.textContent = enabled ? "On" : "Off";
+    if (wifiBlock) wifiBlock.classList.toggle("is-wifi-on", enabled);
+    document.querySelectorAll(".mikrotik-wifi-fields").forEach(function (el) {
+      el.classList.toggle("is-disabled", !enabled);
+    });
+    if (wifiSsidInput) {
+      wifiSsidInput.readOnly = !enabled;
+      wifiSsidInput.tabIndex = enabled ? 0 : -1;
+    }
+    if (wifiPasswordInput) {
+      wifiPasswordInput.readOnly = !enabled;
+      wifiPasswordInput.tabIndex = enabled ? 0 : -1;
+    }
+    if (!wifiHint || opts.keepHint) return;
+    if (enabled) {
+      wifiHint.textContent = "Wi‑Fi will be activated on onboard. Edit the name and password below, then save.";
+    } else {
+      wifiHint.textContent = "Turn on to activate Wi‑Fi and edit the name or password.";
+    }
+  }
+
   function fillWifiFromRouter(data) {
     var ssid = (data && data.wifi_ssid) ? String(data.wifi_ssid) : "";
     var pass = (data && data.wifi_password) ? String(data.wifi_password) : "";
     var mode = (data && data.wifi_mode) ? String(data.wifi_mode) : "";
+    var enabled = !!(data && data.wifi_enabled);
     if (wifiSsidInput) {
       wifiSsidInput.value = ssid;
       wifiSsidInput.placeholder = ssid ? "Current Wi‑Fi name" : "e.g. ISPCENTRIC-WiFi";
@@ -384,16 +531,33 @@
     if (wifiSsidOriginal) wifiSsidOriginal.value = ssid;
     if (wifiPasswordOriginal) wifiPasswordOriginal.value = pass;
     if (wifiModeInput) wifiModeInput.value = mode;
+
+    // Prefer router state; if Wi‑Fi is already on, leave toggle on so user can edit.
+    setWifiToggle(enabled, { keepHint: true });
     if (!wifiHint) return;
-    if (ssid && pass) {
-      wifiHint.textContent = "Showing the current Wi‑Fi name and password from this router — edit only if you want to change them.";
+    if (enabled) {
+      if (ssid && pass) {
+        wifiHint.textContent = "Wi‑Fi is on. Showing current name and password — edit if you want to change them.";
+      } else if (ssid) {
+        wifiHint.textContent = "Wi‑Fi is on. Showing the current name — enter a password if you want to change it.";
+      } else {
+        wifiHint.textContent = "Wi‑Fi is on. Enter a name and password to update it.";
+      }
     } else if (ssid) {
-      wifiHint.textContent = "Showing the current Wi‑Fi name. The password could not be read from this router — enter it only if you want to change it.";
-    } else if (pass) {
-      wifiHint.textContent = "Showing the current Wi‑Fi password. Enter or confirm the Wi‑Fi name, then edit if needed.";
+      wifiHint.textContent = "Wi‑Fi is currently off. Turn it on to activate and edit the name or password.";
     } else {
-      wifiHint.textContent = "No Wi‑Fi settings were found on this router. Enter a name and password to set them, or leave blank.";
+      wifiHint.textContent = "Turn on to activate Wi‑Fi and set a name and password.";
     }
+  }
+
+  if (wifiToggle) {
+    wifiToggle.addEventListener("change", function () {
+      setWifiToggle(wifiToggle.checked);
+      if (wifiToggle.checked && wifiSsidInput && !wifiSsidInput.value.trim()) {
+        wifiSsidInput.focus();
+      }
+    });
+    setWifiToggle(wifiToggle.checked, { keepHint: true });
   }
 
   function syncConnectCredentialsFromOnboard() {
@@ -444,7 +608,7 @@
     }
   }
 
-  function setSelectedModel(value, closeAfter) {
+  function setSelectedModel(value, closeAfter, meta) {
     if (!modelInput) return;
     var next = value || "";
     if (next && modelInput.querySelector('option[value="' + next + '"]')) {
@@ -466,7 +630,39 @@
       });
     }
     updateModelTrigger(matched);
+    if (modelAuto) {
+      var board = meta && meta.board ? String(meta.board) : "";
+      var auto = meta && meta.auto;
+      if (auto && next) {
+        modelAuto.hidden = false;
+        modelAuto.textContent = board
+          ? ("Auto-detected: " + board + " → " + ((matched && matched.getAttribute("data-label")) || next))
+          : ("Auto-detected model: " + ((matched && matched.getAttribute("data-label")) || next));
+      } else if (!modelAuto.dataset.keepHint) {
+        modelAuto.hidden = false;
+        modelAuto.textContent = "Model is picked automatically from the router board name after Connect.";
+      }
+    }
     if (closeAfter !== false) closeModelPicker();
+  }
+
+  function autoPickModel(model, board) {
+    if (!model && board) {
+      // Client-side fallback for common boards if connect omitted model.
+      var text = String(board).toLowerCase().replace(/[\s_-]+/g, "");
+      if (text.indexOf("rb951") >= 0 || text.indexOf("951ui") >= 0) model = "rb951";
+      else if (text.indexOf("hapax3") >= 0) model = "hap_ax3";
+      else if (text.indexOf("hapax2") >= 0) model = "hap_ax2";
+      else if (text.indexOf("hapac3") >= 0) model = "hap_ac3";
+      else if (text.indexOf("hapac2") >= 0) model = "hap_ac2";
+      else if (text.indexOf("rb5009") >= 0) model = "rb5009";
+      else if (text.indexOf("rb4011") >= 0) model = "rb4011";
+      else if (text.indexOf("rb3011") >= 0) model = "rb3011";
+      else if (text.indexOf("rb2011") >= 0) model = "rb2011";
+      else if (text.indexOf("l009") >= 0) model = "l009";
+      else model = "other";
+    }
+    if (model) setSelectedModel(model, false, { auto: true, board: board || "" });
   }
 
   if (modelPicker && modelInput) {
@@ -520,12 +716,19 @@
   function applyDevice(device) {
     if (!device || !hostInput) return;
     hostInput.value = device.host || "";
-    if (device.model) setSelectedModel(device.model, false);
+    if (device.model || device.board) autoPickModel(device.model, device.board);
     if (nameInput && device.name && !nameInput.value) nameInput.value = device.name;
     closeHostPicker();
     if (device.onboarded) {
       setHostHint("Already onboarded — reconnect or pick a green (new) router.");
       showConnectStatus("This MikroTik is already onboarded.", true);
+    } else if (device.needs_api) {
+      setHostHint("Router seen on LAN — enable API port 8728 in Winbox first.");
+      showConnectStatus(
+        "Found " + (device.board || device.name || "MikroTik") +
+        ", but API is off. In Winbox (Neighbors → MAC): IP → Services → enable api, then Connect again.",
+        true
+      );
     } else {
       setHostHint("Selected new router " + (device.name || device.host));
       showConnectStatus("");
@@ -550,18 +753,27 @@
     }
     var newCount = discoveredDevices.filter(function (d) { return !d.onboarded; }).length;
     var onboardedCount = discoveredDevices.length - newCount;
-    setStatus(newCount + " new · " + onboardedCount + " onboarded");
+    var needsApiCount = discoveredDevices.filter(function (d) { return d.needs_api; }).length;
+    if (needsApiCount) {
+      setStatus(needsApiCount + " found · API off");
+    } else {
+      setStatus(newCount + " new · " + onboardedCount + " onboarded");
+    }
     var currentHost = hostInput ? hostInput.value.trim() : "";
     hostPicker.innerHTML = discoveredDevices.map(function (device, idx) {
       var selected = currentHost && currentHost === device.host ? " is-selected" : "";
       var stateClass = device.onboarded ? " is-onboarded" : " is-new";
-      var badge = device.onboarded ? "Onboarded" : "New";
+      if (device.needs_api) stateClass += " is-needs-api";
+      var badge = device.onboarded ? "Onboarded" : (device.needs_api ? "Enable API" : "New");
+      var subtitle = device.host
+        ? (device.host_guess ? device.host + " (guess)" : device.host)
+        : "No reachable API IP yet";
       return (
         '<button type="button" class="mikrotik-host-option' + stateClass + selected + '" role="option" data-idx="' + idx + '" data-host="' + escapeHtml(device.host) + '" data-onboarded="' + (device.onboarded ? "1" : "0") + '">' +
           '<span class="mikrotik-discover-dot" aria-hidden="true"></span>' +
           '<span class="mikrotik-host-option-text">' +
-            '<strong>' + escapeHtml(device.name || device.host) + '</strong>' +
-            '<span class="mikrotik-discover-ip">' + escapeHtml(device.host) + '</span>' +
+            '<strong>' + escapeHtml(device.name || device.board || device.host) + '</strong>' +
+            '<span class="mikrotik-discover-ip">' + escapeHtml(subtitle) + '</span>' +
           '</span>' +
           '<span class="mikrotik-host-badge">' + badge + '</span>' +
         '</button>'
@@ -573,7 +785,18 @@
         applyDevice(discoveredDevices[Number(btn.getAttribute("data-idx"))]);
       });
     });
-  }
+    // Always prefer a live new (not onboarded) MikroTik when the IP field is empty.
+    if (hostInput && !hostInput.value.trim()) {
+      var autoPick = null;
+      for (var i = 0; i < discoveredDevices.length; i++) {
+        if (!discoveredDevices[i].onboarded && discoveredDevices[i].host) {
+          autoPick = discoveredDevices[i];
+          break;
+        }
+      }
+      if (!autoPick && discoveredDevices.length === 1) autoPick = discoveredDevices[0];
+      if (autoPick) applyDevice(autoPick);
+    }  }
 
   function runDiscovery(full) {
     if (discoverInFlight) return;
@@ -643,19 +866,19 @@
     var host = hostInput.value.trim();
     var username = usernameInput.value.trim();
     var password = passwordInput.value;
-    if (!host) {
-      showConnectStatus("Enter or select a MikroTik IP.", true);
-      hostInput.focus();
-      return;
-    }
     if (!username) {
       showConnectStatus("Enter the router username.", true);
       usernameInput.focus();
       return;
     }
+    // Empty host is allowed: backend discovers and picks the working MikroTik IP.
+    if (!host && discoveredDevices && discoveredDevices.length === 1 && discoveredDevices[0].host) {
+      host = discoveredDevices[0].host;
+      hostInput.value = host;
+    }
 
     connectBtn.disabled = true;
-    showConnectStatus("Connecting to " + host + "…");
+    showConnectStatus(host ? ("Finding MikroTik at " + host + "…") : "Finding the right MikroTik IP…");
 
     var body = new FormData();
     body.append("host", host);
@@ -676,18 +899,26 @@
           return;
         }
         var data = result.data;
+        var workingHost = (data.host || host || "").trim();
+        if (workingHost && hostInput) hostInput.value = workingHost;
+        if (hostOnboard && workingHost) hostOnboard.value = workingHost;
         if (nameInput) nameInput.value = data.name || nameInput.value || "";
-        if (data.model) setSelectedModel(data.model, false);
+        if (data.model || data.board) autoPickModel(data.model, data.board);
         syncOnboardCredentialsFromConnect();
         fillWifiFromRouter(data);
-        if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || host);
+        if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || workingHost);
         if (connectedMeta) {
-          var bits = [data.host || host];
+          var bits = [workingHost];
           if (data.board) bits.push(data.board);
           if (data.version) bits.push("RouterOS " + data.version);
+          if (data.host_changed && host && workingHost !== host) bits.push("IP auto-corrected");
           connectedMeta.textContent = bits.join(" · ");
         }
-        showConnectStatus("");
+        if (data.host_changed && data.message) {
+          showConnectStatus(data.message, false);
+        } else {
+          showConnectStatus("");
+        }
         setStep("onboard");
         if (nameInput) nameInput.focus();
       })
@@ -964,6 +1195,32 @@
         return;
       }
       syncConnectCredentialsFromOnboard();
+      if (wifiActivateInput && wifiToggle) {
+        wifiActivateInput.value = wifiToggle.checked ? "1" : "0";
+      }
+      if (wifiToggle && wifiToggle.checked) {
+        var ssid = wifiSsidInput ? wifiSsidInput.value.trim() : "";
+        var pass = wifiPasswordInput ? wifiPasswordInput.value : "";
+        var originalPass = wifiPasswordOriginal ? wifiPasswordOriginal.value : "";
+        if (!ssid) {
+          e.preventDefault();
+          alert("Enter a Wi‑Fi name to activate Wi‑Fi.");
+          if (wifiSsidInput) wifiSsidInput.focus();
+          return;
+        }
+        if (pass && pass !== originalPass && pass.length < 8) {
+          e.preventDefault();
+          alert("Wi‑Fi password must be at least 8 characters.");
+          if (wifiPasswordInput) wifiPasswordInput.focus();
+          return;
+        }
+        if (!pass && !originalPass) {
+          e.preventDefault();
+          alert("Enter a Wi‑Fi password (at least 8 characters) to activate Wi‑Fi.");
+          if (wifiPasswordInput) wifiPasswordInput.focus();
+          return;
+        }
+      }
 
       var locationValue = locationInput ? locationInput.value.trim() : "";
       var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
@@ -1002,13 +1259,102 @@
   var statusUrl = "{% url 'core:mikrotik_status' %}";
   var timer = null;
   var started = false;
+  var hint = document.getElementById("mikrotik-reconnect-hint");
+  var passwordModal = document.getElementById("mikrotik-password-modal");
+  var passwordForm = document.getElementById("mikrotik-password-form");
+  var passwordError = document.getElementById("mikrotik-password-error");
+  var passwordSubmit = document.getElementById("mikrotik-password-submit");
+  var activeReconnectBtn = null;
+  var authPrompted = {};
 
-  function setStatus(el, online) {
+  function csrfToken() {
+    var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function setStatus(el, online, status) {
     if (!el) return;
-    el.classList.remove("is-checking", "is-connected", "is-disconnected");
-    el.classList.add(online ? "is-connected" : "is-disconnected");
+    el.classList.remove(
+      "is-checking",
+      "is-connected",
+      "is-disconnected",
+      "is-limited",
+      "is-auth-failed",
+      "is-reachable",
+      "is-api-closed"
+    );
+    var state = status || (online ? "connected" : "disconnected");
+    if (state === "limited") el.classList.add("is-limited");
+    else if (state === "auth_failed") el.classList.add("is-auth-failed");
+    else if (state === "reachable") el.classList.add("is-reachable");
+    else if (state === "api_closed") el.classList.add("is-api-closed");
+    else el.classList.add(online ? "is-connected" : "is-disconnected");
     var label = el.querySelector(".mikrotik-link-label");
-    if (label) label.textContent = online ? "Connected" : "Disconnected";
+    if (label) {
+      if (state === "limited") label.textContent = "Ping only (API blocked)";
+      else if (state === "auth_failed") label.textContent = "Online — wrong password";
+      else if (state === "reachable") label.textContent = "Reachable";
+      else if (state === "api_closed") label.textContent = "Seen — enable API";
+      else label.textContent = online ? "Connected" : "Disconnected";
+    }
+    var row = el.closest("[data-router-row]");
+    if (!row) return;
+    var btn = row.querySelector("[data-reconnect-router]");
+    if (btn && !btn.disabled) {
+      btn.classList.toggle(
+        "is-needed",
+        state === "disconnected" ||
+          state === "limited" ||
+          state === "auth_failed" ||
+          state === "api_closed"
+      );
+      btn.dataset.authFailed = state === "auth_failed" ? "1" : "0";
+      btn.dataset.apiClosed = state === "api_closed" ? "1" : "0";
+    }
+  }
+
+  function showHint(text, isError) {
+    if (!hint) return;
+    hint.hidden = !text;
+    hint.textContent = text || "";
+    hint.classList.toggle("is-error", !!isError);
+    hint.classList.toggle("is-ok", !!text && !isError);
+  }
+
+  function openPasswordModal(opts) {
+    if (!passwordModal) return;
+    opts = opts || {};
+    document.getElementById("mikrotik-password-router-id").value = opts.id || "";
+    document.getElementById("mikrotik-password-reconnect-url").value = opts.url || "";
+    document.getElementById("mikrotik-password-host").value = (opts.name ? opts.name + " · " : "") + (opts.host || "");
+    document.getElementById("mikrotik-password-username").value = opts.username || "admin";
+    document.getElementById("mikrotik-password-input").value = "";
+    if (passwordError) {
+      passwordError.hidden = !opts.error;
+      passwordError.textContent = opts.error || "";
+    }
+    var sub = document.getElementById("mikrotik-password-sub");
+    if (sub) {
+      sub.textContent = opts.error
+        ? "Login failed. Enter the Winbox username and password, then save to reconnect."
+        : "Enter the Winbox username and password for this MikroTik.";
+    }
+    passwordModal.hidden = false;
+    passwordModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    setTimeout(function () {
+      var pw = document.getElementById("mikrotik-password-input");
+      if (pw) pw.focus();
+    }, 50);
+  }
+
+  function closePasswordModal() {
+    if (!passwordModal) return;
+    passwordModal.hidden = true;
+    passwordModal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".mikrotik-action-modal:not([hidden]), .mikrotik-onboard-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
   }
 
   function refreshStatus(force) {
@@ -1024,8 +1370,31 @@
         if (!data || !data.ok || !data.routers) return;
         data.routers.forEach(function (item) {
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
-            setStatus(el, !!item.online);
+            setStatus(el, !!item.online, item.status || "");
           });
+          var btn = document.querySelector('[data-reconnect-router="' + item.id + '"]');
+          if (item.host) {
+            var hostCell = document.querySelector('[data-router-host-cell="' + item.id + '"]');
+            if (hostCell) hostCell.textContent = item.host;
+            if (btn) btn.setAttribute("data-router-host", item.host);
+          }
+          if (item.status === "api_closed" && item.error) {
+            showHint(item.error, true);
+          }
+          if (item.status === "auth_failed" && !authPrompted[item.id]) {
+            authPrompted[item.id] = true;
+            if (btn && !btn.disabled) {
+              openPasswordModal({
+                id: item.id,
+                url: btn.getAttribute("data-reconnect-url"),
+                name: btn.getAttribute("data-router-name") || item.name || "",
+                host: item.host || btn.getAttribute("data-router-host") || "",
+                username: btn.getAttribute("data-router-username") || "admin",
+                error: item.error || "Saved password does not match this MikroTik."
+              });
+              activeReconnectBtn = btn;
+            }
+          }
         });
       })
       .catch(function () {
@@ -1035,25 +1404,233 @@
       });
   }
 
+  function reconnectRouter(btn, credentials) {
+    var url = btn.getAttribute("data-reconnect-url");
+    var id = btn.getAttribute("data-reconnect-router");
+    if (!url || btn.disabled) return;
+
+    if (!credentials && btn.dataset.authFailed === "1") {
+      activeReconnectBtn = btn;
+      openPasswordModal({
+        id: id,
+        url: url,
+        name: btn.getAttribute("data-router-name") || "",
+        host: btn.getAttribute("data-router-host") || "",
+        username: btn.getAttribute("data-router-username") || "admin",
+        error: "Saved password does not match this MikroTik."
+      });
+      return;
+    }
+
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+    var original = btn.textContent;
+    btn.textContent = "Reconnecting…";
+    showHint("Scanning LAN and repairing MikroTik access…", false);
+
+    var body = new URLSearchParams();
+    if (credentials) {
+      if (credentials.username) body.set("username", credentials.username);
+      if (credentials.password) body.set("password", credentials.password);
+    }
+
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRFToken": csrfToken(),
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      credentials: "same-origin",
+      body: body.toString()
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { okHttp: res.ok, data: data || {} };
+        });
+      })
+      .then(function (result) {
+        var data = result.data;
+        if (!result.okHttp || !data.ok) {
+          if (data.auth_error) {
+            activeReconnectBtn = btn;
+            openPasswordModal({
+              id: id,
+              url: url,
+              name: btn.getAttribute("data-router-name") || data.name || "",
+              host: data.host || btn.getAttribute("data-router-host") || "",
+              username: data.username || btn.getAttribute("data-router-username") || "admin",
+              error: data.error || "Wrong username or password."
+            });
+            showHint("Enter the correct Winbox password in the popup.", true);
+          } else if (data.needs_api) {
+            showHint(data.error || "Router found, but API port 8728 is closed. Enable API in Winbox.", true);
+            if (data.host) {
+              var hostCell = document.querySelector('[data-router-host-cell="' + id + '"]');
+              if (hostCell) hostCell.textContent = data.host;
+              btn.setAttribute("data-router-host", data.host);
+            }
+            document.querySelectorAll('[data-router-status="' + id + '"]').forEach(function (el) {
+              setStatus(el, false, "api_closed");
+            });
+          } else {
+            showHint(data.error || "Could not reconnect to this MikroTik.", true);
+          }
+          return;
+        }
+        closePasswordModal();
+        authPrompted[id] = false;
+        btn.dataset.authFailed = "0";
+        showHint(data.message || "MikroTik is back online.", false);
+        document.querySelectorAll('[data-router-status="' + id + '"]').forEach(function (el) {
+          setStatus(el, true, "connected");
+        });
+        if (data.host) {
+          var hostCell = document.querySelector('[data-router-host-cell="' + id + '"]');
+          if (hostCell) hostCell.textContent = data.host;
+          btn.setAttribute("data-router-host", data.host);
+        }
+        if (credentials && credentials.username) {
+          btn.setAttribute("data-router-username", credentials.username);
+        }
+        refreshStatus(true);
+      })
+      .catch(function () {
+        showHint("Network error while reconnecting. Check the cable and try again.", true);
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.classList.remove("is-busy");
+        btn.textContent = original || "Reconnect";
+        if (passwordSubmit) {
+          passwordSubmit.disabled = false;
+          passwordSubmit.textContent = "Save & reconnect";
+        }
+      });
+  }
+
+  document.querySelectorAll("[data-reconnect-router]").forEach(function (btn) {
+    btn.addEventListener("click", function () { reconnectRouter(btn); });
+  });
+  document.querySelectorAll("[data-close-password-modal]").forEach(function (el) {
+    el.addEventListener("click", closePasswordModal);
+  });
+
+  if (passwordForm) {
+    passwordForm.addEventListener("submit", function (e) {
+      e.preventDefault();
+      var id = document.getElementById("mikrotik-password-router-id").value;
+      var username = (document.getElementById("mikrotik-password-username").value || "").trim();
+      var password = document.getElementById("mikrotik-password-input").value || "";
+      if (!username || !password) {
+        if (passwordError) {
+          passwordError.hidden = false;
+          passwordError.textContent = "Enter both username and password.";
+        }
+        return;
+      }
+      var btn = activeReconnectBtn || document.querySelector('[data-reconnect-router="' + id + '"]');
+      if (!btn) return;
+      if (passwordSubmit) {
+        passwordSubmit.disabled = true;
+        passwordSubmit.textContent = "Checking…";
+      }
+      reconnectRouter(btn, { username: username, password: password });
+    });
+  }
+
+  document.querySelectorAll("#mikrotik-password-modal [data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) { eye.hidden = show; eyeOff.hidden = !show; }
+    });
+  });
+
+  var refreshBtn = document.getElementById("mikrotik-refresh-status");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      document.querySelectorAll("[data-router-status]").forEach(function (el) {
+        el.classList.remove("is-connected", "is-disconnected", "is-auth-failed", "is-limited", "is-reachable");
+        el.classList.add("is-checking");
+        var label = el.querySelector(".mikrotik-link-label");
+        if (label) label.textContent = "Checking…";
+      });
+      refreshStatus(true);
+    });
+  }
+
+  var deleteModal = document.getElementById("mikrotik-delete-modal");
+  var deleteForm = document.getElementById("mikrotik-delete-form");
+  var deleteSummary = document.getElementById("mikrotik-delete-summary");
+  var deleteClientsNote = document.getElementById("mikrotik-delete-clients-note");
+  var deleteConfirm = document.getElementById("id_delete_mikrotik_confirm");
+
+  function openDeleteModal(btn) {
+    if (!deleteModal || !deleteForm || !btn) return;
+    var name = btn.getAttribute("data-router-name") || "this MikroTik";
+    var host = btn.getAttribute("data-router-host") || "";
+    var count = parseInt(btn.getAttribute("data-customer-count") || "0", 10) || 0;
+    deleteForm.action = btn.getAttribute("data-delete-url") || "";
+    if (deleteSummary) {
+      deleteSummary.textContent = host
+        ? ("Delete “" + name + "” (" + host + ") from the system?")
+        : ("Delete “" + name + "” from the system?");
+    }
+    if (deleteClientsNote) {
+      if (count > 0) {
+        deleteClientsNote.hidden = false;
+        deleteClientsNote.textContent =
+          count === 1
+            ? "1 linked client will stay in the system but will no longer be assigned to a router."
+            : count + " linked clients will stay in the system but will no longer be assigned to a router.";
+      } else {
+        deleteClientsNote.hidden = true;
+        deleteClientsNote.textContent = "";
+      }
+    }
+    if (deleteConfirm) deleteConfirm.checked = false;
+    deleteModal.hidden = false;
+    deleteModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeDeleteModal() {
+    if (!deleteModal) return;
+    deleteModal.hidden = true;
+    deleteModal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".role-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  document.querySelectorAll("[data-open-mikrotik-delete]").forEach(function (btn) {
+    btn.addEventListener("click", function () { openDeleteModal(btn); });
+  });
+  document.querySelectorAll("[data-close-mikrotik-delete]").forEach(function (el) {
+    el.addEventListener("click", closeDeleteModal);
+  });
+
   function startPolling() {
     if (started) return;
     started = true;
     refreshStatus(true);
     timer = setInterval(function () { refreshStatus(false); }, 30000);
   }
-
-  // Let the page paint first; status probes can wait briefly.
-  if (window.requestIdleCallback) {
-    window.requestIdleCallback(startPolling, { timeout: 1200 });
-  } else {
-    setTimeout(startPolling, 400);
-  }
-  document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) refreshStatus(true);
+  if (window.requestIdleCallback) window.requestIdleCallback(startPolling, { timeout: 1200 });
+  else setTimeout(startPolling, 400);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) refreshStatus(true); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (passwordModal && !passwordModal.hidden) closePasswordModal();
+    else if (deleteModal && !deleteModal.hidden) closeDeleteModal();
   });
-  window.addEventListener("beforeunload", function () {
-    if (timer) clearInterval(timer);
-  });
+  window.addEventListener("beforeunload", function () { if (timer) clearInterval(timer); });
 })();
 </script>
 {% endif %}

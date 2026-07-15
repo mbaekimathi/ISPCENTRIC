@@ -557,6 +557,28 @@ class OrganizationEditForm(forms.ModelForm):
         return (self.cleaned_data.get("phone") or "").strip()
 
 
+class ClientSettingsForm(forms.ModelForm):
+    """Workspace preferences for how client internet access is granted."""
+
+    class Meta:
+        model = Organization
+        fields = ["pppoe_compulsory"]
+        labels = {
+            "pppoe_compulsory": "PPPoE compulsory check",
+        }
+        help_texts = {
+            "pppoe_compulsory": (
+                "Only customers registered as PPPoE clients receive internet. "
+                "Other service types stay offline until registered as PPPoE."
+            ),
+        }
+        widgets = {
+            "pppoe_compulsory": forms.CheckboxInput(
+                attrs={"id": "id_pppoe_compulsory"}
+            ),
+        }
+
+
 class EmployeeAdminEditForm(forms.Form):
     first_name = forms.CharField(
         max_length=150,

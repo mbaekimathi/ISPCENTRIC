@@ -36,6 +36,13 @@ class Organization(models.Model):
         null=True,
         help_text="Optional profile photo",
     )
+    pppoe_compulsory = models.BooleanField(
+        default=False,
+        help_text=(
+            "When enabled, only customers registered as PPPoE clients "
+            "are eligible to receive internet."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

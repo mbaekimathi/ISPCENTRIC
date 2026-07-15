@@ -1,4 +1,5 @@
 from django import forms
+from django.db.models import Q
 
 from billing.models import BillingPlan, Customer
 from core.models import MikroTikRouter
@@ -83,9 +84,9 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["email"].required = False
         self.fields["address"].required = False
         self.fields["plan"].required = False
-        self.fields["router"].required = False
+        self.fields["router"].required = True
         self.fields["plan"].empty_label = "No plan yet"
-        self.fields["router"].empty_label = "No router assigned"
+        self.fields["router"].empty_label = "Select MikroTik router"
         if organization is not None:
             self.fields["plan"].queryset = BillingPlan.objects.filter(
                 organization=organization,
@@ -135,7 +136,11 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
     def clean_router(self):
         router = self.cleaned_data.get("router")
-        if router and self.organization and router.organization_id != self.organization.pk:
+        if not router:
+            raise forms.ValidationError(
+                "Select the MikroTik this client dials — credentials are created there so they can get internet."
+            )
+        if self.organization and router.organization_id != self.organization.pk:
             raise forms.ValidationError("Choose a router from this organization.")
         return router
 
@@ -154,6 +159,185 @@ class PppoeClientRegisterForm(forms.ModelForm):
         if commit:
             customer.save()
         return customer
+
+
+class ClientEditForm(forms.ModelForm):
+    """Edit an existing subscriber account (contact, plan, router, PPPoE)."""
+
+    class Meta:
+        model = Customer
+        fields = [
+            "full_name",
+            "phone",
+            "email",
+            "address",
+            "plan",
+            "router",
+            "pppoe_username",
+            "pppoe_password",
+        ]
+        widgets = {
+            "full_name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Full name",
+                    "autocomplete": "name",
+                    "id": "id_edit_full_name",
+                }
+            ),
+            "phone": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Phone number",
+                    "autocomplete": "tel",
+                    "id": "id_edit_phone",
+                }
+            ),
+            "email": forms.EmailInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Email (optional)",
+                    "autocomplete": "email",
+                    "id": "id_edit_email",
+                }
+            ),
+            "address": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Install address (optional)",
+                    "autocomplete": "street-address",
+                    "id": "id_edit_address",
+                }
+            ),
+            "plan": forms.Select(attrs={"class": "form-control", "id": "id_edit_plan"}),
+            "router": forms.Select(attrs={"class": "form-control", "id": "id_edit_router"}),
+            "pppoe_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "PPPoE username",
+                    "autocomplete": "off",
+                    "id": "id_edit_pppoe_username",
+                }
+            ),
+            "pppoe_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "PPPoE password",
+                    "autocomplete": "new-password",
+                    "id": "id_edit_pppoe_password",
+                },
+                render_value=True,
+            ),
+        }
+        labels = {
+            "full_name": "Full name",
+            "phone": "Phone",
+            "email": "Email",
+            "address": "Address",
+            "plan": "Billing plan",
+            "router": "MikroTik router",
+            "pppoe_username": "PPPoE username",
+            "pppoe_password": "PPPoE password",
+        }
+
+    def __init__(self, *args, organization=None, **kwargs):
+        self.organization = organization
+        super().__init__(*args, **kwargs)
+        self.fields["email"].required = False
+        self.fields["address"].required = False
+        self.fields["plan"].required = False
+        self.fields["plan"].empty_label = "No plan"
+        self.fields["router"].empty_label = "No router"
+        is_pppoe = (
+            self.instance
+            and self.instance.pk
+            and self.instance.service_type == Customer.ServiceType.PPPOE
+        )
+        self.fields["router"].required = bool(is_pppoe)
+        if not is_pppoe:
+            self.fields["pppoe_username"].required = False
+            self.fields["pppoe_password"].required = False
+            self.fields.pop("pppoe_username", None)
+            self.fields.pop("pppoe_password", None)
+        if organization is not None:
+            self.fields["plan"].queryset = BillingPlan.objects.filter(
+                organization=organization,
+                is_active=True,
+            ).order_by("price", "name")
+            # Keep current plan visible even if inactive.
+            if self.instance and self.instance.plan_id:
+                self.fields["plan"].queryset = (
+                    BillingPlan.objects.filter(organization=organization)
+                    .filter(Q(is_active=True) | Q(pk=self.instance.plan_id))
+                    .order_by("price", "name")
+                )
+            self.fields["router"].queryset = MikroTikRouter.objects.filter(
+                organization=organization,
+            ).order_by("name")
+        else:
+            self.fields["plan"].queryset = BillingPlan.objects.none()
+            self.fields["router"].queryset = MikroTikRouter.objects.none()
+
+    def clean_full_name(self):
+        name = (self.cleaned_data.get("full_name") or "").strip()
+        if not name:
+            raise forms.ValidationError("Enter the client’s full name.")
+        return name
+
+    def clean_phone(self):
+        phone = (self.cleaned_data.get("phone") or "").strip()
+        if not phone:
+            raise forms.ValidationError("Enter a phone number.")
+        return phone
+
+    def clean_pppoe_username(self):
+        username = (self.cleaned_data.get("pppoe_username") or "").strip()
+        if not username:
+            raise forms.ValidationError("Enter the PPPoE username.")
+        qs = Customer.objects.filter(
+            organization=self.organization,
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username__iexact=username,
+        )
+        if self.instance and self.instance.pk:
+            qs = qs.exclude(pk=self.instance.pk)
+        if self.organization and qs.exists():
+            raise forms.ValidationError("That PPPoE username is already registered.")
+        return username
+
+    def clean_pppoe_password(self):
+        password = self.cleaned_data.get("pppoe_password") or ""
+        if not password:
+            raise forms.ValidationError("Enter the PPPoE password.")
+        if len(password) < 4:
+            raise forms.ValidationError("PPPoE password must be at least 4 characters.")
+        return password
+
+    def clean_router(self):
+        router = self.cleaned_data.get("router")
+        is_pppoe = (
+            self.instance
+            and self.instance.pk
+            and self.instance.service_type == Customer.ServiceType.PPPOE
+        )
+        if is_pppoe and not router:
+            raise forms.ValidationError(
+                "Select the MikroTik this client dials — credentials are stored there."
+            )
+        if router and self.organization and router.organization_id != self.organization.pk:
+            raise forms.ValidationError("Choose a router from this organization.")
+        return router
+
+
+class ClientDeleteForm(forms.Form):
+    """Confirm permanent deletion of a subscriber account."""
+
+    confirm = forms.BooleanField(
+        required=True,
+        label="Confirm deletion",
+        widget=forms.CheckboxInput(attrs={"id": "id_delete_client_confirm"}),
+        error_messages={"required": "Confirm that you want to delete this account."},
+    )
 
 
 class BillingPackageRegisterForm(forms.ModelForm):

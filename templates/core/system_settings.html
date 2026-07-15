@@ -21,13 +21,16 @@
     </div>
   </div>
 
-  <section class="panel" style="margin-top:1.15rem;">
-    <h2>Workspace preferences</h2>
-    <p class="empty">Additional system preferences (notifications, billing defaults, and integrations) will appear here.</p>
-    <div class="form-actions" style="margin-top:1rem;">
-      <a class="btn btn-primary" href="{% url 'core:my_account' %}">Edit account details</a>
-    </div>
-  </section>
+  <div class="module-grid staff-module-grid" style="margin-top:1.15rem;">
+    {% for link in settings_links %}
+      <a class="module-card" href="{% url link.url_name %}">
+        <span class="module-kicker">Settings</span>
+        <h2>{{ link.title }}</h2>
+        <p>{{ link.description }}</p>
+        <span class="module-cta">{{ link.cta }} →</span>
+      </a>
+    {% endfor %}
+  </div>
 {% else %}
   <section class="panel">
     <p class="empty">No organization settings available.</p>
