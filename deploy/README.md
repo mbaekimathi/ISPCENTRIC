@@ -149,13 +149,36 @@ WIREGUARD_SERVER_PUBLIC_KEY=<public key from above>
 WIREGUARD_SUBNET=10.9.0.0/24
 ```
 
-Provision a peer for every router. Each one gets an address in the tunnel subnet
-and prints a script to paste into that router's terminal (Winbox → New Terminal),
-which needs RouterOS 7:
+### Routers already onboarded
+
+If the database already holds your routers, give each one a peer:
 
 ```bash
 sudo -u www-data .venv/bin/python manage.py wireguard_peer --all
 ```
+
+Each router gets an address in the tunnel subnet and a script to paste into its
+terminal (Winbox → New Terminal). RouterOS 7 is required.
+
+The app dials the tunnel address in preference to the saved `host`, so leave each
+router's host set to its real LAN address — it stays useful for on-site work.
+
+### Routers not onboarded yet
+
+Onboarding verifies the API login, which the VPS cannot do until it can reach the
+router — and it can only reach the router once the tunnel is up. Reserve the peer
+first to break that circle:
+
+```bash
+sudo -u www-data .venv/bin/python manage.py wireguard_peer --new "Kariobangi"
+```
+
+Paste the script into that router, finish the server steps below, confirm the
+handshake, then onboard the router in the app using the **reserved tunnel
+address** as its host. The next `wireguard_peer` run for that router adopts the
+reserved peer rather than issuing a second one.
+
+### Server side
 
 Write the server config using the **private** key you kept, and start it:
 
@@ -166,14 +189,13 @@ sudo chmod 600 /etc/wireguard/wg0.conf
 sudo systemctl enable --now wg-quick@wg0
 ```
 
-Re-run that last step whenever you add a router. Confirm a site is up with
-`sudo wg show` (a recent handshake) and `ping 10.9.0.2`, then push Hotspot/PPPoE
-settings from the app again.
+Re-run that whenever you add a router or reserve a peer. Confirm a site is up
+with `sudo wg show` (a recent handshake) and `ping 10.9.0.2`, then push
+Hotspot/PPPoE settings from the app.
 
-The app dials the tunnel address in preference to the saved `host`, so leave each
-router's host set to its real LAN address — it stays useful for on-site work. It
-also stops scanning the local network for routers when `DJANGO_HOSTED=true`,
-since on a VPS that would only probe unrelated datacentre hosts.
+The app stops scanning the local network for routers when `DJANGO_HOSTED=true`,
+since on a VPS that would only probe unrelated datacentre hosts. Add routers by
+hand instead.
 
 One consequence worth planning for: the PPPoE renew page identifies a subscriber
 from the session address in `/ppp/active`. That only works while the client's

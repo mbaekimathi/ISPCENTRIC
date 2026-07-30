@@ -1,16 +1,17 @@
 """
 Provision the WireGuard tunnel that lets a hosted billing server reach routers.
 
-    python manage.py wireguard_peer --server-keys   # once, on the VPS
-    python manage.py wireguard_peer --all           # keys for every router
-    python manage.py wireguard_peer 9               # one router
-    python manage.py wireguard_peer --server-config # rebuild wg0.conf
+    python manage.py wireguard_peer --server-keys      # once, on the VPS
+    python manage.py wireguard_peer --new "Site name"  # before onboarding
+    python manage.py wireguard_peer --all              # every onboarded router
+    python manage.py wireguard_peer 9                  # one router
+    python manage.py wireguard_peer --server-config KEY
 """
 
 from django.core.management.base import BaseCommand, CommandError
 
 from core import wireguard
-from core.models import MikroTikRouter
+from core.models import MikroTikRouter, WireGuardReservation
 
 
 class Command(BaseCommand):
@@ -26,7 +27,15 @@ class Command(BaseCommand):
         parser.add_argument(
             "--all",
             action="store_true",
-            help="Provision every router that has no tunnel address yet.",
+            help="Provision every onboarded router.",
+        )
+        parser.add_argument(
+            "--new",
+            metavar="LABEL",
+            help=(
+                "Reserve a peer for a router that is not onboarded yet. Bring the "
+                "tunnel up first, then onboard using the reserved address as host."
+            ),
         )
         parser.add_argument(
             "--rotate",
@@ -41,7 +50,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--server-config",
             metavar="PRIVATE_KEY",
-            help="Print /etc/wireguard/wg0.conf containing all provisioned peers.",
+            help="Print /etc/wireguard/wg0.conf containing all known peers.",
         )
 
     def handle(self, *args, **options):
@@ -53,16 +62,17 @@ class Command(BaseCommand):
             self.stdout.write(wireguard.server_config(options["server_config"]))
             return
 
-        routers = self._select_routers(options)
-        for router in routers:
-            self._provision(router, rotate=options["rotate"])
+        if options["new"]:
+            self._reserve(options["new"])
+        else:
+            for router in self._select_routers(options):
+                self._provision(router, rotate=options["rotate"])
 
         self.stdout.write("")
         self.stdout.write(
             self.style.WARNING(
-                "Add the peer blocks above to /etc/wireguard/wg0.conf on the VPS "
-                "(or regenerate it with --server-config), then run "
-                "`systemctl restart wg-quick@wg0`."
+                "Rebuild /etc/wireguard/wg0.conf on the VPS with --server-config, "
+                "then run `systemctl restart wg-quick@wg0`."
             )
         )
 
@@ -79,9 +89,12 @@ class Command(BaseCommand):
         if options["all"]:
             routers = list(MikroTikRouter.objects.order_by("id"))
             if not routers:
-                raise CommandError("There are no routers to provision.")
+                raise CommandError(
+                    "There are no onboarded routers. If this server cannot reach a "
+                    'router yet, reserve its peer first with --new "Site name".'
+                )
             return routers
-        raise CommandError("Pass one or more router ids, or --all.")
+        raise CommandError('Pass router ids, --all, or --new "Site name".')
 
     def _server_keys(self):
         private_key, public_key = wireguard.generate_keypair()
@@ -98,9 +111,46 @@ class Command(BaseCommand):
             f"  python manage.py wireguard_peer --server-config '{private_key}'"
         )
 
+    def _reserve(self, label: str):
+        label = label.strip()
+        reservation = WireGuardReservation.objects.filter(label__iexact=label).first()
+        if reservation is None:
+            private_key, public_key = wireguard.generate_keypair()
+            reservation = WireGuardReservation.objects.create(
+                label=label,
+                address=wireguard.allocate_address(),
+                private_key=private_key,
+                public_key=public_key,
+            )
+
+        self._report(
+            f"{reservation.label} (not onboarded yet) -> {reservation.address}",
+            address=reservation.address,
+            private_key=reservation.private_key,
+            public_key=reservation.public_key,
+            label=f"{reservation.label} (not onboarded yet)",
+        )
+        self.stdout.write("")
+        self.stdout.write(
+            f"Once the tunnel is up, onboard this router in the app with host "
+            f"{reservation.address}."
+        )
+
     def _provision(self, router, *, rotate: bool):
         changed = []
-        if rotate or not router.vpn_private_key:
+
+        # A router reserved before onboarding was saved with the tunnel address
+        # as its host. Adopt that peer instead of allocating a second one.
+        reservation = WireGuardReservation.objects.filter(
+            address=(router.host or "").strip()
+        ).first()
+        if reservation and not rotate and not router.vpn_private_key:
+            router.vpn_address = reservation.address
+            router.vpn_private_key = reservation.private_key
+            router.vpn_public_key = reservation.public_key
+            changed += ["vpn_address", "vpn_private_key", "vpn_public_key"]
+            reservation.delete()
+        elif rotate or not router.vpn_private_key:
             private_key, public_key = wireguard.generate_keypair()
             router.vpn_private_key = private_key
             router.vpn_public_key = public_key
@@ -114,17 +164,22 @@ class Command(BaseCommand):
             changed.append("vpn_address")
 
         if changed:
-            router.save(update_fields=[*changed, "updated_at"])
+            router.save(update_fields=[*dict.fromkeys(changed), "updated_at"])
 
-        self.stdout.write("")
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"=== {router.name} (id {router.pk}) -> {router.vpn_address} ==="
-            )
+        self._report(
+            f"{router.name} (id {router.pk}) -> {router.vpn_address}",
+            address=router.vpn_address,
+            private_key=router.vpn_private_key,
+            public_key=router.vpn_public_key,
+            label=f"{router.name} (router id {router.pk})",
         )
+
+    def _report(self, heading, *, address, private_key, public_key, label):
+        self.stdout.write("")
+        self.stdout.write(self.style.SUCCESS(f"=== {heading} ==="))
         self.stdout.write("")
         self.stdout.write("--- paste into the MikroTik terminal ---")
-        self.stdout.write(wireguard.routeros_script(router))
+        self.stdout.write(wireguard.routeros_script(address, private_key))
         self.stdout.write("")
-        self.stdout.write("--- add to /etc/wireguard/wg0.conf on the VPS ---")
-        self.stdout.write(wireguard.server_peer_block(router))
+        self.stdout.write("--- included in wg0.conf by --server-config ---")
+        self.stdout.write(wireguard.server_peer_block(label, address, public_key))

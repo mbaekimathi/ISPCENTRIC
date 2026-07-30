@@ -70,12 +70,16 @@ def allocate_address(exclude: set[str] | None = None) -> str:
 
     The server holds the first host address, so peers start one above it.
     """
-    from core.models import MikroTikRouter
+    from core.models import MikroTikRouter, WireGuardReservation
 
     taken = {
         (value or "").strip()
         for value in MikroTikRouter.objects.exclude(vpn_address__isnull=True)
         .values_list("vpn_address", flat=True)
+    }
+    taken |= {
+        (value or "").strip()
+        for value in WireGuardReservation.objects.values_list("address", flat=True)
     }
     taken |= {str(server_address())}
     taken |= set(exclude or set())
@@ -110,24 +114,20 @@ def _server_public_key() -> str:
     return key
 
 
-def routeros_script(router) -> str:
+def routeros_script(address: str, private_key: str) -> str:
     """
     Commands to paste into the MikroTik terminal to join the tunnel.
 
-    Interface names are suffixed with nothing special on purpose: a site has one
-    tunnel to the billing server, and reusing a fixed name makes re-running the
-    script idempotent.
+    The interface name is fixed rather than per-site: a router has one tunnel to
+    the billing server, and a fixed name makes re-running the script idempotent.
     """
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
     network = tunnel_network()
-    address = (router.vpn_address or "").strip()
-    private_key = (router.vpn_private_key or "").strip()
+    address = (address or "").strip()
+    private_key = (private_key or "").strip()
     if not address or not private_key:
-        raise ValueError(
-            f"Router {router.pk} has no tunnel keys yet. Run "
-            f"`python manage.py wireguard_peer {router.pk}` first."
-        )
+        raise ValueError("This peer has no tunnel address or key yet.")
 
     return "\n".join(
         [
@@ -158,15 +158,15 @@ def routeros_script(router) -> str:
     )
 
 
-def server_peer_block(router) -> str:
-    """The [Peer] stanza to add to the VPS wg0.conf for this router."""
-    public_key = (router.vpn_public_key or "").strip()
-    address = (router.vpn_address or "").strip()
+def server_peer_block(label: str, address: str, public_key: str) -> str:
+    """The [Peer] stanza to add to the VPS wg0.conf for one router."""
+    public_key = (public_key or "").strip()
+    address = (address or "").strip()
     if not public_key or not address:
-        raise ValueError(f"Router {router.pk} has no tunnel keys yet.")
+        raise ValueError("This peer has no tunnel address or key yet.")
     return "\n".join(
         [
-            f"# {router.name} (router id {router.pk})",
+            f"# {label}",
             "[Peer]",
             f"PublicKey = {public_key}",
             f"AllowedIPs = {address}/32",
@@ -175,8 +175,8 @@ def server_peer_block(router) -> str:
 
 
 def server_config(private_key: str) -> str:
-    """A complete wg0.conf for the VPS, with every provisioned peer."""
-    from core.models import MikroTikRouter
+    """A complete wg0.conf for the VPS, with every peer known so far."""
+    from core.models import MikroTikRouter, WireGuardReservation
 
     _, _, port = _endpoint().partition(":")
     network = tunnel_network()
@@ -188,14 +188,32 @@ def server_config(private_key: str) -> str:
         f"PrivateKey = {private_key}",
         "",
     ]
-    peers = (
+
+    blocks: list[str] = []
+    for router in (
         MikroTikRouter.objects.exclude(vpn_address__isnull=True)
         .exclude(vpn_public_key="")
         .order_by("id")
-    )
-    for router in peers:
-        lines.append(server_peer_block(router))
+    ):
+        blocks.append(
+            server_peer_block(
+                f"{router.name} (router id {router.pk})",
+                router.vpn_address,
+                router.vpn_public_key,
+            )
+        )
+    for reservation in WireGuardReservation.objects.all():
+        blocks.append(
+            server_peer_block(
+                f"{reservation.label} (not onboarded yet)",
+                reservation.address,
+                reservation.public_key,
+            )
+        )
+
+    if not blocks:
+        lines.append("# No peers provisioned yet.")
+    for block in blocks:
+        lines.append(block)
         lines.append("")
-    if not peers:
-        lines.append("# No router peers provisioned yet.")
     return "\n".join(lines)

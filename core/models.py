@@ -181,3 +181,27 @@ class MikroTikRouter(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.host})"
+
+
+class WireGuardReservation(models.Model):
+    """
+    A tunnel peer for a router that has not been onboarded yet.
+
+    Onboarding verifies the API login, which a hosted server cannot do until it
+    can reach the router — and it can only reach the router once the tunnel is
+    up. Reserving the peer first breaks that circle: bring the tunnel up with
+    these keys, then onboard using the reserved address as the router's host.
+    """
+
+    label = models.CharField(max_length=150, help_text="Site name, for your reference.")
+    address = models.GenericIPAddressField(protocol="IPv4", unique=True)
+    public_key = models.CharField(max_length=64)
+    private_key = models.CharField(max_length=64)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "core_wireguard_reservation"
+        ordering = ["address"]
+
+    def __str__(self):
+        return f"{self.label} ({self.address})"

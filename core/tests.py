@@ -1,4 +1,7 @@
-from django.test import SimpleTestCase, override_settings
+from io import StringIO
+
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from core import mikrotik_connect, wireguard
 from core.mikrotik_connect import (
@@ -29,9 +32,8 @@ class WireGuardKeyTests(SimpleTestCase):
     )
     def test_routeros_script_carries_both_sides_of_the_tunnel(self):
         private_key, _ = wireguard.generate_keypair()
-        router = _router(vpn_address="10.9.0.3", vpn_private_key=private_key)
 
-        script = wireguard.routeros_script(router)
+        script = wireguard.routeros_script("10.9.0.3", private_key)
 
         self.assertIn(f'private-key="{private_key}"', script)
         self.assertIn(f'public-key="{SERVER_PUBLIC_KEY}"', script)
@@ -43,10 +45,66 @@ class WireGuardKeyTests(SimpleTestCase):
 
     @override_settings(WIREGUARD_ENDPOINT="", WIREGUARD_SERVER_PUBLIC_KEY="")
     def test_script_refuses_to_render_without_server_settings(self):
-        router = _router(vpn_address="10.9.0.3", vpn_private_key="x")
-
         with self.assertRaises(ValueError):
-            wireguard.routeros_script(router)
+            wireguard.routeros_script("10.9.0.3", "x")
+
+
+@override_settings(
+    WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+    WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+    WIREGUARD_SUBNET="10.9.0.0/24",
+)
+class ReservationTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.org = Organization.objects.create(
+            name="Richcom",
+            owner=User.objects.create_user("owner", password="x"),
+            join_code="123456",
+        )
+
+    def test_reserved_peer_is_adopted_by_the_router_onboarded_onto_it(self):
+        from core.models import WireGuardReservation
+
+        call_command("wireguard_peer", new="Kariobangi", stdout=StringIO())
+        reservation = WireGuardReservation.objects.get()
+
+        # The operator onboards using the reserved address as the router's host.
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Kariobangi",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host=reservation.address,
+            username="admin",
+            password="secret",
+        )
+        call_command("wireguard_peer", router.pk, stdout=StringIO())
+
+        router.refresh_from_db()
+        self.assertEqual(router.vpn_address, reservation.address)
+        self.assertEqual(router.vpn_private_key, reservation.private_key)
+        # The peer now belongs to the router, so it must not be listed twice.
+        self.assertFalse(WireGuardReservation.objects.exists())
+
+    def test_a_second_reservation_does_not_reuse_the_first_address(self):
+        from core.models import WireGuardReservation
+
+        call_command("wireguard_peer", new="Site A", stdout=StringIO())
+        call_command("wireguard_peer", new="Site B", stdout=StringIO())
+
+        addresses = set(WireGuardReservation.objects.values_list("address", flat=True))
+        self.assertEqual(addresses, {"10.9.0.2", "10.9.0.3"})
+
+    def test_reserving_the_same_site_twice_keeps_one_peer(self):
+        from core.models import WireGuardReservation
+
+        call_command("wireguard_peer", new="Site A", stdout=StringIO())
+        call_command("wireguard_peer", new="Site A", stdout=StringIO())
+
+        self.assertEqual(WireGuardReservation.objects.count(), 1)
 
 
 class RouterDialTargetTests(SimpleTestCase):
