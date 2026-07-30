@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>{{ page_title }} — {{ org_name }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(ellipse 90% 60% at 10% 0%, rgba(14, 124, 134, 0.22), transparent 55%),
+        radial-gradient(ellipse 70% 50% at 100% 100%, rgba(31, 111, 235, 0.16), transparent 50%),
+        #0b1520;
+      color: #142033;
+    }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .card {
+      width: min(100%, 24rem);
+      background: #fff;
+      border-radius: 1.15rem;
+      padding: 1.55rem 1.3rem 1.35rem;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.35);
+      text-align: center;
+      animation: rise 0.28s ease-out;
+    }
+    @keyframes rise {
+      from { transform: translateY(12px); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+    .logo {
+      width: 3.4rem;
+      height: 3.4rem;
+      border-radius: 0.95rem;
+      object-fit: cover;
+      margin: 0 auto 0.85rem;
+      display: block;
+      background: #e8f4f5;
+    }
+    .logo-fallback {
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: #0e7c86;
+    }
+    .brand {
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #5b6f8a;
+      margin-bottom: 0.55rem;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 1.45rem;
+      line-height: 1.2;
+      margin: 0 0 0.7rem;
+      letter-spacing: -0.02em;
+    }
+    .msg {
+      margin: 0;
+      line-height: 1.5;
+      font-size: 0.98rem;
+      color: #334155;
+      white-space: pre-wrap;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-top: 1rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: 999px;
+      background: rgba(46, 204, 113, 0.12);
+      color: #1e7a45;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .status::before {
+      content: "";
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: #2ecc71;
+    }
+    .actions {
+      display: grid;
+      gap: 0.55rem;
+      margin-top: 1.15rem;
+    }
+    .ok {
+      display: block;
+      border: 0;
+      border-radius: 0.75rem;
+      padding: 0.85rem 1rem;
+      background: #0e7c86;
+      color: #fff;
+      font: 700 0.98rem/1 "Segoe UI", system-ui, sans-serif;
+      text-decoration: none;
+    }
+    .ok:hover { background: #0b6670; }
+    .meta {
+      margin: 1rem 0 0;
+      font-size: 0.78rem;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <main class="card" role="main">
+    {% if logo_url %}
+      <img class="logo" src="{{ logo_url }}" alt="{{ org_name }}" width="54" height="54">
+    {% else %}
+      <div class="logo logo-fallback" aria-hidden="true">{{ org_initial }}</div>
+    {% endif %}
+    <div class="brand">{{ org_name }}</div>
+    <h1>{{ page_title }}</h1>
+    {% if page_message %}<p class="msg">{{ page_message }}</p>{% endif %}
+    <div class="status">Connected</div>
+    {% if button_url and button_label %}
+      <div class="actions">
+        <a class="ok" href="{{ button_url }}">{{ button_label }}</a>
+      </div>
+    {% elif button_label %}
+      <div class="actions">
+        <a class="ok" href="https://www.google.com/">{{ button_label }}</a>
+      </div>
+    {% endif %}
+    <p class="meta">Hotspot · {{ org_name }}</p>
+  </main>
+  {% if activation_url %}
+  <script>
+    // This page must paint before RouterOS expires the old captive host. The
+    // activation request may itself be disconnected; that is expected because
+    // its purpose is to force the newly paid MAC to authenticate.
+    window.setTimeout(function () {
+      fetch("{{ activation_url|escapejs }}", {
+        method: "POST",
+        keepalive: true,
+        headers: { "Accept": "application/json" }
+      }).catch(function () {});
+    }, 800);
+  </script>
+  {% endif %}
+</body>
+</html>

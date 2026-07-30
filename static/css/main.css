@@ -558,6 +558,7 @@ a {
   border-radius: 6px;
   box-shadow: 0 16px 40px rgba(20, 32, 40, 0.1);
   padding: 1.75rem 1.4rem;
+  color: #142028;
   animation: rise 0.55s ease 0.08s both;
 }
 
@@ -591,15 +592,61 @@ a {
   color: #4a5560;
 }
 
+.staff-card .form-group {
+  margin-bottom: 1.15rem;
+}
+
+.staff-card .form-group label {
+  color: #142028;
+  font-size: 0.92rem;
+  font-weight: 800;
+  margin-bottom: 0.45rem;
+}
+
 .staff-card .form-control {
-  border-radius: 6px;
-  border-color: rgba(20, 32, 40, 0.16);
-  background: #fff;
+  border-radius: 8px;
+  border: 2px solid rgba(20, 32, 40, 0.28);
+  background: #ffffff;
+  color: #142028;
+  padding: 0.95rem 1.05rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  box-shadow: inset 0 1px 2px rgba(20, 32, 40, 0.05);
+}
+
+.staff-card .form-control::placeholder {
+  color: rgba(20, 32, 40, 0.4);
+  font-weight: 600;
+  opacity: 1;
+}
+
+.staff-card .form-control:hover {
+  border-color: rgba(20, 32, 40, 0.42);
 }
 
 .staff-card .form-control:focus {
   border-color: #c48a12;
-  box-shadow: 0 0 0 4px rgba(232, 163, 23, 0.18);
+  box-shadow: 0 0 0 4px rgba(232, 163, 23, 0.24);
+  outline: none;
+}
+
+.staff-card .join-code-input {
+  font-size: 1.35rem;
+  letter-spacing: 0.42em;
+  font-weight: 800;
+}
+
+.staff-card .password-field .password-input {
+  padding-right: 3rem;
+}
+
+.staff-card .password-toggle {
+  color: #4a5560;
+}
+
+.staff-card .password-toggle:hover {
+  color: #142028;
+  background: rgba(20, 32, 40, 0.08);
 }
 
 .btn-staff {
@@ -2050,10 +2097,14 @@ a.module-card:hover {
 
 .staff-workspace {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  min-height: 100svh;
   background: var(--workspace-bg);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .staff-topbar {
@@ -3792,8 +3843,12 @@ body.staff-nav-lock {
 
 .app-shell {
   min-height: 100svh;
+  height: 100svh;
+  height: 100dvh;
+  max-height: 100dvh;
   display: grid;
   grid-template-columns: 250px 1fr;
+  overflow: hidden;
 }
 
 .staff-app {
@@ -3807,6 +3862,13 @@ body.staff-nav-lock {
   display: flex;
   flex-direction: column;
   gap: 1.15rem;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .sidebar .brand {
@@ -3900,6 +3962,11 @@ body.staff-nav-lock {
 
 .app-shell > .main {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .page-title {
@@ -4027,6 +4094,34 @@ body.staff-nav-lock {
   color: var(--chip-signal-fg);
 }
 
+.clients-surf-badge {
+  gap: 0.35rem;
+  align-items: center;
+  min-width: 6.5rem;
+  justify-content: center;
+  margin-top: 0.35rem;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.clients-surf-badge.is-checking {
+  background: color-mix(in srgb, var(--ink-soft) 14%, transparent);
+  color: var(--ink-soft);
+}
+
+.clients-surf-badge.is-surfing {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.clients-surf-badge.is-not-surfing {
+  background: color-mix(in srgb, var(--signal) 16%, transparent);
+  color: var(--chip-signal-fg, var(--signal));
+}
+
+.clients-status-cell {
+  white-space: nowrap;
+}
+
 .clients-panel .panel-sub {
   margin: 0.25rem 0 0;
 }
@@ -4124,6 +4219,65 @@ body.staff-nav-lock {
   opacity: 0.72;
 }
 
+.clients-account-cell {
+  min-width: 8.5rem;
+}
+
+.clients-account-number {
+  display: block;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.clients-account-plan {
+  display: block;
+  margin-top: 0.12rem;
+  font-size: 0.84rem;
+  opacity: 0.78;
+}
+
+.clients-account-status {
+  display: inline-flex;
+  margin-top: 0.35rem;
+}
+
+.clients-pppoe-cell {
+  min-width: 9rem;
+}
+
+.clients-pppoe-user {
+  display: block;
+  font-weight: 650;
+}
+
+.clients-pppoe-secret {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.2rem;
+  flex-wrap: nowrap;
+}
+
+.clients-pppoe-secret .mikrotik-secret-mask,
+.clients-pppoe-secret .mikrotik-secret-value {
+  font-size: 0.84rem;
+}
+
+.clients-secret-toggle {
+  position: static;
+  transform: none;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: 0 0 auto;
+}
+
+.clients-pppoe-pass-none {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+  opacity: 0.65;
+}
+
 .clients-router-cell {
   min-width: 9.5rem;
 }
@@ -4216,8 +4370,168 @@ body.staff-nav-lock {
   padding-top: 0.35rem;
 }
 
+.client-overview-panel {
+  margin-bottom: 1.25rem;
+}
+
+.client-overview-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.client-overview-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 3.25rem;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 50%;
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+[data-theme="light"] .client-overview-avatar {
+  background: rgba(14, 116, 144, 0.12);
+  color: #0e7490;
+}
+
+.client-overview-identity {
+  min-width: 0;
+}
+
+.client-overview-identity h2 {
+  margin: 0.1rem 0 0.15rem;
+}
+
+.client-overview-identity > p:last-child {
+  margin: 0;
+  color: var(--muted, #64748b);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.client-overview-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.client-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem 2rem;
+  margin-top: 1.2rem;
+}
+
+.client-overview-group h3 {
+  margin: 0 0 0.65rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #64748b);
+}
+
+.client-overview-list {
+  margin: 0;
+}
+
+.client-overview-list > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.7fr) minmax(0, 1.3fr);
+  gap: 0.75rem;
+  padding: 0.52rem 0;
+  border-top: 1px solid var(--border-strong);
+}
+
+.client-overview-list dt {
+  color: var(--muted, #64748b);
+  font-size: 0.84rem;
+}
+
+.client-overview-list dd {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.client-overview-list a {
+  color: inherit;
+}
+
+.client-overview-secondary {
+  display: block;
+  margin-top: 0.12rem;
+  color: var(--muted, #64748b);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.client-overview-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .client-usage-panel {
   margin-bottom: 1.25rem;
+}
+
+.client-wifi-panel {
+  margin-bottom: 1.25rem;
+}
+
+.client-wifi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.client-wifi-panel .panel-sub {
+  margin: 0.35rem 0 0;
+}
+
+.client-wifi-panel .panel-sub a {
+  color: inherit;
+}
+
+.client-cpe-prep {
+  margin: 0.75rem 0 0;
+  font-size: 0.86rem;
+  opacity: 0.85;
+}
+
+.client-cpe-prep summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.client-cpe-prep ol {
+  margin: 0.45rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.client-cpe-prep li {
+  margin: 0.15rem 0;
+}
+
+.client-wifi-panel .mikrotik-live-value a {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.client-wifi-panel .mikrotik-live-value a:hover,
+.client-wifi-panel .mikrotik-live-value a:focus-visible {
+  text-decoration: underline;
 }
 
 .client-usage-head {
@@ -4244,6 +4558,154 @@ body.staff-nav-lock {
 
 .client-billing-analysis {
   margin-bottom: 1rem;
+}
+
+.client-package-period {
+  margin-bottom: 1rem;
+}
+
+.client-cpe-connect-form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.client-cpe-unlock {
+  margin: 0.85rem 0 0;
+  padding: 0.95rem 1rem;
+  border-radius: 0.75rem;
+  background: rgba(192, 57, 43, 0.1);
+  border: 1px solid rgba(192, 57, 43, 0.28);
+}
+
+.client-cpe-unlock-title {
+  margin: 0 0 0.55rem;
+  font-weight: 700;
+  color: #c0392b;
+}
+
+.client-cpe-unlock-steps {
+  margin: 0 0 0.75rem 1.1rem;
+  padding: 0;
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+
+.client-cpe-unlock-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.client-cpe-unlock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  margin-top: 0.65rem;
+}
+
+.client-subscription-banner {
+  margin: 0.85rem 0 0;
+  padding: 0.75rem 0.95rem;
+  border-radius: 0.65rem;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.client-subscription-banner.is-active {
+  background: rgba(31, 138, 91, 0.12);
+  color: #1f8a5b;
+}
+
+.client-subscription-banner.is-blocked {
+  background: rgba(192, 57, 43, 0.12);
+  color: #c0392b;
+}
+
+.client-subscription-banner a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.renew-page {
+  min-height: 100vh;
+  margin: 0;
+  position: relative;
+  font-family: "Manrope", system-ui, sans-serif;
+  color: #142033;
+}
+
+.renew-page-bg {
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(31, 111, 235, 0.35), transparent 42%),
+    radial-gradient(circle at 80% 0%, rgba(20, 90, 140, 0.4), transparent 40%),
+    linear-gradient(165deg, #0f2744 0%, #163a5c 48%, #0c1b2c 100%);
+  z-index: 0;
+}
+
+.renew-shell {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+}
+
+.renew-popup {
+  width: min(100%, 26rem);
+  border: 0;
+  border-radius: 1rem;
+  padding: 1.5rem 1.4rem 1.2rem;
+  background: #f7f9fc;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+  color: #142033;
+}
+
+.renew-popup::backdrop {
+  background: rgba(6, 16, 28, 0.55);
+}
+
+.renew-popup-brand {
+  font-family: "Syne", sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #3d5a80;
+  margin-bottom: 0.55rem;
+}
+
+.renew-popup h1 {
+  font-family: "Syne", sans-serif;
+  font-size: 1.55rem;
+  line-height: 1.15;
+  margin: 0 0 0.7rem;
+}
+
+.renew-popup p {
+  margin: 0 0 0.7rem;
+  line-height: 1.45;
+}
+
+.renew-period,
+.renew-hint,
+.renew-account {
+  font-size: 0.9rem;
+  color: #4d5f78;
+}
+
+.renew-popup-ok {
+  width: 100%;
+  margin-top: 0.55rem;
 }
 
 .client-usage-stats {
@@ -4293,6 +4755,24 @@ body.staff-nav-lock {
   }
 }
 
+@media (max-width: 720px) {
+  .client-overview-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .client-overview-badges {
+    width: 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .client-overview-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+}
+
 .client-detail-rows {
   margin-top: 1rem;
 }
@@ -4327,6 +4807,19 @@ body.staff-nav-lock {
   margin: 0 0 0.35rem;
   font-size: 1rem;
   font-weight: 750;
+}
+
+.clients-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.clients-pagination-meta {
+  font-size: 0.9rem;
+  color: var(--muted, #64748b);
 }
 
 @media (max-width: 720px) {
@@ -4380,6 +4873,33 @@ body.staff-nav-lock {
   box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.16);
 }
 
+.mikrotik-link-status.is-limited {
+  color: #d68910;
+}
+
+.mikrotik-link-status.is-limited .mikrotik-link-dot {
+  background: #f39c12;
+  box-shadow: 0 0 0 3px rgba(243, 156, 18, 0.2);
+}
+
+.mikrotik-link-status.is-auth-failed {
+  color: #e67e22;
+}
+
+.mikrotik-link-status.is-auth-failed .mikrotik-link-dot {
+  background: #e67e22;
+  box-shadow: 0 0 0 3px rgba(230, 126, 34, 0.2);
+}
+
+.mikrotik-link-status.is-reachable {
+  color: #2980b9;
+}
+
+.mikrotik-link-status.is-reachable .mikrotik-link-dot {
+  background: #3498db;
+  box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.18);
+}
+
 @keyframes mikrotik-status-pulse {
   0% { box-shadow: 0 0 0 0 rgba(138, 154, 163, 0.45); }
   70% { box-shadow: 0 0 0 6px rgba(138, 154, 163, 0); }
@@ -4392,6 +4912,10 @@ body.staff-nav-lock {
 
 [data-theme="light"] .mikrotik-link-status.is-disconnected {
   color: #b03a2e;
+}
+
+[data-theme="light"] .mikrotik-link-status.is-limited {
+  color: #b45309;
 }
 
 .badge-muted {
@@ -5215,8 +5739,9 @@ body.staff-nav-lock {
   }
 
   .staff-workspace {
-    min-height: 100svh;
     width: 100%;
+    min-height: 0;
+    height: 100%;
   }
 
   .staff-topbar {
@@ -5621,6 +6146,58 @@ body.staff-nav-lock {
   margin-left: auto;
 }
 
+.mikrotik-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.mikrotik-router-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.mikrotik-reconnect-btn.is-needed {
+  border-color: rgba(251, 191, 36, 0.55);
+  color: #fbbf24;
+}
+
+.mikrotik-reconnect-btn.is-busy {
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+.mikrotik-reconnect-hint {
+  margin: 0.85rem 0 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.mikrotik-reconnect-hint.is-ok {
+  color: #34d399;
+}
+
+.mikrotik-reconnect-hint.is-error {
+  color: #f87171;
+}
+
+[data-theme="light"] .mikrotik-reconnect-btn.is-needed {
+  color: #b45309;
+  border-color: rgba(180, 83, 9, 0.35);
+}
+
+[data-theme="light"] .mikrotik-reconnect-hint.is-ok {
+  color: #047857;
+}
+
+[data-theme="light"] .mikrotik-reconnect-hint.is-error {
+  color: #b91c1c;
+}
+
 .mikrotik-detail-sections {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5783,6 +6360,237 @@ body.staff-nav-lock {
   color: #ffb4a8;
   background: rgba(231, 76, 60, 0.12);
   border: 1px solid rgba(231, 76, 60, 0.28);
+}
+
+.mikrotik-wifi-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+  cursor: pointer;
+  user-select: none;
+  margin-top: 0.15rem;
+}
+
+.mikrotik-wifi-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.mikrotik-wifi-switch-track {
+  position: relative;
+  width: 2.55rem;
+  height: 1.4rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.mikrotik-wifi-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+  transition: transform 0.2s ease;
+}
+
+.mikrotik-wifi-switch input:checked + .mikrotik-wifi-switch-track {
+  background: rgba(14, 124, 134, 0.85);
+  border-color: rgba(14, 124, 134, 0.95);
+}
+
+.mikrotik-wifi-switch input:checked + .mikrotik-wifi-switch-track::after {
+  transform: translateX(1.05rem);
+}
+
+.mikrotik-wifi-switch-text {
+  min-width: 1.6rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+
+.settings-policy-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.settings-policy-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.settings-policy-head h2 {
+  margin: 0.15rem 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.settings-policy-copy {
+  margin: 0;
+  max-width: 42rem;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+
+.settings-policy-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.15rem;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(14, 124, 134, 0.04);
+}
+
+.settings-policy-panel.is-policy-on .settings-policy-form {
+  border-color: rgba(14, 124, 134, 0.28);
+  background: rgba(14, 124, 134, 0.08);
+}
+
+.settings-policy-hint {
+  margin: 0;
+  flex: 1 1 14rem;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.settings-policy-banner {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(14, 124, 134, 0.28);
+  background: rgba(14, 124, 134, 0.08);
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.stk-live-panel {
+  margin: 0 0 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel, rgba(255, 255, 255, 0.03));
+}
+
+.stk-live-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.stk-live-panel-head h3 {
+  margin: 0.15rem 0 0;
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.stk-live-meta {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.stk-live-checks {
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.stk-live-checks li {
+  padding: 0.55rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.stk-live-checks li strong {
+  display: inline-block;
+  min-width: 8.5rem;
+  margin-right: 0.35rem;
+}
+
+.stk-live-checks li.is-ok {
+  border-color: rgba(46, 204, 113, 0.28);
+  background: rgba(46, 204, 113, 0.08);
+}
+
+.stk-live-checks li.is-bad {
+  border-color: var(--notice-error-border);
+  background: var(--notice-error-bg);
+  color: var(--notice-error-fg);
+}
+
+.stk-live-panel[data-status="ok"] {
+  border-color: rgba(46, 204, 113, 0.35);
+}
+
+.stk-live-panel[data-status="incomplete"],
+.stk-live-panel[data-status="inactive"],
+.stk-live-panel[data-status="checking"] {
+  border-color: rgba(210, 160, 40, 0.35);
+}
+
+.stk-live-panel[data-status="invalid"],
+.stk-live-panel[data-status="unreachable"],
+.stk-live-panel[data-status="error"] {
+  border-color: var(--notice-error-border);
+}
+
+.settings-policy-stats {
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hotspot-settings-form .settings-policy-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.hotspot-settings-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.hotspot-settings-form .account-card-span {
+  grid-column: 1 / -1;
+}
+
+.hotspot-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.hotspot-push-form {
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 720px) {
+  .settings-policy-stats,
+  .hotspot-settings-form .settings-policy-stats {
+    grid-template-columns: 1fr;
+  }
 }
 
 [data-theme="light"] .mikrotik-wifi-pill.is-on {
@@ -6033,6 +6841,116 @@ body.staff-nav-lock {
   }
 }
 
+.mikrotik-clean-uplink {
+  margin-top: 1.15rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .mikrotik-clean-uplink {
+  border-top-color: rgba(16, 36, 44, 0.1);
+}
+
+.mikrotik-clean-uplink-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.mikrotik-clean-uplink-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.mikrotik-clean-uplink-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mikrotik-clean-uplink-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.85rem 1rem;
+  margin-top: 0.95rem;
+}
+
+.mikrotik-clean-uplink-note {
+  margin: 0;
+  font-size: 0.84rem;
+  opacity: 0.72;
+  line-height: 1.4;
+  max-width: 36rem;
+}
+
+.mikrotik-clean-mode-fieldset {
+  border: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.mikrotik-clean-mode-fieldset legend {
+  margin: 0 0 0.55rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.mikrotik-clean-mode-option {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  margin: 0 0 0.55rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.mikrotik-clean-mode-option:has(input:checked) {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.1);
+}
+
+[data-theme="light"] .mikrotik-clean-mode-option {
+  border-color: rgba(16, 36, 44, 0.1);
+  background: rgba(16, 36, 44, 0.03);
+}
+
+[data-theme="light"] .mikrotik-clean-mode-option:has(input:checked) {
+  border-color: rgba(14, 116, 144, 0.35);
+  background: rgba(14, 116, 144, 0.08);
+}
+
+.mikrotik-clean-mode-option input {
+  margin-top: 0.15rem;
+}
+
+.field-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  opacity: 0.68;
+  line-height: 1.35;
+}
+
+@media (max-width: 1100px) {
+  .mikrotik-clean-uplink-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .mikrotik-clean-uplink-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 560px) {
   .mikrotik-uplink-grid,
   .mikrotik-uplink-grid-5 {
@@ -6221,5 +7139,920 @@ body.staff-nav-lock {
   .mikrotik-live-grid,
   .mikrotik-live-facts {
     grid-template-columns: 1fr;
+  }
+}
+
+.mikrotik-ports-panel .panel-sub {
+  margin: 0.25rem 0 0;
+}
+
+.mikrotik-ports-host {
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+
+.mikrotik-ports-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(185, 64, 64, 0.35);
+  background: rgba(185, 64, 64, 0.08);
+}
+
+.mikrotik-ports-error p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.mikrotik-ports-table-wrap {
+  margin-top: 1rem;
+}
+
+.mikrotik-ports-table .mikrotik-port-name {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.mikrotik-ports-table .mikrotik-port-comment {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+
+.mikrotik-port-type {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: lowercase;
+}
+
+.mikrotik-port-role-form {
+  margin: 0;
+}
+
+.mikrotik-port-role-select {
+  min-width: 10.5rem;
+  max-width: 100%;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.mikrotik-port-role-select:focus {
+  outline: 2px solid rgba(14, 124, 134, 0.35);
+  outline-offset: 1px;
+}
+
+.mikrotik-port-actions {
+  white-space: nowrap;
+}
+
+.mikrotik-port-actions form {
+  margin: 0;
+}
+
+.mikrotik-ports-table tr.is-disabled {
+  opacity: 0.72;
+}
+
+.btn-sm {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 720px) {
+  .mikrotik-port-role-select {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+.mikrotik-uplink-mode-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(14, 124, 134, 0.28);
+  background: rgba(14, 124, 134, 0.08);
+}
+
+.mikrotik-uplink-mode-label {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--ink-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mikrotik-uplink-mode-banner strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.mikrotik-uplink-mode-meta {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.mikrotik-uplink-config-panel {
+  margin-top: 1.25rem;
+}
+
+.mikrotik-uplink-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.mikrotik-uplink-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.mikrotik-uplink-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.mikrotik-uplink-card > p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.mikrotik-uplink-field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.mikrotik-uplink-field span {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.mikrotik-uplink-field input,
+.mikrotik-uplink-field select {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.mikrotik-uplink-fieldset {
+  margin: 0;
+  padding: 0.65rem 0.75rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.mikrotik-uplink-fieldset legend {
+  padding: 0 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.mikrotik-uplink-check-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.75rem;
+}
+
+.mikrotik-uplink-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.mikrotik-uplink-card .btn {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}
+
+.mikrotik-uplink-step {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mikrotik-uplink-role-block {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.mikrotik-uplink-role-label {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mikrotik-uplink-port-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mikrotik-uplink-port-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.55rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.mikrotik-uplink-port-chip.is-primary {
+  background: rgba(14, 124, 134, 0.14);
+  border-color: rgba(14, 124, 134, 0.35);
+  color: var(--sea-deep, #0e7c86);
+}
+
+.mikrotik-uplink-port-chip.is-backup {
+  background: rgba(180, 120, 20, 0.12);
+  border-color: rgba(180, 120, 20, 0.35);
+  color: #8a5a00;
+}
+
+.mikrotik-uplink-empty,
+.mikrotik-uplink-hint,
+.mikrotik-uplink-warn {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.mikrotik-uplink-empty {
+  color: var(--ink-soft);
+}
+
+.mikrotik-uplink-hint {
+  color: var(--ink-soft);
+}
+
+.mikrotik-uplink-warn {
+  color: #b94040;
+}
+
+.mikrotik-uplink-card .btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .mikrotik-uplink-config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .mikrotik-uplink-check-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* Friendly MikroTik ports workspace */
+.mikrotik-ports-head {
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.mikrotik-ports-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  justify-content: flex-end;
+}
+
+.mikrotik-ports-auto-form {
+  margin: 0;
+}
+
+.mikrotik-ports-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.1rem;
+}
+
+.mikrotik-ports-summary-card {
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.mikrotik-ports-summary-card.is-internet {
+  border-color: rgba(37, 150, 190, 0.35);
+  background: rgba(37, 150, 190, 0.1);
+}
+
+.mikrotik-ports-summary-card.is-customers {
+  border-color: rgba(46, 160, 110, 0.35);
+  background: rgba(46, 160, 110, 0.1);
+}
+
+.mikrotik-ports-summary-card.is-unused {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.mikrotik-ports-summary-label {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mikrotik-ports-summary-card strong {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 1.05rem;
+  line-height: 1.25;
+}
+
+.mikrotik-ports-summary-card p {
+  margin: 0.3rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.mikrotik-ports-hint {
+  margin: 0.85rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mikrotik-ports-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.mikrotik-port-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.95rem 1rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface, rgba(15, 23, 42, 0.35));
+}
+
+.mikrotik-port-card.is-up {
+  box-shadow: inset 3px 0 0 rgba(46, 160, 110, 0.85);
+}
+
+.mikrotik-port-card.is-down {
+  box-shadow: inset 3px 0 0 rgba(148, 163, 184, 0.55);
+}
+
+.mikrotik-port-card.is-disabled {
+  opacity: 0.72;
+  box-shadow: inset 3px 0 0 rgba(185, 64, 64, 0.75);
+}
+
+.mikrotik-port-card.role-wan {
+  border-color: rgba(37, 150, 190, 0.45);
+}
+
+.mikrotik-port-card.role-lan {
+  border-color: rgba(46, 160, 110, 0.4);
+}
+
+.mikrotik-port-card-head,
+.mikrotik-port-card-foot {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.mikrotik-port-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+  margin-top: 0.35rem;
+}
+
+.mikrotik-port-bridge {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.mikrotik-port-role-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.mikrotik-port-role-pick-form {
+  margin: 0;
+}
+
+.mikrotik-port-role-pick {
+  min-height: 2rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mikrotik-port-role-pick:hover:not(:disabled) {
+  border-color: rgba(37, 150, 190, 0.5);
+}
+
+.mikrotik-port-role-pick.is-active.role-wan,
+.mikrotik-port-role-pick.is-active[class*=role-wan] {
+  border-color: rgba(37, 150, 190, 0.55);
+  background: rgba(37, 150, 190, 0.18);
+  color: var(--ink);
+}
+
+.mikrotik-port-role-pick.is-active.role-lan {
+  border-color: rgba(46, 160, 110, 0.55);
+  background: rgba(46, 160, 110, 0.18);
+}
+
+.mikrotik-port-role-pick.is-active.role-unused,
+.mikrotik-port-role-pick.is-active.role-none {
+  border-color: rgba(148, 163, 184, 0.55);
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.mikrotik-port-role-pick.is-active.role-wan_backup,
+.mikrotik-port-role-pick.is-active.role-bond {
+  border-color: rgba(217, 119, 6, 0.55);
+  background: rgba(217, 119, 6, 0.16);
+}
+
+.mikrotik-port-role-pick:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mikrotik-port-advanced {
+  border-top: 1px dashed var(--border);
+  padding-top: 0.45rem;
+}
+
+.mikrotik-port-advanced summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.mikrotik-port-advanced .mikrotik-port-role-picks {
+  margin-top: 0.5rem;
+}
+
+.mikrotik-port-current-role {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.mikrotik-port-bond-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.mikrotik-uplink-advanced > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.mikrotik-uplink-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mikrotik-uplink-advanced > summary .panel-sub {
+  display: block;
+  margin-top: 0.2rem;
+}
+
+.mikrotik-uplink-advanced[open] > summary {
+  margin-bottom: 1rem;
+}
+
+.mikrotik-uplink-advanced .mikrotik-uplink-config-grid {
+  margin-top: 0;
+}
+
+@media (max-width: 900px) {
+  .mikrotik-ports-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-ports-head {
+    flex-direction: column;
+  }
+
+  .mikrotik-ports-head-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .mikrotik-ports-head-actions .btn,
+  .mikrotik-ports-auto-form {
+    flex: 1 1 auto;
+  }
+
+  .mikrotik-ports-auto-form .btn {
+    width: 100%;
+  }
+}
+
+.pkg-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  max-width: 28rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: #fff;
+  z-index: 9999;
+  opacity: 0;
+  transform: translateY(0.75rem);
+  transition: opacity 0.25s, transform 0.25s;
+  pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+}
+.pkg-toast-show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.pkg-toast-success { background: #16a34a; }
+.pkg-toast-error   { background: #dc2626; }
+.pkg-toast-info    { background: #2563eb; }
+
+/* My account — company profile + Daraja */
+.account-page-shell {
+  width: 100%;
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.account-page-shell > .client-page-lead {
+  text-align: center;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.account-page {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+}
+
+.account-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 1.25rem 1.35rem;
+}
+
+.account-hero-main {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.account-hero-avatar,
+.account-hero-avatar-fallback {
+  width: 88px;
+  height: 88px;
+  border-radius: 22px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.account-hero-avatar-fallback {
+  display: grid;
+  place-items: center;
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--ink);
+  background: rgba(14, 124, 134, 0.12);
+  border: 1px solid rgba(14, 124, 134, 0.22);
+}
+
+.account-hero-copy h2 {
+  margin: 0.15rem 0 0.55rem;
+  font-size: 1.45rem;
+  line-height: 1.2;
+}
+
+.account-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.account-hero-pay {
+  min-width: 180px;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(14, 124, 134, 0.22);
+  background: rgba(14, 124, 134, 0.08);
+}
+
+.account-hero-pay-label {
+  margin: 0 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.account-hero-pay strong {
+  font-size: 1.05rem;
+}
+
+.account-page-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.account-card {
+  padding: 1.15rem 1.25rem 1.25rem;
+}
+
+.account-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.account-card-head h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.account-card-head p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  max-width: 42rem;
+}
+
+.account-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.95rem 1rem;
+}
+
+.account-receive-field {
+  margin-bottom: 1rem;
+}
+
+.account-receive-label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+.account-receive-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.65rem;
+}
+
+.account-receive-option {
+  display: grid;
+  gap: 0.35rem;
+  text-align: left;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(127, 127, 127, 0.04);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.account-receive-option:hover,
+.account-receive-option:focus-visible {
+  border-color: rgba(14, 124, 134, 0.45);
+  background: rgba(14, 124, 134, 0.06);
+  outline: none;
+}
+
+.account-receive-option.is-selected {
+  border-color: rgba(14, 124, 134, 0.55);
+  background: rgba(14, 124, 134, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(14, 124, 134, 0.2);
+}
+
+.account-receive-option-title {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.account-receive-option-copy {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.account-photo-field {
+  grid-column: 1 / -1;
+}
+
+.account-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.account-photo-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.account-photo-btn {
+  cursor: pointer;
+  margin: 0;
+}
+
+.account-photo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.account-status-card[data-ready="1"] {
+  border-color: rgba(46, 204, 113, 0.35);
+}
+
+.account-status-card[data-enabled="1"][data-ready="0"] {
+  border-color: rgba(210, 160, 40, 0.4);
+}
+
+.account-daraja-card .field-hint[data-daraja-blocked-hint] {
+  margin-top: 0.55rem;
+}
+
+.account-daraja-card.is-daraja-on {
+  border-color: rgba(14, 124, 134, 0.35);
+}
+
+.account-daraja-body {
+  margin-top: 1.1rem;
+  display: grid;
+  gap: 1.15rem;
+}
+
+.account-subsection {
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.account-subsection h4 {
+  margin: 0 0 0.25rem;
+  font-size: 0.98rem;
+}
+
+.account-subsection > p {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.account-readonly {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(127, 127, 127, 0.06);
+  font-weight: 600;
+}
+
+.account-page-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.account-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.account-summary-item {
+  padding: 0.85rem 0.95rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(127, 127, 127, 0.04);
+}
+
+.account-summary-item span {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.account-summary-item strong {
+  font-size: 0.98rem;
+}
+
+@media (max-width: 720px) {
+  .account-hero {
+    align-items: flex-start;
+  }
+
+  .account-card-grid,
+  .account-summary-grid,
+  .account-receive-options {
+    grid-template-columns: 1fr;
+  }
+
+  .account-hero-pay {
+    width: 100%;
   }
 }

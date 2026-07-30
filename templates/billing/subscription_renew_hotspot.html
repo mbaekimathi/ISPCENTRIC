@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Renew subscription</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: rgba(8, 16, 28, 0.72);
+    }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .popup {
+      width: min(100%, 22.5rem);
+      background: #fff;
+      color: #142033;
+      border-radius: 1.1rem;
+      padding: 1.35rem 1.2rem 1.15rem;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.4);
+      text-align: center;
+      animation: pop 0.22s ease-out;
+    }
+    @keyframes pop {
+      from { transform: translateY(10px) scale(0.97); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+    .brand {
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #5b6f8a;
+      margin-bottom: 0.55rem;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 1.35rem;
+      line-height: 1.2;
+      margin: 0 0 0.65rem;
+    }
+    p {
+      margin: 0 0 0.65rem;
+      line-height: 1.45;
+      font-size: 0.95rem;
+      color: #334155;
+    }
+    .meta {
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-top: 0.85rem;
+    }
+    .pay {
+      margin-top: 0.85rem;
+      padding: 0.8rem 0.85rem;
+      border-radius: 0.85rem;
+      background: #eef4ff;
+      text-align: left;
+    }
+    .pay-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #3b5bdb;
+      font-weight: 700;
+      margin: 0 0 0.4rem;
+    }
+    .pay p { margin: 0.2rem 0; color: #142033; }
+    .actions {
+      display: grid;
+      gap: 0.55rem;
+      margin-top: 1rem;
+    }
+    .ok {
+      display: block;
+      border: 0;
+      border-radius: 0.7rem;
+      padding: 0.8rem 1rem;
+      background: #1f6feb;
+      color: #fff;
+      font: 700 0.98rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-decoration: none;
+    }
+    .ghost {
+      display: block;
+      border: 0;
+      border-radius: 0.7rem;
+      padding: 0.7rem 1rem;
+      background: #e8eef7;
+      color: #1e3a5f;
+      font: 600 0.9rem/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="popup" role="dialog" aria-modal="true" aria-labelledby="renew-title">
+    <div class="brand">{{ org_name }}</div>
+    {% if invalid %}
+      <h1 id="renew-title">Unable to renew</h1>
+      <p>This notice is not valid. Contact your internet provider.</p>
+    {% elif allowed %}
+      <h1 id="renew-title">You are covered</h1>
+      <p>Hi {{ customer_name }}. Your subscription is active. Reconnect Wi‑Fi if browsing is still blocked.</p>
+    {% elif not_started %}
+      <h1 id="renew-title">Package not started</h1>
+      <p>Hi {{ customer_name }}. Your package has not started yet. Internet unlocks on the start date.</p>
+    {% else %}
+      <h1 id="renew-title">Renew your subscription</h1>
+      <p>
+        Hi {{ customer_name }}. Your internet package
+        {% if package_end %}ended on {{ package_end|date:"M j, Y" }}{% else %}has expired{% endif %}.
+      </p>
+      <p>You are connected to Wi‑Fi, but surfing is blocked until you renew.</p>
+      {% if plan_name %}<p class="meta">Plan: {{ plan_name }}</p>{% endif %}
+      {% if organization and organization.mpesa_payment_type and organization.mpesa_number %}
+        <div class="pay">
+          <p class="pay-title">Pay with M-Pesa</p>
+          {% if organization.mpesa_payment_type == "paybill" %}
+            <p><strong>Paybill:</strong> {{ organization.mpesa_number }}</p>
+            <p><strong>Account:</strong> {{ organization.mpesa_account|default:account_number }}</p>
+          {% else %}
+            <p><strong>Buy Goods Till:</strong> {{ organization.mpesa_number }}</p>
+          {% endif %}
+          {% if plan and plan.price %}<p><strong>Amount:</strong> {{ plan.price }}</p>{% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+    <p class="meta">Account {{ account_number|default:"—" }}</p>
+    <div class="actions">
+      <a class="ok" href="$(link-orig)">OK</a>
+      <a class="ghost" href="$(link-login-only)">Close</a>
+    </div>
+  </div>
+</body>
+</html>

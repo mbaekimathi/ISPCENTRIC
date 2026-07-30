@@ -58,6 +58,20 @@
   {% else %}
     {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 %}
   {% endif %}
+
+  {% if clients_page and clients_page.paginator.num_pages > 1 %}
+    <nav class="clients-pagination" aria-label="Client pages">
+      {% if clients_page.has_previous %}
+        <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}">Previous</a>
+      {% endif %}
+      <span class="clients-pagination-meta">
+        Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
+      </span>
+      {% if clients_page.has_next %}
+        <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}">Next</a>
+      {% endif %}
+    </nav>
+  {% endif %}
 </section>
 
 {# —— Register PPPoE client —— #}
@@ -68,7 +82,7 @@
       <div>
         <p class="role-modal-kicker">PPPoE</p>
         <h2 id="pppoe-register-title">Register PPPoE client</h2>
-        <p class="role-modal-sub">Add a new PPPoE subscriber to this organization. An account number is created automatically.</p>
+        <p class="role-modal-sub">Add a PPPoE subscriber. The username and password are installed on the selected MikroTik so the client router can dial in.</p>
       </div>
       <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
     </header>
@@ -112,12 +126,13 @@
             <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
             {{ pppoe_form.router }}
             {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
-            <p class="field-hint">Assign the MikroTik this client connects through for live status.</p>
+            <p class="field-hint">Required — ISPCENTRIC writes the PPPoE login onto this MikroTik as a PPP secret.</p>
           </div>
           <div class="field">
             <label for="{{ pppoe_form.pppoe_username.id_for_label }}">{{ pppoe_form.pppoe_username.label }}</label>
             {{ pppoe_form.pppoe_username }}
             {% if pppoe_form.pppoe_username.errors %}<div class="field-error">{{ pppoe_form.pppoe_username.errors|striptags }}</div>{% endif %}
+            <p class="field-hint">Use this exact username on the client’s CPE PPPoE settings.</p>
           </div>
           <div class="field">
             <label for="{{ pppoe_form.pppoe_password.id_for_label }}">{{ pppoe_form.pppoe_password.label }}</label>
@@ -129,6 +144,24 @@
               </button>
             </div>
             {% if pppoe_form.pppoe_password.errors %}<div class="field-error">{{ pppoe_form.pppoe_password.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.cpe_username.id_for_label }}">{{ pppoe_form.cpe_username.label }}</label>
+            {{ pppoe_form.cpe_username }}
+            {% if pppoe_form.cpe_username.errors %}<div class="field-error">{{ pppoe_form.cpe_username.errors|striptags }}</div>{% endif %}
+            <p class="field-hint">Winbox user on the client’s CPE (not the ISP MikroTik).</p>
+          </div>
+          <div class="field">
+            <label for="{{ pppoe_form.cpe_password.id_for_label }}">{{ pppoe_form.cpe_password.label }}</label>
+            <div class="password-field">
+              {{ pppoe_form.cpe_password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ pppoe_form.cpe_password.id_for_label }}" aria-label="Show CPE password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if pppoe_form.cpe_password.errors %}<div class="field-error">{{ pppoe_form.cpe_password.errors|striptags }}</div>{% endif %}
+            <p class="field-hint">Optional now — needed later to manage the CPE’s Wi‑Fi.</p>
           </div>
         </div>
       </div>
@@ -203,6 +236,28 @@
       }
     });
   });
+
+  document.querySelectorAll(".clients-pppoe-secret").forEach(function (wrap) {
+    var mask = wrap.querySelector("[data-secret-mask]");
+    var value = wrap.querySelector("[data-secret-value]");
+    var btn = wrap.querySelector("[data-toggle-secret]");
+    if (!mask || !value || !btn) return;
+    var len = (value.textContent || "").length;
+    mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var showing = !value.hidden;
+      value.hidden = showing;
+      mask.hidden = !showing;
+      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = !showing;
+        eyeOff.hidden = showing;
+      }
+    });
+  });
 })();
 </script>
 {% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}
@@ -259,6 +314,70 @@
   }
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) refreshStatus(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+{% endif %}
+{% if active_tab == 'pppoe' %}
+<script>
+(function () {
+  var badges = document.querySelectorAll("[data-client-surf]");
+  if (!badges.length) return;
+  var surfUrl = "{% url 'core:clients_surfing' %}";
+  var timer = null;
+  var inFlight = false;
+
+  function applyBadge(el, surfing, reason) {
+    if (!el) return;
+    el.classList.remove("is-checking", "is-surfing", "is-not-surfing");
+    el.classList.add(surfing ? "is-surfing" : "is-not-surfing");
+    el.textContent = surfing ? "Surfing" : "Not surfing";
+    el.title = reason || (surfing ? "Client is online on the MikroTik" : "No active PPPoE session");
+  }
+
+  function refreshSurf(force) {
+    if (document.hidden || inFlight) return;
+    inFlight = true;
+    var url = surfUrl;
+    if (force) url += (surfUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data.ok || !data.clients) {
+          badges.forEach(function (el) {
+            if (el.classList.contains("is-checking")) applyBadge(el, false, "Could not check");
+          });
+          return;
+        }
+        var byId = {};
+        data.clients.forEach(function (item) { byId[String(item.id)] = item; });
+        badges.forEach(function (el) {
+          var item = byId[String(el.getAttribute("data-client-surf"))];
+          if (!item) {
+            applyBadge(el, false, "No live data");
+            return;
+          }
+          applyBadge(el, !!item.surfing, item.reason || "");
+        });
+      })
+      .catch(function () {
+        badges.forEach(function (el) {
+          if (el.classList.contains("is-checking")) applyBadge(el, false, "Could not check");
+        });
+      })
+      .finally(function () { inFlight = false; });
+  }
+
+  refreshSurf(true);
+  timer = setInterval(function () { refreshSurf(false); }, 10000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshSurf(true);
   });
   window.addEventListener("beforeunload", function () {
     if (timer) clearInterval(timer);

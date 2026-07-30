@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0; url={{ welcome_url }}">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>Connected — {{ org_name }}</title>
+  <script>window.location.replace("{{ welcome_url|escapejs }}");</script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #0b1520;
+      color: #e8eef7;
+      text-align: center;
+      padding: 1.5rem;
+    }
+    a { color: #7dd3d8; }
+  </style>
+</head>
+<body>
+  <div>
+    <p>You are online.</p>
+    <p><a href="{{ welcome_url }}">Continue</a></p>
+  </div>
+</body>
+</html>

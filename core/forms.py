@@ -396,6 +396,95 @@ class MikroTikSuspendForm(forms.Form):
     )
 
 
+class MikroTikWifiSettingsForm(forms.Form):
+    """Update Wi‑Fi name and password on a client's CPE router."""
+
+    wifi_ssid = forms.CharField(
+        required=False,
+        max_length=64,
+        label="Wi‑Fi name",
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "placeholder": "e.g. Home-WiFi",
+                "id": "id_client_wifi_ssid",
+                "autocomplete": "off",
+            }
+        ),
+    )
+    wifi_password = forms.CharField(
+        required=False,
+        max_length=128,
+        label="Wi‑Fi password",
+        widget=forms.PasswordInput(
+            attrs={
+                "class": "form-control password-input",
+                "placeholder": "Leave blank to keep current password",
+                "autocomplete": "new-password",
+                "id": "id_client_wifi_password",
+            },
+            render_value=True,
+        ),
+    )
+
+    def clean_wifi_ssid(self):
+        return (self.cleaned_data.get("wifi_ssid") or "").strip()
+
+    def clean_wifi_password(self):
+        return self.cleaned_data.get("wifi_password") or ""
+
+    def clean(self):
+        cleaned = super().clean()
+        wifi_ssid = cleaned.get("wifi_ssid") or ""
+        wifi_password = cleaned.get("wifi_password") or ""
+        if wifi_password and len(wifi_password) < 8:
+            self.add_error("wifi_password", "Wi‑Fi password must be at least 8 characters.")
+        if wifi_password and not wifi_ssid:
+            self.add_error("wifi_ssid", "Enter a Wi‑Fi name when setting a Wi‑Fi password.")
+        if not wifi_ssid and not wifi_password:
+            self.add_error(None, "Enter a Wi‑Fi name or password to update.")
+        return cleaned
+
+
+class CustomerCpeAccessForm(forms.Form):
+    """Save Winbox/API credentials for the subscriber's CPE router."""
+
+    cpe_username = forms.CharField(
+        max_length=64,
+        label="CPE username",
+        initial="admin",
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "placeholder": "admin",
+                "id": "id_client_cpe_username",
+                "autocomplete": "username",
+            }
+        ),
+    )
+    cpe_password = forms.CharField(
+        required=False,
+        max_length=128,
+        label="CPE password",
+        widget=forms.PasswordInput(
+            attrs={
+                "class": "form-control password-input",
+                "placeholder": "CPE Winbox password",
+                "autocomplete": "new-password",
+                "id": "id_client_cpe_password",
+            },
+            render_value=True,
+        ),
+    )
+
+    def clean_cpe_username(self):
+        username = (self.cleaned_data.get("cpe_username") or "").strip() or "admin"
+        return username
+
+    def clean_cpe_password(self):
+        return self.cleaned_data.get("cpe_password") or ""
+
+
 class MikroTikWifiToggleForm(forms.Form):
     """Confirm activating or deactivating MikroTik Wi‑Fi."""
 
@@ -404,3 +493,92 @@ class MikroTikWifiToggleForm(forms.Form):
         error_messages={"required": "Confirm to continue."},
         widget=forms.CheckboxInput(attrs={"id": "id_wifi_mikrotik_confirm"}),
     )
+
+
+class MikroTikCleanUplinkForm(forms.Form):
+    """Enable/disable clean uplink (bypass or behind provider) on a MikroTik."""
+
+    mode = forms.ChoiceField(
+        choices=[
+            ("bypass", "Starlink Bypass — dish/router in bypass, MikroTik owns WAN"),
+            ("behind", "Behind provider — Starlink/ISP router stays on, block its settings"),
+        ],
+        widget=forms.RadioSelect(attrs={"class": "mikrotik-clean-mode-list"}),
+    )
+    wan_interface = forms.CharField(
+        max_length=64,
+        widget=forms.TextInput(
+            attrs={
+                "class": "input",
+                "placeholder": "ether1",
+                "id": "id_clean_uplink_wan",
+                "autocomplete": "off",
+            }
+        ),
+        label="WAN interface",
+    )
+    lan_bridge = forms.CharField(
+        max_length=64,
+        widget=forms.TextInput(
+            attrs={
+                "class": "input",
+                "placeholder": "bridgeLocal",
+                "id": "id_clean_uplink_lan",
+                "autocomplete": "off",
+            }
+        ),
+        label="LAN bridge",
+    )
+    provider_gateway = forms.CharField(
+        required=False,
+        max_length=64,
+        widget=forms.TextInput(
+            attrs={
+                "class": "input",
+                "placeholder": "192.168.1.1",
+                "id": "id_clean_uplink_gateway",
+                "autocomplete": "off",
+            }
+        ),
+        label="Provider gateway IP",
+        help_text="Used in behind-provider mode to block the Starlink/ISP admin page.",
+    )
+    separate_wan = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Separate WAN from bridge",
+        help_text=(
+            "Only enable if your PC is plugged into ether2–ether5 (LAN). "
+            "If you manage the MikroTik through Starlink/ether1, leave this OFF or you will lose access."
+        ),
+        widget=forms.CheckboxInput(attrs={"id": "id_clean_uplink_separate_wan"}),
+    )
+    confirm = forms.BooleanField(
+        required=True,
+        error_messages={"required": "Confirm to continue."},
+        widget=forms.CheckboxInput(attrs={"id": "id_clean_uplink_confirm"}),
+    )
+
+    def clean_wan_interface(self):
+        return (self.cleaned_data.get("wan_interface") or "").strip()
+
+    def clean_lan_bridge(self):
+        return (self.cleaned_data.get("lan_bridge") or "").strip()
+
+    def clean_provider_gateway(self):
+        return (self.cleaned_data.get("provider_gateway") or "").strip()
+
+    def clean(self):
+        cleaned = super().clean()
+        mode = cleaned.get("mode") or "bypass"
+        gateway = cleaned.get("provider_gateway") or ""
+        if mode == "behind" and not gateway:
+            self.add_error(
+                "provider_gateway",
+                "Enter the provider gateway IP (often 192.168.1.1 on Starlink).",
+            )
+        if not cleaned.get("wan_interface"):
+            self.add_error("wan_interface", "Enter the WAN interface name.")
+        if not cleaned.get("lan_bridge"):
+            self.add_error("lan_bridge", "Enter the LAN bridge name.")
+        return cleaned

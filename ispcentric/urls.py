@@ -5,12 +5,15 @@ from django.urls import include, path, re_path
 from django.views.decorators.cache import cache_control
 from django.views.static import serve
 
+from accounts.views import mpesa_stk_callback
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", include("core.urls")),
     path("", include("accounts.role_urls")),
     path("accounts/", include("accounts.urls")),
     path("billing/", include("billing.urls")),
+    path("api/mpesa/stk-callback/", mpesa_stk_callback, name="mpesa_stk_callback"),
 ]
 
 # django.conf.urls.static.static() is a no-op when DEBUG=False, so hosted

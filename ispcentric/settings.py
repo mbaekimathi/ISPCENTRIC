@@ -63,6 +63,22 @@ elif _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
 else:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
+# Windows/Android/iOS captive-portal probes are DNS-hijacked to the MikroTik
+# gateway, then dst-nat'd to this app. Accept those Host headers.
+ALLOWED_HOSTS += [
+    "www.msftconnecttest.com",
+    "msftconnecttest.com",
+    "dns.msftncsi.com",
+    "connectivitycheck.gstatic.com",
+    "clients3.google.com",
+    "captive.apple.com",
+    "www.apple.com",
+    "detectportal.firefox.com",
+    "neverssl.com",
+    "example.com",
+    "10.10.0.1",
+]
+
 CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in (os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS") or "").split(",")
@@ -70,6 +86,10 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 # On hosted, middleware adds https://<current-host> per request
 AUTO_CSRF_ORIGINS = HOSTED or env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
+
+# Public base URL for captive renew pages pushed to client CPE routers.
+# Example: https://billing.example.com  (no trailing slash)
+PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -84,10 +104,12 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "ispcentric.middleware.CaptiveHostRewriteMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
+    "ispcentric.middleware.HotspotCaptiveProbeMiddleware",
     "ispcentric.middleware.AutoCsrfOriginMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -138,15 +160,32 @@ DATABASES = {
     }
 }
 
-# Local-memory cache is enough for single-worker / low-traffic; swap for Redis when scaled.
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "ispcentric-default",
-        "TIMEOUT": 60,
-        "OPTIONS": {"MAX_ENTRIES": 1000},
+# Shared file cache so TTL keys (status/surfing/live) work across Passenger workers.
+# Override with DJANGO_CACHE_BACKEND=locmem for single-process local if needed.
+_cache_backend = (os.getenv("DJANGO_CACHE_BACKEND") or "file").strip().lower()
+if _cache_backend in {"locmem", "locmemcache", "local"}:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ispcentric-default",
+            "TIMEOUT": 60,
+            "OPTIONS": {"MAX_ENTRIES": 1000},
+        }
     }
-}
+else:
+    _cache_dir = BASE_DIR / ".cache"
+    try:
+        _cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": str(_cache_dir),
+            "TIMEOUT": 60,
+            "OPTIONS": {"MAX_ENTRIES": 2000},
+        }
+    }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

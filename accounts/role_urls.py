@@ -63,6 +63,16 @@ urlpatterns = [
     ),
     path("manager/dashboard/", role_dashboards.manager_dashboard, name="manager"),
     path("it-support/dashboard/", role_dashboards.it_support_dashboard, name="it_support"),
+    path(
+        "it-support/payment-gateway/",
+        role_dashboards.it_support_payment_gateway,
+        name="it_support_payment_gateway",
+    ),
+    path(
+        "it-support/payment-gateway/status/",
+        role_dashboards.it_support_payment_gateway_status,
+        name="it_support_payment_gateway_status",
+    ),
     path("it-support/switch-role/", role_dashboards.switch_role_view, name="switch_role"),
     path("sales/dashboard/", role_dashboards.sales_dashboard, name="sales"),
     path("technician/dashboard/", role_dashboards.technician_dashboard, name="technician"),

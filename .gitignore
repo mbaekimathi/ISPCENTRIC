@@ -5,6 +5,7 @@ __pycache__/
 .Python
 .env
 .secret_key
+.cache/
 .venv/
 venv/
 env/

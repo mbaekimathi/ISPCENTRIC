@@ -1,0 +1,322 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Hotspot settings — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  {% if hotspot_enabled %}
+    <div class="settings-policy-banner">
+      Hotspot is <strong>on</strong>. After you push to MikroTik, phones joining Wi‑Fi should open the payment/login page.
+    </div>
+  {% endif %}
+
+  {% if portal_base_is_loopback %}
+    <div class="notice notice-error" style="margin:0 0 1rem;">
+      <strong>PUBLIC_BASE_URL is localhost.</strong>
+      The router and phones cannot open <code>localhost</code>.
+      Set <code>PUBLIC_BASE_URL</code> in <code>.env</code> to this PC’s LAN IP
+      (example: <code>http://192.168.88.10:8000</code>), add that IP to
+      <code>DJANGO_ALLOWED_HOSTS</code>, restart the server, then push Hotspot again.
+    </div>
+  {% endif %}
+
+  {% if form and can_edit %}
+    <form method="post" class="hotspot-settings-form" id="hotspot-settings-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="save_settings">
+
+      {% if form.non_field_errors %}
+        <div class="notice notice-error">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <section class="panel settings-policy-panel{% if hotspot_enabled %} is-policy-on{% endif %}">
+        <div class="settings-policy-head">
+          <div>
+            <p class="mikrotik-section-label">Access policy</p>
+            <h2>Hotspot service</h2>
+            <p class="settings-policy-copy">
+              When this is on, ISPCENTRIC uses your portal title, login message, and voucher
+              defaults for Hotspot clients on this organization. Saving also pushes Hotspot
+              to your onboarded MikroTik routers.
+            </p>
+          </div>
+          <span class="mikrotik-wifi-pill{% if hotspot_enabled %} is-on{% else %} is-off{% endif %}" id="hotspot-status-pill">
+            {% if hotspot_enabled %}On{% else %}Off{% endif %}
+          </span>
+        </div>
+
+        <div class="settings-policy-form">
+          <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.hotspot_enabled.id_for_label }}">
+            {{ form.hotspot_enabled }}
+            <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+            <span class="mikrotik-wifi-switch-text" id="hotspot-enabled-label">
+              {% if hotspot_enabled %}On{% else %}Off{% endif %}
+            </span>
+          </label>
+          {% if form.hotspot_enabled.errors %}
+            <div class="field-error">{{ form.hotspot_enabled.errors|striptags }}</div>
+          {% endif %}
+          <p class="settings-policy-hint">{{ form.hotspot_enabled.help_text }}</p>
+        </div>
+
+        <div class="stat-grid settings-policy-stats">
+          <div class="stat">
+            <div class="label">Service</div>
+            <div class="value" style="font-size:1.05rem;" id="hotspot-service-label">
+              {% if hotspot_enabled %}Hotspot portals active{% else %}Hotspot portals off{% endif %}
+            </div>
+          </div>
+          <div class="stat">
+            <div class="label">Hotspot clients</div>
+            <div class="value">{{ hotspot_client_count }}</div>
+          </div>
+          <div class="stat">
+            <div class="label">This router</div>
+            <div class="value" style="font-size:1.05rem;">{{ router.name }}</div>
+          </div>
+        </div>
+      </section>
+
+      {% if pppoe_compulsory and hotspot_enabled %}
+        <div class="settings-policy-banner">
+          PPPoE enforcement and Hotspot work together: dialed PPPoE clients keep internet;
+          other LAN/Wi‑Fi devices must log in via Hotspot before surfing.
+        </div>
+      {% endif %}
+
+      <section class="panel account-card">
+        <header class="account-card-head">
+          <div>
+            <h3>Portal &amp; login page</h3>
+            <p>Shown when a phone connects to Hotspot Wi‑Fi (payment details + login form).</p>
+          </div>
+          {% if pay_page_path %}
+            <a class="btn btn-ghost" href="{{ pay_page_path }}" target="_blank" rel="noopener">Preview payment page</a>
+          {% endif %}
+        </header>
+        <div class="account-card-grid">
+          <div class="field">
+            <label for="{{ form.hotspot_portal_title.id_for_label }}">{{ form.hotspot_portal_title.label }}</label>
+            {{ form.hotspot_portal_title }}
+            {% if form.hotspot_portal_title.errors %}
+              <div class="field-error">{{ form.hotspot_portal_title.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_portal_title.help_text }}</p>
+          </div>
+          <div class="field account-card-span">
+            <label for="{{ form.hotspot_login_message.id_for_label }}">{{ form.hotspot_login_message.label }}</label>
+            {{ form.hotspot_login_message }}
+            {% if form.hotspot_login_message.errors %}
+              <div class="field-error">{{ form.hotspot_login_message.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_login_message.help_text }}</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel account-card">
+        <header class="account-card-head">
+          <div>
+            <h3>After login redirect</h3>
+            <p>Where clients go after a successful Hotspot login — customize your welcome page or use any URL.</p>
+          </div>
+          {% if welcome_page_url %}
+            <a class="btn btn-ghost" href="{{ welcome_page_path }}" target="_blank" rel="noopener">Preview welcome page</a>
+          {% endif %}
+        </header>
+
+        <div class="settings-policy-form" style="margin-bottom:1rem;">
+          <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.hotspot_use_welcome_page.id_for_label }}">
+            {{ form.hotspot_use_welcome_page }}
+            <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+            <span class="mikrotik-wifi-switch-text" id="hotspot-welcome-label">
+              {% if use_welcome_page %}Welcome page{% else %}Custom URL{% endif %}
+            </span>
+          </label>
+          {% if form.hotspot_use_welcome_page.errors %}
+            <div class="field-error">{{ form.hotspot_use_welcome_page.errors|striptags }}</div>
+          {% endif %}
+          <p class="settings-policy-hint">{{ form.hotspot_use_welcome_page.help_text }}</p>
+        </div>
+
+        <div class="account-card-grid" data-welcome-fields {% if not use_welcome_page %}hidden{% endif %}>
+          {% if welcome_page_url %}
+            <div class="field account-card-span">
+              <label>Welcome page URL</label>
+              <input class="form-control" type="text" readonly value="{{ welcome_page_url }}" id="hotspot-welcome-url">
+              <p class="field-hint">Saved as the redirect URL when the welcome page is on. Share or paste this into MikroTik if needed.</p>
+            </div>
+          {% endif %}
+          <div class="field">
+            <label for="{{ form.hotspot_welcome_title.id_for_label }}">{{ form.hotspot_welcome_title.label }}</label>
+            {{ form.hotspot_welcome_title }}
+            {% if form.hotspot_welcome_title.errors %}
+              <div class="field-error">{{ form.hotspot_welcome_title.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_welcome_title.help_text }}</p>
+          </div>
+          <div class="field">
+            <label for="{{ form.hotspot_welcome_button_label.id_for_label }}">{{ form.hotspot_welcome_button_label.label }}</label>
+            {{ form.hotspot_welcome_button_label }}
+            {% if form.hotspot_welcome_button_label.errors %}
+              <div class="field-error">{{ form.hotspot_welcome_button_label.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_welcome_button_label.help_text }}</p>
+          </div>
+          <div class="field account-card-span">
+            <label for="{{ form.hotspot_welcome_message.id_for_label }}">{{ form.hotspot_welcome_message.label }}</label>
+            {{ form.hotspot_welcome_message }}
+            {% if form.hotspot_welcome_message.errors %}
+              <div class="field-error">{{ form.hotspot_welcome_message.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_welcome_message.help_text }}</p>
+          </div>
+          <div class="field account-card-span">
+            <label for="{{ form.hotspot_welcome_button_url.id_for_label }}">{{ form.hotspot_welcome_button_url.label }}</label>
+            {{ form.hotspot_welcome_button_url }}
+            {% if form.hotspot_welcome_button_url.errors %}
+              <div class="field-error">{{ form.hotspot_welcome_button_url.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_welcome_button_url.help_text }}</p>
+          </div>
+        </div>
+
+        <div class="account-card-grid" data-custom-redirect {% if use_welcome_page %}hidden{% endif %}>
+          <div class="field account-card-span">
+            <label for="{{ form.hotspot_redirect_url.id_for_label }}">{{ form.hotspot_redirect_url.label }}</label>
+            {{ form.hotspot_redirect_url }}
+            {% if form.hotspot_redirect_url.errors %}
+              <div class="field-error">{{ form.hotspot_redirect_url.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_redirect_url.help_text }}</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel account-card">
+        <header class="account-card-head">
+          <div>
+            <h3>Voucher defaults</h3>
+            <p>Defaults applied when creating new Hotspot vouchers.</p>
+          </div>
+        </header>
+        <div class="account-card-grid">
+          <div class="field">
+            <label for="{{ form.hotspot_voucher_validity_hours.id_for_label }}">{{ form.hotspot_voucher_validity_hours.label }}</label>
+            {{ form.hotspot_voucher_validity_hours }}
+            {% if form.hotspot_voucher_validity_hours.errors %}
+              <div class="field-error">{{ form.hotspot_voucher_validity_hours.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_voucher_validity_hours.help_text }}</p>
+          </div>
+          <div class="field">
+            <label for="{{ form.hotspot_idle_timeout_minutes.id_for_label }}">{{ form.hotspot_idle_timeout_minutes.label }}</label>
+            {{ form.hotspot_idle_timeout_minutes }}
+            {% if form.hotspot_idle_timeout_minutes.errors %}
+              <div class="field-error">{{ form.hotspot_idle_timeout_minutes.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_idle_timeout_minutes.help_text }}</p>
+          </div>
+          <div class="field">
+            <label for="{{ form.hotspot_default_download_mbps.id_for_label }}">{{ form.hotspot_default_download_mbps.label }}</label>
+            {{ form.hotspot_default_download_mbps }}
+            {% if form.hotspot_default_download_mbps.errors %}
+              <div class="field-error">{{ form.hotspot_default_download_mbps.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_default_download_mbps.help_text }}</p>
+          </div>
+          <div class="field">
+            <label for="{{ form.hotspot_default_upload_mbps.id_for_label }}">{{ form.hotspot_default_upload_mbps.label }}</label>
+            {{ form.hotspot_default_upload_mbps }}
+            {% if form.hotspot_default_upload_mbps.errors %}
+              <div class="field-error">{{ form.hotspot_default_upload_mbps.errors|striptags }}</div>
+            {% endif %}
+            <p class="field-hint">{{ form.hotspot_default_upload_mbps.help_text }}</p>
+          </div>
+        </div>
+      </section>
+
+      <div class="form-actions hotspot-settings-actions">
+        <button type="submit" class="btn btn-primary">Save &amp; push to this router</button>
+      </div>
+    </form>
+
+    <form method="post" class="settings-policy-form hotspot-push-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="push_hotspot">
+      <button type="submit" class="btn btn-ghost">
+        {% if hotspot_enabled %}Push Hotspot to this router again{% else %}Remove Hotspot from this router{% endif %}
+      </button>
+      <p class="settings-policy-hint">
+        {% if hotspot_enabled %}
+          Re-installs the Hotspot server on this router’s LAN bridge, syncs Hotspot client logins,
+          and refreshes the post-login redirect. Use after reconnecting.
+        {% else %}
+          Removes the ISPCENTRIC Hotspot server, profiles, and synced users from this router.
+        {% endif %}
+      </p>
+    </form>
+  {% elif not can_edit %}
+    <section class="panel">
+      <p class="empty">You do not have permission to change Hotspot settings.</p>
+    </section>
+  {% else %}
+    <section class="panel">
+      <p class="empty">Hotspot settings are unavailable for this workspace.</p>
+    </section>
+  {% endif %}
+{% else %}
+  <section class="panel">
+    <p class="empty">No organization is linked to this workspace.</p>
+  </section>
+{% endif %}
+{% endblock %}
+
+{% block client_extra_js %}
+{% if form and can_edit %}
+<script>
+(function () {
+  var enabled = document.getElementById("id_hotspot_enabled");
+  var enabledLabel = document.getElementById("hotspot-enabled-label");
+  var pill = document.getElementById("hotspot-status-pill");
+  var service = document.getElementById("hotspot-service-label");
+  var panel = document.querySelector(".settings-policy-panel");
+
+  var useWelcome = document.getElementById("id_hotspot_use_welcome_page");
+  var welcomeLabel = document.getElementById("hotspot-welcome-label");
+  var welcomeFields = document.querySelector("[data-welcome-fields]");
+  var customRedirect = document.querySelector("[data-custom-redirect]");
+
+  function syncEnabled() {
+    if (!enabled) return;
+    var on = !!enabled.checked;
+    if (enabledLabel) enabledLabel.textContent = on ? "On" : "Off";
+    if (pill) {
+      pill.textContent = on ? "On" : "Off";
+      pill.classList.toggle("is-on", on);
+      pill.classList.toggle("is-off", !on);
+    }
+    if (service) {
+      service.textContent = on ? "Hotspot portals active" : "Hotspot portals off";
+    }
+    if (panel) panel.classList.toggle("is-policy-on", on);
+  }
+
+  function syncWelcome() {
+    if (!useWelcome) return;
+    var on = !!useWelcome.checked;
+    if (welcomeLabel) welcomeLabel.textContent = on ? "Welcome page" : "Custom URL";
+    if (welcomeFields) welcomeFields.hidden = !on;
+    if (customRedirect) customRedirect.hidden = on;
+  }
+
+  if (enabled) enabled.addEventListener("change", syncEnabled);
+  if (useWelcome) useWelcome.addEventListener("change", syncWelcome);
+  syncEnabled();
+  syncWelcome();
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -2,11 +2,17 @@ from functools import wraps
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_http_methods, require_POST
 
-from accounts.forms import EmployeeAdminEditForm, OrganizationEditForm
-from accounts.models import Employee, Organization
+from accounts.forms import (
+    EmployeeAdminEditForm,
+    OrganizationEditForm,
+    PaymentGatewayForm,
+)
+from accounts.models import Employee, Organization, PaymentGateway
+from accounts.mpesa_daraja import check_stk_configuration, normalize_gateway_values
 from accounts.routing import (
     CLIENT_VIEW_VALUE,
     ROLE_DASHBOARD_NAMES,
@@ -209,7 +215,7 @@ def super_admin_clients(request):
 
     _prepare_super_admin_view(request)
 
-    clients = (
+    clients = list(
         Organization.objects.select_related("owner")
         .annotate(
             staff_count=Count("employees", distinct=True),
@@ -222,7 +228,7 @@ def super_admin_clients(request):
         "accounts/super_admin_clients.html",
         _super_admin_clients_context(
             clients=clients,
-            clients_count=clients.count(),
+            clients_count=len(clients),
         ),
     )
 
@@ -311,7 +317,7 @@ def super_admin_client_delete(request, pk):
 def super_admin_hr(request):
     _prepare_super_admin_view(request)
 
-    employees = (
+    employees = list(
         Employee.objects.select_related("user", "organization")
         .order_by("-created_at")
     )
@@ -320,7 +326,7 @@ def super_admin_hr(request):
         "accounts/super_admin_hr.html",
         _super_admin_hr_context(
             employees=employees,
-            employees_count=employees.count(),
+            employees_count=len(employees),
         ),
     )
 
@@ -483,6 +489,68 @@ def manager_dashboard(request):
 @role_required(Employee.Role.IT_SUPPORT)
 def it_support_dashboard(request):
     return _role_dashboard(request, Employee.Role.IT_SUPPORT)
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_payment_gateway(request):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.IT_SUPPORT)
+
+    gateway = PaymentGateway.get_solo()
+    if request.method == "POST":
+        form = PaymentGatewayForm(request.POST, instance=gateway)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Payment gateway settings saved.")
+            return redirect("roles:it_support_payment_gateway")
+    else:
+        form = PaymentGatewayForm(instance=gateway)
+
+    return render(
+        request,
+        "accounts/it_support_payment_gateway.html",
+        {
+            "page_title": "Payment Gateway",
+            "page_kicker": "Integrations",
+            "current_page": "payment_gateway",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "gateway": gateway,
+            "sandbox_base_url": PaymentGateway.sandbox_base_url(),
+            "sandbox_callback_url": PaymentGateway.default_callback_url(
+                PaymentGateway.Environment.SANDBOX
+            ),
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_http_methods(["GET", "POST"])
+def it_support_payment_gateway_status(request):
+    """Live-check whether STK Push / Daraja credentials are well configured."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.IT_SUPPORT)
+
+    gateway = PaymentGateway.get_solo()
+    draft = None
+    if request.method == "POST":
+        draft = {
+            "enabled": request.POST.get("enabled"),
+            "environment": request.POST.get("environment"),
+            "payment_type": request.POST.get("payment_type"),
+            "shortcode": request.POST.get("shortcode"),
+            "consumer_key": request.POST.get("consumer_key"),
+            "consumer_secret": request.POST.get("consumer_secret"),
+            "passkey": request.POST.get("passkey"),
+            "callback_url": request.POST.get("callback_url"),
+        }
+    values = normalize_gateway_values(draft, gateway)
+    live = str(request.GET.get("live") or request.POST.get("live") or "1") != "0"
+    result = check_stk_configuration(values, live=live)
+    result["saved_enabled"] = bool(gateway.enabled)
+    return JsonResponse(result)
 
 
 @role_required(Employee.Role.SALES)

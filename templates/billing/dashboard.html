@@ -21,6 +21,10 @@
     <div class="value">{{ stats.active_customers }}</div>
   </div>
   <div class="stat">
+    <div class="label">Needs renewal</div>
+    <div class="value">{{ stats.attention_customers }}</div>
+  </div>
+  <div class="stat">
     <div class="label">Packages</div>
     <div class="value">{{ stats.packages }}</div>
   </div>
@@ -34,7 +38,86 @@
   </div>
 </div>
 
-<div class="grid-2">
+<section class="panel" style="margin-top: 1rem;">
+  <div class="panel-head-row">
+    <h2>Subscriptions needing attention</h2>
+    <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
+  </div>
+  <p class="page-sub" style="margin: 0 0 0.85rem;">
+    Clients whose package has expired, or who have used ¾ or more of their subscription period.
+  </p>
+  {% if attention_customers %}
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Client</th>
+          <th>Account</th>
+          <th>Package</th>
+          <th>Period</th>
+          <th>Used</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in attention_customers %}
+          <tr>
+            <td>
+              <a href="{% url 'core:client_detail' row.customer.pk %}">{{ row.customer.full_name }}</a>
+            </td>
+            <td>{{ row.customer.account_number }}</td>
+            <td>{% if row.customer.plan %}{{ row.customer.plan.name }}{% else %}—{% endif %}</td>
+            <td>
+              {% if row.customer.package_start and row.customer.package_end %}
+                {{ row.customer.package_start|date:"M j, Y" }} → {{ row.customer.package_end|date:"M j, Y" }}
+              {% elif row.customer.package_end %}
+                Ends {{ row.customer.package_end|date:"M j, Y" }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>
+              {% if row.progress %}
+                {{ row.progress.percent }}%
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>
+              {% if row.attention == "expired" %}
+                <span class="badge badge-warn">Expired</span>
+              {% else %}
+                <span class="badge">¾ used</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.customer.plan and row.customer.plan.price %}
+                <button
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  data-stk-pay
+                  data-customer-id="{{ row.customer.pk }}"
+                  data-customer-name="{{ row.customer.full_name }}"
+                  data-account="{{ row.customer.account_number }}"
+                  data-phone="{{ row.customer.phone }}"
+                  data-plan="{{ row.customer.plan.name }}"
+                  data-amount="{{ row.customer.plan.price }}"
+                  data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
+                >Pay</button>
+              {% else %}
+                <span class="empty">No package</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty">No expired or nearly exhausted subscriptions right now.</p>
+  {% endif %}
+</section>
+
+<div class="grid-2" style="margin-top: 1rem;">
   <section class="panel">
     <div class="panel-head-row">
       <h2>Packages</h2>
@@ -49,61 +132,267 @@
   </section>
 
   <section class="panel">
-    <h2>Recent customers</h2>
-    {% if recent_customers %}
+    <h2>Recent invoices</h2>
+    {% if recent_invoices %}
       <table class="table">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Account</th>
-            <th>Status</th>
+            <th>Invoice</th>
+            <th>Customer</th>
+            <th>Amount</th>
           </tr>
         </thead>
         <tbody>
-          {% for c in recent_customers %}
+          {% for inv in recent_invoices %}
             <tr>
-              <td>{{ c.full_name }}</td>
-              <td>{{ c.account_number }}</td>
-              <td><span class="badge">{{ c.get_status_display }}</span></td>
+              <td>{{ inv.invoice_number }}</td>
+              <td>{{ inv.customer.full_name }}</td>
+              <td>{{ inv.amount }}</td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     {% else %}
-      <p class="empty">No customers yet. Add packages, then register clients.</p>
+      <p class="empty">No invoices yet. They will appear here once billing starts.</p>
     {% endif %}
   </section>
 </div>
 
-<section class="panel" style="margin-top: 1rem;">
-  <h2>Recent invoices</h2>
-  {% if recent_invoices %}
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Invoice</th>
-          <th>Customer</th>
-          <th>Amount</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for inv in recent_invoices %}
-          <tr>
-            <td>{{ inv.invoice_number }}</td>
-            <td>{{ inv.customer.full_name }}</td>
-            <td>{{ inv.amount }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  {% else %}
-    <p class="empty">No invoices yet. They will appear here once billing starts.</p>
-  {% endif %}
-</section>
-
 {% include "billing/includes/package_register_modal.html" %}
+
+<div class="role-modal client-action-modal" id="billing-stk-pay-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="billing-stk-pay-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">M-Pesa STK Push</p>
+        <h2 id="billing-stk-pay-title">Collect payment</h2>
+        <p class="role-modal-sub" id="billing-stk-pay-sub">Prompt the client’s phone to pay the package amount.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form id="billing-stk-pay-form" class="mikrotik-action-form" novalidate>
+      {% csrf_token %}
+      <div class="mikrotik-action-scroll">
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field field-span-2">
+            <label>Client</label>
+            <p id="billing-stk-client" class="page-sub" style="margin:0;"></p>
+          </div>
+          <div class="field">
+            <label>Package</label>
+            <p id="billing-stk-plan" class="page-sub" style="margin:0;"></p>
+          </div>
+          <div class="field">
+            <label>Amount</label>
+            <p id="billing-stk-amount" class="page-sub" style="margin:0;"></p>
+          </div>
+          <div class="field field-span-2">
+            <label for="billing-stk-phone">M-Pesa phone number</label>
+            <input
+              type="tel"
+              id="billing-stk-phone"
+              name="phone"
+              class="input"
+              inputmode="tel"
+              autocomplete="tel"
+              placeholder="07xxxxxxxx"
+              required
+            >
+            <p class="page-sub" style="margin:0.35rem 0 0;">
+              STK Push opens on <strong>this</strong> number — use the client’s M-Pesa phone.
+            </p>
+          </div>
+          <div class="field field-span-2" id="billing-stk-status" hidden>
+            <p class="page-sub" id="billing-stk-status-text" style="margin:0;"></p>
+          </div>
+        </div>
+      </div>
+      <footer class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="billing-stk-submit">Send STK Push</button>
+      </footer>
+    </form>
+  </div>
+</div>
 {% endblock %}
 
 {% block client_extra_js %}
 {% include "billing/includes/package_register_scripts.html" %}
+<script>
+(function () {
+  var modal = document.getElementById("billing-stk-pay-modal");
+  var form = document.getElementById("billing-stk-pay-form");
+  if (!modal || !form) return;
+
+  var phoneInput = document.getElementById("billing-stk-phone");
+  var submitBtn = document.getElementById("billing-stk-submit");
+  var statusBox = document.getElementById("billing-stk-status");
+  var statusText = document.getElementById("billing-stk-status-text");
+  var clientEl = document.getElementById("billing-stk-client");
+  var planEl = document.getElementById("billing-stk-plan");
+  var amountEl = document.getElementById("billing-stk-amount");
+  var payUrl = "";
+  var pollTimer = null;
+  var statusUrlTemplate = "{% url 'billing:subscription_stk_status' 0 %}".replace("/0/", "/__ID__/");
+
+  function csrfToken() {
+    var input = form.querySelector("input[name=csrfmiddlewaretoken]");
+    if (input && input.value) return input.value;
+    var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function setStatus(message, show) {
+    if (!statusBox || !statusText) return;
+    statusText.textContent = message || "";
+    statusBox.hidden = !show;
+  }
+
+  function stopPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function statusUrl(stkId) {
+    return statusUrlTemplate.replace("__ID__", String(stkId));
+  }
+
+  function pollStatus(stkId) {
+    stopPoll();
+    var tries = 0;
+    pollTimer = setInterval(function () {
+      tries += 1;
+      fetch(statusUrl(stkId), {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || data.pending) {
+            setStatus(data && data.result_desc ? data.result_desc : "Waiting for M-Pesa confirmation…", true);
+            if (tries >= 40) {
+              stopPoll();
+              setStatus("Timed out waiting for confirmation. Refresh later if the client paid.", true);
+              if (submitBtn) submitBtn.disabled = false;
+            }
+            return;
+          }
+          stopPoll();
+          if (data.success) {
+            setStatus(
+              "Payment successful. Subscription updated" +
+                (data.package_end ? (" until " + new Date(data.package_end).toLocaleString()) : "") +
+                ".",
+              true
+            );
+            setTimeout(function () { window.location.reload(); }, 1200);
+          } else {
+            setStatus(data.result_desc || "Payment was not completed.", true);
+            if (submitBtn) submitBtn.disabled = false;
+          }
+        })
+        .catch(function () {
+          setStatus("Could not check payment status. Retrying…", true);
+        });
+    }, 3000);
+  }
+
+  document.querySelectorAll("[data-stk-pay]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      stopPoll();
+      payUrl = btn.getAttribute("data-pay-url") || "";
+      if (clientEl) {
+        clientEl.textContent =
+          (btn.getAttribute("data-customer-name") || "") +
+          " · " +
+          (btn.getAttribute("data-account") || "");
+      }
+      if (planEl) planEl.textContent = btn.getAttribute("data-plan") || "—";
+      if (amountEl) amountEl.textContent = btn.getAttribute("data-amount") || "—";
+      if (phoneInput) phoneInput.value = btn.getAttribute("data-phone") || "";
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Send STK Push";
+      }
+      setStatus("", false);
+      openModal();
+      if (phoneInput) phoneInput.focus();
+    });
+  });
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    if (!payUrl) return;
+    var phone = phoneInput ? phoneInput.value.trim() : "";
+    if (!phone) {
+      setStatus("Enter the client’s M-Pesa phone number.", true);
+      return;
+    }
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Sending…";
+    }
+    setStatus("Sending STK Push…", true);
+    var body = new FormData();
+    body.append("phone", phone);
+    body.append("csrfmiddlewaretoken", csrfToken());
+    fetch(payUrl, {
+      method: "POST",
+      body: body,
+      headers: {
+        "X-CSRFToken": csrfToken(),
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json"
+      },
+      credentials: "same-origin"
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { ok: res.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        var data = result.data || {};
+        if (!result.ok || !data.ok) {
+          setStatus(data.error || "Could not send STK Push.", true);
+          if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = "Send STK Push";
+          }
+          return;
+        }
+        setStatus(
+          (data.message || "STK Push sent.") +
+            (data.phone ? (" Phone: " + data.phone) : "") +
+            " Waiting for PIN…",
+          true
+        );
+        if (submitBtn) submitBtn.textContent = "Waiting…";
+        pollStatus(data.stk_id);
+      })
+      .catch(function () {
+        setStatus("Network error while sending STK Push.", true);
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Send STK Push";
+        }
+      });
+  });
+
+  modal.addEventListener("click", function (event) {
+    if (event.target && event.target.hasAttribute("data-close-client-modal")) {
+      stopPoll();
+    }
+  });
+})();
+</script>
 {% endblock %}

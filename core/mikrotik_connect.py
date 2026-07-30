@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import socket
+import time
 from contextlib import contextmanager
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 
 WIFI_PACKAGES = (
@@ -183,10 +186,16 @@ def _api_login(sock: socket.socket, username: str, password: str) -> dict[str, A
 
 
 def _command(sock: socket.socket, words: list[str]) -> tuple[list[dict[str, str]], dict[str, str]]:
-    """Run a RouterOS API command. Returns (replies, done/trap attrs)."""
+    """Run a RouterOS API command. Returns (replies, done/trap attrs).
+
+    RouterOS may send one or more !trap sentences before a final !done.
+    We must consume through !done/!fatal or the next command reads a stale !done
+    and looks like an empty successful reply (e.g. secret print returns no rows).
+    """
     _write_sentence(sock, words)
     replies: list[dict[str, str]] = []
     terminal: dict[str, str] = {}
+    trapped: dict[str, str] | None = None
     while True:
         sentence = _read_sentence(sock)
         if not sentence:
@@ -195,10 +204,18 @@ def _command(sock: socket.socket, words: list[str]) -> tuple[list[dict[str, str]
         reply = attrs.get("_reply") or (sentence[0] if sentence else "")
         if reply == "!re":
             replies.append(attrs)
-        if reply in {"!done", "!trap", "!fatal"}:
+        elif reply == "!trap":
+            trapped = attrs
+            trapped["_reply"] = "!trap"
+        elif reply in {"!done", "!fatal"}:
             terminal = attrs
             terminal["_reply"] = reply
             break
+    if trapped is not None:
+        # Prefer trap details for callers; keep done attrs under _done if present.
+        if terminal:
+            trapped["_done"] = terminal.get("_reply", "!done")
+        return replies, trapped
     return replies, terminal
 
 
@@ -220,6 +237,934 @@ def _set(sock: socket.socket, path: str, item_id: str, **props: str) -> dict[str
     return terminal
 
 
+def _add(sock: socket.socket, path: str, **props: str) -> dict[str, str]:
+    words = [f"{path}/add"]
+    for key, value in props.items():
+        if value is None:
+            continue
+        words.append(f"={key}={value}")
+    _, terminal = _command(sock, words)
+    return terminal
+
+
+def _remove(sock: socket.socket, path: str, item_id: str) -> dict[str, str]:
+    _, terminal = _command(sock, [f"{path}/remove", f"=.id={item_id}"])
+    return terminal
+
+
+CLEAN_UPLINK_TAG = "ispcentric-clean-uplink"
+UPLINK_TAG = "ispcentric-uplink"
+CPE_PROXY_TAG = "ispcentric-cpe-proxy"
+CPE_API_AUTO_TAG = "ispcentric-cpe-api"
+# ISP PPPoE pool used when opening CPE management from the NAS side.
+PPPOE_LOCAL_ADDRESS = "10.20.0.1"
+PPPOE_POOL_NAME = "ispcentric-pppoe"
+PPPOE_POOL_RANGES = "10.20.0.10-10.20.0.250"
+PPPOE_POOL_NETWORK = "10.20.0.0/24"
+CPE_PROXY_PORT_BASE = 38728
+CPE_PROXY_PORT_SPAN = 900
+DEFAULT_BOND_NAME = "bond-wan"
+BOND_MODES = (
+    "balance-xor",
+    "802.3ad",
+    "active-backup",
+    "balance-rr",
+    "balance-tlb",
+    "balance-alb",
+)
+
+
+def _trap_message(terminal: dict[str, str], fallback: str) -> str:
+    return (terminal.get("message") or "").strip() or fallback
+
+
+def _unknown_parameter_name(message: str) -> str:
+    """Extract RouterOS 'unknown parameter X' name, if present."""
+    import re
+
+    match = re.search(r"unknown parameter[, ]+['\"]?([^\s'\"]+)", message or "", re.I)
+    return (match.group(1) if match else "").strip()
+
+
+def _add_or_set_attempts(
+    sock: socket.socket,
+    path: str,
+    item_id: str,
+    attempts: list[dict[str, str]],
+    *,
+    required: tuple[str, ...] = (),
+) -> tuple[dict[str, str], str]:
+    """
+    Try add/set prop sets in order. If RouterOS rejects an unknown parameter,
+    automatically retry the same props without that field.
+
+    Keys listed in ``required`` are never trimmed. Use it for match conditions:
+    dropping one turns a scoped rule into a match-everything rule, which in a
+    walled garden would allow every unauthenticated client straight through.
+    """
+    terminal: dict[str, str] = {"_reply": "!trap"}
+    resolved_id = (item_id or "").strip()
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    queue: list[dict[str, str]] = [dict(props) for props in attempts if props]
+
+    while queue:
+        props = queue.pop(0)
+        key = tuple(sorted((k, str(v)) for k, v in props.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if resolved_id:
+            terminal = _set(sock, path, resolved_id, **props)
+        else:
+            terminal = _add(sock, path, **props)
+            if terminal.get("_reply") != "!trap":
+                resolved_id = (terminal.get("ret") or "").strip() or resolved_id
+
+        if terminal.get("_reply") != "!trap":
+            return terminal, resolved_id
+
+        bad = _unknown_parameter_name(_trap_message(terminal, ""))
+        if bad and bad in props and bad not in required:
+            trimmed = {k: v for k, v in props.items() if k != bad}
+            if trimmed:
+                queue.insert(0, trimmed)
+
+    return terminal, resolved_id
+
+
+def _rows_with_tag(sock: socket.socket, path: str, *, props: str = ".id,comment") -> list[dict[str, str]]:
+    tag = CLEAN_UPLINK_TAG
+    matched: list[dict[str, str]] = []
+    for row in _print(sock, path, props=props):
+        comment = row.get("comment") or ""
+        if tag in comment:
+            matched.append(row)
+    return matched
+
+
+def _remove_tagged(sock: socket.socket, path: str) -> int:
+    removed = 0
+    for row in _rows_with_tag(sock, path):
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, path, item_id)
+        if terminal.get("_reply") != "!trap":
+            removed += 1
+    return removed
+
+
+def _rows_with_comment_tag(
+    sock: socket.socket,
+    path: str,
+    tag: str,
+    *,
+    props: str = ".id,comment",
+) -> list[dict[str, str]]:
+    matched: list[dict[str, str]] = []
+    for row in _print(sock, path, props=props):
+        comment = row.get("comment") or ""
+        if tag in comment:
+            matched.append(row)
+    return matched
+
+
+def _remove_comment_tagged(sock: socket.socket, path: str, tag: str) -> int:
+    removed = 0
+    for row in _rows_with_comment_tag(sock, path, tag):
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, path, item_id)
+        if terminal.get("_reply") not in {"!trap", "!fatal"}:
+            removed += 1
+    return removed
+
+
+def _ensure_interface_list(sock: socket.socket, name: str) -> None:
+    for row in _print(sock, "/interface/list", props=".id,name"):
+        if (row.get("name") or "").strip() == name:
+            return
+    _add(sock, "/interface/list", name=name, comment=CLEAN_UPLINK_TAG)
+
+
+def _ensure_list_member(sock: socket.socket, list_name: str, interface: str) -> None:
+    for row in _print(sock, "/interface/list/member", props=".id,list,interface,comment"):
+        if (row.get("list") or "").strip() == list_name and (row.get("interface") or "").strip() == interface:
+            return
+    _add(
+        sock,
+        "/interface/list/member",
+        list=list_name,
+        interface=interface,
+        comment=CLEAN_UPLINK_TAG,
+    )
+
+
+def _bridge_port_id(sock: socket.socket, interface: str) -> str:
+    for row in _print(sock, "/interface/bridge/port", props=".id,interface,bridge"):
+        if (row.get("interface") or "").strip() == interface:
+            return (row.get(".id") or "").strip()
+    return ""
+
+
+def _ensure_dhcp_client(sock: socket.socket, interface: str) -> None:
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled,comment"):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            return
+        # Reuse the existing client — do not tag it so disable won't delete it.
+        _set(
+            sock,
+            "/ip/dhcp-client",
+            item_id,
+            disabled="no",
+            **{"add-default-route": "yes", "use-peer-dns": "no"},
+        )
+        return
+    _add(
+        sock,
+        "/ip/dhcp-client",
+        interface=interface,
+        disabled="no",
+        **{"add-default-route": "yes", "use-peer-dns": "no", "comment": CLEAN_UPLINK_TAG},
+    )
+
+
+def _ensure_masquerade(sock: socket.socket) -> None:
+    for row in _rows_with_tag(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,action,out-interface-list,comment",
+    ):
+        if (row.get("chain") or "") == "srcnat" and (row.get("action") or "") == "masquerade":
+            return
+    _add(
+        sock,
+        "/ip/firewall/nat",
+        chain="srcnat",
+        action="masquerade",
+        **{"out-interface-list": "WAN", "comment": f"{CLEAN_UPLINK_TAG} NAT"},
+    )
+
+
+def _ensure_dns_redirect(sock: socket.socket) -> None:
+    existing = {
+        ((row.get("protocol") or ""), (row.get("dst-port") or ""))
+        for row in _rows_with_tag(
+            sock,
+            "/ip/firewall/nat",
+            props=".id,chain,protocol,dst-port,action,comment",
+        )
+        if (row.get("chain") or "") == "dstnat" and (row.get("action") or "") == "redirect"
+    }
+    for protocol in ("udp", "tcp"):
+        if (protocol, "53") in existing:
+            continue
+        _add(
+            sock,
+            "/ip/firewall/nat",
+            chain="dstnat",
+            protocol=protocol,
+            **{
+                "in-interface-list": "LAN",
+                "dst-port": "53",
+                "action": "redirect",
+                "to-ports": "53",
+                "comment": f"{CLEAN_UPLINK_TAG} force DNS",
+            },
+        )
+
+
+def _ensure_filter_rules(sock: socket.socket, *, mode: str, provider_gateway: str) -> None:
+    """Install tagged filter rules. Existing non-tagged rules are left alone.
+
+    Intentionally does NOT drop all WAN→router or forward-the-rest traffic.
+    Those rules locked operators out when they managed the MikroTik from the
+    Starlink/provider side of ether1. Clean uplink focuses on DNS/NAT and
+    blocking the provider admin page instead.
+    """
+    _remove_tagged(sock, "/ip/firewall/filter")
+
+    rules: list[dict[str, str]] = [
+        {
+            "chain": "forward",
+            "action": "accept",
+            "connection-state": "established,related,untracked",
+            "comment": f"{CLEAN_UPLINK_TAG} forward OK",
+        },
+        {
+            "chain": "forward",
+            "action": "accept",
+            "in-interface-list": "LAN",
+            "out-interface-list": "WAN",
+            "comment": f"{CLEAN_UPLINK_TAG} LAN to internet",
+        },
+    ]
+
+    if mode == "behind" and provider_gateway:
+        rules.insert(
+            1,
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": provider_gateway,
+                "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
+            },
+        )
+
+    for rule in rules:
+        _add(sock, "/ip/firewall/filter", **rule)
+
+
+def _wait_for_api(
+    host: str,
+    *,
+    port: int = 8728,
+    attempts: int = 8,
+    delay: float = 1.25,
+    connect_timeout: float = 4.0,
+) -> None:
+    """Wait until RouterOS API accepts TCP again after a topology change."""
+    last_error: OSError | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(delay)
+    if last_error:
+        raise ConnectionError(
+            f"Router API at {host}:{port} did not come back after changing the WAN bridge. "
+            f"Wait a few seconds and try Enable again. ({last_error})"
+        )
+
+
+def ensure_mikrotik_lan_passthrough(
+    sock: socket.socket,
+    *,
+    wan_interface: str = "ether1",
+    lan_bridge: str = "bridgeLocal",
+    lan_network: str = "10.10.0.0/24",
+    lan_gateway: str = "10.10.0.1",
+    lan_pool_ranges: str = "10.10.0.10-10.10.0.200",
+) -> list[str]:
+    """
+    Make MikroTik route internet cleanly:
+
+    - WAN (Starlink) on wan_interface via DHCP
+    - LAN on a different subnet (default 10.10.0.0/24) with DHCP for clients
+    - NAT masquerade out WAN
+    """
+    wan_interface = (wan_interface or "ether1").strip()
+    lan_bridge = (lan_bridge or "bridgeLocal").strip()
+    notes: list[str] = []
+
+    # DHCP client belongs on WAN only — never on the LAN bridge.
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface"):
+        iface = (row.get("interface") or "").strip()
+        item_id = (row.get(".id") or "").strip()
+        if iface == lan_bridge and item_id:
+            _remove(sock, "/ip/dhcp-client", item_id)
+            notes.append(f"removed DHCP client from {lan_bridge}")
+        elif iface == wan_interface and item_id:
+            _set(
+                sock,
+                "/ip/dhcp-client",
+                item_id,
+                disabled="no",
+                **{"add-default-route": "yes", "use-peer-dns": "no"},
+            )
+
+    wan_dhcp = any(
+        (row.get("interface") or "").strip() == wan_interface
+        for row in _print(sock, "/ip/dhcp-client", props="interface")
+    )
+    if not wan_dhcp:
+        _add(
+            sock,
+            "/ip/dhcp-client",
+            interface=wan_interface,
+            disabled="no",
+            **{
+                "add-default-route": "yes",
+                "use-peer-dns": "no",
+                "comment": CLEAN_UPLINK_TAG,
+            },
+        )
+        notes.append(f"added DHCP client on {wan_interface}")
+
+    # LAN must not share the Starlink/WAN subnet.
+    for row in _print(sock, "/ip/address", props=".id,address,interface"):
+        iface = (row.get("interface") or "").strip()
+        address = (row.get("address") or "").strip()
+        item_id = (row.get(".id") or "").strip()
+        if iface != lan_bridge or not item_id:
+            continue
+        if address.startswith("10.10.0."):
+            continue
+        _remove(sock, "/ip/address", item_id)
+        notes.append(f"removed conflicting LAN address {address}")
+
+    has_lan_ip = any(
+        (row.get("interface") or "").strip() == lan_bridge
+        and (row.get("address") or "").startswith("10.10.0.")
+        for row in _print(sock, "/ip/address", props="address,interface")
+    )
+    if not has_lan_ip:
+        _add(
+            sock,
+            "/ip/address",
+            address=f"{lan_gateway}/24",
+            interface=lan_bridge,
+            comment=CLEAN_UPLINK_TAG,
+        )
+        notes.append(f"set LAN {lan_gateway}/24 on {lan_bridge}")
+
+    pool_names = {
+        (row.get("name") or "").strip()
+        for row in _print(sock, "/ip/pool", props="name")
+    }
+    if "ispcentric-lan" not in pool_names:
+        _add(
+            sock,
+            "/ip/pool",
+            name="ispcentric-lan",
+            ranges=lan_pool_ranges,
+            comment=CLEAN_UPLINK_TAG,
+        )
+        notes.append("added LAN DHCP pool")
+
+    lan_server_id = ""
+    for row in _print(sock, "/ip/dhcp-server", props=".id,interface,name"):
+        if (row.get("interface") or "").strip() == lan_bridge:
+            lan_server_id = (row.get(".id") or "").strip()
+            break
+    if lan_server_id:
+        _set(
+            sock,
+            "/ip/dhcp-server",
+            lan_server_id,
+            disabled="no",
+            **{"address-pool": "ispcentric-lan"},
+        )
+    else:
+        _add(
+            sock,
+            "/ip/dhcp-server",
+            name="ispcentric-lan",
+            interface=lan_bridge,
+            **{"address-pool": "ispcentric-lan", "comment": CLEAN_UPLINK_TAG},
+        )
+        notes.append("added LAN DHCP server")
+
+    has_net = any(
+        (row.get("address") or "").startswith("10.10.0.")
+        for row in _print(sock, "/ip/dhcp-server/network", props="address")
+    )
+    if not has_net:
+        _add(
+            sock,
+            "/ip/dhcp-server/network",
+            address=lan_network,
+            gateway=lan_gateway,
+            **{"dns-server": lan_gateway, "comment": CLEAN_UPLINK_TAG},
+        )
+        notes.append("added LAN DHCP network")
+
+    _ensure_interface_list(sock, "WAN")
+    _ensure_interface_list(sock, "LAN")
+    _ensure_list_member(sock, "WAN", wan_interface)
+    _ensure_list_member(sock, "LAN", lan_bridge)
+    _ensure_masquerade(sock)
+    _command(
+        sock,
+        [
+            "/ip/dns/set",
+            "=allow-remote-requests=yes",
+            "=servers=1.1.1.1,8.8.8.8",
+        ],
+    )
+
+    # Provider-admin drop can stay, but keep it disabled while diagnosing passthrough.
+    for row in _print(sock, "/ip/firewall/filter", props=".id,comment,disabled"):
+        if "block provider admin" in (row.get("comment") or ""):
+            item_id = (row.get(".id") or "").strip()
+            if item_id and (row.get("disabled") or "").lower() not in {"true", "yes"}:
+                _set(sock, "/ip/firewall/filter", item_id, disabled="yes")
+                notes.append("paused provider-admin block")
+
+    return notes
+
+
+def read_mikrotik_clean_uplink(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """Detect whether ISPCENTRIC clean-uplink rules are present on the router."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "enabled": False, "error": "Router credentials are required."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            filter_hits = _rows_with_tag(sock, "/ip/firewall/filter")
+            nat_hits = _rows_with_tag(sock, "/ip/firewall/nat")
+            enabled = bool(filter_hits or nat_hits)
+            mode = "behind" if any(
+                "block provider admin" in (row.get("comment") or "") for row in filter_hits
+            ) else "bypass"
+            return {
+                "ok": True,
+                "enabled": enabled,
+                "mode": mode if enabled else "",
+                "filter_rules": len(filter_hits),
+                "nat_rules": len(nat_hits),
+            }
+    except TimeoutError:
+        return {"ok": False, "enabled": False, "error": "Timed out reading clean uplink status.", "timeout": True}
+    except ConnectionError as exc:
+        return {"ok": False, "enabled": False, "error": str(exc)}
+    except OSError as exc:
+        return {
+            "ok": False,
+            "enabled": False,
+            "error": f"Could not reach {host}:8728.",
+            "detail": str(exc),
+        }
+    except Exception as exc:
+        return {"ok": False, "enabled": False, "error": f"Clean uplink status failed: {exc}"}
+
+
+def set_mikrotik_clean_uplink(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    enabled: bool,
+    mode: str = "bypass",
+    wan_interface: str = "ether1",
+    lan_bridge: str = "bridgeLocal",
+    provider_gateway: str = "192.168.1.1",
+    separate_wan: bool = True,
+    restore_wan_to_bridge: bool = False,
+    port: int = 8728,
+    timeout: float = 20.0,
+) -> dict[str, Any]:
+    """
+    Apply or remove clean-uplink rules on RouterOS.
+
+    Runs in phases and reconnects after unbridging WAN, because that change
+    often drops the active API TCP session and caused timeouts.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    mode = (mode or "bypass").strip().lower()
+    if mode not in {"bypass", "behind"}:
+        mode = "bypass"
+    wan_interface = (wan_interface or "ether1").strip()
+    lan_bridge = (lan_bridge or "bridgeLocal").strip()
+    provider_gateway = (provider_gateway or "").strip()
+
+    if not host or not username:
+        return {"ok": False, "error": "Router credentials are required."}
+    if not wan_interface:
+        return {"ok": False, "error": "WAN interface is required."}
+    if not lan_bridge:
+        return {"ok": False, "error": "LAN bridge is required."}
+    if mode == "behind" and enabled and not provider_gateway:
+        return {"ok": False, "error": "Provider gateway IP is required for behind-provider mode."}
+
+    try:
+        if not enabled:
+            with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+                _remove_tagged(sock, "/ip/firewall/filter")
+                _remove_tagged(sock, "/ip/firewall/nat")
+                _remove_tagged(sock, "/ip/dhcp-client")
+                _remove_tagged(sock, "/interface/list/member")
+                if restore_wan_to_bridge and wan_interface and lan_bridge:
+                    if not _bridge_port_id(sock, wan_interface):
+                        terminal = _add(
+                            sock,
+                            "/interface/bridge/port",
+                            interface=wan_interface,
+                            bridge=lan_bridge,
+                            comment=CLEAN_UPLINK_TAG,
+                        )
+                        if terminal.get("_reply") == "!trap":
+                            return {
+                                "ok": False,
+                                "enabled": False,
+                                "wan_was_bridged": False,
+                                "error": _trap_message(
+                                    terminal,
+                                    "Removed clean uplink rules, but could not restore WAN to the bridge.",
+                                ),
+                            }
+            return {
+                "ok": True,
+                "enabled": False,
+                "mode": mode,
+                "wan_was_bridged": False,
+                "message": "Clean uplink disabled. Provider-block rules were removed from the MikroTik.",
+            }
+
+        wan_was_bridged = False
+
+        # Phase 1: validate interfaces and optionally unbridge WAN.
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            iface_names = {
+                (row.get("name") or "").strip()
+                for row in _print(sock, "/interface", props="name")
+            }
+            if wan_interface not in iface_names:
+                return {
+                    "ok": False,
+                    "error": f"WAN interface “{wan_interface}” was not found on this MikroTik.",
+                }
+            if lan_bridge not in iface_names:
+                return {
+                    "ok": False,
+                    "error": f"LAN bridge “{lan_bridge}” was not found on this MikroTik.",
+                }
+
+            if separate_wan:
+                port_id = _bridge_port_id(sock, wan_interface)
+                if port_id:
+                    terminal = _remove(sock, "/interface/bridge/port", port_id)
+                    if terminal.get("_reply") == "!trap":
+                        return {
+                            "ok": False,
+                            "error": _trap_message(
+                                terminal,
+                                f"Could not remove {wan_interface} from the bridge.",
+                            ),
+                        }
+                    wan_was_bridged = True
+
+        # Unbridging often kills the current API TCP session — wait, then continue.
+        if wan_was_bridged:
+            time.sleep(1.5)
+            _wait_for_api(host, port=port)
+
+        # Phase 2: lists, DHCP, DNS, NAT, firewall (fresh session).
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                with _api_session(
+                    host, username, password, port=port, timeout=timeout
+                ) as sock:
+                    _ensure_interface_list(sock, "WAN")
+                    _ensure_interface_list(sock, "LAN")
+                    _ensure_list_member(sock, "WAN", wan_interface)
+                    _ensure_list_member(sock, "LAN", lan_bridge)
+                    ensure_mikrotik_lan_passthrough(
+                        sock,
+                        wan_interface=wan_interface,
+                        lan_bridge=lan_bridge,
+                    )
+                    _command(
+                        sock,
+                        [
+                            "/ip/dns/set",
+                            "=allow-remote-requests=yes",
+                            "=servers=1.1.1.1,8.8.8.8",
+                        ],
+                    )
+                    _remove_tagged(sock, "/ip/firewall/nat")
+                    _ensure_masquerade(sock)
+                    _ensure_dns_redirect(sock)
+                    _ensure_filter_rules(
+                        sock, mode=mode, provider_gateway=provider_gateway
+                    )
+                break
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                last_error = str(exc)
+                if attempt >= 3:
+                    return {
+                        "ok": False,
+                        "error": (
+                            last_error
+                            or "Could not finish clean uplink after reconnecting to the router."
+                        ),
+                    }
+                time.sleep(1.5 * attempt)
+                _wait_for_api(host, port=port)
+
+        mode_label = "Starlink Bypass" if mode == "bypass" else "Behind provider router"
+        return {
+            "ok": True,
+            "enabled": True,
+            "mode": mode,
+            "wan_was_bridged": wan_was_bridged,
+            "message": (
+                f"Clean uplink enabled ({mode_label}). "
+                "MikroTik will pass internet and block provider settings pages."
+            ),
+        }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": (
+                "Timed out while updating clean uplink. "
+                "If WAN was just taken out of the bridge, wait 5 seconds and click Enable again."
+            ),
+            "timeout": True,
+        }
+    except ConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728 to update clean uplink.",
+            "detail": str(exc),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"Clean uplink update failed: {exc}"}
+
+
+def recover_mikrotik_connection(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    wan_interface: str = "ether1",
+    lan_bridge: str = "bridgeLocal",
+    candidate_hosts: list[str] | None = None,
+    restore_bridge: bool = True,
+    remove_clean_rules: bool = True,
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Bring a MikroTik back under management after clean-uplink / network lockout.
+
+    Tries the saved host first, then any discovered candidate IPs with the same
+    credentials. When API works, optionally restores WAN into the LAN bridge and
+    removes ISPCENTRIC clean-uplink firewall/NAT rules that can block access.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    wan_interface = (wan_interface or "ether1").strip()
+    lan_bridge = (lan_bridge or "bridgeLocal").strip()
+
+    if not username:
+        return {"ok": False, "error": "Router username is required."}
+    if not password:
+        return {"ok": False, "error": "Router password is required."}
+
+    hosts: list[str] = []
+    for candidate in [
+        host,
+        "192.168.88.1",
+        *(candidate_hosts or []),
+    ]:
+        value = (candidate or "").strip()
+        if value and value not in hosts:
+            hosts.append(value)
+    if not hosts:
+        return {
+            "ok": False,
+            "error": "No router IP to try. Plug your PC into a LAN port and scan again.",
+        }
+
+    last_error = "Could not reach the MikroTik API on any candidate IP."
+    working_host = ""
+    pingable_hosts: list[str] = []
+    manageable_hosts: list[str] = []
+    api_refused_hosts: list[str] = []
+    _auth_tokens = (
+        "invalid user",
+        "password",
+        "cannot log in",
+        "login failed",
+        "authentication",
+        "bad name",
+    )
+    _network_tokens = (
+        "refused",
+        "10061",
+        "10060",
+        "unreachable",
+        "no route",
+        "network is unreachable",
+        "timed out",
+        "forcibly closed",
+        "reset by peer",
+    )
+
+    for candidate in hosts:
+        probe = check_mikrotik_reachable(candidate, timeout=min(2.0, timeout))
+        via = (probe.get("via") or "").strip()
+        if probe.get("online") and via == "ping":
+            pingable_hosts.append(candidate)
+        if probe.get("online") and via in {"api", "winbox", "http"}:
+            manageable_hosts.append(candidate)
+
+        # Don't burn long timeouts on ping-only hosts — API is almost certainly firewalled.
+        attempt_timeout = 2.5 if via == "ping" else timeout
+
+        try:
+            with _api_session(
+                candidate, username, password, port=port, timeout=attempt_timeout
+            ) as sock:
+                # Prove the session is usable.
+                _print(sock, "/system/identity", props="name")
+                working_host = candidate
+
+                repaired: list[str] = []
+                if remove_clean_rules:
+                    removed_filter = _remove_tagged(sock, "/ip/firewall/filter")
+                    removed_nat = _remove_tagged(sock, "/ip/firewall/nat")
+                    removed_dhcp = _remove_tagged(sock, "/ip/dhcp-client")
+                    removed_members = _remove_tagged(sock, "/interface/list/member")
+                    if removed_filter or removed_nat or removed_dhcp or removed_members:
+                        repaired.append("removed clean-uplink rules")
+
+                if restore_bridge and wan_interface and lan_bridge:
+                    iface_names = {
+                        (row.get("name") or "").strip()
+                        for row in _print(sock, "/interface", props="name")
+                    }
+                    if wan_interface in iface_names and lan_bridge in iface_names:
+                        if not _bridge_port_id(sock, wan_interface):
+                            # Do NOT put WAN back in the bridge — that breaks routing.
+                            # Instead ensure proper LAN/WAN passthrough.
+                            pass
+
+                try:
+                    repaired.extend(
+                        ensure_mikrotik_lan_passthrough(
+                            sock,
+                            wan_interface=wan_interface,
+                            lan_bridge=lan_bridge,
+                        )
+                    )
+                except Exception as exc:
+                    repaired.append(f"passthrough warning: {exc}")
+
+                identity = ""
+                for row in _print(sock, "/system/identity", props="name"):
+                    identity = (row.get("name") or "").strip() or identity
+
+            note = "; ".join(repaired) if repaired else "API login verified"
+            host_note = (
+                f" (updated IP to {working_host})"
+                if working_host != host and host
+                else ""
+            )
+            return {
+                "ok": True,
+                "host": working_host,
+                "host_changed": bool(host and working_host != host),
+                "identity": identity,
+                "repaired": repaired,
+                "message": (
+                    f"MikroTik is back online{host_note}. {note}. "
+                    "Clients must use ether2–ether5 and get a 10.10.0.x address."
+                ),
+            }
+        except ConnectionRefusedError:
+            api_refused_hosts.append(candidate)
+            last_error = (
+                f"{candidate}: API port {port} refused "
+                "(RouterOS API service may be disabled)"
+            )
+            continue
+        except ConnectionError as exc:
+            message = str(exc) or "Login failed."
+            low = message.lower()
+            # socket.create_connection failures are ConnectionError subclasses on
+            # some platforms; never treat those as wrong-password auth errors.
+            if any(token in low for token in _network_tokens):
+                if "refused" in low or "10061" in low:
+                    api_refused_hosts.append(candidate)
+                last_error = f"{candidate}: {message}"
+                continue
+            # Wrong password after TCP connected — stop trying other IPs.
+            if any(token in low for token in _auth_tokens):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"{message} Update Login credentials on this router "
+                        "(sidebar) with the same username/password used in Winbox, "
+                        "then click Reconnect again."
+                    ),
+                    "auth_error": True,
+                    "host": candidate,
+                }
+            last_error = f"{candidate}: {message}"
+            continue
+        except TimeoutError:
+            last_error = f"{candidate}: API timed out"
+            continue
+        except OSError as exc:
+            message = str(exc) or "OS error"
+            low = message.lower()
+            if "refused" in low or "10061" in low:
+                api_refused_hosts.append(candidate)
+            last_error = f"{candidate}: {exc}"
+            continue
+        except Exception as exc:
+            last_error = f"{candidate}: {exc}"
+            continue
+
+    # Device answers WebFig/Winbox but API TCP is refused → enable api service.
+    if api_refused_hosts and manageable_hosts:
+        shown = ", ".join(sorted(set(api_refused_hosts))[:3])
+        return {
+            "ok": False,
+            "error": (
+                f"Router {shown} is online (WebFig/Winbox), but RouterOS API "
+                f"port {port} is closed. In Winbox: IP → Services → enable api "
+                f"(port {port}), allow this PC in the service address list if set, "
+                "then click Reconnect again."
+            ),
+            "api_disabled": True,
+            "host": api_refused_hosts[0],
+            "pingable_hosts": sorted(set(pingable_hosts)),
+        }
+
+    # Ping works but every management TCP port is dead → IP firewall lockout.
+    if pingable_hosts and not manageable_hosts:
+        shown = ", ".join(sorted(set(pingable_hosts))[:3])
+        return {
+            "ok": False,
+            "error": (
+                f"Router {shown} answers ping, but API/Winbox ports are blocked "
+                "(likely leftover clean-uplink firewall). ISPCENTRIC cannot repair "
+                "this over the network. Open Winbox → Neighbors → connect by MAC, then: "
+                "1) IP → Firewall → Filter/NAT — remove rows with comment "
+                "ispcentric-clean-uplink; "
+                "2) Bridge → Ports — add ether1 to bridgeLocal if missing; "
+                "3) IP → Services — ensure api is enabled. "
+                "Plug PC into ether2–ether5, then click Reconnect again."
+            ),
+            "firewall_lockout": True,
+            "pingable_hosts": sorted(set(pingable_hosts)),
+        }
+
+    return {
+        "ok": False,
+        "error": (
+            f"{last_error}. Plug this PC into MikroTik ether2–ether5 (LAN), "
+            "wait a few seconds, then click Reconnect again."
+        ),
+    }
+
+
 @contextmanager
 def _api_session(
     host: str,
@@ -235,6 +1180,772 @@ def _api_session(
         if login_error:
             raise ConnectionError(login_error.get("error") or "Login failed.")
         yield sock
+
+
+def _cpe_proxy_port(cpe_host: str, scope: str = "") -> int:
+    digest = hashlib.sha256(f"{cpe_host}|{scope}".encode()).hexdigest()
+    offset = int(digest[:8], 16) % CPE_PROXY_PORT_SPAN
+    return CPE_PROXY_PORT_BASE + offset
+
+
+def _cpe_proxy_comment(proxy_port: int) -> str:
+    return f"{CPE_PROXY_TAG}:{proxy_port}"
+
+
+def _install_cpe_proxy(
+    sock: socket.socket,
+    proxy_port: int,
+    cpe_host: str,
+    cpe_port: int = 8728,
+) -> str | None:
+    """Forward NAS:proxy_port -> CPE:8728 so the billing app can reach the CPE."""
+    comment = _cpe_proxy_comment(proxy_port)
+    _remove_comment_tagged(sock, "/ip/firewall/nat", comment)
+    _remove_comment_tagged(sock, "/ip/firewall/filter", comment)
+    nat = _add(
+        sock,
+        "/ip/firewall/nat",
+        chain="dstnat",
+        protocol="tcp",
+        **{"dst-port": str(proxy_port)},
+        action="dst-nat",
+        **{"to-addresses": cpe_host},
+        **{"to-ports": str(cpe_port)},
+        comment=comment,
+    )
+    if nat.get("_reply") in {"!trap", "!fatal"}:
+        return _trap_message(nat, "Could not create CPE proxy on the ISP MikroTik.")
+
+    # Make the CPE see the ISP gateway (10.20.0.1), not the office PC IP.
+    # Many CPEs drop WAN management from foreign source addresses.
+    src = _add(
+        sock,
+        "/ip/firewall/nat",
+        chain="srcnat",
+        protocol="tcp",
+        **{"dst-address": cpe_host},
+        **{"dst-port": str(cpe_port)},
+        action="src-nat",
+        **{"to-addresses": PPPOE_LOCAL_ADDRESS},
+        comment=comment,
+    )
+    if src.get("_reply") in {"!trap", "!fatal"}:
+        src = _add(
+            sock,
+            "/ip/firewall/nat",
+            chain="srcnat",
+            protocol="tcp",
+            **{"dst-address": cpe_host},
+            **{"dst-port": str(cpe_port)},
+            action="masquerade",
+            comment=comment,
+        )
+        if src.get("_reply") in {"!trap", "!fatal"}:
+            return _trap_message(src, "Could not NAT CPE proxy traffic on the ISP MikroTik.")
+
+    # dst-nat sends traffic to the CPE, so it uses the forward chain (not input).
+    forward = _add(
+        sock,
+        "/ip/firewall/filter",
+        chain="forward",
+        protocol="tcp",
+        **{"dst-address": cpe_host},
+        **{"dst-port": str(cpe_port)},
+        action="accept",
+        comment=comment,
+        **{"place-before": "0"},
+    )
+    if forward.get("_reply") in {"!trap", "!fatal"}:
+        forward = _add(
+            sock,
+            "/ip/firewall/filter",
+            chain="forward",
+            protocol="tcp",
+            **{"dst-address": cpe_host},
+            **{"dst-port": str(cpe_port)},
+            action="accept",
+            comment=comment,
+        )
+    if forward.get("_reply") in {"!trap", "!fatal"}:
+        # Still try a broader dstnat-related allow.
+        forward = _add(
+            sock,
+            "/ip/firewall/filter",
+            chain="forward",
+            **{"connection-nat-state": "dstnat"},
+            action="accept",
+            comment=comment,
+        )
+    if forward.get("_reply") in {"!trap", "!fatal"}:
+        _remove_comment_tagged(sock, "/ip/firewall/nat", comment)
+        _remove_comment_tagged(sock, "/ip/firewall/filter", comment)
+        return _trap_message(forward, "Could not allow CPE proxy traffic on the ISP MikroTik.")
+
+    # Also accept the pre-NAT hit on the NAS listening port (some ROS builds need this).
+    _add(
+        sock,
+        "/ip/firewall/filter",
+        chain="input",
+        protocol="tcp",
+        **{"dst-port": str(proxy_port)},
+        action="accept",
+        comment=comment,
+        **{"place-before": "0"},
+    )
+    return None
+
+
+def _uninstall_cpe_proxy(sock: socket.socket, proxy_port: int) -> None:
+    comment = _cpe_proxy_comment(proxy_port)
+    _remove_comment_tagged(sock, "/ip/firewall/nat", comment)
+    _remove_comment_tagged(sock, "/ip/firewall/filter", comment)
+
+
+def _nas_ping_host(
+    sock: socket.socket,
+    address: str,
+    *,
+    count: int = 2,
+) -> dict[str, Any]:
+    """Ping a host from the NAS (RouterOS /ping)."""
+    address = (address or "").strip()
+    if not address:
+        return {"ok": False, "reachable": False, "error": "No address to ping."}
+    previous = sock.gettimeout()
+    ping_count = max(1, int(count))
+    # Keep ping short so status polls cannot starve the web server.
+    sock.settimeout(max(float(previous or 3.0), min(6.0, 1.5 + ping_count * 1.5)))
+    try:
+        replies, terminal = _command(
+            sock,
+            [
+                "/ping",
+                f"=address={address}",
+                f"=count={ping_count}",
+            ],
+        )
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            return {
+                "ok": False,
+                "reachable": False,
+                "error": _trap_message(terminal, "Ping failed on the ISP MikroTik."),
+            }
+        received = 0
+        for row in replies:
+            # Final summary row often has received= / packet-loss=
+            if row.get("received") not in (None, ""):
+                received = _parse_int(row.get("received"))
+            elif (row.get("status") or "").strip().lower() in {"", "echo reply", "ttl exceeded"}:
+                # Individual reply rows
+                if "time" in row or "ttl" in row:
+                    received += 1
+        if received <= 0 and replies:
+            # Some builds only return one summary with "received"
+            for row in replies:
+                received = max(received, _parse_int(row.get("received")))
+        return {
+            "ok": True,
+            "reachable": received > 0,
+            "received": received,
+            "error": "" if received > 0 else f"NAS cannot ping CPE at {address}.",
+        }
+    except (TimeoutError, OSError) as exc:
+        return {"ok": False, "reachable": False, "error": str(exc) or "Ping timed out."}
+    finally:
+        sock.settimeout(previous)
+
+
+def _nas_ssh_exec(
+    sock: socket.socket,
+    *,
+    address: str,
+    username: str,
+    password: str,
+    command: str,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """Run a command on the CPE via NAS /system/ssh-exec (no extra Python deps)."""
+    address = (address or "").strip()
+    username = (username or "").strip()
+    command = (command or "").strip()
+    if not address or not username or not command:
+        return {"ok": False, "error": "SSH exec needs address, username, and command."}
+    previous = sock.gettimeout()
+    sock.settimeout(max(3.0, min(float(timeout or 12.0), 12.0)))
+    try:
+        words = [
+            "/system/ssh-exec",
+            f"=address={address}",
+            f"=user={username}",
+            f"=command={command}",
+        ]
+        # Empty password is valid for factory-default admin.
+        words.append(f"=password={password or ''}")
+        replies, terminal = _command(sock, words)
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            return {
+                "ok": False,
+                "error": _trap_message(
+                    terminal,
+                    "NAS could not SSH into the CPE (enable SSH or fix CPE login).",
+                ),
+                "output": "",
+            }
+        output_parts: list[str] = []
+        for row in replies:
+            for key in ("output", "ret", "message"):
+                val = (row.get(key) or "").strip()
+                if val:
+                    output_parts.append(val)
+        for key in ("output", "ret", "message"):
+            val = (terminal.get(key) or "").strip()
+            if val:
+                output_parts.append(val)
+        return {"ok": True, "error": "", "output": "\n".join(output_parts).strip()}
+    except (TimeoutError, OSError) as exc:
+        return {"ok": False, "error": str(exc) or "SSH exec timed out.", "output": ""}
+    finally:
+        sock.settimeout(previous)
+
+
+def cpe_firewall_unlock_script() -> str:
+    """
+    One-time Winbox Terminal script for a CPE that drops WAN management.
+
+    Two common causes of ISP-side timeouts (while LAN Winbox still works):
+    1) defconf input drop on WAN / PPPoE
+    2) /ip service address= limited to the LAN subnet (sources outside are
+       dropped with no reply — looks like a firewall timeout)
+
+    Do NOT use `/ip service set [find] address=...` — on ROS 7 that often
+    fails on telnet/www and applies to nothing.
+
+    Guards against pasting into the ISP NAS (both often identity "MikroTik").
+    """
+    tag = CPE_API_AUTO_TAG
+    return (
+        ":local ppp [/ip address find where interface~\"pppoe\" and address~\"10.20.\"]\n"
+        ":if ([:len $ppp] = 0) do={\n"
+        "  :put \"WRONG DEVICE - this is not the client CPE\"\n"
+        "  :put \"In Winbox Neighbors open the router whose IP is 10.20.0.x (pppoe-out)\"\n"
+        "  :put \"Do NOT use the ISP NAS at 10.10.0.1\"\n"
+        "  :error \"not-cpe\"\n"
+        "}\n"
+        ":put (\"CPE OK - \" . [/ip address get ($ppp->0) address])\n"
+        "/ip service set [find name=api] disabled=no port=8728 address=0.0.0.0/0\n"
+        "/ip service set [find name=ssh] disabled=no port=22 address=0.0.0.0/0\n"
+        "/ip service set [find name=winbox] disabled=no address=0.0.0.0/0\n"
+        f'/ip firewall filter remove [find comment~"{tag}"]\n'
+        "/ip firewall filter disable [find where chain=input]\n"
+        "/ip firewall raw disable [find]\n"
+        "/ip firewall filter add chain=input action=accept protocol=tcp "
+        f'dst-port=8728,22,8291 comment="{tag}"\n'
+        ':put "ispcentric unlock ok - retry Connect in ISPCENTRIC"'
+    )
+
+
+def _cpe_auto_enable_commands() -> str:
+    """RouterOS script to enable API and allow it from the ISP PPPoE network."""
+    tag = CPE_API_AUTO_TAG
+    return (
+        ":do { /ip service set [find where name=api] disabled=no port=8728 "
+        "address=0.0.0.0/0 } on-error={}; "
+        ":do { /ip service set [find where name=ssh] disabled=no port=22 "
+        "address=0.0.0.0/0 } on-error={}; "
+        ":do { /ip service set [find where name=winbox] disabled=no "
+        "address=0.0.0.0/0 } on-error={}; "
+        f':do {{ /ip firewall filter remove [find where comment~"{tag}"] }} on-error={{}}; '
+        ":do { /ip firewall filter disable [find where chain=input] } on-error={}; "
+        ":do { /ip firewall raw disable [find] } on-error={}; "
+        ":do { /ip firewall filter add chain=input action=accept protocol=tcp "
+        f'dst-port=8728,22,8291 comment="{tag}" }} on-error={{}}; '
+        ":put ispcentric-api-ready"
+    )
+
+
+def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
+    """Once API is open, make sure api service stays enabled and firewall allows it."""
+    notes: list[str] = []
+    try:
+        for row in _print(sock, "/ip/service", props=".id,name,port,disabled,address"):
+            if (row.get("name") or "").strip().lower() != "api":
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            props: dict[str, str] = {
+                "disabled": "no",
+                "port": "8728",
+                "address": "0.0.0.0/0",
+            }
+            terminal = _set(sock, "/ip/service", item_id, **props)
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append("ensured CPE API service enabled")
+            break
+    except Exception:
+        pass
+
+    try:
+        disabled_drops = 0
+        for row in _print(
+            sock,
+            "/ip/firewall/filter",
+            props=".id,chain,action,disabled",
+        ):
+            if (row.get("chain") or "") != "input":
+                continue
+            if (row.get("action") or "") != "drop":
+                continue
+            if str(row.get("disabled") or "").lower() in {"true", "yes"}:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            terminal = _set(sock, "/ip/firewall/filter", item_id, disabled="yes")
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                disabled_drops += 1
+        if disabled_drops:
+            notes.append(f"disabled {disabled_drops} CPE input drop rule(s)")
+    except Exception:
+        pass
+
+    try:
+        existing = [
+            row
+            for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
+            if CPE_API_AUTO_TAG in (row.get("comment") or "")
+        ]
+        if not existing:
+            terminal = _add(
+                sock,
+                "/ip/firewall/filter",
+                chain="input",
+                protocol="tcp",
+                **{"dst-port": "8728,22,8291"},
+                action="accept",
+                comment=CPE_API_AUTO_TAG,
+            )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append("opened CPE firewall for API")
+    except Exception:
+        pass
+    return notes
+
+
+def prepare_customer_cpe_access(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    *,
+    pppoe_username: str,
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
+    nas_port: int = 8728,
+    cpe_port: int = 8728,
+    timeout: float = 8.0,
+    auto_enable: bool = True,
+) -> dict[str, Any]:
+    """
+    Automatically prepare remote management of a subscriber CPE:
+    - find live PPPoE IP on the NAS
+    - confirm NAS can ping that IP
+    - install temporary NAS→CPE API proxy
+    - try CPE logins; if API is off, enable it via NAS SSH-exec
+    - ensure CPE API + firewall allow management
+
+    When auto_enable is False (status polls), skip SSH enable so the
+    account page stays responsive while the client is surfing.
+    """
+    steps: list[str] = []
+    session = resolve_customer_cpe_session(
+        nas_host,
+        nas_username,
+        nas_password,
+        pppoe_username=pppoe_username,
+        port=nas_port,
+        timeout=min(timeout, 5.0),
+    )
+    result: dict[str, Any] = {
+        "ok": False,
+        "prepared": False,
+        "session_active": bool(session.get("session_active")),
+        "cpe_host": session.get("address") or "",
+        "cpe_username": (cpe_username or "").strip() or "admin",
+        "cpe_password": cpe_password or "",
+        "auth_ok": False,
+        "reachable": False,
+        "api_enabled": False,
+        "proxy_used": False,
+        "steps": steps,
+        "error": session.get("error") or "",
+        "hint": session.get("hint") or "",
+    }
+    if not session.get("ok"):
+        return result
+    if not session.get("session_active"):
+        result["ok"] = True
+        result["hint"] = session.get("hint") or (
+            "Client CPE is offline — wait for PPPoE, then retry."
+        )
+        steps.append("waiting for active PPPoE session")
+        return result
+
+    cpe_host = (session.get("address") or "").strip()
+    result["cpe_host"] = cpe_host
+    steps.append(f"found PPPoE IP {cpe_host}")
+    candidates = _cpe_credential_candidates(
+        cpe_username=cpe_username,
+        cpe_password=cpe_password,
+        pppoe_password=pppoe_password,
+    )
+    proxy_port = _cpe_proxy_port(cpe_host, pppoe_username)
+
+    try:
+        with _api_session(
+            nas_host,
+            nas_username,
+            nas_password,
+            port=nas_port,
+            timeout=timeout,
+        ) as nas_sock:
+            ping = _nas_ping_host(nas_sock, cpe_host, count=1)
+            result["reachable"] = bool(ping.get("reachable"))
+            if ping.get("reachable"):
+                steps.append("NAS can ping CPE")
+            else:
+                steps.append(ping.get("error") or "NAS cannot ping CPE yet")
+                # Still install proxy — some boards block ICMP but accept TCP.
+
+            proxy_error = _install_cpe_proxy(nas_sock, proxy_port, cpe_host, cpe_port)
+            if proxy_error:
+                result["error"] = proxy_error
+                return result
+            result["proxy_used"] = True
+            steps.append(f"installed NAS proxy port {proxy_port} → {cpe_host}:{cpe_port}")
+
+            # Try API first (direct then via proxy is handled by callers; here use proxy).
+            last_error = ""
+            api_timeout = min(timeout, 3.0 if not auto_enable else 6.0)
+            for user, password in candidates:
+                try:
+                    with _api_session(
+                        nas_host,
+                        user,
+                        password,
+                        port=proxy_port,
+                        timeout=api_timeout,
+                    ) as cpe_sock:
+                        notes = _ensure_cpe_api_ready_on_session(cpe_sock)
+                        steps.extend(notes)
+                    result.update(
+                        {
+                            "ok": True,
+                            "prepared": True,
+                            "auth_ok": True,
+                            "api_enabled": True,
+                            "cpe_username": user,
+                            "cpe_password": password,
+                            "error": "",
+                            "hint": "",
+                        }
+                    )
+                    steps.append(f"CPE API ready as {user}")
+                    return result
+                except ConnectionError as exc:
+                    last_error = str(exc) or "CPE login failed."
+                    continue
+                except (TimeoutError, OSError) as exc:
+                    last_error = str(exc) or "CPE API timed out."
+                    if "timed out" in last_error.lower() or not last_error.strip():
+                        last_error = "Timed out"
+                    if not auto_enable:
+                        break
+                    continue
+
+            if not auto_enable:
+                result["ok"] = True
+                friendly = last_error or "CPE API not ready yet."
+                timed_out = "timed out" in friendly.lower() or friendly.lower() == "timed out"
+                if timed_out and result.get("reachable"):
+                    result["firewall_blocked"] = True
+                    result["error"] = (
+                        "CPE firewall is blocking management from the ISP side "
+                        "(not a wrong password). Winbox from the client Wi‑Fi still works."
+                    )
+                    result["hint"] = (
+                        "Run the unlock script below once from Winbox on the client Wi‑Fi "
+                        "(must print ispcentric unlock ok). Then click Connect & Activate Wi‑Fi."
+                    )
+                else:
+                    if timed_out:
+                        friendly = "CPE is online — click Connect & Activate Wi‑Fi to finish setup."
+                    result["error"] = friendly
+                    result["hint"] = (
+                        "PPPoE is up. Use Connect & Activate Wi‑Fi (or save CPE login) "
+                        "to manage the radio — surfing is separate from this."
+                    )
+                steps.append("skipped SSH auto-enable (fast status check)")
+                return result
+
+            steps.append("API not reachable yet — enabling via NAS SSH")
+            ssh_ok = False
+            ssh_last = ""
+            enable_cmd = _cpe_auto_enable_commands()
+            for user, password in candidates:
+                ssh = _nas_ssh_exec(
+                    nas_sock,
+                    address=cpe_host,
+                    username=user,
+                    password=password,
+                    command=enable_cmd,
+                    timeout=min(timeout, 10.0),
+                )
+                if ssh.get("ok"):
+                    ssh_ok = True
+                    result["cpe_username"] = user
+                    result["cpe_password"] = password
+                    steps.append(f"enabled CPE API via SSH as {user}")
+                    break
+                ssh_last = ssh.get("error") or ssh_last
+
+            if not ssh_ok:
+                timed_out = "timed out" in (last_error or "").lower() or "timed out" in (
+                    ssh_last or ""
+                ).lower()
+                if timed_out and result.get("reachable"):
+                    result["error"] = (
+                        "CPE firewall is blocking management from the ISP side "
+                        "(not a wrong password). Winbox from the client Wi‑Fi still works."
+                    )
+                    result["hint"] = (
+                        "Join the client Wi‑Fi, open Winbox → New Terminal, paste the unlock "
+                        "script from this page, and confirm it prints: ispcentric unlock ok. "
+                        "Then click Connect & Activate Wi‑Fi again."
+                    )
+                    result["firewall_blocked"] = True
+                elif "refused" in (last_error or "").lower() or "refused" in (
+                    ssh_last or ""
+                ).lower():
+                    result["error"] = (
+                        "CPE is reachable but API is not accepting ISP connections "
+                        "(service address still limited to LAN, or API off)."
+                    )
+                    result["hint"] = (
+                        "In Winbox New Terminal run:\n"
+                        "/ip service set [find name=api] disabled=no port=8728 address=0.0.0.0/0\n"
+                        "/ip service set [find name=ssh] disabled=no port=22 address=0.0.0.0/0\n"
+                        "Then retry Connect."
+                    )
+                    result["firewall_blocked"] = True
+                else:
+                    result["error"] = (
+                        last_error
+                        or ssh_last
+                        or "Could not enable CPE API automatically."
+                    )
+                    result["hint"] = (
+                        "CPE is online but API/SSH login failed. "
+                        "Save the correct CPE Winbox username/password once — "
+                        "the system will enable API and open the firewall automatically after that."
+                    )
+                return result
+
+            # Brief settle, then re-try API through the same proxy.
+            time.sleep(1.0)
+            user = result["cpe_username"]
+            password = result["cpe_password"]
+            try:
+                with _api_session(
+                    nas_host,
+                    user,
+                    password,
+                    port=proxy_port,
+                    timeout=min(timeout, 8.0),
+                ) as cpe_sock:
+                    notes = _ensure_cpe_api_ready_on_session(cpe_sock)
+                    steps.extend(notes)
+                result.update(
+                    {
+                        "ok": True,
+                        "prepared": True,
+                        "auth_ok": True,
+                        "api_enabled": True,
+                        "error": "",
+                        "hint": "",
+                    }
+                )
+                steps.append("CPE API verified after auto-enable")
+                return result
+            except Exception as exc:
+                result["error"] = str(exc) or last_error or "API still unreachable after enable."
+                result["hint"] = (
+                    "API enable was sent, but the CPE still blocks management. "
+                    "Check the CPE input firewall or reboot the CPE, then refresh."
+                )
+                return result
+    except ConnectionError as exc:
+        result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
+        return result
+    except (TimeoutError, OSError) as exc:
+        result["error"] = str(exc) or "Timed out preparing CPE access."
+        return result
+    finally:
+        try:
+            with _api_session(
+                nas_host,
+                nas_username,
+                nas_password,
+                port=nas_port,
+                timeout=min(timeout, 5.0),
+            ) as nas_sock:
+                _uninstall_cpe_proxy(nas_sock, proxy_port)
+        except Exception:
+            pass
+
+    return result
+
+
+@contextmanager
+def _cpe_api_session(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    cpe_host: str,
+    cpe_username: str,
+    cpe_password: str,
+    *,
+    nas_port: int = 8728,
+    cpe_port: int = 8728,
+    timeout: float = 8.0,
+    proxy_scope: str = "",
+    pppoe_password: str = "",
+    auto_prepare: bool = True,
+) -> Iterator[socket.socket]:
+    """
+    Open RouterOS API on a subscriber CPE.
+
+    Direct connect is tried first. When the app cannot route to the PPPoE
+    client IP, a temporary dst-nat on the ISP MikroTik forwards NAS:proxy -> CPE:8728.
+    When auto_prepare is True, API is enabled on the CPE via NAS SSH if needed.
+    """
+    nas_host = (nas_host or "").strip()
+    cpe_host = (cpe_host or "").strip()
+    cpe_username = (cpe_username or "").strip()
+    cpe_password = cpe_password or ""
+    if not nas_host or not cpe_host or not cpe_username:
+        raise ConnectionError("NAS host, CPE host, and CPE username are required.")
+
+    try:
+        with _api_session(
+            cpe_host,
+            cpe_username,
+            cpe_password,
+            port=cpe_port,
+            timeout=min(timeout, 2.5),
+        ) as sock:
+            _ensure_cpe_api_ready_on_session(sock)
+            yield sock
+            return
+    except (TimeoutError, OSError, ConnectionError):
+        pass
+
+    if auto_prepare:
+        prep = prepare_customer_cpe_access(
+            nas_host,
+            nas_username,
+            nas_password,
+            pppoe_username=proxy_scope or cpe_username,
+            cpe_username=cpe_username,
+            cpe_password=cpe_password,
+            pppoe_password=pppoe_password,
+            nas_port=nas_port,
+            cpe_port=cpe_port,
+            timeout=timeout,
+        )
+        if prep.get("auth_ok") and prep.get("cpe_username"):
+            cpe_username = prep.get("cpe_username") or cpe_username
+            if prep.get("cpe_password") is not None:
+                cpe_password = prep.get("cpe_password") or ""
+        elif prep.get("error"):
+            # Keep going — proxy install below may still succeed with saved login.
+            pass
+
+    proxy_port = _cpe_proxy_port(cpe_host, proxy_scope or cpe_username)
+    with _api_session(
+        nas_host,
+        nas_username,
+        nas_password,
+        port=nas_port,
+        timeout=timeout,
+    ) as nas_sock:
+        proxy_error = _install_cpe_proxy(nas_sock, proxy_port, cpe_host, cpe_port)
+        if proxy_error:
+            raise ConnectionError(proxy_error)
+
+    try:
+        with _api_session(
+            nas_host,
+            cpe_username,
+            cpe_password,
+            port=proxy_port,
+            timeout=timeout,
+        ) as sock:
+            _ensure_cpe_api_ready_on_session(sock)
+            yield sock
+    except TimeoutError as exc:
+        raise ConnectionError(
+            "Could not reach the client CPE through the ISP MikroTik after auto-setup. "
+            "Save the correct CPE login once if this is a new device."
+        ) from exc
+    except ConnectionError:
+        raise
+    finally:
+        try:
+            with _api_session(
+                nas_host,
+                nas_username,
+                nas_password,
+                port=nas_port,
+                timeout=min(timeout, 5.0),
+            ) as nas_sock:
+                _uninstall_cpe_proxy(nas_sock, proxy_port)
+        except Exception:
+            pass
+
+
+@contextmanager
+def _device_api_session(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 8.0,
+    nas_host: str = "",
+    nas_username: str = "",
+    nas_password: str = "",
+    proxy_scope: str = "",
+) -> Iterator[socket.socket]:
+    host = (host or "").strip()
+    if (nas_host or "").strip():
+        with _cpe_api_session(
+            nas_host,
+            nas_username,
+            nas_password,
+            host,
+            username,
+            password,
+            nas_port=port,
+            cpe_port=port,
+            timeout=timeout,
+            proxy_scope=proxy_scope or username,
+            auto_prepare=True,
+        ) as sock:
+            yield sock
+    else:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            yield sock
 
 
 def _fetch_identity(sock: socket.socket, host: str) -> dict[str, Any]:
@@ -409,6 +2120,9 @@ def read_mikrotik_wifi(
     *,
     port: int = 8728,
     timeout: float = 8.0,
+    nas_host: str = "",
+    nas_username: str = "",
+    nas_password: str = "",
 ) -> dict[str, Any]:
     """Fresh-login helper to load current Wi‑Fi name/password and radio state."""
     host = (host or "").strip()
@@ -424,7 +2138,17 @@ def read_mikrotik_wifi(
     if not host or not username:
         return empty
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _device_api_session(
+            host,
+            username,
+            password,
+            port=port,
+            timeout=timeout,
+            nas_host=nas_host,
+            nas_username=nas_username,
+            nas_password=nas_password,
+            proxy_scope=username,
+        ) as sock:
             package = _detect_wifi_package(sock)
             return _read_wifi_settings(sock, package)
     except Exception:
@@ -468,6 +2192,9 @@ def set_mikrotik_wifi_enabled(
     wifi_password: str = "",
     port: int = 8728,
     timeout: float = 12.0,
+    nas_host: str = "",
+    nas_username: str = "",
+    nas_password: str = "",
 ) -> dict[str, Any]:
     """Turn local MikroTik Wi‑Fi radios on or off."""
     host = (host or "").strip()
@@ -480,7 +2207,17 @@ def set_mikrotik_wifi_enabled(
         return {"ok": False, "error": "Saved router credentials are missing."}
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _device_api_session(
+            host,
+            username,
+            password,
+            port=port,
+            timeout=timeout,
+            nas_host=nas_host,
+            nas_username=nas_username,
+            nas_password=nas_password,
+            proxy_scope=username,
+        ) as sock:
             package = _detect_wifi_package(sock)
             if not package:
                 return {
@@ -1458,6 +3195,13 @@ def fetch_mikrotik_live_snapshot(
             "online": False,
             "error": "Connection timed out. Is the router reachable on API port 8728?",
         }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "online": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+            "auth_error": True,
+        }
     except OSError as exc:
         return {
             "ok": False,
@@ -1617,6 +3361,524 @@ def fetch_customer_pppoe_usage(
         }
 
 
+def _find_cpe_wan_interface(sock: socket.socket) -> str:
+    """Prefer a running PPPoE client interface, else the detected internet uplink port."""
+    try:
+        interfaces = _print(
+            sock,
+            "/interface",
+            props="name,type,running,disabled",
+        )
+    except Exception:
+        interfaces = []
+
+    running_pppoe: list[str] = []
+    for row in interfaces:
+        if _is_ros_true(row.get("disabled")):
+            continue
+        name = (row.get("name") or "").strip()
+        iface_type = (row.get("type") or "").strip().lower()
+        running = _is_ros_true(row.get("running"))
+        lower = name.lower()
+        if not running:
+            continue
+        if iface_type == "pppoe-out" or lower.startswith("pppoe-out") or lower.startswith("pppoe"):
+            running_pppoe.append(name)
+    if running_pppoe:
+        # Prefer the default RouterOS name when present.
+        for preferred in ("pppoe-out1", "pppoe-out"):
+            if preferred in running_pppoe:
+                return preferred
+        return running_pppoe[0]
+
+    try:
+        uplink = _read_internet_uplink(sock)
+    except Exception:
+        uplink = {}
+    return (uplink.get("wan_port") or uplink.get("wan_interface") or "").strip()
+
+
+def _count_cpe_connected_devices(sock: socket.socket) -> dict[str, Any]:
+    """
+    Count LAN/Wi‑Fi devices attached to the CPE.
+    Prefers unique MACs from DHCP leases + wireless registrations.
+    """
+    macs: set[str] = set()
+    dhcp_bound = 0
+    wifi_clients = 0
+
+    try:
+        leases = _print(
+            sock,
+            "/ip/dhcp-server/lease",
+            props="mac-address,status,active-mac-address,address",
+        )
+    except Exception:
+        leases = []
+    for row in leases:
+        status = (row.get("status") or "").strip().lower()
+        if status and status != "bound":
+            continue
+        dhcp_bound += 1
+        mac = (
+            (row.get("active-mac-address") or row.get("mac-address") or "")
+            .strip()
+            .upper()
+        )
+        if mac:
+            macs.add(mac)
+
+    for path in (
+        "/interface/wireless/registration-table",
+        "/interface/wifi/registration",
+        "/interface/wifiwave2/registration",
+    ):
+        try:
+            rows = _print(sock, path, props="mac-address,last-ip,interface")
+        except Exception:
+            rows = []
+        if not rows:
+            continue
+        for row in rows:
+            mac = (row.get("mac-address") or "").strip().upper()
+            if mac:
+                macs.add(mac)
+                wifi_clients += 1
+        break
+
+    # Bridge host table as a fallback when DHCP/Wi‑Fi tables are empty.
+    if not macs:
+        try:
+            hosts = _print(
+                sock,
+                "/interface/bridge/host",
+                props="mac-address,on-interface,local",
+            )
+        except Exception:
+            hosts = []
+        for row in hosts:
+            if _is_ros_true(row.get("local")):
+                continue
+            mac = (row.get("mac-address") or "").strip().upper()
+            if mac:
+                macs.add(mac)
+
+    devices = len(macs) if macs else max(dhcp_bound, wifi_clients)
+    return {
+        "devices_connected": devices,
+        "dhcp_leases": dhcp_bound,
+        "wifi_clients": wifi_clients,
+        "devices_label": str(devices),
+        "devices_hint": (
+            f"{wifi_clients} Wi‑Fi · {dhcp_bound} DHCP"
+            if wifi_clients or dhcp_bound
+            else "LAN / Wi‑Fi clients on this CPE"
+        ),
+    }
+
+
+def read_cpe_live_metrics(
+    sock: socket.socket,
+) -> dict[str, Any]:
+    """Live WAN speed + connected devices from an already-open CPE API session."""
+    wan_iface = _find_cpe_wan_interface(sock)
+    speed = _monitor_interface_speed(sock, wan_iface) if wan_iface else {
+        "wan_download_bps": None,
+        "wan_upload_bps": None,
+        "wan_download_label": "—",
+        "wan_upload_label": "—",
+        "wan_speed_interface": "",
+    }
+    devices = _count_cpe_connected_devices(sock)
+
+    bytes_in = 0
+    bytes_out = 0
+    if wan_iface:
+        try:
+            for row in _print(
+                sock,
+                "/interface",
+                props="name,rx-byte,tx-byte",
+            ):
+                if (row.get("name") or "").strip() == wan_iface:
+                    bytes_in = _parse_int(row.get("rx-byte"))
+                    bytes_out = _parse_int(row.get("tx-byte"))
+                    break
+        except Exception:
+            pass
+
+    return {
+        "cpe_wan_interface": wan_iface,
+        "download_bps": speed.get("wan_download_bps"),
+        "upload_bps": speed.get("wan_upload_bps"),
+        "download_label": speed.get("wan_download_label") or "—",
+        "upload_label": speed.get("wan_upload_label") or "—",
+        "bytes_in": bytes_in,
+        "bytes_out": bytes_out,
+        "bytes_in_label": _bytes_label(bytes_in) if bytes_in else "—",
+        "bytes_out_label": _bytes_label(bytes_out) if bytes_out else "—",
+        **devices,
+    }
+
+
+def fetch_customer_cpe_live_usage(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    *,
+    pppoe_username: str,
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
+    nas_port: int = 8728,
+    cpe_port: int = 8728,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Live CPE metrics: speed the client router is receiving, and how many devices
+    are connected to that CPE. Auto-prepares CPE API access through the NAS.
+    Falls back to NAS PPPoE session data when CPE API is unreachable.
+    """
+    nas = fetch_customer_pppoe_usage(
+        nas_host,
+        nas_username,
+        nas_password,
+        pppoe_username=pppoe_username,
+        port=nas_port,
+        timeout=min(timeout, 5.0),
+    )
+    payload = {
+        **nas,
+        "cpe_reachable": False,
+        "cpe_auth_ok": False,
+        "cpe_host": (nas.get("address") or "").strip(),
+        "devices_connected": None,
+        "devices_label": "—",
+        "devices_hint": "Preparing CPE access…",
+        "speed_source": "nas",
+        "prep_steps": [],
+    }
+    if not nas.get("ok") or not nas.get("session_active"):
+        payload["devices_hint"] = "Client offline — no PPPoE session"
+        return payload
+
+    cpe_host = (nas.get("address") or "").strip()
+    if not cpe_host:
+        return payload
+
+    prep = prepare_customer_cpe_access(
+        nas_host,
+        nas_username,
+        nas_password,
+        pppoe_username=pppoe_username,
+        cpe_username=cpe_username,
+        cpe_password=cpe_password,
+        pppoe_password=pppoe_password,
+        nas_port=nas_port,
+        cpe_port=cpe_port,
+        timeout=timeout,
+    )
+    payload["prep_steps"] = list(prep.get("steps") or [])
+    payload["cpe_host"] = prep.get("cpe_host") or cpe_host
+    payload["cpe_reachable"] = bool(prep.get("reachable") or prep.get("session_active"))
+    if prep.get("cpe_username"):
+        cpe_username = prep.get("cpe_username") or cpe_username
+    if prep.get("cpe_password") is not None and prep.get("auth_ok"):
+        cpe_password = prep.get("cpe_password") or ""
+
+    if not prep.get("auth_ok"):
+        payload["cpe_error"] = prep.get("error") or "Could not prepare CPE access."
+        payload["devices_hint"] = prep.get("hint") or payload["cpe_error"]
+        payload["cpe_username"] = cpe_username
+        return payload
+
+    try:
+        with _cpe_api_session(
+            nas_host,
+            nas_username,
+            nas_password,
+            payload["cpe_host"],
+            cpe_username,
+            cpe_password,
+            nas_port=nas_port,
+            cpe_port=cpe_port,
+            timeout=timeout,
+            proxy_scope=pppoe_username,
+            pppoe_password=pppoe_password,
+            auto_prepare=False,
+        ) as sock:
+            metrics = read_cpe_live_metrics(sock)
+        payload.update(
+            {
+                "cpe_reachable": True,
+                "cpe_auth_ok": True,
+                "cpe_username": cpe_username,
+                "cpe_password": cpe_password,
+                "speed_source": "cpe",
+                "interface": metrics.get("cpe_wan_interface") or payload.get("interface") or "",
+                "download_bps": metrics.get("download_bps"),
+                "upload_bps": metrics.get("upload_bps"),
+                "download_label": metrics.get("download_label") or "—",
+                "upload_label": metrics.get("upload_label") or "—",
+                "bytes_in": metrics.get("bytes_in") or 0,
+                "bytes_out": metrics.get("bytes_out") or 0,
+                "bytes_in_label": metrics.get("bytes_in_label") or "—",
+                "bytes_out_label": metrics.get("bytes_out_label") or "—",
+                "devices_connected": metrics.get("devices_connected"),
+                "devices_label": metrics.get("devices_label") or "—",
+                "devices_hint": metrics.get("devices_hint") or "",
+                "dhcp_leases": metrics.get("dhcp_leases") or 0,
+                "wifi_clients": metrics.get("wifi_clients") or 0,
+                "error": "",
+            }
+        )
+        return payload
+    except Exception as exc:
+        payload["cpe_error"] = str(exc) or "Could not read CPE live metrics."
+        payload["devices_hint"] = payload["cpe_error"]
+        return payload
+
+
+def resolve_customer_cpe_session(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    *,
+    pppoe_username: str,
+    port: int = 8728,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Find the live PPPoE session IP for the client's CPE behind the ISP MikroTik."""
+    usage = fetch_customer_pppoe_usage(
+        nas_host,
+        nas_username,
+        nas_password,
+        pppoe_username=pppoe_username,
+        port=port,
+        timeout=timeout,
+    )
+    address = (usage.get("address") or "").strip()
+    if not usage.get("ok"):
+        return {
+            "ok": False,
+            "session_active": False,
+            "address": "",
+            "error": usage.get("error") or "Could not read the PPPoE session.",
+        }
+    if not usage.get("session_active") or not address:
+        return {
+            "ok": True,
+            "session_active": False,
+            "address": "",
+            "error": "",
+            "hint": usage.get("hint")
+            or "Client CPE is offline — the PPPoE session is not active.",
+        }
+    return {
+        "ok": True,
+        "session_active": True,
+        "address": address,
+        "caller_id": usage.get("caller_id") or "",
+        "error": "",
+    }
+
+
+def _cpe_credential_candidates(
+    *,
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
+) -> list[tuple[str, str]]:
+    """Ordered (username, password) pairs to try against the CPE RouterOS API."""
+    username = ((cpe_username or "").strip() or "admin")
+    candidates: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(user: str, password: str) -> None:
+        key = (user, password)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(key)
+
+    add(username, cpe_password or "")
+    if pppoe_password and pppoe_password != (cpe_password or ""):
+        add(username, pppoe_password)
+    if username.lower() != "admin":
+        add("admin", cpe_password or "")
+        if pppoe_password:
+            add("admin", pppoe_password)
+    add("admin", "")
+    return candidates
+
+
+def access_customer_cpe_wifi(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    *,
+    pppoe_username: str,
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
+    nas_port: int = 8728,
+    cpe_port: int = 8728,
+    timeout: float = 12.0,
+    auto_enable: bool = True,
+) -> dict[str, Any]:
+    """
+    Auto-prepare CPE access through the ISP MikroTik, then read Wi‑Fi settings
+    from the subscriber CPE — not from the ISP MikroTik.
+    """
+    prep = prepare_customer_cpe_access(
+        nas_host,
+        nas_username,
+        nas_password,
+        pppoe_username=pppoe_username,
+        cpe_username=cpe_username,
+        cpe_password=cpe_password,
+        pppoe_password=pppoe_password,
+        nas_port=nas_port,
+        cpe_port=cpe_port,
+        timeout=timeout,
+        auto_enable=auto_enable,
+    )
+    base = {
+        "ok": True,
+        "session_active": bool(prep.get("session_active")),
+        "cpe_host": prep.get("cpe_host") or "",
+        "cpe_username": prep.get("cpe_username") or ((cpe_username or "").strip() or "admin"),
+        "cpe_password": prep.get("cpe_password")
+        if prep.get("cpe_password") is not None
+        else (cpe_password or ""),
+        "auth_ok": False,
+        "wifi_ssid": "",
+        "wifi_password": "",
+        "wifi_mode": "",
+        "wifi_enabled": False,
+        "interface_count": 0,
+        "reachable": bool(prep.get("reachable")),
+        "api_enabled": bool(prep.get("api_enabled")),
+        "prep_steps": list(prep.get("steps") or []),
+        "error": prep.get("error") or "",
+        "hint": prep.get("hint") or "",
+        "firewall_blocked": bool(prep.get("firewall_blocked")),
+    }
+    if not prep.get("session_active"):
+        return {
+            **base,
+            "ok": True,
+            "error": "",
+            "hint": prep.get("hint")
+            or "Client CPE is offline — the PPPoE session is not active.",
+        }
+    if not prep.get("auth_ok"):
+        # Keep ok=True when PPPoE is up so the account page never looks "dead".
+        firewall_blocked = bool(prep.get("firewall_blocked"))
+        err = prep.get("error") or "Could not sign in to the client CPE automatically."
+        if not firewall_blocked and "firewall is blocking" in (err or "").lower():
+            firewall_blocked = True
+        return {
+            **base,
+            "ok": True,
+            "auth_ok": False,
+            "firewall_blocked": firewall_blocked,
+            "error": err,
+            "hint": prep.get("hint")
+            or "Save the CPE Winbox username/password once — API will be enabled automatically.",
+        }
+
+    cpe_host = (prep.get("cpe_host") or "").strip()
+    user = prep.get("cpe_username") or "admin"
+    password = prep.get("cpe_password") if prep.get("cpe_password") is not None else ""
+    try:
+        with _cpe_api_session(
+            nas_host,
+            nas_username,
+            nas_password,
+            cpe_host,
+            user,
+            password,
+            nas_port=nas_port,
+            cpe_port=cpe_port,
+            timeout=timeout,
+            proxy_scope=pppoe_username,
+            pppoe_password=pppoe_password,
+            auto_prepare=False,
+        ) as sock:
+            package = _detect_wifi_package(sock)
+            wifi = _read_wifi_settings(sock, package)
+        return {
+            **base,
+            "ok": True,
+            "session_active": True,
+            "cpe_host": cpe_host,
+            "cpe_username": user,
+            "cpe_password": password,
+            "auth_ok": True,
+            "wifi_ssid": wifi.get("wifi_ssid") or "",
+            "wifi_password": wifi.get("wifi_password") or "",
+            "wifi_mode": wifi.get("wifi_mode") or "",
+            "wifi_enabled": bool(wifi.get("wifi_enabled")),
+            "interface_count": int(wifi.get("interface_count") or 0),
+            "api_enabled": True,
+            "error": "",
+            "hint": "",
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "ok": False,
+            "auth_ok": False,
+            "error": str(exc) or "Could not read CPE Wi‑Fi after auto-setup.",
+            "hint": "CPE access was prepared, but Wi‑Fi read failed. Refresh and try again.",
+        }
+
+
+def fetch_active_pppoe_usernames(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Return lowercased PPPoE usernames currently online on a MikroTik."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "usernames": [], "error": "Router host or username missing."}
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            rows = _print(sock, "/ppp/active", props="name,service")
+            names: list[str] = []
+            seen: set[str] = set()
+            for row in rows:
+                name = (row.get("name") or "").strip()
+                if not name:
+                    continue
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                names.append(key)
+            return {"ok": True, "usernames": names, "error": ""}
+    except TimeoutError:
+        return {"ok": False, "usernames": [], "error": "Connection timed out."}
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "usernames": [],
+            "error": str(exc) or "Login failed.",
+            "auth_error": True,
+        }
+    except OSError as exc:
+        return {"ok": False, "usernames": [], "error": f"Could not reach {host}:8728.", "detail": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "usernames": [], "error": str(exc) or "Could not read active sessions."}
+
+
 def test_mikrotik_api_login(
     host: str,
     username: str,
@@ -1674,6 +3936,9 @@ def configure_mikrotik_wifi(
     apply_password: bool | None = None,
     port: int = 8728,
     timeout: float = 20.0,
+    nas_host: str = "",
+    nas_username: str = "",
+    nas_password: str = "",
 ) -> dict[str, Any]:
     """Apply Wi‑Fi name/password. Fails closed unless values are confirmed on the router."""
     host = (host or "").strip()
@@ -1694,7 +3959,17 @@ def configure_mikrotik_wifi(
 
     try:
         # Fresh connection: read current values and decide what actually needs writing.
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        with _device_api_session(
+            host,
+            username,
+            password,
+            port=port,
+            timeout=timeout,
+            nas_host=nas_host,
+            nas_username=nas_username,
+            nas_password=nas_password,
+            proxy_scope=username,
+        ) as sock:
             package = _package_by_mode(wifi_mode) if wifi_mode else _detect_wifi_package(sock)
             if not package:
                 # Detection may have poisoned the socket on timeout; retry packages on new sessions below.
@@ -1738,7 +4013,17 @@ def configure_mikrotik_wifi(
         for package in packages:
             # Brand-new TCP session per package so a timed-out probe cannot poison later work.
             try:
-                with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+                with _device_api_session(
+                    host,
+                    username,
+                    password,
+                    port=port,
+                    timeout=timeout,
+                    nas_host=nas_host,
+                    nas_username=nas_username,
+                    nas_password=nas_password,
+                    proxy_scope=username,
+                ) as sock:
                     result = _apply_on_package(
                         sock,
                         package,
@@ -2087,3 +4372,4346 @@ def apply_mikrotik_access_changes(
         "wifi_ssid": final.get("wifi_ssid") or new_wifi_ssid,
         "wifi_password": new_wifi_password,
     }
+
+
+PPP_SECRET_TAG = "ispcentric-pppoe"
+PPPOE_PROFILE_NAME = "ispcentric-pppoe"
+# Out-of-period clients stay dialed in (CPE online) but this profile + firewall
+# address-list drop stops surfing at the ISP NAS regardless of CPE state.
+PPPOE_BLOCKED_PROFILE_NAME = "ispcentric-blocked"
+PPPOE_BLOCKED_ADDRESS_LIST = "ispcentric-blocked"
+RENEW_HOTSPOT_TAG = "ispcentric-renew"
+RENEW_HOTSPOT_NAME = "ispcentric-renew"
+RENEW_HOTSPOT_PROFILE = "ispcentric-renew"
+RENEW_HOTSPOT_POOL = "ispcentric-renew"
+RENEW_HOTSPOT_POOL_RANGES = "192.168.189.10-192.168.189.250"
+RENEW_HOTSPOT_ADDRESS = "192.168.189.1"
+
+# ISP Hotspot on onboarded NAS routers (voucher / Hotspot clients).
+ISP_HOTSPOT_TAG = "ispcentric-hotspot"
+ISP_HOTSPOT_NAME = "ispcentric-hotspot"
+ISP_HOTSPOT_PROFILE = "ispcentric-hotspot"
+ISP_HOTSPOT_USER_PROFILE = "ispcentric-hs-default"
+ISP_HOTSPOT_POOL = "ispcentric-hs"
+ISP_HOTSPOT_POOL_RANGES = "10.50.50.10-10.50.50.250"
+ISP_HOTSPOT_ADDRESS = "10.50.50.1"
+ISP_HOTSPOT_POOL_NETWORK = "10.50.50.0/24"
+# Authenticated Hotspot users are tagged with this list so PPPoE compulsory
+# can still allow them while blocking free LAN/DHCP browsing.
+ISP_HOTSPOT_OK_LIST = "ispcentric-hotspot-ok"
+
+
+def _is_disabled(row: dict[str, str]) -> bool:
+    return (row.get("disabled") or "").strip().lower() in {"true", "yes"}
+
+
+def _first_forward_drop_id(sock: socket.socket) -> str:
+    """First forward-chain drop rule — insert allows before it when possible."""
+    for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action"):
+        if (row.get("chain") or "") == "forward" and (row.get("action") or "") == "drop":
+            return (row.get(".id") or "").strip()
+    return ""
+
+
+def _add_filter_rule(sock: socket.socket, rule: dict[str, str], *, place_before: str = "") -> dict[str, str]:
+    words = ["/ip/firewall/filter/add"]
+    for key, value in rule.items():
+        words.append(f"={key}={value}")
+    if place_before:
+        words.append(f"=place-before={place_before}")
+    _, terminal = _command(sock, words)
+    return terminal
+
+
+def _ensure_pppoe_nat(sock: socket.socket) -> None:
+    """NAT for dialed PPPoE clients (pool subnet to WAN)."""
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,action,src-address,comment",
+    ):
+        comment = row.get("comment") or ""
+        if PPP_SECRET_TAG in comment and (row.get("action") or "") == "masquerade":
+            return
+    _add(
+        sock,
+        "/ip/firewall/nat",
+        chain="srcnat",
+        action="masquerade",
+        **{
+            "src-address": PPPOE_POOL_NETWORK,
+            "out-interface-list": "WAN",
+            "comment": f"{PPP_SECRET_TAG} NAT",
+        },
+    )
+
+
+def _resolve_pppoe_lan_interface(sock: socket.socket, preferred: str = "") -> str:
+    """Pick the LAN / bridge interface where client devices dial PPPoE."""
+    preferred = (preferred or "").strip()
+    rows = _print(sock, "/interface", props="name,type,running")
+    names = {(row.get("name") or "").strip() for row in rows if (row.get("name") or "").strip()}
+    if preferred and preferred in names:
+        return preferred
+    for candidate in ("bridgeLocal", "bridge", "br-lan", "LAN"):
+        if candidate in names:
+            return candidate
+    bridges = [
+        (row.get("name") or "").strip()
+        for row in rows
+        if (row.get("type") or "").strip().lower() == "bridge"
+    ]
+    if bridges:
+        return bridges[0]
+    for candidate in ("ether2", "ether3", "ether4", "ether5"):
+        if candidate in names:
+            return candidate
+    return preferred or (next(iter(names), "") or "bridge")
+
+
+def _ensure_pppoe_stack(
+    sock: socket.socket,
+    *,
+    lan_interface: str,
+    wan_interface: str = "ether1",
+    compulsory: bool = False,
+    portal_url: str = "",
+) -> tuple[str, list[str]]:
+    """
+    Ensure MikroTik can accept PPPoE dial-ins and route them to the internet.
+
+    When compulsory is True, free LAN/DHCP browsing to the WAN is dropped so only
+    dialed PPPoE clients (pool subnet) and authenticated Hotspot clients can
+    access the internet.
+
+    Returns (profile_name, notes).
+    """
+    notes: list[str] = []
+    lan_interface = _resolve_pppoe_lan_interface(sock, lan_interface)
+    wan_interface = (wan_interface or "ether1").strip() or "ether1"
+
+    pool_names = {
+        (row.get("name") or "").strip()
+        for row in _print(sock, "/ip/pool", props="name")
+    }
+    if PPPOE_POOL_NAME not in pool_names:
+        terminal = _add(
+            sock,
+            "/ip/pool",
+            name=PPPOE_POOL_NAME,
+            ranges=PPPOE_POOL_RANGES,
+            comment=PPP_SECRET_TAG,
+        )
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(terminal, "Could not create the PPPoE IP pool on the MikroTik.")
+            )
+        notes.append("created PPPoE IP pool")
+
+    profile_id = ""
+    for row in _print(
+        sock,
+        "/ppp/profile",
+        props=".id,name,local-address,remote-address,dns-server",
+    ):
+        if (row.get("name") or "").strip() == PPPOE_PROFILE_NAME:
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    # use-encryption=no: many CPE routers fail PPPoE when MPPE is required.
+    profile_props = {
+        "name": PPPOE_PROFILE_NAME,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        "dns-server": "8.8.8.8,1.1.1.1",
+        "change-tcp-mss": "yes",
+        "use-encryption": "no",
+        "only-one": "default",
+        "comment": PPP_SECRET_TAG,
+    }
+    if profile_id:
+        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
+        if terminal.get("_reply") == "!trap":
+            soft = {
+                "name": PPPOE_PROFILE_NAME,
+                "local-address": PPPOE_LOCAL_ADDRESS,
+                "remote-address": PPPOE_POOL_NAME,
+                "dns-server": "8.8.8.8,1.1.1.1",
+                "use-encryption": "no",
+                "comment": PPP_SECRET_TAG,
+            }
+            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(terminal, "Could not update the PPPoE profile on the MikroTik.")
+                )
+        notes.append("updated PPPoE profile")
+    else:
+        terminal = _add(sock, "/ppp/profile", **profile_props)
+        if terminal.get("_reply") == "!trap":
+            soft = {
+                "name": PPPOE_PROFILE_NAME,
+                "local-address": PPPOE_LOCAL_ADDRESS,
+                "remote-address": PPPOE_POOL_NAME,
+                "dns-server": "8.8.8.8,1.1.1.1",
+                "use-encryption": "no",
+                "comment": PPP_SECRET_TAG,
+            }
+            terminal = _add(sock, "/ppp/profile", **soft)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(terminal, "Could not create the PPPoE profile on the MikroTik.")
+                )
+        notes.append("created PPPoE profile")
+
+    notes.extend(_ensure_pppoe_blocked_profile(sock))
+
+    _command(
+        sock,
+        [
+            "/ppp/aaa/set",
+            "=use-radius=no",
+            "=accounting=no",
+        ],
+    )
+    notes.append("PPP AAA set to local secrets")
+
+    server_id = ""
+    for row in _print(
+        sock,
+        "/interface/pppoe-server/server",
+        props=".id,service-name,interface,disabled,default-profile,comment",
+    ):
+        iface = (row.get("interface") or "").strip()
+        comment = row.get("comment") or ""
+        if iface == lan_interface or PPP_SECRET_TAG in comment:
+            server_id = (row.get(".id") or "").strip()
+            break
+        if not server_id and not _is_disabled(row):
+            server_id = (row.get(".id") or "").strip()
+
+    server_props = {
+        "service-name": "",
+        "interface": lan_interface,
+        "default-profile": PPPOE_PROFILE_NAME,
+        "authentication": "pap,chap,mschap1,mschap2",
+        "disabled": "no",
+        "comment": PPP_SECRET_TAG,
+    }
+    if server_id:
+        terminal = _set(sock, "/interface/pppoe-server/server", server_id, **server_props)
+        if terminal.get("_reply") == "!trap":
+            core = {
+                "service-name": "",
+                "interface": lan_interface,
+                "default-profile": PPPOE_PROFILE_NAME,
+                "disabled": "no",
+                "comment": PPP_SECRET_TAG,
+            }
+            terminal = _set(sock, "/interface/pppoe-server/server", server_id, **core)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(
+                        terminal,
+                        f"Could not enable PPPoE server on {lan_interface}.",
+                    )
+                )
+        notes.append(f"enabled PPPoE server on {lan_interface}")
+    else:
+        terminal = _add(sock, "/interface/pppoe-server/server", **server_props)
+        if terminal.get("_reply") == "!trap":
+            core = {
+                "service-name": "",
+                "interface": lan_interface,
+                "default-profile": PPPOE_PROFILE_NAME,
+                "disabled": "no",
+                "comment": PPP_SECRET_TAG,
+            }
+            terminal = _add(sock, "/interface/pppoe-server/server", **core)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(
+                        terminal,
+                        (
+                            f"Could not create PPPoE server on {lan_interface}. "
+                            "Clients get no response until a server listens on that LAN."
+                        ),
+                    )
+                )
+        notes.append(f"created PPPoE server on {lan_interface}")
+
+    _ensure_interface_list(sock, "WAN")
+    _ensure_interface_list(sock, "LAN")
+    _ensure_list_member(sock, "WAN", wan_interface)
+    _ensure_list_member(sock, "LAN", lan_interface)
+    _ensure_masquerade(sock)
+    _ensure_pppoe_nat(sock)
+    notes.append("ensured WAN NAT for PPPoE clients")
+
+    _command(
+        sock,
+        [
+            "/ip/dns/set",
+            "=allow-remote-requests=yes",
+            "=servers=1.1.1.1,8.8.8.8",
+        ],
+    )
+
+    existing_pppoe_filters = [
+        row
+        for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
+        if PPP_SECRET_TAG in (row.get("comment") or "")
+    ]
+    for row in existing_pppoe_filters:
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/ip/firewall/filter", item_id)
+
+    place_before_drop = _first_forward_drop_id(sock)
+    billing_ip = _routable_ipv4_from_url(portal_url) if portal_url else ""
+
+    forward_rules: list[dict[str, str]] = []
+    if billing_ip:
+        # Expired clients must still reach the pay page and STK APIs.
+        forward_rules.append(
+            {
+                "chain": "forward",
+                "action": "accept",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "dst-address": billing_ip,
+                "comment": f"{PPP_SECRET_TAG} blocked to billing",
+            }
+        )
+    forward_rules.extend(
+        [
+            # Drop expired clients first (even established) once tagged by blocked profile.
+            {
+                "chain": "forward",
+                "action": "drop",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} block expired",
+            },
+            {
+                "chain": "forward",
+                "action": "accept",
+                "connection-state": "established,related,untracked",
+                "comment": f"{PPP_SECRET_TAG} forward OK",
+            },
+            {
+                "chain": "forward",
+                "action": "accept",
+                "src-address": PPPOE_POOL_NETWORK,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} PPPoE clients to internet",
+            },
+            {
+                "chain": "input",
+                "action": "accept",
+                "protocol": "tcp",
+                "dst-port": "8728",
+                "comment": f"{PPP_SECRET_TAG} keep API",
+            },
+        ]
+    )
+    if compulsory:
+        # Hotspot-authenticated clients (tagged by user profile address-list) may
+        # share the LAN with free DHCP devices; allow them before the LAN drop.
+        forward_rules.extend(
+            [
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "src-address-list": ISP_HOTSPOT_OK_LIST,
+                    "out-interface-list": "WAN",
+                    "comment": f"{PPP_SECRET_TAG} Hotspot clients to internet",
+                },
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "src-address": ISP_HOTSPOT_POOL_NETWORK,
+                    "out-interface-list": "WAN",
+                    "comment": f"{PPP_SECRET_TAG} Hotspot pool to internet",
+                },
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "in-interface-list": "LAN",
+                    "out-interface-list": "WAN",
+                    "comment": f"{PPP_SECRET_TAG} PPPoE compulsory",
+                },
+            ]
+        )
+    else:
+        forward_rules.append(
+            {
+                "chain": "forward",
+                "action": "accept",
+                "in-interface-list": "LAN",
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} LAN to internet",
+            }
+        )
+    for rule in forward_rules:
+        terminal = _add_filter_rule(sock, rule, place_before=place_before_drop)
+        if terminal.get("_reply") == "!trap" and place_before_drop:
+            _add_filter_rule(sock, rule)
+    notes.append(
+        "PPPoE compulsory firewall (Hotspot clients allowed)"
+        if compulsory
+        else "LAN forward allow"
+    )
+    notes.append(f"forward allow {PPPOE_POOL_NETWORK} to WAN")
+    if compulsory:
+        notes.append(f"forward allow address-list {ISP_HOTSPOT_OK_LIST} to WAN")
+        notes.append(f"forward allow {ISP_HOTSPOT_POOL_NETWORK} to WAN")
+    notes.append(f"forward drop address-list {PPPOE_BLOCKED_ADDRESS_LIST}")
+    if billing_ip:
+        notes.append(f"forward allow blocked clients to billing {billing_ip}")
+        notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal_url))
+
+    return PPPOE_PROFILE_NAME, notes
+
+
+def _portal_http_port(portal_url: str) -> str:
+    try:
+        parsed = urlparse((portal_url or "").strip())
+        if parsed.port:
+            return str(parsed.port)
+        return "443" if (parsed.scheme or "").lower() == "https" else "80"
+    except Exception:
+        return "8000"
+
+
+def _ensure_pppoe_expired_redirect(
+    sock: socket.socket,
+    billing_ip: str,
+    portal_url: str,
+) -> list[str]:
+    """
+    Send plain-HTTP traffic from expired PPPoE sessions to the billing server.
+
+    HTTPS cannot be intercepted without a certificate warning, so this only
+    covers port 80 — enough for OS captive probes and neverssl-style checks.
+    The billing app then 302s the browser onto the PPPoE pay page.
+    """
+    notes: list[str] = []
+    billing_ip = (billing_ip or "").strip()
+    if not billing_ip:
+        return notes
+    to_port = _portal_http_port(portal_url)
+
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,comment,chain,action",
+    ):
+        comment = row.get("comment") or ""
+        if PPP_SECRET_TAG not in comment:
+            continue
+        if "expired redirect" not in comment and "expired dns" not in comment:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/ip/firewall/nat", item_id)
+
+    for protocol in ("udp", "tcp"):
+        terminal = _add(
+            sock,
+            "/ip/firewall/nat",
+            chain="dstnat",
+            protocol=protocol,
+            **{
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "dst-port": "53",
+                "action": "redirect",
+                "to-ports": "53",
+                "comment": f"{PPP_SECRET_TAG} expired dns",
+            },
+        )
+        if terminal.get("_reply") == "!trap":
+            notes.append(f"warning: could not force {protocol}/53 for expired clients")
+        else:
+            notes.append(f"expired-client DNS redirect ({protocol}/53)")
+
+    terminal = _add(
+        sock,
+        "/ip/firewall/nat",
+        chain="dstnat",
+        protocol="tcp",
+        **{
+            "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+            "dst-port": "80",
+            "action": "dst-nat",
+            "to-addresses": billing_ip,
+            "to-ports": to_port,
+            "comment": f"{PPP_SECRET_TAG} expired redirect",
+        },
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            f"warning: could not redirect expired PPPoE HTTP to {billing_ip}:{to_port}"
+        )
+    else:
+        notes.append(f"expired PPPoE HTTP → {billing_ip}:{to_port}")
+    return notes
+
+
+def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
+    """
+    PPP profile for out-of-subscription clients.
+
+    Same pool as normal PPPoE (CPE stays online) but tags the session IP with
+    an address-list that the NAS firewall drops to WAN.
+    """
+    notes: list[str] = []
+    profile_id = ""
+    for row in _print(
+        sock,
+        "/ppp/profile",
+        props=".id,name,local-address,remote-address,address-list",
+    ):
+        if (row.get("name") or "").strip() == PPPOE_BLOCKED_PROFILE_NAME:
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    profile_props = {
+        "name": PPPOE_BLOCKED_PROFILE_NAME,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        # Point DNS at the NAS itself. External resolvers are unreachable once
+        # the blocked address-list is dropped to WAN, and a browser that cannot
+        # resolve a hostname never sends the HTTP request we intercept.
+        "dns-server": PPPOE_LOCAL_ADDRESS,
+        "change-tcp-mss": "yes",
+        "use-encryption": "no",
+        "only-one": "default",
+        "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+        "comment": f"{PPP_SECRET_TAG} no-internet",
+    }
+    soft = {
+        "name": PPPOE_BLOCKED_PROFILE_NAME,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        "dns-server": PPPOE_LOCAL_ADDRESS,
+        "use-encryption": "no",
+        "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+        "comment": f"{PPP_SECRET_TAG} no-internet",
+    }
+    if profile_id:
+        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
+        if terminal.get("_reply") == "!trap":
+            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(
+                        terminal,
+                        "Could not update the blocked PPPoE profile on the MikroTik.",
+                    )
+                )
+        notes.append("updated blocked PPPoE profile")
+    else:
+        terminal = _add(sock, "/ppp/profile", **profile_props)
+        if terminal.get("_reply") == "!trap":
+            terminal = _add(sock, "/ppp/profile", **soft)
+            if terminal.get("_reply") == "!trap":
+                raise ConnectionError(
+                    _trap_message(
+                        terminal,
+                        "Could not create the blocked PPPoE profile on the MikroTik.",
+                    )
+                )
+        notes.append("created blocked PPPoE profile")
+    return notes
+
+
+def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
+    """Normal profile when surfing is allowed; blocked profile when period is inactive."""
+    if disabled:
+        # Secret disabled entirely — profile unused, keep normal for when re-enabled.
+        return PPPOE_PROFILE_NAME
+    if _customer_internet_allowed(customer):
+        return PPPOE_PROFILE_NAME
+    return PPPOE_BLOCKED_PROFILE_NAME
+
+
+def _current_ppp_secret_profile(sock: socket.socket, username: str) -> str:
+    username = (username or "").strip().lower()
+    if not username:
+        return ""
+    for row in _print(sock, "/ppp/secret", props="name,profile"):
+        if (row.get("name") or "").strip().lower() == username:
+            return (row.get("profile") or "").strip()
+    return ""
+
+
+def _customer_internet_allowed(customer) -> bool:
+    """Whether this customer should have unrestricted internet (surfing)."""
+    try:
+        from billing.services import customer_receives_internet
+
+        return bool(customer_receives_internet(customer))
+    except Exception:
+        return getattr(customer, "status", "") == "active"
+
+
+def _customer_pppoe_secret_disabled(customer) -> bool:
+    """Whether /ppp/secret should be disabled on the ISP MikroTik."""
+    try:
+        from billing.services import customer_pppoe_secret_disabled
+
+        return bool(customer_pppoe_secret_disabled(customer))
+    except Exception:
+        return getattr(customer, "status", "") != "active"
+
+
+def _pppoe_rate_limit_for_customer(customer) -> str:
+    """RouterOS rate-limit string (rx=upload / tx=download from router view)."""
+    plan = getattr(customer, "plan", None)
+    if plan is None:
+        return ""
+    upload = int(getattr(plan, "upload_speed_mbps", 0) or 0)
+    download = int(getattr(plan, "download_speed_mbps", 0) or getattr(plan, "speed_mbps", 0) or 0)
+    if upload < 1 and download < 1:
+        return ""
+    if upload < 1:
+        upload = download
+    if download < 1:
+        download = upload
+    return f"{upload}M/{download}M"
+
+
+def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
+    """Drop active PPP sessions so a password change takes effect immediately."""
+    username = (username or "").strip()
+    if not username:
+        return 0
+    removed = 0
+    for row in _print(sock, "/ppp/active", props=".id,name"):
+        if (row.get("name") or "").strip().lower() != username.lower():
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, "/ppp/active", item_id)
+        if terminal.get("_reply") != "!trap":
+            removed += 1
+    return removed
+
+
+def _ensure_ppp_secret(
+    sock: socket.socket,
+    *,
+    username: str,
+    password: str,
+    profile: str = PPPOE_PROFILE_NAME,
+    comment: str = "",
+    disabled: bool = False,
+    rate_limit: str = "",
+) -> str:
+    """
+    Create or update /ppp/secret so a CPE can dial this username/password.
+
+    Always writes the password in a dedicated follow-up set (some RouterOS builds
+    drop password when mixed with other properties), then verifies the secret exists.
+
+    Returns 'created' or 'updated'.
+    """
+    username = (username or "").strip()
+    password = password or ""
+    if not username:
+        raise ConnectionError("PPPoE username is empty.")
+    if not password:
+        raise ConnectionError("PPPoE password is empty.")
+
+    profile = (profile or PPPOE_PROFILE_NAME).strip() or PPPOE_PROFILE_NAME
+    comment = (comment or "").strip() or PPP_SECRET_TAG
+    disabled_value = "no" if not disabled else "yes"
+    rate_limit = (rate_limit or "").strip()
+
+    secret_id = ""
+    for row in _print(
+        sock,
+        "/ppp/secret",
+        props=".id,name,profile,service,disabled,comment",
+    ):
+        if (row.get("name") or "").strip().lower() == username.lower():
+            secret_id = (row.get(".id") or "").strip()
+            break
+
+    # service=any: accept dial-in regardless of CPE service-name quirks.
+    base_props = {
+        "name": username,
+        "service": "any",
+        "profile": profile,
+        "disabled": disabled_value,
+        "comment": comment,
+    }
+
+    action = "updated"
+    if secret_id:
+        terminal = _set(sock, "/ppp/secret", secret_id, **base_props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not update PPPoE secret “{username}” on the MikroTik.",
+                )
+            )
+    else:
+        terminal = _add(sock, "/ppp/secret", **base_props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not create PPPoE secret “{username}” on the MikroTik.",
+                )
+            )
+        secret_id = (terminal.get("ret") or "").strip()
+        action = "created"
+        if not secret_id:
+            for row in _print(sock, "/ppp/secret", props=".id,name"):
+                if (row.get("name") or "").strip().lower() == username.lower():
+                    secret_id = (row.get(".id") or "").strip()
+                    break
+
+    if not secret_id:
+        raise ConnectionError(
+            f"PPPoE secret “{username}” was not found on the MikroTik after write."
+        )
+
+    # Password MUST be set on its own — never rely on multi-property add/set alone.
+    pwd_terminal = _set(sock, "/ppp/secret", secret_id, password=password)
+    if pwd_terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                pwd_terminal,
+                f"Could not set PPPoE password for “{username}” on the MikroTik.",
+            )
+        )
+
+    # Note: many RouterOS builds reject rate-limit on /ppp/secret (unknown parameter).
+    # Speed limits are applied via the shared profile / simple queues separately.
+    _ = rate_limit
+
+    # Verify the secret is present (password itself is readable on most ROS builds).
+    verified = None
+    for row in _print(sock, "/ppp/secret", props=".id,name,password,disabled,service"):
+        if (row.get("name") or "").strip().lower() != username.lower():
+            continue
+        verified = row
+        break
+    if verified is None:
+        # Full print fallback if .proplist behaved oddly.
+        for row in _print(sock, "/ppp/secret"):
+            if (row.get("name") or "").strip().lower() == username.lower():
+                verified = row
+                break
+    if verified is None:
+        raise ConnectionError(
+            f"PPPoE secret “{username}” missing after install — dial-in would fail."
+        )
+    stored_password = verified.get("password")
+    if stored_password is not None and stored_password != "" and stored_password != password:
+        _set(sock, "/ppp/secret", secret_id, password=password)
+        again = None
+        for row in _print(sock, "/ppp/secret"):
+            if (row.get("name") or "").strip().lower() == username.lower():
+                again = row
+                break
+        if again is not None and again.get("password") not in (None, "", password):
+            raise ConnectionError(
+                f"MikroTik stored a different password for “{username}”. "
+                "Re-push PPPoE logins from settings."
+            )
+
+    _disconnect_pppoe_sessions(sock, username)
+    return action
+
+
+def _pppoe_customers_for_router(router):
+    """Active/suspended PPPoE customers that should exist as secrets on this NAS."""
+    from billing.models import Customer
+
+    org_id = getattr(router, "organization_id", None)
+    if not org_id:
+        return []
+    qs = (
+        Customer.objects.filter(
+            organization_id=org_id,
+            service_type=Customer.ServiceType.PPPOE,
+        )
+        .exclude(pppoe_username="")
+        .exclude(pppoe_password="")
+        .select_related("plan")
+        .order_by("id")
+    )
+    # Prefer customers assigned to this router; also include unassigned so dial works.
+    return [
+        customer
+        for customer in qs
+        if customer.router_id in (None, getattr(router, "pk", None))
+    ]
+
+
+def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> int:
+    """Write all eligible customer PPP secrets onto an open API session."""
+    synced = 0
+    for customer in _pppoe_customers_for_router(router):
+        username = (customer.pppoe_username or "").strip()
+        password = customer.pppoe_password or ""
+        if not username or not password:
+            continue
+        disabled = _customer_pppoe_secret_disabled(customer)
+        comment = f"{PPP_SECRET_TAG} {customer.account_number}".strip()
+        _ensure_ppp_secret(
+            sock,
+            username=username,
+            password=password,
+            profile=PPPOE_PROFILE_NAME,
+            comment=comment,
+            disabled=disabled,
+            rate_limit=_pppoe_rate_limit_for_customer(customer),
+        )
+        synced += 1
+    return synced
+
+
+def _router_api_host_candidates(router, candidate_hosts: list[str] | None = None) -> list[str]:
+    host = (getattr(router, "host", None) or "").strip()
+    hosts: list[str] = []
+    for candidate in [host, "192.168.88.1", *(candidate_hosts or [])]:
+        value = (candidate or "").strip()
+        if value and value not in hosts:
+            hosts.append(value)
+    if not candidate_hosts:
+        try:
+            from core.mikrotik_discovery import discover_mikrotik_devices
+
+            for device in discover_mikrotik_devices(timeout=2.0, full_scan=False) or []:
+                ip = (device.get("ip") or device.get("host") or "").strip()
+                if ip and ip not in hosts:
+                    hosts.append(ip)
+        except Exception:
+            pass
+    return hosts
+
+
+def provision_customer_pppoe(
+    customer,
+    *,
+    router=None,
+    candidate_hosts: list[str] | None = None,
+    ensure_stack: bool = True,
+    force_disabled: bool | None = None,
+) -> dict[str, Any]:
+    """
+    Push one customer's PPPoE username/password onto their MikroTik as /ppp/secret.
+
+    Without this step, the CPE dials correctly but MikroTik rejects the login with
+    “invalid username or password” / “confirm your username and password”.
+
+    force_disabled: optional override for /ppp/secret disabled flag.
+    """
+    if customer is None:
+        return {"ok": False, "error": "No customer provided."}
+
+    username = (getattr(customer, "pppoe_username", None) or "").strip()
+    password = getattr(customer, "pppoe_password", None) or ""
+    if not username or not password:
+        return {
+            "ok": False,
+            "error": "Customer is missing a PPPoE username or password.",
+        }
+
+    target = router or getattr(customer, "router", None)
+    if target is None:
+        org = getattr(customer, "organization", None)
+        if org is not None:
+            from core.models import MikroTikRouter
+
+            routers = list(
+                MikroTikRouter.objects.filter(organization=org).order_by("id")
+            )
+            if len(routers) == 1:
+                target = routers[0]
+            elif len(routers) > 1:
+                results = [
+                    provision_customer_pppoe(
+                        customer,
+                        router=item,
+                        candidate_hosts=candidate_hosts,
+                        ensure_stack=ensure_stack,
+                        force_disabled=force_disabled,
+                    )
+                    for item in routers
+                ]
+                ok_results = [item for item in results if item.get("ok")]
+                if ok_results:
+                    return {
+                        "ok": True,
+                        "username": username,
+                        "routers": ok_results,
+                        "message": (
+                            f"PPPoE secret “{username}” pushed to "
+                            f"{len(ok_results)} MikroTik router(s)."
+                        ),
+                    }
+                first_error = next(
+                    (item.get("error") for item in results if item.get("error")),
+                    "Could not reach any organization MikroTik.",
+                )
+                return {"ok": False, "error": first_error, "results": results}
+        return {
+            "ok": False,
+            "error": (
+                "Assign a MikroTik router to this client so the PPPoE username/password "
+                "can be installed on the NAS."
+            ),
+        }
+
+    host = (getattr(target, "host", None) or "").strip()
+    api_user = (getattr(target, "username", None) or "").strip()
+    api_password = getattr(target, "password", None) or ""
+    router_id = getattr(target, "pk", None)
+    router_name = getattr(target, "name", "") or host
+    if not host or not api_user:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "error": "Router host or API username is missing.",
+        }
+
+    lan_interface = getattr(target, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(target, "wan_interface", None) or "ether1"
+    org = getattr(customer, "organization", None)
+    compulsory = bool(getattr(org, "pppoe_compulsory", False)) if org else False
+    if force_disabled is None:
+        disabled = _customer_pppoe_secret_disabled(customer)
+    else:
+        disabled = bool(force_disabled)
+    internet_allowed = _customer_internet_allowed(customer)
+    profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+    comment = f"{PPP_SECRET_TAG} {getattr(customer, 'account_number', '')}".strip()
+    rate_limit = _pppoe_rate_limit_for_customer(customer)
+
+    hosts = _router_api_host_candidates(target, candidate_hosts)
+    last_error = ""
+    working_host = ""
+    action = ""
+    notes: list[str] = []
+    kicked = 0
+
+    for candidate in hosts:
+        probe = check_mikrotik_reachable(candidate, timeout=1.5)
+        via = (probe.get("via") or "").strip()
+        attempt_timeout = 3.0 if via == "ping" else 12.0
+        if not probe.get("online") and candidate != host:
+            continue
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=attempt_timeout) as sock:
+                if ensure_stack:
+                    from django.conf import settings
+
+                    portal_url = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                    _, stack_notes = _ensure_pppoe_stack(
+                        sock,
+                        lan_interface=lan_interface,
+                        wan_interface=wan_interface,
+                        compulsory=compulsory,
+                        portal_url=portal_url,
+                    )
+                    notes.extend(stack_notes)
+                previous_profile = _current_ppp_secret_profile(sock, username)
+                action = _ensure_ppp_secret(
+                    sock,
+                    username=username,
+                    password=password,
+                    profile=profile,
+                    comment=comment,
+                    disabled=disabled,
+                    rate_limit=rate_limit,
+                )
+                # Kick when profile changes so the blocked address-list (or restore)
+                # takes effect immediately — otherwise established TCP keeps surfing.
+                if (previous_profile or "") != profile:
+                    kicked = _disconnect_pppoe_sessions(sock, username)
+                    if kicked:
+                        notes.append(
+                            f"disconnected {kicked} active session(s) to apply "
+                            + (
+                                "internet block"
+                                if profile == PPPOE_BLOCKED_PROFILE_NAME
+                                else "internet restore"
+                            )
+                        )
+            working_host = candidate
+            break
+        except TimeoutError:
+            last_error = f"{candidate}: timed out on API port 8728"
+        except OSError as exc:
+            message = str(exc) or "network error"
+            if "timed out" in message.lower() or getattr(exc, "errno", None) in {10060, 110}:
+                last_error = f"{candidate}: timed out on API port 8728"
+            else:
+                last_error = f"{candidate}: {message}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{candidate}: {exc}"
+
+    if not working_host:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "username": username,
+            "error": (
+                f"{last_error or host}. Could not install the PPPoE login on the MikroTik. "
+                "Connect this PC to the router LAN, open MikroTik → Reconnect, then register again "
+                "or push PPPoE settings."
+            ),
+        }
+
+    if working_host != host and hasattr(target, "host"):
+        try:
+            target.host = working_host
+            target.save(update_fields=["host", "updated_at"])
+            notes.append(f"updated saved IP to {working_host}")
+        except Exception:
+            pass
+
+    # Keep the customer linked to the NAS that received the secret.
+    if getattr(customer, "router_id", None) != router_id and hasattr(customer, "router_id"):
+        try:
+            customer.router = target
+            customer.save(update_fields=["router"])
+        except Exception:
+            pass
+
+    verb = "created" if action == "created" else "updated"
+    surfing_blocked = (not disabled) and profile == PPPOE_BLOCKED_PROFILE_NAME
+    if disabled:
+        access_note = " (dial-in disabled — account inactive)."
+    elif surfing_blocked:
+        access_note = (
+            " (dial-in kept on, surfing blocked at NAS — outside subscription period)."
+        )
+    else:
+        access_note = ". The client router can dial with this username and password."
+    return {
+        "ok": True,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": working_host,
+        "username": username,
+        "action": action,
+        "disabled": disabled,
+        "internet_allowed": internet_allowed and not disabled,
+        "profile": profile,
+        "kicked": kicked,
+        "notes": notes,
+        "message": (
+            f"PPPoE secret “{username}” {verb} on {router_name or working_host}"
+            + access_note
+        ),
+    }
+
+
+def _cpe_lan_bridge_name(sock: socket.socket) -> str:
+    """Pick a LAN bridge on the CPE for the renew hotspot."""
+    for row in _print(sock, "/interface/bridge", props="name,.id"):
+        name = (row.get("name") or "").strip()
+        if name:
+            return name
+    return "bridge"
+
+
+def _cpe_lan_gateway_ip(sock: socket.socket, lan: str) -> str:
+    """Return the IPv4 gateway on the CPE LAN bridge (fallback to renew hotspot IP)."""
+    lan_l = (lan or "").strip().lower()
+    for row in _print(sock, "/ip/address", props="address,interface,.id"):
+        iface = (row.get("interface") or "").strip().lower()
+        if lan_l and iface != lan_l:
+            continue
+        address = (row.get("address") or "").strip()
+        if "/" in address:
+            address = address.split("/", 1)[0].strip()
+        if address and not address.startswith("10.20.0."):
+            return address
+    return RENEW_HOTSPOT_ADDRESS
+
+
+def _ensure_tagged_pool(sock: socket.socket, *, name: str, ranges: str, comment: str) -> None:
+    pool_id = ""
+    for row in _print(sock, "/ip/pool", props=".id,name,comment"):
+        if (row.get("name") or "").strip() == name or comment in (row.get("comment") or ""):
+            pool_id = (row.get(".id") or "").strip()
+            break
+    props = {"name": name, "ranges": ranges, "comment": comment}
+    if pool_id:
+        _set(sock, "/ip/pool", pool_id, **props)
+    else:
+        terminal = _add(sock, "/ip/pool", **props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(_trap_message(terminal, "Could not create renew hotspot pool."))
+
+
+def _ensure_tagged_ip_address(
+    sock: socket.socket,
+    *,
+    address: str,
+    interface: str,
+    comment: str,
+) -> None:
+    item_id = ""
+    for row in _print(sock, "/ip/address", props=".id,address,interface,comment"):
+        if comment in (row.get("comment") or ""):
+            item_id = (row.get(".id") or "").strip()
+            break
+    props = {
+        "address": address,
+        "interface": interface,
+        "comment": comment,
+    }
+    if item_id:
+        _set(sock, "/ip/address", item_id, **props)
+    else:
+        terminal = _add(sock, "/ip/address", **props)
+        if terminal.get("_reply") == "!trap":
+            # Address may already exist on the bridge from the CPE LAN — fine.
+            pass
+
+
+CAPTIVE_PROBE_HOSTS = (
+    "captive.apple.com",
+    "www.apple.com",
+    "connectivitycheck.gstatic.com",
+    "clients3.google.com",
+    "www.msftconnecttest.com",
+    "dns.msftncsi.com",
+    "detectportal.firefox.com",
+    "neverssl.com",
+    "example.com",
+)
+
+
+def _ensure_captive_dns(sock: socket.socket, gateway_ip: str, comment: str) -> int:
+    """Point OS captive-portal probes at the CPE so phones open the renew popup."""
+    hosts = CAPTIVE_PROBE_HOSTS
+    existing = {
+        ((row.get("name") or "").strip().lower(), (row.get("comment") or "")): (row.get(".id") or "").strip()
+        for row in _print(sock, "/ip/dns/static", props=".id,name,address,comment")
+    }
+    added = 0
+    for host in hosts:
+        key = (host.lower(), comment)
+        item_id = existing.get(key) or existing.get((host.lower(), ""))
+        attempts = [
+            {
+                "name": host,
+                "address": gateway_ip,
+                "comment": comment,
+                "ttl": "1m",
+            },
+            {
+                "name": host,
+                "address": gateway_ip,
+                "ttl": "1m",
+            },
+            {
+                "name": host,
+                "address": gateway_ip,
+            },
+        ]
+        terminal, _ = _add_or_set_attempts(sock, "/ip/dns/static", item_id, attempts)
+        if terminal.get("_reply") != "!trap" and not item_id:
+            added += 1
+    # Force CPE to answer DNS for LAN clients.
+    try:
+        _command(
+            sock,
+            [
+                "/ip/dns/set",
+                "=allow-remote-requests=yes",
+            ],
+        )
+    except Exception:
+        pass
+    return added
+
+
+def _clear_captive_dns_hijack(sock: socket.socket, comment: str) -> int:
+    """
+    Stop resolving OS captive-probe hostnames to the Hotspot address.
+
+    Hotspot decides how to answer by destination: a foreign IP gets intercepted
+    and served login.html, but its own address is treated as a local file
+    request, so ``/connecttest.txt`` and ``/generate_204`` 404 and the client
+    reports plain "no internet" without ever offering a sign-in page. Letting
+    the probes resolve normally restores the interception path.
+    """
+    wanted = {host.lower() for host in CAPTIVE_PROBE_HOSTS}
+    removed = 0
+    for row in _print(sock, "/ip/dns/static", props=".id,name,comment"):
+        if comment not in (row.get("comment") or ""):
+            continue
+        if (row.get("name") or "").strip().lower() not in wanted:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/ip/dns/static", item_id).get("_reply") != "!trap":
+            removed += 1
+    # LAN clients still need the router as their resolver for normal lookups.
+    try:
+        _command(sock, ["/ip/dns/set", "=allow-remote-requests=yes"])
+    except Exception:
+        pass
+    return removed
+
+
+def _clear_https_capture_redirect(sock: socket.socket, *, comment: str) -> int:
+    """Drop any tagged ``dstnat`` TCP/443 → 80 rule.
+
+    Such a rule rewrites *every* client's HTTPS to plain HTTP, so it corrupts
+    TLS for devices that already authenticated (they pay and then cannot browse)
+    and for the billing server's own Safaricom Daraja calls. Captive detection
+    does not need it: every major OS probes over HTTP
+    (connectivitycheck.gstatic.com, captive.apple.com, msftconnecttest.com), and
+    the Hotspot intercepts port 80 natively once an HTTP login method is enabled.
+    """
+    removed = 0
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,protocol,dst-port,action,to-ports,comment",
+    ):
+        if comment not in (row.get("comment") or ""):
+            continue
+        if not (
+            (row.get("chain") or "").strip() == "dstnat"
+            and (row.get("protocol") or "").strip() == "tcp"
+            and (row.get("dst-port") or "").strip() == "443"
+            and (row.get("action") or "").strip() == "redirect"
+            and (row.get("to-ports") or "").strip() == "80"
+        ):
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id and _remove(sock, "/ip/firewall/nat", item_id).get(
+            "_reply"
+        ) != "!trap":
+            removed += 1
+    return removed
+
+
+def _ensure_hotspot_owns_http_port(
+    sock: socket.socket, *, hotspot_address: str, comment: str, portal_url: str = ""
+) -> list[str]:
+    """
+    Send gateway TCP/80 to the billing server so captive probes never hit WebFig.
+
+    Bypassed hosts (billing-server Ethernet) skip Hotspot NAT and would otherwise
+    reach RouterOS WebFig on :80. Windows then opens
+    ``http://www.msftconnecttest.com/redirect`` and WebFig returns a blank 404.
+    Hotspot's own proxy ports also ignore bypassed clients, so we dst-nat
+    gateway:80 to the Django portal, which serves the payment redirect.
+    """
+    notes: list[str] = []
+    gateway = (hotspot_address or "").strip()
+    if not gateway:
+        return notes
+
+    portal_ip = _routable_ipv4_from_url(portal_url) or ""
+    try:
+        from urllib.parse import urlparse
+
+        portal_port = str(urlparse((portal_url or "").strip()).port or 8000)
+    except Exception:
+        portal_port = "8000"
+    if not portal_ip:
+        notes.append(
+            "warning: cannot bind captive HTTP to billing server — "
+            "PUBLIC_BASE_URL must be an http://LAN-IP:port URL"
+        )
+        return notes
+
+    # Move RouterOS www (WebFig) off port 80 when it is still there.
+    for row in _print(sock, "/ip/service", props=".id,name,port,disabled"):
+        if (row.get("name") or "").strip() != "www":
+            continue
+        item_id = (row.get(".id") or "").strip()
+        port = (row.get("port") or "").strip()
+        if item_id and port == "80":
+            terminal = _set(sock, "/ip/service", item_id, port="8081")
+            if terminal.get("_reply") != "!trap":
+                notes.append("RouterOS WebFig moved to :8081")
+            else:
+                notes.append("warning: could not move WebFig off port 80")
+        elif port and port != "80":
+            notes.append(f"RouterOS WebFig already on :{port}")
+
+    # Replace any previous "redirect to Hotspot proxy" rule with dst-nat to Django.
+    existing_id = ""
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,protocol,dst-port,dst-address,action,to-addresses,to-ports,comment",
+    ):
+        if comment not in (row.get("comment") or ""):
+            continue
+        if (row.get("chain") or "").strip() != "dstnat":
+            continue
+        if (row.get("protocol") or "").strip() != "tcp":
+            continue
+        if (row.get("dst-port") or "").strip() != "80":
+            continue
+        action = (row.get("action") or "").strip()
+        if action not in {"redirect", "dst-nat"}:
+            continue
+        existing_id = (row.get(".id") or "").strip()
+        break
+
+    attempts = [
+        {
+            "chain": "dstnat",
+            "protocol": "tcp",
+            # Only the bypassed billing PC needs this workaround. Real Hotspot
+            # clients must reach RouterOS's login servlet so $(mac) and
+            # $(link-login-only) are substituted into login.html.
+            "src-address": portal_ip,
+            "dst-address": gateway,
+            "dst-port": "80",
+            "action": "dst-nat",
+            "to-addresses": portal_ip,
+            "to-ports": portal_port,
+            "comment": comment,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/firewall/nat", existing_id, attempts
+    )
+    if terminal.get("_reply") != "!trap":
+        notes.append(f"captive HTTP {gateway}:80 -> {portal_ip}:{portal_port}")
+    else:
+        notes.append(
+            f"warning: could not forward {gateway}:80 to {portal_ip}:{portal_port}"
+        )
+        return notes
+
+    # Hairpin: LAN clients dialing the gateway must receive replies from the
+    # gateway address, not directly from the billing server.
+    hairpin_id = ""
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,action,src-address,dst-address,protocol,dst-port,comment",
+    ):
+        if comment not in (row.get("comment") or ""):
+            continue
+        if (row.get("chain") or "").strip() != "srcnat":
+            continue
+        if (row.get("action") or "").strip() != "masquerade":
+            continue
+        if (row.get("dst-address") or "").strip() != portal_ip:
+            continue
+        hairpin_id = (row.get(".id") or "").strip()
+        break
+
+    # Derive LAN subnet from gateway (…x.1 → …x.0/24).
+    parts = gateway.split(".")
+    lan_cidr = (
+        f"{parts[0]}.{parts[1]}.{parts[2]}.0/24" if len(parts) == 4 else "10.10.0.0/24"
+    )
+    hairpin_attempts = [
+        {
+            "chain": "srcnat",
+            "action": "masquerade",
+            "src-address": lan_cidr,
+            "dst-address": portal_ip,
+            "protocol": "tcp",
+            "dst-port": portal_port,
+            "comment": comment,
+        },
+        {
+            "chain": "srcnat",
+            "action": "masquerade",
+            "src-address": lan_cidr,
+            "dst-address": portal_ip,
+            "comment": comment,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/firewall/nat", hairpin_id, hairpin_attempts
+    )
+    if terminal.get("_reply") != "!trap":
+        notes.append(f"captive hairpin NAT for {portal_ip}:{portal_port}")
+    else:
+        notes.append("warning: could not add captive hairpin NAT")
+
+    # PPPoE-compulsory forward-drop would otherwise block unauthorized LAN
+    # clients from reaching the billing server after dst-nat.
+    filter_id = ""
+    for row in _print(
+        sock,
+        "/ip/firewall/filter",
+        props=".id,chain,action,dst-address,protocol,dst-port,comment",
+    ):
+        if comment not in (row.get("comment") or ""):
+            continue
+        if (row.get("chain") or "").strip() != "forward":
+            continue
+        if (row.get("dst-address") or "").strip() != portal_ip:
+            continue
+        if (row.get("action") or "").strip() != "accept":
+            continue
+        filter_id = (row.get(".id") or "").strip()
+        break
+
+    filter_attempts = [
+        {
+            "chain": "forward",
+            "action": "accept",
+            "dst-address": portal_ip,
+            "protocol": "tcp",
+            "dst-port": portal_port,
+            "comment": comment,
+        },
+        {
+            "chain": "forward",
+            "action": "accept",
+            "dst-address": portal_ip,
+            "comment": comment,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/firewall/filter", filter_id, filter_attempts
+    )
+    if terminal.get("_reply") != "!trap":
+        # Ensure this accept sits above the compulsory drop.
+        if terminal.get("ret") or filter_id:
+            rule_id = (terminal.get("ret") or filter_id or "").strip()
+            if rule_id:
+                _command(
+                    sock,
+                    [
+                        "/ip/firewall/filter/move",
+                        f"=.id={rule_id}",
+                        "=destination=0",
+                    ],
+                )
+        notes.append(f"forward allow to billing server {portal_ip}:{portal_port}")
+    else:
+        notes.append("warning: could not allow forward to billing server")
+    return notes
+
+
+def _remove_tagged_rows(sock: socket.socket, path: str, tag: str) -> int:
+    removed = 0
+    for row in _print(sock, path, props=".id,name,comment,address"):
+        comment = row.get("comment") or ""
+        name = row.get("name") or ""
+        if tag not in comment and name != tag and name != RENEW_HOTSPOT_NAME:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, path, item_id)
+        if terminal.get("_reply") != "!trap":
+            removed += 1
+    return removed
+
+
+def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
+    """Download renew HTML into the CPE hotspot folder (needs WAN at call time)."""
+    notes: list[str] = []
+    if not portal_url:
+        return notes
+    targets = (
+        ("hotspot/login.html", portal_url),
+        ("hotspot/redirect.html", portal_url),
+        ("hotspot/rlogin.html", portal_url),
+        ("hotspot/status.html", portal_url),
+        ("hotspot/alogin.html", portal_url),
+    )
+    for dst, url in targets:
+        fetch_words = [
+            "/tool/fetch",
+            f"=url={url}",
+            "=mode=http",
+            f"=dst-path={dst}",
+            "=keep-result=no",
+        ]
+        _, fetch_terminal = _command(sock, fetch_words)
+        if fetch_terminal.get("_reply") == "!trap":
+            notes.append(f"fetch skipped: {dst}")
+        else:
+            notes.append(f"installed {dst}")
+    return notes
+
+
+def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> list[str]:
+    """
+    Turn on a local Hotspot + DNS/HTTP redirects on the CPE.
+
+    Phones/PCs joining Wi‑Fi are redirected to the renew popup on the device.
+    """
+    notes: list[str] = []
+    lan = _cpe_lan_bridge_name(sock)
+    gateway_ip = _cpe_lan_gateway_ip(sock, lan)
+    hotspot_address = gateway_ip or RENEW_HOTSPOT_ADDRESS
+
+    # Dedicated address so hotspot has a stable captive portal IP even if LAN IP differs.
+    _ensure_tagged_ip_address(
+        sock,
+        address=f"{RENEW_HOTSPOT_ADDRESS}/24",
+        interface=lan,
+        comment=RENEW_HOTSPOT_TAG,
+    )
+    _ensure_tagged_pool(
+        sock,
+        name=RENEW_HOTSPOT_POOL,
+        ranges=RENEW_HOTSPOT_POOL_RANGES,
+        comment=RENEW_HOTSPOT_TAG,
+    )
+    notes.append(f"renew portal on {lan} ({hotspot_address})")
+
+    profile_id = ""
+    for row in _print(sock, "/ip/hotspot/profile", props=".id,name,comment"):
+        if (row.get("name") or "").strip() == RENEW_HOTSPOT_PROFILE or RENEW_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    # http-pap/chap forces unauthenticated clients onto login.html (device captive popup).
+    profile_attempts = [
+        {
+            "name": RENEW_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "http-chap,http-pap,https,cookie",
+            "open-status-page": "http-login",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+        {
+            "name": RENEW_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "http-chap,http-pap,https,cookie",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+        {
+            "name": RENEW_HOTSPOT_PROFILE,
+            "hotspot-address": RENEW_HOTSPOT_ADDRESS,
+            "html-directory": "hotspot",
+            "login-by": "http-chap,http-pap,cookie",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+    ]
+    terminal: dict[str, str] = {"_reply": "!trap"}
+    for profile_props in profile_attempts:
+        if profile_id:
+            terminal = _set(sock, "/ip/hotspot/profile", profile_id, **profile_props)
+        else:
+            terminal = _add(sock, "/ip/hotspot/profile", **profile_props)
+            if terminal.get("_reply") != "!trap":
+                profile_id = (terminal.get("ret") or "").strip() or profile_id
+        if terminal.get("_reply") != "!trap":
+            break
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(terminal, "Could not create renew hotspot profile on the CPE.")
+        )
+    notes.append("renew hotspot profile")
+
+    server_id = ""
+    for row in _print(sock, "/ip/hotspot", props=".id,name,interface,comment,disabled"):
+        if (row.get("name") or "").strip() == RENEW_HOTSPOT_NAME or RENEW_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            server_id = (row.get(".id") or "").strip()
+            break
+
+    # Prefer existing LAN DHCP (no address-pool) so Wi‑Fi clients keep their subnet,
+    # but fall back to the renew pool when the CPE rejects that.
+    server_attempts = [
+        {
+            "name": RENEW_HOTSPOT_NAME,
+            "interface": lan,
+            "profile": RENEW_HOTSPOT_PROFILE,
+            "disabled": "no",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+        {
+            "name": RENEW_HOTSPOT_NAME,
+            "interface": lan,
+            "address-pool": RENEW_HOTSPOT_POOL,
+            "profile": RENEW_HOTSPOT_PROFILE,
+            "disabled": "no",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+    ]
+    terminal = {"_reply": "!trap"}
+    for server_props in server_attempts:
+        if server_id:
+            terminal = _set(sock, "/ip/hotspot", server_id, **server_props)
+        else:
+            terminal = _add(sock, "/ip/hotspot", **server_props)
+            if terminal.get("_reply") != "!trap":
+                server_id = (terminal.get("ret") or "").strip() or server_id
+        if terminal.get("_reply") != "!trap":
+            break
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(terminal, f"Could not enable renew hotspot on CPE interface {lan}.")
+        )
+    notes.append(f"renew hotspot redirect on {lan}")
+
+    dns_added = _ensure_captive_dns(sock, hotspot_address, RENEW_HOTSPOT_TAG)
+    if dns_added:
+        notes.append(f"captive DNS probes -> {hotspot_address}")
+    if _clear_https_capture_redirect(sock, comment=RENEW_HOTSPOT_TAG):
+        notes.append("removed HTTPS-to-HTTP capture rule")
+    notes.append("Hotspot intercepts captive HTTP probes")
+    notes.extend(_ensure_cpe_wan_block(sock))
+    notes.extend(_fetch_hotspot_pages(sock, portal_url))
+
+    try:
+        _command(sock, ["/system/identity/set", "=name=Renew subscription"])
+        notes.append("CPE identity set for renew popup")
+    except Exception:
+        pass
+
+    return notes
+
+
+def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
+    """
+    Block client devices from surfing through the CPE while keeping the CPE online.
+
+    Phones still reach the local Hotspot (input) and get the renew popup.
+    """
+    notes: list[str] = []
+    _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-block")
+    # Drop all forwarded traffic (LAN → internet). Local CPE services stay reachable.
+    terminal = _add(
+        sock,
+        "/ip/firewall/filter",
+        **{
+            "chain": "forward",
+            "action": "drop",
+            "comment": f"{RENEW_HOTSPOT_TAG}-block",
+        },
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append("WAN block filter skipped")
+    else:
+        notes.append("client internet blocked on CPE (renew popup only)")
+    return notes
+
+
+def _disable_cpe_renew_hotspot(sock: socket.socket) -> list[str]:
+    """Remove the renew Hotspot / DNS / redirects so normal CPE LAN/Wi‑Fi resumes."""
+    notes: list[str] = []
+    removed = 0
+    removed += _remove_tagged_rows(sock, "/ip/hotspot", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/hotspot/profile", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/pool", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/address", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/dns/static", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/firewall/nat", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-block")
+    removed += _remove_tagged_rows(sock, "/ip/firewall/filter", RENEW_HOTSPOT_TAG)
+    if removed:
+        notes.append("renew hotspot / redirects removed from CPE")
+    try:
+        _command(sock, ["/system/identity/set", "=name=ISPCENTRIC CPE"])
+    except Exception:
+        pass
+    return notes
+
+
+def apply_cpe_renew_portal(
+    customer,
+    *,
+    enabled: bool,
+    portal_url: str = "",
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """
+    Enable or disable the Wi‑Fi captive renew popup on the subscriber CPE.
+
+    Requires an active PPPoE session and working CPE API credentials.
+    """
+    nas = getattr(customer, "router", None)
+    pppoe_username = (getattr(customer, "pppoe_username", None) or "").strip()
+    if not nas or not pppoe_username:
+        return {
+            "ok": False,
+            "skipped": True,
+            "error": "No MikroTik NAS or PPPoE username — renew portal not applied.",
+        }
+
+    session = resolve_customer_cpe_session(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        pppoe_username=pppoe_username,
+        timeout=timeout,
+    )
+    if not session.get("session_active"):
+        return {
+            "ok": False,
+            "skipped": True,
+            "session_active": False,
+            "error": session.get("hint")
+            or "CPE is offline — renew Wi‑Fi popup will apply next time they are online before cut-off.",
+        }
+
+    cpe_host = (session.get("address") or "").strip()
+    last_error = ""
+    for user, password in _cpe_credential_candidates(
+        cpe_username=getattr(customer, "cpe_username", "") or "admin",
+        cpe_password=getattr(customer, "cpe_password", "") or "",
+        pppoe_password=getattr(customer, "pppoe_password", "") or "",
+    ):
+        try:
+            with _cpe_api_session(
+                nas.host,
+                nas.username,
+                nas.password or "",
+                cpe_host,
+                user,
+                password,
+                timeout=timeout,
+                proxy_scope=pppoe_username,
+            ) as sock:
+                notes = (
+                    _enable_cpe_renew_hotspot(sock, portal_url=portal_url)
+                    if enabled
+                    else _disable_cpe_renew_hotspot(sock)
+                )
+            return {
+                "ok": True,
+                "enabled": enabled,
+                "cpe_host": cpe_host,
+                "notes": notes,
+                "message": (
+                    "Renew popup enabled on client Wi‑Fi."
+                    if enabled
+                    else "Renew popup removed from client Wi‑Fi."
+                ),
+            }
+        except ConnectionError as exc:
+            last_error = str(exc) or "CPE login failed."
+            continue
+        except (TimeoutError, OSError) as exc:
+            last_error = str(exc) or f"Could not reach CPE at {cpe_host}."
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc) or "Could not configure renew portal on CPE."
+            continue
+
+    return {
+        "ok": False,
+        "skipped": False,
+        "error": last_error
+        or "Could not configure the renew Wi‑Fi popup on the client CPE.",
+    }
+
+
+def find_hotspot_router_for_mac(organization, mac_address: str):
+    """
+    Return the organization's active MikroTik currently seeing this client MAC.
+
+    An organization can have multiple saved routers. Picking the first row is
+    unsafe: a stale/unreachable NAS can receive the customer assignment while
+    the payment came through a different Hotspot. The paying device must be
+    provisioned on the router whose host/active table contains its MAC.
+    """
+    from core.models import MikroTikRouter
+
+    compact = "".join(ch for ch in (mac_address or "") if ch.isalnum()).upper()
+    if len(compact) != 12:
+        return None
+
+    routers = MikroTikRouter.objects.filter(
+        organization=organization,
+        account_status=MikroTikRouter.AccountStatus.ACTIVE,
+    ).order_by("id")
+    for router in routers:
+        host = (router.host or "").strip()
+        username = (router.username or "").strip()
+        if not host or not username:
+            continue
+        try:
+            with _api_session(host, username, router.password or "", timeout=5.0) as sock:
+                for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
+                    for row in _print(sock, path, props="mac-address"):
+                        row_mac = "".join(
+                            ch for ch in (row.get("mac-address") or "") if ch.isalnum()
+                        ).upper()
+                        if row_mac == compact:
+                            return router
+        except Exception:
+            continue
+    return None
+
+
+def is_pppoe_pool_ip(ip: str) -> bool:
+    """True when the address sits in the ISPCentric PPPoE client pool."""
+    try:
+        return ipaddress.ip_address((ip or "").strip()) in ipaddress.ip_network(
+            PPPOE_POOL_NETWORK
+        )
+    except ValueError:
+        return False
+
+
+def find_pppoe_customer_for_ip(organization, session_ip: str):
+    """
+    Resolve a PPPoE Customer from the session IP seen by Django.
+
+    Expired PPPoE clients are dst-nat'd to the billing server, so REMOTE_ADDR
+    is the PPP remote address. Match it against /ppp/active on the org's NAS
+    to recover the dial-in username, then the Customer row.
+    """
+    from billing.models import Customer
+    from core.models import MikroTikRouter
+
+    session_ip = (session_ip or "").strip()
+    if not session_ip or not is_pppoe_pool_ip(session_ip):
+        return None
+
+    routers = MikroTikRouter.objects.filter(
+        organization=organization,
+        account_status=MikroTikRouter.AccountStatus.ACTIVE,
+    ).order_by("id")
+    for router in routers:
+        host = (router.host or "").strip()
+        username = (router.username or "").strip()
+        if not host or not username:
+            continue
+        try:
+            with _api_session(host, username, router.password or "", timeout=5.0) as sock:
+                for row in _print(sock, "/ppp/active", props="name,address"):
+                    if (row.get("address") or "").strip() != session_ip:
+                        continue
+                    ppp_user = (row.get("name") or "").strip()
+                    if not ppp_user:
+                        continue
+                    customer = (
+                        Customer.objects.filter(
+                            organization=organization,
+                            service_type=Customer.ServiceType.PPPOE,
+                            pppoe_username__iexact=ppp_user,
+                        )
+                        .select_related("plan", "organization", "router")
+                        .order_by("id")
+                        .first()
+                    )
+                    if customer is not None:
+                        if customer.router_id != router.pk:
+                            customer.router = router
+                            customer.save(update_fields=["router"])
+                        return customer
+        except Exception:
+            continue
+    return None
+
+
+def sync_customer_subscription_access(
+    customer,
+    *,
+    portal_url: str = "",
+    provision: bool = True,
+    reauthenticate: bool = True,
+) -> dict[str, Any]:
+    """
+    Enforce package period on the NAS through PPPoE policy only.
+
+    Outside the subscription period (account still active):
+      Move /ppp/secret to the blocked profile + kick the session so surfing
+      stops at the ISP MikroTik
+    Account inactive / suspended:
+      Disable the PPPoE secret entirely
+    Inside the period:
+      Restore the normal PPPoE profile
+    """
+    from billing.models import Customer
+    from billing.services import customer_receives_internet
+
+    allowed = customer_receives_internet(customer)
+    status_active = getattr(customer, "status", "") == "active"
+    portal_result: dict[str, Any] = {"ok": False, "skipped": True}
+    provision_result: dict[str, Any] = {"ok": False, "skipped": not provision}
+
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        router = getattr(customer, "router", None)
+        detected_router = find_hotspot_router_for_mac(
+            customer.organization,
+            getattr(customer, "hotspot_mac", "") or "",
+        )
+        if detected_router is not None:
+            router = detected_router
+            if customer.router_id != detected_router.pk:
+                customer.router = detected_router
+                customer.save(update_fields=["router"])
+        if router is None:
+            from core.models import MikroTikRouter
+
+            router = (
+                MikroTikRouter.objects.filter(
+                    organization_id=customer.organization_id,
+                    account_status=MikroTikRouter.AccountStatus.ACTIVE,
+                )
+                .order_by("id")
+                .first()
+            )
+        if not provision or router is None:
+            return {
+                "ok": not provision,
+                "allowed": allowed,
+                "portal": portal_result,
+                "provision": provision_result,
+                "message": "No active MikroTik is available for Hotspot authorization.",
+            }
+        provision_result = apply_hotspot_on_router(
+            router,
+            enabled=True,
+            organization=customer.organization,
+            reauthenticate=reauthenticate,
+        )
+        return {
+            "ok": bool(provision_result.get("ok")),
+            "allowed": allowed,
+            "portal": portal_result,
+            "provision": provision_result,
+            "message": (
+                "Paid device authorized automatically."
+                if allowed and provision_result.get("ok")
+                else "Hotspot access is blocked or could not be synchronized."
+            ),
+        }
+
+    if not allowed:
+        if provision:
+            if status_active:
+                # Keep the secret enabled, but move it to the blocked PPP profile
+                # so only registered in-period clients can surf.
+                provision_result = provision_customer_pppoe(
+                    customer,
+                    ensure_stack=True,
+                    force_disabled=False,
+                )
+            else:
+                provision_result = provision_customer_pppoe(
+                    customer,
+                    ensure_stack=True,
+                    force_disabled=True,
+                )
+    else:
+        if provision:
+            provision_result = provision_customer_pppoe(
+                customer,
+                ensure_stack=True,
+                force_disabled=False,
+            )
+
+    nas_blocked = bool(
+        not allowed
+        and status_active
+        and provision_result.get("ok")
+        and provision_result.get("profile") == PPPOE_BLOCKED_PROFILE_NAME
+    )
+    return {
+        "ok": bool(provision_result.get("ok") or not provision or portal_result.get("ok")),
+        "allowed": allowed,
+        "portal": portal_result,
+        "provision": provision_result,
+        "message": (
+            "Internet allowed for subscription period."
+            if allowed
+            else (
+                "Surfing blocked on the ISP MikroTik"
+                + (" outside subscription period." if nas_blocked else ".")
+            )
+        ),
+    }
+
+
+def apply_pppoe_enforcement_on_router(
+    router,
+    *,
+    compulsory: bool,
+    candidate_hosts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Push PPPoE pool/server + compulsory firewall policy to one MikroTik."""
+    if router is None:
+        return {"ok": False, "error": "No router provided."}
+
+    host = (getattr(router, "host", None) or "").strip()
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or host
+    if not host or not username:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "error": "Router host or username is missing.",
+        }
+
+    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(router, "wan_interface", None) or "ether1"
+
+    hosts: list[str] = []
+    for candidate in [host, "192.168.88.1", *(candidate_hosts or [])]:
+        value = (candidate or "").strip()
+        if value and value not in hosts:
+            hosts.append(value)
+
+    # Discover nearby MikroTiks when the saved IP is offline.
+    if not candidate_hosts:
+        try:
+            from core.mikrotik_discovery import discover_mikrotik_devices
+
+            for device in discover_mikrotik_devices(timeout=2.0, full_scan=False) or []:
+                ip = (device.get("ip") or device.get("host") or "").strip()
+                if ip and ip not in hosts:
+                    hosts.append(ip)
+        except Exception:
+            pass
+
+    last_error = ""
+    working_host = ""
+    notes: list[str] = []
+
+    secrets_synced = 0
+    for candidate in hosts:
+        probe = check_mikrotik_reachable(candidate, timeout=1.5)
+        via = (probe.get("via") or "").strip()
+        # Fail fast on hosts that only answer ping — API is usually firewalled.
+        attempt_timeout = 3.0 if via == "ping" else 12.0
+        if not probe.get("online") and candidate != host:
+            # Still try saved host even when probe fails; skip weak discovered misses.
+            continue
+        try:
+            with _api_session(
+                candidate, username, password, timeout=attempt_timeout
+            ) as sock:
+                from django.conf import settings
+
+                portal_url = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                _, notes = _ensure_pppoe_stack(
+                    sock,
+                    lan_interface=lan_interface,
+                    wan_interface=wan_interface,
+                    compulsory=bool(compulsory),
+                    portal_url=portal_url,
+                )
+                secrets_synced = _sync_organization_pppoe_secrets_on_socket(sock, router)
+                if secrets_synced:
+                    notes.append(f"synced {secrets_synced} PPPoE secret(s)")
+            working_host = candidate
+            break
+        except TimeoutError:
+            last_error = f"{candidate}: timed out on API port 8728"
+        except OSError as exc:
+            message = str(exc) or "network error"
+            if "timed out" in message.lower() or getattr(exc, "errno", None) in {10060, 110}:
+                last_error = f"{candidate}: timed out on API port 8728"
+            else:
+                last_error = f"{candidate}: {message}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{candidate}: {exc}"
+
+    if not working_host:
+        unreachable = last_error or f"{host}: timed out"
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "timeout": True,
+            "error": (
+                f"{unreachable}. This PC cannot reach the MikroTik API right now. "
+                "Plug into ether2–ether5 (LAN), open the router detail page, click Reconnect, "
+                "then push PPPoE enforcement again."
+            ),
+        }
+
+    host_changed = bool(working_host and working_host != host)
+    if host_changed and hasattr(router, "host"):
+        try:
+            router.host = working_host
+            router.save(update_fields=["host", "updated_at"])
+            notes.append(f"updated saved IP to {working_host}")
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": working_host,
+        "host_changed": host_changed,
+        "compulsory": bool(compulsory),
+        "secrets_synced": secrets_synced,
+        "notes": notes,
+        "message": (
+            "Free LAN browsing blocked; dialed PPPoE clients and authenticated Hotspot clients can reach the internet."
+            if compulsory
+            else "LAN browsing allowed again alongside PPPoE clients."
+        ),
+    }
+
+
+def apply_pppoe_enforcement_for_organization(organization, *, compulsory: bool | None = None) -> dict[str, Any]:
+    """Apply PPPoE enforcement firewall policy on every router for an organization."""
+    if organization is None:
+        return {"ok": False, "applied": 0, "failed": 0, "results": [], "error": "No organization."}
+
+    if compulsory is None:
+        compulsory = bool(getattr(organization, "pppoe_compulsory", False))
+
+    from core.models import MikroTikRouter
+
+    routers = list(
+        MikroTikRouter.objects.filter(organization=organization).only(
+            "id",
+            "name",
+            "host",
+            "username",
+            "password",
+            "lan_bridge",
+            "wan_interface",
+            "account_status",
+        )
+    )
+    if not routers:
+        return {
+            "ok": True,
+            "compulsory": bool(compulsory),
+            "applied": 0,
+            "failed": 0,
+            "router_count": 0,
+            "results": [],
+        }
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[dict[str, Any]] = []
+    workers = min(6, len(routers))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(apply_pppoe_enforcement_on_router, router, compulsory=bool(compulsory))
+            for router in routers
+        ]
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    applied = sum(1 for item in results if item.get("ok"))
+    failed = len(results) - applied
+    return {
+        "ok": failed == 0,
+        "compulsory": bool(compulsory),
+        "applied": applied,
+        "failed": failed,
+        "router_count": len(routers),
+        "results": results,
+    }
+
+
+def _ros_duration_minutes(minutes: int) -> str:
+    minutes = max(0, int(minutes or 0))
+    if minutes <= 0:
+        return "0s"
+    if minutes % 60 == 0 and minutes >= 60:
+        hours = minutes // 60
+        if hours % 24 == 0:
+            return f"{hours // 24}d"
+        return f"{hours}h"
+    return f"{minutes}m"
+
+
+def _ros_duration_hours(hours: int) -> str:
+    hours = max(0, int(hours or 0))
+    if hours <= 0:
+        return "0s"
+    if hours % 24 == 0:
+        return f"{hours // 24}d"
+    return f"{hours}h"
+
+
+def _hotspot_rate_limit_from_org(organization) -> str:
+    upload = int(getattr(organization, "hotspot_default_upload_mbps", 0) or 0)
+    download = int(getattr(organization, "hotspot_default_download_mbps", 0) or 0)
+    if upload < 1 and download < 1:
+        return "5M/10M"
+    if upload < 1:
+        upload = download
+    if download < 1:
+        download = upload
+    return f"{upload}M/{download}M"
+
+
+def _hotspot_customers_for_router(router):
+    from billing.models import Customer
+
+    org_id = getattr(router, "organization_id", None)
+    if not org_id:
+        return []
+    qs = (
+        Customer.objects.filter(
+            organization_id=org_id,
+            service_type=Customer.ServiceType.HOTSPOT,
+        )
+        .select_related("plan")
+        .order_by("id")
+    )
+    return [
+        customer
+        for customer in qs
+        if customer.router_id in (None, getattr(router, "pk", None))
+    ]
+
+
+def _lan_ipv4_for_interface(sock: socket.socket, lan: str) -> str:
+    lan_l = (lan or "").strip().lower()
+    for row in _print(sock, "/ip/address", props="address,interface"):
+        iface = (row.get("interface") or "").strip().lower()
+        if lan_l and iface != lan_l:
+            continue
+        address = (row.get("address") or "").strip()
+        if "/" in address:
+            address = address.split("/", 1)[0].strip()
+        if address and not address.startswith("10.20.0."):
+            return address
+    return ISP_HOTSPOT_ADDRESS
+
+
+def _remove_isp_hotspot_tagged(sock: socket.socket, path: str) -> int:
+    """Remove only ISPCENTRIC Hotspot rows (never the CPE renew Hotspot)."""
+    removed = 0
+    for row in _print(sock, path, props=".id,name,comment"):
+        comment = row.get("comment") or ""
+        name = (row.get("name") or "").strip()
+        if ISP_HOTSPOT_TAG not in comment and name not in {
+            ISP_HOTSPOT_NAME,
+            ISP_HOTSPOT_PROFILE,
+            ISP_HOTSPOT_USER_PROFILE,
+            ISP_HOTSPOT_POOL,
+        }:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, path, item_id)
+        if terminal.get("_reply") != "!trap":
+            removed += 1
+    return removed
+
+
+def _ensure_hotspot_walled_garden(sock: socket.socket, redirect_url: str) -> list[str]:
+    """Allow the payment/welcome host before Hotspot auth (DNS + HTTP/IP)."""
+    notes: list[str] = []
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+
+        parsed = urlparse((redirect_url or "").strip())
+        host = (parsed.hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    if not host or host in {"localhost", "127.0.0.1", "::1"}:
+        return notes
+
+    existing = {
+        ((row.get("dst-host") or "").strip().lower(), (row.get("comment") or "")): (
+            row.get(".id") or ""
+        ).strip()
+        for row in _print(sock, "/ip/hotspot/walled-garden", props=".id,dst-host,action,comment")
+    }
+    for dst_host in {host, f"*.{host}"}:
+        key = (dst_host.lower(), ISP_HOTSPOT_TAG)
+        item_id = existing.get(key) or existing.get((dst_host.lower(), ""))
+        attempts = [
+            {
+                "dst-host": dst_host,
+                "action": "allow",
+                "comment": ISP_HOTSPOT_TAG,
+            },
+            {
+                "dst-host": dst_host,
+                "action": "allow",
+            },
+        ]
+        terminal, _ = _add_or_set_attempts(
+            sock,
+            "/ip/hotspot/walled-garden",
+            item_id,
+            attempts,
+            required=("dst-host",),
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"walled garden {dst_host}")
+
+    # IP URLs need walled-garden/ip (Host-header matching alone is unreliable).
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(host)
+        is_ip = True
+    except Exception:
+        is_ip = False
+    if is_ip:
+        existing_ip = {
+            ((row.get("dst-address") or "").strip(), (row.get("comment") or "")): (
+                row.get(".id") or ""
+            ).strip()
+            for row in _print(
+                sock,
+                "/ip/hotspot/walled-garden/ip",
+                props=".id,dst-address,action,comment",
+            )
+        }
+        item_id = existing_ip.get((host, ISP_HOTSPOT_TAG)) or existing_ip.get((host, ""))
+        attempts = [
+            {
+                "dst-address": host,
+                "action": "accept",
+                "comment": ISP_HOTSPOT_TAG,
+            },
+            {
+                "dst-address": f"{host}/32",
+                "action": "accept",
+                "comment": ISP_HOTSPOT_TAG,
+            },
+            {
+                "dst-address": host,
+                "action": "accept",
+            },
+        ]
+        terminal, _ = _add_or_set_attempts(
+            sock,
+            "/ip/hotspot/walled-garden/ip",
+            item_id,
+            attempts,
+            required=("dst-address",),
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"walled garden ip {host}")
+    return notes
+
+
+def _routable_ipv4_from_url(url: str) -> str:
+    """Return the IPv4 literal a portal URL points at, or "" for names/loopback."""
+    try:
+        host = (urlparse((url or "").strip()).hostname or "").strip()
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return ""
+    if address.version != 4 or address.is_loopback or address.is_unspecified:
+        return ""
+    return str(address)
+
+
+def _arp_mac_for_ip(sock: socket.socket, ip: str) -> str:
+    for row in _print(sock, "/ip/arp", props="address,mac-address"):
+        if (row.get("address") or "").strip() != ip:
+            continue
+        mac = (row.get("mac-address") or "").strip().upper()
+        if mac:
+            return mac
+    return ""
+
+
+def _ensure_static_dhcp_lease(sock: socket.socket, ip: str, mac: str) -> list[str]:
+    """Pin the server to its current address so the Hotspot bypass keeps matching."""
+    notes: list[str] = []
+    item_id = ""
+    dynamic = False
+    for row in _print(
+        sock, "/ip/dhcp-server/lease", props=".id,address,mac-address,dynamic"
+    ):
+        same_ip = (row.get("address") or "").strip() == ip
+        same_mac = (row.get("mac-address") or "").strip().upper() == mac
+        if not (same_ip or same_mac):
+            continue
+        item_id = (row.get(".id") or "").strip()
+        dynamic = (row.get("dynamic") or "").strip().lower() == "true"
+        break
+
+    # A dynamic lease rejects most /set props until RouterOS converts it.
+    if item_id and dynamic:
+        _, terminal = _command(
+            sock, ["/ip/dhcp-server/lease/make-static", f"=.id={item_id}"]
+        )
+        if terminal.get("_reply") == "!trap":
+            notes.append(f"warning: could not reserve {ip} on DHCP")
+            return notes
+
+    attempts = [
+        {
+            "address": ip,
+            "mac-address": mac,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "address": ip,
+            "mac-address": mac,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/dhcp-server/lease", item_id, attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(f"warning: could not reserve {ip} on DHCP")
+    else:
+        notes.append(f"DHCP reservation {ip} -> {mac}")
+    return notes
+
+
+def _ensure_hotspot_server_allowlist(sock: socket.socket, ip: str) -> list[str]:
+    """Permit the bypassed billing server through PPPoE compulsory filtering."""
+    item_id = ""
+    for row in _print(
+        sock,
+        "/ip/firewall/address-list",
+        props=".id,list,address,comment",
+    ):
+        if (
+            (row.get("list") or "").strip() == ISP_HOTSPOT_OK_LIST
+            and (row.get("address") or "").strip() == ip
+        ):
+            item_id = (row.get(".id") or "").strip()
+            break
+
+    attempts = [
+        {
+            "list": ISP_HOTSPOT_OK_LIST,
+            "address": ip,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "list": ISP_HOTSPOT_OK_LIST,
+            "address": ip,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/firewall/address-list", item_id, attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        return [f"warning: could not allow billing server {ip} through firewall"]
+    return [f"firewall allowlist for billing server {ip}"]
+
+
+def _ensure_daraja_walled_garden(sock: socket.socket) -> list[str]:
+    """Allow Safaricom Daraja hosts before Hotspot auth (no full server bypass)."""
+    notes: list[str] = []
+    hosts = (
+        "api.safaricom.co.ke",
+        "*.safaricom.co.ke",
+        "sandbox.safaricom.co.ke",
+    )
+    existing = {
+        ((row.get("dst-host") or "").strip().lower(), (row.get("comment") or "")): (
+            row.get(".id") or ""
+        ).strip()
+        for row in _print(
+            sock, "/ip/hotspot/walled-garden", props=".id,dst-host,action,comment"
+        )
+    }
+    for dst_host in hosts:
+        key = (dst_host.lower(), ISP_HOTSPOT_TAG)
+        item_id = existing.get(key) or existing.get((dst_host.lower(), ""))
+        attempts = [
+            {
+                "dst-host": dst_host,
+                "action": "allow",
+                "comment": ISP_HOTSPOT_TAG,
+            },
+            {
+                "dst-host": dst_host,
+                "action": "allow",
+            },
+        ]
+        terminal, _ = _add_or_set_attempts(
+            sock,
+            "/ip/hotspot/walled-garden",
+            item_id,
+            attempts,
+            required=("dst-host",),
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"walled garden {dst_host}")
+    return notes
+
+
+def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[str]:
+    """
+    Exempt the ISPCentric server itself from Hotspot authentication.
+
+    The server normally sits on the same LAN as the captive clients, so without an
+    ip-binding the Hotspot intercepts its own outbound traffic too. Safaricom
+    Daraja calls then die mid-TLS handshake (UNEXPECTED_EOF_WHILE_READING) and
+    every M-Pesa payment fails.
+
+    Also allow Safaricom hosts in the walled garden so STK remains reachable if
+    the bypass binding is missing temporarily.
+    """
+    notes: list[str] = []
+    server_ip = _routable_ipv4_from_url(portal_url)
+    if not server_ip:
+        return notes
+
+    mac = _arp_mac_for_ip(sock, server_ip)
+    item_id = ""
+    for row in _print(
+        sock, "/ip/hotspot/ip-binding", props=".id,address,mac-address,type,comment"
+    ):
+        if (row.get("address") or "").strip() == server_ip or (
+            mac and (row.get("mac-address") or "").strip().upper() == mac
+        ):
+            item_id = (row.get(".id") or "").strip()
+            break
+
+    attempts: list[dict[str, str]] = []
+    if mac:
+        attempts.append(
+            {
+                "address": server_ip,
+                "mac-address": mac,
+                "type": "bypassed",
+                "comment": ISP_HOTSPOT_TAG,
+            }
+        )
+    attempts.extend(
+        [
+            {
+                "address": server_ip,
+                "type": "bypassed",
+                "comment": ISP_HOTSPOT_TAG,
+            },
+            {
+                "address": server_ip,
+                "type": "bypassed",
+            },
+        ]
+    )
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/hotspot/ip-binding", item_id, attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(
+            f"warning: could not bypass Hotspot for the billing server {server_ip} — "
+            "M-Pesa STK Push may fail with TLS errors"
+        )
+    else:
+        notes.append(f"Hotspot bypass for billing server {server_ip}")
+
+    notes.extend(_ensure_daraja_walled_garden(sock))
+    notes.extend(_ensure_hotspot_server_allowlist(sock, server_ip))
+
+    if mac:
+        notes.extend(_ensure_static_dhcp_lease(sock, server_ip, mac))
+    else:
+        notes.append(
+            f"warning: {server_ip} is not in the router ARP table — "
+            "give the billing server a static IP so the Hotspot bypass keeps matching"
+        )
+    return notes
+
+
+def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[str]:
+    notes: list[str] = []
+    rate_limit = _hotspot_rate_limit_from_org(organization)
+    idle = _ros_duration_minutes(int(getattr(organization, "hotspot_idle_timeout_minutes", 15) or 0))
+    session = _ros_duration_hours(int(getattr(organization, "hotspot_voucher_validity_hours", 24) or 24))
+
+    profile_id = ""
+    for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name,comment"):
+        if (row.get("name") or "").strip() == ISP_HOTSPOT_USER_PROFILE or ISP_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    # session-timeout here is only the outer ceiling shared by every device.
+    # What a customer actually bought is enforced per user via limit-uptime, so
+    # this value must never be mistaken for the package length.
+    #
+    # add-mac-cookie is off: a stored cookie lets a device log back in without
+    # its Hotspot user being re-checked, which would keep an expired package
+    # online.
+    attempts = [
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "session-timeout": session,
+            "idle-timeout": idle,
+            "keepalive-timeout": "2m",
+            "status-autorefresh": "1m",
+            "shared-users": "1",
+            "add-mac-cookie": "no",
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "session-timeout": session,
+            "idle-timeout": idle,
+            "add-mac-cookie": "no",
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "rate-limit": rate_limit,
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+            "rate-limit": rate_limit,
+        },
+        {
+            "name": ISP_HOTSPOT_USER_PROFILE,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/hotspot/user/profile", profile_id, attempts
+    )
+    if terminal.get("_reply") != "!trap":
+        notes.append(f"Hotspot user profile ({rate_limit})")
+        return notes
+    raise ConnectionError(
+        _trap_message(terminal, "Could not create Hotspot user profile on the MikroTik.")
+    )
+
+
+def _ensure_hotspot_user(
+    sock: socket.socket,
+    *,
+    username: str,
+    password: str,
+    comment: str,
+    disabled: bool = False,
+    limit_uptime: str = "",
+) -> str:
+    username = (username or "").strip()
+    password = password or ""
+    if not username:
+        raise ConnectionError("Hotspot device identity is empty.")
+
+    user_id = ""
+    for row in _print(sock, "/ip/hotspot/user", props=".id,name,comment,disabled"):
+        if (row.get("name") or "").strip().lower() == username.lower():
+            user_id = (row.get(".id") or "").strip()
+            break
+
+    disabled_value = "yes" if disabled else "no"
+    tag = comment or ISP_HOTSPOT_TAG
+    # limit-uptime is the router-side hard cap on what this MAC bought. It is
+    # cumulative across sessions, so reconnecting cannot extend the package, and
+    # it survives the billing server going offline. RouterOS reads "0s" as
+    # "no cap", which is only ever passed for a user that is also disabled.
+    uptime_cap = (limit_uptime or "").strip() or "0s"
+    attempts = [
+        {
+            "name": username,
+            "password": password,
+            "profile": ISP_HOTSPOT_USER_PROFILE,
+            "limit-uptime": uptime_cap,
+            "disabled": disabled_value,
+            "comment": tag,
+        },
+        {
+            "name": username,
+            "password": password,
+            "profile": ISP_HOTSPOT_USER_PROFILE,
+            "limit-uptime": uptime_cap,
+            "disabled": disabled_value,
+        },
+        {
+            "name": username,
+            "password": password,
+            "disabled": disabled_value,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(sock, "/ip/hotspot/user", user_id, attempts)
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                f"Could not {'update' if user_id else 'create'} Hotspot user “{username}”.",
+            )
+        )
+    return "updated" if user_id else "created"
+
+
+def _sync_organization_hotspot_users_on_socket(
+    sock: socket.socket,
+    router,
+    *,
+    reauthenticate: bool = True,
+) -> int:
+    # Remove credential-era users; passwordless users are identified only by MAC.
+    for row in _print(sock, "/ip/hotspot/user", props=".id,name,comment"):
+        comment = row.get("comment") or ""
+        if ISP_HOTSPOT_TAG not in comment:
+            continue
+        name = (row.get("name") or "").strip()
+        compact = name.replace(":", "").replace("-", "")
+        is_mac = len(compact) == 12 and all(ch in "0123456789abcdefABCDEF" for ch in compact)
+        if not is_mac:
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _remove(sock, "/ip/hotspot/user", item_id)
+
+    from django.utils import timezone
+
+    from billing.services import customer_receives_internet
+
+    now = timezone.now()
+    synced = 0
+    for customer in _hotspot_customers_for_router(router):
+        mac = (getattr(customer, "hotspot_mac", None) or "").strip().upper()
+        if not mac:
+            continue
+        # The same rule the rest of the billing system uses, so a device that
+        # only reached the pay page — or whose package has lapsed — never gets
+        # an enabled MAC user.
+        disabled = not customer_receives_internet(
+            customer, getattr(router, "organization", None)
+        )
+        limit_uptime = ""
+        end = getattr(customer, "package_end", None)
+        if not disabled and end is not None:
+            remaining = int((end - now).total_seconds())
+            limit_uptime = f"{max(remaining, 1)}s"
+        comment = f"{ISP_HOTSPOT_TAG} {customer.account_number}".strip()
+        _ensure_hotspot_user(
+            sock,
+            username=mac,
+            password="",
+            comment=comment,
+            disabled=disabled,
+            limit_uptime=limit_uptime,
+        )
+        # RouterOS does not reconsider MAC authentication for a host that was
+        # already sitting in the unauthenticated table when its user was
+        # created. Expire only that stale host so the very next packet performs
+        # MAC login. Conversely, kick active/host rows when access is disabled.
+        for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
+            for row in _print(
+                sock,
+                path,
+                props=".id,mac-address,authorized",
+            ):
+                if (row.get("mac-address") or "").strip().upper() != mac:
+                    continue
+                authorized = (row.get("authorized") or "").strip().lower() == "true"
+                should_remove = disabled or reauthenticate and (
+                    path == "/ip/hotspot/host" and not authorized
+                )
+                item_id = (row.get(".id") or "").strip()
+                if should_remove and item_id:
+                    _remove(sock, path, item_id)
+        synced += 1
+    return synced
+
+
+def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> bool:
+    """Write HTML into the router Hotspot folder via API (no HTTP fetch required)."""
+    dst_path = (dst_path or "").strip()
+    html = html or ""
+    if not dst_path or not html:
+        return False
+    file_id = ""
+    for row in _print(sock, "/file", props=".id,name"):
+        if (row.get("name") or "").strip() == dst_path:
+            file_id = (row.get(".id") or "").strip()
+            break
+    if file_id:
+        terminal = _set(sock, "/file", file_id, contents=html)
+        return terminal.get("_reply") != "!trap"
+    terminal = _add(sock, "/file", name=dst_path, contents=html)
+    return terminal.get("_reply") != "!trap"
+
+
+def _captive_pay_redirect_html(pay_url: str) -> str:
+    """Hotspot login page that HTTP-redirects every OS to the payment page."""
+    pay_url = (pay_url or "").strip().rstrip("/")
+    if not pay_url:
+        return ""
+    base = pay_url.rstrip("/")
+    # Pass MikroTik session vars so the payment page can post login back to the router.
+    target = (
+        f"{base}/"
+        f"?dst=$(link-orig-esc)"
+        f"&mac=$(mac-esc)"
+        f"&username=$(username-esc)"
+        f"&link-login-only=$(link-login-only-esc)"
+        f"&error=$(error-esc)"
+    )
+    # RouterOS interprets these special template directives as response metadata.
+    # A real 302 is required for non-browser captive clients such as Windows NCSI;
+    # they do not execute the JavaScript/meta-refresh in a 200 HTML response.
+    # Keep the HTML as a fallback for captive browsers with unusual redirect handling.
+    return (
+        "$(if http-status == 302)Payment required$(endif)\n"
+        f'$(if http-header == "Location"){target}$(endif)\n'
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<meta http-equiv="refresh" content="0; url={target}">\n'
+        '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
+        "<title>Pay to connect</title>\n"
+        f'<script>window.location.replace("{target}");</script>\n'
+        "</head>\n"
+        "<body>\n"
+        "<p>Opening payment page…</p>\n"
+        f'<p><a href="{target}">Continue to payment</a></p>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _captive_alogin_html(welcome_url: str) -> str:
+    """Post-login Hotspot page that sends clients to the continue-browsing welcome page."""
+    welcome_url = (welcome_url or "").strip()
+    if not welcome_url:
+        return ""
+    return (
+        "<!DOCTYPE html>\n"
+        "<html>\n"
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<meta http-equiv="refresh" content="0; url={welcome_url}">\n'
+        '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
+        "<title>Connected</title>\n"
+        f"<script>window.location.replace({welcome_url!r});</script>\n"
+        "</head>\n"
+        "<body>\n"
+        "<p>You are online.</p>\n"
+        f'<p><a href="{welcome_url}">Continue browsing</a></p>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+# Files RouterOS would serve verbatim for OS captive-probe paths. They must not
+# exist: an extensionless file is sent as application/octet-stream (phones
+# download it) and a .txt file is sent as text/plain (the redirect never runs).
+# Removing them lets Hotspot fall back to login.html, which is the only place
+# RouterOS substitutes $(mac), $(link-login-only) and friends.
+_STALE_PROBE_FILES = (
+    "hotspot/redirect",
+    "hotspot/hotspot-detect.html",
+    "hotspot/generate_204",
+    "hotspot/connecttest.txt",
+    "hotspot/ncsi.txt",
+)
+
+
+def _delete_hotspot_file(sock: socket.socket, dst_path: str) -> bool:
+    """Remove a file from the router Hotspot folder. True when it was deleted."""
+    dst_path = (dst_path or "").strip()
+    if not dst_path:
+        return False
+    for row in _print(sock, "/file", props=".id,name"):
+        if (row.get("name") or "").strip() != dst_path:
+            continue
+        file_id = (row.get(".id") or "").strip()
+        if not file_id:
+            return False
+        terminal = _remove(sock, "/file", file_id)
+        return terminal.get("_reply") != "!trap"
+    return False
+
+
+def _fetch_isp_hotspot_pages(
+    sock: socket.socket,
+    *,
+    login_url: str = "",
+    alogin_url: str = "",
+    pay_url: str = "",
+    welcome_url: str = "",
+) -> list[str]:
+    """
+    Install captive payment redirect + post-login welcome HTML on the router.
+
+    Prefers writing HTML via the API so the router does not need to download from
+    PUBLIC_BASE_URL (which often fails when Django only listens on 127.0.0.1).
+    """
+    notes: list[str] = []
+    pay = (pay_url or login_url or "").strip()
+    welcome = (welcome_url or alogin_url or "").strip()
+
+    pay_html = _captive_pay_redirect_html(pay) if pay else ""
+    alogin_html = _captive_alogin_html(welcome) if welcome else ""
+
+    for dst in _STALE_PROBE_FILES:
+        if _delete_hotspot_file(sock, dst):
+            notes.append(f"removed {dst}")
+
+    if pay_html:
+        # login.html serves the unauthenticated client; rlogin.html is the same
+        # page reached via the RADIUS/redirect path. Both get macro substitution.
+        for dst in ("hotspot/login.html", "hotspot/rlogin.html"):
+            if _write_hotspot_html_file(sock, dst, pay_html):
+                notes.append(f"installed {dst}")
+            else:
+                notes.append(f"could not write {dst}")
+
+        # redirect.html is how RouterOS bounces an *authorized* client to the
+        # site it originally asked for. Overwriting it sends paying customers
+        # back to the pay page, so leave the built-in page in place.
+        if _delete_hotspot_file(sock, "hotspot/redirect.html"):
+            notes.append("removed hotspot/redirect.html")
+
+    if alogin_html:
+        # Both pages are only reached once the client is logged in, so they point
+        # at the welcome page rather than the pay page.
+        for dst in ("hotspot/alogin.html", "hotspot/status.html"):
+            if _write_hotspot_html_file(sock, dst, alogin_html):
+                notes.append(f"installed {dst}")
+            else:
+                notes.append(f"could not write {dst}")
+
+    # Optional fallback: try HTTP fetch when API write failed and a URL is available.
+    missing_login = pay and not any("installed hotspot/login" in n for n in notes)
+    if missing_login and login_url:
+        fetch_words = [
+            "/tool/fetch",
+            f"=url={login_url}",
+            "=mode=http",
+            "=dst-path=hotspot/login.html",
+            "=keep-result=no",
+        ]
+        try:
+            _, terminal = _command(sock, fetch_words)
+            if terminal.get("_reply") != "!trap":
+                notes.append("installed hotspot/login.html via fetch")
+                missing_login = False
+            else:
+                notes.append("could not fetch hotspot/login.html")
+        except Exception:
+            notes.append("could not fetch hotspot/login.html")
+
+    if missing_login:
+        notes.append(
+            "warning: payment login page was not installed — "
+            "set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP and run "
+            "python manage.py runserver 0.0.0.0:8000, then push again"
+        )
+    return notes
+
+
+def _disable_isp_hotspot_stack(sock: socket.socket) -> list[str]:
+    notes: list[str] = []
+    removed = 0
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot/user")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot/user/profile")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot/profile")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot/walled-garden")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/hotspot/ip-binding")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/address-list")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/dns/static")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/nat")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/pool")
+    removed += _remove_isp_hotspot_tagged(sock, "/ip/address")
+    if removed:
+        notes.append("ISP Hotspot removed from MikroTik")
+    else:
+        notes.append("no ISP Hotspot config to remove")
+    return notes
+
+
+def _ensure_hotspot_wireless_on_lan(
+    sock: socket.socket, *, lan_bridge: str, ssid: str = ""
+) -> list[str]:
+    """Bridge enabled MikroTik access-point radios into the Hotspot LAN."""
+    notes: list[str] = []
+    existing_ports = {
+        (row.get("interface") or "").strip(): (
+            row.get(".id") or ""
+        ).strip()
+        for row in _print(
+            sock,
+            "/interface/bridge/port",
+            props=".id,interface,bridge,disabled",
+        )
+        if (row.get("bridge") or "").strip() == lan_bridge
+    }
+
+    radios: list[str] = []
+    for path in ("/interface/wireless", "/interface/wifi"):
+        for row in _print(
+            sock,
+            path,
+            props=".id,name,mode,disabled,master-interface,ssid",
+        ):
+            name = (row.get("name") or "").strip()
+            mode = (row.get("mode") or "").strip().lower()
+            disabled = (row.get("disabled") or "").strip().lower() == "true"
+            master = (row.get("master-interface") or "").strip()
+            if (
+                name
+                and not disabled
+                and not master
+                and mode in {"ap", "ap-bridge"}
+            ):
+                radios.append(name)
+                if ssid and path == "/interface/wireless":
+                    item_id = (row.get(".id") or "").strip()
+                    current = (row.get("ssid") or "").strip()
+                    if item_id and current != ssid:
+                        terminal = _set(
+                            sock,
+                            path,
+                            item_id,
+                            **{
+                                "ssid": ssid,
+                                "hide-ssid": "no",
+                                "security-profile": "default",
+                            },
+                        )
+                        if terminal.get("_reply") != "!trap":
+                            notes.append(f"wireless SSID set to {ssid}")
+
+    for radio in dict.fromkeys(radios):
+        if radio in existing_ports:
+            notes.append(f"wireless {radio} already on {lan_bridge}")
+            continue
+        terminal = _add(
+            sock,
+            "/interface/bridge/port",
+            interface=radio,
+            bridge=lan_bridge,
+            comment=ISP_HOTSPOT_TAG,
+        )
+        if terminal.get("_reply") == "!trap":
+            notes.append(f"warning: could not bridge wireless {radio} to {lan_bridge}")
+        else:
+            notes.append(f"wireless {radio} bridged to {lan_bridge}")
+    return notes
+
+
+def _ensure_isp_hotspot_stack(
+    sock: socket.socket,
+    *,
+    lan_interface: str,
+    organization,
+    redirect_url: str = "",
+    login_url: str = "",
+    alogin_url: str = "",
+    pay_url: str = "",
+    welcome_url: str = "",
+    wifi_ssid: str = "",
+) -> list[str]:
+    """
+    Enable Hotspot on the ISP MikroTik LAN so Wi‑Fi/LAN clients authenticate.
+
+    Installs a payment-page captive redirect, captive DNS probes for phones, and
+    post-login welcome redirect HTML.
+    """
+    notes: list[str] = []
+    lan = (lan_interface or "").strip() or "bridgeLocal"
+    hotspot_address = _lan_ipv4_for_interface(sock, lan)
+
+    # Prefer the onboarded router's Wi‑Fi name, then a short org-based SSID so
+    # clients can tell this apart from a third-party AP like Tenda_0C8890.
+    ssid = (wifi_ssid or "").strip()
+    if ssid.lower() in {"", "mikrotik", "wifi", "hotspot"}:
+        ssid = ""
+    if not ssid and organization is not None:
+        raw = (getattr(organization, "name", "") or "Hotspot").strip()
+        cleaned = "".join(
+            ch if ch.isalnum() else "-" for ch in raw.upper()
+        )
+        while "--" in cleaned:
+            cleaned = cleaned.replace("--", "-")
+        cleaned = cleaned.strip("-")[:20] or "HOTSPOT"
+        ssid = f"{cleaned}-PAY"[:32]
+    notes.extend(
+        _ensure_hotspot_wireless_on_lan(sock, lan_bridge=lan, ssid=ssid)
+    )
+
+    # Dedicated address/pool only when the LAN has no usable IPv4 yet.
+    if hotspot_address == ISP_HOTSPOT_ADDRESS:
+        _ensure_tagged_ip_address(
+            sock,
+            address=f"{ISP_HOTSPOT_ADDRESS}/24",
+            interface=lan,
+            comment=ISP_HOTSPOT_TAG,
+        )
+        _ensure_tagged_pool(
+            sock,
+            name=ISP_HOTSPOT_POOL,
+            ranges=ISP_HOTSPOT_POOL_RANGES,
+            comment=ISP_HOTSPOT_TAG,
+        )
+        notes.append(f"Hotspot address {ISP_HOTSPOT_ADDRESS} on {lan}")
+    else:
+        notes.append(f"Hotspot on {lan} ({hotspot_address})")
+
+    notes.extend(_ensure_isp_hotspot_user_profile(sock, organization))
+
+
+    profile_id = ""
+    for row in _print(sock, "/ip/hotspot/profile", props=".id,name,comment"):
+        if (row.get("name") or "").strip() == ISP_HOTSPOT_PROFILE or ISP_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    # http-pap/http-chap are what make RouterOS serve login.html to an
+    # unauthenticated client, and mac stays first so a paid device reconnects
+    # without seeing the portal again.
+    #
+    # cookie/mac-cookie are deliberately absent. A cookie login replays an
+    # earlier successful login instead of re-checking the Hotspot user, so a
+    # device whose package has lapsed would silently get back online for the
+    # lifetime of the cookie. Only mac login is billed, because it resolves the
+    # per-MAC user and therefore honours disabled and limit-uptime.
+    #
+    # https is deliberately absent. Enabling it makes RouterOS advertise
+    # link-login-only as https://<gateway>/login, and the portal navigates the
+    # browser straight there after payment. The only certificate available for a
+    # private gateway address is self-signed, so that navigation dead-ends on a
+    # full-page certificate warning at the exact moment the customer should be
+    # getting online. HTTP probe interception is what actually triggers portal
+    # detection, so nothing is lost by keeping the login endpoint plain HTTP.
+    profile_attempts = [
+        {
+            "name": ISP_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "mac,http-chap,http-pap",
+            "open-status-page": "http-login",
+            "use-radius": "no",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "mac,http-pap",
+            "open-status-page": "http-login",
+            "use-radius": "no",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "mac,http-chap",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+            "login-by": "http-pap",
+        },
+        {
+            "name": ISP_HOTSPOT_PROFILE,
+            "hotspot-address": hotspot_address,
+            "html-directory": "hotspot",
+        },
+    ]
+    terminal, profile_id = _add_or_set_attempts(
+        sock, "/ip/hotspot/profile", profile_id, profile_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(terminal, "Could not create Hotspot profile on the MikroTik.")
+        )
+    notes.append("Hotspot profile ready")
+
+    server_id = ""
+    for row in _print(sock, "/ip/hotspot", props=".id,name,interface,comment,disabled"):
+        if (row.get("name") or "").strip() == ISP_HOTSPOT_NAME or ISP_HOTSPOT_TAG in (
+            row.get("comment") or ""
+        ):
+            server_id = (row.get(".id") or "").strip()
+            break
+
+    server_attempts = [
+        {
+            "name": ISP_HOTSPOT_NAME,
+            "interface": lan,
+            "profile": ISP_HOTSPOT_PROFILE,
+            "disabled": "no",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_NAME,
+            "interface": lan,
+            "address-pool": ISP_HOTSPOT_POOL,
+            "profile": ISP_HOTSPOT_PROFILE,
+            "disabled": "no",
+            "comment": ISP_HOTSPOT_TAG,
+        },
+        {
+            "name": ISP_HOTSPOT_NAME,
+            "interface": lan,
+            "profile": ISP_HOTSPOT_PROFILE,
+            "disabled": "no",
+        },
+        {
+            "name": ISP_HOTSPOT_NAME,
+            "interface": lan,
+            "disabled": "no",
+        },
+    ]
+    terminal, server_id = _add_or_set_attempts(
+        sock, "/ip/hotspot", server_id, server_attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(terminal, f"Could not enable Hotspot on interface {lan}.")
+        )
+    notes.append(f"Hotspot server on {lan}")
+
+    garden_url = pay_url or redirect_url or login_url or welcome_url or alogin_url
+
+    if _clear_captive_dns_hijack(sock, ISP_HOTSPOT_TAG):
+        notes.append("captive probe hostnames resolve normally again")
+    if _clear_https_capture_redirect(sock, comment=ISP_HOTSPOT_TAG):
+        notes.append("removed HTTPS-to-HTTP capture rule")
+    notes.extend(
+        _ensure_hotspot_owns_http_port(
+            sock,
+            hotspot_address=hotspot_address,
+            comment=ISP_HOTSPOT_TAG,
+            portal_url=garden_url,
+        )
+    )
+    notes.append("Hotspot intercepts captive HTTP probes")
+
+    notes.extend(_ensure_hotspot_walled_garden(sock, garden_url))
+    if redirect_url and redirect_url != garden_url:
+        notes.extend(_ensure_hotspot_walled_garden(sock, redirect_url))
+    notes.extend(_ensure_hotspot_server_bypass(sock, garden_url))
+    notes.extend(
+        _fetch_isp_hotspot_pages(
+            sock,
+            login_url=login_url,
+            alogin_url=alogin_url,
+            pay_url=pay_url or login_url,
+            welcome_url=welcome_url or redirect_url or alogin_url,
+        )
+    )
+    return notes
+
+
+def apply_hotspot_on_router(
+    router,
+    *,
+    enabled: bool,
+    organization=None,
+    reauthenticate: bool = True,
+    redirect_url: str = "",
+    login_url: str = "",
+    alogin_url: str = "",
+    pay_url: str = "",
+    welcome_url: str = "",
+    candidate_hosts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Push or remove ISP Hotspot configuration on one onboarded MikroTik."""
+    if router is None:
+        return {"ok": False, "error": "No router provided."}
+
+    org = organization or getattr(router, "organization", None)
+    host = (getattr(router, "host", None) or "").strip()
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or host
+    if not host or not username:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "error": "Router host or username is missing.",
+        }
+    if enabled and org is None:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "error": "Organization is required to enable Hotspot.",
+        }
+
+    if getattr(router, "account_status", "") == "suspended":
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "reason": "suspended",
+            "message": f"{router_name} is suspended — Hotspot push skipped.",
+            "users_synced": 0,
+            "notes": ["skipped suspended router"],
+        }
+
+    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(router, "wan_interface", None) or "ether1"
+    hosts = _router_api_host_candidates(router, candidate_hosts)
+    compulsory = bool(getattr(org, "pppoe_compulsory", False)) if org else False
+
+    # Fast offline skip: if the saved host (and common fallbacks) are down, don't
+    # treat this as a failed push — the router simply isn't connected right now.
+    any_reachable = False
+    for candidate in hosts[:4]:
+        probe = check_mikrotik_reachable(candidate, timeout=1.2)
+        if probe.get("online"):
+            any_reachable = True
+            break
+    if not any_reachable:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "reason": "offline",
+            "timeout": True,
+            "message": f"{router_name} is offline / not reachable — Hotspot push skipped.",
+            "users_synced": 0,
+            "notes": [f"skipped offline router ({host or 'no host'})"],
+        }
+
+    last_error = ""
+    last_timeout = False
+    working_host = ""
+    notes: list[str] = []
+    users_synced = 0
+
+    for candidate in hosts:
+        probe = check_mikrotik_reachable(candidate, timeout=1.5)
+        via = (probe.get("via") or "").strip()
+        attempt_timeout = 3.0 if via == "ping" else 14.0
+        if not probe.get("online") and candidate != host:
+            continue
+        try:
+            with _api_session(
+                candidate, username, password, timeout=attempt_timeout
+            ) as sock:
+                if enabled:
+                    notes = _ensure_isp_hotspot_stack(
+                        sock,
+                        lan_interface=lan_interface,
+                        organization=org,
+                        redirect_url=redirect_url,
+                        login_url=login_url,
+                        alogin_url=alogin_url,
+                        pay_url=pay_url,
+                        welcome_url=welcome_url or redirect_url,
+                        wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
+                    )
+                    users_synced = _sync_organization_hotspot_users_on_socket(
+                        sock,
+                        router,
+                        reauthenticate=reauthenticate,
+                    )
+                    if users_synced:
+                        notes.append(f"synced {users_synced} Hotspot user(s)")
+                    else:
+                        notes.append("no Hotspot clients to sync yet")
+                    if compulsory:
+                        # Refresh firewall so Hotspot-authenticated clients bypass
+                        # the PPPoE compulsory LAN drop.
+                        _, fw_notes = _ensure_pppoe_stack(
+                            sock,
+                            lan_interface=lan_interface,
+                            wan_interface=wan_interface,
+                            compulsory=True,
+                        )
+                        notes.extend(fw_notes)
+                    # Re-apply after PPPoE filter rewrite so captive HTTP forward
+                    # allow + hairpin NAT stay above the compulsory drop.
+                    garden = (
+                        pay_url
+                        or redirect_url
+                        or login_url
+                        or welcome_url
+                        or ""
+                    )
+                    hotspot_address = _lan_ipv4_for_interface(sock, lan_interface)
+                    notes.extend(
+                        _ensure_hotspot_owns_http_port(
+                            sock,
+                            hotspot_address=hotspot_address,
+                            comment=ISP_HOTSPOT_TAG,
+                            portal_url=garden,
+                        )
+                    )
+                else:
+                    notes = _disable_isp_hotspot_stack(sock)
+            working_host = candidate
+            break
+        except TimeoutError:
+            last_timeout = True
+            last_error = f"{candidate}: timed out on API port 8728"
+        except OSError as exc:
+            message = str(exc) or "network error"
+            if "timed out" in message.lower() or getattr(exc, "errno", None) in {10060, 110}:
+                last_timeout = True
+                last_error = f"{candidate}: timed out on API port 8728"
+            else:
+                last_timeout = False
+                last_error = f"{candidate}: {message}"
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc) or "failed"
+            lower = message.lower()
+            last_timeout = "timed out" in lower or "cannot connect" in lower
+            last_error = f"{candidate}: {message}"
+
+    if not working_host:
+        detail = last_error or f"{host}: timed out"
+        # Still offline after attempts — skip rather than fail the whole org push.
+        if last_timeout:
+            return {
+                "ok": True,
+                "skipped": True,
+                "router_id": router_id,
+                "router_name": router_name,
+                "host": host,
+                "reason": "offline",
+                "timeout": True,
+                "message": f"{router_name} is offline / not reachable — Hotspot push skipped.",
+                "users_synced": 0,
+                "notes": [detail],
+            }
+        if "invalid user name or password" in detail.lower() or "cannot log in" in detail.lower():
+            error = (
+                f"{detail}. Update the saved API username/password on the router detail page "
+                "(or click Reconnect), then push Hotspot again."
+            )
+        else:
+            error = (
+                f"{detail}. Fix the router setting above, then push Hotspot again. "
+                "If this keeps failing, open MikroTik → the router → Reconnect."
+            )
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "timeout": False,
+            "error": error,
+        }
+
+    host_changed = bool(working_host and working_host != host)
+    if host_changed and hasattr(router, "host"):
+        try:
+            router.host = working_host
+            router.save(update_fields=["host", "updated_at"])
+            notes.append(f"updated saved IP to {working_host}")
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": working_host,
+        "host_changed": host_changed,
+        "enabled": bool(enabled),
+        "users_synced": users_synced,
+        "notes": notes,
+        "message": (
+            "Hotspot portal enabled on the LAN. PPPoE clients dial in; other devices use Hotspot login."
+            if enabled and compulsory
+            else (
+                "Hotspot portal enabled on the LAN. Clients must log in before surfing."
+                if enabled
+                else "Hotspot portal removed from this MikroTik."
+            )
+        ),
+    }
+
+
+def apply_hotspot_for_organization(
+    organization,
+    *,
+    enabled: bool | None = None,
+    redirect_url: str = "",
+    login_url: str = "",
+    alogin_url: str = "",
+    pay_url: str = "",
+    welcome_url: str = "",
+) -> dict[str, Any]:
+    """Push Hotspot config to every onboarded MikroTik for an organization."""
+    if organization is None:
+        return {"ok": False, "applied": 0, "failed": 0, "results": [], "error": "No organization."}
+
+    if enabled is None:
+        enabled = bool(getattr(organization, "hotspot_enabled", False))
+
+    redirect = (redirect_url or getattr(organization, "hotspot_redirect_url", "") or "").strip()
+    login = (login_url or "").strip()
+    alogin = (alogin_url or "").strip()
+    pay = (pay_url or "").strip()
+    welcome = (welcome_url or redirect or "").strip()
+
+    from core.models import MikroTikRouter
+
+    routers = list(
+        MikroTikRouter.objects.filter(organization=organization).only(
+            "id",
+            "name",
+            "host",
+            "username",
+            "password",
+            "lan_bridge",
+            "wan_interface",
+            "organization_id",
+            "account_status",
+        )
+    )
+    if not routers:
+        return {
+            "ok": True,
+            "enabled": bool(enabled),
+            "applied": 0,
+            "failed": 0,
+            "router_count": 0,
+            "results": [],
+        }
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: list[dict[str, Any]] = []
+    workers = min(6, len(routers))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(
+                apply_hotspot_on_router,
+                router,
+                enabled=bool(enabled),
+                organization=organization,
+                redirect_url=redirect,
+                login_url=login,
+                alogin_url=alogin,
+                pay_url=pay,
+                welcome_url=welcome,
+            )
+            for router in routers
+        ]
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    applied = sum(1 for item in results if item.get("ok") and not item.get("skipped"))
+    skipped = sum(1 for item in results if item.get("skipped"))
+    failed = sum(1 for item in results if not item.get("ok"))
+    users_total = sum(int(item.get("users_synced") or 0) for item in results)
+    return {
+        "ok": failed == 0,
+        "enabled": bool(enabled),
+        "applied": applied,
+        "skipped": skipped,
+        "failed": failed,
+        "router_count": len(routers),
+        "users_synced": users_total,
+        "results": results,
+    }
+
+
+_PORT_TYPES = {
+    "ether",
+    "sfp",
+    "sfp-sfpplus",
+    "qsfp28",
+    "wlan",
+    "wifi",
+    "wifiwave2",
+    "bond",
+}
+
+
+def _is_manageable_port(row: dict[str, str]) -> bool:
+    name = (row.get("name") or "").strip().lower()
+    iface_type = (row.get("type") or "").strip().lower()
+    if not name:
+        return False
+    if iface_type in _PORT_TYPES:
+        return True
+    return name.startswith(("ether", "sfp", "wlan", "wifi", "bond"))
+
+
+def _flag_yes(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"true", "yes", "1"}
+
+
+def _default_route_wan(sock: socket.socket) -> str:
+    """Best-effort WAN interface from the active default route."""
+    try:
+        routes = _print(
+            sock,
+            "/ip/route",
+            props="dst-address,gateway,immediate-gw,active,disabled,distance",
+        )
+    except (TimeoutError, OSError, ConnectionError):
+        return ""
+
+    candidates: list[tuple[int, str]] = []
+    for row in routes:
+        if _flag_yes(row.get("disabled")):
+            continue
+        dst = (row.get("dst-address") or "").strip()
+        if dst not in {"0.0.0.0/0", "::/0"}:
+            continue
+        if not _flag_yes(row.get("active")):
+            continue
+        immediate = (row.get("immediate-gw") or "").strip()
+        gateway = (row.get("gateway") or "").strip()
+        iface = ""
+        for raw in (immediate, gateway):
+            if "%" in raw:
+                iface = raw.split("%", 1)[-1].strip()
+            elif raw and not any(ch.isdigit() for ch in raw.split(".")[0:1]):
+                # gateway may already be an interface name
+                if "/" not in raw and ":" not in raw:
+                    iface = raw
+            if iface:
+                break
+        if not iface and immediate:
+            # e.g. 192.168.1.1%ether1
+            parts = immediate.replace("%", " ").split()
+            for part in reversed(parts):
+                token = part.strip()
+                if token and not token[0].isdigit():
+                    iface = token
+                    break
+        if iface:
+            try:
+                distance = int(str(row.get("distance") or "1").strip() or "1")
+            except ValueError:
+                distance = 1
+            candidates.append((distance, iface))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
+
+
+def list_mikrotik_ports(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """List physical / wireless ports that can be enabled, disabled, or assigned a role."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials.", "ports": [], "suggested_wan": ""}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            rows = _print(
+                sock,
+                "/interface",
+                props=".id,name,type,running,disabled,comment",
+            )
+            bridge_of: dict[str, str] = {}
+            try:
+                for brow in _print(
+                    sock, "/interface/bridge/port", props="interface,bridge"
+                ):
+                    iface = (brow.get("interface") or "").strip()
+                    bridge = (brow.get("bridge") or "").strip()
+                    if iface and bridge:
+                        bridge_of[iface] = bridge
+            except (TimeoutError, OSError, ConnectionError):
+                bridge_of = {}
+
+            suggested_wan = _default_route_wan(sock)
+            ports: list[dict[str, Any]] = []
+            for row in rows:
+                if not _is_manageable_port(row):
+                    continue
+                name = (row.get("name") or "").strip()
+                iface_type = (row.get("type") or "").strip() or "ether"
+                disabled = _flag_yes(row.get("disabled"))
+                running = _flag_yes(row.get("running"))
+                bridge = bridge_of.get(name, "")
+                ports.append(
+                    {
+                        "id": (row.get(".id") or "").strip(),
+                        "name": name,
+                        "type": iface_type,
+                        "disabled": disabled,
+                        "running": running and not disabled,
+                        "comment": (row.get("comment") or "").strip(),
+                        "bridge": bridge,
+                        "is_bridged": bool(bridge),
+                        "is_wireless": iface_type.lower()
+                        in {"wlan", "wifi", "wifiwave2"}
+                        or name.lower().startswith(("wlan", "wifi")),
+                    }
+                )
+
+            def _sort_key(item: dict[str, Any]) -> tuple:
+                n = item["name"].lower()
+                # ether1 before ether10
+                prefix = "".join(ch for ch in n if not ch.isdigit())
+                digits = "".join(ch for ch in n if ch.isdigit())
+                return (prefix, int(digits) if digits else 0, n)
+
+            ports.sort(key=_sort_key)
+            return {
+                "ok": True,
+                "ports": ports,
+                "host": host,
+                "suggested_wan": suggested_wan,
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "Connection timed out. Is the router reachable on API port 8728?",
+            "ports": [],
+            "suggested_wan": "",
+        }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+            "ports": [],
+            "suggested_wan": "",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728. ({exc})",
+            "ports": [],
+            "suggested_wan": "",
+        }
+
+
+def set_mikrotik_port_enabled(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    interface_name: str,
+    enabled: bool,
+    port: int = 8728,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """Enable or disable a RouterOS interface by name."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    interface_name = (interface_name or "").strip()
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if not interface_name:
+        return {"ok": False, "error": "Select a port to update."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            rows = _print(
+                sock,
+                "/interface",
+                props=".id,name,type,disabled",
+            )
+            match = None
+            for row in rows:
+                if (row.get("name") or "").strip() == interface_name:
+                    match = row
+                    break
+            if not match:
+                return {"ok": False, "error": f"Port “{interface_name}” was not found on the router."}
+            if not _is_manageable_port(match):
+                return {
+                    "ok": False,
+                    "error": f"“{interface_name}” is not a manageable port.",
+                }
+
+            item_id = (match.get(".id") or "").strip()
+            if not item_id:
+                return {"ok": False, "error": f"Could not resolve port id for “{interface_name}”."}
+
+            terminal = _set(
+                sock,
+                "/interface",
+                item_id,
+                disabled="no" if enabled else "yes",
+            )
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                return {
+                    "ok": False,
+                    "error": _trap_message(
+                        terminal,
+                        f"Could not {'enable' if enabled else 'disable'} {interface_name}.",
+                    ),
+                }
+
+            return {
+                "ok": True,
+                "name": interface_name,
+                "enabled": enabled,
+                "message": (
+                    f"Port {interface_name} enabled."
+                    if enabled
+                    else f"Port {interface_name} disabled."
+                ),
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "Connection timed out. Is the router reachable on API port 8728?",
+        }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728. ({exc})",
+        }
+
+
+def _iface_names(sock: socket.socket) -> set[str]:
+    return {
+        (row.get("name") or "").strip()
+        for row in _print(sock, "/interface", props="name")
+        if (row.get("name") or "").strip()
+    }
+
+
+def _unbridge_interfaces(sock: socket.socket, interfaces: list[str]) -> list[dict[str, str]]:
+    """Remove ports from their bridge; return list of {interface, bridge} for restore."""
+    removed: list[dict[str, str]] = []
+    for iface in interfaces:
+        for row in _print(sock, "/interface/bridge/port", props=".id,interface,bridge"):
+            if (row.get("interface") or "").strip() != iface:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            bridge = (row.get("bridge") or "").strip()
+            if not item_id:
+                break
+            terminal = _remove(sock, "/interface/bridge/port", item_id)
+            if terminal.get("_reply") not in {"!trap", "!fatal"} and bridge:
+                removed.append({"interface": iface, "bridge": bridge})
+            break
+    return removed
+
+
+def _restore_bridged_interfaces(
+    sock: socket.socket,
+    entries: list[dict[str, str]],
+    *,
+    lan_bridge_fallback: str = "bridgeLocal",
+) -> int:
+    """Re-add previously unbridged ports to their bridge. Returns count restored."""
+    restored = 0
+    for entry in entries or []:
+        iface = (entry.get("interface") or "").strip()
+        bridge = (entry.get("bridge") or "").strip() or lan_bridge_fallback
+        if not iface or not bridge:
+            continue
+        if _bridge_port_id(sock, iface):
+            continue
+        terminal = _add(
+            sock,
+            "/interface/bridge/port",
+            interface=iface,
+            bridge=bridge,
+            comment=UPLINK_TAG,
+        )
+        if terminal.get("_reply") not in {"!trap", "!fatal"}:
+            restored += 1
+    return restored
+
+
+def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
+    """Remove ispcentric-uplink bond / DHCP / route / list-member leftovers."""
+    return {
+        "bonding": _remove_comment_tagged(sock, "/interface/bonding", UPLINK_TAG),
+        "dhcp_client": _remove_comment_tagged(sock, "/ip/dhcp-client", UPLINK_TAG),
+        "routes": _remove_comment_tagged(sock, "/ip/route", UPLINK_TAG),
+        "list_members": _remove_comment_tagged(sock, "/interface/list/member", UPLINK_TAG),
+    }
+
+
+def _ensure_uplink_list_member(sock: socket.socket, interface: str) -> None:
+    _ensure_interface_list(sock, "WAN")
+    for row in _print(sock, "/interface/list/member", props=".id,list,interface,comment"):
+        if (row.get("list") or "").strip() != "WAN":
+            continue
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        # Prefer tagged member for our managed uplinks.
+        item_id = (row.get(".id") or "").strip()
+        if item_id and UPLINK_TAG not in (row.get("comment") or ""):
+            _set(sock, "/interface/list/member", item_id, comment=UPLINK_TAG)
+        return
+    _add(
+        sock,
+        "/interface/list/member",
+        list="WAN",
+        interface=interface,
+        comment=UPLINK_TAG,
+    )
+
+
+def _ensure_failover_dhcp_client(
+    sock: socket.socket,
+    interface: str,
+    *,
+    distance: int,
+) -> dict[str, str]:
+    """Ensure a DHCP client that installs a default route at the given distance.
+
+    Existing (non-ISPCENTRIC) clients are reused and distance is updated without
+    retagging them — so Clear will not delete the original WAN DHCP client.
+    Only newly created clients are tagged with UPLINK_TAG.
+    """
+    for row in _print(
+        sock,
+        "/ip/dhcp-client",
+        props=".id,interface,disabled,comment,default-route-distance,add-default-route",
+    ):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            return {"_reply": "!done"}
+        props: dict[str, str] = {
+            "disabled": "no",
+            "add-default-route": "yes",
+            "use-peer-dns": "no",
+            "default-route-distance": str(distance),
+        }
+        # Only keep / apply our tag on clients we already own.
+        if UPLINK_TAG in (row.get("comment") or ""):
+            props["comment"] = UPLINK_TAG
+        return _set(sock, "/ip/dhcp-client", item_id, **props)
+    return _add(
+        sock,
+        "/ip/dhcp-client",
+        interface=interface,
+        disabled="no",
+        comment=UPLINK_TAG,
+        **{
+            "add-default-route": "yes",
+            "use-peer-dns": "no",
+            "default-route-distance": str(distance),
+        },
+    )
+
+
+def _ensure_bond_dhcp_client(sock: socket.socket, interface: str) -> dict[str, str]:
+    """DHCP on the bond interface. Prefer create/reuse with UPLINK_TAG (bond iface is ours)."""
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled,comment"):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            return {"_reply": "!done"}
+        return _set(
+            sock,
+            "/ip/dhcp-client",
+            item_id,
+            disabled="no",
+            comment=UPLINK_TAG,
+            **{"add-default-route": "yes", "use-peer-dns": "no", "default-route-distance": "1"},
+        )
+    return _add(
+        sock,
+        "/ip/dhcp-client",
+        interface=interface,
+        disabled="no",
+        comment=UPLINK_TAG,
+        **{"add-default-route": "yes", "use-peer-dns": "no", "default-route-distance": "1"},
+    )
+
+
+def apply_mikrotik_uplink_bond(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    member_ports: list[str],
+    bond_name: str = DEFAULT_BOND_NAME,
+    bond_mode: str = "balance-xor",
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Bond two or more ports for the same provider.
+
+    Creates /interface/bonding, slaves the selected ports, DHCP on the bond,
+    and adds the bond to the WAN interface list.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    bond_name = (bond_name or DEFAULT_BOND_NAME).strip() or DEFAULT_BOND_NAME
+    bond_mode = (bond_mode or "balance-xor").strip() or "balance-xor"
+    if bond_mode not in BOND_MODES:
+        bond_mode = "balance-xor"
+    members = [p.strip() for p in (member_ports or []) if (p or "").strip()]
+    members = list(dict.fromkeys(members))
+
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if len(members) < 2:
+        return {"ok": False, "error": "Select at least two ports to bond (same provider)."}
+    if bond_name in members:
+        return {"ok": False, "error": "Bond interface name cannot match a member port."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            names = _iface_names(sock)
+            missing = [p for p in members if p not in names]
+            if missing:
+                return {
+                    "ok": False,
+                    "error": f"Port(s) not found on router: {', '.join(missing)}.",
+                }
+
+            _clear_tagged_uplink(sock)
+            # If a leftover bond with the same name exists without our tag, remove it only when owned.
+            for row in _print(sock, "/interface/bonding", props=".id,name,comment"):
+                if (row.get("name") or "").strip() != bond_name:
+                    continue
+                comment = row.get("comment") or ""
+                item_id = (row.get(".id") or "").strip()
+                if item_id and (UPLINK_TAG in comment or CLEAN_UPLINK_TAG in comment):
+                    _remove(sock, "/interface/bonding", item_id)
+                elif item_id:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Interface “{bond_name}” already exists on the router. "
+                            "Rename it in RouterOS or choose another bond name."
+                        ),
+                    }
+
+            unbridged = _unbridge_interfaces(sock, members)
+            slaves = ",".join(members)
+            terminal = _add(
+                sock,
+                "/interface/bonding",
+                name=bond_name,
+                mode=bond_mode,
+                slaves=slaves,
+                comment=UPLINK_TAG,
+            )
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                # LACP often fails without switch support — fall back to balance-xor.
+                if bond_mode == "802.3ad":
+                    bond_mode = "balance-xor"
+                    terminal = _add(
+                        sock,
+                        "/interface/bonding",
+                        name=bond_name,
+                        mode=bond_mode,
+                        slaves=slaves,
+                        comment=UPLINK_TAG,
+                    )
+                if terminal.get("_reply") in {"!trap", "!fatal"}:
+                    if unbridged:
+                        _restore_bridged_interfaces(sock, unbridged)
+                    return {
+                        "ok": False,
+                        "error": _trap_message(
+                            terminal,
+                            f"Could not create bonding interface {bond_name}.",
+                        ),
+                    }
+
+            dhcp = _ensure_bond_dhcp_client(sock, bond_name)
+            if dhcp.get("_reply") in {"!trap", "!fatal"}:
+                return {
+                    "ok": False,
+                    "error": _trap_message(
+                        dhcp,
+                        f"Bond created, but DHCP client failed on {bond_name}.",
+                    ),
+                    "bond_name": bond_name,
+                    "members": members,
+                    "unbridged": unbridged,
+                }
+
+            _ensure_uplink_list_member(sock, bond_name)
+
+            return {
+                "ok": True,
+                "mode": "bond",
+                "bond_name": bond_name,
+                "bond_mode": bond_mode,
+                "members": members,
+                "wan_interface": bond_name,
+                "unbridged": unbridged,
+                "message": (
+                    f"Bonded {', '.join(members)} as {bond_name} "
+                    f"({bond_mode}) for the same provider."
+                ),
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "Connection timed out while configuring bonding.",
+        }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728. ({exc})",
+        }
+
+
+def apply_mikrotik_uplink_failover(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    primary_port: str,
+    backup_ports: list[str],
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Configure primary + backup WAN ports for different providers.
+
+    Uses DHCP default-route-distance so traffic prefers the primary and fails
+    over when that link drops.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    primary_port = (primary_port or "").strip()
+    backups = [p.strip() for p in (backup_ports or []) if (p or "").strip()]
+    backups = [p for p in dict.fromkeys(backups) if p != primary_port]
+
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if not primary_port:
+        return {"ok": False, "error": "Choose a primary WAN port."}
+    if not backups:
+        return {"ok": False, "error": "Choose at least one backup WAN port."}
+
+    ordered = [primary_port, *backups]
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            names = _iface_names(sock)
+            missing = [p for p in ordered if p not in names]
+            if missing:
+                return {
+                    "ok": False,
+                    "error": f"Port(s) not found on router: {', '.join(missing)}.",
+                }
+
+            _clear_tagged_uplink(sock)
+            unbridged = _unbridge_interfaces(sock, ordered)
+
+            for index, iface in enumerate(ordered):
+                distance = 1 + (index * 10)
+                terminal = _ensure_failover_dhcp_client(
+                    sock, iface, distance=distance
+                )
+                if terminal.get("_reply") in {"!trap", "!fatal"}:
+                    if unbridged:
+                        _restore_bridged_interfaces(sock, unbridged)
+                    return {
+                        "ok": False,
+                        "error": _trap_message(
+                            terminal,
+                            f"Could not configure DHCP failover on {iface}.",
+                        ),
+                    }
+                _ensure_uplink_list_member(sock, iface)
+
+            # Best-effort: ping-check any default routes we just tagged via DHCP comment.
+            # RouterOS often creates dynamic DHCP routes; set check-gateway where possible.
+            for row in _print(
+                sock,
+                "/ip/route",
+                props=".id,dst-address,gateway,distance,dynamic,comment,active",
+            ):
+                dst = (row.get("dst-address") or "").strip()
+                if dst not in {"0.0.0.0/0", "::/0"}:
+                    continue
+                item_id = (row.get(".id") or "").strip()
+                if not item_id:
+                    continue
+                if _flag_yes(row.get("dynamic")):
+                    continue
+                _set(sock, "/ip/route", item_id, **{"check-gateway": "ping"})
+
+            return {
+                "ok": True,
+                "mode": "failover",
+                "primary": primary_port,
+                "backups": backups,
+                "ports": ordered,
+                "wan_interface": primary_port,
+                "unbridged": unbridged,
+                "message": (
+                    f"Failover ready: primary {primary_port}, "
+                    f"backup {', '.join(backups)}."
+                ),
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "Connection timed out while configuring failover.",
+        }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728. ({exc})",
+        }
+
+
+def clear_mikrotik_uplink_multi(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    restore_bridged: list[dict[str, str]] | None = None,
+    lan_bridge: str = "bridgeLocal",
+    port: int = 8728,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Remove bonded / failover uplink objects tagged by ISPCENTRIC."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            removed = _clear_tagged_uplink(sock)
+            restored = _restore_bridged_interfaces(
+                sock,
+                restore_bridged or [],
+                lan_bridge_fallback=lan_bridge or "bridgeLocal",
+            )
+            return {
+                "ok": True,
+                "removed": removed,
+                "restored_bridge_ports": restored,
+                "message": "Bonded / failover uplink settings cleared on the MikroTik.",
+            }
+    except TimeoutError:
+        return {"ok": False, "error": "Connection timed out while clearing uplink settings."}
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {"ok": False, "error": f"Could not reach {host}:8728. ({exc})"}
+
+
+def read_mikrotik_uplink_multi(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """Best-effort read of bonded / failover uplink state from the router."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            bonds: list[dict[str, Any]] = []
+            for row in _print(
+                sock,
+                "/interface/bonding",
+                props=".id,name,mode,slaves,running,disabled,comment",
+            ):
+                if UPLINK_TAG not in (row.get("comment") or ""):
+                    continue
+                slaves_raw = (row.get("slaves") or "").strip()
+                bonds.append(
+                    {
+                        "name": (row.get("name") or "").strip(),
+                        "mode": (row.get("mode") or "").strip(),
+                        "slaves": [s.strip() for s in slaves_raw.split(",") if s.strip()],
+                        "running": _flag_yes(row.get("running")),
+                        "disabled": _flag_yes(row.get("disabled")),
+                    }
+                )
+
+            failover_clients: list[dict[str, Any]] = []
+            for row in _print(
+                sock,
+                "/ip/dhcp-client",
+                props=".id,interface,status,default-route-distance,disabled,comment",
+            ):
+                if UPLINK_TAG not in (row.get("comment") or ""):
+                    continue
+                failover_clients.append(
+                    {
+                        "interface": (row.get("interface") or "").strip(),
+                        "status": (row.get("status") or "").strip(),
+                        "distance": (row.get("default-route-distance") or "").strip() or "1",
+                        "disabled": _flag_yes(row.get("disabled")),
+                    }
+                )
+            failover_clients.sort(
+                key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
+            )
+
+            mode = "single"
+            if bonds:
+                mode = "bond"
+            elif len(failover_clients) >= 2:
+                mode = "failover"
+
+            return {
+                "ok": True,
+                "mode": mode,
+                "bonds": bonds,
+                "failover_clients": failover_clients,
+            }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc) or "Could not read uplink state."}

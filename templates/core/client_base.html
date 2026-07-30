@@ -29,6 +29,8 @@
               {% csrf_token %}
               <button type="submit">{{ item.label }}</button>
             </form>
+          {% elif item.href %}
+            <a class="{% if sidebar_active == item.key %}active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
           {% else %}
             <a class="{% if sidebar_active == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
           {% endif %}

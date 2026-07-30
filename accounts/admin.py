@@ -1,16 +1,50 @@
 from django import forms
 from django.contrib import admin
 
-from .models import Employee, Organization
+from .models import Employee, Organization, PaymentGateway
 
 
 @admin.register(Organization)
 class OrganizationAdmin(admin.ModelAdmin):
-    list_display = ("name", "status", "join_code", "owner", "phone", "created_at")
-    list_filter = ("status",)
-    search_fields = ("name", "join_code", "owner__username", "phone")
+    list_display = (
+        "name",
+        "status",
+        "join_code",
+        "owner",
+        "phone",
+        "daraja_enabled",
+        "mpesa_payment_type",
+        "mpesa_number",
+        "created_at",
+    )
+    list_filter = ("status", "daraja_enabled", "mpesa_payment_type", "daraja_environment")
+    search_fields = ("name", "join_code", "owner__username", "phone", "mpesa_number")
     list_editable = ("status",)
     readonly_fields = ("join_code", "created_at")
+
+
+@admin.register(PaymentGateway)
+class PaymentGatewayAdmin(admin.ModelAdmin):
+    list_display = ("provider", "enabled", "environment", "payment_type", "shortcode", "updated_at")
+    readonly_fields = ("updated_at",)
+    fields = (
+        "enabled",
+        "provider",
+        "environment",
+        "payment_type",
+        "shortcode",
+        "consumer_key",
+        "consumer_secret",
+        "passkey",
+        "callback_url",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return not PaymentGateway.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class EmployeeAdminForm(forms.ModelForm):

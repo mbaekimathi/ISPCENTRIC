@@ -97,6 +97,29 @@ class Customer(models.Model):
     )
     pppoe_username = models.CharField("PPPoE username", max_length=64, blank=True)
     pppoe_password = models.CharField("PPPoE password", max_length=128, blank=True)
+    hotspot_mac = models.CharField(
+        "Hotspot device MAC",
+        max_length=17,
+        blank=True,
+        db_index=True,
+        help_text="Device authorized automatically after a successful Hotspot payment.",
+    )
+    # CPE = the subscriber's own router that dials PPPoE into the ISP MikroTik.
+    cpe_username = models.CharField(
+        "CPE username",
+        max_length=64,
+        blank=True,
+        default="admin",
+        help_text="RouterOS / Winbox username on the client's CPE router.",
+    )
+    cpe_password = models.CharField(
+        "CPE password",
+        max_length=128,
+        blank=True,
+        help_text="RouterOS / Winbox password on the client's CPE router.",
+    )
+    cpe_wifi_ssid = models.CharField("CPE Wi‑Fi name", max_length=64, blank=True)
+    cpe_wifi_password = models.CharField("CPE Wi‑Fi password", max_length=128, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     plan = models.ForeignKey(
         BillingPlan,
@@ -104,6 +127,18 @@ class Customer(models.Model):
         null=True,
         blank=True,
         related_name="customers",
+    )
+    package_start = models.DateTimeField(
+        "Package start",
+        null=True,
+        blank=True,
+        help_text="When this client's current package period began.",
+    )
+    package_end = models.DateTimeField(
+        "Package end",
+        null=True,
+        blank=True,
+        help_text="When this client's current package period ends (from plan duration or manual override).",
     )
     router = models.ForeignKey(
         "core.MikroTikRouter",
@@ -157,6 +192,8 @@ class Invoice(models.Model):
         ordering = ["-issued_at"]
         indexes = [
             models.Index(fields=["organization", "status"], name="bill_inv_org_status_idx"),
+            models.Index(fields=["customer", "-issued_at"], name="bill_inv_cust_issued_idx"),
+            models.Index(fields=["organization", "customer"], name="bill_inv_org_cust_idx"),
         ]
 
     def __str__(self):
@@ -192,6 +229,86 @@ class Payment(models.Model):
     class Meta:
         db_table = "billing_payment"
         ordering = ["-received_at"]
+        indexes = [
+            models.Index(fields=["organization", "received_at"], name="bill_pay_org_recv_idx"),
+        ]
 
     def __str__(self):
         return f"{self.reference or self.pk} — {self.amount}"
+
+
+class StkPushRequest(models.Model):
+    """Tracks an M-Pesa STK Push attempt for subscription payment."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        SUCCESS = "success", "Success"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="stk_push_requests",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="stk_push_requests",
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    phone = models.CharField(max_length=20)
+    account_reference = models.CharField(max_length=64)
+    merchant_request_id = models.CharField(max_length=64, blank=True)
+    checkout_request_id = models.CharField(max_length=64, blank=True, db_index=True)
+    mpesa_receipt = models.CharField(max_length=64, blank=True)
+    result_code = models.IntegerField(null=True, blank=True)
+    result_desc = models.CharField(max_length=255, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    invoice = models.ForeignKey(
+        Invoice,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stk_push_requests",
+    )
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="stk_push_requests",
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="initiated_stk_pushes",
+    )
+    subscription_applied = models.BooleanField(default=False)
+    raw_callback = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "billing_stk_push_request"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "status", "-created_at"],
+                name="bill_stk_org_status_idx",
+            ),
+            models.Index(
+                fields=["customer", "-created_at"],
+                name="bill_stk_cust_created_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"STK {self.checkout_request_id or self.pk} ({self.status})"

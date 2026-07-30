@@ -36,6 +36,148 @@ class Organization(models.Model):
         null=True,
         help_text="Optional profile photo",
     )
+    pppoe_compulsory = models.BooleanField(
+        "PPPoE enforcement",
+        default=False,
+        help_text=(
+            "When enabled, free LAN browsing is blocked. Dialed PPPoE clients "
+            "keep internet; other devices can use Hotspot when it is enabled."
+        ),
+    )
+    hotspot_enabled = models.BooleanField(
+        "Enable Hotspot",
+        default=False,
+        help_text="Allow Hotspot portals and voucher access for this organization.",
+    )
+    hotspot_portal_title = models.CharField(
+        "Portal title",
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Title shown on the Hotspot login page.",
+    )
+    hotspot_login_message = models.TextField(
+        "Login message",
+        blank=True,
+        default="",
+        help_text="Welcome text shown on the Hotspot login page.",
+    )
+    hotspot_redirect_url = models.URLField(
+        "Redirect URL after login",
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="URL clients open after a successful Hotspot login.",
+    )
+    hotspot_use_welcome_page = models.BooleanField(
+        "Use ISPCENTRIC welcome page",
+        default=True,
+        help_text="After login, send clients to your customizable Hotspot welcome page.",
+    )
+    hotspot_welcome_title = models.CharField(
+        "Welcome page title",
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Headline on the post-login welcome page.",
+    )
+    hotspot_welcome_message = models.TextField(
+        "Welcome page message",
+        blank=True,
+        default="",
+        help_text="Body text on the post-login welcome page.",
+    )
+    hotspot_welcome_button_label = models.CharField(
+        "Welcome button label",
+        max_length=80,
+        blank=True,
+        default="",
+        help_text="Label for the main button on the welcome page.",
+    )
+    hotspot_welcome_button_url = models.URLField(
+        "Welcome button link",
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Optional link for the welcome page button (e.g. your website).",
+    )
+    hotspot_voucher_validity_hours = models.PositiveIntegerField(
+        "Default voucher validity (hours)",
+        default=24,
+        help_text="Default lifetime for new Hotspot vouchers.",
+    )
+    hotspot_default_download_mbps = models.PositiveIntegerField(
+        "Default download (Mbps)",
+        default=10,
+        help_text="Default download speed for new Hotspot vouchers.",
+    )
+    hotspot_default_upload_mbps = models.PositiveIntegerField(
+        "Default upload (Mbps)",
+        default=5,
+        help_text="Default upload speed for new Hotspot vouchers.",
+    )
+    hotspot_idle_timeout_minutes = models.PositiveIntegerField(
+        "Idle timeout (minutes)",
+        default=15,
+        help_text="Disconnect idle Hotspot sessions after this many minutes. Use 0 for no idle timeout.",
+    )
+
+    class MpesaPaymentType(models.TextChoices):
+        NONE = "", "Not set"
+        PAYBILL = "paybill", "Paybill"
+        TILL = "till", "Buy Goods Till"
+
+    mpesa_payment_type = models.CharField(
+        "M-Pesa payment type",
+        max_length=20,
+        choices=MpesaPaymentType.choices,
+        blank=True,
+        default="",
+        help_text="How subscribers pay for packages: Paybill or Buy Goods Till.",
+    )
+    mpesa_number = models.CharField(
+        "M-Pesa number",
+        max_length=20,
+        blank=True,
+        help_text="Paybill number or Buy Goods Till number.",
+    )
+    mpesa_account = models.CharField(
+        "Paybill account",
+        max_length=64,
+        blank=True,
+        help_text="Optional Paybill account / reference clients should enter.",
+    )
+    class DarajaEnvironment(models.TextChoices):
+        SANDBOX = "sandbox", "Sandbox"
+        PRODUCTION = "production", "Production"
+
+    daraja_enabled = models.BooleanField(
+        "Enable Daraja API",
+        default=False,
+        help_text="Receive subscription payments via M-Pesa Daraja STK Push.",
+    )
+    daraja_environment = models.CharField(
+        "Daraja environment",
+        max_length=20,
+        choices=DarajaEnvironment.choices,
+        default=DarajaEnvironment.SANDBOX,
+    )
+    daraja_consumer_key = models.CharField(
+        "Daraja consumer key",
+        max_length=255,
+        blank=True,
+    )
+    daraja_consumer_secret = models.CharField(
+        "Daraja consumer secret",
+        max_length=255,
+        blank=True,
+    )
+    daraja_passkey = models.CharField(
+        "Lipa Na M-Pesa passkey",
+        max_length=255,
+        blank=True,
+        help_text="Passkey for your Paybill or Till Lipa Na M-Pesa Online shortcode.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -65,6 +207,120 @@ class Organization(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def receives_via_label(self) -> str:
+        if self.mpesa_payment_type == self.MpesaPaymentType.PAYBILL and self.mpesa_number:
+            return f"Paybill {self.mpesa_number}"
+        if self.mpesa_payment_type == self.MpesaPaymentType.TILL and self.mpesa_number:
+            return f"Till {self.mpesa_number}"
+        return "Not set"
+
+    def uses_platform_daraja_credentials(self) -> bool:
+        """Sandbox / testing uses IT Support Payment Gateway credentials."""
+        env = (self.daraja_environment or self.DarajaEnvironment.SANDBOX).strip().lower()
+        return env != self.DarajaEnvironment.PRODUCTION
+
+    def effective_daraja_credentials(self) -> dict:
+        """
+        Credentials used for STK Push.
+
+        Testing (sandbox): IT Support Payment Gateway settings.
+        Production: this organization's own Daraja fields + Paybill/Till.
+        """
+        payment_type = (self.mpesa_payment_type or "").strip()
+        shortcode = (self.mpesa_number or "").strip()
+        environment = self.daraja_environment or self.DarajaEnvironment.SANDBOX
+
+        if not self.daraja_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "source": "none",
+                "source_label": "Off",
+                "environment": environment,
+                "payment_type": payment_type,
+                "shortcode": shortcode,
+                "consumer_key": "",
+                "consumer_secret": "",
+                "passkey": "",
+                "callback_url": "",
+                "message": "Daraja API is turned off.",
+            }
+
+        if not payment_type or not shortcode:
+            return {
+                "enabled": True,
+                "ready": False,
+                "source": "incomplete",
+                "source_label": "Incomplete",
+                "environment": environment,
+                "payment_type": payment_type,
+                "shortcode": shortcode,
+                "consumer_key": "",
+                "consumer_secret": "",
+                "passkey": "",
+                "callback_url": "",
+                "message": "Choose Paybill or Till and enter the number first.",
+            }
+
+        if self.uses_platform_daraja_credentials():
+            gateway = PaymentGateway.get_solo()
+            ready = gateway.is_stk_ready()
+            # STK BusinessShortCode/passkey must match the Daraja app on the gateway.
+            # Org Paybill/Till is the receive method shown to clients; the Lipa Na
+            # M-Pesa Online shortcode comes from IT Support Payment Gateway.
+            gw_shortcode = (gateway.shortcode or "").strip() or shortcode
+            gw_payment_type = (gateway.payment_type or "").strip() or payment_type
+            gw_environment = (
+                gateway.environment or PaymentGateway.Environment.SANDBOX
+            ).strip().lower()
+            # Live Paybill/Till shortcodes must hit api.safaricom.co.ke.
+            # Sandbox host only works with Safaricom's test shortcode 174379.
+            if gw_shortcode and gw_shortcode != "174379":
+                gw_environment = PaymentGateway.Environment.PRODUCTION
+            return {
+                "enabled": True,
+                "ready": ready,
+                "source": "it_support",
+                "source_label": "IT Support Payment Gateway",
+                "environment": gw_environment,
+                "payment_type": gw_payment_type,
+                "shortcode": gw_shortcode,
+                "consumer_key": (gateway.consumer_key or "").strip(),
+                "consumer_secret": (gateway.consumer_secret or "").strip(),
+                "passkey": (gateway.passkey or "").strip(),
+                "callback_url": gateway.resolved_callback_url(),
+                "message": (
+                    f"Using IT Support Daraja credentials ({gw_environment}) "
+                    f"with shortcode {gw_shortcode}."
+                    if ready
+                    else "IT Support Payment Gateway is not ready for STK Push."
+                ),
+            }
+
+        key = (self.daraja_consumer_key or "").strip()
+        secret = (self.daraja_consumer_secret or "").strip()
+        passkey = (self.daraja_passkey or "").strip()
+        ready = bool(key and secret and passkey)
+        return {
+            "enabled": True,
+            "ready": ready,
+            "source": "organization",
+            "source_label": "Organization credentials",
+            "environment": self.DarajaEnvironment.PRODUCTION,
+            "payment_type": payment_type,
+            "shortcode": shortcode,
+            "consumer_key": key,
+            "consumer_secret": secret,
+            "passkey": passkey,
+            "callback_url": "",
+            "message": (
+                "Using this organization's production Daraja credentials."
+                if ready
+                else "Add production consumer key, secret, and passkey."
+            ),
+        }
 
 
 class Employee(models.Model):
@@ -142,3 +398,161 @@ class Employee(models.Model):
         if self.organization_id:
             return f"{self.user.username} @ {self.organization.name}"
         return self.user.username
+
+
+class PaymentGateway(models.Model):
+    """Platform-wide payment gateway settings (singleton, managed by IT Support)."""
+
+    class Provider(models.TextChoices):
+        MPESA = "mpesa", "M-Pesa"
+
+    class Environment(models.TextChoices):
+        SANDBOX = "sandbox", "Sandbox"
+        PRODUCTION = "production", "Production"
+
+    class PaymentType(models.TextChoices):
+        NONE = "", "Not set"
+        PAYBILL = "paybill", "Paybill"
+        TILL = "till", "Buy Goods Till"
+
+    enabled = models.BooleanField(
+        "Activate STK Push",
+        default=False,
+        help_text="Turn on M-Pesa Daraja Lipa Na M-Pesa Online (STK Push) for collections.",
+    )
+    provider = models.CharField(
+        "Provider",
+        max_length=20,
+        choices=Provider.choices,
+        default=Provider.MPESA,
+    )
+    environment = models.CharField(
+        "Environment",
+        max_length=20,
+        choices=Environment.choices,
+        default=Environment.SANDBOX,
+    )
+    payment_type = models.CharField(
+        "Payment type",
+        max_length=20,
+        choices=PaymentType.choices,
+        blank=True,
+        default="",
+        help_text="Paybill (CustomerPayBillOnline) or Till (CustomerBuyGoodsOnline).",
+    )
+    shortcode = models.CharField(
+        "Business shortcode",
+        max_length=20,
+        blank=True,
+        help_text="Lipa Na M-Pesa Online shortcode (Paybill or Till).",
+    )
+    account_reference = models.CharField(
+        "Account reference",
+        max_length=64,
+        blank=True,
+        help_text="Unused. STK Push AccountReference is always the client's account number.",
+    )
+    consumer_key = models.CharField("Consumer key", max_length=255, blank=True)
+    consumer_secret = models.CharField("Consumer secret", max_length=255, blank=True)
+    passkey = models.CharField(
+        "Lipa Na M-Pesa passkey",
+        max_length=255,
+        blank=True,
+        help_text="Passkey for the Lipa Na M-Pesa Online shortcode.",
+    )
+    callback_url = models.URLField(
+        "Callback URL",
+        max_length=500,
+        blank=True,
+        help_text=(
+            "URL Safaricom calls with STK Push results. "
+            "Sandbox may use http://localhost:8000; production requires HTTPS."
+        ),
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_payment_gateway"
+        verbose_name = "Payment gateway"
+        verbose_name_plural = "Payment gateway"
+
+    STK_CALLBACK_PATH = "/api/mpesa/stk-callback/"
+    SANDBOX_BASE_URL = "http://localhost:8000"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        # Live shortcodes cannot use the sandbox API host.
+        shortcode = (self.shortcode or "").strip()
+        if shortcode and shortcode != "174379":
+            self.environment = self.Environment.PRODUCTION
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def is_stk_ready(self) -> bool:
+        """True when STK Push is activated with usable Daraja credentials."""
+        return bool(
+            self.enabled
+            and (self.consumer_key or "").strip()
+            and (self.consumer_secret or "").strip()
+            and (self.passkey or "").strip()
+            and (self.shortcode or "").strip()
+        )
+
+    @classmethod
+    def sandbox_base_url(cls) -> str:
+        from django.conf import settings
+
+        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+        if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
+            return base
+        return cls.SANDBOX_BASE_URL
+
+    @classmethod
+    def default_callback_url(cls, environment: str = "") -> str:
+        env = (environment or "").strip().lower()
+        if env == cls.Environment.SANDBOX or not env:
+            return f"{cls.sandbox_base_url()}{cls.STK_CALLBACK_PATH}"
+        from django.conf import settings
+
+        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+        if base:
+            return f"{base}{cls.STK_CALLBACK_PATH}"
+        return ""
+
+    def resolved_callback_url(self) -> str:
+        url = (self.callback_url or "").strip()
+        if url:
+            return self.normalize_callback_url(url)
+        shortcode = (self.shortcode or "").strip()
+        env = self.environment
+        if shortcode and shortcode != "174379":
+            env = self.Environment.PRODUCTION
+        return self.default_callback_url(env)
+
+    @classmethod
+    def normalize_callback_url(cls, url: str) -> str:
+        """Ensure a callback base like http://localhost:8000 includes the STK path."""
+        raw = (url or "").strip()
+        if not raw:
+            return ""
+        path = cls.STK_CALLBACK_PATH
+        path_noslash = path.rstrip("/")
+        if path_noslash in raw:
+            return raw
+        return f"{raw.rstrip('/')}{path}"
+
+    @staticmethod
+    def account_reference_for_client(customer) -> str:
+        """STK Push AccountReference is always the client's account number."""
+        return (getattr(customer, "account_number", None) or "").strip()
+
+    def __str__(self):
+        status = "enabled" if self.enabled else "disabled"
+        return f"{self.get_provider_display()} ({status})"

@@ -1,0 +1,116 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% if invalid %}Renew link invalid{% elif expired %}Renew subscription{% else %}Subscription{% endif %} — ISPCENTRIC</title>
+  <link rel="stylesheet" href="{% static 'css/main.css' %}?v=75">
+  <style>
+    .renew-page { min-height: 100vh; margin: 0; }
+    .renew-popup[open] {
+      position: fixed;
+      inset: 0;
+      width: min(100% - 2rem, 24rem);
+      margin: auto;
+      border: 0;
+      border-radius: 1.1rem;
+      padding: 1.4rem 1.25rem 1.15rem;
+      background: #f7f9fc;
+      color: #142033;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    }
+    .renew-pay {
+      margin-top: 0.85rem;
+      padding: 0.85rem 0.9rem;
+      border-radius: 0.85rem;
+      background: #eef4ff;
+      text-align: left;
+    }
+    .renew-pay-title {
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #3b5bdb;
+      font-weight: 700;
+      margin: 0 0 0.45rem;
+    }
+    .renew-pay p { margin: 0.2rem 0; }
+  </style>
+</head>
+<body class="renew-page">
+  <div class="renew-page-bg" aria-hidden="true"></div>
+  <main class="renew-shell">
+    <dialog class="renew-popup" id="renew-popup">
+      <div class="renew-popup-brand">{{ org_name }}</div>
+      {% if invalid %}
+        <h1>Link not valid</h1>
+        <p>This renew link is invalid or expired. Contact your internet provider for help.</p>
+      {% elif allowed %}
+        <h1>You are covered</h1>
+        <p>
+          <strong>{{ customer.full_name }}</strong> — account {{ customer.account_number }} —
+          can use the internet for the current package period.
+        </p>
+        {% if customer.package_start and customer.package_end %}
+          <p class="renew-period">
+            {{ customer.package_start|date:"M j, Y" }} → {{ customer.package_end|date:"M j, Y" }}
+            {% if plan %} · {{ plan.name }}{% endif %}
+          </p>
+        {% endif %}
+      {% elif not_started %}
+        <h1>Package not started yet</h1>
+        <p>
+          Hi {{ customer.full_name }}. Your package starts on
+          <strong>{{ customer.package_start|date:"M j, Y" }}</strong>.
+          Internet will unlock on that day.
+        </p>
+      {% else %}
+        <h1>Renew your subscription</h1>
+        <p>
+          Hi {{ customer.full_name }}. Your internet package
+          {% if customer.package_end %}
+            ended on <strong>{{ customer.package_end|date:"M j, Y" }}</strong>
+          {% else %}
+            is not active
+          {% endif %}.
+        </p>
+        <p class="renew-hint">You can join Wi‑Fi, but browsing is blocked until you renew this package.</p>
+        {% if plan %}
+          <p class="renew-period">Last plan: {{ plan.name }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}</p>
+        {% endif %}
+        {% if organization and organization.mpesa_payment_type and organization.mpesa_number %}
+          <div class="renew-pay">
+            <p class="renew-pay-title">Pay with M-Pesa</p>
+            {% if organization.mpesa_payment_type == "paybill" %}
+              <p><strong>Paybill:</strong> {{ organization.mpesa_number }}</p>
+              <p><strong>Account:</strong> {{ organization.mpesa_account|default:customer.account_number }}</p>
+            {% else %}
+              <p><strong>Buy Goods Till:</strong> {{ organization.mpesa_number }}</p>
+            {% endif %}
+            {% if plan and plan.price %}<p><strong>Amount:</strong> {{ plan.price }}</p>{% endif %}
+          </div>
+        {% endif %}
+      {% endif %}
+      {% if not invalid %}
+        <p class="renew-account">Account {{ customer.account_number }}</p>
+      {% endif %}
+      <form method="dialog">
+        <button type="submit" class="btn btn-primary renew-popup-ok">OK</button>
+      </form>
+    </dialog>
+  </main>
+  <script>
+    (function () {
+      var dialog = document.getElementById("renew-popup");
+      if (!dialog) return;
+      try {
+        if (typeof dialog.showModal === "function") dialog.showModal();
+        else dialog.setAttribute("open", "open");
+      } catch (e) {
+        dialog.setAttribute("open", "open");
+      }
+    })();
+  </script>
+</body>
+</html>

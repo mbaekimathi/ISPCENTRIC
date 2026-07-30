@@ -1,0 +1,371 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit"
+         data-stk-live-root
+         data-status-url="{% url 'roles:it_support_payment_gateway_status' %}">
+  <div class="org-edit-intro">
+    <div class="org-edit-hero">
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">M-Pesa · Daraja</p>
+        <h2>STK Push</h2>
+        <div class="org-edit-meta">
+          {% if gateway.enabled %}
+            <span class="org-status org-status-active">Activated</span>
+          {% else %}
+            <span class="org-status org-status-suspended">Inactive</span>
+          {% endif %}
+          <span class="org-edit-meta-item">{{ gateway.get_environment_display }}</span>
+          {% if gateway.updated_at %}
+            <span class="org-edit-meta-item">Updated {{ gateway.updated_at|date:"d M Y H:i" }}</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stk-live-panel" data-stk-live-panel data-status="checking" aria-live="polite">
+    <div class="stk-live-panel-head">
+      <div>
+        <p class="org-edit-kicker">Live configuration check</p>
+        <h3 data-stk-live-summary>Checking Daraja configuration…</h3>
+      </div>
+      <span class="mikrotik-wifi-pill is-off" data-stk-live-pill>Checking</span>
+    </div>
+    <p class="stk-live-meta" data-stk-live-meta>Contacting Safaricom Daraja…</p>
+    <ul class="stk-live-checks" data-stk-live-checks></ul>
+  </div>
+
+  <div class="settings-policy-banner" data-sandbox-banner {% if gateway.environment != "sandbox" and form.environment.value != "sandbox" %}hidden{% endif %}>
+    Sandbox testing is enabled for <strong>{{ sandbox_base_url }}</strong>.
+    Use callback <code>{{ sandbox_callback_url }}</code> while developing locally.
+  </div>
+
+  <form method="post" class="org-edit-form" id="stk-push-form" novalidate
+        data-sandbox-callback="{{ sandbox_callback_url }}"
+        data-sandbox-base="{{ sandbox_base_url }}">
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="notice notice-error">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="org-edit-panel settings-policy-panel{% if gateway.enabled or form.enabled.value %} is-policy-on{% endif %}" data-stk-activate-panel>
+      <header class="org-edit-panel-head settings-policy-head">
+        <div>
+          <h3>Activate STK Push</h3>
+          <p>Turn on Safaricom Daraja Lipa Na M-Pesa Online so the platform can prompt phones to pay.</p>
+        </div>
+        <span class="mikrotik-wifi-pill{% if gateway.enabled or form.enabled.value %} is-on{% else %} is-off{% endif %}" data-stk-status-pill>
+          {% if gateway.enabled or form.enabled.value %}On{% else %}Off{% endif %}
+        </span>
+      </header>
+
+      <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.enabled.id_for_label }}">
+        {{ form.enabled }}
+        <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+        <span class="mikrotik-wifi-switch-text" data-stk-switch-label>
+          {% if gateway.enabled or form.enabled.value %}Activated{% else %}Inactive{% endif %}
+        </span>
+      </label>
+      {% if form.enabled.help_text %}<p class="settings-policy-hint">{{ form.enabled.help_text }}</p>{% endif %}
+      {% if form.enabled.errors %}<div class="field-error">{{ form.enabled.errors|striptags }}</div>{% endif %}
+    </div>
+
+    <div class="org-edit-panel" data-stk-credentials {% if not gateway.enabled and not form.enabled.value and not form.errors %}hidden{% endif %}>
+      <header class="org-edit-panel-head">
+        <h3>STK Push credentials</h3>
+        <p>Enter the Daraja app credentials used to set up and send STK Push requests.</p>
+      </header>
+
+      <div class="form-group">
+        <label for="{{ form.environment.id_for_label }}">{{ form.environment.label }}</label>
+        {{ form.environment }}
+        {% if form.environment.help_text %}<p class="field-hint">{{ form.environment.help_text }}</p>{% endif %}
+        {% if form.environment.errors %}<div class="field-error">{{ form.environment.errors|striptags }}</div>{% endif %}
+      </div>
+
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.payment_type.id_for_label }}">{{ form.payment_type.label }}</label>
+          {{ form.payment_type }}
+          {% if form.payment_type.help_text %}<p class="field-hint">{{ form.payment_type.help_text }}</p>{% endif %}
+          {% if form.payment_type.errors %}<div class="field-error">{{ form.payment_type.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.shortcode.id_for_label }}" data-gateway-shortcode-label>{{ form.shortcode.label }}</label>
+          {{ form.shortcode }}
+          {% if form.shortcode.help_text %}<p class="field-hint">{{ form.shortcode.help_text }}</p>{% endif %}
+          {% if form.shortcode.errors %}<div class="field-error">{{ form.shortcode.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Account reference</label>
+        <p class="form-control" style="display:flex;align-items:center;min-height:2.5rem;margin:0;">
+          Client account number
+        </p>
+        <p class="field-hint">
+          STK Push <strong>AccountReference</strong> always uses the paying client’s account number
+          (for example <code>CLT-0001-A1B2C3</code>), not a fixed gateway value.
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.consumer_key.id_for_label }}">{{ form.consumer_key.label }}</label>
+        {{ form.consumer_key }}
+        {% if form.consumer_key.help_text %}<p class="field-hint">{{ form.consumer_key.help_text }}</p>{% endif %}
+        {% if form.consumer_key.errors %}<div class="field-error">{{ form.consumer_key.errors|striptags }}</div>{% endif %}
+      </div>
+
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.consumer_secret.id_for_label }}">{{ form.consumer_secret.label }}</label>
+          {{ form.consumer_secret }}
+          {% if form.consumer_secret.help_text %}<p class="field-hint">{{ form.consumer_secret.help_text }}</p>{% endif %}
+          {% if form.consumer_secret.errors %}<div class="field-error">{{ form.consumer_secret.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.passkey.id_for_label }}">{{ form.passkey.label }}</label>
+          {{ form.passkey }}
+          {% if form.passkey.help_text %}<p class="field-hint">{{ form.passkey.help_text }}</p>{% endif %}
+          {% if form.passkey.errors %}<div class="field-error">{{ form.passkey.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="{{ form.callback_url.id_for_label }}">{{ form.callback_url.label }}</label>
+        {{ form.callback_url }}
+        {% if form.callback_url.help_text %}<p class="field-hint">{{ form.callback_url.help_text }}</p>{% endif %}
+        {% if form.callback_url.errors %}<div class="field-error">{{ form.callback_url.errors|striptags }}</div>{% endif %}
+        <p class="field-hint" data-sandbox-callback-hint>
+          Local sandbox callback:
+          <button type="button" class="btn btn-ghost" style="padding:0.15rem 0.5rem;margin-left:0.35rem;" data-use-sandbox-callback>
+            Use {{ sandbox_callback_url }}
+          </button>
+        </p>
+      </div>
+    </div>
+
+    <div class="org-edit-actions">
+      <button type="submit" class="btn btn-primary">Save STK Push settings</button>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Back to dashboard</a>
+    </div>
+  </form>
+</section>
+<script>
+(function () {
+  var root = document.querySelector("[data-stk-live-root]");
+  var form = document.getElementById("stk-push-form");
+  var enabledInput = document.getElementById("id_gateway_enabled");
+  var envSelect = document.getElementById("id_gateway_environment");
+  var callbackInput = document.getElementById("id_gateway_callback_url");
+  var credentials = document.querySelector("[data-stk-credentials]");
+  var activatePanel = document.querySelector("[data-stk-activate-panel]");
+  var statusPill = document.querySelector("[data-stk-status-pill]");
+  var switchLabel = document.querySelector("[data-stk-switch-label]");
+  var sandboxBanner = document.querySelector("[data-sandbox-banner]");
+  var sandboxHint = document.querySelector("[data-sandbox-callback-hint]");
+  var useSandboxBtn = document.querySelector("[data-use-sandbox-callback]");
+  var typeSelect = document.getElementById("id_gateway_payment_type");
+  var shortcodeLabel = document.querySelector("[data-gateway-shortcode-label]");
+  var livePanel = document.querySelector("[data-stk-live-panel]");
+  var liveSummary = document.querySelector("[data-stk-live-summary]");
+  var liveMeta = document.querySelector("[data-stk-live-meta]");
+  var livePill = document.querySelector("[data-stk-live-pill]");
+  var liveChecks = document.querySelector("[data-stk-live-checks]");
+  var sandboxCallback = form ? (form.getAttribute("data-sandbox-callback") || "") : "";
+  var statusUrl = root ? (root.getAttribute("data-status-url") || "") : "";
+  var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
+  var checkTimer = null;
+  var pollTimer = null;
+  var requestSeq = 0;
+
+  function isSandbox() {
+    return !!(envSelect && envSelect.value === "sandbox");
+  }
+
+  function isLocalCallback(url) {
+    return /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(url || "");
+  }
+
+  function syncActivate() {
+    var on = !!(enabledInput && enabledInput.checked);
+    if (credentials) credentials.hidden = !on;
+    if (activatePanel) activatePanel.classList.toggle("is-policy-on", on);
+    if (statusPill) {
+      statusPill.textContent = on ? "On" : "Off";
+      statusPill.classList.toggle("is-on", on);
+      statusPill.classList.toggle("is-off", !on);
+    }
+    if (switchLabel) switchLabel.textContent = on ? "Activated" : "Inactive";
+  }
+
+  function syncEnvironment() {
+    var sandbox = isSandbox();
+    if (sandboxBanner) sandboxBanner.hidden = !sandbox;
+    if (sandboxHint) sandboxHint.hidden = !sandbox;
+    if (sandbox && callbackInput) {
+      var current = (callbackInput.value || "").trim();
+      if (!current || isLocalCallback(current) || current.indexOf("/api/mpesa/stk-callback/") !== -1) {
+        callbackInput.value = sandboxCallback;
+      }
+    }
+  }
+
+  function syncPaymentType() {
+    if (!typeSelect || !shortcodeLabel) return;
+    var type = (typeSelect.value || "").toLowerCase();
+    shortcodeLabel.textContent = type === "till"
+      ? "Till shortcode"
+      : type === "paybill"
+        ? "Paybill shortcode"
+        : "Business shortcode";
+  }
+
+  function statusLabel(status) {
+    if (status === "ok") return "Configured";
+    if (status === "inactive") return "Inactive";
+    if (status === "incomplete") return "Incomplete";
+    if (status === "invalid") return "Invalid";
+    if (status === "unreachable") return "Unreachable";
+    if (status === "checking") return "Checking";
+    return "Error";
+  }
+
+  function renderLive(data) {
+    if (!livePanel) return;
+    var status = (data && data.status) || "error";
+    livePanel.setAttribute("data-status", status);
+    if (liveSummary) liveSummary.textContent = (data && data.summary) || "Could not verify configuration.";
+    if (livePill) {
+      livePill.textContent = statusLabel(status);
+      livePill.classList.toggle("is-on", status === "ok");
+      livePill.classList.toggle("is-off", status !== "ok");
+    }
+    if (liveMeta) {
+      var env = (data && data.environment) || "sandbox";
+      var live = data && data.checked_live ? "Live Daraja check" : "Local checks only";
+      liveMeta.textContent = env.charAt(0).toUpperCase() + env.slice(1) + " · " + live + " · updated just now";
+    }
+    if (liveChecks) {
+      liveChecks.innerHTML = "";
+      ((data && data.checks) || []).forEach(function (item) {
+        var li = document.createElement("li");
+        li.className = item.ok ? "is-ok" : "is-bad";
+        li.innerHTML = "<strong>" + (item.label || item.key || "Check") + "</strong> " + (item.message || "");
+        liveChecks.appendChild(li);
+      });
+    }
+  }
+
+  function setChecking() {
+    renderLive({
+      status: "checking",
+      summary: "Checking Daraja configuration…",
+      environment: envSelect ? envSelect.value : "sandbox",
+      checked_live: true,
+      checks: []
+    });
+    if (liveMeta) liveMeta.textContent = "Contacting Safaricom Daraja…";
+  }
+
+  function formPayload() {
+    var body = new FormData();
+    if (csrfInput) body.append("csrfmiddlewaretoken", csrfInput.value);
+    body.append("live", "1");
+    body.append("enabled", enabledInput && enabledInput.checked ? "on" : "");
+    ["environment", "payment_type", "shortcode", "consumer_key", "consumer_secret", "passkey", "callback_url"].forEach(function (name) {
+      var el = form ? form.querySelector("[name='" + name + "']") : null;
+      body.append(name, el ? el.value : "");
+    });
+    return body;
+  }
+
+  function runLiveCheck() {
+    if (!statusUrl) return;
+    var seq = ++requestSeq;
+    setChecking();
+    fetch(statusUrl, {
+      method: "POST",
+      body: formPayload(),
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest" }
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("Status " + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        if (seq !== requestSeq) return;
+        renderLive(data || {});
+      })
+      .catch(function () {
+        if (seq !== requestSeq) return;
+        renderLive({
+          status: "error",
+          summary: "Could not run the live configuration check.",
+          environment: envSelect ? envSelect.value : "sandbox",
+          checked_live: false,
+          checks: [{ key: "network", ok: false, label: "Live check", message: "Request failed. Try again." }]
+        });
+      });
+  }
+
+  function scheduleLiveCheck(delay) {
+    if (checkTimer) window.clearTimeout(checkTimer);
+    checkTimer = window.setTimeout(runLiveCheck, typeof delay === "number" ? delay : 700);
+  }
+
+  if (enabledInput) {
+    enabledInput.addEventListener("change", function () {
+      syncActivate();
+      scheduleLiveCheck(250);
+    });
+    syncActivate();
+  }
+  if (envSelect) {
+    envSelect.addEventListener("change", function () {
+      syncEnvironment();
+      scheduleLiveCheck(250);
+    });
+    syncEnvironment();
+  }
+  if (typeSelect) {
+    typeSelect.addEventListener("change", function () {
+      syncPaymentType();
+      scheduleLiveCheck(250);
+    });
+    syncPaymentType();
+  }
+  if (useSandboxBtn && callbackInput) {
+    useSandboxBtn.addEventListener("click", function () {
+      callbackInput.value = sandboxCallback;
+      if (envSelect) envSelect.value = "sandbox";
+      syncEnvironment();
+      scheduleLiveCheck(150);
+    });
+  }
+  if (form) {
+    form.querySelectorAll("input, select, textarea").forEach(function (el) {
+      el.addEventListener("input", function () { scheduleLiveCheck(800); });
+      el.addEventListener("change", function () { scheduleLiveCheck(300); });
+    });
+  }
+
+  runLiveCheck();
+  pollTimer = window.setInterval(runLiveCheck, 20000);
+  window.addEventListener("beforeunload", function () {
+    if (checkTimer) window.clearTimeout(checkTimer);
+    if (pollTimer) window.clearInterval(pollTimer);
+  });
+})();
+</script>
+{% endblock %}

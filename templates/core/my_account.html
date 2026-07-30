@@ -3,69 +3,379 @@
 {% block title %}My account — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="account-page-shell">
+  <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-{% if organization %}
-  <section class="panel org-edit-panel">
-    <div class="org-edit-hero">
-      {% if organization.profile_photo %}
-        <img class="org-edit-avatar" src="{{ organization.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
-      {% else %}
-        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
+  {% if not organization %}
+    <section class="panel">
+      <p class="empty">No organization is linked to this account yet.</p>
+    </section>
+  {% else %}
+    <div class="account-page" id="account-page"
+         data-platform-ready="{{ platform_gateway_ready|yesno:'1,0' }}">
+
+      {% if daraja_status %}
+        <section class="panel account-card account-status-card" data-account-status
+                 data-ready="{{ daraja_status.ready|yesno:'1,0' }}"
+                 data-enabled="{{ daraja_status.enabled|yesno:'1,0' }}">
+          <header class="account-card-head">
+            <div>
+              <h3>Payment status</h3>
+              <p>{{ daraja_status.message }}</p>
+            </div>
+            {% if daraja_status.ready %}
+              <span class="mikrotik-wifi-pill is-on">Ready</span>
+            {% elif daraja_status.enabled %}
+              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+            {% else %}
+              <span class="mikrotik-wifi-pill is-off">Manual only</span>
+            {% endif %}
+          </header>
+          <div class="account-summary-grid">
+            <div class="account-summary-item">
+              <span>Receives via</span>
+              <strong>{{ organization.receives_via_label }}</strong>
+            </div>
+            <div class="account-summary-item">
+              <span>Account reference</span>
+              <strong>Client account number</strong>
+            </div>
+            <div class="account-summary-item">
+              <span>Daraja</span>
+              <strong>
+                {% if daraja_status.enabled %}
+                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
+                {% else %}
+                  Off
+                {% endif %}
+              </strong>
+            </div>
+            <div class="account-summary-item">
+              <span>STK Push</span>
+              <strong>{% if daraja_status.ready %}Ready{% else %}Not ready{% endif %}</strong>
+            </div>
+          </div>
+        </section>
       {% endif %}
-      <div class="org-edit-hero-copy">
-        <p class="org-edit-kicker">Organization</p>
-        <h2>{{ organization.name }}</h2>
-        <p>{{ organization.get_status_display }} · Join code {{ organization.join_code }}</p>
-      </div>
+
+      {% if form and can_edit %}
+        <form method="post" enctype="multipart/form-data" class="account-page-form" id="org-account-form" novalidate>
+          {% csrf_token %}
+
+          {% if form.non_field_errors %}
+            <div class="notice notice-error">{{ form.non_field_errors }}</div>
+          {% endif %}
+
+          <section class="panel account-card">
+            <header class="account-card-head">
+              <div>
+                <h3>1. Company profile</h3>
+                <p>Name, contact details, and logo shown across your workspace.</p>
+              </div>
+            </header>
+            <div class="account-card-grid">
+              <div class="field">
+                <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+                {{ form.name }}
+                {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+                {{ form.phone }}
+                {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
+                {{ form.status }}
+                {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field account-photo-field">
+                <span class="org-edit-file-label">Profile photo</span>
+                <div class="account-photo-row">
+                  {% if organization.profile_photo %}
+                    <img class="org-edit-photo-preview" data-photo-preview src="{{ organization.profile_photo.url }}" alt="Current photo" width="64" height="64" loading="lazy" decoding="async">
+                  {% else %}
+                    <span class="org-edit-photo-preview org-edit-avatar-fallback" data-photo-fallback aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
+                    <img class="org-edit-photo-preview" data-photo-preview hidden alt="" width="64" height="64">
+                  {% endif %}
+                  <div class="account-photo-picker">
+                    <label class="btn btn-ghost account-photo-btn" for="{{ form.profile_photo.id_for_label }}">Choose photo</label>
+                    {{ form.profile_photo }}
+                  </div>
+                </div>
+                {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
+              </div>
+            </div>
+          </section>
+
+          <section class="panel account-card">
+            <header class="account-card-head">
+              <div>
+                <h3>2. Receive subscription money</h3>
+                <p>Choose Paybill or Buy Goods Till, then enter the number that receives client payments.</p>
+              </div>
+            </header>
+
+            <div class="field account-receive-field">
+              <span class="account-receive-label">{{ form.mpesa_payment_type.label }}</span>
+              <div class="account-receive-options" role="radiogroup" aria-label="Receive via">
+                <button type="button" class="account-receive-option" data-receive-value="paybill" aria-pressed="false">
+                  <span class="account-receive-option-title">Paybill</span>
+                  <span class="account-receive-option-copy">M-Pesa Paybill shortcode for subscription collections.</span>
+                </button>
+                <button type="button" class="account-receive-option" data-receive-value="till" aria-pressed="false">
+                  <span class="account-receive-option-title">Buy Goods Till</span>
+                  <span class="account-receive-option-copy">Buy Goods Till number for subscription collections.</span>
+                </button>
+              </div>
+              <div class="visually-hidden">{{ form.mpesa_payment_type }}</div>
+              {% if form.mpesa_payment_type.errors %}<div class="field-error">{{ form.mpesa_payment_type.errors|striptags }}</div>{% endif %}
+            </div>
+
+            <div class="account-card-grid" data-receive-details hidden>
+              <div class="field">
+                <label for="{{ form.mpesa_number.id_for_label }}" data-mpesa-number-label>{{ form.mpesa_number.label }}</label>
+                {{ form.mpesa_number }}
+                {% if form.mpesa_number.help_text %}<p class="field-hint">{{ form.mpesa_number.help_text }}</p>{% endif %}
+                {% if form.mpesa_number.errors %}<div class="field-error">{{ form.mpesa_number.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field" data-mpesa-account-field hidden>
+                <label for="{{ form.mpesa_account.id_for_label }}">{{ form.mpesa_account.label }}</label>
+                {{ form.mpesa_account }}
+                {% if form.mpesa_account.help_text %}<p class="field-hint">{{ form.mpesa_account.help_text }}</p>{% endif %}
+                {% if form.mpesa_account.errors %}<div class="field-error">{{ form.mpesa_account.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label>STK account reference</label>
+                <p class="account-readonly">Client account number</p>
+                <p class="field-hint">Every subscriber pays with their own account number as the M-Pesa reference.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel account-card account-daraja-card" data-daraja-card>
+            <header class="account-card-head account-daraja-head">
+              <div>
+                <h3>3. Daraja STK Push</h3>
+                <p>Prompt phones to pay your Paybill or Till automatically after package renewals.</p>
+              </div>
+              <span class="mikrotik-wifi-pill is-off" data-daraja-pill>Off</span>
+            </header>
+
+            <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.daraja_enabled.id_for_label }}">
+              {{ form.daraja_enabled }}
+              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+              <span class="mikrotik-wifi-switch-text" data-daraja-switch-label>Daraja disabled</span>
+            </label>
+            {% if form.daraja_enabled.help_text %}<p class="settings-policy-hint">{{ form.daraja_enabled.help_text }}</p>{% endif %}
+            {% if form.daraja_enabled.errors %}<div class="field-error">{{ form.daraja_enabled.errors|striptags }}</div>{% endif %}
+            <p class="field-hint" data-daraja-blocked-hint hidden></p>
+
+            <div class="account-daraja-body" data-daraja-body hidden>
+              <div class="account-subsection">
+                <h4>Mode</h4>
+                <div class="account-card-grid">
+                  <div class="field">
+                    <label for="{{ form.daraja_environment.id_for_label }}">{{ form.daraja_environment.label }}</label>
+                    {{ form.daraja_environment }}
+                    {% if form.daraja_environment.help_text %}<p class="field-hint">{{ form.daraja_environment.help_text }}</p>{% endif %}
+                    {% if form.daraja_environment.errors %}<div class="field-error">{{ form.daraja_environment.errors|striptags }}</div>{% endif %}
+                  </div>
+                </div>
+              </div>
+
+              <div class="account-subsection" data-sandbox-creds>
+                <h4>Sandbox / testing</h4>
+                <div class="settings-policy-banner" style="margin:0;">
+                  {% if platform_gateway_ready %}
+                    Uses credentials from <strong>IT Support → Payment Gateway</strong>
+                    ({{ platform_gateway.get_environment_display }} · shortcode {{ platform_gateway.shortcode|default:"—" }}).
+                    Your Paybill/Till above is still used as the collection number shown to clients.
+                  {% else %}
+                    IT Support Payment Gateway is not ready yet.
+                    Ask IT Support to activate STK Push and save Daraja credentials before testing.
+                  {% endif %}
+                </div>
+              </div>
+
+              <div class="account-subsection" data-production-creds hidden>
+                <h4>Production credentials</h4>
+                <p>Your own Safaricom Daraja app credentials for live collections.</p>
+                <div class="account-card-grid">
+                  <div class="field">
+                    <label for="{{ form.daraja_consumer_key.id_for_label }}">{{ form.daraja_consumer_key.label }}</label>
+                    {{ form.daraja_consumer_key }}
+                    {% if form.daraja_consumer_key.errors %}<div class="field-error">{{ form.daraja_consumer_key.errors|striptags }}</div>{% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.daraja_consumer_secret.id_for_label }}">{{ form.daraja_consumer_secret.label }}</label>
+                    {{ form.daraja_consumer_secret }}
+                    {% if form.daraja_consumer_secret.errors %}<div class="field-error">{{ form.daraja_consumer_secret.errors|striptags }}</div>{% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.daraja_passkey.id_for_label }}">{{ form.daraja_passkey.label }}</label>
+                    {{ form.daraja_passkey }}
+                    {% if form.daraja_passkey.errors %}<div class="field-error">{{ form.daraja_passkey.errors|striptags }}</div>{% endif %}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <div class="account-page-actions">
+            <button type="submit" class="btn btn-primary">Save account</button>
+          </div>
+        </form>
+      {% else %}
+        <section class="panel account-card">
+          <header class="account-card-head">
+            <div>
+              <h3>Company profile</h3>
+              <p>Read-only organization details.</p>
+            </div>
+          </header>
+          <dl class="account-session-rows">
+            <div class="account-session-row"><span>Phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
+            <div class="account-session-row"><span>Email</span><strong>{{ organization.owner.email|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Receives via</span><strong>{{ organization.receives_via_label }}</strong></div>
+            <div class="account-session-row">
+              <span>Daraja</span>
+              <strong>
+                {% if daraja_status.enabled %}
+                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
+                {% else %}
+                  Off
+                {% endif %}
+              </strong>
+            </div>
+          </dl>
+        </section>
+      {% endif %}
     </div>
 
     {% if form and can_edit %}
-      <form method="post" enctype="multipart/form-data" class="org-edit-form" style="margin-top:1.25rem;">
-        {% csrf_token %}
-        <div class="form-grid">
-          <div class="field">
-            <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
-            {{ form.name }}
-            {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
-            {{ form.phone }}
-            {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
-            {{ form.status }}
-            {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field org-edit-photo-field">
-            <span class="org-edit-file-label">Profile photo</span>
-            {% if organization.profile_photo %}
-              <img class="org-edit-photo-preview" src="{{ organization.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
-            {% endif %}
-            <label class="org-edit-file" for="{{ form.profile_photo.id_for_label }}">
-              Choose photo
-            </label>
-            {{ form.profile_photo }}
-            {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
-          </div>
-        </div>
-        <div class="form-actions" style="margin-top:1rem;">
-          <button type="submit" class="btn btn-primary">Save account</button>
-        </div>
-      </form>
-    {% else %}
-      <dl class="account-session-rows" style="margin-top:1rem;">
-        <div class="account-session-row"><span>Phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
-        <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
-        <div class="account-session-row"><span>Email</span><strong>{{ organization.owner.email|default:"—" }}</strong></div>
-      </dl>
+    <script>
+    (function () {
+      var form = document.getElementById("org-account-form");
+      if (!form) return;
+
+      var enabled = document.getElementById("id_daraja_enabled");
+      var envSelect = document.getElementById("id_daraja_environment");
+      var typeSelect = document.getElementById("id_mpesa_payment_type");
+      var numberInput = document.getElementById("id_mpesa_number");
+      var accountInput = document.getElementById("id_mpesa_account");
+      var photoInput = document.getElementById("id_profile_photo");
+      var photoPreview = form.querySelector("[data-photo-preview]");
+      var photoFallback = form.querySelector("[data-photo-fallback]");
+      var card = form.querySelector("[data-daraja-card]");
+      var body = form.querySelector("[data-daraja-body]");
+      var pill = form.querySelector("[data-daraja-pill]");
+      var switchLabel = form.querySelector("[data-daraja-switch-label]");
+      var blockedHint = form.querySelector("[data-daraja-blocked-hint]");
+      var sandboxCreds = form.querySelector("[data-sandbox-creds]");
+      var productionCreds = form.querySelector("[data-production-creds]");
+      var receiveDetails = form.querySelector("[data-receive-details]");
+      var accountField = form.querySelector("[data-mpesa-account-field]");
+      var numberLabel = form.querySelector("[data-mpesa-number-label]");
+      var receiveOptions = form.querySelectorAll("[data-receive-value]");
+
+      function receiveReady() {
+        var type = (typeSelect && typeSelect.value || "").trim();
+        var number = (numberInput && numberInput.value || "").trim();
+        return !!(type && number);
+      }
+
+      function syncReceive() {
+        var type = (typeSelect && typeSelect.value || "").toLowerCase();
+        receiveOptions.forEach(function (btn) {
+          var selected = btn.getAttribute("data-receive-value") === type;
+          btn.classList.toggle("is-selected", selected);
+          btn.setAttribute("aria-pressed", selected ? "true" : "false");
+        });
+        if (receiveDetails) receiveDetails.hidden = !type;
+        if (numberLabel) {
+          numberLabel.textContent = type === "till"
+            ? "Buy Goods Till number"
+            : type === "paybill"
+              ? "Paybill number"
+              : "Paybill / Till number";
+        }
+        if (accountField) {
+          accountField.hidden = type !== "paybill";
+          if (type !== "paybill" && accountInput) accountInput.value = "";
+        }
+        syncDaraja();
+      }
+
+      function syncEnvironment() {
+        var production = !!(envSelect && envSelect.value === "production");
+        if (sandboxCreds) sandboxCreds.hidden = production;
+        if (productionCreds) productionCreds.hidden = !production;
+      }
+
+      function syncDaraja() {
+        var on = !!(enabled && enabled.checked);
+        var ready = receiveReady();
+        if (blockedHint) {
+          blockedHint.hidden = !on || ready;
+          blockedHint.textContent = ready
+            ? ""
+            : "Also complete step 2: select Paybill or Till and enter the number, then save.";
+        }
+        if (body) body.hidden = !on;
+        if (card) card.classList.toggle("is-daraja-on", on);
+        if (pill) {
+          pill.textContent = on ? "On" : "Off";
+          pill.classList.toggle("is-on", on);
+          pill.classList.toggle("is-off", !on);
+        }
+        if (switchLabel) switchLabel.textContent = on ? "Daraja enabled" : "Daraja disabled";
+        syncEnvironment();
+      }
+
+      receiveOptions.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (!typeSelect) return;
+          typeSelect.value = btn.getAttribute("data-receive-value") || "";
+          typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+          if (receiveDetails) {
+            receiveDetails.hidden = false;
+            if (numberInput) numberInput.focus();
+          }
+        });
+      });
+
+      if (typeSelect) typeSelect.addEventListener("change", syncReceive);
+      if (numberInput) {
+        numberInput.addEventListener("input", syncDaraja);
+        numberInput.addEventListener("change", syncDaraja);
+      }
+      if (enabled) {
+        enabled.addEventListener("change", function () {
+          syncDaraja();
+          if (enabled.checked && !receiveReady() && receiveDetails) {
+            receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        });
+      }
+      if (envSelect) envSelect.addEventListener("change", syncEnvironment);
+
+      if (photoInput && photoPreview) {
+        photoInput.addEventListener("change", function () {
+          var file = photoInput.files && photoInput.files[0];
+          if (!file) return;
+          var url = URL.createObjectURL(file);
+          photoPreview.src = url;
+          photoPreview.hidden = false;
+          if (photoFallback) photoFallback.hidden = true;
+        });
+      }
+
+      syncReceive();
+    })();
+    </script>
     {% endif %}
-  </section>
-{% else %}
-  <section class="panel">
-    <p class="empty">No organization is linked to this account yet.</p>
-  </section>
-{% endif %}
+  {% endif %}
+</div>
 {% endblock %}

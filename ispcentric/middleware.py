@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+from urllib.parse import urlparse
 
 from django.http import HttpResponseServerError
 
@@ -18,6 +19,53 @@ _SCHEMA_HINT_RE = re.compile(
     r"unknown column|doesn't exist|does not exist|no such table|table .* not found",
     re.IGNORECASE,
 )
+
+CAPTIVE_PROBE_HOSTS = {
+    "www.msftconnecttest.com",
+    "msftconnecttest.com",
+    "dns.msftncsi.com",
+    "connectivitycheck.gstatic.com",
+    "clients3.google.com",
+    "captive.apple.com",
+    "www.apple.com",
+    "detectportal.firefox.com",
+    "neverssl.com",
+    "example.com",
+}
+
+
+class CaptiveHostRewriteMiddleware:
+    """
+    Rewrite foreign Host headers from captive probes / transparent NAT.
+
+    Expired PPPoE clients are dst-nat'd to Django with Host: www.msftconnect…
+    which would otherwise 400 DisallowedHost before any view runs. Replace the
+    Host with PUBLIC_BASE_URL so CommonMiddleware accepts the request.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        host = (request.META.get("HTTP_HOST") or "").split(":")[0].strip().lower()
+        remote = (request.META.get("REMOTE_ADDR") or "").strip()
+        rewrite = host in CAPTIVE_PROBE_HOSTS
+        if not rewrite:
+            try:
+                from core.mikrotik_connect import is_pppoe_pool_ip
+
+                rewrite = is_pppoe_pool_ip(remote)
+            except Exception:
+                rewrite = False
+        if rewrite:
+            from django.conf import settings
+
+            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+            parsed = urlparse(base)
+            if parsed.hostname:
+                port = f":{parsed.port}" if parsed.port else ""
+                request.META["HTTP_HOST"] = f"{parsed.hostname}{port}"
+        return self.get_response(request)
 
 
 class AutoCsrfOriginMiddleware:
@@ -67,6 +115,87 @@ class PrefetchEmployeeMiddleware:
             except Exception:
                 pass
         return self.get_response(request)
+
+
+class HotspotCaptiveProbeMiddleware:
+    """
+    Turn OS captive-portal probes into the Hotspot or PPPoE payment page.
+
+    MikroTik DNS points probe hostnames at the gateway; a dst-nat rule forwards
+    gateway:80 to Django. Windows opens ``/redirect`` on msftconnecttest.com —
+    without this handler that request 404s instead of showing the pay page.
+
+    Expired PPPoE sessions are dst-nat'd the same way; their REMOTE_ADDR sits in
+    the PPPoE pool, so they land on the PPPoE renew page instead of Hotspot.
+    """
+
+    CAPTIVE_HOSTS = CAPTIVE_PROBE_HOSTS
+    CAPTIVE_PATHS = {
+        "/redirect",
+        "/connecttest.txt",
+        "/ncsi.txt",
+        "/generate_204",
+        "/gen_204",
+        "/hotspot-detect.html",
+        "/library/test/success.html",
+        "/success.txt",
+    }
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        path = request.path or "/"
+        # Never intercept the real payment/welcome app routes.
+        if (
+            path.startswith("/hotspot/")
+            or path.startswith("/pppoe/")
+            or path.startswith("/billing/")
+            or path.startswith("/static/")
+            or path.startswith("/api/")
+        ):
+            return self.get_response(request)
+
+        host = (request.get_host() or "").split(":")[0].strip().lower()
+        remote = (request.META.get("REMOTE_ADDR") or "").strip()
+        from core.mikrotik_connect import is_pppoe_pool_ip
+
+        pppoe_client = is_pppoe_pool_ip(remote)
+        if not (pppoe_client or host in self.CAPTIVE_HOSTS or path in self.CAPTIVE_PATHS):
+            return self.get_response(request)
+
+        from django.conf import settings
+        from django.shortcuts import redirect
+        from django.urls import reverse
+
+        from accounts.models import Organization
+
+        org = (
+            Organization.objects.filter(hotspot_enabled=True)
+            .order_by("id")
+            .first()
+        )
+        if org is None:
+            org = Organization.objects.order_by("id").first()
+        if org is None:
+            return self.get_response(request)
+
+        if pppoe_client:
+            pay_path = reverse(
+                "core:pppoe_pay", kwargs={"join_code": org.join_code}
+            )
+        else:
+            pay_path = reverse(
+                "core:hotspot_pay", kwargs={"join_code": org.join_code}
+            )
+        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+        if not base:
+            base = request.build_absolute_uri("/").rstrip("/")
+        target = f"{base}{pay_path}"
+        query = request.META.get("QUERY_STRING") or ""
+        if query:
+            target = f"{target}?{query}"
+        return redirect(target)
 
 
 class SchemaErrorMiddleware:

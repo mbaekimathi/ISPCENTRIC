@@ -62,6 +62,20 @@
           {% endif %}
         </strong>
       </div>
+      {% if customer.plan %}
+        <div class="account-session-row">
+          <span>Period</span>
+          <strong>{{ customer.plan.get_duration_display }}</strong>
+        </div>
+      {% endif %}
+      <div class="account-session-row">
+        <span>Package starts</span>
+        <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+      </div>
+      <div class="account-session-row">
+        <span>Package ends</span>
+        <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+      </div>
       {% if customer.service_type == "pppoe" %}
         <div class="account-session-row"><span>PPPoE user</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
         <div class="account-session-row">
@@ -93,6 +107,14 @@
         <div class="account-session-row"><span>Host</span><strong>{{ customer.router.host }}</strong></div>
       {% endif %}
 
+      {% if can_access_wifi %}
+        <p class="mikrotik-router-profile-group">Client CPE Wi‑Fi</p>
+        <div class="account-session-row">
+          <span>Wi‑Fi name</span>
+          <strong>{{ wifi_ssid_display|default:"—" }}</strong>
+        </div>
+      {% endif %}
+
       <p class="mikrotik-router-profile-group">Record</p>
       <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y g:i A" }}</strong></div>
     </div>
@@ -107,6 +129,98 @@
   <a href="{{ back_url }}">&larr; Back to clients</a>
 </p>
 
+<section class="panel client-overview-panel" id="client-overview">
+  <div class="client-overview-head">
+    <span class="client-overview-avatar" aria-hidden="true">
+      {{ customer.full_name|slice:":1"|upper }}
+    </span>
+    <div class="client-overview-identity">
+      <p class="mikrotik-detail-kicker">{{ customer.get_service_type_display }} subscriber</p>
+      <h2>{{ customer.full_name }}</h2>
+      <p>{{ customer.account_number }}</p>
+    </div>
+    <div class="client-overview-badges">
+      <span class="badge">{{ customer.get_status_display }}</span>
+      {% if customer.router %}
+        <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
+          <span class="mikrotik-link-dot" aria-hidden="true"></span>
+          <span class="mikrotik-link-label">Checking…</span>
+        </span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="client-overview-grid">
+    <div class="client-overview-group">
+      <h3>Contact details</h3>
+      <dl class="client-overview-list">
+        <div><dt>Phone</dt><dd>{{ customer.phone|default:"—" }}</dd></div>
+        <div><dt>Email</dt><dd>{{ customer.email|default:"—" }}</dd></div>
+        <div><dt>Address</dt><dd>{{ customer.address|default:"—" }}</dd></div>
+      </dl>
+    </div>
+
+    <div class="client-overview-group">
+      <h3>Connection details</h3>
+      <dl class="client-overview-list">
+        <div><dt>Service</dt><dd>{{ customer.get_service_type_display }}</dd></div>
+        {% if customer.service_type == "pppoe" %}
+          <div><dt>PPPoE username</dt><dd class="client-overview-mono">{{ customer.pppoe_username|default:"—" }}</dd></div>
+        {% elif customer.service_type == "hotspot" %}
+          <div><dt>Device MAC</dt><dd class="client-overview-mono">{{ customer.hotspot_mac|default:"—" }}</dd></div>
+        {% endif %}
+        <div>
+          <dt>Router</dt>
+          <dd>
+            {% if customer.router %}
+              <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
+              <span class="client-overview-secondary">{{ customer.router.host }}</span>
+            {% else %}
+              —
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="client-overview-group">
+      <h3>Package details</h3>
+      <dl class="client-overview-list">
+        <div>
+          <dt>Plan</dt>
+          <dd>
+            {% if customer.plan %}
+              {{ customer.plan.name }}
+              {% if customer.plan.speed_label %}<span class="client-overview-secondary">{{ customer.plan.speed_label }}</span>{% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </dd>
+        </div>
+        <div><dt>Billing period</dt><dd>{{ package_duration_label|default:"—" }}</dd></div>
+        <div>
+          <dt>Package starts</dt>
+          <dd>{% if customer.package_start %}{{ customer.package_start|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Package ends</dt>
+          <dd>{% if customer.package_end %}{{ customer.package_end|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="client-overview-group">
+      <h3>Account record</h3>
+      <dl class="client-overview-list">
+        <div><dt>Account number</dt><dd class="client-overview-mono">{{ customer.account_number }}</dd></div>
+        <div><dt>Status</dt><dd>{{ customer.get_status_display }}</dd></div>
+        <div><dt>Registered</dt><dd>{{ customer.created_at|date:"M j, Y · g:i A" }}</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+{% if can_live_usage %}
 <section
   class="panel client-usage-panel"
   id="client-usage"
@@ -130,7 +244,7 @@
       <h3>Live session</h3>
       <p class="mikrotik-live-sub" id="client-usage-sub">
         {% if can_live_usage %}
-          Reading session from {{ customer.router.name }}…
+          Reading live session from the client CPE…
         {% elif not customer.router %}
           Assign a MikroTik router to this client to see live usage.
         {% elif customer.service_type != "pppoe" %}
@@ -143,7 +257,7 @@
     <span class="mikrotik-live-stamp" id="client-usage-stamp">—</span>
   </div>
 
-  <div class="mikrotik-live-grid client-usage-grid" id="client-usage-grid">
+  <div class="client-usage-grid mikrotik-live-grid" id="client-usage-grid">
     <article class="mikrotik-live-card" data-metric="session">
       <p class="mikrotik-live-label">Session</p>
       <p class="mikrotik-live-value" data-usage="session">…</p>
@@ -152,12 +266,17 @@
     <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
       <p class="mikrotik-live-label">Download</p>
       <p class="mikrotik-live-value" data-usage="download">—</p>
-      <p class="mikrotik-live-hint">Live inbound speed</p>
+      <p class="mikrotik-live-hint" data-usage="download-hint">Speed CPE is receiving</p>
     </article>
     <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
       <p class="mikrotik-live-label">Upload</p>
       <p class="mikrotik-live-value" data-usage="upload">—</p>
-      <p class="mikrotik-live-hint">Live outbound speed</p>
+      <p class="mikrotik-live-hint" data-usage="upload-hint">Speed CPE is sending</p>
+    </article>
+    <article class="mikrotik-live-card" data-metric="devices">
+      <p class="mikrotik-live-label">Devices connected</p>
+      <p class="mikrotik-live-value" data-usage="devices">—</p>
+      <p class="mikrotik-live-hint" data-usage="devices-hint">On the client CPE</p>
     </article>
     <article class="mikrotik-live-card" data-metric="uptime">
       <p class="mikrotik-live-label">Session uptime</p>
@@ -167,15 +286,15 @@
     <article class="mikrotik-live-card" data-metric="bytes-in">
       <p class="mikrotik-live-label">Downloaded</p>
       <p class="mikrotik-live-value" data-usage="bytes-in">—</p>
-      <p class="mikrotik-live-hint">Traffic this session</p>
+      <p class="mikrotik-live-hint" data-usage="bytes-in-hint">Traffic this session</p>
     </article>
     <article class="mikrotik-live-card" data-metric="bytes-out">
       <p class="mikrotik-live-label">Uploaded</p>
       <p class="mikrotik-live-value" data-usage="bytes-out">—</p>
-      <p class="mikrotik-live-hint">Traffic this session</p>
+      <p class="mikrotik-live-hint" data-usage="bytes-out-hint">Traffic this session</p>
     </article>
     <article class="mikrotik-live-card" data-metric="ip">
-      <p class="mikrotik-live-label">Assigned IP</p>
+      <p class="mikrotik-live-label">CPE IP</p>
       <p class="mikrotik-live-value client-usage-mono" data-usage="address">—</p>
       <p class="mikrotik-live-hint" data-usage="caller">Caller / MAC</p>
     </article>
@@ -190,8 +309,223 @@
     </article>
   </div>
 </section>
+{% endif %}
 
-<section class="panel client-billing-analysis">
+{% if can_access_wifi %}
+<section
+  class="panel client-wifi-panel"
+  id="client-wifi"
+>
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="mikrotik-detail-kicker">Client CPE</p>
+      <h2>Wi‑Fi settings</h2>
+      <p class="panel-sub">
+        Stored Wi‑Fi credentials for the subscriber’s CPE router connected through PPPoE
+        (<strong>{{ customer.pppoe_username }}</strong>) on
+        <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>.
+      </p>
+    </div>
+  </div>
+
+  <div class="client-wifi-grid">
+    <article class="mikrotik-live-card">
+      <p class="mikrotik-live-label">Dials into</p>
+      <p class="mikrotik-live-value">
+        <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
+      </p>
+      <p class="mikrotik-live-hint">ISP MikroTik NAS · {{ customer.router.host }}</p>
+    </article>
+    <article class="mikrotik-live-card">
+      <p class="mikrotik-live-label">Wi‑Fi name</p>
+      <p class="mikrotik-live-value">{{ wifi_ssid_display|default:"—" }}</p>
+      <p class="mikrotik-live-hint">Last known</p>
+    </article>
+    <article class="mikrotik-live-card">
+      <p class="mikrotik-live-label">Wi‑Fi password</p>
+      <p class="mikrotik-live-value" data-cpe-password-wrap>
+        {% if wifi_password_display %}
+          <span class="mikrotik-secret">
+            <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+            <span class="mikrotik-secret-value" data-secret-value hidden>{{ wifi_password_display }}</span>
+            <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">
+              <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+              <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+            </button>
+          </span>
+        {% else %}
+          —
+        {% endif %}
+      </p>
+      <p class="mikrotik-live-hint">Click the eye icon to reveal</p>
+    </article>
+  </div>
+</section>
+{% endif %}
+
+<section
+  class="panel client-package-period"
+  id="client-package-period"
+  data-subscription-url="{% url 'core:client_subscription' customer.id %}"
+  data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
+  data-package-duration="{{ package_duration|default:'' }}"
+>
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="mikrotik-detail-kicker">Billing package</p>
+      <h2>Package period</h2>
+      <p class="panel-sub">
+        {% if customer.plan %}
+          {{ customer.plan.name }} · {{ customer.plan.get_duration_display }}
+          {% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
+        {% else %}
+          No plan assigned. Assign a plan so the end date can follow package settings.
+        {% endif %}
+      </p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <button type="button" class="btn btn-ghost" data-open-modal="client-update-package-modal">
+        {% if customer.plan %}Update package{% else %}Set package{% endif %}
+      </button>
+      <button type="button" class="btn btn-primary" data-open-modal="client-package-period-modal">
+        {% if customer.package_start %}Update period{% else %}Set period{% endif %}
+      </button>
+    </div>
+  </div>
+
+  {% if customer.package_start or customer.package_end %}
+    <div class="client-subscription-banner {% if subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
+      {% if subscription_active %}
+        Subscription active — devices on this client’s Wi‑Fi can surf within this period.
+      {% elif subscription_expired %}
+        Subscription ended — surfing is blocked for users outside the subscription period.
+      {% else %}
+        Outside the package period — surfing is blocked for users.
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="client-subscription-banner is-blocked" data-sub-banner hidden></div>
+  {% endif %}
+
+  <div class="client-usage-stats">
+    <div class="client-usage-stat">
+      <span>Starts</span>
+      <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Ends</span>
+      <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Remaining</span>
+      <strong data-sub-remaining>—</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Billing period</span>
+      <strong data-sub-duration>{% if package_duration_label %}{{ package_duration_label }}{% else %}—{% endif %}</strong>
+    </div>
+    <div class="client-usage-stat">
+      <span>Plan</span>
+      <strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
+    </div>
+  </div>
+</section>
+
+<div
+  class="role-modal client-action-modal"
+  id="client-update-package-modal"
+  {% if open_client_modal != "client-update-package-modal" %}hidden{% endif %}
+  aria-hidden="{% if open_client_modal == "client-update-package-modal" %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-update-package-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Package</p>
+        <h2 id="client-update-package-title">Update package</h2>
+        <p class="role-modal-sub">
+          Change the client's billing plan. If a package period is already set, the end date is recalculated from the new plan.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form client-package-ajax-form" id="client-update-package-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="update_package">
+      <div class="mikrotik-action-scroll">
+        {% if package_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ package_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field" style="grid-column:1/-1">
+            <label for="{{ package_form.plan.id_for_label }}">{{ package_form.plan.label }}</label>
+            {{ package_form.plan }}
+            {% if package_form.plan.errors %}<div class="field-error">{{ package_form.plan.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" data-save-label="Save package">Save package</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal"
+  id="client-package-period-modal"
+  {% if open_client_modal != "client-package-period-modal" %}hidden{% endif %}
+  aria-hidden="{% if open_client_modal == "client-package-period-modal" %}false{% else %}true{% endif %}"
+  data-package-duration="{{ package_duration|default:'' }}"
+  data-plan-durations="{{ plan_durations_json }}"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-package-period-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Package period</p>
+        <h2 id="client-package-period-title">Update period</h2>
+        <p class="role-modal-sub">
+          {% if package_duration == "hourly" %}
+            Hourly package — pick start and end times on the clock. Leave end blank to auto-set one hour later.
+          {% else %}
+            Change when this client's package starts and ends. Selecting a new start date can recalculate the end date from the current plan.
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form client-package-ajax-form" id="client-package-period-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="update_package_period">
+      <div class="mikrotik-action-scroll">
+        {% if package_period_form.non_field_errors %}
+          <div class="field-error mikrotik-form-banner">{{ package_period_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="form-grid mikrotik-simple-grid">
+          <div class="field">
+            <label for="{{ package_period_form.package_start.id_for_label }}">{{ package_period_form.package_start.label }}</label>
+            {{ package_period_form.package_start }}
+            {% if package_period_form.package_start.errors %}<div class="field-error">{{ package_period_form.package_start.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ package_period_form.package_end.id_for_label }}">{{ package_period_form.package_end.label }}</label>
+            {{ package_period_form.package_end }}
+            {% if package_period_form.package_end.errors %}<div class="field-error">{{ package_period_form.package_end.errors|striptags }}</div>{% endif %}
+            {% if package_period_form.package_end.help_text %}<p class="field-hint">{{ package_period_form.package_end.help_text }}</p>{% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" data-save-label="Save period">Save period</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<section class="panel client-billing-analysis" id="client-billing">
   <div class="panel-head-row">
     <div>
       <h2>Billing analysis</h2>
@@ -338,8 +672,313 @@
       var showing = !value.hidden;
       value.hidden = showing;
       mask.hidden = !showing;
-      btn.textContent = showing ? "Show" : "Hide";
+      if (btn.classList.contains("mikrotik-secret-toggle")) {
+        btn.textContent = showing ? "Show" : "Hide";
+      }
       btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = !showing;
+        eyeOff.hidden = showing;
+      }
+    });
+  });
+
+  function openClientModal(id) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    document.querySelectorAll(".client-action-modal").forEach(function (el) {
+      el.hidden = true;
+      el.setAttribute("aria-hidden", "true");
+    });
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeClientModal(modal) {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openClientModal(btn.getAttribute("data-open-modal"));
+    });
+  });
+
+  document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeClientModal(el.closest(".client-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var open = document.querySelector(".client-action-modal:not([hidden])");
+    if (open) closeClientModal(open);
+  });
+
+  {% if open_client_modal %}
+  openClientModal("{{ open_client_modal|escapejs }}");
+  {% endif %}
+
+  document.querySelectorAll("[data-copy-cpe-unlock], [data-copy-cpe-unlock-inline]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var area = document.getElementById("cpe-unlock-script-inline") ||
+        document.getElementById("cpe-unlock-script");
+      if (!area) return;
+      var text = area.value || "";
+      var label = btn.getAttribute("data-copy-cpe-unlock-inline") != null
+        ? "Copy script"
+        : "Copy script";
+      function done() {
+        btn.textContent = "Copied";
+        setTimeout(function () { btn.textContent = label; }, 1500);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done);
+      } else {
+        area.select();
+        document.execCommand("copy");
+        done();
+      }
+    });
+  });
+
+  (function setupPackagePeriodAjax() {
+    document.querySelectorAll(".client-package-ajax-form").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var submitBtn = form.querySelector('[type="submit"]');
+        var saveLabel = (submitBtn && submitBtn.getAttribute("data-save-label")) || "Save";
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Saving…"; }
+        var body = new FormData(form);
+        fetch(form.getAttribute("action") || window.location.pathname, {
+          method: "POST",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          body: body,
+        })
+          .then(function (res) {
+            return res.json().then(function (d) {
+              d._status = res.status;
+              return d;
+            }).catch(function () {
+              throw new Error("Invalid server response (" + res.status + ")");
+            });
+          })
+          .then(function (data) {
+            if (!data.ok) {
+              var msg = "";
+              if (data.errors) {
+                Object.keys(data.errors).forEach(function (k) {
+                  (data.errors[k] || []).forEach(function (err) { msg += (err.message || err) + " "; });
+                });
+              }
+              showPackageToast(msg.trim() || "Validation failed.", "error");
+              return;
+            }
+            closeClientModal(form.closest(".client-action-modal"));
+            updatePackageSection(data);
+            if (typeof window.refreshClientSubscription === "function") {
+              window.refreshClientSubscription(false);
+            }
+            showPackageToast(data.message || "Saved.", "success");
+            if (data.syncing) showPackageToast("Syncing to MikroTik in background…", "info");
+          })
+          .catch(function (err) {
+            showPackageToast((err && err.message) || "Network error — please try again.", "error");
+          })
+          .finally(function () {
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = saveLabel; }
+          });
+      });
+    });
+
+    function fmtPeriodValue(value, duration) {
+      if (!value) return "—";
+      if ((duration || "").toLowerCase() === "hourly") {
+        // Accept "HH:MM" or already formatted strings / ISO.
+        if (/^\d{1,2}:\d{2}/.test(String(value))) {
+          var timeParts = String(value).split(":");
+          var h = Number(timeParts[0]);
+          var m = Number(timeParts[1]);
+          if (!isNaN(h) && !isNaN(m)) {
+            var d = new Date(2000, 0, 1, h, m);
+            return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          }
+        }
+        return value;
+      }
+      if (/^\d{4}-\d{2}-\d{2}/.test(String(value))) {
+        var d = new Date(String(value).slice(0, 10) + "T00:00:00");
+        if (!isNaN(d.getTime())) {
+          return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+        }
+      }
+      return value;
+    }
+
+    function updatePackageSection(data) {
+      var section = document.getElementById("client-package-period");
+      if (!section) return;
+      var duration = data.package_duration || "";
+      section.setAttribute("data-package-duration", duration || "");
+      section.setAttribute("data-subscription-active", data.subscription_active ? "1" : "0");
+
+      document.querySelectorAll("[data-sub-start]").forEach(function (el) {
+        el.textContent = data.package_start || fmtPeriodValue(data.package_start, duration) || "—";
+      });
+      document.querySelectorAll("[data-sub-end]").forEach(function (el) {
+        el.textContent = data.package_end || fmtPeriodValue(data.package_end, duration) || "—";
+      });
+      var remainingEl = section.querySelector("[data-sub-remaining]");
+      if (remainingEl) remainingEl.textContent = data.remaining_label || "—";
+      var durationEl = section.querySelector("[data-sub-duration]");
+      if (durationEl) durationEl.textContent = data.plan_duration || "—";
+      var planEl = section.querySelector("[data-sub-plan]");
+      if (planEl) planEl.textContent = data.plan_name || "—";
+
+      var modal = document.getElementById("client-package-period-modal");
+      if (modal && duration) modal.setAttribute("data-package-duration", duration);
+
+      var banner = section.querySelector("[data-sub-banner]");
+      if (data.package_start || data.package_end || data.package_start_iso || data.package_end_iso) {
+        if (!banner) {
+          banner = document.createElement("div");
+          banner.className = "client-subscription-banner";
+          banner.setAttribute("data-sub-banner", "");
+          var toolbar = section.querySelector(".mikrotik-detail-toolbar");
+          if (toolbar) toolbar.insertAdjacentElement("afterend", banner);
+        }
+        banner.classList.remove("is-active", "is-blocked");
+        if (data.subscription_active) {
+          banner.classList.add("is-active");
+          banner.textContent = "Subscription active — devices on this client's Wi‑Fi can surf within this period.";
+        } else {
+          banner.classList.add("is-blocked");
+          banner.textContent = data.subscription_expired
+            ? "Subscription ended — surfing is blocked for users outside the subscription period."
+            : "Outside the package period — surfing is blocked for users.";
+        }
+        banner.hidden = false;
+      }
+
+      var panelSub = section.querySelector(".panel-sub");
+      if (panelSub && data.plan_name) {
+        var txt = data.plan_name;
+        if (data.plan_duration) txt += " · " + data.plan_duration;
+        if (data.plan_speed) txt += " · " + data.plan_speed;
+        panelSub.textContent = txt;
+      }
+    }
+
+    function showPackageToast(msg, type) {
+      var existing = document.getElementById("pkg-toast");
+      if (existing) existing.remove();
+      var el = document.createElement("div");
+      el.id = "pkg-toast";
+      el.className = "pkg-toast pkg-toast-" + (type || "info");
+      el.textContent = msg;
+      document.body.appendChild(el);
+      requestAnimationFrame(function () { el.classList.add("pkg-toast-show"); });
+      setTimeout(function () {
+        el.classList.remove("pkg-toast-show");
+        setTimeout(function () { el.remove(); }, 300);
+      }, type === "error" ? 5000 : 3000);
+    }
+
+    window.updatePackageSection = updatePackageSection;
+  })();
+
+  (function setupPackagePeriodAutoEnd() {
+    var modal = document.getElementById("client-package-period-modal");
+    var startInput = document.getElementById("id_package_start");
+    var endInput = document.getElementById("id_package_end");
+    if (!modal || !startInput || !endInput) return;
+
+    var fallbackDuration = (modal.getAttribute("data-package-duration") || "").toLowerCase();
+
+    function getActiveDuration() {
+      return fallbackDuration;
+    }
+
+    function pad(n) {
+      return n < 10 ? "0" + n : String(n);
+    }
+
+    function toIsoDate(d) {
+      return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    }
+
+    function toIsoTime(d) {
+      return pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+
+    function addMonths(d, months) {
+      var year = d.getFullYear();
+      var month = d.getMonth() + months;
+      year += Math.floor(month / 12);
+      month = ((month % 12) + 12) % 12;
+      var day = d.getDate();
+      var lastDay = new Date(year, month + 1, 0).getDate();
+      return new Date(year, month, Math.min(day, lastDay));
+    }
+
+    function computeEnd(startStr) {
+      var duration = getActiveDuration();
+      if (!startStr || !duration) return "";
+
+      if (duration === "hourly") {
+        var timeParts = startStr.split(":");
+        if (timeParts.length < 2) return "";
+        var start = new Date(2000, 0, 1, Number(timeParts[0]), Number(timeParts[1]), 0);
+        if (isNaN(start.getTime())) return "";
+        start.setHours(start.getHours() + 1);
+        return toIsoTime(start);
+      }
+
+      var parts = startStr.split("-");
+      if (parts.length !== 3) return "";
+      var start = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      if (isNaN(start.getTime())) return "";
+      var end;
+      if (duration === "daily") end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1);
+      else if (duration === "weekly") end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7);
+      else if (duration === "monthly") end = addMonths(start, 1);
+      else if (duration === "yearly") end = addMonths(start, 12);
+      else return "";
+      return toIsoDate(end);
+    }
+
+    function syncEnd() {
+      var computed = computeEnd(startInput.value);
+      if (computed) endInput.value = computed;
+    }
+
+    startInput.addEventListener("change", syncEnd);
+    startInput.addEventListener("input", syncEnd);
+  })();
+
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
     });
   });
 })();
@@ -411,9 +1050,15 @@
     setText("session-hint", message || "Not connected");
     setText("download", "—");
     setText("upload", "—");
+    setText("download-hint", "Speed CPE is receiving");
+    setText("upload-hint", "Speed CPE is sending");
+    setText("devices", "—");
+    setText("devices-hint", "On the client CPE");
     setText("uptime", "—");
     setText("bytes-in", "—");
     setText("bytes-out", "—");
+    setText("bytes-in-hint", "Traffic this session");
+    setText("bytes-out-hint", "Traffic this session");
     setText("address", "—");
     setText("caller", "Caller / MAC");
     root.classList.remove("is-online");
@@ -443,17 +1088,46 @@
           root.classList.add("is-online");
           root.classList.remove("is-offline");
           setText("session", "Online");
-          setText("session-hint", (data.service || "PPPoE") + (data.interface ? " · " + data.interface : ""));
+          setText(
+            "session-hint",
+            (data.service || "PPPoE") +
+              (data.interface ? " · " + data.interface : "") +
+              (data.speed_source === "cpe" ? " · CPE live" : "")
+          );
           setText("download", data.download_label || "—");
           setText("upload", data.upload_label || "—");
+          if (data.speed_source === "cpe") {
+            setText("download-hint", "Receiving on CPE" + (data.interface ? " · " + data.interface : ""));
+            setText("upload-hint", "Sending from CPE" + (data.interface ? " · " + data.interface : ""));
+            setText("bytes-in-hint", "Through CPE WAN");
+            setText("bytes-out-hint", "Through CPE WAN");
+          } else {
+            setText("download-hint", "From ISP MikroTik (PPPoE interface)");
+            setText("upload-hint", "From ISP MikroTik (PPPoE interface)");
+            setText("bytes-in-hint", "Traffic this PPPoE session");
+            setText("bytes-out-hint", "Traffic this PPPoE session");
+          }
+          setText("devices", data.devices_label != null ? data.devices_label : "—");
+          setText("devices-hint", data.devices_hint || "On the client CPE");
           setText("uptime", data.uptime || "—");
           setText("bytes-in", data.bytes_in_label || "—");
           setText("bytes-out", data.bytes_out_label || "—");
-          setText("address", data.address || "—");
+          setText("address", data.cpe_host || data.address || "—");
           setText("caller", data.caller_id ? ("Caller " + data.caller_id) : "Caller / MAC");
           if (subEl) {
-            subEl.textContent = "Live from " + (data.router_name || "router") +
-              (data.pppoe_username ? " · " + data.pppoe_username : "");
+            if (data.speed_source === "cpe") {
+              subEl.textContent =
+                "Live from client CPE " +
+                (data.cpe_host || "") +
+                (data.pppoe_username ? " · " + data.pppoe_username : "") +
+                (data.devices_connected != null ? " · " + data.devices_connected + " devices" : "");
+            } else {
+              subEl.textContent =
+                "PPPoE online on " +
+                (data.router_name || "NAS") +
+                (data.pppoe_username ? " · " + data.pppoe_username : "") +
+                (data.address ? " · " + data.address : "");
+            }
           }
         } else {
           applyOffline(data.hint || "Subscriber is not online right now.");
@@ -492,4 +1166,84 @@
   }
 })();
 </script>
+
+<script>
+(function () {
+  var section = document.getElementById("client-package-period");
+  if (!section) return;
+  var statusUrl = section.getAttribute("data-subscription-url");
+  if (!statusUrl) return;
+
+  var lastActive = section.getAttribute("data-subscription-active") === "1";
+  var inFlight = false;
+  var timer = null;
+
+  function applySubscription(data, synced) {
+    if (!data || !data.ok) return;
+    var wasActive = lastActive;
+    lastActive = !!data.subscription_active;
+    section.setAttribute("data-subscription-active", lastActive ? "1" : "0");
+    if (typeof window.updatePackageSection === "function") {
+      window.updatePackageSection(data);
+    } else {
+      document.querySelectorAll("[data-sub-start]").forEach(function (el) {
+        el.textContent = data.package_start || "—";
+      });
+      document.querySelectorAll("[data-sub-end]").forEach(function (el) {
+        el.textContent = data.package_end || "—";
+      });
+      var remainingEl = section.querySelector("[data-sub-remaining]");
+      if (remainingEl) remainingEl.textContent = data.remaining_label || "—";
+      var banner = section.querySelector("[data-sub-banner]");
+      if (banner) {
+        banner.classList.remove("is-active", "is-blocked");
+        if (data.subscription_active) {
+          banner.classList.add("is-active");
+          banner.textContent = "Subscription active — devices on this client's Wi‑Fi can surf within this period.";
+        } else {
+          banner.classList.add("is-blocked");
+          banner.textContent = data.subscription_expired
+            ? "Subscription ended — surfing is blocked for users outside the subscription period."
+            : "Outside the package period — surfing is blocked for users.";
+        }
+        banner.hidden = !(data.package_start || data.package_end || data.package_start_iso || data.package_end_iso);
+      }
+    }
+    if (!synced && wasActive !== lastActive) {
+      refreshSubscription(true);
+    }
+  }
+
+  function refreshSubscription(sync) {
+    if (!statusUrl || document.hidden || inFlight) return;
+    inFlight = true;
+    var url = statusUrl;
+    if (sync) url += (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "sync=1";
+    fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) { applySubscription(data, !!sync); })
+      .catch(function () {})
+      .finally(function () { inFlight = false; });
+  }
+
+  // Expose for AJAX package saves so remaining/banner stay live immediately.
+  window.applyClientSubscription = applySubscription;
+  window.refreshClientSubscription = refreshSubscription;
+
+  refreshSubscription(false);
+  var duration = (section.getAttribute("data-package-duration") || "").toLowerCase();
+  var intervalMs = duration === "hourly" ? 5000 : 15000;
+  timer = setInterval(function () { refreshSubscription(false); }, intervalMs);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refreshSubscription(false);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+
 {% endblock %}

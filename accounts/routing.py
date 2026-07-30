@@ -37,6 +37,11 @@ ROLE_NAV_ITEMS = {
     ],
     Employee.Role.IT_SUPPORT: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:it_support"},
+        {
+            "key": "payment_gateway",
+            "label": "Payment Gateway",
+            "url_name": "roles:it_support_payment_gateway",
+        },
     ],
     Employee.Role.SALES: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:sales"},
@@ -99,6 +104,8 @@ def page_key_from_path(path: str) -> str | None:
         return "clients"
     if "/human-resources/" in path:
         return "hr"
+    if "/payment-gateway/" in path:
+        return "payment_gateway"
     if path.endswith("/dashboard/"):
         return "dashboard"
     if "/employee/profile/" in path:

@@ -1,13 +1,17 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q, Sum
-from django.shortcuts import redirect, render
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.http import require_GET, require_POST
 
 from accounts.routing import home_url_for_user, is_viewing_as_client
 from core.views import client_page_context, resolve_organization
 
 from .forms import BillingPackageRegisterForm
-from .models import BillingPlan, Customer, Invoice, Payment
+from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
+from .services import customers_needing_renewal_attention
+from .stk import refresh_stk_status, start_subscription_stk_payment
 
 
 def _require_client_workspace(request):
@@ -83,15 +87,12 @@ def dashboard(request):
             .select_related("customer")
             .order_by("-issued_at")[:8]
         )
-        recent_customers = (
-            Customer.objects.filter(organization=org)
-            .select_related("plan")
-            .order_by("-created_at")[:8]
-        )
         packages = (
             BillingPlan.objects.filter(organization=org)
             .order_by("price", "name")[:6]
         )
+        attention_customers = customers_needing_renewal_attention(org)
+        stats["attention_customers"] = len(attention_customers)
     else:
         stats = {
             "customers": 0,
@@ -99,10 +100,11 @@ def dashboard(request):
             "pending_invoices": 0,
             "revenue": 0,
             "packages": 0,
+            "attention_customers": 0,
         }
         recent_invoices = Invoice.objects.none()
-        recent_customers = Customer.objects.none()
         packages = BillingPlan.objects.none()
+        attention_customers = []
 
     return render(
         request,
@@ -114,12 +116,61 @@ def dashboard(request):
             page_title="Billings",
             stats=stats,
             recent_invoices=recent_invoices,
-            recent_customers=recent_customers,
+            attention_customers=attention_customers,
             packages=packages,
             package_form=package_form,
             open_billing_modal=open_modal,
         ),
     )
+
+
+@login_required
+@require_POST
+def subscription_stk_pay(request, customer_id: int):
+    """Initiate M-Pesa STK Push for a client's package renewal."""
+    blocked = _require_client_workspace(request)
+    if blocked:
+        return JsonResponse({"ok": False, "error": "Not allowed."}, status=403)
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization linked."}, status=400)
+
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    phone = (request.POST.get("phone") or "").strip()
+    result = start_subscription_stk_payment(
+        organization=org,
+        customer=customer,
+        phone=phone,
+        user=request.user,
+        request=request,
+    )
+    status = 200 if result.get("ok") else 400
+    return JsonResponse(result, status=status)
+
+
+@login_required
+@require_GET
+def subscription_stk_status(request, stk_id: int):
+    """Poll STK Push status (also queries Daraja when callback cannot reach localhost)."""
+    blocked = _require_client_workspace(request)
+    if blocked:
+        return JsonResponse({"ok": False, "error": "Not allowed."}, status=403)
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization linked."}, status=400)
+
+    stk = get_object_or_404(
+        StkPushRequest.objects.select_related("customer", "organization"),
+        pk=stk_id,
+        organization=org,
+    )
+    return JsonResponse(refresh_stk_status(stk))
 
 
 @login_required
@@ -136,7 +187,7 @@ def packages(request):
     if early:
         return early
 
-    package_list = (
+    package_list = list(
         BillingPlan.objects.filter(organization=org).order_by("price", "name")
         if org
         else BillingPlan.objects.none()
@@ -153,8 +204,108 @@ def packages(request):
             page_kicker="Billing",
             page_subtitle="Manage internet packages for this organization.",
             packages=package_list,
-            package_count=package_list.count() if hasattr(package_list, "count") else len(package_list),
+            package_count=len(package_list),
             package_form=package_form,
             open_billing_modal=open_modal,
         ),
+    )
+
+
+def _renew_page_context(customer):
+    from django.utils import timezone
+
+    from billing.services import (
+        customer_receives_internet,
+        customer_subscription_expired,
+        subscription_period_allows,
+    )
+
+    today = timezone.localdate()
+    allowed = customer_receives_internet(customer, today=today)
+    expired = customer_subscription_expired(customer, today=today)
+    start = customer.package_start
+    if start is not None:
+        start_day = timezone.localtime(start).date() if hasattr(start, "hour") else start
+        not_started = today < start_day
+    else:
+        not_started = False
+    org = getattr(customer, "organization", None)
+    return {
+        "customer": customer,
+        "organization": org,
+        "org_name": getattr(org, "name", "") or "ISPCENTRIC",
+        "allowed": allowed,
+        "expired": expired,
+        "not_started": not_started,
+        "period_ok": subscription_period_allows(customer, today=today),
+        "today": today,
+        "plan": customer.plan,
+        "popup": True,
+    }
+
+
+def subscription_renew(request, token: str):
+    """Public renew notice shown when a subscriber's package period has ended."""
+    from billing.services import resolve_customer_from_renew_token
+
+    customer = resolve_customer_from_renew_token(token)
+    if customer is None:
+        return render(
+            request,
+            "billing/subscription_renew.html",
+            {
+                "invalid": True,
+                "org_name": "ISPCENTRIC",
+                "popup": True,
+            },
+            status=404,
+        )
+    return render(
+        request,
+        "billing/subscription_renew.html",
+        _renew_page_context(customer),
+    )
+
+
+def subscription_renew_hotspot(request, token: str):
+    """
+    Bare HTML login page fetched onto client CPE Hotspot folders.
+
+    Phones show this as the captive-portal popup when Wi‑Fi connects after expiry.
+    """
+    from billing.services import resolve_customer_from_renew_token
+
+    customer = resolve_customer_from_renew_token(token)
+    if customer is None:
+        return render(
+            request,
+            "billing/subscription_renew_hotspot.html",
+            {
+                "invalid": True,
+                "org_name": "ISPCENTRIC",
+                "customer_name": "Subscriber",
+            },
+            content_type="text/html; charset=utf-8",
+            status=404,
+        )
+    ctx = _renew_page_context(customer)
+    org = ctx.get("organization")
+    return render(
+        request,
+        "billing/subscription_renew_hotspot.html",
+        {
+            "invalid": False,
+            "org_name": ctx["org_name"],
+            "organization": org,
+            "customer": customer,
+            "customer_name": customer.full_name,
+            "account_number": customer.account_number,
+            "package_end": customer.package_end,
+            "plan_name": customer.plan.name if customer.plan_id else "",
+            "plan": customer.plan,
+            "expired": ctx["expired"],
+            "not_started": ctx["not_started"],
+            "allowed": ctx["allowed"],
+        },
+        content_type="text/html; charset=utf-8",
     )

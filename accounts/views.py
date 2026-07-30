@@ -6,6 +6,8 @@ from django.shortcuts import redirect, render
 from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views import View
+from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
 from .forms import (
     EmployeeLoginForm,
@@ -265,3 +267,32 @@ class EmployeeProfileView(View):
                 "page_title": "My profile settings",
             },
         )
+
+
+@csrf_exempt
+@require_POST
+def mpesa_stk_callback(request):
+    """
+    Daraja STK Push result callback.
+
+    Sandbox local testing uses http://localhost:8000/api/mpesa/stk-callback/.
+    Always acknowledges so Safaricom treats the callback as received.
+    """
+    import json
+    import logging
+
+    from billing.stk import process_stk_callback_payload
+
+    logger = logging.getLogger(__name__)
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except (TypeError, ValueError, UnicodeDecodeError):
+        payload = {"raw": request.body.decode("utf-8", errors="replace")}
+
+    logger.info("M-Pesa STK callback received: %s", payload)
+    try:
+        process_stk_callback_payload(payload if isinstance(payload, dict) else {})
+    except Exception:  # noqa: BLE001 — never fail the HTTP ack to Safaricom
+        logger.exception("Failed processing M-Pesa STK callback")
+    return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
+

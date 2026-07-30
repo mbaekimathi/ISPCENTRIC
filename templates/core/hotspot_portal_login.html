@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <title>{{ page_title }} — {{ org_name }}</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(ellipse 90% 60% at 10% 0%, rgba(14, 124, 134, 0.22), transparent 55%),
+        radial-gradient(ellipse 70% 50% at 100% 100%, rgba(31, 111, 235, 0.16), transparent 50%),
+        #0b1520;
+      color: #142033;
+    }
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.15rem;
+    }
+    .card {
+      width: min(100%, 24rem);
+      background: #fff;
+      border-radius: 1.15rem;
+      padding: 1.4rem 1.2rem 1.25rem;
+      box-shadow: 0 28px 70px rgba(0, 0, 0, 0.35);
+      text-align: center;
+    }
+    .brand {
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #5b6f8a;
+      margin-bottom: 0.45rem;
+      font-weight: 700;
+    }
+    h1 {
+      font-size: 1.35rem;
+      line-height: 1.2;
+      margin: 0 0 0.55rem;
+      letter-spacing: -0.02em;
+    }
+    .msg {
+      margin: 0 0 0.85rem;
+      line-height: 1.45;
+      font-size: 0.95rem;
+      color: #334155;
+      white-space: pre-wrap;
+    }
+    .step {
+      margin: 0.85rem 0 0;
+      padding: 0.85rem 0.9rem;
+      border-radius: 0.85rem;
+      text-align: left;
+    }
+    .step-pay { background: #eef4ff; }
+    .step-login { background: #f0fdf9; }
+    .step-title {
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-weight: 700;
+      margin: 0 0 0.4rem;
+    }
+    .step-pay .step-title { color: #3b5bdb; }
+    .step-login .step-title { color: #0e7c86; }
+    .step p { margin: 0.2rem 0; color: #142033; font-size: 0.92rem; }
+    .plans {
+      margin: 0.75rem 0 0;
+      text-align: left;
+      display: grid;
+      gap: 0.45rem;
+    }
+    .plan {
+      padding: 0.65rem 0.75rem;
+      border-radius: 0.75rem;
+      border: 1px solid #dbe3ef;
+      background: #f8fafc;
+    }
+    .plan strong { display: block; font-size: 0.92rem; }
+    .plan span { color: #64748b; font-size: 0.8rem; }
+    form.login {
+      margin-top: 0.65rem;
+      display: grid;
+      gap: 0.55rem;
+      text-align: left;
+    }
+    label {
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: #475569;
+    }
+    input, select {
+      width: 100%;
+      border: 1px solid #cbd5e1;
+      border-radius: 0.65rem;
+      padding: 0.7rem 0.75rem;
+      font: inherit;
+      background: #fff;
+    }
+    button, .ok {
+      display: block;
+      width: 100%;
+      border: 0;
+      border-radius: 0.75rem;
+      padding: 0.85rem 1rem;
+      background: #0e7c86;
+      color: #fff;
+      font: 700 0.98rem/1 "Segoe UI", system-ui, sans-serif;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+    }
+    .error {
+      margin: 0.65rem 0 0;
+      color: #b42318;
+      font-size: 0.88rem;
+    }
+    .meta {
+      margin: 0.9rem 0 0;
+      font-size: 0.78rem;
+      color: #64748b;
+    }
+    .retry {
+      margin-top: 0.75rem;
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <main class="card" role="main">
+    <div class="brand">{{ org_name }}</div>
+    <h1>{{ page_title }}</h1>
+    {% if page_message %}<p class="msg">{{ page_message }}</p>{% endif %}
+
+    <div class="step step-pay">
+      <p class="step-title">1 · Pay to connect</p>
+      {% if has_mpesa %}
+        {% if mpesa_type == "paybill" %}
+          <p><strong>Paybill:</strong> {{ mpesa_number }}</p>
+          {% if mpesa_account %}<p><strong>Account:</strong> {{ mpesa_account }}</p>{% endif %}
+          <p>Use your account number as the M-Pesa account reference.</p>
+        {% else %}
+          <p><strong>Buy Goods Till:</strong> {{ mpesa_number }}</p>
+        {% endif %}
+      {% else %}
+        <p>Contact {{ org_name }} for payment details, then continue below.</p>
+      {% endif %}
+    </div>
+
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+
+    {% if show_payment_form %}
+      <div class="step step-login">
+        <p class="step-title">2 · Pay from your phone</p>
+        {% if customer_name or account_number %}
+          <p class="meta" style="margin-top:0;">
+            {% if customer_name %}<strong>{{ customer_name }}</strong>{% endif %}
+            {% if account_number %} · {{ account_number }}{% endif %}
+            {% if package_end %} · ended {{ package_end|date:"M j, Y H:i" }}{% endif %}
+          </p>
+        {% endif %}
+        {% if stk_ready and plans %}
+        <form class="login" id="hotspot-payment-form" method="post" action="{{ payment_start_url }}">
+          {% csrf_token %}
+          {% if hotspot_mac %}<input type="hidden" name="mac" value="{{ hotspot_mac }}">{% endif %}
+          {% if customer_token %}<input type="hidden" name="customer_token" value="{{ customer_token }}">{% endif %}
+          <div>
+            <label for="plan_id">Internet package</label>
+            <select id="plan_id" name="plan_id" required>
+              {% for plan in plans %}
+                <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if selected_plan_id == plan.pk %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label for="phone">M-Pesa phone number</label>
+            <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" value="{{ phone_value|default:'' }}" required>
+          </div>
+          <button type="submit" id="payment-submit">Pay with M-Pesa</button>
+        </form>
+        <p class="meta" id="payment-status" role="status" aria-live="polite">
+          {% if portal_mode == "pppoe" %}
+            Pay to renew. Your connection restores automatically after payment.
+          {% else %}
+            No username or password is needed. Access opens automatically after payment.
+          {% endif %}
+        </p>
+        <button type="button" id="payment-retry" class="retry" hidden>Try again</button>
+        {% else %}
+          <p class="error">M-Pesa payment is not available right now. Please contact {{ org_name }}.</p>
+        {% endif %}
+      </div>
+    {% else %}
+      <p class="meta">
+        {% if portal_mode == "pppoe" %}
+          {% if identify_error %}{{ identify_error }}{% else %}
+            Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
+          {% endif %}
+        {% else %}
+          Rejoin this Wi‑Fi to open the passwordless payment page for your device.
+        {% endif %}
+      </p>
+      {% if welcome_url %}
+        <p style="margin-top:0.85rem;"><a class="ok" href="{{ welcome_url }}">Preview continue-browsing page</a></p>
+      {% endif %}
+    {% endif %}
+  </main>
+  {% if show_payment_form and stk_ready and plans %}
+  <script>
+    (function () {
+      var form = document.getElementById("hotspot-payment-form");
+      var submit = document.getElementById("payment-submit");
+      var retry = document.getElementById("payment-retry");
+      var plan = document.getElementById("plan_id");
+      var status = document.getElementById("payment-status");
+      var welcomeUrl = "{{ welcome_url|escapejs }}";
+      var pollTimer = null;
+      // Once the prompt has lapsed, keep checking more slowly instead of
+      // stopping: a customer who paid late must still be let online.
+      var POLL_FAST_MS = 3000;
+      var POLL_SLOW_MS = 8000;
+      var POLL_GIVE_UP_MS = 600000;
+      var pollStartedAt = 0;
+
+      function show(message, isError) {
+        status.textContent = message;
+        status.className = isError ? "error" : "meta";
+      }
+
+      function offerRetry(message) {
+        show(message, true);
+        retry.hidden = false;
+        submit.disabled = false;
+      }
+
+      function stopRetry() {
+        retry.hidden = true;
+      }
+
+      function updatePayButton() {
+        var option = plan.options[plan.selectedIndex];
+        var amount = option ? option.getAttribute("data-price") : "";
+        submit.textContent = amount ? "Pay KES " + amount + " with M-Pesa" : "Pay with M-Pesa";
+      }
+
+      function openInternet(stkId, token) {
+        show("Payment successful. You can now browse.", false);
+        // The status endpoint has already provisioned this MAC and expired its
+        // stale Hotspot host entry. Sending the captive browser through
+        // RouterOS /login again can leave it on the payment page because there
+        // are no form credentials in that navigation. Open the same-origin
+        // confirmation page directly; the device's next internet request will
+        // complete RouterOS MAC authentication automatically.
+        var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+        window.location.replace(
+          welcomeUrl + separator +
+            "stk=" + encodeURIComponent(stkId) +
+            "&token=" + encodeURIComponent(token)
+        );
+      }
+
+      function poll(url, token) {
+        window.clearTimeout(pollTimer);
+        fetch(url + "?token=" + encodeURIComponent(token), {
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            var data = result.data || {};
+            if (!result.ok || !data.ok) {
+              throw new Error(data.error || "Could not check payment.");
+            }
+            if (data.success) {
+              stopRetry();
+              if (data.authorized) {
+                openInternet(data.stk_id, token);
+                return;
+              }
+              // Paid but not provisioned — never invite a second charge.
+              show(
+                data.authorization_error ||
+                  "Payment succeeded, but the router could not authorize this device. Contact support.",
+                true
+              );
+              return;
+            }
+            if (data.pending) {
+              var elapsed = Date.now() - pollStartedAt;
+              if (data.expired) {
+                offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
+              } else {
+                show(data.result_desc || "Waiting for M-Pesa confirmation…", false);
+              }
+              if (elapsed < POLL_GIVE_UP_MS) {
+                pollTimer = window.setTimeout(
+                  function () { poll(url, token); },
+                  data.expired ? POLL_SLOW_MS : POLL_FAST_MS
+                );
+              }
+              return;
+            }
+            offerRetry(
+              data.reason || data.result_desc || "The payment was not completed."
+            );
+            if (data.can_retry === false) {
+              stopRetry();
+            }
+          })
+          .catch(function (error) {
+            offerRetry(error.message || "Could not check payment.");
+          });
+      }
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        window.clearTimeout(pollTimer);
+        stopRetry();
+        submit.disabled = true;
+        pollStartedAt = Date.now();
+        show("Sending M-Pesa prompt…", false);
+        fetch(form.action, {
+          method: "POST",
+          body: new FormData(form),
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            var data = result.data || {};
+            if (!result.ok || !data.ok) {
+              throw new Error(data.error || "Could not start payment.");
+            }
+            show(
+              "M-Pesa prompt sent for KES " + data.amount +
+                ". Check your phone and enter your PIN.",
+              false
+            );
+            poll(data.status_url, data.status_token);
+          })
+          .catch(function (error) {
+            offerRetry(error.message || "Could not start payment.");
+          });
+      });
+      retry.addEventListener("click", function () {
+        form.dispatchEvent(new Event("submit", { cancelable: true }));
+      });
+      plan.addEventListener("change", updatePayButton);
+      updatePayButton();
+    })();
+  </script>
+  {% endif %}
+</body>
+</html>
