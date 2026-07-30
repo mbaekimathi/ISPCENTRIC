@@ -138,7 +138,7 @@ Generate the server keypair once:
 
 ```bash
 cd /opt/ispcentric
-sudo -u www-data venv/bin/python manage.py wireguard_peer --server-keys
+sudo -u www-data .venv/bin/python manage.py wireguard_peer --server-keys
 ```
 
 Put the **public** key and endpoint in `.env`, then restart the app:
@@ -154,13 +154,13 @@ and prints a script to paste into that router's terminal (Winbox → New Termina
 which needs RouterOS 7:
 
 ```bash
-sudo -u www-data venv/bin/python manage.py wireguard_peer --all
+sudo -u www-data .venv/bin/python manage.py wireguard_peer --all
 ```
 
 Write the server config using the **private** key you kept, and start it:
 
 ```bash
-sudo -u www-data venv/bin/python manage.py wireguard_peer --server-config '<private key>' \
+sudo -u www-data .venv/bin/python manage.py wireguard_peer --server-config '<private key>' \
     | sudo tee /etc/wireguard/wg0.conf > /dev/null
 sudo chmod 600 /etc/wireguard/wg0.conf
 sudo systemctl enable --now wg-quick@wg0
