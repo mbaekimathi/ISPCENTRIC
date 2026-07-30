@@ -119,12 +119,61 @@ Then `sudo systemctl restart ispcentric`.
 ## Router reachability
 
 The app is the *client* of the MikroTik API, so the routers do not need to reach
-the VPS — the VPS needs to reach them. On a public VPS that means a tunnel.
+the VPS — the VPS needs to reach them. On a public VPS that means a tunnel: the
+routers' `192.168.x.x` addresses are unroutable from the internet, so every push
+times out and the app reports the router as offline.
 
-Recommended: WireGuard with the VPS as the server and each MikroTik as a peer
-that dials out. No static public IP or port forwarding is needed at the sites.
-Once the tunnel is up, edit each router in the app and set its host to the
-tunnel address (for example `10.9.0.2`), then push Hotspot/PPPoE settings again.
+`manage.py wireguard_peer` builds both sides of that tunnel. The VPS is the
+WireGuard server and each MikroTik dials out to it, so no site needs a static
+public IP or port forwarding.
+
+Install WireGuard and open its port:
+
+```bash
+sudo apt install -y wireguard
+sudo ufw allow 51820/udp
+```
+
+Generate the server keypair once:
+
+```bash
+cd /opt/ispcentric
+sudo -u www-data venv/bin/python manage.py wireguard_peer --server-keys
+```
+
+Put the **public** key and endpoint in `.env`, then restart the app:
+
+```
+WIREGUARD_ENDPOINT=isp.richcom.co.ke:51820
+WIREGUARD_SERVER_PUBLIC_KEY=<public key from above>
+WIREGUARD_SUBNET=10.9.0.0/24
+```
+
+Provision a peer for every router. Each one gets an address in the tunnel subnet
+and prints a script to paste into that router's terminal (Winbox → New Terminal),
+which needs RouterOS 7:
+
+```bash
+sudo -u www-data venv/bin/python manage.py wireguard_peer --all
+```
+
+Write the server config using the **private** key you kept, and start it:
+
+```bash
+sudo -u www-data venv/bin/python manage.py wireguard_peer --server-config '<private key>' \
+    | sudo tee /etc/wireguard/wg0.conf > /dev/null
+sudo chmod 600 /etc/wireguard/wg0.conf
+sudo systemctl enable --now wg-quick@wg0
+```
+
+Re-run that last step whenever you add a router. Confirm a site is up with
+`sudo wg show` (a recent handshake) and `ping 10.9.0.2`, then push Hotspot/PPPoE
+settings from the app again.
+
+The app dials the tunnel address in preference to the saved `host`, so leave each
+router's host set to its real LAN address — it stays useful for on-site work. It
+also stops scanning the local network for routers when `DJANGO_HOSTED=true`,
+since on a VPS that would only probe unrelated datacentre hosts.
 
 One consequence worth planning for: the PPPoE renew page identifies a subscriber
 from the session address in `/ppp/active`. That only works while the client's

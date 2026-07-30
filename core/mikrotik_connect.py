@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
+from django.conf import settings
+
 
 WIFI_PACKAGES = (
     {
@@ -532,7 +534,7 @@ def _wait_for_api(
     last_error: OSError | None = None
     for _ in range(max(1, attempts)):
         try:
-            with socket.create_connection((host, port), timeout=connect_timeout):
+            with socket.create_connection((dial_host(host), port), timeout=connect_timeout):
                 return
         except OSError as exc:
             last_error = exc
@@ -968,7 +970,7 @@ def recover_mikrotik_connection(
     hosts: list[str] = []
     for candidate in [
         host,
-        "192.168.88.1",
+        *(["192.168.88.1"] if on_router_lan() else []),
         *(candidate_hosts or []),
     ]:
         value = (candidate or "").strip()
@@ -1174,7 +1176,7 @@ def _api_session(
     port: int = 8728,
     timeout: float = 5.0,
 ) -> Iterator[socket.socket]:
-    with socket.create_connection((host, port), timeout=timeout) as sock:
+    with socket.create_connection((dial_host(host), port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         login_error = _api_login(sock, username, password)
         if login_error:
@@ -2512,7 +2514,7 @@ def check_mikrotik_reachable(
 
     def _probe(probe_port: int) -> tuple[int, bool, str]:
         try:
-            with socket.create_connection((check_host, probe_port), timeout=timeout):
+            with socket.create_connection((dial_host(check_host), probe_port), timeout=timeout):
                 return probe_port, True, ""
         except TimeoutError:
             return probe_port, False, f"{probe_port}: timed out"
@@ -3897,7 +3899,7 @@ def test_mikrotik_api_login(
         return {"ok": False, "error": "Enter the router username."}
 
     try:
-        with socket.create_connection((host, port), timeout=timeout) as sock:
+        with socket.create_connection((dial_host(host), port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             login_error = _api_login(sock, username, password)
             if login_error:
@@ -5200,14 +5202,85 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
     return synced
 
 
+_TUNNEL_HOST_CACHE: dict[str, str] = {}
+_TUNNEL_HOST_CACHE_AT = 0.0
+_TUNNEL_HOST_CACHE_TTL = 30.0
+
+
+def _tunnel_hosts() -> dict[str, str]:
+    """LAN address -> tunnel address, for every router that has a peer."""
+    global _TUNNEL_HOST_CACHE, _TUNNEL_HOST_CACHE_AT
+
+    now = time.monotonic()
+    if now - _TUNNEL_HOST_CACHE_AT < _TUNNEL_HOST_CACHE_TTL:
+        return _TUNNEL_HOST_CACHE
+    try:
+        from core.models import MikroTikRouter
+
+        mapping: dict[str, str] = {}
+        ambiguous: set[str] = set()
+        for host, vpn in MikroTikRouter.objects.values_list("host", "vpn_address"):
+            host = (host or "").strip()
+            vpn = (vpn or "").strip()
+            if not host:
+                continue
+            # Sites routinely keep the factory 192.168.88.1, so the same saved
+            # address can belong to several routers. Translating it would send
+            # one router's traffic down another's tunnel; leave it alone.
+            if host in mapping or host in ambiguous:
+                mapping.pop(host, None)
+                ambiguous.add(host)
+                continue
+            if vpn:
+                mapping[host] = vpn
+        _TUNNEL_HOST_CACHE = mapping
+        _TUNNEL_HOST_CACHE_AT = now
+    except Exception:
+        pass
+    return _TUNNEL_HOST_CACHE
+
+
+def dial_host(host: str) -> str:
+    """
+    Resolve the address to actually connect to for a router.
+
+    Call sites across the app pass whatever is saved on the router row, which on
+    a hosted server is an unroutable LAN address. Translating here means every
+    one of them reaches the router over the billing tunnel without having to
+    know the tunnel exists.
+    """
+    host = (host or "").strip()
+    if not host or on_router_lan():
+        return host
+    return _tunnel_hosts().get(host, host)
+
+
+def on_router_lan() -> bool:
+    """
+    True when the billing server shares a network with the routers.
+
+    A hosted server never does: the routers' LAN addresses are unroutable from
+    it, so guessing 192.168.88.1 or scanning for neighbours only buys a long
+    timeout — and on a VPS the scan would probe unrelated datacentre hosts.
+    """
+    return not bool(getattr(settings, "HOSTED", False))
+
+
 def _router_api_host_candidates(router, candidate_hosts: list[str] | None = None) -> list[str]:
     host = (getattr(router, "host", None) or "").strip()
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    lan_only = ["192.168.88.1"] if on_router_lan() else []
     hosts: list[str] = []
-    for candidate in [host, "192.168.88.1", *(candidate_hosts or [])]:
+    dialled: set[str] = set()
+    for candidate in [tunnel, host, *lan_only, *(candidate_hosts or [])]:
         value = (candidate or "").strip()
-        if value and value not in hosts:
-            hosts.append(value)
-    if not candidate_hosts:
+        # Two candidates that dial the same address are one attempt, not two.
+        target = dial_host(value)
+        if not value or target in dialled:
+            continue
+        dialled.add(target)
+        hosts.append(value)
+    if not candidate_hosts and on_router_lan():
         try:
             from core.mikrotik_discovery import discover_mikrotik_devices
 
@@ -5218,6 +5291,24 @@ def _router_api_host_candidates(router, candidate_hosts: list[str] | None = None
         except Exception:
             pass
     return hosts
+
+
+def unreachable_router_error(router) -> str:
+    """Explain a dial failure in terms of what the operator has to change."""
+    host = (getattr(router, "host", None) or "").strip() or "the saved address"
+    if on_router_lan():
+        return f"Could not reach {host}:8728."
+    if (getattr(router, "vpn_address", None) or "").strip():
+        return (
+            f"Could not reach {router.vpn_address}:8728 over the billing tunnel. "
+            "Check that WireGuard is up on this router."
+        )
+    return (
+        f"This server is hosted and cannot reach {host}, which is a private LAN "
+        "address. Join the router to the billing tunnel: run "
+        f"`python manage.py wireguard_peer {getattr(router, 'pk', '')}` on the "
+        "server and paste the script it prints into the MikroTik terminal."
+    )
 
 
 def provision_customer_pppoe(
@@ -6163,7 +6254,7 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
         account_status=MikroTikRouter.AccountStatus.ACTIVE,
     ).order_by("id")
     for router in routers:
-        host = (router.host or "").strip()
+        host = router.api_host
         username = (router.username or "").strip()
         if not host or not username:
             continue
@@ -6211,7 +6302,7 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
         account_status=MikroTikRouter.AccountStatus.ACTIVE,
     ).order_by("id")
     for router in routers:
-        host = (router.host or "").strip()
+        host = router.api_host
         username = (router.username or "").strip()
         if not host or not username:
             continue
@@ -6389,23 +6480,7 @@ def apply_pppoe_enforcement_on_router(
     lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
     wan_interface = getattr(router, "wan_interface", None) or "ether1"
 
-    hosts: list[str] = []
-    for candidate in [host, "192.168.88.1", *(candidate_hosts or [])]:
-        value = (candidate or "").strip()
-        if value and value not in hosts:
-            hosts.append(value)
-
-    # Discover nearby MikroTiks when the saved IP is offline.
-    if not candidate_hosts:
-        try:
-            from core.mikrotik_discovery import discover_mikrotik_devices
-
-            for device in discover_mikrotik_devices(timeout=2.0, full_scan=False) or []:
-                ip = (device.get("ip") or device.get("host") or "").strip()
-                if ip and ip not in hosts:
-                    hosts.append(ip)
-        except Exception:
-            pass
+    hosts = _router_api_host_candidates(router, candidate_hosts)
 
     last_error = ""
     working_host = ""
@@ -6461,10 +6536,14 @@ def apply_pppoe_enforcement_on_router(
                 f"{unreachable}. This PC cannot reach the MikroTik API right now. "
                 "Plug into ether2–ether5 (LAN), open the router detail page, click Reconnect, "
                 "then push PPPoE enforcement again."
-            ),
+            )
+            if on_router_lan()
+            else f"{unreachable}. {unreachable_router_error(router)}",
         }
 
-    host_changed = bool(working_host and working_host != host)
+    # The tunnel address is not the router's own IP, so never write it over it.
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    host_changed = bool(working_host and working_host not in (host, tunnel))
     if host_changed and hasattr(router, "host"):
         try:
             router.host = working_host
@@ -7822,7 +7901,11 @@ def apply_hotspot_on_router(
                 "host": host,
                 "reason": "offline",
                 "timeout": True,
-                "message": f"{router_name} is offline / not reachable — Hotspot push skipped.",
+                "message": (
+                    f"{router_name} is offline / not reachable — Hotspot push skipped."
+                    if on_router_lan()
+                    else f"{router_name}: {unreachable_router_error(router)}"
+                ),
                 "users_synced": 0,
                 "notes": [detail],
             }
@@ -7831,11 +7914,13 @@ def apply_hotspot_on_router(
                 f"{detail}. Update the saved API username/password on the router detail page "
                 "(or click Reconnect), then push Hotspot again."
             )
-        else:
+        elif on_router_lan():
             error = (
                 f"{detail}. Fix the router setting above, then push Hotspot again. "
                 "If this keeps failing, open MikroTik → the router → Reconnect."
             )
+        else:
+            error = f"{detail}. {unreachable_router_error(router)}"
         return {
             "ok": False,
             "router_id": router_id,
@@ -7844,7 +7929,9 @@ def apply_hotspot_on_router(
             "error": error,
         }
 
-    host_changed = bool(working_host and working_host != host)
+    # The tunnel address is not the router's own IP, so never write it over it.
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    host_changed = bool(working_host and working_host not in (host, tunnel))
     if host_changed and hasattr(router, "host"):
         try:
             router.host = working_host

@@ -103,6 +103,11 @@ INSTALLED_APPS = [
     "billing.apps.BillingConfig",
 ]
 
+# WireGuard tunnel the routers dial so a hosted server can reach their API.
+WIREGUARD_ENDPOINT = (os.getenv("WIREGUARD_ENDPOINT") or "").strip()
+WIREGUARD_SERVER_PUBLIC_KEY = (os.getenv("WIREGUARD_SERVER_PUBLIC_KEY") or "").strip()
+WIREGUARD_SUBNET = (os.getenv("WIREGUARD_SUBNET") or "10.9.0.0/24").strip()
+
 # Reverse proxies whose X-Forwarded-For may be trusted (nginx on the same box).
 TRUSTED_PROXY_IPS = [
     p.strip()

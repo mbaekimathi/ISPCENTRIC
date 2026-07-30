@@ -151,8 +151,29 @@ class MikroTikRouter(models.Model):
         default=AccountStatus.ACTIVE,
         db_index=True,
     )
+
+    # WireGuard peer. A hosted billing server is the *client* of the MikroTik
+    # API, so it must reach the router — but the router sits on a private LAN.
+    # The router dials out to the VPS and the tunnel address becomes the host
+    # the app connects to.
+    vpn_address = models.GenericIPAddressField(
+        "Tunnel address",
+        protocol="IPv4",
+        null=True,
+        blank=True,
+        unique=True,
+        help_text="Address this router answers on inside the WireGuard tunnel.",
+    )
+    vpn_public_key = models.CharField(max_length=64, blank=True)
+    vpn_private_key = models.CharField(max_length=64, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def api_host(self) -> str:
+        """Address the billing server should dial for the API."""
+        return (self.vpn_address or "").strip() or (self.host or "").strip()
 
     class Meta:
         db_table = "core_mikrotik_router"

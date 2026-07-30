@@ -362,7 +362,16 @@ def discover_mikrotik_devices(timeout: float = 3.0, *, full_scan: bool = False) 
 
     full_scan=False (default): MNDP + gateway/common-host probe only — fast enough for polling.
     full_scan=True: also walks local /24s (slower; use on explicit Refresh).
+
+    A hosted server shares no network with any router, so scanning would only
+    probe unrelated hosts in the datacentre. Those routers are added by hand and
+    reached over the billing tunnel instead.
     """
+    from django.conf import settings
+
+    if getattr(settings, "HOSTED", False):
+        return []
+
     mndp_result: list[dict] = []
     scan_result: list[dict] = []
     mndp_timeout = min(timeout, 2.0) if not full_scan else timeout
