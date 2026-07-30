@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the ISPCENTRIC expiry sweep every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+# Measured from the end of the last run, so slow runs cannot overlap.
+AccuracySec=15s
+Unit=ispcentric-sweep.service
+
+[Install]
+WantedBy=timers.target

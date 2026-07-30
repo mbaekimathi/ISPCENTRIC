@@ -103,7 +103,15 @@ INSTALLED_APPS = [
     "billing.apps.BillingConfig",
 ]
 
+# Reverse proxies whose X-Forwarded-For may be trusted (nginx on the same box).
+TRUSTED_PROXY_IPS = [
+    p.strip()
+    for p in (os.getenv("DJANGO_TRUSTED_PROXY_IPS") or "127.0.0.1,::1").split(",")
+    if p.strip()
+]
+
 MIDDLEWARE = [
+    "ispcentric.middleware.RealClientIpMiddleware",
     "ispcentric.middleware.CaptiveHostRewriteMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",

@@ -4668,7 +4668,7 @@ def _ensure_pppoe_stack(
             _remove(sock, "/ip/firewall/filter", item_id)
 
     place_before_drop = _first_forward_drop_id(sock)
-    billing_ip = _routable_ipv4_from_url(portal_url) if portal_url else ""
+    billing_ip = _portal_target_ipv4(portal_url) if portal_url else ""
 
     forward_rules: list[dict[str, str]] = []
     if billing_ip:
@@ -4771,6 +4771,29 @@ def _ensure_pppoe_stack(
         notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal_url))
 
     return PPPOE_PROFILE_NAME, notes
+
+
+def _portal_target_ipv4(portal_url: str) -> str:
+    """
+    IPv4 the portal is reachable at, resolving a hostname when needed.
+
+    dst-nat needs a literal address, so a domain-based PUBLIC_BASE_URL (the
+    normal setup once billing runs on a VPS) has to be resolved here or the
+    expired-client redirect would silently never install.
+    """
+    direct = _routable_ipv4_from_url(portal_url)
+    if direct:
+        return direct
+    try:
+        host = (urlparse((portal_url or "").strip()).hostname or "").strip()
+        if not host:
+            return ""
+        resolved = ipaddress.ip_address(socket.gethostbyname(host))
+    except (ValueError, OSError):
+        return ""
+    if resolved.version != 4 or resolved.is_loopback or resolved.is_unspecified:
+        return ""
+    return str(resolved)
 
 
 def _portal_http_port(portal_url: str) -> str:

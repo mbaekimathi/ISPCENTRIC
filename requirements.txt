@@ -4,3 +4,5 @@ python-dotenv>=1.0.0
 cryptography>=42.0.0
 Pillow>=10.0.0
 whitenoise>=6.6.0
+# WSGI server for VPS/systemd deployments. cPanel/Passenger ignores this.
+gunicorn>=21.2.0

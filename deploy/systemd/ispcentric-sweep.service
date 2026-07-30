@@ -1,0 +1,13 @@
+[Unit]
+Description=ISPCENTRIC subscription expiry sweep
+After=network-online.target ispcentric.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/ispcentric
+EnvironmentFile=/opt/ispcentric/.env
+ExecStart=/opt/ispcentric/scripts/sync_subscription_access.sh
+# A run that cannot reach a router must not wedge the timer.
+TimeoutStartSec=600

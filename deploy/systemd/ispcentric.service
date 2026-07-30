@@ -1,0 +1,34 @@
+[Unit]
+Description=ISPCENTRIC billing (gunicorn)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/ispcentric
+Environment=DJANGO_SETTINGS_MODULE=ispcentric.settings
+EnvironmentFile=/opt/ispcentric/.env
+
+# Creates and owns /run/ispcentric for the socket nginx connects to.
+RuntimeDirectory=ispcentric
+RuntimeDirectoryMode=0755
+
+# Threads rather than extra workers: request time is dominated by waiting on
+# the MikroTik API and Daraja, not CPU.
+ExecStart=/opt/ispcentric/.venv/bin/gunicorn \
+    --workers 3 \
+    --threads 4 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --access-logfile /opt/ispcentric/logs/gunicorn-access.log \
+    --error-logfile /opt/ispcentric/logs/gunicorn-error.log \
+    --bind unix:/run/ispcentric/gunicorn.sock \
+    ispcentric.wsgi:application
+
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

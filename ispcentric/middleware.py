@@ -34,6 +34,31 @@ CAPTIVE_PROBE_HOSTS = {
 }
 
 
+class RealClientIpMiddleware:
+    """
+    Restore the client address when running behind nginx.
+
+    Captive identification reads REMOTE_ADDR — the PPPoE session lookup matches
+    it against /ppp/active — and a reverse proxy would otherwise make every
+    request look like it came from the proxy itself. Only headers from a
+    trusted proxy address are honoured, since X-Forwarded-For is spoofable.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from django.conf import settings
+
+        trusted = set(getattr(settings, "TRUSTED_PROXY_IPS", ()) or ())
+        if (request.META.get("REMOTE_ADDR") or "").strip() in trusted:
+            forwarded = (request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",")
+            client = forwarded[0].strip() if forwarded else ""
+            if client:
+                request.META["REMOTE_ADDR"] = client
+        return self.get_response(request)
+
+
 class CaptiveHostRewriteMiddleware:
     """
     Rewrite foreign Host headers from captive probes / transparent NAT.
