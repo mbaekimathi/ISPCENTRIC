@@ -94,6 +94,24 @@ def allocate_address(exclude: set[str] | None = None) -> str:
     )
 
 
+def looks_like_wg_key(value: str) -> bool:
+    """True for a base64-encoded 32-byte WireGuard key (not a placeholder)."""
+    value = (value or "").strip()
+    if len(value) != 44 or "<" in value or " " in value:
+        return False
+    try:
+        return len(base64.b64decode(value, validate=True)) == 32
+    except Exception:
+        return False
+
+
+def configured() -> bool:
+    """True when the VPS endpoint and a real public key are set."""
+    endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
+    key = (getattr(settings, "WIREGUARD_SERVER_PUBLIC_KEY", "") or "").strip()
+    return bool(endpoint and ":" in endpoint and looks_like_wg_key(key))
+
+
 def _endpoint() -> str:
     endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
     if not endpoint:
@@ -106,12 +124,83 @@ def _endpoint() -> str:
 
 def _server_public_key() -> str:
     key = (getattr(settings, "WIREGUARD_SERVER_PUBLIC_KEY", "") or "").strip()
-    if not key:
+    if not looks_like_wg_key(key):
         raise ValueError(
-            "WIREGUARD_SERVER_PUBLIC_KEY is not set. Run "
-            "`python manage.py wireguard_peer --server` on the VPS first."
+            "WIREGUARD_SERVER_PUBLIC_KEY is missing or invalid. Run "
+            "`python manage.py wireguard_peer --server-keys` and put the "
+            "public key in .env (not the placeholder text)."
         )
     return key
+
+
+def reserve_peer(label: str):
+    """
+    Create or reuse a WireGuardReservation for a router that is not onboarded yet.
+
+    Returns the reservation. Same label (case-insensitive) keeps one peer so the
+    Connect modal can regenerate the paste script without burning addresses.
+    """
+    from core.models import WireGuardReservation
+
+    label = (label or "").strip() or "New MikroTik"
+    reservation = WireGuardReservation.objects.filter(label__iexact=label).first()
+    if reservation is not None:
+        return reservation
+
+    private_key, public_key = generate_keypair()
+    return WireGuardReservation.objects.create(
+        label=label,
+        address=allocate_address(),
+        private_key=private_key,
+        public_key=public_key,
+    )
+
+
+def adopt_reservation_for_router(router) -> bool:
+    """
+    If the router was onboarded on a reserved tunnel address, attach that peer.
+
+    Returns True when keys were adopted (or already match the reservation).
+    """
+    from core.models import WireGuardReservation
+
+    host = (getattr(router, "host", None) or "").strip()
+    if not host:
+        return False
+
+    reservation = WireGuardReservation.objects.filter(address=host).first()
+    if reservation is None:
+        return False
+
+    changed: list[str] = []
+    if router.vpn_address != reservation.address:
+        router.vpn_address = reservation.address
+        changed.append("vpn_address")
+    if not router.vpn_private_key:
+        router.vpn_private_key = reservation.private_key
+        router.vpn_public_key = reservation.public_key
+        changed += ["vpn_private_key", "vpn_public_key"]
+    elif not router.vpn_public_key:
+        router.vpn_public_key = reservation.public_key or public_key_for(
+            router.vpn_private_key
+        )
+        changed.append("vpn_public_key")
+
+    if changed:
+        router.save(update_fields=[*dict.fromkeys(changed), "updated_at"])
+    reservation.delete()
+    return True
+
+
+def peer_payload(label: str, address: str, private_key: str, public_key: str) -> dict:
+    """JSON-friendly tunnel details for the Connect modal."""
+    return {
+        "label": label,
+        "address": address,
+        "script": routeros_script(address, private_key),
+        "server_peer": server_peer_block(label, address, public_key),
+        "endpoint": _endpoint(),
+    }
 
 
 def routeros_script(address: str, private_key: str) -> str:
@@ -120,14 +209,25 @@ def routeros_script(address: str, private_key: str) -> str:
 
     The interface name is fixed rather than per-site: a router has one tunnel to
     the billing server, and a fixed name makes re-running the script idempotent.
+
+    Besides bringing WireGuard up, the script:
+    - restricts the RouterOS API to private/tunnel sources (not the public internet)
+    - accepts API + ICMP from the tunnel in the input filter
+    - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
+    - pings the billing server and prints a clear pass/fail line
     """
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
     network = tunnel_network()
+    server = str(server_address())
     address = (address or "").strip()
     private_key = (private_key or "").strip()
     if not address or not private_key:
         raise ValueError("This peer has no tunnel address or key yet.")
+
+    # RFC1918 + the tunnel subnet (already inside 10/8 for the default plan).
+    # Blocks WAN clients from the API while still allowing LAN and the VPS peer.
+    api_sources = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
     return "\n".join(
         [
@@ -139,21 +239,40 @@ def routeros_script(address: str, private_key: str) -> str:
             'comment="ispcentric billing tunnel"',
             "/ip/address",
             "remove [find interface=ispcentric-vpn]",
-            f"add address={address}/{network.prefixlen} interface=ispcentric-vpn",
+            f"add address={address}/{network.prefixlen} interface=ispcentric-vpn "
+            'comment="ispcentric billing tunnel"',
             "/interface/wireguard/peers",
             "remove [find interface=ispcentric-vpn]",
             f'add interface=ispcentric-vpn public-key="{_server_public_key()}" '
             f"endpoint-address={host} endpoint-port={port} "
             f"allowed-address={network} persistent-keepalive=25s "
             'comment="ispcentric billing server"',
-            "# Let the billing server reach the API over the tunnel only.",
+            "# API: on, but only from private/tunnel networks - never the public WAN.",
             "/ip/service",
-            "set [find name=api] disabled=no port=8728",
+            f"set [find name=api] disabled=no port=8728 address={api_sources}",
             "/ip/firewall/filter",
-            'remove [find comment="ispcentric-vpn-api"]',
+            'remove [find comment~"ispcentric-vpn-"]',
             "add chain=input action=accept protocol=tcp dst-port=8728 "
             f'src-address={network} place-before=0 comment="ispcentric-vpn-api"',
-            f':put "ispcentric tunnel up on {address} - retry Connect in ISPCENTRIC"',
+            "add chain=input action=accept protocol=icmp "
+            f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp"',
+            "# Keep client/PPP source IPs intact when talking to the billing tunnel.",
+            "/ip/firewall/nat",
+            'remove [find comment="ispcentric-vpn-no-nat"]',
+            "add chain=srcnat action=accept "
+            f'dst-address={network} place-before=0 comment="ispcentric-vpn-no-nat"',
+            "# Wait for the handshake, then prove the billing server answers.",
+            ":delay 3s",
+            (
+                f":if ([/ping {server} count=4 interval=500ms] > 0) do={{:put "
+                f'"ispcentric OK: tunnel {address} reaches {server} - Connect in ISPCENTRIC"'
+                f"}} else={{:put "
+                f'"ispcentric: tunnel set on {address} but no ping from {server}. '
+                f'Add this peer on the VPS wg0, restart WireGuard, then retry Connect."}}'
+            ),
+            "/system/backup",
+            "save name=ispcentric-tunnel dont-encrypt=yes",
+            ':put "Backup saved as ispcentric-tunnel.backup - Winbox Save is also fine."',
         ]
     )
 

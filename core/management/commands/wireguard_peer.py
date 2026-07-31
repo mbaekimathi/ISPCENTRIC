@@ -11,7 +11,7 @@ Provision the WireGuard tunnel that lets a hosted billing server reach routers.
 from django.core.management.base import BaseCommand, CommandError
 
 from core import wireguard
-from core.models import MikroTikRouter, WireGuardReservation
+from core.models import MikroTikRouter
 
 
 class Command(BaseCommand):
@@ -112,17 +112,7 @@ class Command(BaseCommand):
         )
 
     def _reserve(self, label: str):
-        label = label.strip()
-        reservation = WireGuardReservation.objects.filter(label__iexact=label).first()
-        if reservation is None:
-            private_key, public_key = wireguard.generate_keypair()
-            reservation = WireGuardReservation.objects.create(
-                label=label,
-                address=wireguard.allocate_address(),
-                private_key=private_key,
-                public_key=public_key,
-            )
-
+        reservation = wireguard.reserve_peer(label)
         self._report(
             f"{reservation.label} (not onboarded yet) -> {reservation.address}",
             address=reservation.address,
@@ -141,16 +131,18 @@ class Command(BaseCommand):
 
         # A router reserved before onboarding was saved with the tunnel address
         # as its host. Adopt that peer instead of allocating a second one.
-        reservation = WireGuardReservation.objects.filter(
-            address=(router.host or "").strip()
-        ).first()
-        if reservation and not rotate and not router.vpn_private_key:
-            router.vpn_address = reservation.address
-            router.vpn_private_key = reservation.private_key
-            router.vpn_public_key = reservation.public_key
-            changed += ["vpn_address", "vpn_private_key", "vpn_public_key"]
-            reservation.delete()
-        elif rotate or not router.vpn_private_key:
+        if not rotate and wireguard.adopt_reservation_for_router(router):
+            router.refresh_from_db()
+            self._report(
+                f"{router.name} (id {router.pk}) -> {router.vpn_address}",
+                address=router.vpn_address,
+                private_key=router.vpn_private_key,
+                public_key=router.vpn_public_key,
+                label=f"{router.name} (router id {router.pk})",
+            )
+            return
+
+        if rotate or not router.vpn_private_key:
             private_key, public_key = wireguard.generate_keypair()
             router.vpn_private_key = private_key
             router.vpn_public_key = public_key

@@ -43,10 +43,62 @@ class WireGuardKeyTests(SimpleTestCase):
         # The API has to survive the router's input chain to be of any use.
         self.assertIn("dst-port=8728", script)
 
+    @override_settings(
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
+    def test_routeros_script_hardens_api_skips_nat_and_verifies_tunnel(self):
+        private_key, _ = wireguard.generate_keypair()
+
+        script = wireguard.routeros_script("10.9.0.3", private_key)
+
+        # API must not be open to the public internet.
+        self.assertIn(
+            "set [find name=api] disabled=no port=8728 "
+            "address=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+            script,
+        )
+        self.assertIn('comment="ispcentric-vpn-api"', script)
+        self.assertIn('comment="ispcentric-vpn-icmp"', script)
+        # Masquerade must not rewrite sources talking to the billing tunnel.
+        self.assertIn('comment="ispcentric-vpn-no-nat"', script)
+        self.assertIn("action=accept", script)
+        self.assertIn("dst-address=10.9.0.0/24", script)
+        # Prove reachability to the VPS tunnel address.
+        self.assertIn("/ping 10.9.0.1 count=4", script)
+        self.assertIn("ispcentric OK", script)
+        self.assertIn("save name=ispcentric-tunnel", script)
+        # Idempotent cleanup for re-runs.
+        self.assertIn('remove [find comment~"ispcentric-vpn-"]', script)
+        # Avoid :local so paste works cleanly in New Terminal.
+        self.assertNotIn(":local ", script)
+        if_line = next(line for line in script.splitlines() if line.startswith(":if"))
+        self.assertIn(
+            'do={:put "ispcentric OK: tunnel 10.9.0.3 reaches 10.9.0.1 - Connect in ISPCENTRIC"} else={:put',
+            if_line,
+        )
+        self.assertTrue(if_line.endswith('"}'))
+        self.assertEqual(if_line.count("{"), if_line.count("}"))
+
     @override_settings(WIREGUARD_ENDPOINT="", WIREGUARD_SERVER_PUBLIC_KEY="")
     def test_script_refuses_to_render_without_server_settings(self):
         with self.assertRaises(ValueError):
             wireguard.routeros_script("10.9.0.3", "x")
+
+    def test_placeholder_public_key_is_not_configured(self):
+        with override_settings(
+            WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+            WIREGUARD_SERVER_PUBLIC_KEY="<public key from wireguard_peer --server-keys>",
+        ):
+            self.assertFalse(wireguard.configured())
+
+    def test_real_public_key_counts_as_configured(self):
+        with override_settings(
+            WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+            WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        ):
+            self.assertTrue(wireguard.configured())
 
 
 @override_settings(

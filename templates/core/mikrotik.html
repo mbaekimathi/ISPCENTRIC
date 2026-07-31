@@ -3,11 +3,15 @@
 {% block title %}MikroTik — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
+<div class="mikrotik-page">
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel">
-  <div class="panel-head-row">
-    <h2>Routers ({{ routers|length }})</h2>
+<section class="panel mikrotik-list-panel">
+  <div class="panel-head-row mikrotik-list-head">
+    <div class="mikrotik-list-heading">
+      <h2>Routers</h2>
+      <p class="mikrotik-list-count">{{ routers|length }} onboarded</p>
+    </div>
     <div class="mikrotik-list-actions">
       <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>Refresh status</button>
       <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
@@ -15,64 +19,72 @@
   </div>
 
   {% if routers %}
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Status</th>
-          <th>Model</th>
-          <th>Location</th>
-          <th>IP / Host</th>
-          <th>Wi‑Fi</th>
-          <th>Username</th>
-          <th>Account</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for router in routers %}
-          <tr data-router-row="{{ router.id }}" class="mikrotik-router-row{% if router.account_status == 'suspended' %} is-suspended{% endif %}">
-            <td>
-              <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
-            </td>
-            <td>
-              <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
-                <span class="mikrotik-link-dot" aria-hidden="true"></span>
-                <span class="mikrotik-link-label">Checking…</span>
-              </span>
-            </td>
-            <td>{{ router.get_model_display }}</td>
-            <td>{{ router.location|default:"—" }}</td>
-            <td data-router-host-cell="{{ router.id }}">{{ router.host }}</td>
-            <td>{{ router.wifi_ssid|default:"—" }}</td>
-            <td>{{ router.username }}</td>
-            <td>
-              <span class="mikrotik-account-pill{% if router.account_status == 'suspended' %} is-suspended{% else %} is-active{% endif %}">
-                {{ router.get_account_status_display }}
-              </span>
-            </td>
-            <td class="mikrotik-router-actions">
-              <button
-                type="button"
-                class="btn btn-ghost mikrotik-reconnect-btn"
-                data-reconnect-router="{{ router.id }}"
-                data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
-                data-router-name="{{ router.name }}"
-                data-router-host="{{ router.host }}"
-                data-router-username="{{ router.username }}"
-                {% if router.account_status == 'suspended' %}disabled title="Activate account first"{% else %}title="Repair connection and bring this MikroTik back online"{% endif %}
-              >Reconnect</button>
-              <a class="btn btn-ghost mikrotik-view-btn" href="{% url 'core:mikrotik_detail' router.id %}">View</a>
-            </td>
+    <div class="mikrotik-table-wrap">
+      <table class="table mikrotik-routers-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Model</th>
+            <th>Location</th>
+            <th>IP / Host</th>
+            <th>Wi‑Fi</th>
+            <th>Username</th>
+            <th>Account</th>
+            <th><span class="visually-hidden">Actions</span></th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for router in routers %}
+            <tr data-router-row="{{ router.id }}" class="mikrotik-router-row{% if router.account_status == 'suspended' %} is-suspended{% endif %}">
+              <td data-label="Name">
+                <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
+              </td>
+              <td data-label="Status">
+                <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+                  <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                  <span class="mikrotik-link-label">Checking…</span>
+                </span>
+              </td>
+              <td data-label="Model">{{ router.get_model_display }}</td>
+              <td data-label="Location">{{ router.location|default:"—" }}</td>
+              <td data-label="IP / Host" data-router-host-cell="{{ router.id }}">{{ router.host }}</td>
+              <td data-label="Wi‑Fi">{{ router.wifi_ssid|default:"—" }}</td>
+              <td data-label="Username">{{ router.username }}</td>
+              <td data-label="Account">
+                <span class="mikrotik-account-pill{% if router.account_status == 'suspended' %} is-suspended{% else %} is-active{% endif %}">
+                  {{ router.get_account_status_display }}
+                </span>
+              </td>
+              <td class="mikrotik-router-actions" data-label="Actions">
+                <button
+                  type="button"
+                  class="btn btn-ghost mikrotik-reconnect-btn"
+                  data-reconnect-router="{{ router.id }}"
+                  data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
+                  data-router-name="{{ router.name }}"
+                  data-router-host="{{ router.host }}"
+                  data-router-username="{{ router.username }}"
+                  {% if router.account_status == 'suspended' %}disabled title="Activate account first"{% else %}title="Repair connection and bring this MikroTik back online"{% endif %}
+                >Reconnect</button>
+                <a class="btn btn-ghost mikrotik-view-btn" href="{% url 'core:mikrotik_detail' router.id %}">View</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
   {% else %}
-    <p class="empty">No routers onboarded yet. Use <strong>Connect to a New MikroTik</strong> to add one.</p>
+    <div class="mikrotik-empty">
+      <div class="mikrotik-empty-icon" aria-hidden="true">+</div>
+      <h3>No routers yet</h3>
+      <p>Connect your first MikroTik to manage Hotspot, PPPoE, and device health from here.</p>
+      <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
+    </div>
   {% endif %}
 </section>
+</div>
 
 {# Password popup when Reconnect hits wrong credentials #}
 <div class="role-modal mikrotik-action-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
@@ -146,6 +158,81 @@
 
       <div class="mikrotik-onboard-scroll">
         <section class="mikrotik-step" id="mikrotik-step-connect" data-step="connect">
+          <div
+            class="mikrotik-tunnel-card{% if not wireguard_ready %} is-optional{% endif %}"
+            id="mikrotik-tunnel-card"
+            data-wireguard-ready="{% if wireguard_ready %}1{% else %}0{% endif %}"
+            data-hosted="{% if hosted_server %}1{% else %}0{% endif %}"
+          >
+            <div class="mikrotik-tunnel-head">
+              <div>
+                <p class="mikrotik-section-label">Billing tunnel · Winbox script</p>
+                <p class="mikrotik-tunnel-lead">
+                  {% if wireguard_ready %}
+                    Name the site, generate the script, paste it in Winbox, wait for “ispcentric OK”, then Connect.
+                  {% elif hosted_server %}
+                    This server is remote — routers need a tunnel before Connect can reach them.
+                  {% else %}
+                    Optional on a local network. Use this when billing is on a VPS and cannot reach the router’s LAN IP.
+                  {% endif %}
+                </p>
+              </div>
+            </div>
+
+            {% if wireguard_ready %}
+              <ol class="mikrotik-tunnel-steps" aria-label="Tunnel setup steps">
+                <li class="mikrotik-tunnel-step is-active" data-tunnel-step="1">
+                  <span class="mikrotik-tunnel-step-num">1</span>
+                  <div class="mikrotik-tunnel-step-body">
+                    <label for="mikrotik-tunnel-label">Site name</label>
+                    <div class="mikrotik-tunnel-actions">
+                      <input
+                        type="text"
+                        class="form-control"
+                        id="mikrotik-tunnel-label"
+                        maxlength="150"
+                        placeholder="e.g. Kariobangi"
+                        autocomplete="off"
+                      >
+                      <button type="button" class="btn btn-primary" id="mikrotik-tunnel-generate">Generate script</button>
+                    </div>
+                  </div>
+                </li>
+                <li class="mikrotik-tunnel-step" data-tunnel-step="2" id="mikrotik-tunnel-step-script" hidden>
+                  <span class="mikrotik-tunnel-step-num">2</span>
+                  <div class="mikrotik-tunnel-step-body">
+                    <div class="mikrotik-tunnel-script-bar">
+                      <span>Paste into Winbox → New Terminal · wait for “ispcentric OK”</span>
+                      <button type="button" class="btn btn-ghost mikrotik-tunnel-copy" id="mikrotik-tunnel-copy">Copy script</button>
+                    </div>
+                    <pre class="mikrotik-tunnel-script" id="mikrotik-tunnel-script" aria-label="RouterOS tunnel script"></pre>
+                  </div>
+                </li>
+                <li class="mikrotik-tunnel-step" data-tunnel-step="3" id="mikrotik-tunnel-step-ip" hidden>
+                  <span class="mikrotik-tunnel-step-num">3</span>
+                  <div class="mikrotik-tunnel-step-body">
+                    <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
+                    <button type="button" class="btn btn-ghost" id="mikrotik-tunnel-use-ip">Use this IP for Connect</button>
+                  </div>
+                </li>
+              </ol>
+              <p class="mikrotik-tunnel-status" id="mikrotik-tunnel-status">Enter a site name, then generate the Winbox script.</p>
+            {% else %}
+              <input type="hidden" id="mikrotik-tunnel-label" value="">
+              <button type="button" id="mikrotik-tunnel-generate" hidden tabindex="-1" aria-hidden="true"></button>
+              <button type="button" id="mikrotik-tunnel-copy" hidden tabindex="-1" aria-hidden="true"></button>
+              <pre id="mikrotik-tunnel-script" hidden></pre>
+              <p id="mikrotik-tunnel-address" hidden></p>
+              <button type="button" id="mikrotik-tunnel-use-ip" hidden tabindex="-1" aria-hidden="true"></button>
+              <div class="mikrotik-tunnel-setup" id="mikrotik-tunnel-setup">
+                <p class="mikrotik-tunnel-status" id="mikrotik-tunnel-status">
+                  Skip this for now and Connect with the router’s local IP below.
+                  To enable remote tunnels later, put a real WireGuard public key in <code>.env</code> (from <code>manage.py wireguard_peer --server-keys</code>), then restart the app.
+                </p>
+              </div>
+            {% endif %}
+          </div>
+
           <div class="form-grid mikrotik-simple-grid">
             <div class="field field-span-2 mikrotik-host-field">
               <div class="mikrotik-host-label-row">
@@ -161,7 +248,7 @@
                 <button type="button" class="mikrotik-host-toggle" id="mikrotik-host-toggle" aria-label="Show found routers" aria-expanded="false" aria-controls="mikrotik-host-picker">▾</button>
                 <div class="mikrotik-host-picker" id="mikrotik-host-picker" hidden role="listbox" aria-label="Found MikroTik routers"></div>
               </div>
-              <p class="mikrotik-host-hint" id="mikrotik-host-hint">Select a found router or type an IP address.</p>
+              <p class="mikrotik-host-hint" id="mikrotik-host-hint">Select a found router, type a LAN IP, or use the tunnel IP from the script above.</p>
               {% if onboard_form.host.errors %}<div class="field-error">{{ onboard_form.host.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
@@ -335,11 +422,25 @@
   var placeDetailsUrl = "{% url 'core:mikrotik_place_details' %}";
   var discoverUrl = "{% url 'core:mikrotik_discover' %}";
   var connectUrl = "{% url 'core:mikrotik_connect' %}";
+  var tunnelScriptUrl = "{% url 'core:mikrotik_tunnel_script' %}";
+  var wireguardReady = {% if wireguard_ready %}true{% else %}false{% endif %};
   var statusEl = document.getElementById("mikrotik-discover-status");
   var hostPicker = document.getElementById("mikrotik-host-picker");
   var hostToggle = document.getElementById("mikrotik-host-toggle");
   var hostHint = document.getElementById("mikrotik-host-hint");
   var refreshBtn = document.getElementById("mikrotik-discover-refresh");
+  var tunnelCard = document.getElementById("mikrotik-tunnel-card");
+  var tunnelLabel = document.getElementById("mikrotik-tunnel-label");
+  var tunnelGenerate = document.getElementById("mikrotik-tunnel-generate");
+  var tunnelCopy = document.getElementById("mikrotik-tunnel-copy");
+  var tunnelUseIp = document.getElementById("mikrotik-tunnel-use-ip");
+  var tunnelStatus = document.getElementById("mikrotik-tunnel-status");
+  var tunnelScript = document.getElementById("mikrotik-tunnel-script");
+  var tunnelAddress = document.getElementById("mikrotik-tunnel-address");
+  var tunnelStepScript = document.getElementById("mikrotik-tunnel-step-script");
+  var tunnelStepIp = document.getElementById("mikrotik-tunnel-step-ip");
+  var tunnelScriptText = "";
+  var tunnelReadyAddress = "";
   var discoverTimer = null;
   var discoverInFlight = false;
   var discoveredDevices = [];
@@ -393,6 +494,143 @@
     connectStatus.classList.toggle("is-ok", !isError);
   }
 
+  function setTunnelStatus(text, isError) {
+    if (!tunnelStatus) return;
+    tunnelStatus.textContent = text || "";
+    tunnelStatus.classList.toggle("is-error", !!isError);
+    tunnelStatus.classList.toggle("is-ok", !!text && !isError);
+  }
+
+  function markTunnelStep(step, state) {
+    if (!tunnelCard) return;
+    var el = tunnelCard.querySelector('[data-tunnel-step="' + step + '"]');
+    if (!el) return;
+    el.classList.toggle("is-active", state === "active");
+    el.classList.toggle("is-done", state === "done");
+  }
+
+  function applyTunnelIp(address) {
+    if (!address || !hostInput) return;
+    hostInput.value = address;
+    setHostHint("Using tunnel IP " + address + " — paste the script in Winbox first, then Connect.");
+    showConnectStatus("");
+    if (usernameInput && !usernameInput.value.trim()) {
+      usernameInput.focus();
+    }
+  }
+
+  function showTunnelScript(data) {
+    tunnelScriptText = (data && data.script) || "";
+    tunnelReadyAddress = (data && data.address) || "";
+    if (tunnelScript) tunnelScript.textContent = tunnelScriptText;
+    if (tunnelStepScript) tunnelStepScript.hidden = !tunnelScriptText;
+    if (tunnelStepIp) tunnelStepIp.hidden = !tunnelReadyAddress;
+    if (tunnelAddress && tunnelReadyAddress) {
+      tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
+    }
+    markTunnelStep(1, "done");
+    markTunnelStep(2, tunnelScriptText ? "active" : "");
+    markTunnelStep(3, tunnelReadyAddress ? "active" : "");
+    applyTunnelIp(tunnelReadyAddress);
+    if (data && data.hint) setTunnelStatus(data.hint, false);
+    else if (tunnelReadyAddress) {
+      setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
+    }
+  }
+
+  function clearTunnelScript() {
+    tunnelScriptText = "";
+    tunnelReadyAddress = "";
+    if (tunnelScript) tunnelScript.textContent = "";
+    if (tunnelStepScript) tunnelStepScript.hidden = true;
+    if (tunnelStepIp) tunnelStepIp.hidden = true;
+    if (tunnelAddress) tunnelAddress.textContent = "";
+    markTunnelStep(1, "active");
+    markTunnelStep(2, "");
+    markTunnelStep(3, "");
+  }
+
+  function generateTunnelScript() {
+    if (!wireguardReady) {
+      setTunnelStatus(
+        "Skip this for now and Connect with the router’s local IP below.",
+        false
+      );
+      return;
+    }
+    var label = tunnelLabel ? tunnelLabel.value.trim() : "";
+    if (!label) {
+      setTunnelStatus("Enter a site name first (for example Kariobangi).", true);
+      if (tunnelLabel) tunnelLabel.focus();
+      return;
+    }
+    if (tunnelGenerate) tunnelGenerate.disabled = true;
+    setTunnelStatus("Generating Winbox script…", false);
+    var body = new FormData();
+    body.append("label", label);
+    body.append("csrfmiddlewaretoken", csrfToken());
+    fetch(tunnelScriptUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+    })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.ok) {
+          clearTunnelScript();
+          setTunnelStatus((result.data && result.data.error) || "Could not generate tunnel script.", true);
+          return;
+        }
+        showTunnelScript(result.data);
+      })
+      .catch(function () {
+        clearTunnelScript();
+        setTunnelStatus("Could not generate tunnel script. Try again.", true);
+      })
+      .finally(function () {
+        if (tunnelGenerate) tunnelGenerate.disabled = false;
+      });
+  }
+
+  function copyTunnelScript() {
+    if (!tunnelScriptText) return;
+    var done = function () {
+      if (tunnelCopy) {
+        var original = tunnelCopy.textContent;
+        tunnelCopy.textContent = "Copied";
+        setTimeout(function () { tunnelCopy.textContent = original || "Copy script"; }, 1400);
+      }
+      markTunnelStep(2, "done");
+      markTunnelStep(3, "active");
+      setTunnelStatus("Copied. Paste in Winbox → New Terminal, wait a few seconds, then Connect.", false);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(tunnelScriptText).then(done).catch(function () {
+        fallbackCopyTunnelScript(done);
+      });
+      return;
+    }
+    fallbackCopyTunnelScript(done);
+  }
+
+  function fallbackCopyTunnelScript(done) {
+    var area = document.createElement("textarea");
+    area.value = tunnelScriptText;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      document.execCommand("copy");
+      if (done) done();
+    } catch (err) {
+      setTunnelStatus("Could not copy automatically — select the script and copy manually.", true);
+    }
+    document.body.removeChild(area);
+  }
+
   function setStep(step) {
     var onboard = step === "onboard";
     connected = onboard;
@@ -405,7 +643,9 @@
     if (subEl) {
       subEl.textContent = onboard
         ? "Name the router, set its location, Wi‑Fi, and adjust IP or credentials if needed."
-        : "Select or enter the router IP, then sign in with its username and password.";
+        : (wireguardReady
+          ? "Generate the Winbox script if this server is remote, then sign in to the router."
+          : "Enter the router IP and login. Tunnel setup is optional on a local network.");
     }
   }
 
@@ -686,6 +926,9 @@
     setStep("connect");
     showConnectStatus("");
     startLiveDiscovery();
+    if (wireguardReady && tunnelLabel) {
+      setTimeout(function () { tunnelLabel.focus(); }, 40);
+    }
   }
 
   function closeModal() {
@@ -738,7 +981,14 @@
           return;
         }
         var data = result.data;
-        if (nameInput) nameInput.value = data.name || nameInput.value || "";
+        if (nameInput) {
+          var suggested = data.name || data.identity || "";
+          if (tunnelLabel && tunnelLabel.value.trim() && !nameInput.value.trim()) {
+            nameInput.value = tunnelLabel.value.trim();
+          } else if (!nameInput.value.trim()) {
+            nameInput.value = suggested || nameInput.value || "";
+          }
+        }
         if (data.model) setSelectedModel(data.model, false);
         syncOnboardCredentialsFromConnect();
         fillWifiFromRouter(data);
@@ -769,6 +1019,25 @@
   });
   if (refreshBtn) refreshBtn.addEventListener("click", function () { runDiscovery(true); });
   if (connectBtn) connectBtn.addEventListener("click", connectRouter);
+  if (tunnelGenerate) tunnelGenerate.addEventListener("click", generateTunnelScript);
+  if (tunnelCopy) tunnelCopy.addEventListener("click", copyTunnelScript);
+  if (tunnelUseIp) {
+    tunnelUseIp.addEventListener("click", function () {
+      if (!tunnelReadyAddress) return;
+      applyTunnelIp(tunnelReadyAddress);
+      markTunnelStep(3, "done");
+      setTunnelStatus("Tunnel IP filled in. Sign in below and press Connect.", false);
+    });
+  }
+  if (tunnelLabel) {
+    tunnelLabel.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        generateTunnelScript();
+      }
+    });
+  }
+  if (tunnelGenerate && !wireguardReady) tunnelGenerate.disabled = true;
 
   modal.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -834,6 +1103,9 @@
     } else {
       setStep("connect");
       startLiveDiscovery();
+      if (wireguardReady && tunnelLabel) {
+        setTimeout(function () { tunnelLabel.focus(); }, 40);
+      }
     }
   } else if (/(?:^\?|&)onboard=1(?:&|$)/.test(window.location.search || "")) {
     openModal();

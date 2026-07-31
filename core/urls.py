@@ -35,6 +35,11 @@ urlpatterns = [
     ),
     path("app/mikrotik/discover/", views.mikrotik_discover, name="mikrotik_discover"),
     path("app/mikrotik/connect/", views.mikrotik_connect, name="mikrotik_connect"),
+    path(
+        "app/mikrotik/tunnel-script/",
+        views.mikrotik_tunnel_script,
+        name="mikrotik_tunnel_script",
+    ),
     path("app/mikrotik/status/", views.mikrotik_status, name="mikrotik_status"),
     path("app/mikrotik/places/", views.mikrotik_places, name="mikrotik_places"),
     path("app/mikrotik/places/details/", views.mikrotik_place_details, name="mikrotik_place_details"),

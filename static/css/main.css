@@ -865,38 +865,38 @@ a {
 .mikrotik-onboard-panel {
   display: flex;
   flex-direction: column;
-  width: min(100% - 1.25rem, 26.5rem);
-  max-width: 26.5rem;
-  max-height: min(92dvh, 40rem);
+  width: min(100%, 28rem);
+  max-width: 100%;
+  max-height: min(94dvh, 100%);
   height: auto;
   margin: 0 auto;
   padding: 0;
   overflow: hidden;
-  border-radius: 18px 18px 0 0;
+  border-radius: 20px 20px 0 0;
   background:
-    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(46, 204, 113, 0.14), transparent 55%),
-    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.18), transparent 50%),
-    linear-gradient(180deg, #173039 0%, #101c23 48%, #0d171d 100%);
+    radial-gradient(ellipse 80% 50% at 100% -10%, rgba(46, 204, 113, 0.18), transparent 55%),
+    radial-gradient(ellipse 60% 45% at -5% 0%, rgba(14, 124, 134, 0.22), transparent 52%),
+    linear-gradient(185deg, #1a3742 0%, #12252e 42%, #0d171d 100%);
   box-shadow:
-    0 -16px 40px rgba(0, 0, 0, 0.35),
-    0 0 0 1px rgba(255, 255, 255, 0.06);
+    0 -18px 48px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.07);
 }
 
 .mikrotik-onboard-panel::before {
   content: "";
   display: block;
-  width: 2.25rem;
-  height: 0.25rem;
-  margin: 0.45rem auto 0;
+  width: 2.5rem;
+  height: 0.28rem;
+  margin: 0.5rem auto 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.24);
   flex: 0 0 auto;
 }
 
 .role-modal-panel.mikrotik-onboard-panel {
   overflow: hidden;
-  width: min(100% - 1.25rem, 26.5rem);
-  max-height: min(92dvh, 40rem);
+  width: min(100%, 28rem);
+  max-height: min(94dvh, 100%);
   padding: 0;
 }
 
@@ -905,9 +905,9 @@ a {
   align-items: flex-start;
   gap: 0.65rem;
   margin: 0;
-  padding: 0.7rem 1rem 0.75rem;
+  padding: 0.75rem 1.05rem 0.85rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(8, 16, 22, 0.22);
+  background: linear-gradient(180deg, rgba(8, 16, 22, 0.28), rgba(8, 16, 22, 0.12));
 }
 
 .mikrotik-onboard-title-block {
@@ -916,32 +916,39 @@ a {
 }
 
 .mikrotik-onboard-head .role-modal-kicker {
-  margin-bottom: 0.15rem;
+  margin-bottom: 0.2rem;
   color: #7ddea0;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 800;
 }
 
 .mikrotik-onboard-head h2 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: clamp(1.1rem, 3.6vw, 1.35rem);
   line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .mikrotik-onboard-sub {
-  margin: 0.3rem 0 0;
-  font-size: 0.8rem;
-  line-height: 1.35;
-  color: rgba(232, 242, 244, 0.62);
+  margin: 0.35rem 0 0;
+  font-size: clamp(0.78rem, 2.5vw, 0.88rem);
+  line-height: 1.4;
+  color: rgba(232, 242, 244, 0.64);
+  max-width: 42ch;
 }
 
 .mikrotik-onboard-scroll {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-height: 0;
-  max-height: none;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 0.75rem 1rem 0.85rem;
+  padding: 0.85rem 1.05rem 1rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 
 .mikrotik-discover-live {
@@ -1198,6 +1205,158 @@ a {
   color: rgba(232, 242, 244, 0.58);
 }
 
+.mikrotik-tunnel-card {
+  margin: 0 0 1.05rem;
+  padding: 0.95rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(125, 222, 160, 0.3);
+  background:
+    linear-gradient(160deg, rgba(28, 78, 62, 0.42), rgba(16, 48, 38, 0.28) 55%, rgba(12, 28, 34, 0.18));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.mikrotik-tunnel-card.is-optional {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: none;
+}
+
+.mikrotik-tunnel-head {
+  margin-bottom: 0.7rem;
+}
+
+.mikrotik-tunnel-lead {
+  margin: 0.25rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(232, 242, 244, 0.68);
+}
+
+.mikrotik-tunnel-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.mikrotik-tunnel-step {
+  display: grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  opacity: 0.72;
+}
+
+.mikrotik-tunnel-step.is-active,
+.mikrotik-tunnel-step.is-done {
+  opacity: 1;
+}
+
+.mikrotik-tunnel-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 222, 160, 0.45);
+  background: rgba(46, 204, 113, 0.12);
+  color: #9af0bc;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.mikrotik-tunnel-step.is-done .mikrotik-tunnel-step-num {
+  background: rgba(46, 204, 113, 0.28);
+  border-color: rgba(46, 204, 113, 0.55);
+}
+
+.mikrotik-tunnel-step-body {
+  min-width: 0;
+}
+
+.mikrotik-tunnel-step-body > label {
+  display: block;
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: rgba(232, 242, 244, 0.72);
+}
+
+.mikrotik-tunnel-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.mikrotik-tunnel-script-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: rgba(232, 242, 244, 0.78);
+}
+
+.mikrotik-tunnel-status {
+  margin: 0.7rem 0 0;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: rgba(232, 242, 244, 0.7);
+}
+
+.mikrotik-tunnel-status.is-error {
+  color: #ffc9c9;
+}
+
+.mikrotik-tunnel-status.is-ok {
+  color: #b8f5d0;
+}
+
+.mikrotik-tunnel-status code {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.mikrotik-tunnel-script {
+  margin: 0;
+  max-height: 10.5rem;
+  overflow: auto;
+  padding: 0.7rem 0.8rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: #d7ffe8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mikrotik-tunnel-address {
+  margin: 0 0 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #9af0bc;
+}
+
+.mikrotik-tunnel-copy {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.mikrotik-tunnel-setup {
+  margin-top: 0.15rem;
+}
+
 .mikrotik-connect-status {
   margin: 0.85rem 0 0;
   padding: 0.65rem 0.75rem;
@@ -1308,7 +1467,7 @@ a {
 .mikrotik-onboard-form {
   display: flex;
   flex-direction: column;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   max-width: 100%;
@@ -1515,13 +1674,13 @@ a {
   flex-wrap: nowrap;
   justify-content: stretch;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
   margin: 0;
   max-width: 100%;
-  padding: 0.7rem 1rem calc(0.8rem + env(safe-area-inset-bottom, 0px));
+  padding: 0.8rem 1.05rem calc(0.9rem + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(10, 18, 24, 0.94);
-  backdrop-filter: blur(8px);
+  background: rgba(10, 18, 24, 0.96);
+  backdrop-filter: blur(10px);
 }
 
 .mikrotik-onboard-actions[hidden] {
@@ -1617,7 +1776,7 @@ a {
 @media (min-width: 480px) {
   .mikrotik-onboard-form .form-grid.mikrotik-simple-grid {
     grid-template-columns: 1fr 1fr;
-    gap: 0.65rem 0.6rem;
+    gap: 0.7rem 0.65rem;
   }
 
   .mikrotik-onboard-form .field-span-2 {
@@ -1625,23 +1784,23 @@ a {
   }
 }
 
-@media (min-width: 720px) {
+@media (min-width: 640px) {
   .mikrotik-onboard-modal {
     place-items: center;
     justify-items: center;
     align-items: center;
-    padding: 2rem;
+    padding: max(1rem, env(safe-area-inset-top)) 1.25rem max(1rem, env(safe-area-inset-bottom));
   }
 
   .mikrotik-onboard-panel,
   .role-modal-panel.mikrotik-onboard-panel {
-    width: min(100%, 36rem);
-    max-width: 36rem;
-    max-height: min(86vh, 44rem);
+    width: min(100%, 34rem);
+    max-width: 34rem;
+    max-height: min(88vh, 46rem);
     margin: 0 auto;
-    border-radius: 18px;
+    border-radius: 20px;
     box-shadow:
-      0 28px 64px rgba(0, 0, 0, 0.4),
+      0 28px 64px rgba(0, 0, 0, 0.42),
       0 0 0 1px rgba(255, 255, 255, 0.06);
     animation: mikrotik-modal-in 0.26s ease;
   }
@@ -1649,25 +1808,35 @@ a {
   .mikrotik-onboard-panel::before {
     display: none;
   }
+}
+
+@media (min-width: 900px) {
+  .mikrotik-onboard-panel,
+  .role-modal-panel.mikrotik-onboard-panel {
+    width: min(100%, 40rem);
+    max-width: 40rem;
+    max-height: min(86vh, 48rem);
+  }
 
   .mikrotik-onboard-head {
-    padding: 1.15rem 1.35rem 1rem;
+    padding: 1.2rem 1.45rem 1.05rem;
   }
 
   .mikrotik-onboard-head h2 {
-    font-size: 1.35rem;
+    font-size: 1.4rem;
   }
 
   .mikrotik-onboard-sub {
-    font-size: 0.88rem;
+    font-size: 0.9rem;
+    max-width: 48ch;
   }
 
   .mikrotik-onboard-scroll {
-    padding: 1.1rem 1.35rem 1.15rem;
+    padding: 1.15rem 1.45rem 1.2rem;
   }
 
   .mikrotik-onboard-form .form-grid.mikrotik-simple-grid {
-    gap: 0.85rem 0.8rem;
+    gap: 0.9rem 0.85rem;
   }
 
   .mikrotik-onboard-form .field label {
@@ -1676,23 +1845,46 @@ a {
   }
 
   .mikrotik-onboard-form .form-control {
-    min-height: 2.7rem;
-    padding: 0.7rem 0.9rem;
-    font-size: 0.94rem;
+    min-height: 2.75rem;
+    padding: 0.7rem 0.95rem;
+    font-size: 0.95rem;
   }
 
-  .mikrotik-host-picker {
-    max-height: 12rem;
-  }
-
+  .mikrotik-host-picker,
   .mikrotik-model-picker {
-    max-height: 12rem;
+    max-height: 13rem;
+  }
+
+  .mikrotik-onboard-actions {
+    gap: 0.7rem;
+    justify-content: flex-end;
+    padding: 1rem 1.45rem 1.2rem;
+  }
+
+  .mikrotik-onboard-actions .btn {
+    flex: 0 0 auto;
+    min-width: 7.75rem;
+    min-height: 2.6rem;
+  }
+
+  .mikrotik-onboard-actions .btn-primary {
+    min-width: 10rem;
+  }
+}
+
+@media (min-width: 720px) and (max-width: 899px) {
+  .mikrotik-onboard-head {
+    padding: 1.05rem 1.25rem 0.95rem;
+  }
+
+  .mikrotik-onboard-scroll {
+    padding: 1rem 1.25rem 1.05rem;
   }
 
   .mikrotik-onboard-actions {
     gap: 0.65rem;
     justify-content: flex-end;
-    padding: 0.95rem 1.35rem 1.15rem;
+    padding: 0.9rem 1.25rem 1.05rem;
   }
 
   .mikrotik-onboard-actions .btn {
@@ -1721,7 +1913,7 @@ a {
   background:
     radial-gradient(ellipse 70% 45% at 100% 0%, rgba(46, 204, 113, 0.12), transparent 55%),
     radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.1), transparent 50%),
-    linear-gradient(180deg, #ffffff 0%, #f4f8f9 100%);
+    linear-gradient(180deg, #ffffff 0%, #f3f7f8 100%);
   color: var(--ink);
   box-shadow:
     0 -18px 40px rgba(11, 31, 42, 0.14),
@@ -1743,8 +1935,44 @@ a {
 
 [data-theme="light"] .mikrotik-onboard-sub,
 [data-theme="light"] .mikrotik-location-hint,
-[data-theme="light"] .mikrotik-host-hint {
+[data-theme="light"] .mikrotik-host-hint,
+[data-theme="light"] .mikrotik-tunnel-lead,
+[data-theme="light"] .mikrotik-tunnel-status,
+[data-theme="light"] .mikrotik-tunnel-script-bar {
   color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-tunnel-card {
+  border-color: rgba(27, 122, 69, 0.28);
+  background: rgba(46, 204, 113, 0.08);
+}
+
+[data-theme="light"] .mikrotik-tunnel-card.is-optional {
+  border-color: var(--border);
+  background: rgba(20, 40, 50, 0.03);
+}
+
+[data-theme="light"] .mikrotik-tunnel-step-body > label {
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-tunnel-status.is-error {
+  color: #9c2b22;
+}
+
+[data-theme="light"] .mikrotik-tunnel-status.is-ok,
+[data-theme="light"] .mikrotik-tunnel-address {
+  color: #1b7a45;
+}
+
+[data-theme="light"] .mikrotik-tunnel-script {
+  border-color: var(--border);
+  background: rgba(11, 31, 42, 0.04);
+  color: #16303a;
+}
+
+[data-theme="light"] .mikrotik-tunnel-status code {
+  background: rgba(11, 31, 42, 0.06);
 }
 
 [data-theme="light"] .mikrotik-connect-status {
@@ -1890,25 +2118,69 @@ a {
   border-color: var(--border);
 }
 
-@media (max-width: 419px) {
+@media (max-width: 639px) {
   .mikrotik-onboard-panel,
   .role-modal-panel.mikrotik-onboard-panel {
     width: 100%;
     max-width: 100%;
     margin: 0;
-    border-radius: 16px 16px 0 0;
+    border-radius: 18px 18px 0 0;
+    max-height: min(96dvh, 100%);
   }
 
   .mikrotik-onboard-head {
-    padding: 0.65rem 0.85rem 0.7rem;
+    padding: 0.7rem 0.95rem 0.75rem;
   }
 
   .mikrotik-onboard-scroll {
-    padding: 0.7rem 0.85rem 0.8rem;
+    padding: 0.75rem 0.95rem 0.85rem;
   }
 
   .mikrotik-onboard-actions {
-    padding-inline: 0.85rem;
+    padding-inline: 0.95rem;
+  }
+
+  .mikrotik-tunnel-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-tunnel-script-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mikrotik-tunnel-copy,
+  .mikrotik-tunnel-actions .btn {
+    width: 100%;
+  }
+}
+
+@media (max-height: 520px) and (orientation: landscape) {
+  .mikrotik-onboard-modal {
+    place-items: center;
+    padding: 0.5rem;
+  }
+
+  .mikrotik-onboard-panel,
+  .role-modal-panel.mikrotik-onboard-panel {
+    width: min(100%, 40rem);
+    max-height: min(96dvh, 100%);
+    border-radius: 14px;
+  }
+
+  .mikrotik-onboard-panel::before {
+    display: none;
+  }
+
+  .mikrotik-onboard-head,
+  .mikrotik-onboard-scroll,
+  .mikrotik-onboard-actions {
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+  }
+
+  .mikrotik-tunnel-script {
+    max-height: 5.5rem;
   }
 }
 
@@ -5953,11 +6225,6 @@ body.staff-nav-lock {
   text-decoration: underline;
 }
 
-.mikrotik-router-actions {
-  text-align: right;
-  white-space: nowrap;
-}
-
 .mikrotik-view-btn {
   padding: 0.35rem 0.7rem;
   font-size: 0.82rem;
@@ -6153,12 +6420,272 @@ body.staff-nav-lock {
   align-items: center;
 }
 
+.mikrotik-page {
+  display: grid;
+  gap: 1rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.mikrotik-list-panel {
+  overflow: hidden;
+  padding: 1.05rem 1.1rem 1.15rem;
+  border-radius: 16px;
+  background:
+    radial-gradient(ellipse 70% 80% at 100% 0%, rgba(46, 204, 113, 0.08), transparent 45%),
+    var(--surface);
+}
+
+[data-theme="dark"] .mikrotik-list-panel {
+  background:
+    radial-gradient(ellipse 70% 80% at 100% 0%, rgba(46, 204, 113, 0.1), transparent 48%),
+    var(--surface);
+}
+
+.mikrotik-list-head {
+  align-items: flex-start;
+  margin-bottom: 1rem;
+  gap: 0.85rem 1rem;
+}
+
+.mikrotik-list-heading h2 {
+  margin: 0;
+  font-size: clamp(1.15rem, 2.4vw, 1.35rem);
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-list-count {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+
+.mikrotik-table-wrap {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .mikrotik-table-wrap {
+  border-color: rgba(11, 31, 42, 0.08);
+}
+
+.mikrotik-routers-table {
+  min-width: 64rem;
+  margin: 0;
+}
+
+.mikrotik-routers-table th,
+.mikrotik-routers-table td {
+  padding: 0.85rem 0.7rem;
+  vertical-align: middle;
+}
+
+.mikrotik-routers-table th:first-child,
+.mikrotik-routers-table td:first-child {
+  padding-left: 0.95rem;
+}
+
+.mikrotik-routers-table th:last-child,
+.mikrotik-routers-table td:last-child {
+  padding-right: 0.95rem;
+}
+
+.mikrotik-router-row.is-suspended {
+  opacity: 0.78;
+}
+
 .mikrotik-router-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   justify-content: flex-end;
   white-space: nowrap;
+}
+
+.mikrotik-empty {
+  display: grid;
+  justify-items: start;
+  gap: 0.55rem;
+  padding: 1.5rem 0.35rem 0.85rem;
+  max-width: 28rem;
+}
+
+.mikrotik-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  margin-bottom: 0.2rem;
+  border-radius: 12px;
+  border: 1px solid rgba(46, 204, 113, 0.35);
+  background: rgba(46, 204, 113, 0.12);
+  color: #2ecc71;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.mikrotik-empty h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-empty p {
+  margin: 0 0 0.45rem;
+  color: var(--ink-soft);
+  line-height: 1.45;
+  font-size: 0.92rem;
+}
+
+@media (max-width: 860px) {
+  .mikrotik-list-panel {
+    padding: 0.95rem 0.9rem 1.05rem;
+  }
+
+  .mikrotik-list-actions {
+    width: 100%;
+  }
+
+  .mikrotik-list-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-height: 2.45rem;
+  }
+
+  .mikrotik-table-wrap {
+    border: 0;
+    overflow: visible;
+  }
+
+  .mikrotik-routers-table {
+    min-width: 0;
+    border-collapse: separate;
+    border-spacing: 0 0.75rem;
+  }
+
+  .mikrotik-routers-table thead {
+    display: none;
+  }
+
+  .mikrotik-routers-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .mikrotik-routers-table tr.mikrotik-router-row {
+    display: grid;
+    gap: 0.15rem;
+    margin: 0;
+    padding: 0.9rem 0.95rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  [data-theme="light"] .mikrotik-routers-table tr.mikrotik-router-row {
+    border-color: rgba(11, 31, 42, 0.08);
+    background: #fff;
+    box-shadow: 0 8px 20px rgba(11, 31, 42, 0.04);
+  }
+
+  .mikrotik-routers-table td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.85rem;
+    width: 100%;
+    padding: 0.42rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  [data-theme="light"] .mikrotik-routers-table td {
+    border-bottom-color: rgba(11, 31, 42, 0.06);
+  }
+
+  .mikrotik-routers-table td:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+    padding-top: 0.7rem;
+  }
+
+  .mikrotik-routers-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    max-width: 38%;
+    font-size: 0.72rem;
+    font-weight: 750;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .mikrotik-routers-table td > *:not(.mikrotik-reconnect-btn):not(.mikrotik-view-btn) {
+    text-align: right;
+  }
+
+  .mikrotik-router-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .mikrotik-router-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .mikrotik-routers-table td[data-label="Name"] {
+    padding-top: 0;
+    padding-bottom: 0.55rem;
+    margin-bottom: 0.2rem;
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .mikrotik-routers-table td[data-label="Name"]::before {
+    display: none;
+  }
+
+  .mikrotik-routers-table td[data-label="Name"] .mikrotik-router-name {
+    font-size: 1.02rem;
+    text-align: left;
+  }
+
+  .mikrotik-routers-table td[data-label="Actions"]::before {
+    display: none;
+  }
+
+  .mikrotik-empty {
+    max-width: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .mikrotik-list-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mikrotik-list-actions .btn {
+    width: 100%;
+  }
+
+  .mikrotik-empty {
+    padding-top: 1.15rem;
+  }
+
+  .mikrotik-router-actions {
+    flex-direction: column;
+  }
+
+  .mikrotik-router-actions .btn {
+    width: 100%;
+  }
 }
 
 .mikrotik-reconnect-btn.is-needed {
@@ -6291,12 +6818,33 @@ body.staff-nav-lock {
 }
 
 .mikrotik-action-modal .mikrotik-action-panel {
-  width: min(100% - 1.25rem, 28rem);
-  max-width: 28rem;
-  max-height: min(92dvh, 38rem);
+  width: min(100%, 30rem);
+  max-width: 100%;
+  max-height: min(94dvh, 40rem);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border-radius: 20px 20px 0 0;
+}
+
+@media (min-width: 640px) {
+  .mikrotik-action-modal {
+    place-items: center;
+    padding: 1.25rem;
+  }
+
+  .mikrotik-action-modal .mikrotik-action-panel {
+    width: min(100%, 30rem);
+    max-width: 30rem;
+    border-radius: 20px;
+  }
+}
+
+@media (max-width: 639px) {
+  .mikrotik-action-modal .mikrotik-action-panel {
+    width: 100%;
+    margin: 0;
+  }
 }
 
 .mikrotik-action-form {

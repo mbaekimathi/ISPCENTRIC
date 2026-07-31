@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.core.cache import cache
 from django.core import signing
 from django.core.paginator import Paginator
@@ -37,6 +38,7 @@ from billing.services import (
     customer_subscription_expired,
     make_renew_token,
 )
+from core import wireguard
 from core.forms import (
     MikroTikCleanUplinkForm,
     MikroTikCredentialsForm,
@@ -828,6 +830,8 @@ def mikrotik(request):
                             onboard_form=form,
                             mikrotik_models=mikrotik_model_catalog(),
                             open_mikrotik_onboard=True,
+                            wireguard_ready=wireguard.configured(),
+                            hosted_server=bool(getattr(settings, "HOSTED", False)),
                         ),
                     )
                 if wifi_result and wifi_result.get("updated"):
@@ -841,6 +845,8 @@ def mikrotik(request):
                 messages.success(request, f"MikroTik “{router.name}” onboarded.")
 
             router.save()
+            # If Connect used a reserved tunnel address, attach that WireGuard peer.
+            wireguard.adopt_reservation_for_router(router)
             if org and getattr(org, "pppoe_compulsory", False):
                 enforce = apply_pppoe_enforcement_on_router(router, compulsory=True)
                 if enforce.get("ok"):
@@ -881,6 +887,8 @@ def mikrotik(request):
             onboard_form=form,
             mikrotik_models=mikrotik_model_catalog(),
             open_mikrotik_onboard=open_onboard,
+            wireguard_ready=wireguard.configured(),
+            hosted_server=bool(getattr(settings, "HOSTED", False)),
         ),
     )
 
@@ -2151,6 +2159,58 @@ def mikrotik_discover(request):
                 }
                 for d in annotated
             ],
+        }
+    )
+
+
+@client_workspace_required
+@require_POST
+def mikrotik_tunnel_script(request):
+    """Reserve a WireGuard peer and return the RouterOS paste script for Connect."""
+    if not wireguard.configured():
+        return JsonResponse(
+            {
+                "ok": False,
+                "configured": False,
+                "error": (
+                    "Billing tunnel is not configured on this server. "
+                    "Set WIREGUARD_ENDPOINT and WIREGUARD_SERVER_PUBLIC_KEY, "
+                    "then restart the app."
+                ),
+            },
+            status=400,
+        )
+
+    label = (request.POST.get("label") or "").strip() or "New MikroTik"
+    try:
+        reservation = wireguard.reserve_peer(label)
+        payload = wireguard.peer_payload(
+            reservation.label,
+            reservation.address,
+            reservation.private_key,
+            reservation.public_key,
+        )
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "configured": True, "error": str(exc)}, status=400)
+    except Exception as exc:
+        return JsonResponse(
+            {"ok": False, "configured": True, "error": f"Could not reserve tunnel peer: {exc}"},
+            status=500,
+        )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "configured": True,
+            "label": payload["label"],
+            "address": payload["address"],
+            "script": payload["script"],
+            "server_peer": payload["server_peer"],
+            "endpoint": payload["endpoint"],
+            "hint": (
+                f"Paste into Winbox → New Terminal and wait for “ispcentric OK”. "
+                f"Then Connect using MikroTik IP {payload['address']}."
+            ),
         }
     )
 
