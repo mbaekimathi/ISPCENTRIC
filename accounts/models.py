@@ -40,14 +40,18 @@ class Organization(models.Model):
         "PPPoE enforcement",
         default=False,
         help_text=(
-            "When enabled, free LAN browsing is blocked. Dialed PPPoE clients "
-            "keep internet; other devices can use Hotspot when it is enabled."
+            "When enabled, free LAN browsing is blocked. Paid PPPoE clients "
+            "surf automatically; other devices fall back to the Hotspot "
+            "payment portal."
         ),
     )
     hotspot_enabled = models.BooleanField(
         "Enable Hotspot",
         default=False,
-        help_text="Allow Hotspot portals and voucher access for this organization.",
+        help_text=(
+            "Allow Hotspot portals and voucher access for this organization. "
+            "Enabled automatically as fallback when PPPoE enforcement is on."
+        ),
     )
     hotspot_portal_title = models.CharField(
         "Portal title",

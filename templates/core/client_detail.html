@@ -129,17 +129,17 @@
   <a href="{{ back_url }}">&larr; Back to clients</a>
 </p>
 
-<section class="panel client-overview-panel" id="client-overview">
-  <div class="client-overview-head">
-    <span class="client-overview-avatar" aria-hidden="true">
+<section class="panel client-profile-panel" id="client-overview">
+  <div class="client-profile-head">
+    <span class="client-profile-avatar" aria-hidden="true">
       {{ customer.full_name|slice:":1"|upper }}
     </span>
-    <div class="client-overview-identity">
-      <p class="mikrotik-detail-kicker">{{ customer.get_service_type_display }} subscriber</p>
+    <div class="client-profile-identity">
+      <p class="client-profile-kicker">{{ customer.get_service_type_display }} subscriber</p>
       <h2>{{ customer.full_name }}</h2>
-      <p>{{ customer.account_number }}</p>
+      <p class="client-profile-account">{{ customer.account_number }}</p>
     </div>
-    <div class="client-overview-badges">
+    <div class="client-profile-badges">
       <span class="badge">{{ customer.get_status_display }}</span>
       {% if customer.router %}
         <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
@@ -150,48 +150,75 @@
     </div>
   </div>
 
-  <div class="client-overview-grid">
-    <div class="client-overview-group">
-      <h3>Contact details</h3>
-      <dl class="client-overview-list">
+  <div class="client-profile-toolbar">
+    <p class="client-profile-toolbar-label">Profile details</p>
+    <button type="button" class="client-profile-expand" data-profile-expand-all aria-expanded="false">Expand all</button>
+  </div>
+
+  <div class="client-profile-groups" data-profile-groups>
+    <details class="client-profile-group" data-profile-group="contact" open>
+      <summary class="client-profile-summary">
+        <span class="client-profile-summary-copy">
+          <span class="client-profile-summary-title">Contact details</span>
+          <span class="client-profile-summary-preview">{{ customer.phone|default:"No phone" }}</span>
+        </span>
+        <span class="client-profile-chevron" aria-hidden="true"></span>
+      </summary>
+      <dl class="client-profile-list">
         <div><dt>Phone</dt><dd>{{ customer.phone|default:"—" }}</dd></div>
         <div><dt>Email</dt><dd>{{ customer.email|default:"—" }}</dd></div>
         <div><dt>Address</dt><dd>{{ customer.address|default:"—" }}</dd></div>
       </dl>
-    </div>
+    </details>
 
-    <div class="client-overview-group">
-      <h3>Connection details</h3>
-      <dl class="client-overview-list">
+    <details class="client-profile-group" data-profile-group="connection">
+      <summary class="client-profile-summary">
+        <span class="client-profile-summary-copy">
+          <span class="client-profile-summary-title">Connection details</span>
+          <span class="client-profile-summary-preview">
+            {{ customer.get_service_type_display }}{% if customer.router %} · {{ customer.router.name }}{% endif %}
+          </span>
+        </span>
+        <span class="client-profile-chevron" aria-hidden="true"></span>
+      </summary>
+      <dl class="client-profile-list">
         <div><dt>Service</dt><dd>{{ customer.get_service_type_display }}</dd></div>
         {% if customer.service_type == "pppoe" %}
-          <div><dt>PPPoE username</dt><dd class="client-overview-mono">{{ customer.pppoe_username|default:"—" }}</dd></div>
+          <div><dt>PPPoE username</dt><dd class="client-profile-mono">{{ customer.pppoe_username|default:"—" }}</dd></div>
         {% elif customer.service_type == "hotspot" %}
-          <div><dt>Device MAC</dt><dd class="client-overview-mono">{{ customer.hotspot_mac|default:"—" }}</dd></div>
+          <div><dt>Device MAC</dt><dd class="client-profile-mono">{{ customer.hotspot_mac|default:"—" }}</dd></div>
         {% endif %}
         <div>
           <dt>Router</dt>
           <dd>
             {% if customer.router %}
               <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
-              <span class="client-overview-secondary">{{ customer.router.host }}</span>
+              <span class="client-profile-secondary">{{ customer.router.host }}</span>
             {% else %}
               —
             {% endif %}
           </dd>
         </div>
       </dl>
-    </div>
+    </details>
 
-    <div class="client-overview-group">
-      <h3>Package details</h3>
-      <dl class="client-overview-list">
+    <details class="client-profile-group" data-profile-group="package">
+      <summary class="client-profile-summary">
+        <span class="client-profile-summary-copy">
+          <span class="client-profile-summary-title">Package details</span>
+          <span class="client-profile-summary-preview">
+            {% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}
+          </span>
+        </span>
+        <span class="client-profile-chevron" aria-hidden="true"></span>
+      </summary>
+      <dl class="client-profile-list">
         <div>
           <dt>Plan</dt>
           <dd>
             {% if customer.plan %}
               {{ customer.plan.name }}
-              {% if customer.plan.speed_label %}<span class="client-overview-secondary">{{ customer.plan.speed_label }}</span>{% endif %}
+              {% if customer.plan.speed_label %}<span class="client-profile-secondary">{{ customer.plan.speed_label }}</span>{% endif %}
             {% else %}
               —
             {% endif %}
@@ -207,16 +234,22 @@
           <dd>{% if customer.package_end %}{{ customer.package_end|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</dd>
         </div>
       </dl>
-    </div>
+    </details>
 
-    <div class="client-overview-group">
-      <h3>Account record</h3>
-      <dl class="client-overview-list">
-        <div><dt>Account number</dt><dd class="client-overview-mono">{{ customer.account_number }}</dd></div>
+    <details class="client-profile-group" data-profile-group="record">
+      <summary class="client-profile-summary">
+        <span class="client-profile-summary-copy">
+          <span class="client-profile-summary-title">Account record</span>
+          <span class="client-profile-summary-preview">{{ customer.account_number }}</span>
+        </span>
+        <span class="client-profile-chevron" aria-hidden="true"></span>
+      </summary>
+      <dl class="client-profile-list">
+        <div><dt>Account number</dt><dd class="client-profile-mono">{{ customer.account_number }}</dd></div>
         <div><dt>Status</dt><dd>{{ customer.get_status_display }}</dd></div>
         <div><dt>Registered</dt><dd>{{ customer.created_at|date:"M j, Y · g:i A" }}</dd></div>
       </dl>
-    </div>
+    </details>
   </div>
 </section>
 
@@ -659,6 +692,57 @@
       if (e.key === "Escape" && !profilePanel.hidden) setProfileOpen(false);
     });
   }
+
+  (function setupProfileGroups() {
+    var wrap = document.querySelector("[data-profile-groups]");
+    var expandBtn = document.querySelector("[data-profile-expand-all]");
+    if (!wrap) return;
+    var groups = Array.prototype.slice.call(wrap.querySelectorAll("[data-profile-group]"));
+    var storeKey = "ispcentric:client-profile-groups";
+
+    function readStore() {
+      try {
+        return JSON.parse(localStorage.getItem(storeKey)) || {};
+      } catch (err) {
+        return {};
+      }
+    }
+
+    function writeStore(state) {
+      try {
+        localStorage.setItem(storeKey, JSON.stringify(state));
+      } catch (err) {
+        /* storage unavailable — open state just won't persist */
+      }
+    }
+
+    function syncExpandBtn() {
+      if (!expandBtn) return;
+      var allOpen = groups.every(function (g) { return g.open; });
+      expandBtn.textContent = allOpen ? "Collapse all" : "Expand all";
+      expandBtn.setAttribute("aria-expanded", allOpen ? "true" : "false");
+    }
+
+    var saved = readStore();
+    groups.forEach(function (group) {
+      var key = group.getAttribute("data-profile-group");
+      if (Object.prototype.hasOwnProperty.call(saved, key)) group.open = !!saved[key];
+      group.addEventListener("toggle", function () {
+        var state = readStore();
+        state[key] = group.open;
+        writeStore(state);
+        syncExpandBtn();
+      });
+    });
+
+    if (expandBtn) {
+      expandBtn.addEventListener("click", function () {
+        var open = !groups.every(function (g) { return g.open; });
+        groups.forEach(function (g) { g.open = open; });
+      });
+    }
+    syncExpandBtn();
+  })();
 
   document.querySelectorAll(".mikrotik-secret").forEach(function (wrap) {
     var mask = wrap.querySelector("[data-secret-mask]");

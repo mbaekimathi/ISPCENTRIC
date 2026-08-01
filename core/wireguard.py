@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import socket
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
@@ -94,6 +95,24 @@ def allocate_address(exclude: set[str] | None = None) -> str:
     )
 
 
+def server_on_tunnel() -> bool:
+    """
+    True when this machine holds the tunnel's server address.
+
+    A router dials the VPS, so only the VPS can reach peer addresses like
+    10.9.0.4. A laptop running the app on localhost has no wg interface and
+    every probe to the tunnel subnet times out — worth saying plainly instead
+    of polling forever. Binding to the address succeeds only when it is
+    configured locally, which needs no extra dependency or shelling out to wg.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind((str(server_address()), 0))
+        return True
+    except OSError:
+        return False
+
+
 def looks_like_wg_key(value: str) -> bool:
     """True for a base64-encoded 32-byte WireGuard key (not a placeholder)."""
     value = (value or "").strip()
@@ -110,6 +129,11 @@ def configured() -> bool:
     endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
     key = (getattr(settings, "WIREGUARD_SERVER_PUBLIC_KEY", "") or "").strip()
     return bool(endpoint and ":" in endpoint and looks_like_wg_key(key))
+
+
+def tunnel_endpoint() -> str:
+    """Configured VPS endpoint, or a placeholder when it is not set yet."""
+    return (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip() or "the billing VPS"
 
 
 def _endpoint() -> str:
@@ -208,13 +232,18 @@ def routeros_script(address: str, private_key: str) -> str:
     Commands to paste into the MikroTik terminal to join the tunnel.
 
     The interface name is fixed rather than per-site: a router has one tunnel to
-    the billing server, and a fixed name makes re-running the script idempotent.
+    the billing server. Every run removes all earlier ISPCENTRIC components
+    before installing the latest address, private key, server peer, and rules.
 
-    Besides bringing WireGuard up, the script:
-    - restricts the RouterOS API to private/tunnel sources (not the public internet)
+    Besides bringing WireGuard up, the script always:
+    - force-enables the RouterOS API on port 8728 (compulsory for Connect)
     - accepts API + ICMP from the tunnel in the input filter
     - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
     - pings the billing server and prints a clear pass/fail line
+
+    API access is locked down by firewall (tunnel subnet only), not by the
+    /ip service address= list — that property has broken silently on some
+    RouterOS builds and left API disabled, which blocks Connect entirely.
     """
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
@@ -225,40 +254,53 @@ def routeros_script(address: str, private_key: str) -> str:
     if not address or not private_key:
         raise ValueError("This peer has no tunnel address or key yet.")
 
-    # RFC1918 + the tunnel subnet (already inside 10/8 for the default plan).
-    # Blocks WAN clients from the API while still allowing LAN and the VPS peer.
-    api_sources = "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
-
     return "\n".join(
         [
             "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
-            "# Requires RouterOS 7. Safe to re-run.",
-            "/interface/wireguard",
-            "remove [find name=ispcentric-vpn]",
-            f'add name=ispcentric-vpn listen-port=13231 private-key="{private_key}" '
+            "# Requires RouterOS 7. Safe to re-run: the newest script replaces the old one.",
+            "# Remove the complete previous ISPCENTRIC tunnel before applying this version.",
+            '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
+            '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
+            "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
+            "/ip address remove [find where interface=ispcentric-vpn]",
+            "/interface wireguard remove [find where name=ispcentric-vpn]",
+            "# Install the latest tunnel interface, key, address, and VPS peer.",
+            f'/interface wireguard add name=ispcentric-vpn listen-port=13231 private-key="{private_key}" '
             'comment="ispcentric billing tunnel"',
-            "/ip/address",
-            "remove [find interface=ispcentric-vpn]",
-            f"add address={address}/{network.prefixlen} interface=ispcentric-vpn "
+            f"/ip address add address={address}/{network.prefixlen} interface=ispcentric-vpn "
             'comment="ispcentric billing tunnel"',
-            "/interface/wireguard/peers",
-            "remove [find interface=ispcentric-vpn]",
-            f'add interface=ispcentric-vpn public-key="{_server_public_key()}" '
+            f'/interface wireguard peers add interface=ispcentric-vpn public-key="{_server_public_key()}" '
             f"endpoint-address={host} endpoint-port={port} "
             f"allowed-address={network} persistent-keepalive=25s "
             'comment="ispcentric billing server"',
-            "# API: on, but only from private/tunnel networks - never the public WAN.",
-            "/ip/service",
-            f"set [find name=api] disabled=no port=8728 address={api_sources}",
-            "/ip/firewall/filter",
-            'remove [find comment~"ispcentric-vpn-"]',
+            "# Compulsory: RouterOS API on 8728 — Connect cannot work without it.",
+            "/ip service",
+            "set [find where name=api] disabled=no port=8728 address=0.0.0.0/0",
+            ":do { /ip service set api disabled=no port=8728 } on-error={}",
+            (
+                ":if ([:len [/ip service find where name=api and disabled=no]] = 0) do={"
+                ':put "ispcentric ERROR: RouterOS API is still disabled — enable IP > Services > api"} '
+                'else={:put "ispcentric API: enabled on port 8728"}'
+            ),
+            "# Allow API + ICMP only from the billing tunnel (not the public WAN).",
+            "/ip firewall filter",
             "add chain=input action=accept protocol=tcp dst-port=8728 "
-            f'src-address={network} place-before=0 comment="ispcentric-vpn-api"',
+            f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-api"',
+            "add chain=input action=accept protocol=tcp dst-port=8728 "
+            f'src-address={network} place-before=0 comment="ispcentric-vpn-api-net"',
             "add chain=input action=accept protocol=icmp "
-            f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp"',
+            f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-icmp"',
+            "add chain=input action=accept protocol=icmp "
+            f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp-net"',
+            "# Local development: permit API from RFC1918 LANs before Hotspot/drop rules.",
+            "add chain=input action=accept protocol=tcp dst-port=8728 "
+            'src-address=10.0.0.0/8 place-before=0 comment="ispcentric-vpn-api-lan-10"',
+            "add chain=input action=accept protocol=tcp dst-port=8728 "
+            'src-address=172.16.0.0/12 place-before=0 comment="ispcentric-vpn-api-lan-172"',
+            "add chain=input action=accept protocol=tcp dst-port=8728 "
+            'src-address=192.168.0.0/16 place-before=0 comment="ispcentric-vpn-api-lan-192"',
             "# Keep client/PPP source IPs intact when talking to the billing tunnel.",
-            "/ip/firewall/nat",
-            'remove [find comment="ispcentric-vpn-no-nat"]',
+            "/ip firewall nat",
             "add chain=srcnat action=accept "
             f'dst-address={network} place-before=0 comment="ispcentric-vpn-no-nat"',
             "# Wait for the handshake, then prove the billing server answers.",
@@ -270,7 +312,9 @@ def routeros_script(address: str, private_key: str) -> str:
                 f'"ispcentric: tunnel set on {address} but no ping from {server}. '
                 f'Add this peer on the VPS wg0, restart WireGuard, then retry Connect."}}'
             ),
-            "/system/backup",
+            "# Replace the old backup so it always contains the latest tunnel.",
+            ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
+            "/system backup",
             "save name=ispcentric-tunnel dont-encrypt=yes",
             ':put "Backup saved as ispcentric-tunnel.backup - Winbox Save is also fine."',
         ]

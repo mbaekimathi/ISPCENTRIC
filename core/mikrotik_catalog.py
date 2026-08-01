@@ -14,6 +14,7 @@ _IMAGE_FILES = {
     MikroTikRouter.ModelChoice.HAP_LITE: "img/mikrotik/hap_lite.webp",
     MikroTikRouter.ModelChoice.HAP_AC2: "img/mikrotik/hap_ac2.webp",
     MikroTikRouter.ModelChoice.HAP_AC3: "img/mikrotik/hap_ac3.webp",
+    MikroTikRouter.ModelChoice.RB951UI_2HND: "img/mikrotik/other.svg",
     MikroTikRouter.ModelChoice.HEX: "img/mikrotik/rb750gr3.webp",
     MikroTikRouter.ModelChoice.HEX_S: "img/mikrotik/rb760igs.webp",
     MikroTikRouter.ModelChoice.L009: "img/mikrotik/l009.webp",

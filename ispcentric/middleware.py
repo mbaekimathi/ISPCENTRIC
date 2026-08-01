@@ -34,6 +34,26 @@ CAPTIVE_PROBE_HOSTS = {
 }
 
 
+def _is_unlisted_private_host(host: str) -> bool:
+    """True for a private IPv4 Host header that ALLOWED_HOSTS would reject."""
+    import ipaddress
+
+    from django.conf import settings
+
+    if not host:
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if not address.is_private or address.is_loopback:
+        return False
+    allowed = {str(item).strip() for item in (settings.ALLOWED_HOSTS or ())}
+    if "*" in allowed:
+        return False
+    return host not in allowed
+
+
 class RealClientIpMiddleware:
     """
     Restore the client address when running behind nginx.
@@ -82,6 +102,11 @@ class CaptiveHostRewriteMiddleware:
                 rewrite = is_pppoe_pool_ip(remote)
             except Exception:
                 rewrite = False
+        if not rewrite:
+            # A captive client that opens the gateway IP directly arrives with the
+            # router's address as Host. Without this it is a 400 DisallowedHost
+            # error page instead of the payment page.
+            rewrite = _is_unlisted_private_host(host)
         if rewrite:
             from django.conf import settings
 
@@ -193,15 +218,11 @@ class HotspotCaptiveProbeMiddleware:
         from django.shortcuts import redirect
         from django.urls import reverse
 
-        from accounts.models import Organization
+        from core.mikrotik_connect import resolve_captive_organization
 
-        org = (
-            Organization.objects.filter(hotspot_enabled=True)
-            .order_by("id")
-            .first()
-        )
-        if org is None:
-            org = Organization.objects.order_by("id").first()
+        # Prefer the NAS/org that currently owns this client IP so multi-tenant
+        # deployments do not send users to the wrong payment join_code.
+        org = resolve_captive_organization(remote)
         if org is None:
             return self.get_response(request)
 

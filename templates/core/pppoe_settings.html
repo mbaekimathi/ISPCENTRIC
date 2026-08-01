@@ -5,6 +5,8 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
+{% include "core/includes/access_settings_tabs.html" %}
+
 {% if organization %}
   {% if pppoe_compulsory %}
     <div class="settings-policy-banner">

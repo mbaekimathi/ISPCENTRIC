@@ -1954,12 +1954,21 @@ def _fetch_identity(sock: socket.socket, host: str) -> dict[str, Any]:
     identity = ""
     version = ""
     board = ""
+    serial_number = ""
+    software_id = ""
     try:
         for attrs in _print(sock, "/system/identity", props="name"):
             identity = attrs.get("name") or identity
         for attrs in _print(sock, "/system/resource", props="version,board-name"):
             version = attrs.get("version") or version
             board = attrs.get("board-name") or board
+        for attrs in _print(
+            sock, "/system/routerboard", props="serial-number,model,board-name"
+        ):
+            serial_number = (attrs.get("serial-number") or "").strip() or serial_number
+            board = (attrs.get("board-name") or attrs.get("model") or board or "").strip() or board
+        for attrs in _print(sock, "/system/license", props="software-id"):
+            software_id = (attrs.get("software-id") or "").strip() or software_id
     except Exception:
         pass
 
@@ -1969,6 +1978,8 @@ def _fetch_identity(sock: socket.socket, host: str) -> dict[str, Any]:
         "identity": identity,
         "version": version,
         "board": board,
+        "serial_number": serial_number,
+        "software_id": software_id,
         "name": identity or f"MikroTik {host}",
     }
 
@@ -2479,8 +2490,10 @@ def check_mikrotik_reachable(
 ) -> dict[str, Any]:
     """Fast reachability check for an onboarded MikroTik.
 
-    Prefer RouterOS API (8728), then Winbox (8291) and WebFig HTTP.
-    Falls back to ICMP ping so routers with API disabled still show online.
+    Probe management ports in parallel, then pick the best channel by priority:
+    RouterOS API (8728) → Winbox (8291) → WebFig HTTP → ICMP ping.
+    Waiting for all probes avoids racing Winbox ahead of API and flipping
+    Connected/Reachable on the same live router.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -2501,7 +2514,7 @@ def check_mikrotik_reachable(
             check_host, check_port = maybe_host, int(maybe_port)
 
     ports = []
-    for candidate in (check_port, 8728, 8291, 80, 8080):
+    for candidate in (8728, check_port, 8291, 80, 8080):
         if candidate and candidate not in ports:
             ports.append(candidate)
 
@@ -2511,6 +2524,7 @@ def check_mikrotik_reachable(
         80: "http",
         8080: "http",
     }
+    via_rank = {"api": 0, "winbox": 1, "http": 2}
 
     def _probe(probe_port: int) -> tuple[int, bool, str]:
         try:
@@ -2521,20 +2535,49 @@ def check_mikrotik_reachable(
         except OSError as exc:
             return probe_port, False, f"{probe_port}: {exc}"
 
+    open_ports: dict[int, str] = {}
     errors: list[str] = []
     with ThreadPoolExecutor(max_workers=min(4, len(ports))) as pool:
         futures = [pool.submit(_probe, p) for p in ports]
         for future in as_completed(futures):
             probe_port, ok, err = future.result()
             if ok:
-                # Cancel remaining work isn't critical; return first success.
-                return {
-                    "online": True,
-                    "via": via_map.get(probe_port, f"tcp/{probe_port}"),
-                    "port": probe_port,
-                }
-            if err:
+                open_ports[probe_port] = via_map.get(probe_port, f"tcp/{probe_port}")
+            elif err:
                 errors.append(err)
+
+    if open_ports:
+        def _rank(probe_port: int) -> tuple[int, int, int]:
+            via = open_ports[probe_port]
+            return (via_rank.get(via, 9), 0 if probe_port == 8728 else 1, probe_port)
+
+        best_port = min(open_ports, key=_rank)
+        best_via = open_ports[best_port]
+        # An open web port proves *something* answers, not that it is the
+        # router. A stale saved IP (the factory 192.168.88.1 is the usual
+        # culprit) is routed to whatever host owns that address, and reporting
+        # it as reachable sends operators hunting a router that was never
+        # there. API/Winbox are RouterOS-specific, so only HTTP needs proof.
+        if best_via == "http":
+            identified = _looks_like_routeros_http(
+                dial_host(check_host), best_port, timeout=timeout
+            )
+            if identified is False:
+                return {
+                    "online": False,
+                    "via": "",
+                    "error": (
+                        f"{check_host}:{best_port} answers HTTP but is not a MikroTik. "
+                        "The saved IP now belongs to another device — update it, "
+                        "or connect the router's management tunnel."
+                    ),
+                    "foreign_http": True,
+                }
+        return {
+            "online": True,
+            "via": best_via,
+            "port": best_port,
+        }
 
     # ICMP fallback — device may be up with management ports firewalled.
     if _icmp_ping(check_host, timeout=timeout):
@@ -2545,6 +2588,47 @@ def check_mikrotik_reachable(
         "error": errors[0] if errors else "Unreachable.",
         "via": "",
     }
+
+
+_ROUTEROS_HTTP_MARKERS = ("routeros", "webfig", "mikrotik")
+
+
+def _looks_like_routeros_http(host: str, port: int, timeout: float = 1.5) -> bool | None:
+    """
+    Whether the HTTP responder on this address is RouterOS/WebFig.
+
+    Returns None when the answer cannot be determined, so callers keep trusting
+    the open port rather than declaring a live router offline on a bad guess.
+    """
+    request = (
+        "GET / HTTP/1.0\r\n"
+        f"Host: {host}\r\n"
+        "User-Agent: ispcentric-probe\r\n"
+        "Accept: */*\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode("ascii", "ignore")
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            chunks: list[bytes] = []
+            received = 0
+            while received < 4096:
+                chunk = sock.recv(1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                received += len(chunk)
+    except (OSError, TimeoutError):
+        return None
+    if not chunks:
+        return None
+    body = b"".join(chunks).decode("utf-8", "replace").lower()
+    if any(marker in body for marker in _ROUTEROS_HTTP_MARKERS):
+        return True
+    # RouterOS answers the root path; a redirect to an unrelated portal or an
+    # error page from another appliance is proof enough that this is not it.
+    return False
 
 
 def _icmp_ping(host: str, timeout: float = 1.5) -> bool:
@@ -3095,6 +3179,8 @@ def fetch_mikrotik_live_snapshot(
             identity = ""
             version = ""
             board = ""
+            serial_number = ""
+            software_id = ""
             uptime_raw = ""
             cpu_load = None
             free_memory = 0
@@ -3115,6 +3201,19 @@ def fetch_mikrotik_live_snapshot(
                     cpu_load = _parse_int(attrs.get("cpu-load"))
                 free_memory = _parse_int(attrs.get("free-memory"))
                 total_memory = _parse_int(attrs.get("total-memory"))
+
+            try:
+                for attrs in _print(
+                    sock, "/system/routerboard", props="serial-number,model,board-name"
+                ):
+                    serial_number = (attrs.get("serial-number") or "").strip() or serial_number
+                    board = (
+                        attrs.get("board-name") or attrs.get("model") or board or ""
+                    ).strip() or board
+                for attrs in _print(sock, "/system/license", props="software-id"):
+                    software_id = (attrs.get("software-id") or "").strip() or software_id
+            except Exception:
+                pass
 
             # Detect WAN / internet entry before optional wireless probes.
             uplink = _read_internet_uplink(sock)
@@ -3175,6 +3274,8 @@ def fetch_mikrotik_live_snapshot(
                 "host": host,
                 "identity": identity or f"MikroTik {host}",
                 "board": board or "",
+                "serial_number": serial_number or "",
+                "software_id": software_id or "",
                 "version": version or "",
                 "uptime": _human_uptime(uptime_raw),
                 "uptime_raw": uptime_raw or "",
@@ -3845,12 +3946,23 @@ def fetch_active_pppoe_usernames(
     port: int = 8728,
     timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Return lowercased PPPoE usernames currently online on a MikroTik."""
+    """
+    Return lowercased PPPoE usernames currently online on a MikroTik.
+
+    ``blocked`` lists the usernames whose /ppp/secret sits on the blocked
+    profile. A dialed session on that profile is dropped before it reaches the
+    internet, so having a session is not the same as being able to surf.
+    """
     host = (host or "").strip()
     username = (username or "").strip()
     password = password or ""
     if not host or not username:
-        return {"ok": False, "usernames": [], "error": "Router host or username missing."}
+        return {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": "Router host or username missing.",
+        }
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
             rows = _print(sock, "/ppp/active", props="name,service")
@@ -3865,20 +3977,113 @@ def fetch_active_pppoe_usernames(
                     continue
                 seen.add(key)
                 names.append(key)
-            return {"ok": True, "usernames": names, "error": ""}
+            blocked: list[str] = []
+            for row in _print(sock, "/ppp/secret", props="name,profile,disabled"):
+                name = (row.get("name") or "").strip()
+                if not name:
+                    continue
+                profile = (row.get("profile") or "").strip()
+                disabled = (row.get("disabled") or "").strip().lower() == "true"
+                if profile == PPPOE_BLOCKED_PROFILE_NAME or disabled:
+                    blocked.append(name.lower())
+            return {"ok": True, "usernames": names, "blocked": blocked, "error": ""}
     except TimeoutError:
-        return {"ok": False, "usernames": [], "error": "Connection timed out."}
+        return {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": "Connection timed out.",
+        }
     except ConnectionError as exc:
         return {
             "ok": False,
             "usernames": [],
+            "blocked": [],
             "error": str(exc) or "Login failed.",
             "auth_error": True,
         }
     except OSError as exc:
-        return {"ok": False, "usernames": [], "error": f"Could not reach {host}:8728.", "detail": str(exc)}
+        return {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": f"Could not reach {host}:8728.",
+            "detail": str(exc),
+        }
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "usernames": [], "error": str(exc) or "Could not read active sessions."}
+        return {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": str(exc) or "Could not read active sessions.",
+        }
+
+
+def fetch_hotspot_client_macs(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Return Hotspot MACs seen on Wi-Fi and those with active internet sessions."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {
+            "ok": False,
+            "active_macs": [],
+            "connected_macs": [],
+            "error": "Router host or username missing.",
+        }
+
+    def _mac(value: str) -> str:
+        compact = "".join(ch for ch in (value or "") if ch.isalnum()).upper()
+        return compact if len(compact) == 12 else ""
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            active_macs = {
+                mac
+                for row in _print(
+                    sock,
+                    "/ip/hotspot/active",
+                    props="mac-address,user",
+                )
+                if (mac := _mac(row.get("mac-address") or row.get("user") or ""))
+            }
+            connected_macs = {
+                mac
+                for row in _print(
+                    sock,
+                    "/ip/hotspot/host",
+                    props="mac-address,authorized",
+                )
+                if (mac := _mac(row.get("mac-address") or ""))
+            }
+            connected_macs.update(active_macs)
+            return {
+                "ok": True,
+                "active_macs": sorted(active_macs),
+                "connected_macs": sorted(connected_macs),
+                "error": "",
+            }
+    except TimeoutError:
+        error = "Connection timed out."
+    except ConnectionError as exc:
+        error = str(exc) or "Login failed."
+    except OSError as exc:
+        error = f"Could not reach {host}:8728. {exc}"
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc) or "Could not read Hotspot sessions."
+    return {
+        "ok": False,
+        "active_macs": [],
+        "connected_macs": [],
+        "error": error,
+    }
 
 
 def test_mikrotik_api_login(
@@ -4415,6 +4620,19 @@ def _first_forward_drop_id(sock: socket.socket) -> str:
     return ""
 
 
+def _first_input_drop_id(sock: socket.socket) -> str:
+    """
+    First input-chain drop rule — insert allows before it when possible.
+
+    Anchoring an input rule to the forward drop puts it below
+    ``defconf: drop all not coming from LAN``, where it never matches.
+    """
+    for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action"):
+        if (row.get("chain") or "") == "input" and (row.get("action") or "") == "drop":
+            return (row.get(".id") or "").strip()
+    return ""
+
+
 def _add_filter_rule(sock: socket.socket, rule: dict[str, str], *, place_before: str = "") -> dict[str, str]:
     words = ["/ip/firewall/filter/add"]
     for key, value in rule.items():
@@ -4448,11 +4666,36 @@ def _ensure_pppoe_nat(sock: socket.socket) -> None:
     )
 
 
-def _resolve_pppoe_lan_interface(sock: socket.socket, preferred: str = "") -> str:
-    """Pick the LAN / bridge interface where client devices dial PPPoE."""
+def _interface_names(sock: socket.socket) -> list[str]:
+    """Every interface name RouterOS currently knows about."""
+    return [
+        (row.get("name") or "").strip()
+        for row in _print(sock, "/interface", props="name")
+        if (row.get("name") or "").strip()
+    ]
+
+
+def _resolve_lan_interface(
+    sock: socket.socket, preferred: str = "", *, exclude: str = ""
+) -> str:
+    """
+    Pick the LAN / bridge interface that serves client devices.
+
+    The saved name (default ``bridgeLocal``) frequently does not exist on the
+    device — RouterOS 7 ships a bridge called ``bridge`` — and passing a name
+    the router does not have makes every interface-scoped command fail with
+    "input does not match any value of interface".
+    """
     preferred = (preferred or "").strip()
-    rows = _print(sock, "/interface", props="name,type,running")
+    exclude = (exclude or "").strip()
+    try:
+        rows = _print(sock, "/interface", props="name,type,running")
+    except Exception:
+        # Never let a probe failure block the push; the caller's own commands
+        # will surface a real error if the saved name is genuinely wrong.
+        return preferred
     names = {(row.get("name") or "").strip() for row in rows if (row.get("name") or "").strip()}
+    names.discard(exclude)
     if preferred and preferred in names:
         return preferred
     for candidate in ("bridgeLocal", "bridge", "br-lan", "LAN"):
@@ -4462,13 +4705,34 @@ def _resolve_pppoe_lan_interface(sock: socket.socket, preferred: str = "") -> st
         (row.get("name") or "").strip()
         for row in rows
         if (row.get("type") or "").strip().lower() == "bridge"
+        and (row.get("name") or "").strip() != exclude
     ]
     if bridges:
         return bridges[0]
     for candidate in ("ether2", "ether3", "ether4", "ether5"):
         if candidate in names:
             return candidate
-    return preferred or (next(iter(names), "") or "bridge")
+    if preferred and preferred != exclude:
+        return preferred
+    return next(iter(sorted(names)), "") or "bridge"
+
+
+# Legacy name kept for callers that predate Hotspot sharing this resolver.
+_resolve_pppoe_lan_interface = _resolve_lan_interface
+
+
+def _interface_mismatch_error(sock: socket.socket, message: str, interface: str) -> str:
+    """Turn RouterOS's opaque interface rejection into an actionable message."""
+    try:
+        available = _interface_names(sock)
+    except Exception:
+        available = []
+    listing = ", ".join(available[:12]) if available else "none reported"
+    return (
+        f"{message} The router has no interface named “{interface}”. "
+        f"Available interfaces: {listing}. Set the router's LAN bridge to one of these "
+        "on the router detail page, then push again."
+    )
 
 
 def _ensure_pppoe_stack(
@@ -4489,8 +4753,13 @@ def _ensure_pppoe_stack(
     Returns (profile_name, notes).
     """
     notes: list[str] = []
-    lan_interface = _resolve_pppoe_lan_interface(sock, lan_interface)
     wan_interface = (wan_interface or "ether1").strip() or "ether1"
+    requested_lan = (lan_interface or "").strip()
+    lan_interface = _resolve_lan_interface(
+        sock, lan_interface, exclude=wan_interface
+    )
+    if requested_lan and requested_lan != lan_interface:
+        notes.append(f"LAN interface {requested_lan} not found; using {lan_interface}")
 
     pool_names = {
         (row.get("name") or "").strip()
@@ -4686,7 +4955,22 @@ def _ensure_pppoe_stack(
         )
     forward_rules.extend(
         [
-            # Drop expired clients first (even established) once tagged by blocked profile.
+            # Silent DROP makes HTTPS captive probes wait for the OS TCP timeout
+            # (often 20–30s) before the device falls back to HTTP — that is the
+            # "popup takes forever after dial-in" delay. RST fails those probes
+            # in milliseconds so Windows/Android/iOS open the pay page promptly.
+            # Plain HTTP never hits this rule: dstnat rewrites it to the billing
+            # host first, so it leaves via LAN rather than WAN.
+            {
+                "chain": "forward",
+                "action": "reject",
+                "reject-with": "tcp-reset",
+                "protocol": "tcp",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} reject https fast",
+            },
+            # Drop remaining expired-client traffic (UDP/ICMP) once tagged.
             {
                 "chain": "forward",
                 "action": "drop",
@@ -4713,6 +4997,27 @@ def _ensure_pppoe_stack(
                 "protocol": "tcp",
                 "dst-port": "8728",
                 "comment": f"{PPP_SECRET_TAG} keep API",
+            },
+            # A dialed session arrives on a dynamic PPPoE interface, which is not
+            # in the LAN interface list, so the default input drop kills its DNS.
+            # Without name resolution a client never issues the HTTP request that
+            # the expired-client redirect turns into the payment page — the device
+            # just reports "no internet" and shows no captive popup.
+            {
+                "chain": "input",
+                "action": "accept",
+                "protocol": "udp",
+                "dst-port": "53",
+                "src-address": PPPOE_POOL_NETWORK,
+                "comment": f"{PPP_SECRET_TAG} client DNS",
+            },
+            {
+                "chain": "input",
+                "action": "accept",
+                "protocol": "tcp",
+                "dst-port": "53",
+                "src-address": PPPOE_POOL_NETWORK,
+                "comment": f"{PPP_SECRET_TAG} client DNS",
             },
         ]
     )
@@ -4754,9 +5059,15 @@ def _ensure_pppoe_stack(
                 "comment": f"{PPP_SECRET_TAG} LAN to internet",
             }
         )
+    place_before_input_drop = _first_input_drop_id(sock)
     for rule in forward_rules:
-        terminal = _add_filter_rule(sock, rule, place_before=place_before_drop)
-        if terminal.get("_reply") == "!trap" and place_before_drop:
+        anchor = (
+            place_before_input_drop
+            if rule.get("chain") == "input"
+            else place_before_drop
+        )
+        terminal = _add_filter_rule(sock, rule, place_before=anchor)
+        if terminal.get("_reply") == "!trap" and anchor:
             _add_filter_rule(sock, rule)
     notes.append(
         "PPPoE compulsory firewall (Hotspot clients allowed)"
@@ -4767,10 +5078,26 @@ def _ensure_pppoe_stack(
     if compulsory:
         notes.append(f"forward allow address-list {ISP_HOTSPOT_OK_LIST} to WAN")
         notes.append(f"forward allow {ISP_HOTSPOT_POOL_NETWORK} to WAN")
+    notes.append(f"forward reject-tcp address-list {PPPOE_BLOCKED_ADDRESS_LIST}")
     notes.append(f"forward drop address-list {PPPOE_BLOCKED_ADDRESS_LIST}")
     if billing_ip:
         notes.append(f"forward allow blocked clients to billing {billing_ip}")
         notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal_url))
+        # Only hijack probe DNS when Hotspot is not sharing this resolver.
+        # Authenticated Hotspot clients use the same NAS DNS; pointing
+        # msftconnecttest at billing would make paid surfers look offline.
+        if not compulsory:
+            dns_added = _ensure_captive_dns(sock, billing_ip, PPP_SECRET_TAG)
+            notes.append(
+                f"captive probe DNS → {billing_ip}"
+                + (f" ({dns_added} host(s))" if dns_added else "")
+            )
+        else:
+            # Stale entries from a previous PPPoE-only push would still break
+            # Hotspot NCSI — clear them whenever compulsory mode is on.
+            cleared = _clear_captive_dns_hijack(sock, PPP_SECRET_TAG)
+            if cleared:
+                notes.append("cleared PPPoE captive DNS hijack for Hotspot coexistence")
 
     return PPPOE_PROFILE_NAME, notes
 
@@ -5024,6 +5351,26 @@ def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     return removed
 
 
+def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool:
+    """Whether this user's current session IP still carries the blocked tag."""
+    username = (username or "").strip().lower()
+    if not username:
+        return False
+    active_addresses = {
+        (row.get("address") or "").strip()
+        for row in _print(sock, "/ppp/active", props="name,address")
+        if (row.get("name") or "").strip().lower() == username
+    }
+    active_addresses.discard("")
+    if not active_addresses:
+        return False
+    return any(
+        (row.get("list") or "").strip() == PPPOE_BLOCKED_ADDRESS_LIST
+        and (row.get("address") or "").strip() in active_addresses
+        for row in _print(sock, "/ip/firewall/address-list", props="list,address")
+    )
+
+
 def _ensure_ppp_secret(
     sock: socket.socket,
     *,
@@ -5188,16 +5535,27 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
         if not username or not password:
             continue
         disabled = _customer_pppoe_secret_disabled(customer)
+        # Match individual provision: expired/unpaid clients stay on the blocked
+        # profile so a policy push never restores free surfing.
+        profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+        previous_profile = _current_ppp_secret_profile(sock, username)
         comment = f"{PPP_SECRET_TAG} {customer.account_number}".strip()
         _ensure_ppp_secret(
             sock,
             username=username,
             password=password,
-            profile=PPPOE_PROFILE_NAME,
+            profile=profile,
             comment=comment,
             disabled=disabled,
             rate_limit=_pppoe_rate_limit_for_customer(customer),
         )
+        if (
+            previous_profile
+            and previous_profile != profile
+            and not disabled
+        ):
+            # Profile flip only takes effect after the CPE redials.
+            _disconnect_pppoe_sessions(sock, username)
         synced += 1
     return synced
 
@@ -5376,13 +5734,14 @@ def provision_customer_pppoe(
                     "Could not reach any organization MikroTik.",
                 )
                 return {"ok": False, "error": first_error, "results": results}
-        return {
-            "ok": False,
-            "error": (
-                "Assign a MikroTik router to this client so the PPPoE username/password "
-                "can be installed on the NAS."
-            ),
-        }
+        if target is None:
+            return {
+                "ok": False,
+                "error": (
+                    "Assign a MikroTik router to this client so the PPPoE username/password "
+                    "can be installed on the NAS."
+                ),
+            }
 
     host = (getattr(target, "host", None) or "").strip()
     api_user = (getattr(target, "username", None) or "").strip()
@@ -5438,6 +5797,9 @@ def provision_customer_pppoe(
                     )
                     notes.extend(stack_notes)
                 previous_profile = _current_ppp_secret_profile(sock, username)
+                session_was_blocked = _active_pppoe_session_is_blocked(
+                    sock, username
+                )
                 action = _ensure_ppp_secret(
                     sock,
                     username=username,
@@ -5449,7 +5811,9 @@ def provision_customer_pppoe(
                 )
                 # Kick when profile changes so the blocked address-list (or restore)
                 # takes effect immediately — otherwise established TCP keeps surfing.
-                if (previous_profile or "") != profile:
+                if (previous_profile or "") != profile or (
+                    internet_allowed and session_was_blocked
+                ):
                     kicked = _disconnect_pppoe_sessions(sock, username)
                     if kicked:
                         notes.append(
@@ -5652,6 +6016,122 @@ def _ensure_captive_dns(sock: socket.socket, gateway_ip: str, comment: str) -> i
     except Exception:
         pass
     return added
+
+
+CAPTIVE_PORTAL_DHCP_OPTION_NAME = "ispcentric-captive-portal"
+
+
+def _ensure_captive_portal_dhcp_option(
+    sock: socket.socket,
+    pay_url: str,
+    *,
+    comment: str,
+) -> list[str]:
+    """
+    Advertise the payment page through DHCP option 114 (RFC 8910).
+
+    Without this, a phone only discovers the portal when one of its probe URLs
+    happens to be plain HTTP, so the sign-in popup is late or never appears on
+    devices that probe over HTTPS. Option 114 is read straight from the DHCP
+    lease, so Android 11+, iOS 14+ and Windows 11 raise the popup the moment
+    the client joins.
+    """
+    notes: list[str] = []
+    pay_url = (pay_url or "").strip()
+    if not pay_url:
+        return notes
+
+    option_id = ""
+    for row in _print(sock, "/ip/dhcp-server/option", props=".id,name,code,value"):
+        if (row.get("name") or "").strip() == CAPTIVE_PORTAL_DHCP_OPTION_NAME:
+            option_id = (row.get(".id") or "").strip()
+            break
+
+    # RouterOS reads a quoted literal as a raw string option value.
+    attempts = [
+        {
+            "name": CAPTIVE_PORTAL_DHCP_OPTION_NAME,
+            "code": "114",
+            "value": f"'{pay_url}'",
+            "comment": comment,
+        },
+        {
+            "name": CAPTIVE_PORTAL_DHCP_OPTION_NAME,
+            "code": "114",
+            "value": f"'{pay_url}'",
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock,
+        "/ip/dhcp-server/option",
+        option_id,
+        attempts,
+        required=("code", "value"),
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append("warning: could not publish captive-portal DHCP option 114")
+        return notes
+    notes.append(f"captive-portal DHCP option 114 → {pay_url}")
+
+    # Attach to every DHCP network without dropping options already in use.
+    for row in _print(
+        sock, "/ip/dhcp-server/network", props=".id,address,dhcp-option"
+    ):
+        network_id = (row.get(".id") or "").strip()
+        if not network_id:
+            continue
+        current = [
+            item.strip()
+            for item in (row.get("dhcp-option") or "").split(",")
+            if item.strip()
+        ]
+        if CAPTIVE_PORTAL_DHCP_OPTION_NAME in current:
+            continue
+        current.append(CAPTIVE_PORTAL_DHCP_OPTION_NAME)
+        result = _set(
+            sock,
+            "/ip/dhcp-server/network",
+            network_id,
+            **{"dhcp-option": ",".join(current)},
+        )
+        if result.get("_reply") != "!trap":
+            notes.append(
+                f"captive-portal option on DHCP network {row.get('address') or network_id}"
+            )
+    return notes
+
+
+def _clear_captive_portal_dhcp_option(sock: socket.socket) -> int:
+    """Detach and delete the captive-portal DHCP option when Hotspot is off."""
+    removed = 0
+    for row in _print(
+        sock, "/ip/dhcp-server/network", props=".id,dhcp-option"
+    ):
+        current = [
+            item.strip()
+            for item in (row.get("dhcp-option") or "").split(",")
+            if item.strip()
+        ]
+        if CAPTIVE_PORTAL_DHCP_OPTION_NAME not in current:
+            continue
+        remaining = [
+            item for item in current if item != CAPTIVE_PORTAL_DHCP_OPTION_NAME
+        ]
+        _set(
+            sock,
+            "/ip/dhcp-server/network",
+            (row.get(".id") or "").strip(),
+            **{"dhcp-option": ",".join(remaining)},
+        )
+    for row in _print(sock, "/ip/dhcp-server/option", props=".id,name"):
+        if (row.get("name") or "").strip() != CAPTIVE_PORTAL_DHCP_OPTION_NAME:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id and _remove(sock, "/ip/dhcp-server/option", item_id).get(
+            "_reply"
+        ) != "!trap":
+            removed += 1
+    return removed
 
 
 def _clear_captive_dns_hijack(sock: socket.socket, comment: str) -> int:
@@ -6282,6 +6762,97 @@ def is_pppoe_pool_ip(ip: str) -> bool:
         return False
 
 
+def is_hotspot_pool_ip(ip: str) -> bool:
+    """True when the address sits in the ISPCentric Hotspot client pool."""
+    try:
+        return ipaddress.ip_address((ip or "").strip()) in ipaddress.ip_network(
+            ISP_HOTSPOT_POOL_NETWORK
+        )
+    except ValueError:
+        return False
+
+
+def _fallback_captive_organization():
+    """Best-effort org when the client IP cannot be matched to a live NAS session."""
+    from accounts.models import Organization
+
+    org = (
+        Organization.objects.filter(hotspot_enabled=True)
+        .order_by("id")
+        .first()
+    )
+    if org is not None:
+        return org
+    org = (
+        Organization.objects.filter(pppoe_compulsory=True)
+        .order_by("id")
+        .first()
+    )
+    if org is not None:
+        return org
+    return Organization.objects.order_by("id").first()
+
+
+def resolve_captive_organization(client_ip: str = ""):
+    """
+    Resolve the Organization that should own a captive-portal redirect.
+
+    Prefers a live PPPoE/Hotspot session match on an onboarded router so
+    multi-tenant deployments do not land clients on the wrong join_code.
+    """
+    from core.models import MikroTikRouter
+
+    client_ip = (client_ip or "").strip()
+    if not client_ip:
+        return _fallback_captive_organization()
+
+    routers = (
+        MikroTikRouter.objects.filter(
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        )
+        .exclude(organization_id=None)
+        .select_related("organization")
+        .order_by("id")
+    )
+
+    check_pppoe = is_pppoe_pool_ip(client_ip)
+    check_hotspot = is_hotspot_pool_ip(client_ip)
+    if check_pppoe or check_hotspot:
+        for router in routers:
+            host = router.api_host
+            username = (router.username or "").strip()
+            if not host or not username:
+                continue
+            try:
+                with _api_session(
+                    host, username, router.password or "", timeout=4.0
+                ) as sock:
+                    if check_pppoe:
+                        for row in _print(sock, "/ppp/active", props="address"):
+                            if (row.get("address") or "").strip() == client_ip:
+                                return router.organization
+                    if check_hotspot:
+                        for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
+                            for row in _print(sock, path, props="address"):
+                                if (row.get("address") or "").strip() == client_ip:
+                                    return router.organization
+            except Exception:
+                continue
+
+    # Single-tenant shortcut: only one org uses captive access.
+    from accounts.models import Organization
+    from django.db.models import Q
+
+    candidates = list(
+        Organization.objects.filter(
+            Q(hotspot_enabled=True) | Q(pppoe_compulsory=True)
+        ).order_by("id")[:2]
+    )
+    if len(candidates) == 1:
+        return candidates[0]
+    return _fallback_captive_organization()
+
+
 def find_pppoe_customer_for_ip(organization, session_ip: str):
     """
     Resolve a PPPoE Customer from the session IP seen by Django.
@@ -6396,15 +6967,24 @@ def sync_customer_subscription_access(
             organization=customer.organization,
             reauthenticate=reauthenticate,
         )
+        # Offline/skipped pushes report ok=True; treat those as not provisioned
+        # so payment UI can retry authorization without charging again.
+        provisioned = bool(
+            provision_result.get("ok") and not provision_result.get("skipped")
+        )
         return {
-            "ok": bool(provision_result.get("ok")),
+            "ok": provisioned,
             "allowed": allowed,
             "portal": portal_result,
             "provision": provision_result,
+            "offline": bool(provision_result.get("skipped")),
             "message": (
                 "Paid device authorized automatically."
-                if allowed and provision_result.get("ok")
-                else "Hotspot access is blocked or could not be synchronized."
+                if allowed and provisioned
+                else (
+                    provision_result.get("message")
+                    or "Hotspot access is blocked or could not be synchronized."
+                )
             ),
         }
 
@@ -6454,13 +7034,50 @@ def sync_customer_subscription_access(
     }
 
 
+def _persist_resolved_lan_bridge(router, resolved_lan: str, notes: list[str]) -> None:
+    """Save the LAN bridge the router actually has, so later pushes stop failing."""
+    resolved_lan = (resolved_lan or "").strip()
+    if not resolved_lan or not hasattr(router, "lan_bridge"):
+        return
+    if (getattr(router, "lan_bridge", "") or "").strip() == resolved_lan:
+        return
+    try:
+        router.lan_bridge = resolved_lan
+        router.save(update_fields=["lan_bridge", "updated_at"])
+        notes.append(f"updated saved LAN bridge to {resolved_lan}")
+    except Exception:
+        pass
+
+
+def _hotspot_portal_urls_for_org(organization) -> dict[str, str]:
+    """Absolute Hotspot portal URLs for an organization (empty when unavailable)."""
+    if organization is None:
+        return {}
+    join_code = (getattr(organization, "join_code", None) or "").strip()
+    if not join_code:
+        return {}
+    try:
+        from core.hotspot_portal import hotspot_portal_urls
+
+        return hotspot_portal_urls(join_code)
+    except Exception:
+        return {}
+
+
 def apply_pppoe_enforcement_on_router(
     router,
     *,
     compulsory: bool,
     candidate_hosts: list[str] | None = None,
+    hotspot_fallback: bool | None = None,
 ) -> dict[str, Any]:
-    """Push PPPoE pool/server + compulsory firewall policy to one MikroTik."""
+    """
+    Push PPPoE pool/server + compulsory firewall policy to one MikroTik.
+
+    When compulsory is True, also provision Hotspot fallback so devices that
+    are not dialed in via PPPoE are redirected to the payment portal instead
+    of being silently dropped.
+    """
     if router is None:
         return {"ok": False, "error": "No router provided."}
 
@@ -6479,12 +7096,17 @@ def apply_pppoe_enforcement_on_router(
 
     lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
     wan_interface = getattr(router, "wan_interface", None) or "ether1"
+    org = getattr(router, "organization", None)
+    enable_hotspot_fallback = (
+        bool(compulsory) if hotspot_fallback is None else bool(hotspot_fallback)
+    )
 
     hosts = _router_api_host_candidates(router, candidate_hosts)
 
     last_error = ""
     working_host = ""
     notes: list[str] = []
+    resolved_lan = ""
 
     secrets_synced = 0
     for candidate in hosts:
@@ -6502,6 +7124,10 @@ def apply_pppoe_enforcement_on_router(
                 from django.conf import settings
 
                 portal_url = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                lan_interface = _resolve_lan_interface(
+                    sock, lan_interface, exclude=wan_interface
+                )
+                resolved_lan = lan_interface
                 _, notes = _ensure_pppoe_stack(
                     sock,
                     lan_interface=lan_interface,
@@ -6552,6 +7178,66 @@ def apply_pppoe_enforcement_on_router(
         except Exception:
             pass
 
+    _persist_resolved_lan_bridge(router, resolved_lan, notes)
+
+    hotspot_result: dict[str, Any] | None = None
+    if enable_hotspot_fallback and org is not None:
+        # Compulsory mode without Hotspot silently drops free LAN users.
+        # Auto-enable the org flag and push the captive portal as fallback.
+        if not getattr(org, "hotspot_enabled", False):
+            try:
+                org.hotspot_enabled = True
+                org.save(update_fields=["hotspot_enabled"])
+                notes.append("enabled organization Hotspot fallback")
+            except Exception:
+                pass
+        urls = _hotspot_portal_urls_for_org(org)
+        redirect_url = (getattr(org, "hotspot_redirect_url", "") or "").strip()
+        if getattr(org, "hotspot_use_welcome_page", True):
+            redirect_url = urls.get("welcome_url") or redirect_url
+            if redirect_url and org.hotspot_redirect_url != redirect_url:
+                try:
+                    org.hotspot_redirect_url = redirect_url
+                    org.save(update_fields=["hotspot_redirect_url"])
+                except Exception:
+                    pass
+        hotspot_result = apply_hotspot_on_router(
+            router,
+            enabled=True,
+            organization=org,
+            reauthenticate=False,
+            redirect_url=redirect_url if redirect_url else urls.get("welcome_url", ""),
+            login_url=urls.get("login_url", ""),
+            alogin_url=urls.get("alogin_url", ""),
+            pay_url=urls.get("pay_url", ""),
+            welcome_url=urls.get("welcome_url", ""),
+            candidate_hosts=candidate_hosts,
+        )
+        if hotspot_result.get("ok") and not hotspot_result.get("skipped"):
+            notes.append("Hotspot fallback portal provisioned")
+            notes.extend(list(hotspot_result.get("notes") or [])[:6])
+        elif hotspot_result.get("skipped"):
+            notes.append(
+                hotspot_result.get("message")
+                or "Hotspot fallback skipped (router offline)"
+            )
+        else:
+            notes.append(
+                hotspot_result.get("error")
+                or "Hotspot fallback could not be provisioned"
+            )
+
+    portal_base_is_loopback = False
+    try:
+        from core.hotspot_portal import is_loopback_url
+        from django.conf import settings as dj_settings
+
+        portal_base_is_loopback = is_loopback_url(
+            (getattr(dj_settings, "PUBLIC_BASE_URL", "") or "").strip()
+        )
+    except Exception:
+        portal_base_is_loopback = False
+
     return {
         "ok": True,
         "router_id": router_id,
@@ -6560,9 +7246,14 @@ def apply_pppoe_enforcement_on_router(
         "host_changed": host_changed,
         "compulsory": bool(compulsory),
         "secrets_synced": secrets_synced,
+        "lan_bridge": resolved_lan or lan_interface,
+        "hotspot": hotspot_result,
+        "hotspot_fallback": bool(enable_hotspot_fallback),
+        "portal_base_is_loopback": portal_base_is_loopback,
         "notes": notes,
         "message": (
-            "Free LAN browsing blocked; dialed PPPoE clients and authenticated Hotspot clients can reach the internet."
+            "Free LAN browsing blocked; paid PPPoE clients surf automatically and "
+            "other devices are sent to the Hotspot payment portal."
             if compulsory
             else "LAN browsing allowed again alongside PPPoE clients."
         ),
@@ -7439,6 +8130,7 @@ def _disable_isp_hotspot_stack(sock: socket.socket) -> list[str]:
     removed += _remove_isp_hotspot_tagged(sock, "/ip/firewall/nat")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/pool")
     removed += _remove_isp_hotspot_tagged(sock, "/ip/address")
+    removed += _clear_captive_portal_dhcp_option(sock)
     if removed:
         notes.append("ISP Hotspot removed from MikroTik")
     else:
@@ -7521,6 +8213,7 @@ def _ensure_isp_hotspot_stack(
     *,
     lan_interface: str,
     organization,
+    wan_interface: str = "ether1",
     redirect_url: str = "",
     login_url: str = "",
     alogin_url: str = "",
@@ -7535,7 +8228,12 @@ def _ensure_isp_hotspot_stack(
     post-login welcome redirect HTML.
     """
     notes: list[str] = []
-    lan = (lan_interface or "").strip() or "bridgeLocal"
+    requested_lan = (lan_interface or "").strip()
+    # The saved bridge name is often stale; RouterOS rejects interface-scoped
+    # commands outright when it does not exist.
+    lan = _resolve_lan_interface(sock, requested_lan, exclude=wan_interface)
+    if requested_lan and requested_lan != lan:
+        notes.append(f"LAN interface {requested_lan} not found; using {lan}")
     hotspot_address = _lan_ipv4_for_interface(sock, lan)
 
     # Prefer the onboarded router's Wi‑Fi name, then a short org-based SSID so
@@ -7689,9 +8387,12 @@ def _ensure_isp_hotspot_stack(
         sock, "/ip/hotspot", server_id, server_attempts
     )
     if terminal.get("_reply") == "!trap":
-        raise ConnectionError(
-            _trap_message(terminal, f"Could not enable Hotspot on interface {lan}.")
+        message = _trap_message(
+            terminal, f"Could not enable Hotspot on interface {lan}."
         )
+        if "any value of interface" in message.lower():
+            raise ConnectionError(_interface_mismatch_error(sock, message, lan))
+        raise ConnectionError(message)
     notes.append(f"Hotspot server on {lan}")
 
     garden_url = pay_url or redirect_url or login_url or welcome_url or alogin_url
@@ -7714,6 +8415,11 @@ def _ensure_isp_hotspot_stack(
     if redirect_url and redirect_url != garden_url:
         notes.extend(_ensure_hotspot_walled_garden(sock, redirect_url))
     notes.extend(_ensure_hotspot_server_bypass(sock, garden_url))
+    notes.extend(
+        _ensure_captive_portal_dhcp_option(
+            sock, pay_url or garden_url, comment=ISP_HOTSPOT_TAG
+        )
+    )
     notes.extend(
         _fetch_isp_hotspot_pages(
             sock,
@@ -7764,6 +8470,19 @@ def apply_hotspot_on_router(
             "error": "Organization is required to enable Hotspot.",
         }
 
+    if enabled and not (pay_url or login_url or redirect_url or welcome_url):
+        # Background callers (the subscription sweep, payment provisioning) push
+        # without URLs. Deriving them here keeps the captive HTTP binding, walled
+        # garden, portal pages and DHCP option 114 in place instead of quietly
+        # degrading the portal on every sweep.
+        derived = _hotspot_portal_urls_for_org(org)
+        login_url = login_url or derived.get("login_url", "")
+        alogin_url = alogin_url or derived.get("alogin_url", "")
+        pay_url = pay_url or derived.get("pay_url", "")
+        welcome_url = welcome_url or derived.get("welcome_url", "")
+        if not redirect_url and getattr(org, "hotspot_use_welcome_page", True):
+            redirect_url = derived.get("welcome_url", "")
+
     if getattr(router, "account_status", "") == "suspended":
         return {
             "ok": True,
@@ -7808,6 +8527,7 @@ def apply_hotspot_on_router(
     working_host = ""
     notes: list[str] = []
     users_synced = 0
+    resolved_lan = ""
 
     for candidate in hosts:
         probe = check_mikrotik_reachable(candidate, timeout=1.5)
@@ -7820,10 +8540,17 @@ def apply_hotspot_on_router(
                 candidate, username, password, timeout=attempt_timeout
             ) as sock:
                 if enabled:
+                    # Resolve once here so every later interface-scoped call in
+                    # this session uses a name the router actually has.
+                    lan_interface = _resolve_lan_interface(
+                        sock, lan_interface, exclude=wan_interface
+                    )
+                    resolved_lan = lan_interface
                     notes = _ensure_isp_hotspot_stack(
                         sock,
                         lan_interface=lan_interface,
                         organization=org,
+                        wan_interface=wan_interface,
                         redirect_url=redirect_url,
                         login_url=login_url,
                         alogin_url=alogin_url,
@@ -7842,12 +8569,21 @@ def apply_hotspot_on_router(
                         notes.append("no Hotspot clients to sync yet")
                     if compulsory:
                         # Refresh firewall so Hotspot-authenticated clients bypass
-                        # the PPPoE compulsory LAN drop.
+                        # the PPPoE compulsory LAN drop. Keep portal_url so the
+                        # expired-client billing allow / HTTP redirect survive —
+                        # a bare re-push used to wipe them and leave only the
+                        # silent WAN drop (slow captive popup).
+                        from django.conf import settings as dj_settings
+
+                        portal_url = (
+                            (getattr(dj_settings, "PUBLIC_BASE_URL", "") or "").strip()
+                        )
                         _, fw_notes = _ensure_pppoe_stack(
                             sock,
                             lan_interface=lan_interface,
                             wan_interface=wan_interface,
                             compulsory=True,
+                            portal_url=portal_url,
                         )
                         notes.extend(fw_notes)
                     # Re-apply after PPPoE filter rewrite so captive HTTP forward
@@ -7940,6 +8676,8 @@ def apply_hotspot_on_router(
         except Exception:
             pass
 
+    _persist_resolved_lan_bridge(router, resolved_lan, notes)
+
     return {
         "ok": True,
         "router_id": router_id,
@@ -7947,6 +8685,7 @@ def apply_hotspot_on_router(
         "host": working_host,
         "host_changed": host_changed,
         "enabled": bool(enabled),
+        "lan_bridge": resolved_lan or lan_interface,
         "users_synced": users_synced,
         "notes": notes,
         "message": (

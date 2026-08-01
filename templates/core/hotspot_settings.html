@@ -5,6 +5,8 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
+{% include "core/includes/access_settings_tabs.html" %}
+
 {% if organization %}
   {% if hotspot_enabled %}
     <div class="settings-policy-banner">
@@ -19,6 +21,11 @@
       Set <code>PUBLIC_BASE_URL</code> in <code>.env</code> to this PC’s LAN IP
       (example: <code>http://192.168.88.10:8000</code>), add that IP to
       <code>DJANGO_ALLOWED_HOSTS</code>, restart the server, then push Hotspot again.
+    </div>
+  {% elif portal_base_unreachable %}
+    <div class="notice notice-error" style="margin:0 0 1rem;">
+      <strong>The payment page address is unreachable.</strong>
+      {{ portal_base_unreachable }}
     </div>
   {% endif %}
 

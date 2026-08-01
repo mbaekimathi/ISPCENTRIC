@@ -6,7 +6,9 @@
           <th>Name</th>
           <th>Account</th>
           {% if show_pppoe %}<th>PPPoE user</th>{% endif %}
+          {% if show_pppoe %}<th>Internet</th>{% endif %}
           {% if show_router %}<th>Router</th>{% endif %}
+          {% if show_hotspot %}<th>Internet</th><th>Wi-Fi router</th>{% endif %}
           <th></th>
         </tr>
       </thead>
@@ -22,14 +24,7 @@
             <td class="clients-account-cell">
               <strong class="clients-account-number">{{ c.account_number }}</strong>
               <span class="clients-account-plan">{% if c.plan %}{{ c.plan.name }}{% else %}—{% endif %}</span>
-              {% if show_pppoe %}
-                <span
-                  class="badge clients-surf-badge is-checking"
-                  data-client-surf="{{ c.id }}"
-                  {% if c.pppoe_username %}data-pppoe-user="{{ c.pppoe_username }}"{% endif %}
-                  title="Checking live internet session…"
-                >Checking…</span>
-              {% else %}
+              {% if not show_pppoe %}
                 <span class="badge clients-account-status">{{ c.get_status_display }}</span>
               {% endif %}
             </td>
@@ -50,6 +45,16 @@
                 {% endif %}
               </td>
             {% endif %}
+            {% if show_pppoe %}
+              <td class="clients-internet-cell">
+                <span
+                  class="badge clients-surf-badge is-checking"
+                  data-client-surf="{{ c.id }}"
+                  {% if c.pppoe_username %}data-pppoe-user="{{ c.pppoe_username }}"{% endif %}
+                  title="Checking live PPPoE session…"
+                >Checking…</span>
+              </td>
+            {% endif %}
             {% if show_router %}
               <td class="clients-router-cell">
                 {% if c.router %}
@@ -61,6 +66,22 @@
                 {% else %}
                   <span class="clients-router-none">No router</span>
                 {% endif %}
+              </td>
+            {% endif %}
+            {% if show_hotspot %}
+              <td>
+                <span
+                  class="badge clients-surf-badge is-checking"
+                  data-hotspot-surf="{{ c.id }}"
+                  title="Checking active Hotspot internet session…"
+                >Checking…</span>
+              </td>
+              <td>
+                <span
+                  class="badge clients-surf-badge is-checking"
+                  data-hotspot-connected="{{ c.id }}"
+                  title="Checking whether this device is connected to the Hotspot network…"
+                >Checking…</span>
               </td>
             {% endif %}
             <td class="clients-row-actions">

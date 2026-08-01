@@ -337,6 +337,7 @@ def _super_admin_hr_context(**extra):
         "page_kicker": "People",
         "current_page": "hr",
         "dashboard_url_name": "roles:super_admin",
+        "hr_list_url_name": "roles:super_admin_hr",
         **extra,
     }
 
@@ -358,11 +359,12 @@ def super_admin_hr_edit(request, pk):
 
     return render(
         request,
-        "accounts/super_admin_hr_edit.html",
+        "accounts/hr_employee_edit.html",
         _super_admin_hr_context(
             page_title="Edit employee",
             member=member,
             form=form,
+            hr_edit_url_name="roles:super_admin_hr_edit",
         ),
     )
 
@@ -422,7 +424,7 @@ def super_admin_hr_delete(request, pk):
 
     return render(
         request,
-        "accounts/super_admin_hr_delete.html",
+        "accounts/hr_employee_delete.html",
         _super_admin_hr_context(
             page_title="Delete employee",
             member=member,
@@ -489,6 +491,133 @@ def manager_dashboard(request):
 @role_required(Employee.Role.IT_SUPPORT)
 def it_support_dashboard(request):
     return _role_dashboard(request, Employee.Role.IT_SUPPORT)
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_hr(request):
+    _prepare_it_support_view(request)
+
+    employees = list(
+        Employee.objects.select_related("user", "organization")
+        .order_by("-created_at")
+    )
+    return render(
+        request,
+        "accounts/it_support_hr.html",
+        _it_support_hr_context(
+            employees=employees,
+            employees_count=len(employees),
+        ),
+    )
+
+
+def _prepare_it_support_view(request):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.IT_SUPPORT)
+    return employee
+
+
+def _it_support_hr_context(**extra):
+    return {
+        "page_title": "Human resource management",
+        "page_kicker": "People",
+        "current_page": "hr",
+        "dashboard_url_name": "roles:it_support",
+        "hr_list_url_name": "roles:it_support_hr",
+        **extra,
+    }
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_hr_edit(request, pk):
+    _prepare_it_support_view(request)
+    member = get_object_or_404(Employee.objects.select_related("user", "organization"), pk=pk)
+
+    if request.method == "POST":
+        form = EmployeeAdminEditForm(request.POST, request.FILES, employee=member)
+        if form.is_valid():
+            form.save()
+            name = member.user.get_full_name() or member.user.username
+            messages.success(request, f"Updated {name}.")
+            return redirect("roles:it_support_hr_edit", pk=member.pk)
+    else:
+        form = EmployeeAdminEditForm(employee=member)
+
+    return render(
+        request,
+        "accounts/hr_employee_edit.html",
+        _it_support_hr_context(
+            page_title="Edit employee",
+            member=member,
+            form=form,
+            hr_edit_url_name="roles:it_support_hr_edit",
+        ),
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_hr_suspend(request, pk):
+    actor = _prepare_it_support_view(request)
+    member = get_object_or_404(Employee.objects.select_related("user"), pk=pk)
+    name = member.user.get_full_name() or member.user.username
+
+    if member.pk == actor.pk:
+        messages.error(request, "You cannot suspend your own account.")
+        return redirect("roles:it_support_hr")
+
+    if member.status == Employee.Status.SUSPENDED:
+        messages.info(request, f"{name} is already suspended.")
+    else:
+        member.status = Employee.Status.SUSPENDED
+        member.save(update_fields=["status", "updated_at"])
+        messages.success(request, f"Suspended {name}.")
+    return redirect("roles:it_support_hr")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_hr_unsuspend(request, pk):
+    _prepare_it_support_view(request)
+    member = get_object_or_404(Employee.objects.select_related("user"), pk=pk)
+    name = member.user.get_full_name() or member.user.username
+
+    if member.status != Employee.Status.SUSPENDED:
+        messages.info(request, f"{name} is not suspended.")
+    else:
+        member.status = Employee.Status.ACTIVE
+        member.save(update_fields=["status", "updated_at"])
+        messages.success(request, f"Unsuspended {name}.")
+    return redirect("roles:it_support_hr")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_hr_delete(request, pk):
+    actor = _prepare_it_support_view(request)
+    member = get_object_or_404(Employee.objects.select_related("user", "organization"), pk=pk)
+    name = member.user.get_full_name() or member.user.username
+    owned_org = Organization.objects.filter(owner_id=member.user_id).first()
+
+    if member.pk == actor.pk:
+        messages.error(request, "You cannot delete your own account.")
+        return redirect("roles:it_support_hr")
+
+    if request.method == "POST":
+        user = member.user
+        user.delete()
+        messages.success(request, f"Deleted {name}.")
+        return redirect("roles:it_support_hr")
+
+    return render(
+        request,
+        "accounts/hr_employee_delete.html",
+        _it_support_hr_context(
+            page_title="Delete employee",
+            member=member,
+            owned_org=owned_org,
+        ),
+    )
 
 
 @role_required(Employee.Role.IT_SUPPORT)

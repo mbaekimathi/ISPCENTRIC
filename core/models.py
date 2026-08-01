@@ -9,6 +9,7 @@ class MikroTikRouter(models.Model):
         HAP_LITE = "hap_lite", "hAP lite"
         HAP_AC2 = "hap_ac2", "hAP ac²"
         HAP_AC3 = "hap_ac3", "hAP ac³"
+        RB951UI_2HND = "rb951ui_2hnd", "RB951Ui-2HnD"
         HEX = "rb750gr3", "hEX"
         HEX_S = "rb760igs", "hEX S"
         L009 = "l009", "L009"
@@ -36,6 +37,19 @@ class MikroTikRouter(models.Model):
     host = models.CharField(max_length=255, help_text="MikroTik IP address or hostname")
     username = models.CharField(max_length=100)
     password = models.CharField(max_length=255)
+    serial_number = models.CharField(
+        "Serial number",
+        max_length=64,
+        blank=True,
+        db_index=True,
+        help_text="RouterBOARD serial from /system/routerboard — unique hardware identity.",
+    )
+    software_id = models.CharField(
+        "Software ID",
+        max_length=64,
+        blank=True,
+        help_text="RouterOS license software-id from /system/license.",
+    )
     wifi_ssid = models.CharField("Wi‑Fi name", max_length=32, blank=True)
     wifi_password = models.CharField("Wi‑Fi password", max_length=63, blank=True)
     internet_provider = models.CharField(
@@ -178,6 +192,13 @@ class MikroTikRouter(models.Model):
     class Meta:
         db_table = "core_mikrotik_router"
         ordering = ["name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "serial_number"],
+                condition=~models.Q(serial_number=""),
+                name="uniq_org_mikrotik_serial",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.host})"

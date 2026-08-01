@@ -177,23 +177,29 @@ def customer_receives_internet(customer, organization=None, *, today: date | Non
     Blocks when:
     - customer status is not active
     - today/now is outside package_start / package_end (when set)
-    - the customer is on Hotspot and has no purchased period at all
+    - Hotspot or PPPoE customer has no purchased period at all
     - PPPoE is compulsory and a non-Hotspot customer is not a registered PPPoE user
     """
     org = organization or getattr(customer, "organization", None)
     if getattr(customer, "status", None) != Customer.Status.ACTIVE:
         return False
-    if customer.service_type == Customer.ServiceType.HOTSPOT:
-        # Hotspot is strictly prepaid, and the customer row is created when the
-        # device first opens the portal — before any money arrives. The legacy
-        # "no dates configured means allow" rule therefore cannot apply here or
-        # every device that merely reached the pay page would be let online. A
-        # purchased window is the only thing that grants access; PPPoE
-        # compulsory does not apply because the Hotspot login is itself the
-        # controlled access method.
+    if customer.service_type in {
+        Customer.ServiceType.HOTSPOT,
+        Customer.ServiceType.PPPOE,
+    }:
+        # Both access paths are prepaid. Customer rows are often created at
+        # register/captive time before money arrives — missing dates must not
+        # grant free surfing. A purchased window is required.
         if getattr(customer, "package_end", None) is None:
             return False
-        return subscription_period_allows(customer, today=today)
+        if not subscription_period_allows(customer, today=today):
+            return False
+        if customer.service_type == Customer.ServiceType.HOTSPOT:
+            # Hotspot login is itself the controlled access method.
+            return True
+        if not org or not getattr(org, "pppoe_compulsory", False):
+            return True
+        return bool((customer.pppoe_username or "").strip())
     if not subscription_period_allows(customer, today=today):
         return False
     if not org or not getattr(org, "pppoe_compulsory", False):

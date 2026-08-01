@@ -248,6 +248,34 @@ class MikroTikEditDetailsForm(forms.ModelForm):
             "internet_provider": "Internet company",
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.unlisted_model = self._keep_current_model_selectable()
+
+    def _keep_current_model_selectable(self) -> str:
+        """Show the stored model even when it predates the current catalog.
+
+        A value the dropdown does not offer renders with nothing selected, so the
+        browser shows the first option and saving silently rewrites the model.
+        """
+        current = (getattr(self.instance, "model", "") or "").strip()
+        if not current:
+            return ""
+        field = self.fields["model"]
+        if any(current == value for value, _ in field.choices):
+            return ""
+        label = current.replace("_", " ").upper()
+        field.choices = [(current, label), *field.choices]
+        return current
+
+    def _get_validation_exclusions(self):
+        exclude = super()._get_validation_exclusions()
+        if self.unlisted_model and self.data.get("model") == self.unlisted_model:
+            # The model field still validates against the catalog, so keeping a
+            # legacy value would otherwise block every edit to this router.
+            exclude.add("model")
+        return exclude
+
     def clean_name(self):
         name = (self.cleaned_data.get("name") or "").strip()
         if not name:

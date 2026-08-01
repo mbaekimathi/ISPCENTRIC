@@ -88,15 +88,18 @@ def start_subscription_stk_payment(
     organization,
     customer: Customer,
     phone: str,
+    plan=None,
     user=None,
     request=None,
 ) -> dict:
     """Validate and initiate STK Push for a customer's plan price."""
     if customer.organization_id != organization.pk:
         return {"ok": False, "error": "Customer does not belong to this organization."}
-    plan = customer.plan
+    plan = plan or customer.plan
     if plan is None:
         return {"ok": False, "error": "Assign a billing package before collecting payment."}
+    if plan.organization_id != organization.pk or not plan.is_active:
+        return {"ok": False, "error": "Choose an active package from this organization."}
     amount = Decimal(plan.price or 0)
     if amount <= 0:
         return {"ok": False, "error": "Package price must be greater than zero."}
@@ -125,6 +128,7 @@ def start_subscription_stk_payment(
     stk = StkPushRequest.objects.create(
         organization=organization,
         customer=customer,
+        plan=plan,
         amount=amount,
         phone=msisdn,
         account_reference=account_ref[:64],
@@ -229,7 +233,7 @@ def fulfill_successful_stk(
 ) -> dict:
     """Mark STK success, renew subscription, and record invoice/payment (idempotent)."""
     stk = StkPushRequest.objects.select_for_update().select_related(
-        "customer", "customer__plan", "organization"
+        "customer", "customer__plan", "plan", "organization"
     ).get(pk=stk.pk)
 
     if raw:
@@ -251,8 +255,12 @@ def fulfill_successful_stk(
         }
 
     customer = stk.customer
+    paid_plan = stk.plan or customer.plan
+    if paid_plan is not None and customer.plan_id != paid_plan.pk:
+        customer.plan = paid_plan
+        customer.save(update_fields=["plan"])
     try:
-        apply_subscription_renewal(customer, plan=customer.plan)
+        apply_subscription_renewal(customer, plan=paid_plan)
     except ValueError as exc:
         stk.status = StkPushRequest.Status.FAILED
         stk.result_desc = str(exc)[:255]

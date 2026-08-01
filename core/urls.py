@@ -9,12 +9,32 @@ urlpatterns = [
     path("", LandingView.as_view(), name="landing"),
     path("app/", views.workspace, name="workspace"),
     path("app/mikrotik/", views.mikrotik, name="mikrotik"),
+    path(
+        "app/mikrotik/<int:router_id>/edit/",
+        views.mikrotik_edit,
+        name="mikrotik_edit",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/delete/",
+        views.mikrotik_delete,
+        name="mikrotik_delete",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/suspend/",
+        views.mikrotik_suspend,
+        name="mikrotik_suspend",
+    ),
     path("app/mikrotik/<int:router_id>/", views.mikrotik_detail, name="mikrotik_detail"),
     path("app/mikrotik/<int:router_id>/ports/", views.mikrotik_ports, name="mikrotik_ports"),
     path(
         "app/mikrotik/<int:router_id>/ports/live/",
         views.mikrotik_ports_live,
         name="mikrotik_ports_live",
+    ),
+    path(
+        "app/mikrotik/<int:router_id>/clean-uplink/",
+        views.mikrotik_clean_uplink,
+        name="mikrotik_clean_uplink",
     ),
     path(
         "app/mikrotik/<int:router_id>/pppoe-settings/",
@@ -39,6 +59,11 @@ urlpatterns = [
         "app/mikrotik/tunnel-script/",
         views.mikrotik_tunnel_script,
         name="mikrotik_tunnel_script",
+    ),
+    path(
+        "app/mikrotik/tunnel-status/",
+        views.mikrotik_tunnel_status,
+        name="mikrotik_tunnel_status",
     ),
     path("app/mikrotik/status/", views.mikrotik_status, name="mikrotik_status"),
     path("app/mikrotik/places/", views.mikrotik_places, name="mikrotik_places"),

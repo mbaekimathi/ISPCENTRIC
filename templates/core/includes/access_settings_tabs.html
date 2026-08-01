@@ -1,0 +1,20 @@
+<div class="client-type-tabs" role="tablist" aria-label="Access settings">
+  <a
+    class="client-type-tab{% if access_settings_tab == 'pppoe' %} is-active{% endif %}"
+    role="tab"
+    href="{% url 'core:mikrotik_pppoe_settings' router.id %}"
+    aria-selected="{% if access_settings_tab == 'pppoe' %}true{% else %}false{% endif %}"
+    id="tab-access-pppoe"
+  >
+    <span class="client-type-tab-label">PPPoE settings</span>
+  </a>
+  <a
+    class="client-type-tab{% if access_settings_tab == 'hotspot' %} is-active{% endif %}"
+    role="tab"
+    href="{% url 'core:mikrotik_hotspot_settings' router.id %}"
+    aria-selected="{% if access_settings_tab == 'hotspot' %}true{% else %}false{% endif %}"
+    id="tab-access-hotspot"
+  >
+    <span class="client-type-tab-label">Hotspot settings</span>
+  </a>
+</div>

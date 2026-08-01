@@ -101,6 +101,8 @@ class Customer(models.Model):
         "Hotspot device MAC",
         max_length=17,
         blank=True,
+        null=True,
+        default=None,
         db_index=True,
         help_text="Device authorized automatically after a successful Hotspot payment.",
     )
@@ -160,6 +162,20 @@ class Customer(models.Model):
                 name="bill_cust_org_svc_idx",
             ),
         ]
+        constraints = [
+            # NULL MACs are distinct in MySQL/MariaDB unique indexes, so PPPoE
+            # rows without a device MAC do not collide. Hotspot rows store a
+            # concrete MAC and cannot duplicate within an organization.
+            models.UniqueConstraint(
+                fields=["organization", "hotspot_mac"],
+                name="bill_cust_org_hotspot_mac_uniq",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        mac = (self.hotspot_mac or "").strip()
+        self.hotspot_mac = mac or None
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.full_name} ({self.account_number})"
@@ -255,6 +271,14 @@ class StkPushRequest(models.Model):
         Customer,
         on_delete=models.CASCADE,
         related_name="stk_push_requests",
+    )
+    plan = models.ForeignKey(
+        BillingPlan,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="stk_push_requests",
+        help_text="Package selected and priced when this payment attempt began.",
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     phone = models.CharField(max_length=20)

@@ -37,11 +37,6 @@ ROLE_NAV_ITEMS = {
     ],
     Employee.Role.IT_SUPPORT: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:it_support"},
-        {
-            "key": "payment_gateway",
-            "label": "Payment Gateway",
-            "url_name": "roles:it_support_payment_gateway",
-        },
     ],
     Employee.Role.SALES: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:sales"},
@@ -60,6 +55,14 @@ ROLE_DASHBOARD_ONLY_NAV = {
     Employee.Role.ADMINISTRATOR: [
         {"key": "clients", "label": "Client management", "url_name": "roles:administrator_clients"},
         {"key": "hr", "label": "Human resource", "url_name": "roles:administrator_hr"},
+    ],
+    Employee.Role.IT_SUPPORT: [
+        {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
+        {
+            "key": "payment_gateway",
+            "label": "Payment Gateway",
+            "url_name": "roles:it_support_payment_gateway",
+        },
     ],
 }
 

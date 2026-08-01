@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  {% if auto_refresh %}<meta http-equiv="refresh" content="3;url={{ refresh_url }}">{% endif %}
+  <title>{% if result.success and result.authorized %}You're online{% else %}Confirming payment{% endif %}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh; margin: 0; padding: 1.2rem; display: grid; place-items: center;
+      font-family: "Segoe UI", system-ui, sans-serif; color: #142033;
+      background: radial-gradient(circle at top left, #174b55, #0b1520 58%);
+    }
+    main {
+      width: min(100%, 25rem); padding: 1.5rem 1.25rem; text-align: center;
+      border-radius: 1.1rem; background: #fff; box-shadow: 0 24px 60px #0007;
+    }
+    .icon {
+      display: grid; place-items: center; width: 4rem; height: 4rem; margin: 0 auto 1rem;
+      border-radius: 50%; background: #dcfce7; color: #15803d; font-size: 2rem; font-weight: 800;
+    }
+    .pending { background: #e0f2fe; color: #0369a1; }
+    .failed { background: #fee2e2; color: #b91c1c; }
+    h1 { margin: 0 0 .55rem; font-size: 1.45rem; }
+    p { margin: .45rem 0; line-height: 1.45; color: #475569; }
+    .details {
+      margin: 1rem 0; padding: .85rem; text-align: left; border-radius: .75rem;
+      background: #f8fafc; font-size: .9rem;
+    }
+    .details strong { color: #142033; }
+    a {
+      display: block; margin-top: 1rem; padding: .85rem 1rem; border-radius: .75rem;
+      background: #0e7c86; color: #fff; font-weight: 700; text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    {% if result.success and result.authorized %}
+      <div class="icon">✓</div>
+      <h1>Payment successful — you're online</h1>
+      <p>Your package and subscription period have been updated. You can continue browsing now.</p>
+      <div class="details">
+        {% if plan_name %}<p><strong>Package:</strong> {{ plan_name }}</p>{% endif %}
+        {% if customer.package_start %}<p><strong>Starts:</strong> {{ customer.package_start|date:"M j, Y H:i" }}</p>{% endif %}
+        {% if customer.package_end %}<p><strong>Valid until:</strong> {{ customer.package_end|date:"M j, Y H:i" }}</p>{% endif %}
+        {% if result.mpesa_receipt %}<p><strong>M-Pesa receipt:</strong> {{ result.mpesa_receipt }}</p>{% endif %}
+      </div>
+      <a href="{{ continue_url }}">Continue browsing</a>
+    {% elif waiting %}
+      <div class="icon pending">…</div>
+      <h1>Confirming your payment</h1>
+      <p>{{ result.result_desc|default:"Enter your M-Pesa PIN. This page will update automatically." }}</p>
+      <p>Please keep this window open.</p>
+    {% elif authorizing %}
+      <div class="icon pending">…</div>
+      <h1>Payment received</h1>
+      <p>Your package period is updated. We are restoring internet on your router now.</p>
+      <p>{{ result.authorization_error|default:"This page will update automatically." }}</p>
+    {% else %}
+      <div class="icon failed">!</div>
+      <h1>Payment not completed</h1>
+      <p>{{ result.reason|default:result.result_desc|default:"Please try the payment again." }}</p>
+      {% if result.can_retry != False %}<a href="{{ retry_url }}">Try again</a>{% endif %}
+    {% endif %}
+  </main>
+</body>
+</html>

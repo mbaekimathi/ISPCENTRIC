@@ -142,14 +142,39 @@
   <script>
     // This page must paint before RouterOS expires the old captive host. The
     // activation request may itself be disconnected; that is expected because
-    // its purpose is to force the newly paid MAC to authenticate.
-    window.setTimeout(function () {
-      fetch("{{ activation_url|escapejs }}", {
-        method: "POST",
-        keepalive: true,
-        headers: { "Accept": "application/json" }
-      }).catch(function () {});
-    }, 800);
+    // its purpose is to force the newly paid MAC to authenticate. Retry a few
+    // times so a briefly offline NAS still brings the device online.
+    (function () {
+      var url = "{{ activation_url|escapejs }}";
+      var attempts = 0;
+      function activate() {
+        attempts += 1;
+        fetch(url, {
+          method: "POST",
+          keepalive: true,
+          headers: { "Accept": "application/json" }
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              return { ok: response.ok, data: data || {} };
+            });
+          })
+          .then(function (result) {
+            if (result.data.authorized) {
+              return;
+            }
+            if (attempts < 4 && (result.data.can_retry_authorize || result.data.offline)) {
+              window.setTimeout(activate, 2500 * attempts);
+            }
+          })
+          .catch(function () {
+            if (attempts < 3) {
+              window.setTimeout(activate, 2500 * attempts);
+            }
+          });
+      }
+      window.setTimeout(activate, 800);
+    })();
   </script>
   {% endif %}
 </body>

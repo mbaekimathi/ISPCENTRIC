@@ -83,13 +83,6 @@
                 </button>
               </div>
               {{ form.password1.errors }}
-              <ul class="password-rules" id="password-rules" aria-live="polite">
-                <li data-rule="length">At least 8 characters</li>
-                <li data-rule="not-numeric">Not entirely numeric</li>
-                <li data-rule="not-common">Not a commonly used password</li>
-                <li data-rule="not-similar">Not too similar to your name, username, or email</li>
-                <li data-rule="match">Passwords match</li>
-              </ul>
             </div>
           {% elif field.name == 'password2' %}
             <div class="form-group">
@@ -253,60 +246,6 @@
         if (eye && eyeOff) { eye.hidden = show; eyeOff.hidden = !show; }
       });
     });
-
-    var COMMON = {"password":1,"password1":1,"password123":1,"12345678":1,"123456789":1,"qwerty":1,"qwerty123":1,"abc123":1,"admin":1,"admin123":1,"welcome":1,"letmein":1,"passw0rd":1,"11111111":1,"00000000":1,"ispcentric":1};
-    var p1 = document.getElementById("id_password1");
-    var p2 = document.getElementById("id_password2");
-    var rules = document.getElementById("password-rules");
-    var username = document.getElementById("id_username");
-    var email = document.getElementById("id_email");
-    var firstName = document.getElementById("id_first_name");
-    var lastName = document.getElementById("id_last_name");
-
-    function setRule(name, ok) {
-      var item = rules && rules.querySelector('[data-rule="' + name + '"]');
-      if (!item) return;
-      item.classList.toggle("is-ok", ok);
-      item.classList.toggle("is-bad", !ok);
-    }
-    function similar(password, value) {
-      if (!value) return false;
-      var p = password.toLowerCase();
-      var v = String(value).toLowerCase().trim();
-      if (v.length < 3) return false;
-      if (p.indexOf(v) !== -1 || v.indexOf(p) !== -1) return true;
-      var local = v.split("@")[0];
-      return !!(local && local.length >= 3 && p.indexOf(local) !== -1);
-    }
-    function checkPasswords() {
-      if (!p1 || !rules) return;
-      var password = p1.value || "";
-      var confirm = p2 ? p2.value || "" : "";
-      var hasInput = password.length > 0;
-      rules.classList.toggle("is-active", hasInput || confirm.length > 0);
-      var lengthOk = password.length >= 8;
-      var notNumeric = password.length > 0 && !/^\d+$/.test(password);
-      var notCommon = password.length > 0 && !COMMON[password.toLowerCase()];
-      var notSimilar = password.length > 0 && !similar(password, username && username.value) && !similar(password, email && email.value) && !similar(password, firstName && firstName.value) && !similar(password, lastName && lastName.value);
-      var matchOk = password.length > 0 && confirm.length > 0 && password === confirm;
-      setRule("length", lengthOk);
-      setRule("not-numeric", notNumeric);
-      setRule("not-common", notCommon);
-      setRule("not-similar", notSimilar);
-      setRule("match", matchOk);
-      p1.classList.toggle("is-valid", lengthOk && notNumeric && notCommon && notSimilar);
-      p1.classList.toggle("is-invalid", hasInput && !(lengthOk && notNumeric && notCommon && notSimilar));
-      if (p2) {
-        p2.classList.toggle("is-valid", matchOk);
-        p2.classList.toggle("is-invalid", confirm.length > 0 && !matchOk);
-      }
-    }
-    [p1, p2, username, email, firstName, lastName].forEach(function (el) {
-      if (!el) return;
-      el.addEventListener("input", checkPasswords);
-      el.addEventListener("change", checkPasswords);
-    });
-    checkPasswords();
   })();
 </script>
 {% endblock %}

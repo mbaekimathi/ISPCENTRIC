@@ -1353,6 +1353,65 @@ a {
   white-space: nowrap;
 }
 
+.mikrotik-tunnel-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.mikrotik-tunnel-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: rgba(232, 242, 244, 0.76);
+}
+
+.mikrotik-tunnel-check-dot {
+  flex: 0 0 auto;
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 999px;
+  background: #f4c95d;
+  box-shadow: 0 0 0 4px rgba(244, 201, 93, 0.12);
+}
+
+.mikrotik-tunnel-check.is-checking .mikrotik-tunnel-check-dot {
+  animation: mikrotik-discover-pulse 1.25s ease-out infinite;
+}
+
+.mikrotik-tunnel-check.is-ready {
+  color: #b8f5d0;
+}
+
+.mikrotik-tunnel-check.is-ready .mikrotik-tunnel-check-dot {
+  background: #2ecc71;
+  box-shadow: 0 0 0 4px rgba(46, 204, 113, 0.14);
+}
+
+.mikrotik-tunnel-check.is-error {
+  color: #ffc9c9;
+}
+
+.mikrotik-tunnel-check.is-error .mikrotik-tunnel-check-dot {
+  background: #ff8585;
+  box-shadow: 0 0 0 4px rgba(255, 133, 133, 0.12);
+}
+
+.mikrotik-tunnel-check-detail {
+  margin: 0.35rem 0 0;
+  font-size: 0.7rem;
+  color: rgba(232, 242, 244, 0.58);
+}
+
+.mikrotik-tunnel-check-now {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .mikrotik-tunnel-setup {
   margin-top: 0.15rem;
 }
@@ -4642,19 +4701,19 @@ body.staff-nav-lock {
   padding-top: 0.35rem;
 }
 
-.client-overview-panel {
+.client-profile-panel {
   margin-bottom: 1.25rem;
 }
 
-.client-overview-head {
+.client-profile-head {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.9rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border-strong);
 }
 
-.client-overview-avatar {
+.client-profile-avatar {
   display: grid;
   place-items: center;
   flex: 0 0 3.25rem;
@@ -4667,27 +4726,39 @@ body.staff-nav-lock {
   font-weight: 800;
 }
 
-[data-theme="light"] .client-overview-avatar {
+[data-theme="light"] .client-profile-avatar {
   background: rgba(14, 116, 144, 0.12);
   color: #0e7490;
 }
 
-.client-overview-identity {
+.client-profile-identity {
   min-width: 0;
 }
 
-.client-overview-identity h2 {
-  margin: 0.1rem 0 0.15rem;
+.client-profile-kicker {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted, #64748b);
 }
 
-.client-overview-identity > p:last-child {
+.client-profile-identity h2 {
+  margin: 0.1rem 0 0.15rem;
+  font-size: clamp(1.15rem, 3.5vw, 1.5rem);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.client-profile-account {
   margin: 0;
   color: var(--muted, #64748b);
   font-size: 0.88rem;
   overflow-wrap: anywhere;
 }
 
-.client-overview-badges {
+.client-profile-badges {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4696,39 +4767,144 @@ body.staff-nav-lock {
   margin-left: auto;
 }
 
-.client-overview-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.25rem 2rem;
-  margin-top: 1.2rem;
+.client-profile-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 1rem 0 0.65rem;
 }
 
-.client-overview-group h3 {
-  margin: 0 0 0.65rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.06em;
+.client-profile-toolbar-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--muted, #64748b);
 }
 
-.client-overview-list {
-  margin: 0;
+.client-profile-expand {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 0.32rem 0.85rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
-.client-overview-list > div {
+.client-profile-expand:hover {
+  background: var(--surface-3);
+}
+
+.client-profile-groups {
   display: grid;
-  grid-template-columns: minmax(7rem, 0.7fr) minmax(0, 1.3fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 0.75rem;
-  padding: 0.52rem 0;
+}
+
+.client-profile-group {
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.85rem;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.client-profile-group[open] {
+  border-color: var(--sea);
+}
+
+.client-profile-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.client-profile-summary::-webkit-details-marker {
+  display: none;
+}
+
+.client-profile-summary:hover {
+  background: var(--surface-3);
+}
+
+.client-profile-summary:focus-visible {
+  outline: 2px solid var(--sea);
+  outline-offset: -2px;
+}
+
+.client-profile-summary-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.client-profile-summary-title {
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.client-profile-summary-preview {
+  font-size: 0.84rem;
+  color: var(--muted, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-profile-group[open] .client-profile-summary-preview {
+  display: none;
+}
+
+.client-profile-chevron {
+  flex: 0 0 auto;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.15rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-0.15rem) rotate(45deg);
+  opacity: 0.55;
+  transition: transform 0.2s ease;
+}
+
+.client-profile-group[open] .client-profile-chevron {
+  transform: translateY(0.1rem) rotate(225deg);
+}
+
+.client-profile-list {
+  margin: 0;
+  padding: 0 0.9rem 0.65rem;
+}
+
+.client-profile-list > div {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.8fr) minmax(0, 1.2fr);
+  gap: 0.75rem;
+  padding: 0.5rem 0;
   border-top: 1px solid var(--border-strong);
 }
 
-.client-overview-list dt {
+.client-profile-list dt {
   color: var(--muted, #64748b);
   font-size: 0.84rem;
 }
 
-.client-overview-list dd {
+.client-profile-list dd {
   margin: 0;
   font-size: 0.9rem;
   font-weight: 700;
@@ -4736,11 +4912,11 @@ body.staff-nav-lock {
   overflow-wrap: anywhere;
 }
 
-.client-overview-list a {
+.client-profile-list a {
   color: inherit;
 }
 
-.client-overview-secondary {
+.client-profile-secondary {
   display: block;
   margin-top: 0.12rem;
   color: var(--muted, #64748b);
@@ -4748,7 +4924,7 @@ body.staff-nav-lock {
   font-weight: 500;
 }
 
-.client-overview-mono {
+.client-profile-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -5027,21 +5203,66 @@ body.staff-nav-lock {
   }
 }
 
+.clients-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 900px) {
+  .client-profile-groups {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 720px) {
-  .client-overview-head {
+  .client-profile-head {
     align-items: flex-start;
     flex-wrap: wrap;
   }
 
-  .client-overview-badges {
+  .client-profile-badges {
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
   }
 
-  .client-overview-grid {
+  .client-usage-panel .mikrotik-detail-actions,
+  .client-package-period .mikrotik-detail-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .client-usage-panel .mikrotik-detail-actions .btn,
+  .client-package-period .mikrotik-detail-actions .btn {
+    flex: 1 1 9rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .client-profile-avatar {
+    flex-basis: 2.6rem;
+    width: 2.6rem;
+    height: 2.6rem;
+    font-size: 1.05rem;
+  }
+
+  .client-profile-list > div {
     grid-template-columns: 1fr;
-    gap: 1rem;
+    gap: 0.1rem;
+  }
+
+  .client-profile-list dd {
+    text-align: left;
+  }
+
+  .client-usage-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-usage-stat strong {
+    font-size: 1rem;
   }
 }
 
@@ -5841,6 +6062,73 @@ body.staff-nav-lock {
   color: var(--danger, #b42318);
 }
 
+.org-actions-icons {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.org-actions-icons form {
+  margin: 0;
+  display: inline-flex;
+}
+
+.org-actions-icons .org-action-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  text-decoration: none;
+  line-height: 0;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.org-actions-icons .org-action-icon:hover,
+.org-actions-icons .org-action-icon:focus-visible {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+  background: var(--surface);
+  outline: none;
+}
+
+.org-actions-icons .org-action-warn {
+  color: #b45309;
+}
+
+.org-actions-icons .org-action-warn:hover,
+.org-actions-icons .org-action-warn:focus-visible {
+  color: #92400e;
+  border-color: rgba(180, 83, 9, 0.45);
+  background: rgba(180, 83, 9, 0.08);
+}
+
+.org-actions-icons .org-action-success {
+  color: #15803d;
+}
+
+.org-actions-icons .org-action-success:hover,
+.org-actions-icons .org-action-success:focus-visible {
+  color: #166534;
+  border-color: rgba(21, 128, 61, 0.45);
+  background: rgba(21, 128, 61, 0.08);
+}
+
+.org-actions-icons .org-action-danger {
+  color: var(--danger, #b42318);
+}
+
+.org-actions-icons .org-action-danger:hover,
+.org-actions-icons .org-action-danger:focus-visible {
+  color: #912018;
+  border-color: rgba(180, 35, 24, 0.4);
+  background: rgba(180, 35, 24, 0.08);
+}
+
 .org-delete-box {
   display: grid;
   gap: 1rem;
@@ -6225,6 +6513,48 @@ body.staff-nav-lock {
   text-decoration: underline;
 }
 
+.mikrotik-router-primary {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.mikrotik-router-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.65rem;
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+
+.mikrotik-router-model,
+.mikrotik-router-serial {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.mikrotik-router-serial {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.mikrotik-router-connection {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: start;
+  min-width: 0;
+}
+
+.mikrotik-router-host {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
 .mikrotik-view-btn {
   padding: 0.35rem 0.7rem;
   font-size: 0.82rem;
@@ -6413,13 +6743,6 @@ body.staff-nav-lock {
   margin-left: auto;
 }
 
-.mikrotik-list-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-  align-items: center;
-}
-
 .mikrotik-page {
   display: grid;
   gap: 1rem;
@@ -6443,9 +6766,17 @@ body.staff-nav-lock {
 }
 
 .mikrotik-list-head {
+  display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
+  justify-content: space-between;
   margin-bottom: 1rem;
   gap: 0.85rem 1rem;
+}
+
+.mikrotik-list-heading {
+  min-width: 0;
+  flex: 1 1 12rem;
 }
 
 .mikrotik-list-heading h2 {
@@ -6459,6 +6790,15 @@ body.staff-nav-lock {
   font-size: 0.82rem;
   font-weight: 650;
   color: var(--ink-soft);
+}
+
+.mikrotik-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  flex: 0 1 auto;
+  max-width: 100%;
 }
 
 .mikrotik-table-wrap {
@@ -6475,8 +6815,10 @@ body.staff-nav-lock {
 }
 
 .mikrotik-routers-table {
-  min-width: 64rem;
+  width: 100%;
+  min-width: 48rem;
   margin: 0;
+  table-layout: auto;
 }
 
 .mikrotik-routers-table th,
@@ -6488,6 +6830,12 @@ body.staff-nav-lock {
 .mikrotik-routers-table th:first-child,
 .mikrotik-routers-table td:first-child {
   padding-left: 0.95rem;
+  min-width: 11rem;
+}
+
+.mikrotik-routers-table th:nth-child(2),
+.mikrotik-routers-table td:nth-child(2) {
+  min-width: 9.5rem;
 }
 
 .mikrotik-routers-table th:last-child,
@@ -6505,6 +6853,63 @@ body.staff-nav-lock {
   gap: 0.4rem;
   justify-content: flex-end;
   white-space: nowrap;
+}
+
+.mikrotik-reconnect-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.mikrotik-reconnect-btn .mikrotik-reconnect-icon {
+  flex: 0 0 auto;
+  display: block;
+}
+
+.mikrotik-reconnect-btn.is-compact {
+  width: 2.15rem;
+  min-width: 2.15rem;
+  padding-left: 0;
+  padding-right: 0;
+  gap: 0;
+}
+
+.mikrotik-reconnect-btn.is-compact .mikrotik-reconnect-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mikrotik-reconnect-btn.is-busy .mikrotik-reconnect-icon {
+  animation: mikrotik-reconnect-spin 0.9s linear infinite;
+}
+
+@keyframes mikrotik-reconnect-spin {
+  to { transform: rotate(360deg); }
+}
+
+.mikrotik-delete-btn {
+  color: #e74c3c;
+}
+
+.mikrotik-delete-btn:hover {
+  color: #ff6b5a;
+  border-color: rgba(231, 76, 60, 0.45);
+  background: rgba(231, 76, 60, 0.1);
+}
+
+.mikrotik-delete-box {
+  margin: 0;
+  border: none;
+  padding: 0;
+  background: transparent;
 }
 
 .mikrotik-empty {
@@ -6543,6 +6948,18 @@ body.staff-nav-lock {
   font-size: 0.92rem;
 }
 
+@media (max-width: 1100px) {
+  .mikrotik-routers-table {
+    min-width: 42rem;
+  }
+
+  .mikrotik-routers-table th,
+  .mikrotik-routers-table td {
+    padding: 0.75rem 0.55rem;
+    font-size: 0.92rem;
+  }
+}
+
 @media (max-width: 860px) {
   .mikrotik-list-panel {
     padding: 0.95rem 0.9rem 1.05rem;
@@ -6564,6 +6981,7 @@ body.staff-nav-lock {
   }
 
   .mikrotik-routers-table {
+    width: 100%;
     min-width: 0;
     border-collapse: separate;
     border-spacing: 0 0.75rem;
@@ -6600,6 +7018,7 @@ body.staff-nav-lock {
     justify-content: space-between;
     gap: 0.85rem;
     width: 100%;
+    min-width: 0;
     padding: 0.42rem 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   }
@@ -6625,7 +7044,7 @@ body.staff-nav-lock {
     color: var(--ink-soft);
   }
 
-  .mikrotik-routers-table td > *:not(.mikrotik-reconnect-btn):not(.mikrotik-view-btn) {
+  .mikrotik-routers-table td > *:not(.mikrotik-reconnect-btn):not(.mikrotik-view-btn):not(.mikrotik-edit-btn):not(.mikrotik-delete-btn) {
     text-align: right;
   }
 
@@ -6640,20 +7059,50 @@ body.staff-nav-lock {
     justify-content: center;
   }
 
-  .mikrotik-routers-table td[data-label="Name"] {
+  .mikrotik-router-actions .mikrotik-reconnect-btn.is-compact {
+    flex: 0 0 auto;
+    width: 2.35rem;
+    min-width: 2.35rem;
+  }
+
+  .mikrotik-routers-table td[data-label="Router"] {
+    display: grid;
+    gap: 0.35rem;
     padding-top: 0;
-    padding-bottom: 0.55rem;
+    padding-bottom: 0.65rem;
     margin-bottom: 0.2rem;
     border-bottom-color: rgba(255, 255, 255, 0.08);
   }
 
-  .mikrotik-routers-table td[data-label="Name"]::before {
+  .mikrotik-routers-table td[data-label="Router"]::before {
     display: none;
   }
 
-  .mikrotik-routers-table td[data-label="Name"] .mikrotik-router-name {
+  .mikrotik-routers-table td[data-label="Router"] .mikrotik-router-primary {
+    width: 100%;
+  }
+
+  .mikrotik-routers-table td[data-label="Router"] .mikrotik-router-name {
     font-size: 1.02rem;
     text-align: left;
+  }
+
+  .mikrotik-routers-table td[data-label="Router"] .mikrotik-router-meta {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] {
+    align-items: center;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] .mikrotik-router-connection {
+    justify-items: end;
+    text-align: right;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] .mikrotik-link-status {
+    justify-content: flex-end;
   }
 
   .mikrotik-routers-table td[data-label="Actions"]::before {
@@ -6666,6 +7115,15 @@ body.staff-nav-lock {
 }
 
 @media (max-width: 480px) {
+  .mikrotik-page {
+    gap: 0.85rem;
+  }
+
+  .mikrotik-list-panel {
+    padding: 0.85rem 0.75rem 0.95rem;
+    border-radius: 14px;
+  }
+
   .mikrotik-list-actions {
     flex-direction: column;
     align-items: stretch;
@@ -6679,12 +7137,35 @@ body.staff-nav-lock {
     padding-top: 1.15rem;
   }
 
+  .mikrotik-routers-table tr.mikrotik-router-row {
+    padding: 0.85rem 0.8rem;
+  }
+
   .mikrotik-router-actions {
     flex-direction: column;
   }
 
   .mikrotik-router-actions .btn {
     width: 100%;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.45rem;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"]::before {
+    max-width: none;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] .mikrotik-router-connection {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .mikrotik-routers-table td[data-label="Connection"] .mikrotik-link-status {
+    justify-content: flex-start;
   }
 }
 
@@ -7424,6 +7905,12 @@ body.staff-nav-lock {
   align-items: center;
   gap: 0.85rem 1rem;
   margin-top: 0.95rem;
+}
+
+.mikrotik-clean-uplink-form {
+  margin-top: 1.15rem;
+  display: grid;
+  gap: 0.9rem;
 }
 
 .mikrotik-clean-uplink-note {
@@ -8603,4 +9090,458 @@ body.staff-nav-lock {
   .account-hero-pay {
     width: 100%;
   }
+}
+
+/* —— Register PPPoE client modal —— */
+.pppoe-modal {
+  place-items: end center;
+  padding: 0;
+}
+
+.pppoe-modal .role-modal-backdrop {
+  background: rgba(6, 14, 20, 0.66);
+  backdrop-filter: blur(6px);
+}
+
+.role-modal-panel.pppoe-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 40rem);
+  max-width: 100%;
+  max-height: min(94dvh, 46rem);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 22px 22px 0 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 100% -10%, rgba(232, 163, 23, 0.16), transparent 55%),
+    radial-gradient(ellipse 60% 45% at -5% 0%, rgba(14, 124, 134, 0.2), transparent 52%),
+    linear-gradient(185deg, #1a3742 0%, #12252e 45%, #0d171d 100%);
+  box-shadow:
+    0 -18px 48px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.pppoe-panel::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 2.5rem;
+  height: 0.28rem;
+  margin: 0.5rem auto 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.pppoe-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.8rem 1.1rem 0.9rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(8, 16, 22, 0.28), rgba(8, 16, 22, 0.1));
+}
+
+.pppoe-head-text {
+  min-width: 0;
+}
+
+.pppoe-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f0b93a;
+}
+
+.pppoe-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.1rem, 3.6vw, 1.4rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.pppoe-sub {
+  margin: 0.3rem 0 0;
+  max-width: 52ch;
+  font-size: clamp(0.78rem, 2.5vw, 0.88rem);
+  line-height: 1.45;
+  color: rgba(232, 242, 244, 0.64);
+}
+
+.pppoe-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #e8f2f4;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.pppoe-close:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.pppoe-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.pppoe-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 1rem 1.1rem 1.15rem;
+  display: grid;
+  gap: 1.05rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+}
+
+.pppoe-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.pppoe-body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.pppoe-banner {
+  margin: 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid rgba(231, 76, 60, 0.32);
+  border-radius: 12px;
+  background: rgba(231, 76, 60, 0.12);
+  color: #ff9b8d;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.pppoe-section {
+  min-width: 0;
+}
+
+.pppoe-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.6rem;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.6);
+}
+
+.pppoe-section-title::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.pppoe-optional {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(232, 242, 244, 0.42);
+}
+
+.pppoe-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.pppoe-grid > .field {
+  min-width: 0;
+}
+
+.pppoe-grid label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  color: rgba(232, 242, 244, 0.8);
+}
+
+.pppoe-grid .form-control {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  background: rgba(8, 18, 24, 0.55);
+  color: #e8f2f4;
+  font-size: 0.95rem;
+}
+
+.pppoe-grid .form-control::placeholder {
+  color: rgba(232, 242, 244, 0.34);
+}
+
+.pppoe-grid .form-control:focus {
+  border-color: rgba(232, 163, 23, 0.7);
+  box-shadow: 0 0 0 3px rgba(232, 163, 23, 0.18);
+}
+
+.pppoe-select {
+  position: relative;
+}
+
+.pppoe-select::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0.95rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-top: -0.32rem;
+  border-right: 2px solid rgba(232, 242, 244, 0.55);
+  border-bottom: 2px solid rgba(232, 242, 244, 0.55);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.pppoe-select select.form-control {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.4rem;
+  cursor: pointer;
+}
+
+.pppoe-select select.form-control option {
+  background: #12252e;
+  color: #e8f2f4;
+}
+
+.pppoe-grid .password-field .form-control {
+  padding-right: 2.9rem;
+}
+
+.pppoe-grid .password-toggle {
+  color: rgba(232, 242, 244, 0.6);
+}
+
+.pppoe-grid .password-toggle:hover {
+  color: #f0b93a;
+  background: rgba(232, 163, 23, 0.12);
+}
+
+.pppoe-grid .field-hint {
+  margin: 0.3rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(232, 242, 244, 0.5);
+  opacity: 1;
+}
+
+.pppoe-grid .field-error {
+  color: #ff9b8d;
+}
+
+.pppoe-grid-hint {
+  grid-column: 1 / -1;
+  margin: 0 !important;
+}
+
+.pppoe-foot {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.65rem;
+  padding: 0.85rem 1.1rem calc(0.85rem + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 16, 22, 0.55);
+}
+
+.pppoe-foot .btn {
+  flex: 1 1 auto;
+  padding: 0.7rem 1.1rem;
+}
+
+.pppoe-foot .btn-ghost {
+  color: #e8f2f4;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.pppoe-foot .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@media (min-width: 34rem) {
+  .pppoe-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem 0.75rem;
+  }
+
+  .pppoe-grid .field-span-2 {
+    grid-column: 1 / -1;
+  }
+
+  .pppoe-foot {
+    justify-content: flex-end;
+  }
+
+  .pppoe-foot .btn {
+    flex: 0 0 auto;
+    min-width: 8rem;
+  }
+}
+
+@media (min-width: 40rem) {
+  .pppoe-modal {
+    place-items: center;
+    padding: 1.25rem;
+  }
+
+  .role-modal-panel.pppoe-panel {
+    border-radius: 22px;
+  }
+
+  .pppoe-panel::before {
+    display: none;
+  }
+
+  .pppoe-head {
+    padding: 1.15rem 1.5rem 1rem;
+  }
+
+  .pppoe-body {
+    padding: 1.25rem 1.5rem 1.4rem;
+    gap: 1.2rem;
+  }
+
+  .pppoe-foot {
+    padding: 1rem 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role-modal-panel.pppoe-panel {
+    animation: none;
+  }
+}
+
+[data-theme="light"] .role-modal-panel.pppoe-panel {
+  background:
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(232, 163, 23, 0.1), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.1), transparent 50%),
+    linear-gradient(180deg, #ffffff 0%, #f3f7f8 100%);
+  color: var(--ink);
+  box-shadow:
+    0 -18px 48px rgba(11, 31, 42, 0.18),
+    0 0 0 1px rgba(11, 31, 42, 0.06);
+}
+
+[data-theme="light"] .pppoe-panel::before {
+  background: rgba(11, 31, 42, 0.18);
+}
+
+[data-theme="light"] .pppoe-head {
+  border-bottom-color: rgba(11, 31, 42, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="light"] .pppoe-kicker {
+  color: #a06a00;
+}
+
+[data-theme="light"] .pppoe-sub,
+[data-theme="light"] .pppoe-section-title,
+[data-theme="light"] .pppoe-grid .field-hint {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .pppoe-section-title::after {
+  background: rgba(11, 31, 42, 0.1);
+}
+
+[data-theme="light"] .pppoe-optional {
+  color: rgba(74, 101, 115, 0.7);
+}
+
+[data-theme="light"] .pppoe-close {
+  border-color: var(--border-strong);
+  background: rgba(11, 31, 42, 0.04);
+  color: var(--ink);
+}
+
+[data-theme="light"] .pppoe-close:hover {
+  background: rgba(11, 31, 42, 0.08);
+}
+
+[data-theme="light"] .pppoe-grid label {
+  color: var(--ink);
+}
+
+[data-theme="light"] .pppoe-grid .form-control {
+  border-color: var(--border-strong);
+  background: #fff;
+  color: var(--ink);
+}
+
+[data-theme="light"] .pppoe-grid .form-control::placeholder {
+  color: rgba(74, 101, 115, 0.62);
+}
+
+[data-theme="light"] .pppoe-select::after {
+  border-color: var(--ink-soft);
+}
+
+[data-theme="light"] .pppoe-select select.form-control option {
+  background: #fff;
+  color: var(--ink);
+}
+
+[data-theme="light"] .pppoe-grid .password-toggle {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .pppoe-grid .password-toggle:hover {
+  color: var(--sea-deep);
+  background: rgba(14, 124, 134, 0.08);
+}
+
+[data-theme="light"] .pppoe-body::-webkit-scrollbar-thumb {
+  background: rgba(11, 31, 42, 0.18);
+}
+
+[data-theme="light"] .pppoe-foot {
+  border-top-color: rgba(11, 31, 42, 0.08);
+  background: rgba(244, 248, 249, 0.96);
+}
+
+[data-theme="light"] .pppoe-foot .btn-ghost {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+[data-theme="light"] .pppoe-grid .field-error {
+  color: var(--notice-error-fg);
+}
+
+[data-theme="light"] .pppoe-banner {
+  color: #8a1f1f;
+  border-color: rgba(176, 48, 48, 0.28);
+  background: rgba(176, 48, 48, 0.08);
 }

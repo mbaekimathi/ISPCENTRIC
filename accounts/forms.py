@@ -279,23 +279,45 @@ class EmployeeRegisterForm(UserCreationForm):
         self.fields["username"].label = "Username"
         self.fields["password1"].label = "Password"
         self.fields["password2"].label = "Confirm password"
+        self.fields["password1"].help_text = ""
+        self.fields["password2"].help_text = ""
         self.fields["password1"].widget.attrs.update(
             {
-                "placeholder": "Create a password",
+                "placeholder": "6-digit password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
             }
         )
         self.fields["password2"].widget.attrs.update(
             {
-                "placeholder": "Confirm password",
+                "placeholder": "Confirm 6-digit password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
             }
         )
         self.country_options = get_country_options()
         selected = self.data.get("country_code") if self.is_bound else self.fields["country_code"].initial
         self.selected_country = option_for_value(selected or DEFAULT_COUNTRY)
+
+    def _post_clean(self):
+        # Skip BaseUserCreationForm strength validators (8+ chars / common / numeric).
+        forms.ModelForm._post_clean(self)
+
+    def clean_password2(self):
+        password1 = self.cleaned_data.get("password1") or ""
+        password2 = self.cleaned_data.get("password2") or ""
+        if password1 != password2:
+            raise forms.ValidationError("Passwords do not match.")
+        digits = "".join(ch for ch in password1 if ch.isdigit())
+        if len(digits) != 6 or digits != password1:
+            raise forms.ValidationError("Enter a 6-digit password.")
+        return password2
 
     def clean_username(self):
         return self.cleaned_data["username"].strip().upper()

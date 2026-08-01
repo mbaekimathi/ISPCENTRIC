@@ -131,6 +131,40 @@
       margin-top: 0.75rem;
       width: 100%;
     }
+    .access-choice {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.55rem;
+      margin: 0.85rem 0;
+    }
+    .access-choice button {
+      padding: 0.72rem 0.55rem;
+      background: #e8eef7;
+      color: #334155;
+      font-size: 0.85rem;
+    }
+    .access-choice button.is-active {
+      background: #0e7c86;
+      color: #fff;
+    }
+    .hotspot-choice {
+      margin: 0.85rem 0 0;
+      padding: 0.9rem;
+      border-radius: 0.85rem;
+      background: #fff7e8;
+      text-align: left;
+    }
+    .hotspot-choice h2 {
+      margin: 0 0 0.45rem;
+      font-size: 1rem;
+    }
+    .hotspot-choice p, .hotspot-choice li {
+      color: #475569;
+      font-size: 0.87rem;
+      line-height: 1.45;
+    }
+    .hotspot-choice ol { margin: 0.45rem 0 0; padding-left: 1.2rem; }
+    .ssid-list { margin: 0.5rem 0; font-weight: 700; color: #142033; }
   </style>
 </head>
 <body>
@@ -139,7 +173,55 @@
     <h1>{{ page_title }}</h1>
     {% if page_message %}<p class="msg">{{ page_message }}</p>{% endif %}
 
-    <div class="step step-pay">
+    {% if portal_mode == "pppoe" and hotspot_option_available %}
+      <div class="access-choice" role="tablist" aria-label="Choose how to reconnect">
+        <button type="button" class="is-active" id="choose-pppoe" role="tab" aria-selected="true">
+          Renew PPPoE
+        </button>
+        <button type="button" id="choose-hotspot" role="tab" aria-selected="false">
+          Pay for Hotspot
+        </button>
+      </div>
+      <section class="hotspot-choice" id="hotspot-choice-panel" hidden>
+        <h2>Connect through Hotspot</h2>
+        <p>Your PPPoE account will remain unchanged. To buy Hotspot access:</p>
+        {% if hotspot_ssids %}
+          <p class="ssid-list">Available Wi‑Fi: {{ hotspot_ssids|join:", " }}</p>
+        {% endif %}
+        <ol>
+          <li>Disconnect from this expired PPPoE connection.</li>
+          <li>Join the ISP Hotspot Wi‑Fi network.</li>
+          <li>The existing Hotspot payment popup will open for that device.</li>
+        </ol>
+        <p>This does not convert or delete your PPPoE account. You can return here and renew it later.</p>
+      </section>
+    {% elif portal_mode == "hotspot" and pppoe_option_available %}
+      <div class="access-choice" role="tablist" aria-label="Choose how to reconnect">
+        <button type="button" class="is-active" id="choose-hotspot" role="tab" aria-selected="true">
+          Pay for Hotspot
+        </button>
+        <button type="button" id="choose-pppoe" role="tab" aria-selected="false">
+          Renew PPPoE
+        </button>
+      </div>
+      <section class="hotspot-choice" id="pppoe-choice-panel" hidden>
+        <h2>Renew a PPPoE connection</h2>
+        <p>This Hotspot device account will remain unchanged. To renew PPPoE:</p>
+        <ol>
+          <li>Leave this Hotspot Wi‑Fi and connect through your PPPoE client router.</li>
+          <li>Open any plain http:// site so the renew page appears.</li>
+          {% if pppoe_pay_url %}
+            <li>Or open the PPPoE renew page after you dial in.</li>
+          {% endif %}
+        </ol>
+        {% if pppoe_pay_url %}
+          <p style="margin-top:0.75rem;"><a class="ok" href="{{ pppoe_pay_url }}">Open PPPoE renew page</a></p>
+        {% endif %}
+        <p>This does not convert or delete your Hotspot device. You can return here and pay for Hotspot later.</p>
+      </section>
+    {% endif %}
+
+    <div class="step step-pay"{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
       <p class="step-title">1 · Pay to connect</p>
       {% if has_mpesa %}
         {% if mpesa_type == "paybill" %}
@@ -159,7 +241,7 @@
     {% endif %}
 
     {% if show_payment_form %}
-      <div class="step step-login">
+      <div class="step step-login"{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
         <p class="step-title">2 · Pay from your phone</p>
         {% if customer_name or account_number %}
           <p class="meta" style="margin-top:0;">
@@ -200,7 +282,7 @@
         {% endif %}
       </div>
     {% else %}
-      <p class="meta">
+      <p class="meta"{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
         {% if portal_mode == "pppoe" %}
           {% if identify_error %}{{ identify_error }}{% else %}
             Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
@@ -214,6 +296,38 @@
       {% endif %}
     {% endif %}
   </main>
+  {% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %}
+  <script>
+    (function () {
+      var renewButton = document.getElementById("choose-pppoe");
+      var hotspotButton = document.getElementById("choose-hotspot");
+      var altPanel = document.getElementById("hotspot-choice-panel") ||
+        document.getElementById("pppoe-choice-panel");
+      var renewPanels = document.querySelectorAll("[data-native-renew]");
+      var nativeMode = "{{ portal_mode|escapejs }}";
+
+      function chooseAlternate(useAlternate) {
+        if (altPanel) altPanel.hidden = !useAlternate;
+        renewPanels.forEach(function (panel) { panel.hidden = useAlternate; });
+        var hotspotActive = nativeMode === "hotspot" ? !useAlternate : useAlternate;
+        var pppoeActive = !hotspotActive;
+        hotspotButton.classList.toggle("is-active", hotspotActive);
+        renewButton.classList.toggle("is-active", pppoeActive);
+        hotspotButton.setAttribute("aria-selected", hotspotActive ? "true" : "false");
+        renewButton.setAttribute("aria-selected", pppoeActive ? "true" : "false");
+      }
+
+      renewButton.addEventListener("click", function () {
+        // On the Hotspot page, PPPoE is the alternate path.
+        chooseAlternate(nativeMode === "hotspot");
+      });
+      hotspotButton.addEventListener("click", function () {
+        // On the PPPoE page, Hotspot is the alternate path.
+        chooseAlternate(nativeMode === "pppoe");
+      });
+    })();
+  </script>
+  {% endif %}
   {% if show_payment_form and stk_ready and plans %}
   <script>
     (function () {
@@ -282,7 +396,15 @@
           .then(function (result) {
             var data = result.data || {};
             if (!result.ok || !data.ok) {
-              throw new Error(data.error || "Could not check payment.");
+              show(data.error || "Could not check payment.", true);
+              if (data.can_retry === false) {
+                stopRetry();
+                submit.disabled = true;
+              } else {
+                retry.hidden = false;
+                submit.disabled = false;
+              }
+              return;
             }
             if (data.success) {
               stopRetry();
@@ -291,9 +413,26 @@
                 return;
               }
               // Paid but not provisioned — never invite a second charge.
+              // Keep polling authorization while the NAS may still be catching up.
+              var authMsg = data.authorization_error ||
+                "Payment succeeded. Waiting for the router to authorize this device…";
+              if (data.offline) {
+                authMsg = "Payment succeeded. The router is offline — retrying authorization…";
+              }
+              show(authMsg, false);
+              if (data.can_retry_authorize !== false) {
+                var elapsedAuth = Date.now() - pollStartedAt;
+                if (elapsedAuth < POLL_GIVE_UP_MS) {
+                  pollTimer = window.setTimeout(
+                    function () { poll(url, token); },
+                    POLL_SLOW_MS
+                  );
+                  return;
+                }
+              }
               show(
                 data.authorization_error ||
-                  "Payment succeeded, but the router could not authorize this device. Contact support.",
+                  "Payment succeeded, but the router could not authorize this device. Reload this page in a moment.",
                 true
               );
               return;
@@ -321,7 +460,18 @@
             }
           })
           .catch(function (error) {
-            offerRetry(error.message || "Could not check payment.");
+            // A network error does not prove that payment failed. Keep checking
+            // this attempt instead of risking a second charge.
+            show(
+              (error.message || "Could not check payment.") +
+                " Retrying the payment status…",
+              false
+            );
+            stopRetry();
+            pollTimer = window.setTimeout(
+              function () { poll(url, token); },
+              POLL_SLOW_MS
+            );
           });
       }
 

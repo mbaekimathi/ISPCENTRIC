@@ -1,0 +1,161 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ router.name }} — Clean uplink — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if clean_uplink_enabled %}
+  <div class="settings-policy-banner">
+    Clean uplink is <strong>on</strong>. Provider settings pages are blocked so customers only get internet through this MikroTik.
+  </div>
+{% endif %}
+
+<section class="panel mikrotik-clean-uplink settings-policy-panel{% if clean_uplink_enabled %} is-policy-on{% endif %}">
+  <div class="mikrotik-clean-uplink-head">
+    <div>
+      <p class="mikrotik-section-label">Uplink policy</p>
+      <h2>Clean uplink</h2>
+      <p class="mikrotik-uplink-sub">
+        Pass only internet through this MikroTik and block provider settings
+        (Starlink Bypass or behind their router).
+      </p>
+    </div>
+    <span class="mikrotik-wifi-pill{% if clean_uplink_enabled %} is-on{% else %} is-off{% endif %}">
+      {% if clean_uplink_enabled %}On{% else %}Off{% endif %}
+    </span>
+  </div>
+
+  <div class="mikrotik-clean-uplink-grid">
+    <article class="mikrotik-uplink-card">
+      <p class="mikrotik-live-label">Mode</p>
+      <p class="mikrotik-live-value mikrotik-uplink-value">
+        {% if clean_uplink_enabled %}
+          {{ router.get_clean_uplink_mode_display }}
+        {% else %}
+          —
+        {% endif %}
+      </p>
+      <p class="mikrotik-live-hint">Bypass vs behind provider</p>
+    </article>
+    <article class="mikrotik-uplink-card">
+      <p class="mikrotik-live-label">WAN port</p>
+      <p class="mikrotik-live-value mikrotik-uplink-value">{{ router.wan_interface|default:"ether1" }}</p>
+      <p class="mikrotik-live-hint">Cable from Starlink / ISP</p>
+    </article>
+    <article class="mikrotik-uplink-card">
+      <p class="mikrotik-live-label">LAN bridge</p>
+      <p class="mikrotik-live-value mikrotik-uplink-value">{{ router.lan_bridge|default:"bridgeLocal" }}</p>
+      <p class="mikrotik-live-hint">Customer ports stay here</p>
+    </article>
+    <article class="mikrotik-uplink-card">
+      <p class="mikrotik-live-label">Provider block</p>
+      <p class="mikrotik-live-value mikrotik-uplink-value">
+        {% if clean_uplink_enabled and router.clean_uplink_mode == "behind" %}
+          {{ router.provider_gateway|default:"—" }}
+        {% elif clean_uplink_enabled %}
+          Not needed (bypass)
+        {% else %}
+          —
+        {% endif %}
+      </p>
+      <p class="mikrotik-live-hint">Admin IP blocked for users</p>
+    </article>
+  </div>
+
+  {% if is_suspended %}
+    <p class="mikrotik-clean-uplink-note" style="margin-top:1rem;">
+      Activate the account first to change clean uplink.
+    </p>
+  {% else %}
+    <form method="post" class="mikrotik-clean-uplink-form" id="mikrotik-clean-uplink-form" novalidate>
+      {% csrf_token %}
+      {% if form.non_field_errors %}
+        <div class="field-error mikrotik-form-banner">{{ form.non_field_errors|striptags }}</div>
+      {% endif %}
+
+      <fieldset class="mikrotik-clean-mode-fieldset">
+        <legend>Mode</legend>
+        {% for radio in form.mode %}
+          <label class="mikrotik-clean-mode-option">
+            {{ radio.tag }}
+            <span>{{ radio.choice_label }}</span>
+          </label>
+        {% endfor %}
+        {% if form.mode.errors %}<div class="field-error">{{ form.mode.errors|striptags }}</div>{% endif %}
+      </fieldset>
+
+      <div class="form-grid mikrotik-simple-grid">
+        <div class="field">
+          <label for="{{ form.wan_interface.id_for_label }}">{{ form.wan_interface.label }}</label>
+          {{ form.wan_interface }}
+          {% if form.wan_interface.errors %}<div class="field-error">{{ form.wan_interface.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.lan_bridge.id_for_label }}">{{ form.lan_bridge.label }}</label>
+          {{ form.lan_bridge }}
+          {% if form.lan_bridge.errors %}<div class="field-error">{{ form.lan_bridge.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="field field-span-2" data-clean-gateway-field>
+          <label for="{{ form.provider_gateway.id_for_label }}">{{ form.provider_gateway.label }}</label>
+          {{ form.provider_gateway }}
+          <p class="field-hint">{{ form.provider_gateway.help_text }}</p>
+          {% if form.provider_gateway.errors %}<div class="field-error">{{ form.provider_gateway.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+
+      <label class="mikrotik-confirm-check">
+        {{ form.separate_wan }}
+        <span>{{ form.separate_wan.label }} — {{ form.separate_wan.help_text }}</span>
+      </label>
+
+      <label class="mikrotik-confirm-check">
+        {{ form.confirm }}
+        <span>
+          {% if clean_uplink_enabled %}
+            I confirm I want to disable clean uplink on this MikroTik.
+          {% else %}
+            I confirm I want to enable clean uplink on this MikroTik (cable Starlink to ether1 / WAN first).
+          {% endif %}
+        </span>
+      </label>
+      {% if form.confirm.errors %}<div class="field-error">{{ form.confirm.errors|striptags }}</div>{% endif %}
+
+      <div class="mikrotik-clean-uplink-actions">
+        <button type="submit" class="btn {% if clean_uplink_enabled %}btn-danger{% else %}btn-primary{% endif %}">
+          {% if clean_uplink_enabled %}Disable clean uplink{% else %}Enable clean uplink{% endif %}
+        </button>
+        <p class="mikrotik-clean-uplink-note">
+          {% if clean_uplink_enabled %}
+            Removes ISPCENTRIC firewall, DNS-force, and provider-block rules from this router.
+          {% else %}
+            Pick Bypass if Starlink bypass is on, or Behind provider if their router is still routing.
+            Keep “Separate WAN from bridge” OFF unless your PC is on ether2–ether5 — otherwise Winbox/API through Starlink will disconnect.
+          {% endif %}
+        </p>
+      </div>
+    </form>
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block client_extra_js %}
+{% if not is_suspended %}
+<script>
+(function () {
+  var form = document.getElementById("mikrotik-clean-uplink-form");
+  if (!form) return;
+  var gatewayField = form.querySelector("[data-clean-gateway-field]");
+  if (!gatewayField) return;
+  function update() {
+    var behind = form.querySelector('input[name="mode"][value="behind"]');
+    gatewayField.hidden = !(behind && behind.checked);
+  }
+  form.querySelectorAll('input[name="mode"]').forEach(function (input) {
+    input.addEventListener("change", update);
+  });
+  update();
+})();
+</script>
+{% endif %}
+{% endblock %}

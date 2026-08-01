@@ -1,17 +1,25 @@
 from datetime import timedelta
+from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.contrib.auth.models import User
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
-from billing.models import BillingPlan
-from billing.services import apply_subscription_renewal
+from accounts.models import Organization
+from billing.models import BillingPlan, Customer
+from billing.services import (
+    apply_subscription_renewal,
+    customer_pppoe_secret_disabled,
+    customer_receives_internet,
+    subscription_period_allows,
+)
 
 
 class SubscriptionRenewalTests(SimpleTestCase):
     def test_active_renewal_extends_end_without_postponing_access(self):
         now = timezone.localtime()
 
-        class Customer:
+        class FakeCustomer:
             plan = None
             package_start = now - timedelta(minutes=10)
             package_end = now + timedelta(minutes=50)
@@ -19,7 +27,7 @@ class SubscriptionRenewalTests(SimpleTestCase):
             def save(self, **kwargs):
                 self.saved_fields = kwargs["update_fields"]
 
-        customer = Customer()
+        customer = FakeCustomer()
         plan = BillingPlan(duration=BillingPlan.Duration.HOURLY)
         original_start = customer.package_start
         original_end = customer.package_end
@@ -29,3 +37,222 @@ class SubscriptionRenewalTests(SimpleTestCase):
         self.assertEqual(customer.package_start, original_start)
         self.assertEqual(customer.package_end, original_end + timedelta(hours=1))
         self.assertEqual(customer.saved_fields, ["package_start", "package_end"])
+
+
+class PrepaidAccessPolicyTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-access", password="x")
+        self.org = Organization.objects.create(
+            name="Access ISP",
+            owner=self.owner,
+            join_code="654321",
+            pppoe_compulsory=True,
+            hotspot_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+
+    def _pppoe(self, **kwargs):
+        defaults = {
+            "organization": self.org,
+            "full_name": "PPPoE Client",
+            "phone": "254700000001",
+            "account_number": "PPP-1",
+            "service_type": Customer.ServiceType.PPPOE,
+            "pppoe_username": "client1",
+            "pppoe_password": "secret",
+            "status": Customer.Status.ACTIVE,
+            "plan": self.plan,
+        }
+        defaults.update(kwargs)
+        return Customer.objects.create(**defaults)
+
+    def _hotspot(self, **kwargs):
+        defaults = {
+            "organization": self.org,
+            "full_name": "Hotspot Device",
+            "phone": "254700000002",
+            "account_number": "HOT-1",
+            "service_type": Customer.ServiceType.HOTSPOT,
+            "hotspot_mac": "AA:BB:CC:DD:EE:FF",
+            "status": Customer.Status.ACTIVE,
+            "plan": self.plan,
+        }
+        defaults.update(kwargs)
+        return Customer.objects.create(**defaults)
+
+    def test_pppoe_without_package_period_is_denied(self):
+        customer = self._pppoe()
+        self.assertTrue(subscription_period_allows(customer))
+        self.assertFalse(customer_receives_internet(customer))
+
+    def test_pppoe_with_active_package_is_allowed(self):
+        now = timezone.localtime()
+        customer = self._pppoe(
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        self.assertTrue(customer_receives_internet(customer))
+
+    def test_pppoe_with_expired_package_is_denied_but_secret_stays_enabled(self):
+        now = timezone.localtime()
+        customer = self._pppoe(
+            package_start=now - timedelta(days=3),
+            package_end=now - timedelta(days=1),
+        )
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertFalse(customer_pppoe_secret_disabled(customer))
+
+    def test_suspended_pppoe_secret_is_disabled(self):
+        now = timezone.localtime()
+        customer = self._pppoe(
+            status=Customer.Status.SUSPENDED,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertTrue(customer_pppoe_secret_disabled(customer))
+
+    def test_hotspot_without_package_period_is_denied(self):
+        customer = self._hotspot()
+        self.assertFalse(customer_receives_internet(customer))
+
+    def test_hotspot_with_active_package_is_allowed(self):
+        now = timezone.localtime()
+        customer = self._hotspot(
+            package_start=now - timedelta(minutes=5),
+            package_end=now + timedelta(hours=1),
+        )
+        self.assertTrue(customer_receives_internet(customer))
+
+
+class HotspotMacUniquenessTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-mac", password="x")
+        self.org = Organization.objects.create(
+            name="MAC ISP",
+            owner=self.owner,
+            join_code="111222",
+        )
+
+    def test_duplicate_hotspot_mac_in_same_org_is_rejected(self):
+        from django.db import IntegrityError
+
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Device A",
+            phone="254700000010",
+            account_number="HOT-A",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="11:22:33:44:55:66",
+        )
+        with self.assertRaises(IntegrityError):
+            Customer.objects.create(
+                organization=self.org,
+                full_name="Device B",
+                phone="254700000011",
+                account_number="HOT-B",
+                service_type=Customer.ServiceType.HOTSPOT,
+                hotspot_mac="11:22:33:44:55:66",
+            )
+
+
+class FulfillIdempotencyTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-stk", password="x")
+        self.org = Organization.objects.create(
+            name="STK ISP",
+            owner=self.owner,
+            join_code="333444",
+            pppoe_compulsory=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=8,
+            upload_speed_mbps=4,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Pay Client",
+            phone="254700000020",
+            account_number="PPP-PAY",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="payuser",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_successful_fulfill_is_idempotent(self, sync_mock):
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_1",
+            status=StkPushRequest.Status.PENDING,
+        )
+
+        first = fulfill_successful_stk(stk, mpesa_receipt="ABC123")
+        self.customer.refresh_from_db()
+        end_after_first = self.customer.package_end
+        self.assertTrue(first["ok"])
+        self.assertFalse(first["already_applied"])
+        self.assertIsNotNone(end_after_first)
+
+        stk.refresh_from_db()
+        second = fulfill_successful_stk(stk, mpesa_receipt="ABC123")
+        self.customer.refresh_from_db()
+        self.assertTrue(second["ok"])
+        self.assertTrue(second["already_applied"])
+        self.assertEqual(self.customer.package_end, end_after_first)
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_fulfill_applies_the_package_that_was_charged(self, sync_mock):
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        daily = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="120.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=12,
+            upload_speed_mbps=6,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=daily,
+            amount=daily.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_PLAN",
+        )
+
+        before = timezone.localtime()
+        result = fulfill_successful_stk(stk, mpesa_receipt="PLAN123")
+        self.customer.refresh_from_db()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.customer.plan_id, daily.pk)
+        self.assertGreater(
+            self.customer.package_end - before,
+            timedelta(hours=23),
+        )
