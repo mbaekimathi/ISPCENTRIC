@@ -1199,7 +1199,18 @@
           event.preventDefault();
           var macInput = form.querySelector('input[name="mac"]');
           if (macInput) {
+            // CPE/ISP Hotspot redirects pass mac=; fill if the template still has $(mac).
             var macVal = (macInput.value || "").trim();
+            if (!macVal || macVal.indexOf("$(") === 0) {
+              try {
+                var fromUrl = new URLSearchParams(window.location.search).get("mac") || "";
+                fromUrl = fromUrl.trim();
+                if (fromUrl && fromUrl.indexOf("$(") !== 0) {
+                  macInput.value = fromUrl;
+                  macVal = fromUrl;
+                }
+              } catch (err) {}
+            }
             if (!macVal || macVal.indexOf("$(") === 0) {
               offerRetry("Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.");
               return;

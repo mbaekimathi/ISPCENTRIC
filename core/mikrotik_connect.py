@@ -5826,6 +5826,9 @@ ISP_HOTSPOT_OK_LIST = "ispcentric-hotspot-ok"
 # Keys are intentionally narrow so a reconnect after renew still re-resolves.
 _CAPTIVE_ORG_CACHE_TTL = 20
 _CAPTIVE_SESSION_CACHE_TTL = 15
+# PPP IP → customer must outlive brief API blips after block/kick/redial so the
+# dst-nat renew page can still auto-fill without a signed CPE token.
+_CAPTIVE_PPPOE_IP_CACHE_TTL = 60 * 60 * 6
 _CAPTIVE_API_TIMEOUT = 1.5
 _CAPTIVE_REDIRECT_CACHE_TTL = 20
 _HOTSPOT_STACK_READY_TTL = 1800
@@ -7956,10 +7959,41 @@ def _remove_tagged_rows(sock: socket.socket, path: str, tag: str) -> int:
 
 
 def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
-    """Download renew HTML into the CPE hotspot folder (needs WAN at call time)."""
+    """
+    Install CPE Hotspot login pages that bounce phones onto the live pay URL.
+
+    Prefer a thin RouterOS redirect (API write) over fetching the full Django
+    page: the phone must land on the billing host for CSRF/cookies, and the
+    redirect carries ``?t=`` (account) plus ``mac=$(mac-esc)`` for Hotspot pay.
+    """
     notes: list[str] = []
     if not portal_url:
         return notes
+
+    for dst in _STALE_PROBE_FILES:
+        if _delete_hotspot_file(sock, dst):
+            notes.append(f"removed {dst}")
+
+    pay_html = _captive_pay_redirect_html(portal_url)
+    wrote_any = False
+    if pay_html:
+        for dst in (
+            "hotspot/login.html",
+            "hotspot/rlogin.html",
+            "hotspot/redirect.html",
+            "hotspot/status.html",
+            "hotspot/alogin.html",
+        ):
+            if _write_hotspot_html_file(sock, dst, pay_html):
+                notes.append(f"installed {dst}")
+                wrote_any = True
+            else:
+                notes.append(f"could not write {dst}")
+
+    if wrote_any:
+        return notes
+
+    # Fallback when /file contents writes are unsupported: HTTP-fetch the pay URL.
     targets = (
         ("hotspot/login.html", portal_url),
         ("hotspot/redirect.html", portal_url),
@@ -7979,7 +8013,7 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
         if fetch_terminal.get("_reply") == "!trap":
             notes.append(f"fetch skipped: {dst}")
         else:
-            notes.append(f"installed {dst}")
+            notes.append(f"fetched {dst}")
     return notes
 
 
@@ -8252,6 +8286,10 @@ def apply_cpe_renew_portal(
                     if enabled
                     else _disable_cpe_renew_hotspot(sock)
                 )
+            # Remember the PPP address while we still know it — dst-nat renew
+            # auto-fill uses this after the session is kicked/redialed.
+            if enabled:
+                remember_pppoe_customer_session_ip(customer, cpe_host)
             return {
                 "ok": True,
                 "enabled": enabled,
@@ -8528,6 +8566,27 @@ def resolve_captive_organization(client_ip: str = ""):
     return _fallback_captive_organization()
 
 
+def remember_pppoe_customer_session_ip(customer, session_ip: str) -> None:
+    """Cache PPP remote IP → customer for dst-nat renew auto-fill after kick/redial."""
+    from billing.models import Customer
+
+    session_ip = (session_ip or "").strip()
+    if not session_ip or not is_pppoe_pool_ip(session_ip):
+        return
+    if customer is None or not getattr(customer, "pk", None):
+        return
+    if getattr(customer, "service_type", "") != Customer.ServiceType.PPPOE:
+        return
+    org_id = getattr(customer, "organization_id", None)
+    if not org_id:
+        return
+    _captive_cache_set(
+        f"captive:pppoe-ip:{org_id}:{session_ip}",
+        customer.pk,
+        _CAPTIVE_PPPOE_IP_CACHE_TTL,
+    )
+
+
 def find_pppoe_customer_for_ip(organization, session_ip: str):
     """
     Resolve a PPPoE Customer from the session IP seen by Django.
@@ -8615,9 +8674,7 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
                         if customer.router_id != router.pk:
                             customer.router = router
                             customer.save(update_fields=["router"])
-                        _captive_cache_set(
-                            cache_key, customer.pk, _CAPTIVE_SESSION_CACHE_TTL
-                        )
+                        remember_pppoe_customer_session_ip(customer, session_ip)
                         return customer
         except Exception:
             continue
@@ -10127,14 +10184,22 @@ def _write_hotspot_html_file(sock: socket.socket, dst_path: str, html: str) -> b
 
 def _captive_pay_redirect_html(pay_url: str) -> str:
     """Hotspot login page that HTTP-redirects every OS to the payment page."""
-    pay_url = (pay_url or "").strip().rstrip("/")
+    pay_url = (pay_url or "").strip()
     if not pay_url:
         return ""
-    base = pay_url.rstrip("/")
+    # Keep an existing query string (e.g. signed ?t= for PPPoE account auto-fill).
+    # Only strip a trailing slash on the path, not after query params.
+    if "?" in pay_url:
+        path_part, query_part = pay_url.split("?", 1)
+        base = f"{path_part.rstrip('?')}?{query_part}"
+        sep = "&"
+    else:
+        base = pay_url.rstrip("/")
+        sep = "?"
     # Pass MikroTik session vars so the payment page can post login back to the router.
     target = (
-        f"{base}/"
-        f"?dst=$(link-orig-esc)"
+        f"{base}{sep}"
+        f"dst=$(link-orig-esc)"
         f"&mac=$(mac-esc)"
         f"&username=$(username-esc)"
         f"&link-login-only=$(link-login-only-esc)"

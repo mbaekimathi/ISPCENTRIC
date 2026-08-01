@@ -636,6 +636,56 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_pppoe_pool_probe_attaches_account_token_when_customer_known(self):
+        from django.core import signing
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+        from urllib.parse import parse_qs, urlparse
+
+        from billing.models import Customer
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Expired PPPoE",
+            phone="254700000044",
+            account_number="PPP-044",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="user044",
+            status=Customer.Status.ACTIVE,
+        )
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/redirect",
+            HTTP_HOST="www.msftconnecttest.com",
+            REMOTE_ADDR="10.20.0.44",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_pppoe_customer_for_ip",
+            return_value=customer,
+        ):
+            response = middleware(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertIn("t=", response.url)
+        token = parse_qs(urlparse(response.url).query).get("t", [""])[0]
+        payload = signing.loads(token, salt="pppoe-payment", max_age=60 * 60)
+        self.assertEqual(payload["cid"], customer.pk)
+        self.assertEqual(payload["org"], self.org.pk)
+        self.assertEqual(payload["mode"], "pppoe")
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_repeated_probe_uses_redirect_cache(self):
         from django.core.cache import cache
         from django.http import HttpResponse
@@ -1741,6 +1791,86 @@ class ClientsSurfingStatusTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         # Token path must resolve even when the phone is not on 10.20.0.x.
+        self.assertEqual(response.context["account_number"], self.customer.account_number)
+        self.assertFalse(response.context["require_account_lookup"])
+
+    def test_captive_pay_redirect_html_keeps_signed_token_and_adds_mac(self):
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        html = _captive_pay_redirect_html(
+            "http://billing.example:8000/pppoe/123456/pay/?t=signed.token.value"
+        )
+        self.assertIn("t=signed.token.value", html)
+        self.assertIn("mac=$(mac-esc)", html)
+        self.assertNotIn("?t=signed.token.value/?", html)
+        self.assertIn("&mac=$(mac-esc)", html)
+
+    def test_pppoe_pay_accepts_mac_query_for_hotspot_tab(self):
+        from django.core import signing
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+
+        self.org.hotspot_enabled = True
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Hotspot Hour",
+            price="50.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        token = signing.dumps(
+            {
+                "cid": self.customer.pk,
+                "org": self.org.pk,
+                "mode": "pppoe",
+            },
+            salt="pppoe-payment",
+            compress=True,
+        )
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"t": token, "mac": "AA:BB:CC:DD:EE:FF"},
+            REMOTE_ADDR="192.168.88.50",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["account_number"], self.customer.account_number)
+        self.assertEqual(response.context["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
+        self.assertContains(response, "AA:BB:CC:DD:EE:FF")
+        self.assertContains(response, 'name="mac" value="AA:BB:CC:DD:EE:FF"')
+
+    def test_remembered_pppoe_ip_autofills_without_active_session_lookup(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            find_pppoe_customer_for_ip,
+            remember_pppoe_customer_session_ip,
+        )
+
+        cache.clear()
+        remember_pppoe_customer_session_ip(self.customer, "10.20.0.77")
+        with patch(
+            "core.mikrotik_connect._api_session",
+            side_effect=AssertionError("API should not be required when IP is cached"),
+        ):
+            matched = find_pppoe_customer_for_ip(self.org, "10.20.0.77")
+        self.assertEqual(matched.pk, self.customer.pk)
+
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            REMOTE_ADDR="10.20.0.77",
+        )
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["account_number"], self.customer.account_number)
         self.assertFalse(response.context["require_account_lookup"])
 

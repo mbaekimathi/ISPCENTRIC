@@ -5121,7 +5121,7 @@ def mikrotik_hotspot_settings(request, router_id: int):
 
 
 def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
-    from core.hotspot_portal import hotspot_portal_urls
+    from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
 
     urls = hotspot_portal_urls(org.join_code, request)
     title = (org.hotspot_portal_title or "").strip() or f"{org.name} Wi‑Fi"
@@ -5150,13 +5150,21 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     pppoe_pay_url = ""
     pppoe_payment_start_url = ""
     if pppoe_option_available:
-        pppoe_pay_url = reverse(
-            "core:pppoe_pay", kwargs={"join_code": org.join_code}
+        pppoe_pay_url = public_absolute_url(
+            reverse("core:pppoe_pay", kwargs={"join_code": org.join_code}),
+            request,
         )
-        pppoe_payment_start_url = reverse(
-            "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
+        pppoe_payment_start_url = public_absolute_url(
+            reverse(
+                "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
+            ),
+            request,
         )
 
+    hotspot_start = public_absolute_url(
+        reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
+        request,
+    )
     return {
         "organization": org,
         "org_name": org.name,
@@ -5176,12 +5184,8 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "link_login": link_login,
         "link_orig": link_orig or urls["welcome_url"],
         "hotspot_mac": hotspot_mac,
-        "payment_start_url": reverse(
-            "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
-        ),
-        "hotspot_payment_start_url": reverse(
-            "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
-        ),
+        "payment_start_url": hotspot_start,
+        "hotspot_payment_start_url": hotspot_start,
         "welcome_url": urls["welcome_url"],
         "error": error,
         "pppoe_option_available": pppoe_option_available,
@@ -5492,7 +5496,7 @@ def hotspot_pay(request, join_code: str):
 
 
 def _pppoe_portal_context(org, request, customer=None, identify_error: str = ""):
-    from core.hotspot_portal import hotspot_portal_urls
+    from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
 
     urls = hotspot_portal_urls(org.join_code, request)
     plans = list(
@@ -5526,6 +5530,14 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         hotspot_mac = _normalize_hotspot_mac(request.GET.get("mac") or "")
     hotspot_mac_value = hotspot_mac or "$(mac)"
     show_payment_form = bool(stk_ready and plans)
+    pppoe_start = public_absolute_url(
+        reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
+        request,
+    )
+    hotspot_start = public_absolute_url(
+        reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
+        request,
+    )
     return {
         "organization": org,
         "org_name": org.name,
@@ -5549,15 +5561,9 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "package_end": getattr(customer, "package_end", None) if customer else None,
         "phone_value": (getattr(customer, "phone", "") or "") if customer else "",
         "selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
-        "payment_start_url": reverse(
-            "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
-        ),
-        "pppoe_payment_start_url": reverse(
-            "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
-        ),
-        "hotspot_payment_start_url": reverse(
-            "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
-        ),
+        "payment_start_url": pppoe_start,
+        "pppoe_payment_start_url": pppoe_start,
+        "hotspot_payment_start_url": hotspot_start,
         "welcome_url": urls["welcome_url"],
         "identify_error": identify_error,
         "error": "",

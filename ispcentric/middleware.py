@@ -248,6 +248,31 @@ class HotspotCaptiveProbeMiddleware:
         target = f"{base}{pay_path}"
         if query:
             target = f"{target}?{query}"
+        if pppoe_client:
+            # Attach a signed account token when we can resolve this PPP IP so the
+            # renew page auto-fills even if a later /ppp/active lookup misses.
+            try:
+                from urllib.parse import urlencode
+
+                from django.core import signing
+
+                from core.mikrotik_connect import find_pppoe_customer_for_ip
+
+                customer = find_pppoe_customer_for_ip(org, remote)
+                if customer is not None:
+                    token = signing.dumps(
+                        {
+                            "cid": customer.pk,
+                            "org": org.pk,
+                            "mode": "pppoe",
+                        },
+                        salt="pppoe-payment",
+                        compress=True,
+                    )
+                    sep = "&" if "?" in target else "?"
+                    target = f"{target}{sep}{urlencode({'t': token})}"
+            except Exception:
+                pass
         try:
             # Match OS captive probe bursts so the popup stays immediate.
             cache.set(cache_key, target, 20)
