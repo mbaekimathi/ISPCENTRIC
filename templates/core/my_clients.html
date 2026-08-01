@@ -5,16 +5,18 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel clients-panel">
+<section class="panel clients-panel staff-panel">
   <div class="panel-head-row">
     <div>
       <h2>Clients</h2>
       <p class="panel-sub">Browse subscribers by how they connect to your network.</p>
     </div>
     {% if active_tab == 'pppoe' %}
-      <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
-        Register PPPoE client
-      </button>
+      <div class="panel-head-actions">
+        <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+          Register PPPoE client
+        </button>
+      </div>
     {% endif %}
   </div>
 

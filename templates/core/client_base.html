@@ -202,6 +202,13 @@
       themeBtn.setAttribute("aria-label", theme === "dark" ? "Switch to light mode" : "Switch to dark mode");
       themeBtn.title = theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
     }
+    try {
+      var metas = document.querySelectorAll('meta[name="theme-color"]');
+      var color = theme === "dark" ? "#0b1217" : "#0e7c86";
+      if (metas.length) {
+        metas.forEach(function (m) { m.setAttribute("content", color); });
+      }
+    } catch (e) {}
   }
 
   if (themeBtn) {

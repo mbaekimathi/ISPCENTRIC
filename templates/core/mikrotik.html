@@ -6,13 +6,13 @@
 <div class="mikrotik-page">
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel mikrotik-list-panel">
+<section class="panel mikrotik-list-panel staff-panel">
   <div class="panel-head-row mikrotik-list-head">
     <div class="mikrotik-list-heading">
       <h2>Routers</h2>
       <p class="mikrotik-list-count">{{ routers|length }} onboarded</p>
     </div>
-    <div class="mikrotik-list-actions">
+    <div class="mikrotik-list-actions panel-head-actions">
       <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>Refresh status</button>
       <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
     </div>

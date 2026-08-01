@@ -5,15 +5,17 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel">
+<section class="panel staff-panel">
   <div class="panel-head-row">
     <div>
       <h2>Packages{% if package_count %} ({{ package_count }}){% endif %}</h2>
       <p class="panel-sub">Internet packages available for customers in this organization.</p>
     </div>
-    <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
-      Register package
-    </button>
+    <div class="panel-head-actions">
+      <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
+        Register package
+      </button>
+    </div>
   </div>
 
   {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package to add one." show_package_actions=1 %}

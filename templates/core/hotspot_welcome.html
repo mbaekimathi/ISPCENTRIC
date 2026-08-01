@@ -74,14 +74,26 @@
       background: var(--surface);
       box-shadow: var(--shadow);
       text-align: center;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
     }
 
     .hero {
+      position: relative;
       padding: clamp(1.25rem, 5vw, 1.7rem) clamp(1.1rem, 4.5vw, 1.45rem) 1.1rem;
       background:
-        linear-gradient(165deg, rgba(21, 128, 61, 0.14), transparent 58%),
+        linear-gradient(165deg, rgba(21, 128, 61, 0.16), transparent 58%),
         linear-gradient(180deg, var(--surface-2), var(--surface));
       border-bottom: 1px solid var(--line);
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--brand), transparent 75%);
+      opacity: 0.9;
     }
 
     .brand {
@@ -208,15 +220,15 @@
       padding: 0.95rem 1.1rem;
       min-height: 3.05rem;
       border: 0;
-      border-radius: 0.9rem;
-      background: linear-gradient(180deg, #1a9a4a 0%, #15803d 100%);
+      border-radius: 999px;
+      background: linear-gradient(135deg, #1a9a4a 0%, #15803d 100%);
       color: #fff;
       font-size: 1rem;
       font-weight: 800;
       letter-spacing: -0.01em;
       text-decoration: none;
       box-shadow: 0 12px 24px rgba(21, 128, 61, 0.28);
-      transition: transform 0.12s ease, filter 0.12s ease;
+      transition: filter 0.15s ease, transform 0.12s ease;
     }
     .ok:hover { filter: brightness(1.06); }
     .ok:active { transform: scale(0.985); }

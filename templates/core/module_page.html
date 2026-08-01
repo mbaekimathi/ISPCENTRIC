@@ -13,8 +13,13 @@
   </div>
 {% endif %}
 
-<section class="panel" style="margin-top:1.15rem;">
-  <h2>{{ empty_title }}</h2>
+<section class="panel staff-panel stack-gap">
+  <div class="panel-head-row">
+    <div>
+      <h2>{{ empty_title }}</h2>
+      <p class="panel-sub">{{ empty_text }}</p>
+    </div>
+  </div>
   <p class="empty">{{ empty_text }}</p>
 </section>
 {% endblock %}

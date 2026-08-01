@@ -5,42 +5,49 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel">
-  <h2>Team ({{ members|length }})</h2>
+<section class="panel staff-panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Team ({{ members|length }})</h2>
+      <p class="panel-sub">People with access to this organization.</p>
+    </div>
+  </div>
   {% if members %}
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Username</th>
-          <th>Phone</th>
-          <th>Status</th>
-          <th>Login code</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for member in members %}
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
           <tr>
-            <td>
-              <div class="org-identity">
-                {% if member.profile_photo %}
-                  <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
-                {% else %}
-                  <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
-                {% endif %}
-                <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
-              </div>
-            </td>
-            <td>{{ member.user.username }}</td>
-            <td>{{ member.phone|default:"—" }}</td>
-            <td><span class="badge">{{ member.get_status_display }}</span></td>
-            <td>{{ member.login_code }}</td>
+            <th>Name</th>
+            <th>Username</th>
+            <th>Phone</th>
+            <th>Status</th>
+            <th>Login code</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for member in members %}
+            <tr>
+              <td>
+                <div class="org-identity">
+                  {% if member.profile_photo %}
+                    <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+                  {% else %}
+                    <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
+                  {% endif %}
+                  <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
+                </div>
+              </td>
+              <td>{{ member.user.username }}</td>
+              <td>{{ member.phone|default:"—" }}</td>
+              <td><span class="badge">{{ member.get_status_display }}</span></td>
+              <td>{{ member.login_code }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% else %}
-    <p class="empty">{{ empty_text }}</p>
+    <p class="empty">{{ empty_text|default:"No team members yet." }}</p>
   {% endif %}
 </section>
 {% endblock %}

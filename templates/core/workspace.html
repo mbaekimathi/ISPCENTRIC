@@ -29,4 +29,27 @@
     <div class="value">{{ stats.revenue }}</div>
   </div>
 </div>
+
+<section class="panel staff-panel stack-gap">
+  <div class="panel-head-row">
+    <div>
+      <h2>Quick start</h2>
+      <p class="panel-sub">Jump into the modules you use most.</p>
+    </div>
+  </div>
+  <div class="role-highlight-grid">
+    <a class="role-highlight-card" href="{% url 'core:my_clients' %}">
+      <span class="role-highlight-index">01</span>
+      <p>Manage subscribers, renewals, and live access.</p>
+    </a>
+    <a class="role-highlight-card" href="{% url 'billing:dashboard' %}">
+      <span class="role-highlight-index">02</span>
+      <p>Track billing attention, packages, and invoices.</p>
+    </a>
+    <a class="role-highlight-card" href="{% url 'core:mikrotik' %}">
+      <span class="role-highlight-index">03</span>
+      <p>Connect routers and monitor network equipment.</p>
+    </a>
+  </div>
+</section>
 {% endblock %}

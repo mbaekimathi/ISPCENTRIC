@@ -38,89 +38,95 @@
   </div>
 </div>
 
-<section class="panel" style="margin-top: 1rem;">
+<section class="panel staff-panel stack-gap">
   <div class="panel-head-row">
-    <h2>Subscriptions needing attention</h2>
-    <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
+    <div>
+      <h2>Subscriptions needing attention</h2>
+      <p class="panel-sub">Expired packages or clients who have used ¾ or more of their period.</p>
+    </div>
+    <div class="panel-head-actions">
+      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
+    </div>
   </div>
-  <p class="page-sub" style="margin: 0 0 0.85rem;">
-    Clients whose package has expired, or who have used ¾ or more of their subscription period.
-  </p>
   {% if attention_customers %}
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Client</th>
-          <th>Account</th>
-          <th>Package</th>
-          <th>Period</th>
-          <th>Used</th>
-          <th>Status</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in attention_customers %}
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
           <tr>
-            <td>
-              <a href="{% url 'core:client_detail' row.customer.pk %}">{{ row.customer.full_name }}</a>
-            </td>
-            <td>{{ row.customer.account_number }}</td>
-            <td>{% if row.customer.plan %}{{ row.customer.plan.name }}{% else %}—{% endif %}</td>
-            <td>
-              {% if row.customer.package_start and row.customer.package_end %}
-                {{ row.customer.package_start|date:"M j, Y" }} → {{ row.customer.package_end|date:"M j, Y" }}
-              {% elif row.customer.package_end %}
-                Ends {{ row.customer.package_end|date:"M j, Y" }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td>
-              {% if row.progress %}
-                {{ row.progress.percent }}%
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td>
-              {% if row.attention == "expired" %}
-                <span class="badge badge-warn">Expired</span>
-              {% else %}
-                <span class="badge">¾ used</span>
-              {% endif %}
-            </td>
-            <td>
-              {% if row.customer.plan and row.customer.plan.price %}
-                <button
-                  type="button"
-                  class="btn btn-primary btn-sm"
-                  data-stk-pay
-                  data-customer-id="{{ row.customer.pk }}"
-                  data-customer-name="{{ row.customer.full_name }}"
-                  data-account="{{ row.customer.account_number }}"
-                  data-phone="{{ row.customer.phone }}"
-                  data-plan="{{ row.customer.plan.name }}"
-                  data-amount="{{ row.customer.plan.price }}"
-                  data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
-                >Pay</button>
-              {% else %}
-                <span class="empty">No package</span>
-              {% endif %}
-            </td>
+            <th>Client</th>
+            <th>Account</th>
+            <th>Package</th>
+            <th>Period</th>
+            <th>Used</th>
+            <th>Status</th>
+            <th></th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {% for row in attention_customers %}
+            <tr>
+              <td>
+                <a href="{% url 'core:client_detail' row.customer.pk %}">{{ row.customer.full_name }}</a>
+              </td>
+              <td>{{ row.customer.account_number }}</td>
+              <td>{% if row.customer.plan %}{{ row.customer.plan.name }}{% else %}—{% endif %}</td>
+              <td>
+                {% if row.customer.package_start and row.customer.package_end %}
+                  {{ row.customer.package_start|date:"M j, Y" }} → {{ row.customer.package_end|date:"M j, Y" }}
+                {% elif row.customer.package_end %}
+                  Ends {{ row.customer.package_end|date:"M j, Y" }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                {% if row.progress %}
+                  {{ row.progress.percent }}%
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                {% if row.attention == "expired" %}
+                  <span class="badge badge-warn">Expired</span>
+                {% else %}
+                  <span class="badge">¾ used</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if row.customer.plan and row.customer.plan.price %}
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    data-stk-pay
+                    data-customer-id="{{ row.customer.pk }}"
+                    data-customer-name="{{ row.customer.full_name }}"
+                    data-account="{{ row.customer.account_number }}"
+                    data-phone="{{ row.customer.phone }}"
+                    data-plan="{{ row.customer.plan.name }}"
+                    data-amount="{{ row.customer.plan.price }}"
+                    data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
+                  >Pay</button>
+                {% else %}
+                  <span class="badge">No package</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   {% else %}
     <p class="empty">No expired or nearly exhausted subscriptions right now.</p>
   {% endif %}
 </section>
 
-<div class="grid-2" style="margin-top: 1rem;">
-  <section class="panel">
+<div class="grid-2 stack-gap">
+  <section class="panel staff-panel">
     <div class="panel-head-row">
-      <h2>Packages</h2>
+      <div>
+        <h2>Packages</h2>
+      </div>
       <div class="panel-head-actions">
         <a class="btn btn-ghost" href="{% url 'billing:packages' %}">View all</a>
         <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
@@ -131,27 +137,33 @@
     {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Open Packages in the sidebar to register one." %}
   </section>
 
-  <section class="panel">
-    <h2>Recent invoices</h2>
+  <section class="panel staff-panel">
+    <div class="panel-head-row">
+      <div>
+        <h2>Recent invoices</h2>
+      </div>
+    </div>
     {% if recent_invoices %}
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Invoice</th>
-            <th>Customer</th>
-            <th>Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for inv in recent_invoices %}
+      <div class="table-scroll">
+        <table class="table">
+          <thead>
             <tr>
-              <td>{{ inv.invoice_number }}</td>
-              <td>{{ inv.customer.full_name }}</td>
-              <td>{{ inv.amount }}</td>
+              <th>Invoice</th>
+              <th>Customer</th>
+              <th>Amount</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for inv in recent_invoices %}
+              <tr>
+                <td>{{ inv.invoice_number }}</td>
+                <td>{{ inv.customer.full_name }}</td>
+                <td>{{ inv.amount }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     {% else %}
       <p class="empty">No invoices yet. They will appear here once billing starts.</p>
     {% endif %}
