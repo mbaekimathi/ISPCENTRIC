@@ -49,6 +49,129 @@ def _handle_register_package(request, org, *, success_url_name: str):
     return form, "billing-package-modal", None
 
 
+def _handle_edit_package(request, org, *, success_url_name: str):
+    """Process package edit POST. Returns (form, open_modal, response_or_none)."""
+    form = BillingPackageRegisterForm(organization=org, id_prefix="edit_package")
+    open_modal = ""
+    if request.method != "POST":
+        return form, open_modal, None
+
+    action = (request.POST.get("action") or "").strip()
+    if action != "edit_package":
+        return form, open_modal, None
+
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return form, open_modal, redirect(success_url_name)
+
+    package_id = (request.POST.get("package_id") or "").strip()
+    if not package_id.isdigit():
+        messages.error(request, "Choose a package to edit.")
+        return form, open_modal, redirect(success_url_name)
+
+    plan = get_object_or_404(BillingPlan, pk=int(package_id), organization=org)
+    form = BillingPackageRegisterForm(
+        request.POST,
+        request.FILES,
+        organization=org,
+        instance=plan,
+        id_prefix="edit_package",
+    )
+    if form.is_valid():
+        plan = form.save()
+        messages.success(
+            request,
+            f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
+        )
+        return form, open_modal, redirect(success_url_name)
+
+    return form, "billing-package-edit-modal", None
+
+
+def _get_posted_package(request, org):
+    package_id = (request.POST.get("package_id") or "").strip()
+    if not org or not package_id.isdigit():
+        return None
+    return BillingPlan.objects.filter(pk=int(package_id), organization=org).first()
+
+
+def _handle_suspend_package(request, org, *, success_url_name: str):
+    """Suspend or unsuspend a package. Returns response_or_none."""
+    if request.method != "POST":
+        return None
+
+    action = (request.POST.get("action") or "").strip()
+    if action not in {"suspend_package", "unsuspend_package"}:
+        return None
+
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect(success_url_name)
+
+    plan = _get_posted_package(request, org)
+    if not plan:
+        messages.error(request, "Choose a package to update.")
+        return redirect(success_url_name)
+
+    if action == "suspend_package":
+        if not plan.is_active:
+            messages.info(request, f"Package “{plan.name}” is already suspended.")
+            return redirect(success_url_name)
+        plan.is_active = False
+        plan.save(update_fields=["is_active"])
+        messages.success(
+            request,
+            f"Package “{plan.name}” suspended. It won’t be offered to new assignments.",
+        )
+        return redirect(success_url_name)
+
+    if plan.is_active:
+        messages.info(request, f"Package “{plan.name}” is already active.")
+        return redirect(success_url_name)
+    plan.is_active = True
+    plan.save(update_fields=["is_active"])
+    messages.success(request, f"Package “{plan.name}” unsuspended and available again.")
+    return redirect(success_url_name)
+
+
+def _handle_delete_package(request, org, *, success_url_name: str):
+    """Permanently delete a package. Returns response_or_none."""
+    if request.method != "POST":
+        return None
+
+    action = (request.POST.get("action") or "").strip()
+    if action != "delete_package":
+        return None
+
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect(success_url_name)
+
+    plan = _get_posted_package(request, org)
+    if not plan:
+        messages.error(request, "Choose a package to delete.")
+        return redirect(success_url_name)
+
+    if plan.stk_push_requests.exists():
+        messages.error(
+            request,
+            f"Cannot delete “{plan.name}” because payment history references it. Suspend it instead.",
+        )
+        return redirect(success_url_name)
+
+    customer_count = plan.customers.count()
+    name = plan.name
+    plan.delete()
+    if customer_count:
+        messages.success(
+            request,
+            f"Package “{name}” deleted. {customer_count} linked client(s) were kept and unassigned from it.",
+        )
+    else:
+        messages.success(request, f"Package “{name}” deleted.")
+    return redirect(success_url_name)
+
+
 @login_required
 def dashboard(request):
     """Billing module dashboard."""
@@ -175,7 +298,7 @@ def subscription_stk_status(request, stk_id: int):
 
 @login_required
 def packages(request):
-    """List and register billing packages for the active organization."""
+    """List, register, edit, suspend, and delete billing packages."""
     blocked = _require_client_workspace(request)
     if blocked:
         return blocked
@@ -187,8 +310,29 @@ def packages(request):
     if early:
         return early
 
+    edit_form, edit_modal, early = _handle_edit_package(
+        request, org, success_url_name="billing:packages"
+    )
+    if early:
+        return early
+    if edit_modal:
+        open_modal = edit_modal
+
+    early = _handle_suspend_package(request, org, success_url_name="billing:packages")
+    if early:
+        return early
+
+    early = _handle_delete_package(request, org, success_url_name="billing:packages")
+    if early:
+        return early
+
     package_list = list(
-        BillingPlan.objects.filter(organization=org).order_by("price", "name")
+        BillingPlan.objects.filter(organization=org)
+        .annotate(
+            customer_count=Count("customers"),
+            stk_count=Count("stk_push_requests"),
+        )
+        .order_by("price", "name")
         if org
         else BillingPlan.objects.none()
     )
@@ -206,6 +350,7 @@ def packages(request):
             packages=package_list,
             package_count=len(package_list),
             package_form=package_form,
+            package_edit_form=edit_form,
             open_billing_modal=open_modal,
         ),
     )

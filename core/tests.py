@@ -66,16 +66,28 @@ class WireGuardKeyTests(SimpleTestCase):
 
         script = wireguard.routeros_script("10.9.0.3", private_key)
 
-        # Compulsory API enable — Connect dials 8728 over the tunnel.
+        # Compulsory API enable — Connect dials 8728 over the tunnel / LAN.
         self.assertIn(
-            "set [find where name=api] disabled=no port=8728 address=0.0.0.0/0",
+            ':do { /ip service set [find where name=api] disabled=no port=8728 '
+            'address=0.0.0.0/0 } on-error={}',
             script,
         )
         self.assertIn(
-            ":do { /ip service set api disabled=no port=8728 } on-error={}",
+            ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } "
+            "on-error={}",
             script,
         )
-        self.assertIn("ispcentric API: enabled on port 8728", script)
+        self.assertIn(":do { /ip service enable [find where name=api] } on-error={}", script)
+        self.assertIn("ispcentric API: enabled and listening on port 8728", script)
+        self.assertIn("name=api and disabled=no and port=8728", script)
+        # Hotspot otherwise refuses 8728 for unpaid LAN clients.
+        self.assertIn('comment="ispcentric-hotspot-bypass-192"', script)
+        self.assertIn("type=bypassed address=192.168.0.0/16", script)
+        self.assertIn(
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } '
+            "on-error={}",
+            script,
+        )
         # Firewall (not /ip service address=) keeps API off the public WAN.
         self.assertIn('comment="ispcentric-vpn-api"', script)
         self.assertIn('comment="ispcentric-vpn-api-net"', script)
@@ -108,7 +120,8 @@ class WireGuardKeyTests(SimpleTestCase):
             if line.startswith(":if") and "ping" in line
         )
         self.assertIn(
-            'do={:put "ispcentric OK: tunnel 10.9.0.3 reaches 10.9.0.1 - Connect in ISPCENTRIC"} else={:put',
+            'do={:put "ispcentric OK: tunnel 10.9.0.3 reaches 10.9.0.1 - Connect in ISPCENTRIC '
+            '(API 8728 must show enabled above)"} else={:put',
             if_line,
         )
         self.assertTrue(if_line.endswith('"}'))
@@ -135,6 +148,8 @@ class WireGuardKeyTests(SimpleTestCase):
         cleanup_lines = [
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } '
+            "on-error={}",
             "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
             "/ip address remove [find where interface=ispcentric-vpn]",
             "/interface wireguard remove [find where name=ispcentric-vpn]",
@@ -374,6 +389,84 @@ class ReachabilityFingerprintTests(SimpleTestCase):
         self.assertTrue(result["online"])
         self.assertEqual(result["via"], "http")
 
+    def test_hotspot_redirect_page_identifies_the_router(self):
+        from core.mikrotik_connect import _looks_like_routeros_http
+
+        # A Hotspot router serves this instead of WebFig on port 80.
+        portal = (
+            "http/1.1 302 found\r\n"
+            "location: http://isp.example.co.ke/hotspot/534970/pay/"
+            "?dst=&mac=84%3a2a%3afd&link-login-only=http%3a%2f%2f192.168.88.1%2flogin\r\n"
+            "\r\n<html><title>pay to connect</title></html>"
+        )
+        with patch(
+            "core.mikrotik_connect._http_probe_body",
+            return_value=portal,
+        ):
+            self.assertTrue(_looks_like_routeros_http("192.168.88.1", 80))
+
+
+class HotspotCaptiveLockoutTests(SimpleTestCase):
+    def test_refused_api_behind_a_hotspot_portal_explains_the_captive_pc(self):
+        from core.mikrotik_connect import recover_mikrotik_connection
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "http", "port": 80},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=ConnectionRefusedError("refused"),
+            ),
+            patch(
+                "core.mikrotik_connect._serves_hotspot_portal",
+                return_value=True,
+            ),
+        ):
+            result = recover_mikrotik_connection(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                timeout=0.1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["hotspot_lockout"])
+        self.assertIn("not logged in", result["error"])
+        self.assertIn("connect by MAC", result["error"])
+        self.assertIn("ip-binding", result["error"])
+        # The old advice was misleading: the PC is already on the LAN.
+        self.assertNotIn("Plug this PC into MikroTik ether2", result["error"])
+
+    def test_refused_api_without_a_portal_still_reports_api_disabled(self):
+        from core.mikrotik_connect import recover_mikrotik_connection
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "winbox", "port": 8291},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=ConnectionRefusedError("refused"),
+            ),
+            patch(
+                "core.mikrotik_connect._serves_hotspot_portal",
+                return_value=False,
+            ),
+        ):
+            result = recover_mikrotik_connection(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                timeout=0.1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["api_disabled"])
+        self.assertIn("IP → Services", result["error"])
+
 
 class PppoeSecretProfileSyncTests(SimpleTestCase):
     def test_bulk_sync_uses_blocked_profile_for_unpaid_clients(self):
@@ -541,6 +634,184 @@ class CaptiveProbeMiddlewareTests(TestCase):
         response = middleware(request)
         self.assertEqual(response.status_code, 302)
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_repeated_probe_uses_redirect_cache(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.50.50.33",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ) as resolve:
+            first = middleware(request)
+            second = middleware(request)
+        self.assertEqual(first.status_code, 302)
+        self.assertEqual(second.status_code, 302)
+        self.assertEqual(first.url, second.url)
+        self.assertEqual(resolve.call_count, 1)
+
+
+class HotspotAuthorizeFastPathTests(TestCase):
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        self.owner = User.objects.create_user("hs-fast-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Fast Hotspot ISP",
+            owner=self.owner,
+            join_code="778899",
+            hotspot_enabled=True,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Fast NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.1",
+            username="admin",
+            password="secret",
+        )
+        now = timezone.now()
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Phone",
+            phone="0700000000",
+            account_number="HOT-FAST-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:FF",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=now,
+            package_end=now + timedelta(hours=1),
+        )
+
+    def test_warm_stack_skips_full_hotspot_push(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            _mark_hotspot_stack_ready,
+            authorize_hotspot_customer,
+        )
+
+        _mark_hotspot_stack_ready(self.router.pk)
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch("core.mikrotik_connect._api_session"),
+            patch(
+                "core.mikrotik_connect._apply_hotspot_customer_on_socket",
+                return_value=True,
+            ) as apply_one,
+            patch("core.mikrotik_connect.apply_hotspot_on_router") as full_push,
+        ):
+            result = authorize_hotspot_customer(
+                self.customer, router=self.router, reauthenticate=False
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("fast_path"))
+        apply_one.assert_called_once()
+        full_push.assert_not_called()
+
+    def test_warm_authorize_probes_reachability_once(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            _mark_hotspot_stack_ready,
+            authorize_hotspot_customer,
+        )
+
+        _mark_hotspot_stack_ready(self.router.pk)
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ) as reachable,
+            patch("core.mikrotik_connect._api_session"),
+            patch(
+                "core.mikrotik_connect._apply_hotspot_customer_on_socket",
+                return_value=True,
+            ),
+        ):
+            authorize_hotspot_customer(
+                self.customer, router=self.router, reauthenticate=False
+            )
+        # Single saved host → exactly one reachability probe (no pre-scan).
+        self.assertEqual(reachable.call_count, 1)
+
+    def test_offline_router_authorize_is_skipped_not_failed(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_connect import (
+            _mark_hotspot_stack_ready,
+            authorize_hotspot_customer,
+        )
+
+        _mark_hotspot_stack_ready(self.router.pk)
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": False, "via": ""},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=TimeoutError("offline"),
+            ),
+        ):
+            result = authorize_hotspot_customer(
+                self.customer, router=self.router, reauthenticate=False
+            )
+        self.assertTrue(result.get("skipped"))
+        self.assertTrue(result.get("timeout"))
+
+    def test_renew_skips_pppoe_ensure_stack(self):
+        from unittest.mock import patch
+
+        from billing.models import Customer
+        from core.mikrotik_connect import sync_customer_subscription_access
+
+        pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Dialer",
+            phone="0700000001",
+            account_number="PPP-FAST-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="user1",
+            pppoe_password="pass1",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=self.customer.package_start,
+            package_end=self.customer.package_end,
+        )
+        with patch(
+            "core.mikrotik_connect.provision_customer_pppoe",
+            return_value={"ok": True, "profile": "default"},
+        ) as provision:
+            sync_customer_subscription_access(pppoe, provision=True)
+        self.assertTrue(provision.called)
+        self.assertFalse(provision.call_args.kwargs.get("ensure_stack"))
 
 
 class CaptiveGatewayHostTests(TestCase):

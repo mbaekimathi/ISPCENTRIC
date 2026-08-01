@@ -336,3 +336,43 @@ class StkPushRequest(models.Model):
 
     def __str__(self):
         return f"STK {self.checkout_request_id or self.pk} ({self.status})"
+
+
+class CustomerUsageSample(models.Model):
+    """Time-series snapshot of a PPPoE client's live session metrics."""
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="usage_samples",
+    )
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="customer_usage_samples",
+    )
+    sampled_at = models.DateTimeField(db_index=True)
+    session_active = models.BooleanField(default=False)
+    uptime_seconds = models.PositiveIntegerField(default=0)
+    download_bps = models.BigIntegerField(default=0)
+    upload_bps = models.BigIntegerField(default=0)
+    bytes_in = models.BigIntegerField(default=0)
+    bytes_out = models.BigIntegerField(default=0)
+    address = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        db_table = "billing_customer_usage_sample"
+        ordering = ["sampled_at"]
+        indexes = [
+            models.Index(
+                fields=["customer", "sampled_at"],
+                name="bill_usage_cust_sampled_idx",
+            ),
+            models.Index(
+                fields=["organization", "sampled_at"],
+                name="bill_usage_org_sampled_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Usage sample {self.customer_id} @ {self.sampled_at}"

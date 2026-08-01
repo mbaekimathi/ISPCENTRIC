@@ -16,10 +16,12 @@
     </button>
   </div>
 
-  {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package in the sidebar to add one." %}
+  {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package to add one." show_package_actions=1 %}
 </section>
 
 {% include "billing/includes/package_register_modal.html" %}
+{% include "billing/includes/package_edit_modal.html" %}
+{% include "billing/includes/package_status_modals.html" %}
 {% endblock %}
 
 {% block client_extra_js %}

@@ -1,10 +1,17 @@
 """Client (organization owner) workspace helpers and module pages."""
 
+import gzip
+import hashlib
+import http.client
 import json
 import re
+import ssl
 import threading
+import time
+import zlib
 from functools import wraps
-from urllib.parse import urlencode
+from http.cookies import SimpleCookie
+from urllib.parse import urlencode, urlsplit
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -13,7 +20,7 @@ from django.core.cache import cache
 from django.core import signing
 from django.core.paginator import Paginator
 from django.db.models import Count, Q, Sum
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
@@ -61,8 +68,14 @@ from core.mikrotik_connect import (
     apply_hotspot_on_router,
     check_mikrotik_reachable,
     clear_mikrotik_uplink_multi,
+    customer_cpe_web_proxy,
+    probe_customer_cpe_web,
+    CPE_WEB_PORTS,
+    PPPOE_LOCAL_ADDRESS as MK_PPPOE_LOCAL_ADDRESS,
+    configure_customer_cpe_web_wifi,
     configure_mikrotik_wifi,
     fetch_active_pppoe_usernames,
+    fetch_customer_cpe_web_data,
     fetch_customer_cpe_live_usage,
     fetch_customer_pppoe_usage,
     fetch_hotspot_client_macs,
@@ -347,9 +360,27 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
         and customer.router_id
         and customer.pppoe_username
     ):
-        nav.append({"key": "usage", "label": "Usage analysis", "href": f"{base}#client-usage"})
+        nav.append(
+            {
+                "key": "usage",
+                "label": "Usage analysis",
+                "href": reverse(
+                    "core:client_usage_analysis",
+                    kwargs={"customer_id": customer.pk},
+                ),
+            }
+        )
     if can_access_wifi:
-        nav.append({"key": "wifi", "label": "Wi‑Fi settings", "href": f"{base}#client-wifi"})
+        nav.append(
+            {
+                "key": "wifi",
+                "label": "Wi‑Fi settings",
+                "href": reverse(
+                    "core:client_wifi_settings",
+                    kwargs={"customer_id": customer.pk},
+                ),
+            }
+        )
     nav.extend(
         [
             {
@@ -3095,6 +3126,29 @@ def client_detail(request, customer_id: int):
 
     if request.method == "POST":
         action = (request.POST.get("action") or "").strip()
+        if action == "update_router_password":
+            router_password = (request.POST.get("cpe_password") or "").strip()
+            if not router_password:
+                if is_ajax:
+                    return JsonResponse(
+                        {"ok": False, "error": "Enter the client router admin password."},
+                        status=400,
+                    )
+                messages.error(request, "Enter the client router admin password.")
+                return redirect("core:client_detail", customer_id=customer.pk)
+
+            customer.cpe_password = router_password
+            if not (customer.cpe_username or "").strip():
+                customer.cpe_username = "admin"
+            customer.save(update_fields=["cpe_password", "cpe_username"])
+            # A new credential invalidates the cached failure and stale snapshot.
+            cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+
+            if is_ajax:
+                return JsonResponse({"ok": True, "message": "Router password saved."})
+            messages.success(request, "Router password saved.")
+            return redirect("core:client_detail", customer_id=customer.pk)
+
         if action == "update_package":
             package_form = CustomerPackageForm(request.POST, instance=customer, organization=org)
             if package_form.is_valid():
@@ -3256,6 +3310,436 @@ def client_detail(request, customer_id: int):
     return render(request, "core/client_detail.html", ctx)
 
 
+_CPE_PROXY_SALT = "core.client-cpe-web.v1"
+# The signed token carries a generous absolute lifetime; the effective session
+# length is governed by a sliding idle window enforced server-side (below), so
+# an actively-used router page never drops mid-session, but an abandoned one
+# still closes. The absolute cap bounds the worst case if the idle-activity
+# cache entry is ever lost (e.g. cache eviction / restart).
+_CPE_PROXY_IDLE_AGE = 15 * 60
+_CPE_PROXY_ABS_AGE = 8 * 60 * 60
+_CPE_PROXY_MAX_BODY = 16 * 1024 * 1024
+_CPE_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def _cpe_proxy_token(request, customer: Customer, cpe_port: int = 80) -> str:
+    return signing.dumps(
+        {
+            "customer_id": customer.pk,
+            "user_id": request.user.pk,
+            "cpe_port": int(cpe_port or 80),
+        },
+        salt=_CPE_PROXY_SALT,
+        compress=True,
+    )
+
+
+def _load_cpe_proxy_token(request, customer: Customer, token: str) -> dict:
+    try:
+        payload = signing.loads(
+            token,
+            salt=_CPE_PROXY_SALT,
+            max_age=_CPE_PROXY_ABS_AGE,
+        )
+    except signing.BadSignature as exc:
+        raise PermissionError("This router-login link has expired.") from exc
+    if (
+        payload.get("customer_id") != customer.pk
+        or payload.get("user_id") != request.user.pk
+    ):
+        raise PermissionError("This router-login link is not valid for this account.")
+    return payload
+
+
+def _recover_escaped_proxy_url(
+    request, customer: Customer, token: str, router_path: str
+) -> str | None:
+    """
+    Rebuild the URL for an asset whose relative "../" escaped the proxy prefix.
+
+    Router UIs reference "../img/x.png" from their own web root; a real router
+    clamps that at "/", but under our prefix ".." walks up one real segment and
+    eats the signed token (…/router/img/visible.png → 403). The referring page
+    still carries a valid token, so the lost segment is just the head of the
+    CPE path and the request can be sent back in under that token.
+    """
+    referer = request.META.get("HTTP_REFERER") or ""
+    if not referer:
+        return None
+    marker = f"/app/clients/{customer.pk}/router/"
+    referer_path = urlsplit(referer).path
+    head, sep, tail = referer_path.partition(marker)
+    if not sep:
+        return None
+    referer_token = tail.split("/", 1)[0]
+    if not referer_token or referer_token == token:
+        return None
+    try:
+        _load_cpe_proxy_token(request, customer, referer_token)
+    except PermissionError:
+        return None
+
+    cpe_path = "/".join(part for part in (token, router_path.strip("/")) if part)
+    recovered = f"{head}{marker}{referer_token}/{cpe_path}"
+    query = request.META.get("QUERY_STRING") or ""
+    return f"{recovered}?{query}" if query else recovered
+
+
+def _rewrite_cpe_body(body: bytes, content_type: str, prefix: str, cpe_host: str) -> bytes:
+    """
+    Rewrite absolute CPE paths so the browser stays under the proxy prefix.
+
+    Must be idempotent: applying the rewrite to already-prefixed markup must not
+    double the prefix (Tenda login posts break as …/router/TOKEN/app/clients/…/login/Auth).
+    """
+    lower_type = (content_type or "").lower()
+    if not any(
+        kind in lower_type
+        for kind in ("text/html", "text/css", "javascript", "application/json")
+    ):
+        return body
+    charset = "utf-8"
+    match = re.search(r"charset=([^\s;]+)", lower_type)
+    if match:
+        charset = match.group(1).strip("\"'")
+    try:
+        text = body.decode(charset, errors="replace")
+    except LookupError:
+        text = body.decode("utf-8", errors="replace")
+
+    prefix = prefix if prefix.endswith("/") else (prefix + "/")
+    # Path after the leading slash — used so we never rewrite "/{prefix}…" again.
+    bare_prefix = prefix.lstrip("/")
+    bare_re = re.escape(bare_prefix)
+
+    for origin in (f"http://{cpe_host}", f"https://{cpe_host}"):
+        text = text.replace(origin + "/", prefix)
+        text = text.replace(origin, prefix.rstrip("/"))
+
+    # href="/login" → href="{prefix}login"  (skip already-prefixed)
+    text = re.sub(
+        rf'(?i)\b(href|src|action|data-url|data-href)=(["\'])/(?!{bare_re})',
+        rf"\1=\2{prefix}",
+        text,
+    )
+    # CSS url(/img/…) — skip protocol-relative url(//…) and already-prefixed
+    text = re.sub(
+        rf"(?i)url\((['\"]?)/(?!/|{bare_re})",
+        rf"url(\1{prefix}",
+        text,
+    )
+    # JS / HTML string literals "/path" — never touch "//host" or already-prefixed
+    if "javascript" in lower_type or "text/html" in lower_type:
+        text = re.sub(
+            rf'(["\'])/(?!/|{bare_re})',
+            rf"\1{prefix}",
+            text,
+        )
+    return text.encode(charset, errors="replace")
+
+
+def _normalize_proxied_path(router_path: str, prefix: str) -> str:
+    """
+    Strip a duplicated proxy prefix from an inbound path.
+
+    Browsers that already have a double-prefixed form action (from an older
+    rewrite bug) would otherwise POST to the CPE as
+    /app/clients/…/router/TOKEN/login/Auth instead of /login/Auth.
+    """
+    path = (router_path or "").lstrip("/")
+    marker = (prefix or "").strip("/") + "/"
+    if not marker or marker == "/":
+        return "/" + path if path else "/"
+    # Unwrap every leading copy of the proxy path.
+    while path.startswith(marker):
+        path = path[len(marker) :]
+    return "/" + path if path else "/"
+
+
+@client_workspace_required
+@require_GET
+def client_router_login(request, customer_id: int):
+    """Start a short-lived, user-bound browser session to a live PPPoE CPE."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router"),
+        pk=customer_id,
+        organization=org,
+    )
+    if (
+        customer.service_type != Customer.ServiceType.PPPOE
+        or not customer.pppoe_username
+        or not customer.router_id
+        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    ):
+        messages.error(request, "Router login requires an active PPPoE client and NAS.")
+        return redirect("core:client_detail", customer_id=customer.pk)
+
+    nas = customer.router
+    probe = probe_customer_cpe_web(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        pppoe_username=customer.pppoe_username,
+        timeout=8.0,
+    )
+    if not probe.get("ok"):
+        return render(
+            request,
+            "core/client_router_unavailable.html",
+            {
+                "customer": customer,
+                "router": nas,
+                "cpe_host": probe.get("cpe_host") or "",
+                "session_active": bool(probe.get("session_active")),
+                "ping_ok": bool(probe.get("ping_ok")),
+                "gateway": MK_PPPOE_LOCAL_ADDRESS,
+                "detail": probe.get("hint") or probe.get("error") or "",
+                "checked_ports": ", ".join(str(p) for p in CPE_WEB_PORTS),
+                "detail_url": reverse("core:client_detail", args=[customer.pk]),
+            },
+            status=200,
+        )
+
+    token = _cpe_proxy_token(request, customer, probe.get("port") or 80)
+    return redirect(
+        "core:client_router_proxy_root",
+        customer_id=customer.pk,
+        token=token,
+    )
+
+
+@csrf_exempt
+@client_workspace_required
+@require_http_methods(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def client_router_proxy(request, customer_id: int, token: str, router_path: str = ""):
+    """Reverse-proxy a client router's HTTP admin UI through its ISP MikroTik."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router"),
+        pk=customer_id,
+        organization=org,
+    )
+    try:
+        token_payload = _load_cpe_proxy_token(request, customer, token)
+    except PermissionError as exc:
+        recovered = _recover_escaped_proxy_url(request, customer, token, router_path)
+        if recovered:
+            # 307 keeps the method and body intact for escaped form posts.
+            response = HttpResponse(status=307)
+            response["Location"] = recovered
+            return response
+        return HttpResponse(str(exc), status=403, content_type="text/plain")
+
+    # Sliding idle window: the signed token is valid for a long absolute span,
+    # but a session that sees no traffic for _CPE_PROXY_IDLE_AGE is closed.
+    # Each proxied request (including the router UI's background polls) refreshes
+    # the window, so an in-use page stays open well past 15 minutes.
+    activity_key = "cpe-web-activity:" + hashlib.sha256(token.encode()).hexdigest()
+    last_seen = cache.get(activity_key)
+    now = time.time()
+    if last_seen is not None and (now - last_seen) > _CPE_PROXY_IDLE_AGE:
+        cache.delete(activity_key)
+        return HttpResponse(
+            "This router session timed out after 15 minutes of inactivity. "
+            "Reopen the client router to continue.",
+            status=403,
+            content_type="text/plain",
+        )
+    cache.set(activity_key, now, _CPE_PROXY_ABS_AGE)
+
+    cpe_port = int(token_payload.get("cpe_port") or 80)
+    cpe_is_tls = cpe_port in {443, 8443}
+    if (
+        customer.service_type != Customer.ServiceType.PPPOE
+        or not customer.pppoe_username
+        or not customer.router_id
+        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    ):
+        return HttpResponse(
+            "Router login is unavailable for this client.",
+            status=409,
+            content_type="text/plain",
+        )
+
+    prefix = reverse(
+        "core:client_router_proxy_root",
+        kwargs={"customer_id": customer.pk, "token": token},
+    )
+    if not prefix.endswith("/"):
+        prefix += "/"
+    target = _normalize_proxied_path(router_path, prefix)
+    query = request.META.get("QUERY_STRING", "")
+    if query:
+        target += "?" + query
+    cookie_key = "cpe-web:" + hashlib.sha256(token.encode()).hexdigest()
+    router_cookies = dict(cache.get(cookie_key) or {})
+
+    try:
+        with customer_cpe_web_proxy(
+            customer.router.host,
+            customer.router.username,
+            customer.router.password or "",
+            pppoe_username=customer.pppoe_username,
+            cpe_port=cpe_port,
+            timeout=10.0,
+        ) as proxy:
+            headers = {}
+            for name, value in request.headers.items():
+                lower = name.lower()
+                if lower in _CPE_HOP_HEADERS or lower in {
+                    "cookie",
+                    "origin",
+                    "referer",
+                    "x-csrftoken",
+                }:
+                    continue
+                headers[name] = value
+            headers["Host"] = proxy["cpe_host"]
+            headers["Accept-Encoding"] = "identity"
+            if router_cookies:
+                headers["Cookie"] = "; ".join(
+                    f"{name}={value}" for name, value in router_cookies.items()
+                )
+
+            if cpe_is_tls:
+                connection = http.client.HTTPSConnection(
+                    proxy["host"],
+                    proxy["port"],
+                    timeout=10.0,
+                    context=ssl._create_unverified_context(),
+                )
+            else:
+                connection = http.client.HTTPConnection(
+                    proxy["host"],
+                    proxy["port"],
+                    timeout=10.0,
+                )
+            try:
+                connection.request(
+                    request.method,
+                    target,
+                    body=request.body if request.method not in {"GET", "HEAD"} else None,
+                    headers=headers,
+                )
+                upstream = connection.getresponse()
+                body = upstream.read(_CPE_PROXY_MAX_BODY + 1)
+                upstream_headers = upstream.getheaders()
+                status = upstream.status
+            finally:
+                connection.close()
+    except (ConnectionError, OSError, TimeoutError, http.client.HTTPException) as exc:
+        detail = str(exc) or exc.__class__.__name__
+        timed_out = "timed out" in detail.lower() or isinstance(exc, TimeoutError)
+        hint = (
+            f" The client router did not answer on port {cpe_port} through the ISP "
+            "MikroTik. Enable Remote / WAN Web Management on the client's router "
+            f"(limit it to the ISP gateway {MK_PPPOE_LOCAL_ADDRESS}), confirm the "
+            "client is online on PPPoE, then try again."
+            if timed_out
+            else ""
+        )
+        return HttpResponse(
+            f"Could not open the client router: {detail}.{hint}",
+            status=502,
+            content_type="text/plain",
+        )
+    if len(body) > _CPE_PROXY_MAX_BODY:
+        return HttpResponse(
+            "The client router response was too large.",
+            status=502,
+            content_type="text/plain",
+        )
+
+    for name, value in upstream_headers:
+        if name.lower() == "set-cookie":
+            parsed = SimpleCookie()
+            try:
+                parsed.load(value)
+            except Exception:
+                continue
+            for cookie_name, morsel in parsed.items():
+                router_cookies[cookie_name] = morsel.value
+    cache.set(cookie_key, router_cookies, _CPE_PROXY_ABS_AGE)
+    if router_cookies:
+        # Let the client detail page reuse a successful web-admin login without
+        # asking the router to create another administrator session.
+        cache.set(
+            f"cpe-web-customer:{customer.organization_id}:{customer.pk}",
+            router_cookies,
+            _CPE_PROXY_ABS_AGE,
+        )
+
+    content_type = next(
+        (value for name, value in upstream_headers if name.lower() == "content-type"),
+        "application/octet-stream",
+    )
+    content_encoding = next(
+        (value.lower() for name, value in upstream_headers if name.lower() == "content-encoding"),
+        "",
+    )
+    decoded_encoding = False
+    try:
+        if content_encoding == "gzip":
+            body = gzip.decompress(body)
+            decoded_encoding = True
+        elif content_encoding == "deflate":
+            body = zlib.decompress(body)
+            decoded_encoding = True
+    except (OSError, zlib.error):
+        decoded_encoding = False
+    if not content_encoding or decoded_encoding:
+        body = _rewrite_cpe_body(body, content_type, prefix, proxy["cpe_host"])
+    response = HttpResponse(
+        b"" if request.method == "HEAD" else body,
+        status=status,
+        content_type=content_type,
+    )
+    for name, value in upstream_headers:
+        lower = name.lower()
+        if lower in _CPE_HOP_HEADERS or lower in {
+            "content-type",
+            "content-security-policy",
+            "set-cookie",
+            "x-frame-options",
+        } or (lower == "content-encoding" and decoded_encoding):
+            continue
+        if lower == "location":
+            location = urlsplit(value)
+            path = location.path or "/"
+            if location.scheme or location.netloc:
+                # Absolute URL on the CPE — keep only the path under our prefix.
+                path = path or "/"
+            if path.startswith(prefix):
+                value = path
+            elif path.startswith("/"):
+                value = prefix + path.lstrip("/")
+            else:
+                value = prefix + path
+            if location.query:
+                value += "?" + location.query
+            if location.fragment:
+                value += "#" + location.fragment
+            response[name] = value
+            continue
+        response[name] = value
+    response["Cache-Control"] = "no-store, private"
+    response["Referrer-Policy"] = "no-referrer"
+    response["X-Robots-Tag"] = "noindex, nofollow"
+    return response
+
+
 @client_workspace_required
 @require_GET
 def client_cpe_wifi(request, customer_id: int):
@@ -3294,59 +3778,397 @@ def client_cpe_wifi(request, customer_id: int):
         if cached is not None:
             return JsonResponse(cached)
 
-    live = access_customer_cpe_wifi(
+    wifi_ssid = (customer.cpe_wifi_ssid or "").strip()
+    wifi_password = customer.cpe_wifi_password or ""
+    auth_ok = False
+    session_active = False
+    cpe_host = ""
+    wifi_enabled = False
+    wifi_mode = ""
+    wifi_channel = ""
+    wifi_security = ""
+    wifi_hidden = False
+    wifi_power = ""
+    wifi_bandwidth = ""
+    ssid_5g = ""
+    source = ""
+    hint = ""
+    error = ""
+    firewall_blocked = False
+    prep_steps: list = []
+    needs_password = False
+
+    # Prefer the consumer CPE web API (Tenda, etc.) — this is where most
+    # subscriber routers expose the live SSID/password/radio settings.
+    probe = probe_customer_cpe_web(
         nas.host,
         nas.username,
         nas.password or "",
         pppoe_username=customer.pppoe_username,
-        cpe_username=customer.cpe_username or "admin",
-        cpe_password=customer.cpe_password or "",
-        pppoe_password=customer.pppoe_password or "",
         timeout=6.0,
-        # Status polls must stay fast — SSH auto-enable is for POST / explicit setup.
-        auto_enable=(request.GET.get("setup") or "").strip() in {"1", "true", "yes"},
     )
+    session_active = bool(probe.get("session_active"))
+    cpe_host = (probe.get("cpe_host") or "").strip()
+    if probe.get("reachable") and probe.get("port"):
+        web = fetch_customer_cpe_web_data(
+            nas.host,
+            nas.username,
+            nas.password or "",
+            pppoe_username=customer.pppoe_username,
+            cpe_password=customer.cpe_password or "",
+            session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
+            cpe_port=int(probe["port"]),
+            timeout=8.0,
+        )
+        if web.get("ok"):
+            wifi = web.get("wifi") or {}
+            auth_ok = True
+            source = "web"
+            cpe_host = (web.get("cpe_host") or cpe_host).strip()
+            wifi_ssid = (wifi.get("ssid") or "").strip() or wifi_ssid
+            wifi_password = wifi.get("password") or wifi_password
+            wifi_enabled = bool(wifi.get("enabled"))
+            wifi_mode = (wifi.get("mode") or "").strip()
+            wifi_channel = str(wifi.get("channel") or "")
+            wifi_security = (wifi.get("security") or "").strip()
+            wifi_hidden = bool(wifi.get("hidden"))
+            wifi_power = (wifi.get("power") or "").strip()
+            wifi_bandwidth = str(wifi.get("bandwidth_mhz") or "")
+            ssid_5g = (wifi.get("ssid_5g") or "").strip()
+        else:
+            error = web.get("error") or ""
+            needs_password = "password" in error.lower()
+            hint = error
 
-    wifi_ssid = (live.get("wifi_ssid") or "").strip() or (customer.cpe_wifi_ssid or "").strip()
-    wifi_password = live.get("wifi_password") or customer.cpe_wifi_password or ""
-    auth_ok = bool(live.get("auth_ok"))
+    # Fallback: RouterOS API on MikroTik CPEs (or when the web UI is locked).
+    if not auth_ok:
+        live = access_customer_cpe_wifi(
+            nas.host,
+            nas.username,
+            nas.password or "",
+            pppoe_username=customer.pppoe_username,
+            cpe_username=customer.cpe_username or "admin",
+            cpe_password=customer.cpe_password or "",
+            pppoe_password=customer.pppoe_password or "",
+            timeout=6.0,
+            auto_enable=(request.GET.get("setup") or "").strip() in {"1", "true", "yes"},
+        )
+        session_active = bool(live.get("session_active")) or session_active
+        cpe_host = (live.get("cpe_host") or cpe_host).strip()
+        auth_ok = bool(live.get("auth_ok"))
+        prep_steps = list(live.get("prep_steps") or [])
+        firewall_blocked = bool(live.get("firewall_blocked")) or (
+            "firewall is blocking" in ((live.get("error") or "") + (live.get("hint") or "")).lower()
+        )
+        if auth_ok:
+            source = "api"
+            wifi_ssid = (live.get("wifi_ssid") or "").strip() or wifi_ssid
+            wifi_password = live.get("wifi_password") or wifi_password
+            wifi_enabled = bool(live.get("wifi_enabled"))
+            wifi_mode = (live.get("wifi_mode") or "").strip() or wifi_mode
+            error = ""
+            hint = ""
+        else:
+            error = error or live.get("error") or ""
+            hint = hint or live.get("hint") or ""
+            working_user = (live.get("cpe_username") or "").strip()
+            working_pass = live.get("cpe_password")
+            update_fields: list[str] = []
+            if working_user and working_user != (customer.cpe_username or ""):
+                customer.cpe_username = working_user
+                update_fields.append("cpe_username")
+            if working_pass is not None and working_pass != (customer.cpe_password or ""):
+                customer.cpe_password = working_pass
+                update_fields.append("cpe_password")
+            if update_fields:
+                customer.save(update_fields=update_fields)
 
     if auth_ok:
-        update_fields: list[str] = []
+        update_fields = []
         if wifi_ssid and wifi_ssid != (customer.cpe_wifi_ssid or ""):
             customer.cpe_wifi_ssid = wifi_ssid
             update_fields.append("cpe_wifi_ssid")
         if wifi_password and wifi_password != (customer.cpe_wifi_password or ""):
             customer.cpe_wifi_password = wifi_password
             update_fields.append("cpe_wifi_password")
-        working_user = (live.get("cpe_username") or "").strip()
-        working_pass = live.get("cpe_password")
-        if working_user and working_user != (customer.cpe_username or ""):
-            customer.cpe_username = working_user
-            update_fields.append("cpe_username")
-        if working_pass is not None and working_pass != (customer.cpe_password or ""):
-            customer.cpe_password = working_pass
-            update_fields.append("cpe_password")
         if update_fields:
             customer.save(update_fields=update_fields)
 
     payload = {
         "ok": True,
         "customer_id": customer.pk,
-        "session_active": bool(live.get("session_active")),
+        "session_active": session_active,
         "auth_ok": auth_ok,
-        "cpe_host": (live.get("cpe_host") or "").strip(),
-        "wifi_enabled": bool(live.get("wifi_enabled")) if auth_ok else False,
+        "source": source,
+        "cpe_host": cpe_host,
+        "wifi_enabled": wifi_enabled if auth_ok else False,
         "wifi_ssid": wifi_ssid,
         "wifi_password": wifi_password if auth_ok else (customer.cpe_wifi_password or ""),
-        "hint": live.get("hint") or "",
-        "error": live.get("error") or "",
-        "firewall_blocked": bool(live.get("firewall_blocked"))
-        or ("firewall is blocking" in ((live.get("error") or "") + (live.get("hint") or "")).lower()),
-        "prep_steps": list(live.get("prep_steps") or []),
+        "wifi_mode": wifi_mode,
+        "wifi_channel": wifi_channel,
+        "wifi_security": wifi_security,
+        "wifi_hidden": wifi_hidden,
+        "wifi_power": wifi_power,
+        "wifi_bandwidth_mhz": wifi_bandwidth,
+        "wifi_ssid_5g": ssid_5g,
+        "hint": hint,
+        "error": error if not auth_ok else "",
+        "firewall_blocked": firewall_blocked,
+        "prep_steps": prep_steps,
+        "needs_password": needs_password and not auth_ok,
         "cpe_username": (customer.cpe_username or "").strip() or "admin",
     }
     cache.set(cache_key, payload, 12 if auth_ok else 5)
+    return JsonResponse(payload)
+
+
+@client_workspace_required
+def client_wifi_settings(request, customer_id: int):
+    """Dedicated page: live CPE Wi‑Fi settings and update form."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    nas = customer.router
+    can_access_wifi = bool(
+        org
+        and customer.service_type == Customer.ServiceType.PPPOE
+        and customer.pppoe_username
+        and nas
+        and nas.account_status != MikroTikRouter.AccountStatus.SUSPENDED
+    )
+    wifi_form = MikroTikWifiSettingsForm(
+        initial={
+            "wifi_ssid": (customer.cpe_wifi_ssid or "").strip(),
+            "wifi_password": customer.cpe_wifi_password or "",
+        }
+    )
+
+    if request.method == "POST" and can_access_wifi:
+        action = (request.POST.get("action") or "").strip()
+        if action == "update_router_password":
+            router_password = (request.POST.get("cpe_password") or "").strip()
+            if not router_password:
+                messages.error(request, "Enter the client router admin password.")
+            else:
+                customer.cpe_password = router_password
+                if not (customer.cpe_username or "").strip():
+                    customer.cpe_username = "admin"
+                customer.save(update_fields=["cpe_password", "cpe_username"])
+                cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+                cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+                messages.success(request, "Router password saved.")
+            return redirect("core:client_wifi_settings", customer_id=customer.pk)
+
+        wifi_form = MikroTikWifiSettingsForm(request.POST)
+        if wifi_form.is_valid():
+            new_ssid = wifi_form.cleaned_data.get("wifi_ssid") or ""
+            new_password = wifi_form.cleaned_data.get("wifi_password") or ""
+            apply_ssid = bool(new_ssid)
+            apply_password = bool(new_password)
+            result: dict = {"ok": False, "error": "Could not reach the client router."}
+
+            probe = probe_customer_cpe_web(
+                nas.host,
+                nas.username,
+                nas.password or "",
+                pppoe_username=customer.pppoe_username,
+                timeout=8.0,
+            )
+            if probe.get("reachable") and probe.get("port"):
+                result = configure_customer_cpe_web_wifi(
+                    nas.host,
+                    nas.username,
+                    nas.password or "",
+                    pppoe_username=customer.pppoe_username,
+                    cpe_password=customer.cpe_password or "",
+                    wifi_ssid=new_ssid,
+                    wifi_password=new_password,
+                    apply_ssid=apply_ssid,
+                    apply_password=apply_password,
+                    session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
+                    cpe_port=int(probe["port"]),
+                    timeout=15.0,
+                )
+            elif not result.get("ok"):
+                # MikroTik CPE path: prepare API access, then configure Wi‑Fi.
+                prep = access_customer_cpe_wifi(
+                    nas.host,
+                    nas.username,
+                    nas.password or "",
+                    pppoe_username=customer.pppoe_username,
+                    cpe_username=customer.cpe_username or "admin",
+                    cpe_password=customer.cpe_password or "",
+                    pppoe_password=customer.pppoe_password or "",
+                    timeout=10.0,
+                    auto_enable=True,
+                )
+                if prep.get("auth_ok") and prep.get("cpe_host"):
+                    result = configure_mikrotik_wifi(
+                        prep["cpe_host"],
+                        prep.get("cpe_username") or customer.cpe_username or "admin",
+                        prep.get("cpe_password")
+                        if prep.get("cpe_password") is not None
+                        else (customer.cpe_password or ""),
+                        wifi_ssid=new_ssid,
+                        wifi_password=new_password,
+                        apply_ssid=apply_ssid,
+                        apply_password=apply_password,
+                        nas_host=nas.host,
+                        nas_username=nas.username,
+                        nas_password=nas.password or "",
+                        timeout=20.0,
+                    )
+                    if result.get("ok"):
+                        result["wifi"] = {
+                            "ssid": result.get("wifi_ssid") or new_ssid,
+                            "password": result.get("wifi_password") or new_password,
+                        }
+                else:
+                    result = {
+                        "ok": False,
+                        "error": prep.get("error")
+                        or prep.get("hint")
+                        or "Could not sign in to the client router to update Wi‑Fi.",
+                        "needs_password": "password" in (
+                            (prep.get("error") or "") + (prep.get("hint") or "")
+                        ).lower(),
+                    }
+
+            if result.get("ok"):
+                wifi = result.get("wifi") or {}
+                saved_ssid = (wifi.get("ssid") or new_ssid or "").strip()
+                saved_password = wifi.get("password") or new_password or ""
+                update_fields = []
+                if saved_ssid and saved_ssid != (customer.cpe_wifi_ssid or ""):
+                    customer.cpe_wifi_ssid = saved_ssid
+                    update_fields.append("cpe_wifi_ssid")
+                if saved_password and saved_password != (customer.cpe_wifi_password or ""):
+                    customer.cpe_wifi_password = saved_password
+                    update_fields.append("cpe_wifi_password")
+                if update_fields:
+                    customer.save(update_fields=update_fields)
+                cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+                cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+                messages.success(
+                    request,
+                    result.get("message")
+                    or (
+                        "Wi‑Fi updated on the client router."
+                        if result.get("updated", True)
+                        else "Wi‑Fi already matched."
+                    ),
+                )
+                return redirect("core:client_wifi_settings", customer_id=customer.pk)
+
+            wifi_form.add_error(
+                None,
+                result.get("error") or "Could not apply Wi‑Fi settings on the client router.",
+            )
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="wifi",
+        page_title=f"Wi‑Fi · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=can_access_wifi,
+        wifi_form=wifi_form,
+        wifi_ssid_display=(customer.cpe_wifi_ssid or "").strip(),
+        wifi_password_display=customer.cpe_wifi_password or "",
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        wifi_url=reverse("core:client_cpe_wifi", kwargs={"customer_id": customer.pk}),
+        router_data_url=reverse(
+            "core:client_cpe_router_data", kwargs={"customer_id": customer.pk}
+        ),
+        router_login_url=reverse(
+            "core:client_router_login", kwargs={"customer_id": customer.pk}
+        ),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    return render(request, "core/client_wifi_settings.html", ctx)
+
+
+@client_workspace_required
+@require_GET
+def client_cpe_router_data(request, customer_id: int):
+    """JSON snapshot of the client router's web status, WAN, Wi-Fi and devices."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    if (
+        customer.service_type != Customer.ServiceType.PPPOE
+        or not customer.pppoe_username
+        or not customer.router_id
+        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    ):
+        return JsonResponse(
+            {"ok": False, "error": "Router data is unavailable for this client."},
+            status=400,
+        )
+
+    cache_key = f"client_cpe_router_data:{org.pk}:{customer.pk}"
+    force = (request.GET.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
+    if not force:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return JsonResponse(cached)
+
+    nas = customer.router
+    probe = probe_customer_cpe_web(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        pppoe_username=customer.pppoe_username,
+        timeout=8.0,
+    )
+    if not probe.get("reachable") or not probe.get("port"):
+        payload = {
+            "ok": False,
+            "cpe_host": probe.get("cpe_host") or "",
+            "error": probe.get("hint") or probe.get("error")
+            or "The client router web interface is unavailable.",
+        }
+        cache.set(cache_key, payload, 5)
+        return JsonResponse(payload)
+
+    payload = fetch_customer_cpe_web_data(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        pppoe_username=customer.pppoe_username,
+        cpe_password=customer.cpe_password or "",
+        session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
+        cpe_port=int(probe["port"]),
+        timeout=10.0,
+    )
+    payload["port"] = int(probe["port"])
+    payload["needs_password"] = not payload.get("ok") and (
+        "password" in (payload.get("error") or "").lower()
+    )
+    if payload.get("ok"):
+        wifi = payload.get("wifi") or {}
+        ssid = (wifi.get("ssid") or "").strip()
+        password = wifi.get("password") or ""
+        update_fields: list[str] = []
+        if ssid and ssid != (customer.cpe_wifi_ssid or ""):
+            customer.cpe_wifi_ssid = ssid
+            update_fields.append("cpe_wifi_ssid")
+        if password and password != (customer.cpe_wifi_password or ""):
+            customer.cpe_wifi_password = password
+            update_fields.append("cpe_wifi_password")
+        if update_fields:
+            customer.save(update_fields=update_fields)
+    cache.set(cache_key, payload, 15 if payload.get("ok") else 5)
     return JsonResponse(payload)
 
 
@@ -3545,9 +4367,116 @@ def client_usage(request, customer_id: int):
         except Exception:
             payload["devices_hint"] = "CPE metrics unavailable — session still live from NAS"
 
+    try:
+        from billing.usage_samples import record_customer_usage_sample
+
+        record_customer_usage_sample(customer, payload)
+    except Exception:
+        pass
+
     # Short cache so live speeds stay useful without hammering the API.
     cache.set(cache_key, payload, 8 if payload.get("session_active") else 4)
     return JsonResponse(payload)
+
+
+@client_workspace_required
+def client_usage_analysis(request, customer_id: int):
+    """Usage analysis page: uptime, throughput and data-used trends."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    can_live = bool(
+        customer.service_type == Customer.ServiceType.PPPOE
+        and customer.pppoe_username
+        and customer.router_id
+        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
+    )
+    can_access_wifi = bool(
+        org
+        and customer.service_type == Customer.ServiceType.PPPOE
+        and customer.pppoe_username
+        and customer.router_id
+        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
+    )
+    hours = 24
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+
+    from billing.usage_samples import usage_trend_payload
+
+    trends = usage_trend_payload(customer, hours=hours) if can_live else {
+        "ok": False,
+        "hours": hours,
+        "sample_count": 0,
+        "labels": [],
+        "series": {
+            "uptime_minutes": [],
+            "download_kbps": [],
+            "upload_kbps": [],
+            "data_used_mb": [],
+        },
+        "summary": {},
+        "error": "Live usage trends are available for PPPoE clients with an assigned router.",
+    }
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="usage",
+        page_title=f"Usage · {customer.full_name}",
+        customer=customer,
+        can_live_usage=can_live,
+        can_access_wifi=can_access_wifi,
+        trend_hours=hours,
+        trends=trends,
+        trends_json=json.dumps(trends),
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        usage_url=reverse("core:client_usage", kwargs={"customer_id": customer.pk}),
+        trends_url=reverse(
+            "core:client_usage_trends", kwargs={"customer_id": customer.pk}
+        ),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    return render(request, "core/client_usage_analysis.html", ctx)
+
+
+@client_workspace_required
+@require_GET
+def client_usage_trends(request, customer_id: int):
+    """JSON chart series for the usage analysis page."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router"),
+        pk=customer_id,
+        organization=org,
+    )
+    if (
+        customer.service_type != Customer.ServiceType.PPPOE
+        or not customer.pppoe_username
+        or not customer.router_id
+    ):
+        return JsonResponse(
+            {"ok": False, "error": "Usage trends are unavailable for this client."},
+            status=400,
+        )
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+    from billing.usage_samples import usage_trend_payload
+
+    return JsonResponse(usage_trend_payload(customer, hours=hours))
 
 
 @client_workspace_required
@@ -4359,7 +5288,7 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
         customer__hotspot_mac=payload.get("mac"),
     )
     result = refresh_stk_status(stk)
-    if result.get("success"):
+    if result.get("success") and "authorized" not in result:
         stk.customer.refresh_from_db()
         provision = sync_customer_subscription_access(
             stk.customer,
@@ -4685,13 +5614,12 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
         customer_id=payload.get("cid"),
     )
     result = refresh_stk_status(stk)
-    if result.get("success"):
+    if result.get("success") and "authorized" not in result:
         stk.customer.refresh_from_db()
-        # PPPoE provision already kicks the live session when the profile flips
-        # from blocked → normal, so the CPE redials onto a surfing profile.
         provision = sync_customer_subscription_access(
             stk.customer,
             provision=True,
+            reauthenticate=False,
         )
         result["authorized"] = bool(provision.get("ok") and provision.get("allowed"))
         if not result["authorized"]:

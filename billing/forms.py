@@ -623,14 +623,29 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "is_active": "Active package",
         }
 
-    def __init__(self, *args, organization=None, **kwargs):
+    def __init__(self, *args, organization=None, id_prefix="package", **kwargs):
         self.organization = organization
+        self.id_prefix = id_prefix or "package"
         super().__init__(*args, **kwargs)
         self.fields["description"].required = False
         self.fields["image"].required = False
         self.fields["is_active"].required = False
-        if not self.is_bound and not self.initial.get("is_active"):
+        # Default Active only for new packages — keep the saved value when editing.
+        if not self.is_bound and not getattr(self.instance, "pk", None):
             self.fields["is_active"].initial = True
+        id_map = {
+            "name": f"id_{self.id_prefix}_name",
+            "description": f"id_{self.id_prefix}_description",
+            "price": f"id_{self.id_prefix}_price",
+            "download_speed_mbps": f"id_{self.id_prefix}_download_speed",
+            "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
+            "duration": f"id_{self.id_prefix}_duration",
+            "image": f"id_{self.id_prefix}_image",
+            "is_active": f"id_{self.id_prefix}_is_active",
+        }
+        for field_name, field_id in id_map.items():
+            if field_name in self.fields:
+                self.fields[field_name].widget.attrs["id"] = field_id
 
     def clean_name(self):
         name = (self.cleaned_data.get("name") or "").strip()
@@ -651,8 +666,11 @@ class BillingPackageRegisterForm(forms.ModelForm):
 
     def clean_image(self):
         image = self.cleaned_data.get("image")
-        if not image:
-            return image
+        # Empty upload on edit should keep the current image (FileInput clears otherwise).
+        if image in (None, False):
+            if self.instance and getattr(self.instance, "pk", None) and self.instance.image:
+                return self.instance.image
+            return None
         content_type = getattr(image, "content_type", "") or ""
         if content_type and not content_type.startswith("image/"):
             raise forms.ValidationError("Upload an image file (PNG, JPG, or WebP).")

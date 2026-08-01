@@ -215,10 +215,18 @@ class HotspotCaptiveProbeMiddleware:
             return self.get_response(request)
 
         from django.conf import settings
+        from django.core.cache import cache
         from django.shortcuts import redirect
         from django.urls import reverse
 
         from core.mikrotik_connect import resolve_captive_organization
+
+        mode = "pppoe" if pppoe_client else "hotspot"
+        query = request.META.get("QUERY_STRING") or ""
+        cache_key = f"captive:redirect:{mode}:{remote}:{query}"
+        cached_target = cache.get(cache_key)
+        if cached_target:
+            return redirect(cached_target)
 
         # Prefer the NAS/org that currently owns this client IP so multi-tenant
         # deployments do not send users to the wrong payment join_code.
@@ -238,9 +246,13 @@ class HotspotCaptiveProbeMiddleware:
         if not base:
             base = request.build_absolute_uri("/").rstrip("/")
         target = f"{base}{pay_path}"
-        query = request.META.get("QUERY_STRING") or ""
         if query:
             target = f"{target}?{query}"
+        try:
+            # Match OS captive probe bursts so the popup stays immediate.
+            cache.set(cache_key, target, 20)
+        except Exception:
+            pass
         return redirect(target)
 
 

@@ -307,6 +307,7 @@ def fulfill_successful_stk(
         ]
     )
 
+    provision = {"ok": False, "allowed": False}
     try:
         from core.mikrotik_connect import sync_customer_subscription_access
 
@@ -314,7 +315,7 @@ def fulfill_successful_stk(
         # running inside its payment-status request. That network reset can
         # sever the JSON response before the browser learns payment succeeded.
         # The loaded welcome page performs the final reauthentication instead.
-        sync_customer_subscription_access(
+        provision = sync_customer_subscription_access(
             customer,
             provision=True,
             reauthenticate=False,
@@ -333,6 +334,11 @@ def fulfill_successful_stk(
         "package_end": customer.package_end,
         "mpesa_receipt": stk.mpesa_receipt,
         "invoice_number": invoice.invoice_number if invoice else "",
+        "provision_ok": bool(provision.get("ok")),
+        "provision_allowed": bool(provision.get("allowed")),
+        "provision_offline": bool(provision.get("offline")),
+        "provision_message": provision.get("message") or "",
+        "just_provisioned": True,
     }
 
 
@@ -626,6 +632,21 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
             "subscription_applied": stk.subscription_applied,
             "error": fulfill.get("error") or "",
         }
+        if applied and fulfill.get("just_provisioned"):
+            # Hand authorization through so payment-status views do not open a
+            # second MikroTik session in the same request.
+            payload["just_provisioned"] = True
+            payload["authorized"] = bool(
+                fulfill.get("provision_ok") and fulfill.get("provision_allowed")
+            )
+            if not payload["authorized"]:
+                payload["authorization_error"] = (
+                    fulfill.get("provision_message")
+                    or "Payment succeeded, but router authorization failed."
+                )
+                payload["can_retry"] = False
+                payload["can_retry_authorize"] = True
+                payload["offline"] = bool(fulfill.get("provision_offline"))
         if not applied:
             # M-Pesa took the money but the subscription could not be applied.
             # Retrying the charge would double-bill, so send them to support.

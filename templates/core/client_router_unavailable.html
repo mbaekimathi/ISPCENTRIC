@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}Client router login — {{ customer.full_name }}{% endblock %}
+
+{% block body %}
+<main class="app-shell" style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;">
+  <section class="panel" style="max-width:640px;width:100%;">
+    <div class="mikrotik-detail-toolbar">
+      <div class="mikrotik-detail-toolbar-copy">
+        <p class="mikrotik-detail-kicker">Client router login</p>
+        <h2>Can’t open {{ customer.full_name }}’s router yet</h2>
+      </div>
+    </div>
+
+    <div class="client-subscription-banner is-blocked" style="margin-bottom:16px;">
+      {% if not session_active %}
+        The client is not online on PPPoE right now, so there is no router to open.
+      {% elif ping_ok %}
+        The ISP MikroTik ({{ router.name }}) reaches the client router
+        {% if cpe_host %}at {{ cpe_host }}{% endif %}, but the router refuses
+        management from the ISP side. This is normal for Tenda and most home
+        routers — remote management is off by default.
+      {% else %}
+        The ISP MikroTik ({{ router.name }}) cannot reach the client router yet.
+      {% endif %}
+    </div>
+
+    {% if session_active and ping_ok %}
+      <p class="panel-sub" style="margin-bottom:8px;">
+        To open it from here, turn on remote web management on the client’s router:
+      </p>
+      <ol class="mikrotik-tunnel-steps" style="margin:0 0 16px 18px;line-height:1.8;">
+        <li>Open the router’s admin page from the client’s own Wi‑Fi/LAN.</li>
+        <li>Find <strong>Administration → Remote Web Management</strong>
+            (Tenda), or the equivalent “Remote / WAN management” toggle.</li>
+        <li>Enable it. If it asks for an allowed address, use the ISP gateway
+            <strong>{{ gateway }}</strong> so only the billing system can reach it.</li>
+        <li>Save, then come back and click <strong>Open client router</strong> again.</li>
+      </ol>
+      <p class="panel-sub" style="opacity:.8;">
+        Checked ports from the ISP side: {{ checked_ports }}. Routers that already
+        allow ISP-side management (including MikroTik CPEs) open with no extra steps.
+      </p>
+    {% elif session_active and not ping_ok %}
+      <ul class="mikrotik-tunnel-steps" style="margin:0 0 16px 18px;line-height:1.8;">
+        <li>Confirm the client’s router is powered on and dialed in on PPPoE.</li>
+        <li>Check the PPPoE session on {{ router.name }}, then retry.</li>
+      </ul>
+    {% endif %}
+
+    {% if detail %}
+      <p class="panel-sub" style="opacity:.75;">{{ detail }}</p>
+    {% endif %}
+
+    <div class="mikrotik-detail-actions" style="margin-top:20px;display:flex;gap:12px;">
+      <a class="btn btn-primary" href="{{ request.path }}">Try again</a>
+      <a class="btn btn-ghost" href="{{ detail_url }}" target="_self">Back to client</a>
+    </div>
+  </section>
+</main>
+{% endblock %}

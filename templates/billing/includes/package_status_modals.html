@@ -1,0 +1,80 @@
+{# —— Suspend / unsuspend package —— #}
+<div class="role-modal client-action-modal" id="billing-package-suspend-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="billing-package-suspend-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Package</p>
+        <h2 id="billing-package-suspend-title">Suspend package</h2>
+        <p class="role-modal-sub" id="billing-package-suspend-sub">
+          Suspended packages stay in history but are hidden from new client assignments.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" id="billing-package-suspend-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" id="id_package_suspend_action" value="suspend_package">
+      <input type="hidden" name="package_id" id="id_package_suspend_id" value="">
+      <div class="mikrotik-action-scroll">
+        <div class="org-delete-box">
+          <p>
+            <span id="billing-package-suspend-verb">Suspend</span>
+            <strong id="billing-package-suspend-name">this package</strong>?
+          </p>
+          <label class="mikrotik-confirm-check" for="id_package_suspend_confirm">
+            <input type="checkbox" name="confirm" id="id_package_suspend_confirm" required>
+            <span id="billing-package-suspend-confirm-label">I confirm I want to suspend this package.</span>
+          </label>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="billing-package-suspend-submit">Suspend package</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# —— Delete package —— #}
+<div class="role-modal client-action-modal" id="billing-package-delete-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="billing-package-delete-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Remove package</p>
+        <h2 id="billing-package-delete-title">Delete package</h2>
+        <p class="role-modal-sub">
+          This permanently removes the package from this organization. Prefer suspend if you may need it later.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+    </header>
+    <form method="post" class="mikrotik-action-form" id="billing-package-delete-form">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="delete_package">
+      <input type="hidden" name="package_id" id="id_package_delete_id" value="">
+      <div class="mikrotik-action-scroll">
+        <div class="org-delete-box">
+          <p>
+            Delete <strong id="billing-package-delete-name">this package</strong> permanently?
+          </p>
+          <p class="org-delete-warn" id="billing-package-delete-clients-warn" hidden>
+            <span id="billing-package-delete-client-count">0</span> linked client(s) will be kept and unassigned from this package.
+          </p>
+          <p class="org-delete-warn" id="billing-package-delete-stk-warn" hidden>
+            This package has payment history and cannot be deleted. Suspend it instead.
+          </p>
+          <label class="mikrotik-confirm-check" for="id_package_delete_confirm" id="billing-package-delete-confirm-wrap">
+            <input type="checkbox" name="confirm" id="id_package_delete_confirm" required>
+            <span>I understand this cannot be undone.</span>
+          </label>
+        </div>
+      </div>
+      <div class="role-modal-actions">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="billing-package-delete-submit">Delete package</button>
+      </div>
+    </form>
+  </div>
+</div>

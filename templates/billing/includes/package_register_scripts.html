@@ -44,22 +44,38 @@
   openModal("{{ open_billing_modal|escapejs }}");
   {% endif %}
 
-  var imageInput = document.getElementById("id_package_image");
-  var preview = document.getElementById("package-image-preview");
-  var previewImg = document.getElementById("package-image-preview-img");
-  var previewEmpty = preview ? preview.querySelector(".package-image-preview-empty") : null;
-  var fileName = document.getElementById("package-image-file-name");
-  if (imageInput) {
+  function wireImagePreview(inputId, previewId, imgId, fileNameId, emptyHint) {
+    var imageInput = document.getElementById(inputId);
+    var preview = document.getElementById(previewId);
+    var previewImg = document.getElementById(imgId);
+    var previewEmpty = preview ? preview.querySelector(".package-image-preview-empty") : null;
+    var fileName = document.getElementById(fileNameId);
+    if (!imageInput) return;
+
+    function showExisting(url) {
+      if (!previewImg) return;
+      if (url) {
+        previewImg.src = url;
+        previewImg.hidden = false;
+        if (previewEmpty) previewEmpty.hidden = true;
+        if (preview) preview.classList.add("has-image");
+      } else {
+        previewImg.hidden = true;
+        previewImg.removeAttribute("src");
+        if (previewEmpty) previewEmpty.hidden = false;
+        if (preview) preview.classList.remove("has-image");
+      }
+    }
+
+    if (previewImg && previewImg.getAttribute("src")) {
+      showExisting(previewImg.getAttribute("src"));
+    }
+
     imageInput.addEventListener("change", function () {
       var file = imageInput.files && imageInput.files[0];
       if (!file) {
-        if (fileName) fileName.textContent = "PNG, JPG, or WebP · optional · max 5 MB";
-        if (previewImg) {
-          previewImg.hidden = true;
-          previewImg.removeAttribute("src");
-        }
-        if (previewEmpty) previewEmpty.hidden = false;
-        if (preview) preview.classList.remove("has-image");
+        if (fileName) fileName.textContent = emptyHint || "PNG, JPG, or WebP · optional · max 5 MB";
+        showExisting("");
         return;
       }
       if (fileName) fileName.textContent = file.name;
@@ -71,19 +87,164 @@
       if (previewEmpty) previewEmpty.hidden = true;
       if (preview) preview.classList.add("has-image");
     });
+
+    return { showExisting: showExisting, fileName: fileName };
   }
 
-  var downInput = document.getElementById("id_package_download_speed");
-  var upInput = document.getElementById("id_package_upload_speed");
-  var generalHint = document.getElementById("package-general-speed-hint");
-  function updateGeneralSpeedHint() {
-    if (!generalHint) return;
-    var down = downInput && downInput.value ? downInput.value : "—";
-    var up = upInput && upInput.value ? upInput.value : "—";
-    generalHint.textContent = "General speed: " + down + "/" + up + " Mbps (from download/upload).";
+  wireImagePreview(
+    "id_package_image",
+    "package-image-preview",
+    "package-image-preview-img",
+    "package-image-file-name"
+  );
+  var editImage = wireImagePreview(
+    "id_edit_package_image",
+    "edit-package-image-preview",
+    "edit-package-image-preview-img",
+    "edit-package-image-file-name",
+    "Current image kept unless you choose a new one"
+  );
+
+  function wireSpeedHint(downId, upId, hintId) {
+    var downInput = document.getElementById(downId);
+    var upInput = document.getElementById(upId);
+    var generalHint = document.getElementById(hintId);
+    function updateGeneralSpeedHint() {
+      if (!generalHint) return;
+      var down = downInput && downInput.value ? downInput.value : "—";
+      var up = upInput && upInput.value ? upInput.value : "—";
+      generalHint.textContent = "General speed: " + down + "/" + up + " Mbps (from download/upload).";
+    }
+    if (downInput) downInput.addEventListener("input", updateGeneralSpeedHint);
+    if (upInput) upInput.addEventListener("input", updateGeneralSpeedHint);
+    updateGeneralSpeedHint();
+    return updateGeneralSpeedHint;
   }
-  if (downInput) downInput.addEventListener("input", updateGeneralSpeedHint);
-  if (upInput) upInput.addEventListener("input", updateGeneralSpeedHint);
-  updateGeneralSpeedHint();
+
+  wireSpeedHint("id_package_download_speed", "id_package_upload_speed", "package-general-speed-hint");
+  var updateEditSpeedHint = wireSpeedHint(
+    "id_edit_package_download_speed",
+    "id_edit_package_upload_speed",
+    "edit-package-general-speed-hint"
+  );
+
+  function setFieldValue(id, value) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.value = value == null ? "" : value;
+  }
+
+  document.querySelectorAll("[data-edit-package]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setFieldValue("id_edit_package_id", btn.getAttribute("data-package-id") || "");
+      setFieldValue("id_edit_package_name", btn.getAttribute("data-package-name") || "");
+      setFieldValue("id_edit_package_description", btn.getAttribute("data-package-description") || "");
+      setFieldValue("id_edit_package_price", btn.getAttribute("data-package-price") || "");
+      setFieldValue("id_edit_package_duration", btn.getAttribute("data-package-duration") || "monthly");
+      setFieldValue("id_edit_package_download_speed", btn.getAttribute("data-package-download") || "");
+      setFieldValue("id_edit_package_upload_speed", btn.getAttribute("data-package-upload") || "");
+
+      var active = document.getElementById("id_edit_package_is_active");
+      if (active) active.checked = btn.getAttribute("data-package-active") === "1";
+
+      var imageInput = document.getElementById("id_edit_package_image");
+      if (imageInput) imageInput.value = "";
+
+      var imageUrl = btn.getAttribute("data-package-image") || "";
+      if (editImage && editImage.showExisting) editImage.showExisting(imageUrl);
+      if (editImage && editImage.fileName) {
+        editImage.fileName.textContent = imageUrl
+          ? "Current image kept unless you choose a new one"
+          : "PNG, JPG, or WebP · optional · max 5 MB";
+      }
+
+      if (updateEditSpeedHint) updateEditSpeedHint();
+      openModal("billing-package-edit-modal");
+      var nameInput = document.getElementById("id_edit_package_name");
+      if (nameInput) nameInput.focus();
+    });
+  });
+
+  var suspendModal = document.getElementById("billing-package-suspend-modal");
+  var suspendForm = document.getElementById("billing-package-suspend-form");
+  if (suspendModal && suspendForm) {
+    var suspendTitle = document.getElementById("billing-package-suspend-title");
+    var suspendSub = document.getElementById("billing-package-suspend-sub");
+    var suspendVerb = document.getElementById("billing-package-suspend-verb");
+    var suspendName = document.getElementById("billing-package-suspend-name");
+    var suspendConfirmLabel = document.getElementById("billing-package-suspend-confirm-label");
+    var suspendConfirm = document.getElementById("id_package_suspend_confirm");
+    var suspendAction = document.getElementById("id_package_suspend_action");
+    var suspendId = document.getElementById("id_package_suspend_id");
+    var suspendSubmit = document.getElementById("billing-package-suspend-submit");
+
+    document.querySelectorAll("[data-suspend-package]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var activating = btn.getAttribute("data-package-active") !== "1";
+        var name = btn.getAttribute("data-package-name") || "this package";
+        if (suspendId) suspendId.value = btn.getAttribute("data-package-id") || "";
+        if (suspendAction) suspendAction.value = activating ? "unsuspend_package" : "suspend_package";
+        if (suspendTitle) suspendTitle.textContent = activating ? "Unsuspend package" : "Suspend package";
+        if (suspendSub) {
+          suspendSub.textContent = activating
+            ? "Make this package available again for new client assignments."
+            : "Suspended packages stay in history but are hidden from new client assignments.";
+        }
+        if (suspendVerb) suspendVerb.textContent = activating ? "Unsuspend" : "Suspend";
+        if (suspendName) suspendName.textContent = name;
+        if (suspendConfirmLabel) {
+          suspendConfirmLabel.textContent = activating
+            ? "I confirm I want to unsuspend this package."
+            : "I confirm I want to suspend this package.";
+        }
+        if (suspendConfirm) suspendConfirm.checked = false;
+        if (suspendSubmit) {
+          suspendSubmit.textContent = activating ? "Unsuspend package" : "Suspend package";
+          suspendSubmit.classList.toggle("btn-danger", !activating);
+          suspendSubmit.classList.toggle("btn-primary", activating);
+        }
+        openModal("billing-package-suspend-modal");
+      });
+    });
+  }
+
+  var deleteModal = document.getElementById("billing-package-delete-modal");
+  var deleteForm = document.getElementById("billing-package-delete-form");
+  if (deleteModal && deleteForm) {
+    var deleteName = document.getElementById("billing-package-delete-name");
+    var deleteId = document.getElementById("id_package_delete_id");
+    var deleteConfirm = document.getElementById("id_package_delete_confirm");
+    var deleteConfirmWrap = document.getElementById("billing-package-delete-confirm-wrap");
+    var deleteSubmit = document.getElementById("billing-package-delete-submit");
+    var clientsWarn = document.getElementById("billing-package-delete-clients-warn");
+    var clientCount = document.getElementById("billing-package-delete-client-count");
+    var stkWarn = document.getElementById("billing-package-delete-stk-warn");
+
+    document.querySelectorAll("[data-delete-package]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var name = btn.getAttribute("data-package-name") || "this package";
+        var customers = parseInt(btn.getAttribute("data-package-customers") || "0", 10) || 0;
+        var stk = parseInt(btn.getAttribute("data-package-stk") || "0", 10) || 0;
+        var blocked = stk > 0;
+
+        if (deleteId) deleteId.value = btn.getAttribute("data-package-id") || "";
+        if (deleteName) deleteName.textContent = name;
+        if (deleteConfirm) {
+          deleteConfirm.checked = false;
+          deleteConfirm.required = !blocked;
+          deleteConfirm.disabled = blocked;
+        }
+        if (deleteConfirmWrap) deleteConfirmWrap.hidden = blocked;
+        if (clientsWarn) clientsWarn.hidden = blocked || customers < 1;
+        if (clientCount) clientCount.textContent = String(customers);
+        if (stkWarn) stkWarn.hidden = !blocked;
+        if (deleteSubmit) {
+          deleteSubmit.disabled = blocked;
+          deleteSubmit.textContent = blocked ? "Cannot delete" : "Delete package";
+        }
+        openModal("billing-package-delete-modal");
+      });
+    });
+  }
 })();
 </script>

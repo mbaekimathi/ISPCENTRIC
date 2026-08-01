@@ -237,11 +237,14 @@ def routeros_script(address: str, private_key: str) -> str:
 
     Besides bringing WireGuard up, the script always:
     - force-enables the RouterOS API on port 8728 (compulsory for Connect)
-    - accepts API + ICMP from the tunnel in the input filter
+    - clears any /ip service address= restriction that silently blocks API
+    - accepts API + ICMP from the tunnel and private LANs in the input filter
+    - bypasses Hotspot for private LAN IPs so captive clients can still reach API
+    - verifies the API service is enabled and listening, then prints pass/fail
     - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
     - pings the billing server and prints a clear pass/fail line
 
-    API access is locked down by firewall (tunnel subnet only), not by the
+    API access is locked down by firewall (tunnel + private LAN only), not by the
     /ip service address= list — that property has broken silently on some
     RouterOS builds and left API disabled, which blocks Connect entirely.
     """
@@ -261,6 +264,7 @@ def routeros_script(address: str, private_key: str) -> str:
             "# Remove the complete previous ISPCENTRIC tunnel before applying this version.",
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } on-error={}',
             "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
             "/ip address remove [find where interface=ispcentric-vpn]",
             "/interface wireguard remove [find where name=ispcentric-vpn]",
@@ -274,15 +278,21 @@ def routeros_script(address: str, private_key: str) -> str:
             f"allowed-address={network} persistent-keepalive=25s "
             'comment="ispcentric billing server"',
             "# Compulsory: RouterOS API on 8728 — Connect cannot work without it.",
-            "/ip service",
-            "set [find where name=api] disabled=no port=8728 address=0.0.0.0/0",
-            ":do { /ip service set api disabled=no port=8728 } on-error={}",
-            (
-                ":if ([:len [/ip service find where name=api and disabled=no]] = 0) do={"
-                ':put "ispcentric ERROR: RouterOS API is still disabled — enable IP > Services > api"} '
-                'else={:put "ispcentric API: enabled on port 8728"}'
-            ),
-            "# Allow API + ICMP only from the billing tunnel (not the public WAN).",
+            "# Clear address= restrictions (empty + 0.0.0.0/0) — a LAN-only list looks",
+            "# like 'connection refused' from the billing PC / tunnel.",
+            ":do { /ip service set [find where name=api] disabled=no port=8728 address=\"\" } on-error={}",
+            ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+            ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+            ":do { /ip service enable [find where name=api] } on-error={}",
+            "# Hotspot refuses API/Winbox/SSH for unpaid clients even when the service is on.",
+            "# Bypass private LAN ranges so the billing PC can reach 8728 without logging in.",
+            ":do { /ip hotspot ip-binding add type=bypassed address=10.0.0.0/8 "
+            'comment="ispcentric-hotspot-bypass-10" } on-error={}',
+            ":do { /ip hotspot ip-binding add type=bypassed address=172.16.0.0/12 "
+            'comment="ispcentric-hotspot-bypass-172" } on-error={}',
+            ":do { /ip hotspot ip-binding add type=bypassed address=192.168.0.0/16 "
+            'comment="ispcentric-hotspot-bypass-192" } on-error={}',
+            "# Allow API + ICMP from the billing tunnel (not the public WAN).",
             "/ip firewall filter",
             "add chain=input action=accept protocol=tcp dst-port=8728 "
             f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-api"',
@@ -292,7 +302,7 @@ def routeros_script(address: str, private_key: str) -> str:
             f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-icmp"',
             "add chain=input action=accept protocol=icmp "
             f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp-net"',
-            "# Local development: permit API from RFC1918 LANs before Hotspot/drop rules.",
+            "# Local / office LAN: permit API before Hotspot/drop rules.",
             "add chain=input action=accept protocol=tcp dst-port=8728 "
             'src-address=10.0.0.0/8 place-before=0 comment="ispcentric-vpn-api-lan-10"',
             "add chain=input action=accept protocol=tcp dst-port=8728 "
@@ -303,11 +313,25 @@ def routeros_script(address: str, private_key: str) -> str:
             "/ip firewall nat",
             "add chain=srcnat action=accept "
             f'dst-address={network} place-before=0 comment="ispcentric-vpn-no-nat"',
+            "# Prove API is actually enabled and listening on 8728.",
+            ":delay 1s",
+            (
+                ':if ([:len [/ip service find where name=api and disabled=no and port=8728]] = 0) do={'
+                ':put "ispcentric ERROR: RouterOS API is still disabled — '
+                'open IP > Services > api, set port 8728, Allowed From empty, then re-paste"} '
+                'else={:put "ispcentric API: enabled and listening on port 8728"}'
+            ),
+            (
+                ':do { :put ("ispcentric API address-list=" . '
+                '[/ip service get [find where name=api] address]) } on-error={'
+                ':put "ispcentric API: address list unread"}'
+            ),
             "# Wait for the handshake, then prove the billing server answers.",
             ":delay 3s",
             (
                 f":if ([/ping {server} count=4 interval=500ms] > 0) do={{:put "
-                f'"ispcentric OK: tunnel {address} reaches {server} - Connect in ISPCENTRIC"'
+                f'"ispcentric OK: tunnel {address} reaches {server} - Connect in ISPCENTRIC '
+                f'(API 8728 must show enabled above)"'
                 f"}} else={{:put "
                 f'"ispcentric: tunnel set on {address} but no ping from {server}. '
                 f'Add this peer on the VPS wg0, restart WireGuard, then retry Connect."}}'

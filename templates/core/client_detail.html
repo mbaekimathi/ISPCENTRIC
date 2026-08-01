@@ -30,56 +30,44 @@
       </span>
       <div>
         <strong>{{ customer.full_name }}</strong>
-        <p>{{ customer.account_number }} · {{ customer.get_service_type_display }}</p>
+        <p>{{ customer.account_number }}</p>
       </div>
     </div>
 
-    <div class="client-user-profile-status">
-      <span class="badge">{{ customer.get_status_display }}</span>
+    <div class="account-menu-roles">
+      <div class="role-identity-row">
+        <span class="role-view-hint">Service</span>
+        <span class="role-chip role-chip-login">{{ customer.get_service_type_display }}</span>
+      </div>
+      <div class="role-identity-row">
+        <span class="role-view-hint">Status</span>
+        <span class="role-chip role-chip-view">{{ customer.get_status_display }}</span>
+      </div>
       {% if customer.router %}
-        <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
-          <span class="mikrotik-link-dot" aria-hidden="true"></span>
-          <span class="mikrotik-link-label">Checking…</span>
-        </span>
+        <div class="role-identity-row">
+          <span class="role-view-hint">Router</span>
+          <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
+            <span class="mikrotik-link-dot" aria-hidden="true"></span>
+            <span class="mikrotik-link-label">Checking…</span>
+          </span>
+        </div>
       {% endif %}
     </div>
 
     <div class="account-menu-session client-user-profile-session">
-      <p class="mikrotik-router-profile-group">Contact</p>
+      <p class="mikrotik-router-profile-group">Client details</p>
       <div class="account-session-row"><span>Phone</span><strong>{{ customer.phone|default:"—" }}</strong></div>
       <div class="account-session-row"><span>Email</span><strong>{{ customer.email|default:"—" }}</strong></div>
       <div class="account-session-row"><span>Address</span><strong>{{ customer.address|default:"—" }}</strong></div>
+      <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y · g:i A" }}</strong></div>
 
-      <p class="mikrotik-router-profile-group">Service</p>
-      <div class="account-session-row"><span>Type</span><strong>{{ customer.get_service_type_display }}</strong></div>
-      <div class="account-session-row">
-        <span>Plan</span>
-        <strong>
-          {% if customer.plan %}
-            {{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
-          {% else %}
-            —
-          {% endif %}
-        </strong>
-      </div>
-      {% if customer.plan %}
-        <div class="account-session-row">
-          <span>Period</span>
-          <strong>{{ customer.plan.get_duration_display }}</strong>
-        </div>
-      {% endif %}
-      <div class="account-session-row">
-        <span>Package starts</span>
-        <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
-      </div>
-      <div class="account-session-row">
-        <span>Package ends</span>
-        <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
-      </div>
+      <p class="mikrotik-router-profile-group">
+        {% if customer.service_type == "pppoe" %}PPPoE details{% elif customer.service_type == "hotspot" %}Hotspot details{% else %}Service details{% endif %}
+      </p>
       {% if customer.service_type == "pppoe" %}
-        <div class="account-session-row"><span>PPPoE user</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
+        <div class="account-session-row"><span>Username</span><strong>{{ customer.pppoe_username|default:"—" }}</strong></div>
         <div class="account-session-row">
-          <span>PPPoE password</span>
+          <span>Password</span>
           <strong class="mikrotik-secret">
             {% if customer.pppoe_password %}
               <span class="mikrotik-secret-mask" data-secret-mask>•</span>
@@ -90,56 +78,116 @@
             {% endif %}
           </strong>
         </div>
+      {% elif customer.service_type == "hotspot" %}
+        <div class="account-session-row"><span>Device MAC</span><strong>{{ customer.hotspot_mac|default:"—" }}</strong></div>
       {% endif %}
-
-      <p class="mikrotik-router-profile-group">Router</p>
       <div class="account-session-row">
-        <span>Assigned</span>
+        <span>Router</span>
         <strong>
           {% if customer.router %}
             <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
           {% else %}
-            No router
+            —
           {% endif %}
         </strong>
       </div>
       {% if customer.router %}
         <div class="account-session-row"><span>Host</span><strong>{{ customer.router.host }}</strong></div>
       {% endif %}
-
+      <div class="account-session-row">
+        <span>Plan</span>
+        <strong>
+          {% if customer.plan %}
+            {{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
+          {% else %}
+            —
+          {% endif %}
+        </strong>
+      </div>
+      <div class="account-session-row"><span>Billing period</span><strong>{{ package_duration_label|default:"—" }}</strong></div>
+      <div class="account-session-row">
+        <span>Package starts</span>
+        <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+      </div>
+      <div class="account-session-row">
+        <span>Package ends</span>
+        <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+      </div>
       {% if can_access_wifi %}
-        <p class="mikrotik-router-profile-group">Client CPE Wi‑Fi</p>
         <div class="account-session-row">
-          <span>Wi‑Fi name</span>
-          <strong>{{ wifi_ssid_display|default:"—" }}</strong>
+          <span>CPE Wi‑Fi</span>
+          <strong data-cpe-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</strong>
         </div>
       {% endif %}
-
-      <p class="mikrotik-router-profile-group">Record</p>
-      <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y g:i A" }}</strong></div>
     </div>
   </div>
 </div>
 {% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="client-detail-page">
 
-<p class="client-detail-back">
-  <a href="{{ back_url }}">&larr; Back to clients</a>
-</p>
+<a class="client-back-link" href="{{ back_url }}">
+  <span aria-hidden="true">&larr;</span> Back to clients
+</a>
 
-<section class="panel client-profile-panel" id="client-overview">
-  <div class="client-profile-head">
-    <span class="client-profile-avatar" aria-hidden="true">
-      {{ customer.full_name|slice:":1"|upper }}
-    </span>
-    <div class="client-profile-identity">
-      <p class="client-profile-kicker">{{ customer.get_service_type_display }} subscriber</p>
-      <h2>{{ customer.full_name }}</h2>
-      <p class="client-profile-account">{{ customer.account_number }}</p>
-    </div>
-    <div class="client-profile-badges">
+<nav class="client-cat-nav" aria-label="Client sections">
+  <a class="client-cat-nav-item is-overview" href="#client-overview">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4 0-8 2-8 4v1h16v-1c0-2-4-4-8-4Z"/></svg></span>
+    Overview
+  </a>
+  <a class="client-cat-nav-item is-billing" href="#client-package-period">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 4H5V6h14Zm-7 9H5v-2h7Zm7 0h-5v-2h5Zm0-3H5v-2h14Z"/></svg></span>
+    Package
+  </a>
+  {% if can_live_usage %}
+  <a class="client-cat-nav-item is-live" href="#client-usage">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
+    Live
+  </a>
+  {% endif %}
+  {% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
+  <a class="client-cat-nav-item is-access" href="#client-router-access">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 0 1 14 0h2a9 9 0 0 0-9-9Zm0 4a5 5 0 0 0-5 5h2a3 3 0 0 1 6 0h2a5 5 0 0 0-5-5Zm-1 7h2v7h-2Z"/></svg></span>
+    Wi‑Fi
+  </a>
+  <a class="client-cat-nav-item is-router" href="#client-router-data">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 15h16v2H4Zm2 3h2v2H6Zm4 0h8v2h-8ZM4 6h16a1 1 0 0 1 1 1v5H3V7a1 1 0 0 1 1-1Zm2 2v2h2V8Z"/></svg></span>
+    Router
+  </a>
+  {% endif %}
+  <a class="client-cat-nav-item is-invoices" href="#client-billing">
+    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2h10l4 4v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm9 1.5V7h3.5ZM8 11h8v1.5H8Zm0 3h8v1.5H8Zm0 3h5V18.5H8Z"/></svg></span>
+    Billing
+  </a>
+</nav>
+
+<section class="panel client-hero" id="client-overview" data-cat="overview">
+  <div class="client-hero-main">
+    <button
+      type="button"
+      class="client-profile-open"
+      id="client-profile-open"
+      data-open-client-profile
+      aria-haspopup="menu"
+      aria-expanded="false"
+      aria-controls="client-user-profile-panel"
+    >
+      <span class="client-profile-avatar" aria-hidden="true">
+        {{ customer.full_name|slice:":1"|upper }}
+      </span>
+      <span class="client-profile-identity">
+        <span class="client-profile-kicker">{{ customer.get_service_type_display }} subscriber</span>
+        <span class="client-profile-name">{{ customer.full_name }}</span>
+        <span class="client-profile-account">{{ customer.account_number }}</span>
+      </span>
+      <span class="client-profile-open-hint">
+        View profile
+        <span class="account-menu-caret" aria-hidden="true"></span>
+      </span>
+    </button>
+
+    <div class="client-hero-status">
       <span class="badge">{{ customer.get_status_display }}</span>
       {% if customer.router %}
         <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
@@ -150,262 +198,66 @@
     </div>
   </div>
 
-  <div class="client-profile-toolbar">
-    <p class="client-profile-toolbar-label">Profile details</p>
-    <button type="button" class="client-profile-expand" data-profile-expand-all aria-expanded="false">Expand all</button>
-  </div>
-
-  <div class="client-profile-groups" data-profile-groups>
-    <details class="client-profile-group" data-profile-group="contact" open>
-      <summary class="client-profile-summary">
-        <span class="client-profile-summary-copy">
-          <span class="client-profile-summary-title">Contact details</span>
-          <span class="client-profile-summary-preview">{{ customer.phone|default:"No phone" }}</span>
+  <dl class="client-kv-row client-hero-rail">
+    <div class="client-kv" data-hero-chip="subscription" data-ico="calendar">
+      <dt>
+        <span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2v2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2Zm12 7H5v10h14Z"/></svg></span>
+        Subscription
+      </dt>
+      <dd>
+        <strong class="client-hero-chip-value" data-hero="subscription">Checking…</strong>
+        <span data-hero-meta="subscription">Package period</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-hero-chip="session" data-ico="signal">
+      <dt>
+        <span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M2 17h2v5H2Zm4-4h2v9H6Zm4-4h2v13h-2Zm4-4h2v17h-2Zm4-3h2v20h-2Z"/></svg></span>
+        Session
+      </dt>
+      <dd>
+        <strong class="client-hero-chip-value" data-hero="session">Checking…</strong>
+        <span data-hero-meta="session">
+          {% if customer.service_type == "pppoe" %}PPPoE link{% else %}{{ customer.get_service_type_display }} link{% endif %}
         </span>
-        <span class="client-profile-chevron" aria-hidden="true"></span>
-      </summary>
-      <dl class="client-profile-list">
-        <div><dt>Phone</dt><dd>{{ customer.phone|default:"—" }}</dd></div>
-        <div><dt>Email</dt><dd>{{ customer.email|default:"—" }}</dd></div>
-        <div><dt>Address</dt><dd>{{ customer.address|default:"—" }}</dd></div>
-      </dl>
-    </details>
-
-    <details class="client-profile-group" data-profile-group="connection">
-      <summary class="client-profile-summary">
-        <span class="client-profile-summary-copy">
-          <span class="client-profile-summary-title">Connection details</span>
-          <span class="client-profile-summary-preview">
-            {{ customer.get_service_type_display }}{% if customer.router %} · {{ customer.router.name }}{% endif %}
-          </span>
-        </span>
-        <span class="client-profile-chevron" aria-hidden="true"></span>
-      </summary>
-      <dl class="client-profile-list">
-        <div><dt>Service</dt><dd>{{ customer.get_service_type_display }}</dd></div>
-        {% if customer.service_type == "pppoe" %}
-          <div><dt>PPPoE username</dt><dd class="client-profile-mono">{{ customer.pppoe_username|default:"—" }}</dd></div>
-        {% elif customer.service_type == "hotspot" %}
-          <div><dt>Device MAC</dt><dd class="client-profile-mono">{{ customer.hotspot_mac|default:"—" }}</dd></div>
-        {% endif %}
-        <div>
-          <dt>Router</dt>
-          <dd>
-            {% if customer.router %}
-              <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
-              <span class="client-profile-secondary">{{ customer.router.host }}</span>
-            {% else %}
-              —
-            {% endif %}
-          </dd>
-        </div>
-      </dl>
-    </details>
-
-    <details class="client-profile-group" data-profile-group="package">
-      <summary class="client-profile-summary">
-        <span class="client-profile-summary-copy">
-          <span class="client-profile-summary-title">Package details</span>
-          <span class="client-profile-summary-preview">
-            {% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}
-          </span>
-        </span>
-        <span class="client-profile-chevron" aria-hidden="true"></span>
-      </summary>
-      <dl class="client-profile-list">
-        <div>
-          <dt>Plan</dt>
-          <dd>
-            {% if customer.plan %}
-              {{ customer.plan.name }}
-              {% if customer.plan.speed_label %}<span class="client-profile-secondary">{{ customer.plan.speed_label }}</span>{% endif %}
-            {% else %}
-              —
-            {% endif %}
-          </dd>
-        </div>
-        <div><dt>Billing period</dt><dd>{{ package_duration_label|default:"—" }}</dd></div>
-        <div>
-          <dt>Package starts</dt>
-          <dd>{% if customer.package_start %}{{ customer.package_start|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</dd>
-        </div>
-        <div>
-          <dt>Package ends</dt>
-          <dd>{% if customer.package_end %}{{ customer.package_end|date:"M j, Y · g:i A" }}{% else %}—{% endif %}</dd>
-        </div>
-      </dl>
-    </details>
-
-    <details class="client-profile-group" data-profile-group="record">
-      <summary class="client-profile-summary">
-        <span class="client-profile-summary-copy">
-          <span class="client-profile-summary-title">Account record</span>
-          <span class="client-profile-summary-preview">{{ customer.account_number }}</span>
-        </span>
-        <span class="client-profile-chevron" aria-hidden="true"></span>
-      </summary>
-      <dl class="client-profile-list">
-        <div><dt>Account number</dt><dd class="client-profile-mono">{{ customer.account_number }}</dd></div>
-        <div><dt>Status</dt><dd>{{ customer.get_status_display }}</dd></div>
-        <div><dt>Registered</dt><dd>{{ customer.created_at|date:"M j, Y · g:i A" }}</dd></div>
-      </dl>
-    </details>
-  </div>
+      </dd>
+    </div>
+    <div class="client-kv" data-hero-chip="throughput" data-ico="speed">
+      <dt>
+        <span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7Zm1 4 4.2 7.3-1.7 1L12 9.4Z"/></svg></span>
+        Throughput
+      </dt>
+      <dd>
+        <strong class="client-hero-chip-value" data-hero="throughput">—</strong>
+        <span data-hero-meta="throughput">Down / up right now</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-hero-chip="plan" data-ico="plan">
+      <dt>
+        <span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6Zm0 2.2 6 3v4.8c0 3.8-2.5 7.2-6 7.8-3.5-.6-6-4-6-7.8V7.2Z"/></svg></span>
+        Plan
+      </dt>
+      <dd>
+        <strong class="client-hero-chip-value">{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
+        <span>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan assigned{% endif %}</span>
+      </dd>
+    </div>
+  </dl>
 </section>
-
-{% if can_live_usage %}
-<section
-  class="panel client-usage-panel"
-  id="client-usage"
-  data-usage-url="{% url 'core:client_usage' customer.id %}"
-  data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
->
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="mikrotik-detail-kicker">Usage analysis</p>
-      <h2>{{ customer.full_name }}</h2>
-    </div>
-    <div class="mikrotik-detail-actions">
-      <button type="button" class="btn btn-ghost" id="client-usage-refresh" {% if not can_live_usage %}disabled{% endif %}>
-        Refresh live
-      </button>
-    </div>
-  </div>
-
-  <div class="mikrotik-live-head client-usage-head">
-    <div>
-      <h3>Live session</h3>
-      <p class="mikrotik-live-sub" id="client-usage-sub">
-        {% if can_live_usage %}
-          Reading live session from the client CPE…
-        {% elif not customer.router %}
-          Assign a MikroTik router to this client to see live usage.
-        {% elif customer.service_type != "pppoe" %}
-          Live session metrics are available for PPPoE clients.
-        {% else %}
-          Add a PPPoE username to enable live usage.
-        {% endif %}
-      </p>
-    </div>
-    <span class="mikrotik-live-stamp" id="client-usage-stamp">—</span>
-  </div>
-
-  <div class="client-usage-grid mikrotik-live-grid" id="client-usage-grid">
-    <article class="mikrotik-live-card" data-metric="session">
-      <p class="mikrotik-live-label">Session</p>
-      <p class="mikrotik-live-value" data-usage="session">…</p>
-      <p class="mikrotik-live-hint" data-usage="session-hint">PPPoE online status</p>
-    </article>
-    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
-      <p class="mikrotik-live-label">Download</p>
-      <p class="mikrotik-live-value" data-usage="download">—</p>
-      <p class="mikrotik-live-hint" data-usage="download-hint">Speed CPE is receiving</p>
-    </article>
-    <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
-      <p class="mikrotik-live-label">Upload</p>
-      <p class="mikrotik-live-value" data-usage="upload">—</p>
-      <p class="mikrotik-live-hint" data-usage="upload-hint">Speed CPE is sending</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="devices">
-      <p class="mikrotik-live-label">Devices connected</p>
-      <p class="mikrotik-live-value" data-usage="devices">—</p>
-      <p class="mikrotik-live-hint" data-usage="devices-hint">On the client CPE</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="uptime">
-      <p class="mikrotik-live-label">Session uptime</p>
-      <p class="mikrotik-live-value" data-usage="uptime">—</p>
-      <p class="mikrotik-live-hint">Current connection length</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="bytes-in">
-      <p class="mikrotik-live-label">Downloaded</p>
-      <p class="mikrotik-live-value" data-usage="bytes-in">—</p>
-      <p class="mikrotik-live-hint" data-usage="bytes-in-hint">Traffic this session</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="bytes-out">
-      <p class="mikrotik-live-label">Uploaded</p>
-      <p class="mikrotik-live-value" data-usage="bytes-out">—</p>
-      <p class="mikrotik-live-hint" data-usage="bytes-out-hint">Traffic this session</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="ip">
-      <p class="mikrotik-live-label">CPE IP</p>
-      <p class="mikrotik-live-value client-usage-mono" data-usage="address">—</p>
-      <p class="mikrotik-live-hint" data-usage="caller">Caller / MAC</p>
-    </article>
-    <article class="mikrotik-live-card" data-metric="plan">
-      <p class="mikrotik-live-label">Plan speed</p>
-      <p class="mikrotik-live-value">
-        {% if customer.plan %}{{ customer.plan.speed_label }}{% else %}—{% endif %}
-      </p>
-      <p class="mikrotik-live-hint">
-        {% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}
-      </p>
-    </article>
-  </div>
-</section>
-{% endif %}
-
-{% if can_access_wifi %}
-<section
-  class="panel client-wifi-panel"
-  id="client-wifi"
->
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="mikrotik-detail-kicker">Client CPE</p>
-      <h2>Wi‑Fi settings</h2>
-      <p class="panel-sub">
-        Stored Wi‑Fi credentials for the subscriber’s CPE router connected through PPPoE
-        (<strong>{{ customer.pppoe_username }}</strong>) on
-        <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>.
-      </p>
-    </div>
-  </div>
-
-  <div class="client-wifi-grid">
-    <article class="mikrotik-live-card">
-      <p class="mikrotik-live-label">Dials into</p>
-      <p class="mikrotik-live-value">
-        <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
-      </p>
-      <p class="mikrotik-live-hint">ISP MikroTik NAS · {{ customer.router.host }}</p>
-    </article>
-    <article class="mikrotik-live-card">
-      <p class="mikrotik-live-label">Wi‑Fi name</p>
-      <p class="mikrotik-live-value">{{ wifi_ssid_display|default:"—" }}</p>
-      <p class="mikrotik-live-hint">Last known</p>
-    </article>
-    <article class="mikrotik-live-card">
-      <p class="mikrotik-live-label">Wi‑Fi password</p>
-      <p class="mikrotik-live-value" data-cpe-password-wrap>
-        {% if wifi_password_display %}
-          <span class="mikrotik-secret">
-            <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-            <span class="mikrotik-secret-value" data-secret-value hidden>{{ wifi_password_display }}</span>
-            <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">
-              <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-              <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-            </button>
-          </span>
-        {% else %}
-          —
-        {% endif %}
-      </p>
-      <p class="mikrotik-live-hint">Click the eye icon to reveal</p>
-    </article>
-  </div>
-</section>
-{% endif %}
 
 <section
   class="panel client-package-period"
   id="client-package-period"
+  data-cat="billing"
   data-subscription-url="{% url 'core:client_subscription' customer.id %}"
   data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
   data-package-duration="{{ package_duration|default:'' }}"
 >
   <div class="mikrotik-detail-toolbar">
     <div class="mikrotik-detail-toolbar-copy">
-      <p class="mikrotik-detail-kicker">Billing package</p>
+      <p class="client-cat client-cat-billing">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 4H5V6h14Zm-7 9H5v-2h7Zm7 0h-5v-2h5Zm0-3H5v-2h14Z"/></svg></span>
+        Billing package
+      </p>
       <h2>Package period</h2>
       <p class="panel-sub">
         {% if customer.plan %}
@@ -440,29 +292,321 @@
     <div class="client-subscription-banner is-blocked" data-sub-banner hidden></div>
   {% endif %}
 
-  <div class="client-usage-stats">
-    <div class="client-usage-stat">
-      <span>Starts</span>
-      <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+  <div class="client-period-progress" data-period-progress hidden>
+    <div class="client-period-progress-head">
+      <span data-period-progress-label>Package period</span>
+      <span class="client-period-progress-pct" data-period-progress-pct>—</span>
     </div>
-    <div class="client-usage-stat">
-      <span>Ends</span>
-      <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+    <div class="client-period-track">
+      <span data-period-progress-fill></span>
     </div>
-    <div class="client-usage-stat">
-      <span>Remaining</span>
-      <strong data-sub-remaining>—</strong>
+  </div>
+
+  <dl class="client-kv-row client-usage-stats">
+    <div class="client-kv client-usage-stat" data-ico="start">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-0.8 1.4L11 13V7h2Z"/></svg></span>Starts</dt>
+      <dd><strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Billing period</span>
-      <strong data-sub-duration>{% if package_duration_label %}{{ package_duration_label }}{% else %}—{% endif %}</strong>
+    <div class="client-kv client-usage-stat" data-ico="end">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm5 11H7v-2h10Z"/></svg></span>Ends</dt>
+      <dd><strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Plan</span>
-      <strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
+    <div class="client-kv client-usage-stat" data-ico="remain">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 11H7v-2h4V6h2Z"/></svg></span>Remaining</dt>
+      <dd><strong data-sub-remaining>—</strong></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="period">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2v2H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2Zm12 7H5v10h14Z"/></svg></span>Billing period</dt>
+      <dd><strong data-sub-duration>{% if package_duration_label %}{{ package_duration_label }}{% else %}—{% endif %}</strong></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="plan">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6Z"/></svg></span>Plan</dt>
+      <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong></dd>
+    </div>
+  </dl>
+</section>
+
+{% if can_live_usage %}
+<section
+  class="panel client-usage-panel"
+  id="client-usage"
+  data-cat="live"
+  data-usage-url="{% url 'core:client_usage' customer.id %}"
+  data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
+  data-plan-down-mbps="{% if customer.plan %}{{ customer.plan.download_speed_mbps }}{% else %}0{% endif %}"
+  data-plan-up-mbps="{% if customer.plan %}{{ customer.plan.upload_speed_mbps }}{% else %}0{% endif %}"
+>
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-live">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
+        <span class="client-live-pulse" aria-hidden="true"></span>
+        Live session
+      </p>
+      <h2>Connection right now</h2>
+      <p class="panel-sub" id="client-usage-sub">Reading live session from the client CPE…</p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <span class="mikrotik-live-stamp" id="client-usage-stamp">—</span>
+      <button type="button" class="btn btn-ghost" id="client-usage-refresh">Refresh</button>
+    </div>
+  </div>
+
+  <dl class="client-kv-list" id="client-usage-grid">
+    <div class="client-kv" data-metric="session" data-ico="session">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Session</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-usage="session">…</strong>
+        <span data-usage="session-hint">PPPoE online status</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-metric="download" data-ico="down">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Download</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-usage="download">—</strong>
+        <div class="client-meter" data-usage-meter="download"><span></span></div>
+        <span data-usage="download-hint">Speed CPE is receiving</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-metric="upload" data-ico="up">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 5l5.7 5.7-1.4 1.4L13 9.8V20h-2V9.8l-3.3 3.3-1.4-1.4Z"/></svg></span>Upload</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-usage="upload">—</strong>
+        <div class="client-meter" data-usage-meter="upload"><span></span></div>
+        <span data-usage="upload-hint">Speed CPE is sending</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="devices">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v10H4Zm2 12h4v2H6Zm6 0h6v2h-6Z"/></svg></span>Devices</dt>
+      <dd>
+        <strong data-usage="devices">—</strong>
+        <span data-usage="devices-hint">On the client CPE</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="uptime">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-0.8 1.4L11 13V7h2Z"/></svg></span>Uptime</dt>
+      <dd>
+        <strong data-usage="uptime">—</strong>
+        <span>Current session</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="bytes-in">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Downloaded</dt>
+      <dd>
+        <strong data-usage="bytes-in">—</strong>
+        <span data-usage="bytes-in-hint">This session</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="bytes-out">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm6 6h10v4H10Zm-6 6h16v4H4Z"/></svg></span>Uploaded</dt>
+      <dd>
+        <strong data-usage="bytes-out">—</strong>
+        <span data-usage="bytes-out-hint">This session</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="ip">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a8 8 0 0 0-8 8c0 5.2 8 12 8 12s8-6.8 8-12a8 8 0 0 0-8-8Zm0 11a3 3 0 1 1 3-3 3 3 0 0 1-3 3Z"/></svg></span>CPE IP</dt>
+      <dd>
+        <strong class="client-usage-mono" data-usage="address">—</strong>
+        <span data-usage="caller">Caller / MAC</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="plan">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6Z"/></svg></span>Plan speed</dt>
+      <dd>
+        <strong>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}—{% endif %}</strong>
+        <span>{% if customer.plan %}{{ customer.plan.name }}{% else %}No plan assigned{% endif %}</span>
+      </dd>
+    </div>
+  </dl>
+</section>
+{% else %}
+<section class="panel client-live-empty">
+  <p class="mikrotik-detail-kicker">Live session</p>
+  <p class="client-live-empty-text">
+    {% if not customer.router %}
+      Assign a MikroTik router to this client to see live usage.
+    {% elif customer.service_type != "pppoe" %}
+      Live session metrics are available for PPPoE clients.
+    {% else %}
+      Add a PPPoE username to enable live usage.
+    {% endif %}
+  </p>
+</section>
+{% endif %}
+
+{% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
+<section class="panel client-access-panel" id="client-router-access" data-cat="access">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-access">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 0 1 14 0h2a9 9 0 0 0-9-9Zm0 4a5 5 0 0 0-5 5h2a3 3 0 0 1 6 0h2a5 5 0 0 0-5-5Zm-1 7h2v7h-2Z"/></svg></span>
+        Access &amp; support
+      </p>
+      <h2>Router and Wi‑Fi</h2>
+      <p class="panel-sub">
+        Dials into <a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a>
+        as <strong>{{ customer.pppoe_username }}</strong>. The client must be online on PPPoE
+        to open their router page.
+      </p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <a
+        class="btn btn-primary"
+        href="{% url 'core:client_router_login' customer.id %}"
+        target="_blank"
+        rel="noopener"
+      >Open client router</a>
+    </div>
+  </div>
+
+  <dl
+    class="client-kv-list"
+    id="client-wifi"
+    {% if can_access_wifi %}data-cpe-wifi-url="{% url 'core:client_cpe_wifi' customer.id %}"{% endif %}
+  >
+    <div class="client-kv" data-ico="nas">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 15h16v2H4Zm2 3h2v2H6Zm4 0h8v2h-8ZM4 6h16a1 1 0 0 1 1 1v5H3V7a1 1 0 0 1 1-1Zm2 2v2h2V8Z"/></svg></span>ISP router</dt>
+      <dd>
+        <strong><a href="{% url 'core:mikrotik_detail' customer.router.id %}">{{ customer.router.name }}</a></strong>
+        <span>MikroTik NAS · {{ customer.router.host }}</span>
+      </dd>
+    </div>
+    {% if can_access_wifi %}
+      <div class="client-kv" data-ico="wifi">
+        <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Zm0 5c-3.3 0-6.2 1.2-8.3 3.2L5.5 13C7.2 11.4 9.5 10.5 12 10.5s4.8.9 6.5 2.5l1.8-1.8C18.2 9.2 15.3 8 12 8Zm0 5a6.4 6.4 0 0 0-4.4 1.8L9.4 16.6A4 4 0 0 1 12 15.5a4 4 0 0 1 2.6 1.1l1.8-1.8A6.4 6.4 0 0 0 12 13Z"/></svg></span>Wi‑Fi name</dt>
+        <dd>
+          <strong data-cpe-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</strong>
+          <span data-cpe-wifi-ssid-hint>Loading live settings…</span>
+        </dd>
+      </div>
+      <div class="client-kv" data-ico="lock">
+        <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-6 0V7a2 2 0 0 1 4 0v2Z"/></svg></span>Wi‑Fi password</dt>
+        <dd>
+          <strong data-cpe-password-wrap>
+            <span class="mikrotik-secret" data-cpe-wifi-secret {% if not wifi_password_display %}hidden{% endif %}>
+              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+              <span class="mikrotik-secret-value" data-secret-value data-cpe-wifi-password hidden>{{ wifi_password_display }}</span>
+              <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </span>
+            <span data-cpe-wifi-password-empty {% if wifi_password_display %}hidden{% endif %}>—</span>
+          </strong>
+          <span data-cpe-wifi-radio-hint>Tap the eye icon to reveal</span>
+        </dd>
+      </div>
+      <div class="client-kv" data-ico="radio">
+        <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a3 3 0 1 0 3 3 3 3 0 0 0-3-3Zm8.7-2.7-1.4 1.4A8 8 0 0 0 4.7 10.7L3.3 9.3a10 10 0 0 1 17.4 0ZM16.9 12.5l-1.4 1.4a4 4 0 0 0-6.9 0l-1.4-1.4a6 6 0 0 1 9.7 0Z"/></svg></span>Wi‑Fi radio</dt>
+        <dd>
+          <strong data-cpe-wifi-state>—</strong>
+          <span data-cpe-wifi-channel>Channel · security</span>
+        </dd>
+      </div>
+    {% endif %}
+  </dl>
+
+  {% if can_access_wifi %}
+  <div class="mikrotik-detail-actions" style="margin-top:0.75rem">
+    <a class="btn btn-primary" href="{% url 'core:client_wifi_settings' customer.id %}">Manage Wi‑Fi settings</a>
+  </div>
+  {% endif %}
+
+  <p class="client-access-note">
+    Router access stays open while you’re using it and closes after 15 minutes of
+    inactivity. It’s tied to your signed-in ISPCENTRIC account.
+    Sign in with the client router’s own admin password when prompted.
+  </p>
+</section>
+{% endif %}
+
+{% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
+<section
+  class="panel client-usage-panel"
+  id="client-router-data"
+  data-cat="router"
+  data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"
+>
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-router">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M4 15h16v2H4Zm2 3h2v2H6Zm4 0h8v2h-8ZM4 6h16a1 1 0 0 1 1 1v5H3V7a1 1 0 0 1 1-1Zm2 2v2h2V8Z"/></svg></span>
+        <span class="client-live-pulse" aria-hidden="true"></span>
+        Client router
+      </p>
+      <h2>Router details</h2>
+      <p class="panel-sub" data-router-data-status>Fetching live data from the client router…</p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <span class="mikrotik-live-stamp" data-router-data-stamp>—</span>
+      <button type="button" class="btn btn-ghost" data-router-data-refresh>Refresh</button>
+    </div>
+  </div>
+
+  <form class="client-router-password-form" data-router-password-form hidden>
+    {% csrf_token %}
+    <input type="hidden" name="action" value="update_router_password">
+    <label for="client-router-password">Client router admin password</label>
+    <div class="client-router-password-row">
+      <input
+        type="password"
+        id="client-router-password"
+        name="cpe_password"
+        class="form-control"
+        autocomplete="off"
+        placeholder="Password used to sign in to the client router"
+      >
+      <button type="submit" class="btn btn-primary">Save &amp; fetch</button>
+    </div>
+    <p class="field-hint">
+      This is the client router's own admin password, not the PPPoE password.
+    </p>
+  </form>
+
+  <dl class="client-kv-list">
+    <div class="client-kv" data-ico="net">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm7.9 9h-3.1a15 15 0 0 0-1.4-5.2A8 8 0 0 1 19.9 11ZM12 4c1.1 0 2.7 2.2 3.4 6H8.6C9.3 6.2 10.9 4 12 4ZM4.1 13h3.1a15 15 0 0 0 1.4 5.2A8 8 0 0 1 4.1 13Zm3.1-2H4.1a8 8 0 0 1 4.5-5.2A15 15 0 0 0 7.2 11Zm1.4 2h6.8c-.7 3.8-2.3 6-3.4 6s-2.7-2.2-3.4-6Zm8.2 5.2A15 15 0 0 0 16.8 13h3.1a8 8 0 0 1-4.5 5.2Z"/></svg></span>Internet</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-router-value="internet">…</strong>
+        <span data-router-value="internet-hint">WAN connection</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="router">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 15h16v2H4Zm2 3h2v2H6Zm4 0h8v2h-8ZM4 6h16a1 1 0 0 1 1 1v5H3V7a1 1 0 0 1 1-1Zm2 2v2h2V8Z"/></svg></span>Router</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-router-value="model">—</strong>
+        <span data-router-value="firmware">Firmware</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="devices">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v10H4Zm2 12h4v2H6Zm6 0h6v2h-6Z"/></svg></span>Devices</dt>
+      <dd>
+        <strong class="mikrotik-live-value" data-router-value="devices">—</strong>
+        <span>LAN and Wi‑Fi clients</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="wifi"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Z"/></svg></span>Wi‑Fi name</dt><dd><strong data-router-value="ssid">—</strong><span data-router-value="wifi-state">Wireless status</span></dd></div>
+    <div class="client-kv" data-ico="radio"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a3 3 0 1 0 3 3 3 3 0 0 0-3-3Zm8.7-2.7-1.4 1.4A8 8 0 0 0 4.7 10.7L3.3 9.3a10 10 0 0 1 17.4 0ZM16.9 12.5l-1.4 1.4a4 4 0 0 0-6.9 0l-1.4-1.4a6 6 0 0 1 9.7 0Z"/></svg></span>Wi‑Fi radio</dt><dd><strong data-router-value="wifi-mode">—</strong><span data-router-value="wifi-channel">Channel</span></dd></div>
+    <div class="client-kv" data-ico="wan"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a8 8 0 0 0-8 8c0 5.2 8 12 8 12s8-6.8 8-12a8 8 0 0 0-8-8Zm0 11a3 3 0 1 1 3-3 3 3 0 0 1-3 3Z"/></svg></span>WAN address</dt><dd><strong class="client-usage-mono" data-router-value="wan-ip">—</strong><span data-router-value="wan-type">Connection type</span></dd></div>
+    <div class="client-kv" data-ico="gw"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 3 7v2h18V7Zm-7 9v8h2v-8Zm5 0v8h2v-8Zm5 0v8h2v-8ZM3 21h18v2H3Z"/></svg></span>Gateway</dt><dd><strong class="client-usage-mono" data-router-value="gateway">—</strong><span data-router-value="dns">DNS</span></dd></div>
+    <div class="client-kv" data-ico="mac"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 7h16v10H4Zm2 2v6h12V9Z"/></svg></span>WAN MAC</dt><dd><strong class="client-usage-mono" data-router-value="wan-mac">—</strong><span data-router-value="wan-link">Link speed / MTU</span></dd></div>
+    <div class="client-kv" data-ico="lan"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 5h8v6H3Zm10 0h8v6h-8ZM3 13h8v6H3Zm10 0h8v6h-8Z"/></svg></span>LAN address</dt><dd><strong class="client-usage-mono" data-router-value="lan-ip">—</strong><span data-router-value="router-time">Router time</span></dd></div>
+    <div class="client-kv" data-ico="uptime"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Session uptime</dt><dd><strong data-router-value="uptime">—</strong><span>Current WAN session</span></dd></div>
+    <div class="client-kv" data-ico="speed"><dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7Zm1 4 4.2 7.3-1.7 1L12 9.4Z"/></svg></span>Live throughput</dt><dd><strong data-router-value="throughput">—</strong><span>Download / upload</span></dd></div>
+  </dl>
+
+  <div data-router-device-wrap hidden>
+    <h3 class="client-billing-subhead">Connected devices</h3>
+    <div class="clients-table-wrap">
+      <table class="table clients-type-table">
+        <thead><tr><th>Device</th><th>IP</th><th>MAC</th><th>Connection</th><th>Traffic</th></tr></thead>
+        <tbody data-router-device-list></tbody>
+      </table>
     </div>
   </div>
 </section>
+{% endif %}
 
 <div
   class="role-modal client-action-modal"
@@ -558,40 +702,44 @@
   </div>
 </div>
 
-<section class="panel client-billing-analysis" id="client-billing">
-  <div class="panel-head-row">
-    <div>
-      <h2>Billing analysis</h2>
-      <p class="panel-sub">Invoices and payments for this subscriber.</p>
+<section class="panel client-billing-analysis" id="client-billing" data-cat="invoices">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-invoices">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M7 2h10l4 4v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm9 1.5V7h3.5ZM8 11h8v1.5H8Zm0 3h8v1.5H8Zm0 3h5V18.5H8Z"/></svg></span>
+        Billing
+      </p>
+      <h2>Invoices and payments</h2>
+      <p class="panel-sub">Everything billed and collected for this subscriber.</p>
     </div>
   </div>
 
-  <div class="client-usage-stats">
-    <div class="client-usage-stat">
-      <span>Invoices</span>
-      <strong>{{ invoice_total }}</strong>
+  <dl class="client-kv-row client-usage-stats">
+    <div class="client-kv client-usage-stat" data-ico="invoice">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2h10l4 4v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z"/></svg></span>Invoices</dt>
+      <dd><strong>{{ invoice_total }}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Pending</span>
-      <strong>{{ invoice_pending }}</strong>
+    <div class="client-kv client-usage-stat" data-ico="pending">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 11H7v-2h4V6h2Z"/></svg></span>Pending</dt>
+      <dd><strong>{{ invoice_pending }}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Paid</span>
-      <strong>{{ invoice_paid }}</strong>
+    <div class="client-kv client-usage-stat" data-ico="paid">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M9.2 16.6 4.8 12.2l1.4-1.4 3 3 8-8 1.4 1.4Z"/></svg></span>Paid</dt>
+      <dd><strong>{{ invoice_paid }}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Overdue</span>
-      <strong>{{ invoice_overdue }}</strong>
+    <div class="client-kv client-usage-stat" data-ico="overdue">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M1 21h22L12 2Zm12-3h-2v-2h2Zm0-4h-2v-4h2Z"/></svg></span>Overdue</dt>
+      <dd><strong>{{ invoice_overdue }}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Billed</span>
-      <strong>{{ amount_billed }}</strong>
+    <div class="client-kv client-usage-stat" data-ico="billed">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 6h18v2H3Zm0 5h18v2H3Zm0 5h12v2H3Z"/></svg></span>Billed</dt>
+      <dd><strong>{{ amount_billed }}</strong></dd>
     </div>
-    <div class="client-usage-stat">
-      <span>Collected</span>
-      <strong>{{ amount_paid }}</strong>
+    <div class="client-kv client-usage-stat" data-ico="collected">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a8 8 0 0 0-8 8c0 5.2 8 12 8 12s8-6.8 8-12a8 8 0 0 0-8-8Zm0 11a3 3 0 1 1 3-3 3 3 0 0 1-3 3Z"/></svg></span>Collected</dt>
+      <dd><strong>{{ amount_paid }}</strong></dd>
     </div>
-  </div>
+  </dl>
 
   <div class="client-billing-split">
     <div>
@@ -654,11 +802,26 @@
     </div>
   </div>
 </section>
+
+</div>
 {% endblock %}
 
 {% block client_extra_js %}
 <script>
 (function () {
+  // Hero rail chips are written by the live pollers further down the page.
+  window.setClientHeroChip = function (key, value, meta, state) {
+    var chip = document.querySelector('[data-hero-chip="' + key + '"]');
+    if (!chip) return;
+    var valueEl = chip.querySelector('[data-hero="' + key + '"]') ||
+      chip.querySelector(".client-hero-chip-value");
+    var metaEl = chip.querySelector('[data-hero-meta="' + key + '"]');
+    if (valueEl) valueEl.textContent = value == null || value === "" ? "—" : value;
+    if (metaEl && meta) metaEl.textContent = meta;
+    chip.classList.remove("is-good", "is-bad", "is-idle");
+    if (state) chip.classList.add(state);
+  };
+
   var profile = document.getElementById("client-user-profile");
   var profileTrigger = document.getElementById("client-user-profile-trigger");
   var profilePanel = document.getElementById("client-user-profile-panel");
@@ -678,12 +841,25 @@
     profile.classList.toggle("is-open", open);
     profileTrigger.setAttribute("aria-expanded", open ? "true" : "false");
     profilePanel.hidden = !open;
+    document.querySelectorAll("[data-open-client-profile]").forEach(function (btn) {
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      btn.classList.toggle("is-open", open);
+    });
   }
 
   if (profile && profileTrigger && profilePanel) {
     profileTrigger.addEventListener("click", function (e) {
       e.stopPropagation();
       setProfileOpen(profilePanel.hidden);
+    });
+    document.querySelectorAll("[data-open-client-profile]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        setProfileOpen(profilePanel.hidden);
+        if (!profilePanel.hidden) {
+          try { profileTrigger.focus(); } catch (err) {}
+        }
+      });
     });
     document.addEventListener("click", function (e) {
       if (!profile.contains(e.target)) setProfileOpen(false);
@@ -692,57 +868,6 @@
       if (e.key === "Escape" && !profilePanel.hidden) setProfileOpen(false);
     });
   }
-
-  (function setupProfileGroups() {
-    var wrap = document.querySelector("[data-profile-groups]");
-    var expandBtn = document.querySelector("[data-profile-expand-all]");
-    if (!wrap) return;
-    var groups = Array.prototype.slice.call(wrap.querySelectorAll("[data-profile-group]"));
-    var storeKey = "ispcentric:client-profile-groups";
-
-    function readStore() {
-      try {
-        return JSON.parse(localStorage.getItem(storeKey)) || {};
-      } catch (err) {
-        return {};
-      }
-    }
-
-    function writeStore(state) {
-      try {
-        localStorage.setItem(storeKey, JSON.stringify(state));
-      } catch (err) {
-        /* storage unavailable — open state just won't persist */
-      }
-    }
-
-    function syncExpandBtn() {
-      if (!expandBtn) return;
-      var allOpen = groups.every(function (g) { return g.open; });
-      expandBtn.textContent = allOpen ? "Collapse all" : "Expand all";
-      expandBtn.setAttribute("aria-expanded", allOpen ? "true" : "false");
-    }
-
-    var saved = readStore();
-    groups.forEach(function (group) {
-      var key = group.getAttribute("data-profile-group");
-      if (Object.prototype.hasOwnProperty.call(saved, key)) group.open = !!saved[key];
-      group.addEventListener("toggle", function () {
-        var state = readStore();
-        state[key] = group.open;
-        writeStore(state);
-        syncExpandBtn();
-      });
-    });
-
-    if (expandBtn) {
-      expandBtn.addEventListener("click", function () {
-        var open = !groups.every(function (g) { return g.open; });
-        groups.forEach(function (g) { g.open = open; });
-      });
-    }
-    syncExpandBtn();
-  })();
 
   document.querySelectorAll(".mikrotik-secret").forEach(function (wrap) {
     var mask = wrap.querySelector("[data-secret-mask]");
@@ -1115,12 +1240,35 @@
   var subEl = document.getElementById("client-usage-sub");
   var stampEl = document.getElementById("client-usage-stamp");
   var refreshBtn = document.getElementById("client-usage-refresh");
+  var planDownBps = Number(root.getAttribute("data-plan-down-mbps") || 0) * 1000000;
+  var planUpBps = Number(root.getAttribute("data-plan-up-mbps") || 0) * 1000000;
   var timer = null;
   var inFlight = false;
 
   function setText(sel, value) {
     var el = root.querySelector('[data-usage="' + sel + '"]');
     if (el) el.textContent = value == null || value === "" ? "—" : value;
+  }
+
+  function setMeter(key, bps, ceiling) {
+    var meter = root.querySelector('[data-usage-meter="' + key + '"]');
+    if (!meter) return;
+    var fill = meter.querySelector("span");
+    var used = Number(bps);
+    if (!fill || !isFinite(used) || used <= 0 || !ceiling) {
+      if (fill) fill.style.width = "0%";
+      meter.classList.remove("is-hot");
+      return;
+    }
+    var pct = Math.max(2, Math.min(100, (used / ceiling) * 100));
+    fill.style.width = pct.toFixed(1) + "%";
+    meter.classList.toggle("is-hot", pct >= 85);
+  }
+
+  function heroChip(key, value, meta, state) {
+    if (typeof window.setClientHeroChip === "function") {
+      window.setClientHeroChip(key, value, meta, state);
+    }
   }
 
   function stampNow() {
@@ -1145,13 +1293,18 @@
     setText("bytes-out-hint", "Traffic this session");
     setText("address", "—");
     setText("caller", "Caller / MAC");
+    setMeter("download", 0, planDownBps);
+    setMeter("upload", 0, planUpBps);
     root.classList.remove("is-online");
     root.classList.add("is-offline");
+    heroChip("session", "Offline", message || "Not connected", "is-bad");
+    heroChip("throughput", "—", "No live traffic", "is-idle");
   }
 
   function refresh(force) {
     if (!canLive || !usageUrl || document.hidden || inFlight) return;
     inFlight = true;
+    root.classList.add("is-fetching");
     if (refreshBtn) refreshBtn.disabled = true;
     var url = usageUrl;
     if (force) url += (usageUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
@@ -1198,6 +1351,20 @@
           setText("bytes-out", data.bytes_out_label || "—");
           setText("address", data.cpe_host || data.address || "—");
           setText("caller", data.caller_id ? ("Caller " + data.caller_id) : "Caller / MAC");
+          setMeter("download", data.download_bps, planDownBps);
+          setMeter("upload", data.upload_bps, planUpBps);
+          heroChip(
+            "session",
+            "Online",
+            (data.service || "PPPoE") + (data.uptime ? " · up " + data.uptime : ""),
+            "is-good"
+          );
+          heroChip(
+            "throughput",
+            (data.download_label || "—") + " ↓ " + (data.upload_label || "—") + " ↑",
+            data.speed_source === "cpe" ? "Measured on the client CPE" : "Measured on the ISP NAS",
+            "is-good"
+          );
           if (subEl) {
             if (data.speed_source === "cpe") {
               subEl.textContent =
@@ -1229,6 +1396,7 @@
       })
       .finally(function () {
         inFlight = false;
+        root.classList.remove("is-fetching");
         if (refreshBtn && canLive) refreshBtn.disabled = false;
       });
   }
@@ -1262,11 +1430,47 @@
   var inFlight = false;
   var timer = null;
 
+  var progress = section.querySelector("[data-period-progress]");
+  var progressFill = section.querySelector("[data-period-progress-fill]");
+  var progressLabel = section.querySelector("[data-period-progress-label]");
+  var progressPct = section.querySelector("[data-period-progress-pct]");
+
+  function renderProgress(data) {
+    if (!progress || !progressFill) return;
+    var start = Date.parse(data.package_start_iso || "");
+    var end = Date.parse(data.package_end_iso || "");
+    var now = Date.parse(data.now || "") || Date.now();
+    if (!isFinite(start) || !isFinite(end) || end <= start) {
+      progress.hidden = true;
+      return;
+    }
+    var used = Math.max(0, Math.min(100, ((now - start) / (end - start)) * 100));
+    progress.hidden = false;
+    progress.classList.toggle("is-spent", used >= 100);
+    progress.classList.toggle("is-ending", used >= 85 && used < 100);
+    progressFill.style.width = used.toFixed(1) + "%";
+    if (progressPct) progressPct.textContent = Math.round(used) + "% used";
+    if (progressLabel) {
+      progressLabel.textContent = data.remaining_label && used < 100
+        ? data.remaining_label + " left of this package"
+        : "Package period complete";
+    }
+  }
+
   function applySubscription(data, synced) {
     if (!data || !data.ok) return;
     var wasActive = lastActive;
     lastActive = !!data.subscription_active;
     section.setAttribute("data-subscription-active", lastActive ? "1" : "0");
+    renderProgress(data);
+    if (typeof window.setClientHeroChip === "function") {
+      window.setClientHeroChip(
+        "subscription",
+        lastActive ? "Active" : (data.subscription_expired ? "Ended" : "Inactive"),
+        data.remaining_label ? data.remaining_label + " remaining" : "Package period",
+        lastActive ? "is-good" : "is-bad"
+      );
+    }
     if (typeof window.updatePackageSection === "function") {
       window.updatePackageSection(data);
     } else {
@@ -1323,6 +1527,261 @@
   timer = setInterval(function () { refreshSubscription(false); }, intervalMs);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) refreshSubscription(false);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+
+<script>
+(function () {
+  var root = document.getElementById("client-router-data");
+  if (!root) return;
+  var url = root.getAttribute("data-router-data-url");
+  var status = root.querySelector("[data-router-data-status]");
+  var stamp = root.querySelector("[data-router-data-stamp]");
+  var refreshButton = root.querySelector("[data-router-data-refresh]");
+  var deviceWrap = root.querySelector("[data-router-device-wrap]");
+  var deviceList = root.querySelector("[data-router-device-list]");
+  var passwordForm = root.querySelector("[data-router-password-form]");
+  var inFlight = false;
+  var timer = null;
+
+  function set(key, value) {
+    var el = root.querySelector('[data-router-value="' + key + '"]');
+    if (el) el.textContent = value == null || value === "" ? "—" : String(value);
+  }
+
+  function uptime(value) {
+    var seconds = Number(value);
+    if (!isFinite(seconds) || seconds < 0) return value || "—";
+    var days = Math.floor(seconds / 86400);
+    var hours = Math.floor((seconds % 86400) / 3600);
+    var minutes = Math.floor((seconds % 3600) / 60);
+    return (days ? days + "d " : "") + hours + "h " + minutes + "m";
+  }
+
+  function drawDevices(devices) {
+    if (!deviceList || !deviceWrap) return;
+    deviceList.textContent = "";
+    (devices || []).forEach(function (device) {
+      var row = document.createElement("tr");
+      [
+        device.name || "Unknown device",
+        device.ip || "—",
+        device.mac || "—",
+        device.type || "—",
+        [device.download, device.upload].filter(Boolean).join(" / ") || "—"
+      ].forEach(function (value) {
+        var cell = document.createElement("td");
+        cell.textContent = value;
+        row.appendChild(cell);
+      });
+      deviceList.appendChild(row);
+    });
+    deviceWrap.hidden = !(devices && devices.length);
+  }
+
+  function apply(data) {
+    if (!data || !data.ok) {
+      if (status) status.textContent = (data && data.error) || "Could not fetch router details.";
+      if (passwordForm) passwordForm.hidden = !(data && data.needs_password);
+      [
+        "internet", "internet-hint", "model", "firmware", "devices", "ssid",
+        "wifi-state", "wifi-mode", "wifi-channel", "wan-ip", "wan-type",
+        "gateway", "dns", "wan-mac", "wan-link", "lan-ip", "router-time",
+        "uptime", "throughput"
+      ].forEach(function (key) { set(key, "—"); });
+      drawDevices([]);
+      root.classList.remove("is-online");
+      root.classList.add("is-offline");
+      if (stamp) stamp.textContent = "Live fetch failed";
+      return;
+    }
+    if (passwordForm) passwordForm.hidden = true;
+    root.classList.remove("is-offline");
+    root.classList.add("is-online");
+    var live = data.status || {};
+    var wifi = data.wifi || {};
+    var wan = data.wan || {};
+    var system = data.system || {};
+    set("internet", live.connected ? "Online" : "Offline");
+    set("internet-hint", (wan.type || "WAN").toUpperCase() + (data.cpe_host ? " · " + data.cpe_host : ""));
+    set("model", data.model || data.vendor || "Router");
+    set("firmware", system.firmware ? "Firmware " + system.firmware : "Firmware unavailable");
+    set("devices", live.online_devices);
+    set("ssid", wifi.ssid);
+    set("wifi-state", (wifi.enabled ? "Enabled" : "Disabled") + (wifi.hidden ? " · hidden SSID" : ""));
+    set("wifi-mode", wifi.mode ? wifi.mode.toUpperCase() : "—");
+    set("wifi-channel", "Channel " + (wifi.channel || "—") + (wifi.bandwidth_mhz ? " · " + wifi.bandwidth_mhz + " MHz" : ""));
+    set("wan-ip", wan.ip);
+    set("wan-type", (wan.type || "Unknown").toUpperCase() + (wan.mask ? " · " + wan.mask : ""));
+    set("gateway", wan.gateway);
+    set("dns", "DNS " + [wan.dns1, wan.dns2].filter(Boolean).join(" · "));
+    set("wan-mac", wan.mac);
+    set("wan-link", (wan.speed_mbps ? wan.speed_mbps + " Mbps" : "Link speed unavailable") + (wan.mtu ? " · MTU " + wan.mtu : ""));
+    set("lan-ip", system.lan_ip);
+    set("router-time", system.router_time || "Router time unavailable");
+    set("uptime", uptime(live.uptime_seconds));
+    set("throughput", (live.download_kbps || "0") + " KB/s ↓ · " + (live.upload_kbps || "0") + " KB/s ↑");
+    drawDevices(data.devices || []);
+    if (status) {
+      status.textContent = "Live from " + (data.vendor || "client router") +
+        (data.cpe_host ? " at " + data.cpe_host : "") + ".";
+    }
+    if (stamp) {
+      stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
+        hour: "2-digit", minute: "2-digit", second: "2-digit"
+      });
+    }
+  }
+
+  function refresh(force, announce) {
+    if (!url || inFlight || document.hidden) return;
+    inFlight = true;
+    root.classList.add("is-fetching");
+    if (refreshButton) refreshButton.disabled = true;
+    if (status && announce) status.textContent = "Fetching live data from the client router…";
+    var query = force
+      ? (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1&_=" + Date.now()
+      : "";
+    fetch(url + query, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (response) { return response.json(); })
+      .then(apply)
+      .catch(function () { apply({ ok: false, error: "Could not fetch router details." }); })
+      .finally(function () {
+        inFlight = false;
+        root.classList.remove("is-fetching");
+        if (refreshButton) refreshButton.disabled = false;
+      });
+  }
+
+  if (passwordForm) {
+    passwordForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var button = passwordForm.querySelector('[type="submit"]');
+      if (button) { button.disabled = true; button.textContent = "Saving…"; }
+      fetch(window.location.pathname, {
+        method: "POST",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+        body: new FormData(passwordForm)
+      })
+        .then(function (response) { return response.json(); })
+        .then(function (data) {
+          if (!data.ok) {
+            if (status) status.textContent = data.error || "Could not save the password.";
+            return;
+          }
+          passwordForm.reset();
+          refresh(true);
+        })
+        .catch(function () {
+          if (status) status.textContent = "Could not save the password.";
+        })
+        .finally(function () {
+          if (button) { button.disabled = false; button.textContent = "Save & fetch"; }
+        });
+    });
+  }
+
+  refresh(true, true);
+  timer = setInterval(function () { refresh(true, false); }, 10000);
+  if (refreshButton) refreshButton.addEventListener("click", function () { refresh(true, true); });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) refresh(true, false);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (timer) clearInterval(timer);
+  });
+})();
+</script>
+
+<script>
+(function () {
+  var root = document.getElementById("client-wifi");
+  if (!root) return;
+  var url = root.getAttribute("data-cpe-wifi-url");
+  if (!url) return;
+  var inFlight = false;
+  var timer = null;
+
+  function applyWifi(data) {
+    var ssidNodes = document.querySelectorAll("[data-cpe-wifi-ssid]");
+    var hint = root.querySelector("[data-cpe-wifi-ssid-hint]");
+    var secret = root.querySelector("[data-cpe-wifi-secret]");
+    var passwordNode = root.querySelector("[data-cpe-wifi-password]");
+    var empty = root.querySelector("[data-cpe-wifi-password-empty]");
+    var state = root.querySelector("[data-cpe-wifi-state]");
+    var channel = root.querySelector("[data-cpe-wifi-channel]");
+    var radioHint = root.querySelector("[data-cpe-wifi-radio-hint]");
+
+    if (!data || !data.ok || !data.auth_ok) {
+      if (hint) {
+        hint.textContent = (data && (data.error || data.hint)) || "Could not load live Wi‑Fi.";
+      }
+      if (state) state.textContent = "—";
+      if (channel) channel.textContent = "Channel · security";
+      return;
+    }
+
+    var ssid = data.wifi_ssid || "—";
+    ssidNodes.forEach(function (node) { node.textContent = ssid; });
+    if (hint) {
+      hint.textContent = data.cpe_host
+        ? "Live at " + data.cpe_host
+        : "Live from the client CPE";
+    }
+
+    var password = data.wifi_password || "";
+    if (passwordNode) passwordNode.textContent = password;
+    if (secret) secret.hidden = !password;
+    if (empty) empty.hidden = !!password;
+
+    if (state) {
+      state.textContent = (data.wifi_enabled ? "Enabled" : "Disabled") +
+        (data.wifi_hidden ? " · hidden SSID" : "");
+    }
+    if (channel) {
+      channel.textContent = [
+        data.wifi_channel ? "Channel " + data.wifi_channel : null,
+        data.wifi_security || null,
+        data.wifi_mode ? String(data.wifi_mode).toUpperCase() : null
+      ].filter(Boolean).join(" · ") || "Channel · security";
+    }
+    if (radioHint) {
+      radioHint.textContent = password
+        ? "Tap the eye icon to reveal"
+        : "Password not reported by the router";
+    }
+  }
+
+  function load(force) {
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    var query = force
+      ? (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1&_=" + Date.now()
+      : "";
+    fetch(url + query, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (response) { return response.json(); })
+      .then(applyWifi)
+      .catch(function () { applyWifi({ ok: false, error: "Could not load live Wi‑Fi." }); })
+      .finally(function () { inFlight = false; });
+  }
+
+  load(true);
+  timer = setInterval(function () { load(true); }, 15000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) load(true);
   });
   window.addEventListener("beforeunload", function () {
     if (timer) clearInterval(timer);

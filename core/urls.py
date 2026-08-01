@@ -73,6 +73,36 @@ urlpatterns = [
     path("app/clients/<int:customer_id>/", views.client_detail, name="client_detail"),
     path("app/clients/<int:customer_id>/usage/", views.client_usage, name="client_usage"),
     path(
+        "app/clients/<int:customer_id>/usage-analysis/",
+        views.client_usage_analysis,
+        name="client_usage_analysis",
+    ),
+    path(
+        "app/clients/<int:customer_id>/usage-trends/",
+        views.client_usage_trends,
+        name="client_usage_trends",
+    ),
+    path(
+        "app/clients/<int:customer_id>/wifi-settings/",
+        views.client_wifi_settings,
+        name="client_wifi_settings",
+    ),
+    path(
+        "app/clients/<int:customer_id>/router-login/",
+        views.client_router_login,
+        name="client_router_login",
+    ),
+    path(
+        "app/clients/<int:customer_id>/router/<str:token>/",
+        views.client_router_proxy,
+        name="client_router_proxy_root",
+    ),
+    path(
+        "app/clients/<int:customer_id>/router/<str:token>/<path:router_path>",
+        views.client_router_proxy,
+        name="client_router_proxy",
+    ),
+    path(
         "app/clients/<int:customer_id>/subscription/",
         views.client_subscription,
         name="client_subscription",
@@ -81,6 +111,11 @@ urlpatterns = [
         "app/clients/<int:customer_id>/cpe-wifi/",
         views.client_cpe_wifi,
         name="client_cpe_wifi",
+    ),
+    path(
+        "app/clients/<int:customer_id>/router-data/",
+        views.client_cpe_router_data,
+        name="client_cpe_router_data",
     ),
     # Legacy PPPoE & Hotspot URLs → first onboarded router (or MikroTik list).
     path("app/pppoe-hotspot/", views.pppoe_hotspot_redirect, name="pppoe_hotspot"),
