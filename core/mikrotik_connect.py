@@ -6349,13 +6349,23 @@ def _portal_target_ipv4(portal_url: str) -> str:
 
 
 def _portal_http_port(portal_url: str) -> str:
+    """
+    Port for expired-client HTTP dst-nat.
+
+    Captive probes are always plain HTTP. Even when PUBLIC_BASE_URL is https://,
+    dst-nat must land on an HTTP listener (nginx :80 or Django's explicit
+    http://host:8000 port) — never 443, which would break the pay popup.
+    """
     try:
         parsed = urlparse((portal_url or "").strip())
+        scheme = (parsed.scheme or "").lower()
+        if scheme == "https":
+            return "80"
         if parsed.port:
             return str(parsed.port)
-        return "443" if (parsed.scheme or "").lower() == "https" else "80"
+        return "80"
     except Exception:
-        return "8000"
+        return "80"
 
 
 def _ensure_pppoe_expired_redirect(
@@ -6432,6 +6442,53 @@ def _ensure_pppoe_expired_redirect(
     return notes
 
 
+def _ensure_pppoe_expired_access(
+    sock: socket.socket,
+    *,
+    portal_url: str = "",
+) -> list[str]:
+    """
+    Ensure blocked PPPoE clients can reach the pay page (billing allow + HTTP redirect).
+
+    Lightweight companion to full stack push — used on expiry so renew works even
+    when ensure_stack=False.
+    """
+    notes: list[str] = []
+    from django.conf import settings
+
+    portal = (portal_url or getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+    billing_ip = _portal_target_ipv4(portal) if portal else ""
+    if not billing_ip:
+        notes.append("warning: no billing IP — expired pay redirect not installed")
+        return notes
+
+    notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal))
+
+    has_billing_allow = any(
+        PPP_SECRET_TAG in (row.get("comment") or "")
+        and "blocked to billing" in (row.get("comment") or "")
+        for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
+    )
+    if not has_billing_allow:
+        place_before = _first_forward_drop_id(sock)
+        terminal = _add_filter_rule(
+            sock,
+            {
+                "chain": "forward",
+                "action": "accept",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "dst-address": billing_ip,
+                "comment": f"{PPP_SECRET_TAG} blocked to billing",
+            },
+            place_before=place_before,
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"blocked clients allowed to billing {billing_ip}")
+        else:
+            notes.append("warning: could not allow blocked clients to billing host")
+    return notes
+
+
 def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
     """
     PPP profile for out-of-subscription clients.
@@ -6500,14 +6557,230 @@ def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
     return notes
 
 
+def _plan_speeds_mbps(plan) -> tuple[int, int]:
+    """
+    Return (upload_mbps, download_mbps) from a billing plan.
+
+    Both are forced to at least 1 when either side is set so RouterOS always
+    gets a complete rx/tx pair.
+    """
+    if plan is None:
+        return 0, 0
+    upload = int(getattr(plan, "upload_speed_mbps", 0) or 0)
+    download = int(
+        getattr(plan, "download_speed_mbps", 0)
+        or getattr(plan, "speed_mbps", 0)
+        or 0
+    )
+    if upload < 1 and download < 1:
+        return 0, 0
+    if upload < 1:
+        upload = download
+    if download < 1:
+        download = upload
+    return upload, download
+
+
+def _rate_limit_string(upload_mbps: int, download_mbps: int) -> str:
+    """RouterOS rate-limit (rx=upload / tx=download from the router's view)."""
+    upload = int(upload_mbps or 0)
+    download = int(download_mbps or 0)
+    if upload < 1 and download < 1:
+        return ""
+    if upload < 1:
+        upload = download
+    if download < 1:
+        download = upload
+    return f"{upload}M/{download}M"
+
+
+def _pppoe_speeds_for_customer(customer) -> tuple[int, int]:
+    return _plan_speeds_mbps(getattr(customer, "plan", None))
+
+
+def _pppoe_rate_limit_for_customer(customer) -> str:
+    """RouterOS rate-limit string for this customer's package."""
+    upload, download = _pppoe_speeds_for_customer(customer)
+    return _rate_limit_string(upload, download)
+
+
+def _pppoe_speed_profile_name(upload_mbps: int, download_mbps: int) -> str:
+    """Stable per-package PPP profile name carrying that plan's rate-limit."""
+    return f"ispcentric-pppoe-{int(upload_mbps)}u-{int(download_mbps)}d"
+
+
+def _ensure_pppoe_rate_profile(
+    sock: socket.socket,
+    *,
+    upload_mbps: int,
+    download_mbps: int,
+) -> str:
+    """
+    Create/update a PPP profile that shapes traffic to the plan speeds.
+
+    MikroTik applies profile rate-limit as a dynamic simple queue when the
+    client dials, which is the reliable way to enforce per-package speeds
+    (many RouterOS builds reject rate-limit on /ppp/secret itself).
+    """
+    upload = int(upload_mbps or 0)
+    download = int(download_mbps or 0)
+    if upload < 1 or download < 1:
+        return PPPOE_PROFILE_NAME
+
+    name = _pppoe_speed_profile_name(upload, download)
+    rate_limit = _rate_limit_string(upload, download)
+    profile_id = ""
+    for row in _print(
+        sock,
+        "/ppp/profile",
+        props=".id,name,rate-limit",
+    ):
+        if (row.get("name") or "").strip() == name:
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    profile_props = {
+        "name": name,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        "dns-server": "8.8.8.8,1.1.1.1",
+        "change-tcp-mss": "yes",
+        "use-encryption": "no",
+        "only-one": "default",
+        "rate-limit": rate_limit,
+        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
+    }
+    soft = {
+        "name": name,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        "dns-server": "8.8.8.8,1.1.1.1",
+        "use-encryption": "no",
+        "rate-limit": rate_limit,
+        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
+    }
+    # Last resort: profile without rate-limit still lets dial work; secret /
+    # simple-queue paths below then carry the shaping.
+    bare = {
+        "name": name,
+        "local-address": PPPOE_LOCAL_ADDRESS,
+        "remote-address": PPPOE_POOL_NAME,
+        "dns-server": "8.8.8.8,1.1.1.1",
+        "use-encryption": "no",
+        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
+    }
+
+    if profile_id:
+        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
+        if terminal.get("_reply") == "!trap":
+            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
+        if terminal.get("_reply") == "!trap":
+            terminal = _set(sock, "/ppp/profile", profile_id, **bare)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not update PPPoE speed profile “{name}” on the MikroTik.",
+                )
+            )
+    else:
+        terminal = _add(sock, "/ppp/profile", **profile_props)
+        if terminal.get("_reply") == "!trap":
+            terminal = _add(sock, "/ppp/profile", **soft)
+        if terminal.get("_reply") == "!trap":
+            terminal = _add(sock, "/ppp/profile", **bare)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not create PPPoE speed profile “{name}” on the MikroTik.",
+                )
+            )
+    return name
+
+
+def _ensure_pppoe_simple_queue(
+    sock: socket.socket,
+    *,
+    username: str,
+    rate_limit: str,
+) -> None:
+    """
+    Shape active PPPoE session IP(s) with a named simple queue.
+
+    Profile rate-limit covers new dials; this keeps an already-online session
+    capped immediately and survives RouterOS builds that ignore profile shaping.
+    """
+    username = (username or "").strip()
+    rate_limit = (rate_limit or "").strip()
+    if not username or not rate_limit:
+        return
+
+    targets = sorted(
+        {
+            (row.get("address") or "").strip()
+            for row in _print(sock, "/ppp/active", props="name,address")
+            if (row.get("name") or "").strip().lower() == username.lower()
+            and (row.get("address") or "").strip()
+        }
+    )
+    queue_name = f"ispcentric-rl-{username}"[:63]
+    comment = f"{PPP_SECRET_TAG} {rate_limit}"
+
+    existing: dict[str, str] = {}
+    for row in _print(
+        sock,
+        "/queue/simple",
+        props=".id,name,target,max-limit,comment",
+    ):
+        if (row.get("name") or "").strip() == queue_name:
+            existing = row
+            break
+
+    if not targets:
+        # No live session — drop a stale queue so a later dial relies on profile.
+        item_id = (existing.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/queue/simple", item_id)
+        return
+
+    # One queue covering every concurrent session IP for this username.
+    target = ",".join(targets)
+    props = {
+        "name": queue_name,
+        "target": target,
+        "max-limit": rate_limit,
+        "comment": comment,
+    }
+    item_id = (existing.get(".id") or "").strip()
+    if item_id:
+        terminal = _set(sock, "/queue/simple", item_id, **props)
+        if terminal.get("_reply") == "!trap":
+            # Older builds use limit-at / differently named fields — best-effort.
+            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+            terminal = _set(sock, "/queue/simple", item_id, **soft)
+        if terminal.get("_reply") == "!trap":
+            return
+    else:
+        terminal = _add(sock, "/queue/simple", **props)
+        if terminal.get("_reply") == "!trap":
+            soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
+            terminal = _add(sock, "/queue/simple", **soft)
+        if terminal.get("_reply") == "!trap":
+            return
+
+
 def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
-    """Normal profile when surfing is allowed; blocked profile when period is inactive."""
+    """Speed profile when surfing is allowed; blocked profile when period is inactive."""
     if disabled:
-        # Secret disabled entirely — profile unused, keep normal for when re-enabled.
+        # Secret disabled entirely — profile unused, keep base for when re-enabled.
         return PPPOE_PROFILE_NAME
-    if _customer_internet_allowed(customer):
-        return PPPOE_PROFILE_NAME
-    return PPPOE_BLOCKED_PROFILE_NAME
+    if not _customer_internet_allowed(customer):
+        return PPPOE_BLOCKED_PROFILE_NAME
+    upload, download = _pppoe_speeds_for_customer(customer)
+    if upload >= 1 and download >= 1:
+        return _pppoe_speed_profile_name(upload, download)
+    return PPPOE_PROFILE_NAME
 
 
 def _current_ppp_secret_profile(sock: socket.socket, username: str) -> str:
@@ -6538,22 +6811,6 @@ def _customer_pppoe_secret_disabled(customer) -> bool:
         return bool(customer_pppoe_secret_disabled(customer))
     except Exception:
         return getattr(customer, "status", "") != "active"
-
-
-def _pppoe_rate_limit_for_customer(customer) -> str:
-    """RouterOS rate-limit string (rx=upload / tx=download from router view)."""
-    plan = getattr(customer, "plan", None)
-    if plan is None:
-        return ""
-    upload = int(getattr(plan, "upload_speed_mbps", 0) or 0)
-    download = int(getattr(plan, "download_speed_mbps", 0) or getattr(plan, "speed_mbps", 0) or 0)
-    if upload < 1 and download < 1:
-        return ""
-    if upload < 1:
-        upload = download
-    if download < 1:
-        download = upload
-    return f"{upload}M/{download}M"
 
 
 def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
@@ -6624,7 +6881,28 @@ def _ensure_ppp_secret(
     disabled_value = "no" if not disabled else "yes"
     rate_limit = (rate_limit or "").strip()
 
+    # Ensure the per-package speed profile exists before assigning the secret.
+    if (
+        rate_limit
+        and profile not in {PPPOE_PROFILE_NAME, PPPOE_BLOCKED_PROFILE_NAME}
+        and profile.startswith("ispcentric-pppoe-")
+    ):
+        try:
+            upload_s, _, download_s = rate_limit.partition("/")
+            upload_mbps = int((upload_s or "").rstrip("MmKk").strip() or 0)
+            download_mbps = int((download_s or "").rstrip("MmKk").strip() or 0)
+            if upload_mbps >= 1 and download_mbps >= 1:
+                profile = _ensure_pppoe_rate_profile(
+                    sock,
+                    upload_mbps=upload_mbps,
+                    download_mbps=download_mbps,
+                )
+        except (TypeError, ValueError):
+            pass
+
     secret_id = ""
+    previous_profile = ""
+    previous_disabled = ""
     for row in _print(
         sock,
         "/ppp/secret",
@@ -6632,6 +6910,8 @@ def _ensure_ppp_secret(
     ):
         if (row.get("name") or "").strip().lower() == username.lower():
             secret_id = (row.get(".id") or "").strip()
+            previous_profile = (row.get("profile") or "").strip()
+            previous_disabled = (row.get("disabled") or "").strip().lower()
             break
 
     # service=any: accept dial-in regardless of CPE service-name quirks.
@@ -6644,6 +6924,7 @@ def _ensure_ppp_secret(
     }
 
     action = "updated"
+    created = False
     if secret_id:
         terminal = _set(sock, "/ppp/secret", secret_id, **base_props)
         if terminal.get("_reply") == "!trap":
@@ -6664,6 +6945,7 @@ def _ensure_ppp_secret(
             )
         secret_id = (terminal.get("ret") or "").strip()
         action = "created"
+        created = True
         if not secret_id:
             for row in _print(sock, "/ppp/secret", props=".id,name"):
                 if (row.get("name") or "").strip().lower() == username.lower():
@@ -6685,13 +6967,17 @@ def _ensure_ppp_secret(
             )
         )
 
-    # Note: many RouterOS builds reject rate-limit on /ppp/secret (unknown parameter).
-    # Speed limits are applied via the shared profile / simple queues separately.
-    _ = rate_limit
+    # Soft-apply rate-limit on the secret when RouterOS accepts it. The
+    # per-package PPP profile rate-limit is the primary enforcement path.
+    if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME:
+        rl_terminal = _set(sock, "/ppp/secret", secret_id, **{"rate-limit": rate_limit})
+        if rl_terminal.get("_reply") == "!trap":
+            # Unknown parameter on older builds — ignore; profile handles it.
+            pass
 
     # Verify the secret is present (password itself is readable on most ROS builds).
     verified = None
-    for row in _print(sock, "/ppp/secret", props=".id,name,password,disabled,service"):
+    for row in _print(sock, "/ppp/secret", props=".id,name,password,disabled,service,profile"):
         if (row.get("name") or "").strip().lower() != username.lower():
             continue
         verified = row
@@ -6707,7 +6993,12 @@ def _ensure_ppp_secret(
             f"PPPoE secret “{username}” missing after install — dial-in would fail."
         )
     stored_password = verified.get("password")
-    if stored_password is not None and stored_password != "" and stored_password != password:
+    password_mismatch = (
+        stored_password is not None
+        and stored_password != ""
+        and stored_password != password
+    )
+    if password_mismatch:
         _set(sock, "/ppp/secret", secret_id, password=password)
         again = None
         for row in _print(sock, "/ppp/secret"):
@@ -6719,8 +7010,24 @@ def _ensure_ppp_secret(
                 f"MikroTik stored a different password for “{username}”. "
                 "Re-push PPPoE logins from settings."
             )
+        password_mismatch = True
 
-    _disconnect_pppoe_sessions(sock, username)
+    prev_disabled_yes = previous_disabled in {"true", "yes", "y"}
+    profile_changed = (not created) and previous_profile != profile
+    disabled_changed = (not created) and prev_disabled_yes != bool(disabled)
+    # Kick only when access actually changes. Sweeping already-blocked clients
+    # every two minutes was tearing down the redialed session that powers the
+    # pay page / STK status polls.
+    should_kick = bool(
+        created or profile_changed or disabled_changed or password_mismatch
+    )
+
+    if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME and not disabled:
+        _ensure_pppoe_simple_queue(
+            sock, username=username, rate_limit=rate_limit
+        )
+    if should_kick:
+        _disconnect_pppoe_sessions(sock, username)
     return action
 
 
@@ -7023,6 +7330,16 @@ def provision_customer_pppoe(
                 session_was_blocked = _active_pppoe_session_is_blocked(
                     sock, username
                 )
+                # When blocking, install pay-page redirect/allow before the kick
+                # so the CPE's first redial already has captive NAT in place.
+                if profile == PPPOE_BLOCKED_PROFILE_NAME:
+                    from django.conf import settings
+
+                    block_portal = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                    notes.extend(
+                        _ensure_pppoe_expired_access(sock, portal_url=block_portal)
+                    )
+                    notes.extend(_ensure_pppoe_blocked_profile(sock))
                 action = _ensure_ppp_secret(
                     sock,
                     username=username,
@@ -7792,6 +8109,7 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     notes.append("Hotspot intercepts captive HTTP probes")
     notes.extend(_ensure_cpe_wan_block(sock))
     notes.extend(_fetch_hotspot_pages(sock, portal_url))
+    notes.extend(_bounce_cpe_wifi_clients(sock))
 
     try:
         _command(sock, ["/system/identity/set", "=name=Renew subscription"])
@@ -7824,6 +8142,32 @@ def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
         notes.append("WAN block filter skipped")
     else:
         notes.append("client internet blocked on CPE (renew popup only)")
+    return notes
+
+
+def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
+    """
+    Drop Wi‑Fi associations so phones re-run captive probes against the renew Hotspot.
+
+    Without this, surfing dies on the WAN while LAN clients keep their old DHCP
+    lease and never open the pay popup until the user toggles Wi‑Fi.
+    """
+    notes: list[str] = []
+    removed = 0
+    for path in (
+        "/interface/wireless/registration-table",
+        "/interface/wifi/registration-table",
+        "/caps-man/registration-table",
+    ):
+        for row in _print(sock, path, props=".id,mac-address"):
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            terminal = _remove(sock, path, item_id)
+            if terminal.get("_reply") != "!trap":
+                removed += 1
+    if removed:
+        notes.append(f"bounced {removed} Wi‑Fi client(s) for captive renew popup")
     return notes
 
 
@@ -8280,6 +8624,24 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
     return None
 
 
+def _pppoe_pay_portal_url(organization, portal_url: str = "") -> str:
+    """Absolute PPPoE renew/pay URL to install on the CPE Hotspot login page."""
+    from django.conf import settings
+    from django.urls import reverse
+
+    join_code = (getattr(organization, "join_code", None) or "").strip()
+    if not join_code:
+        return (portal_url or "").strip()
+    path = reverse("core:pppoe_pay", kwargs={"join_code": join_code})
+    base = (portal_url or getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if not base:
+        return path
+    # If caller passed a full pay URL already, keep it.
+    if "/pppoe/" in base and base.rstrip("/").endswith("/pay"):
+        return base
+    return f"{base}{path}"
+
+
 def sync_customer_subscription_access(
     customer,
     *,
@@ -8288,15 +8650,18 @@ def sync_customer_subscription_access(
     reauthenticate: bool = True,
 ) -> dict[str, Any]:
     """
-    Enforce package period on the NAS through PPPoE policy only.
+    Enforce package period and package speeds on the NAS.
 
     Outside the subscription period (account still active):
-      Move /ppp/secret to the blocked profile + kick the session so surfing
-      stops at the ISP MikroTik
+      1. Enable the CPE Wi‑Fi renew Hotspot (pay popup) while the CPE is still
+         online so phones get the captive portal without a manual reconnect
+      2. Move /ppp/secret to the blocked profile + kick the session so surfing
+         stops at the ISP MikroTik
     Account inactive / suspended:
       Disable the PPPoE secret entirely
     Inside the period:
-      Restore the normal PPPoE profile
+      Restore a per-package PPP/Hotspot profile whose rate-limit matches the
+      plan download/upload Mbps, and remove the CPE renew Hotspot
     """
     from billing.models import Customer
     from billing.services import customer_receives_internet
@@ -8308,9 +8673,14 @@ def sync_customer_subscription_access(
 
     # Same-request or near-immediate status polls often re-enter after fulfill
     # already pushed access. Reuse that result for a few seconds.
+    # Rate-limit is part of the key so a package speed edit is never skipped.
     customer_id = getattr(customer, "pk", None)
+    rate_key = _pppoe_rate_limit_for_customer(customer) or _hotspot_rate_limit_for_customer(
+        customer
+    )
     provision_cache_key = (
-        f"captive:provision:{customer_id}:{int(bool(allowed))}:{int(bool(reauthenticate))}"
+        f"captive:provision:{customer_id}:{int(bool(allowed))}:"
+        f"{int(bool(reauthenticate))}:{rate_key}"
         if customer_id
         else ""
     )
@@ -8382,18 +8752,39 @@ def sync_customer_subscription_access(
             }
         )
 
+    pay_url = _pppoe_pay_portal_url(getattr(customer, "organization", None), portal_url)
+
     if not allowed:
         if provision:
             if status_active:
-                # Keep the secret enabled, but move it to the blocked PPP profile
-                # so only registered in-period clients can surf.
-                # Stack (pool/server/firewall) is owned by org/router setup — renew
-                # only flips the secret profile so surfing restores immediately.
+                # Enable CPE renew popup FIRST while WAN still works (HTML fetch).
+                # Then block+kick on the NAS so surfing stops and phones re-probe.
+                try:
+                    portal_result = apply_cpe_renew_portal(
+                        customer, enabled=True, portal_url=pay_url
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    portal_result = {
+                        "ok": False,
+                        "skipped": False,
+                        "error": str(exc) or "CPE renew portal failed.",
+                    }
                 provision_result = provision_customer_pppoe(
                     customer,
                     ensure_stack=False,
                     force_disabled=False,
                 )
+                # If CPE was briefly offline during the first attempt, retry after
+                # the blocked redial so the popup still appears.
+                if not portal_result.get("ok"):
+                    try:
+                        retry = apply_cpe_renew_portal(
+                            customer, enabled=True, portal_url=pay_url
+                        )
+                        if retry.get("ok") or not portal_result.get("ok"):
+                            portal_result = retry
+                    except Exception:
+                        pass
             else:
                 provision_result = provision_customer_pppoe(
                     customer,
@@ -8407,6 +8798,16 @@ def sync_customer_subscription_access(
                 ensure_stack=False,
                 force_disabled=False,
             )
+            try:
+                portal_result = apply_cpe_renew_portal(
+                    customer, enabled=False, portal_url=pay_url
+                )
+            except Exception as exc:  # noqa: BLE001
+                portal_result = {
+                    "ok": False,
+                    "skipped": False,
+                    "error": str(exc) or "Could not clear CPE renew portal.",
+                }
 
     nas_blocked = bool(
         not allowed
@@ -8740,13 +9141,33 @@ def _ros_duration_hours(hours: int) -> str:
 def _hotspot_rate_limit_from_org(organization) -> str:
     upload = int(getattr(organization, "hotspot_default_upload_mbps", 0) or 0)
     download = int(getattr(organization, "hotspot_default_download_mbps", 0) or 0)
-    if upload < 1 and download < 1:
-        return "5M/10M"
-    if upload < 1:
-        upload = download
-    if download < 1:
-        download = upload
-    return f"{upload}M/{download}M"
+    return _rate_limit_string(upload, download) or "5M/10M"
+
+
+def _hotspot_speeds_for_customer(customer, organization=None) -> tuple[int, int]:
+    """Prefer the customer's package speeds; fall back to org Hotspot defaults."""
+    upload, download = _plan_speeds_mbps(getattr(customer, "plan", None))
+    if upload >= 1 and download >= 1:
+        return upload, download
+    org = organization or getattr(customer, "organization", None)
+    org_upload = int(getattr(org, "hotspot_default_upload_mbps", 0) or 0) if org else 0
+    org_download = int(getattr(org, "hotspot_default_download_mbps", 0) or 0) if org else 0
+    if org_upload < 1 and org_download < 1:
+        return 5, 10
+    if org_upload < 1:
+        org_upload = org_download
+    if org_download < 1:
+        org_download = org_upload
+    return org_upload, org_download
+
+
+def _hotspot_rate_limit_for_customer(customer, organization=None) -> str:
+    upload, download = _hotspot_speeds_for_customer(customer, organization)
+    return _rate_limit_string(upload, download)
+
+
+def _hotspot_speed_profile_name(upload_mbps: int, download_mbps: int) -> str:
+    return f"ispcentric-hs-{int(upload_mbps)}u-{int(download_mbps)}d"
 
 
 def _hotspot_customers_for_router(router):
@@ -9126,9 +9547,7 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
 
     profile_id = ""
     for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name,comment"):
-        if (row.get("name") or "").strip() == ISP_HOTSPOT_USER_PROFILE or ISP_HOTSPOT_TAG in (
-            row.get("comment") or ""
-        ):
+        if (row.get("name") or "").strip() == ISP_HOTSPOT_USER_PROFILE:
             profile_id = (row.get(".id") or "").strip()
             break
 
@@ -9196,6 +9615,85 @@ def _ensure_isp_hotspot_user_profile(sock: socket.socket, organization) -> list[
     )
 
 
+def _ensure_hotspot_rate_profile(
+    sock: socket.socket,
+    *,
+    organization,
+    upload_mbps: int,
+    download_mbps: int,
+) -> str:
+    """
+    Per-package Hotspot user profile with rate-limit.
+
+    The shared default profile stays as a fallback; each plan gets its own
+    profile so a 5 Mbps voucher is not capped the same as a 50 Mbps one.
+    """
+    upload = int(upload_mbps or 0)
+    download = int(download_mbps or 0)
+    if upload < 1 or download < 1:
+        return ISP_HOTSPOT_USER_PROFILE
+
+    name = _hotspot_speed_profile_name(upload, download)
+    rate_limit = _rate_limit_string(upload, download)
+    idle = _ros_duration_minutes(
+        int(getattr(organization, "hotspot_idle_timeout_minutes", 15) or 0)
+    )
+    session = _ros_duration_hours(
+        int(getattr(organization, "hotspot_voucher_validity_hours", 24) or 24)
+    )
+
+    profile_id = ""
+    for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name"):
+        if (row.get("name") or "").strip() == name:
+            profile_id = (row.get(".id") or "").strip()
+            break
+
+    attempts = [
+        {
+            "name": name,
+            "session-timeout": session,
+            "idle-timeout": idle,
+            "keepalive-timeout": "2m",
+            "status-autorefresh": "1m",
+            "shared-users": "1",
+            "add-mac-cookie": "no",
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": f"{ISP_HOTSPOT_TAG} {rate_limit}",
+        },
+        {
+            "name": name,
+            "idle-timeout": idle,
+            "add-mac-cookie": "no",
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": f"{ISP_HOTSPOT_TAG} {rate_limit}",
+        },
+        {
+            "name": name,
+            "rate-limit": rate_limit,
+            "address-list": ISP_HOTSPOT_OK_LIST,
+            "comment": f"{ISP_HOTSPOT_TAG} {rate_limit}",
+        },
+        {
+            "name": name,
+            "rate-limit": rate_limit,
+            "comment": f"{ISP_HOTSPOT_TAG} {rate_limit}",
+        },
+        {
+            "name": name,
+            "rate-limit": rate_limit,
+        },
+    ]
+    terminal, _ = _add_or_set_attempts(
+        sock, "/ip/hotspot/user/profile", profile_id, attempts
+    )
+    if terminal.get("_reply") == "!trap":
+        # Fall back to the org default profile rather than failing authorize.
+        return ISP_HOTSPOT_USER_PROFILE
+    return name
+
+
 def _ensure_hotspot_user(
     sock: socket.socket,
     *,
@@ -9204,6 +9702,7 @@ def _ensure_hotspot_user(
     comment: str,
     disabled: bool = False,
     limit_uptime: str = "",
+    profile: str = "",
 ) -> str:
     username = (username or "").strip()
     password = password or ""
@@ -9228,6 +9727,7 @@ def _ensure_hotspot_user(
 
     disabled_value = "yes" if disabled else "no"
     tag = comment or ISP_HOTSPOT_TAG
+    profile_name = (profile or "").strip() or ISP_HOTSPOT_USER_PROFILE
     # limit-uptime is the router-side hard cap on what this MAC bought. It is
     # cumulative across sessions, so reconnecting cannot extend the package, and
     # it survives the billing server going offline. RouterOS reads "0s" as
@@ -9237,7 +9737,7 @@ def _ensure_hotspot_user(
         {
             "name": username,
             "password": password,
-            "profile": ISP_HOTSPOT_USER_PROFILE,
+            "profile": profile_name,
             "limit-uptime": uptime_cap,
             "disabled": disabled_value,
             "comment": tag,
@@ -9245,7 +9745,7 @@ def _ensure_hotspot_user(
         {
             "name": username,
             "password": password,
-            "profile": ISP_HOTSPOT_USER_PROFILE,
+            "profile": profile_name,
             "limit-uptime": uptime_cap,
             "disabled": disabled_value,
         },
@@ -9344,6 +9844,14 @@ def _apply_hotspot_customer_on_socket(
     )
     if not mac:
         return False
+    org = getattr(customer, "organization", None)
+    upload, download = _hotspot_speeds_for_customer(customer, org)
+    profile = _ensure_hotspot_rate_profile(
+        sock,
+        organization=org,
+        upload_mbps=upload,
+        download_mbps=download,
+    )
     _ensure_hotspot_user(
         sock,
         username=mac,
@@ -9351,6 +9859,7 @@ def _apply_hotspot_customer_on_socket(
         comment=comment,
         disabled=disabled,
         limit_uptime=limit_uptime,
+        profile=profile,
     )
     _expire_hotspot_mac_sessions(
         sock,

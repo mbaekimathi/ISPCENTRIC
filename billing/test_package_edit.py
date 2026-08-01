@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -40,20 +41,24 @@ class PackageEditTests(TestCase):
         self.assertIn(f'data-package-id="{self.plan.id}"', html)
 
     def test_edit_package_updates_fields(self):
-        res = self.client.post(
-            reverse("billing:packages"),
-            {
-                "action": "edit_package",
-                "package_id": str(self.plan.id),
-                "name": "Home 20",
-                "description": "Faster home plan",
-                "price": "2500.00",
-                "download_speed_mbps": "20",
-                "upload_speed_mbps": "10",
-                "duration": BillingPlan.Duration.MONTHLY,
-                "is_active": "on",
-            },
-        )
+        with patch(
+            "billing.views._reprovision_customers_for_plan_speeds",
+            return_value=0,
+        ) as reprovision:
+            res = self.client.post(
+                reverse("billing:packages"),
+                {
+                    "action": "edit_package",
+                    "package_id": str(self.plan.id),
+                    "name": "Home 20",
+                    "description": "Faster home plan",
+                    "price": "2500.00",
+                    "download_speed_mbps": "20",
+                    "upload_speed_mbps": "10",
+                    "duration": BillingPlan.Duration.MONTHLY,
+                    "is_active": "on",
+                },
+            )
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.name, "Home 20")
@@ -62,6 +67,31 @@ class PackageEditTests(TestCase):
         self.assertEqual(self.plan.upload_speed_mbps, 10)
         self.assertEqual(self.plan.speed_mbps, 20)
         self.assertTrue(self.plan.is_active)
+        reprovision.assert_called_once()
+
+    def test_edit_package_skips_reprovision_when_speeds_unchanged(self):
+        with patch(
+            "billing.views._reprovision_customers_for_plan_speeds",
+            return_value=0,
+        ) as reprovision:
+            res = self.client.post(
+                reverse("billing:packages"),
+                {
+                    "action": "edit_package",
+                    "package_id": str(self.plan.id),
+                    "name": "Home Renamed",
+                    "description": "",
+                    "price": "1500.00",
+                    "download_speed_mbps": "10",
+                    "upload_speed_mbps": "5",
+                    "duration": BillingPlan.Duration.MONTHLY,
+                    "is_active": "on",
+                },
+            )
+        self.assertEqual(res.status_code, 302)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.name, "Home Renamed")
+        reprovision.assert_not_called()
 
     def test_edit_package_can_deactivate(self):
         res = self.client.post(

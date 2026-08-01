@@ -218,7 +218,8 @@
         {% if customer.package_end %}<div class="fact"><dt>Valid until</dt><dd>{{ customer.package_end|date:"M j, Y H:i" }}</dd></div>{% endif %}
         {% if result.mpesa_receipt %}<div class="fact"><dt>M-Pesa receipt</dt><dd class="code">{{ result.mpesa_receipt }}</dd></div>{% endif %}
       </dl>
-      <a class="action" href="{{ continue_url }}">Continue browsing</a>
+      <a class="action" id="continue-browsing" href="{{ continue_url }}">{{ continue_label|default:"Continue browsing" }}</a>
+      <p class="hint" style="margin-top:0.85rem;">Tap continue to leave this page and start surfing.</p>
     {% elif waiting %}
       <div class="badge">
         <svg viewBox="0 0 52 52" aria-hidden="true" focusable="false">

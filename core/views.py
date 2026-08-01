@@ -5365,7 +5365,9 @@ def hotspot_welcome(request, join_code: str):
         f"Welcome to {org.name}. Your internet session is active — continue browsing."
     )
     button_label = (org.hotspot_welcome_button_label or "").strip() or "Continue browsing"
-    button_url = (org.hotspot_welcome_button_url or "").strip()
+    # Prefer the org's configured link; otherwise use an HTTP connectivity check
+    # so captive browsers can leave the portal and start surfing immediately.
+    button_url = (org.hotspot_welcome_button_url or "").strip() or "http://neverssl.com/"
     logo_url = ""
     if org.profile_photo:
         from core.hotspot_portal import public_absolute_url
@@ -5398,6 +5400,7 @@ def hotspot_welcome(request, join_code: str):
             "button_url": button_url,
             "logo_url": logo_url,
             "activation_url": activation_url,
+            "paid": bool(stk_id and token),
         },
     )
 
@@ -5490,6 +5493,9 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             .values_list("wifi_ssid", flat=True)
             .distinct()[:8]
         )
+    # Always offer STK when Daraja is ready. Auto-identify fills the token;
+    # otherwise the user enters account number / phone to continue paying.
+    show_payment_form = bool(stk_ready and plans)
     return {
         "organization": org,
         "org_name": org.name,
@@ -5505,7 +5511,8 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "mpesa_account": org.mpesa_account,
         "plans": plans,
         "portal_mode": "pppoe",
-        "show_payment_form": customer is not None,
+        "show_payment_form": show_payment_form,
+        "require_account_lookup": customer is None,
         "customer_token": customer_token,
         "customer_name": getattr(customer, "full_name", "") if customer else "",
         "account_number": getattr(customer, "account_number", "") if customer else "",
@@ -5530,6 +5537,33 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     }
 
 
+def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = ""):
+    """Resolve a PPPoE customer by account number or phone when IP match fails."""
+    from billing.services import normalize_kenya_msisdn
+
+    account_number = (account_number or "").strip()
+    phone = (phone or "").strip()
+    qs = Customer.objects.filter(
+        organization=org,
+        service_type=Customer.ServiceType.PPPOE,
+        status=Customer.Status.ACTIVE,
+    ).select_related("plan", "organization", "router")
+    if account_number:
+        match = qs.filter(account_number__iexact=account_number).order_by("id").first()
+        if match is not None:
+            return match
+    if phone:
+        msisdn = normalize_kenya_msisdn(phone)
+        candidates = list(qs.exclude(phone="").order_by("id")[:500])
+        for row in candidates:
+            if normalize_kenya_msisdn(row.phone or "") == msisdn:
+                return row
+            raw = (row.phone or "").strip()
+            if raw and raw == phone:
+                return row
+    return None
+
+
 def pppoe_pay(request, join_code: str):
     """Public renew page for expired PPPoE sessions (dst-nat captive target)."""
     org = get_object_or_404(Organization, join_code=join_code)
@@ -5538,8 +5572,8 @@ def pppoe_pay(request, join_code: str):
     identify_error = ""
     if customer is None:
         identify_error = (
-            "Could not match this connection to a PPPoE account. "
-            "Confirm the client router is dialed, then open any http:// page again."
+            "Could not auto-match this connection. Enter your account number "
+            "or M-Pesa phone to pay and restore internet."
         )
     return render(
         request,
@@ -5556,26 +5590,51 @@ def pppoe_payment_start(request, join_code: str):
     from billing.stk import start_subscription_stk_payment
 
     org = get_object_or_404(Organization, join_code=join_code)
-    try:
-        payload = signing.loads(
-            request.POST.get("customer_token") or "",
-            salt="pppoe-payment",
-            max_age=60 * 60 * 6,
+    customer = None
+    token = (request.POST.get("customer_token") or "").strip()
+    if token:
+        try:
+            payload = signing.loads(
+                token,
+                salt="pppoe-payment",
+                max_age=60 * 60 * 6,
+            )
+        except signing.BadSignature:
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": "Payment session expired. Reload the page and try again.",
+                },
+                status=400,
+            )
+        if payload.get("org") != org.pk or payload.get("mode") != "pppoe":
+            return JsonResponse(
+                {"ok": False, "error": "Invalid payment session."}, status=400
+            )
+        customer = get_object_or_404(
+            Customer.objects.select_related("plan", "organization", "router"),
+            pk=payload.get("cid"),
+            organization=org,
+            service_type=Customer.ServiceType.PPPOE,
         )
-    except signing.BadSignature:
-        return JsonResponse(
-            {"ok": False, "error": "Payment session expired. Reload the page and try again."},
-            status=400,
+    else:
+        customer = _find_pppoe_customer_for_pay(
+            org,
+            account_number=request.POST.get("account_number") or "",
+            phone=request.POST.get("phone") or "",
         )
-    if payload.get("org") != org.pk or payload.get("mode") != "pppoe":
-        return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=400)
+        if customer is None:
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": (
+                        "Could not find this PPPoE account. Check the account "
+                        "number or the phone used when registering."
+                    ),
+                },
+                status=404,
+            )
 
-    customer = get_object_or_404(
-        Customer.objects.select_related("plan", "organization", "router"),
-        pk=payload.get("cid"),
-        organization=org,
-        service_type=Customer.ServiceType.PPPOE,
-    )
     if customer.status != Customer.Status.ACTIVE:
         return JsonResponse(
             {
@@ -5703,7 +5762,14 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
                 "retry_url": reverse(
                     "core:pppoe_pay", kwargs={"join_code": org.join_code}
                 ),
-                "continue_url": "http://neverssl.com/",
+                "continue_url": (
+                    (org.hotspot_welcome_button_url or "").strip()
+                    or "http://neverssl.com/"
+                ),
+                "continue_label": (
+                    (org.hotspot_welcome_button_label or "").strip()
+                    or "Continue browsing"
+                ),
             },
         )
     return JsonResponse(result)

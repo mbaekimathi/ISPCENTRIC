@@ -805,13 +805,71 @@ class HotspotAuthorizeFastPathTests(TestCase):
             package_start=self.customer.package_start,
             package_end=self.customer.package_end,
         )
-        with patch(
-            "core.mikrotik_connect.provision_customer_pppoe",
-            return_value={"ok": True, "profile": "default"},
-        ) as provision:
+        with (
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                return_value={"ok": True, "profile": "default"},
+            ) as provision,
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                return_value={"ok": True, "enabled": False},
+            ),
+        ):
             sync_customer_subscription_access(pppoe, provision=True)
         self.assertTrue(provision.called)
         self.assertFalse(provision.call_args.kwargs.get("ensure_stack"))
+
+    def test_expiry_enables_cpe_renew_portal_before_block(self):
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.models import Customer
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            sync_customer_subscription_access,
+        )
+
+        pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Expired Dialer",
+            phone="0700000002",
+            account_number="PPP-EXP-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="expired1",
+            pppoe_password="pass1",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=timezone.now() - timedelta(days=3),
+            package_end=timezone.now() - timedelta(days=1),
+        )
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url=""):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision", kwargs.get("force_disabled")))
+            return {"ok": True, "profile": PPPOE_BLOCKED_PROFILE_NAME}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+        ):
+            result = sync_customer_subscription_access(pppoe, provision=True)
+
+        self.assertFalse(result.get("allowed"))
+        self.assertEqual(order[0], ("portal", True))
+        self.assertEqual(order[1], ("provision", False))
+        self.assertTrue(result.get("portal", {}).get("ok"))
 
 
 class CaptiveGatewayHostTests(TestCase):
@@ -1632,3 +1690,406 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Renew PPPoE")
         self.assertNotContains(response, "Pay for Hotspot")
+
+
+class PackageSpeedLimitTests(SimpleTestCase):
+    """Package Mbps must become real MikroTik rate-limits, not discarded strings."""
+
+    def _plan(self, upload=5, download=10):
+        return type(
+            "Plan",
+            (),
+            {
+                "upload_speed_mbps": upload,
+                "download_speed_mbps": download,
+                "speed_mbps": download,
+            },
+        )()
+
+    def _customer(self, *, plan=None, allowed=True, disabled=False):
+        return type(
+            "Customer",
+            (),
+            {
+                "plan": plan,
+                "status": "active",
+                "package_end": object() if allowed else None,
+                "service_type": "pppoe",
+                "organization": type("Org", (), {"pppoe_compulsory": True})(),
+            },
+        )()
+
+    def test_rate_limit_string_is_upload_then_download(self):
+        from core.mikrotik_connect import (
+            _pppoe_rate_limit_for_customer,
+            _pppoe_speed_profile_name,
+            _ppp_secret_profile_for_customer,
+        )
+
+        customer = self._customer(plan=self._plan(upload=8, download=25))
+        with patch(
+            "core.mikrotik_connect._customer_internet_allowed",
+            return_value=True,
+        ):
+            self.assertEqual(_pppoe_rate_limit_for_customer(customer), "8M/25M")
+            self.assertEqual(
+                _ppp_secret_profile_for_customer(customer, disabled=False),
+                _pppoe_speed_profile_name(8, 25),
+            )
+
+    def test_blocked_clients_keep_blocked_profile_not_speed_profile(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _ppp_secret_profile_for_customer,
+        )
+
+        customer = self._customer(plan=self._plan(), allowed=False)
+        with patch(
+            "core.mikrotik_connect._customer_internet_allowed",
+            return_value=False,
+        ):
+            self.assertEqual(
+                _ppp_secret_profile_for_customer(customer, disabled=False),
+                PPPOE_BLOCKED_PROFILE_NAME,
+            )
+
+    def test_ensure_ppp_secret_creates_speed_profile_and_applies_rate_limit(self):
+        from core.mikrotik_connect import (
+            _ensure_ppp_secret,
+            _pppoe_speed_profile_name,
+        )
+
+        profile_name = _pppoe_speed_profile_name(5, 10)
+        sets: list[dict] = []
+        adds: list[tuple] = []
+        state = {
+            "/ppp/profile": [],
+            "/ppp/secret": [],
+            "/ppp/active": [
+                {"name": "alice", "address": "10.20.0.50"},
+            ],
+            "/queue/simple": [],
+        }
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_add(sock, path, **props):
+            adds.append((path, dict(props)))
+            item_id = f"*{len(adds)}"
+            row = {".id": item_id, **props}
+            state.setdefault(path, []).append(row)
+            return {"_reply": "!done", "ret": item_id}
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append({"path": path, "id": item_id, **props})
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+                    break
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=1),
+        ):
+            action = _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+                profile=profile_name,
+                rate_limit="5M/10M",
+            )
+
+        self.assertEqual(action, "created")
+        profile_adds = [props for path, props in adds if path == "/ppp/profile"]
+        self.assertTrue(profile_adds)
+        self.assertEqual(profile_adds[0]["name"], profile_name)
+        self.assertEqual(profile_adds[0]["rate-limit"], "5M/10M")
+
+        secret_adds = [props for path, props in adds if path == "/ppp/secret"]
+        self.assertEqual(secret_adds[0]["profile"], profile_name)
+
+        rate_sets = [
+            item for item in sets if item.get("path") == "/ppp/secret" and "rate-limit" in item
+        ]
+        self.assertTrue(rate_sets)
+        self.assertEqual(rate_sets[0]["rate-limit"], "5M/10M")
+
+        queue_adds = [props for path, props in adds if path == "/queue/simple"]
+        self.assertTrue(queue_adds)
+        self.assertEqual(queue_adds[0]["max-limit"], "5M/10M")
+        self.assertEqual(queue_adds[0]["target"], "10.20.0.50")
+
+    def test_ensure_pppoe_rate_profile_updates_existing(self):
+        from core.mikrotik_connect import (
+            _ensure_pppoe_rate_profile,
+            _pppoe_speed_profile_name,
+        )
+
+        name = _pppoe_speed_profile_name(10, 20)
+        state = {
+            "/ppp/profile": [
+                {".id": "*3", "name": name, "rate-limit": "5M/10M"},
+            ]
+        }
+        sets: list[dict] = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch(
+                "core.mikrotik_connect._set",
+                side_effect=lambda sock, path, item_id, **props: (
+                    sets.append(props) or {"_reply": "!done"}
+                ),
+            ),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!trap"}),
+        ):
+            result = _ensure_pppoe_rate_profile(
+                object(), upload_mbps=10, download_mbps=20
+            )
+
+        self.assertEqual(result, name)
+        self.assertEqual(sets[0]["rate-limit"], "10M/20M")
+
+    def test_hotspot_uses_plan_speeds_not_only_org_defaults(self):
+        from core.mikrotik_connect import (
+            _hotspot_rate_limit_for_customer,
+            _hotspot_speed_profile_name,
+            _ensure_hotspot_rate_profile,
+        )
+
+        plan = self._plan(upload=3, download=12)
+        org = type(
+            "Org",
+            (),
+            {
+                "hotspot_default_upload_mbps": 5,
+                "hotspot_default_download_mbps": 10,
+                "hotspot_idle_timeout_minutes": 15,
+                "hotspot_voucher_validity_hours": 24,
+            },
+        )()
+        customer = type("Customer", (), {"plan": plan, "organization": org})()
+        self.assertEqual(_hotspot_rate_limit_for_customer(customer, org), "3M/12M")
+
+        adds: list[dict] = []
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=lambda sock, path, item_id, attempts: (
+                    adds.append(attempts[0]) or ({"_reply": "!done"}, "*1")
+                ),
+            ),
+        ):
+            profile = _ensure_hotspot_rate_profile(
+                object(),
+                organization=org,
+                upload_mbps=3,
+                download_mbps=12,
+            )
+
+        self.assertEqual(profile, _hotspot_speed_profile_name(3, 12))
+        self.assertEqual(adds[0]["rate-limit"], "3M/12M")
+
+    def test_bulk_sync_assigns_speed_profile_for_paid_plan(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _pppoe_speed_profile_name,
+            _sync_organization_pppoe_secrets_on_socket,
+        )
+
+        plan = self._plan(upload=5, download=10)
+        paid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "paid",
+                "pppoe_password": "pw",
+                "account_number": "A1",
+                "status": "active",
+                "package_end": timezone_aware_future(),
+                "plan": plan,
+                "organization": type("Org", (), {"pppoe_compulsory": True})(),
+                "service_type": "pppoe",
+                "router_id": 1,
+            },
+        )()
+        unpaid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "unpaid",
+                "pppoe_password": "pw",
+                "account_number": "A2",
+                "status": "active",
+                "package_end": None,
+                "plan": plan,
+                "organization": type("Org", (), {"pppoe_compulsory": True})(),
+                "service_type": "pppoe",
+                "router_id": 1,
+            },
+        )()
+
+        captured = []
+
+        def fake_ensure(sock, **kwargs):
+            captured.append(kwargs)
+            return "updated"
+
+        router = type("Router", (), {"pk": 1})()
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[paid, unpaid],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_ppp_secret",
+                side_effect=fake_ensure,
+            ),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value="",
+            ),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                side_effect=lambda c: c.pppoe_username == "paid",
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+        ):
+            synced = _sync_organization_pppoe_secrets_on_socket(object(), router)
+
+        self.assertEqual(synced, 2)
+        by_user = {item["username"]: item for item in captured}
+        self.assertEqual(
+            by_user["paid"]["profile"],
+            _pppoe_speed_profile_name(5, 10),
+        )
+        self.assertEqual(by_user["paid"]["rate_limit"], "5M/10M")
+        self.assertEqual(by_user["unpaid"]["profile"], PPPOE_BLOCKED_PROFILE_NAME)
+
+
+class ExpiredCaptivePayTests(SimpleTestCase):
+    def test_https_public_url_dstnats_to_http_80(self):
+        from core.mikrotik_connect import _portal_http_port
+
+        self.assertEqual(_portal_http_port("https://billing.example.com"), "80")
+        self.assertEqual(_portal_http_port("http://192.168.88.254:8000"), "8000")
+        self.assertEqual(_portal_http_port("http://billing.example.com"), "80")
+
+    def test_unchanged_blocked_secret_does_not_kick(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _ensure_ppp_secret,
+        )
+
+        state = {
+            "/ppp/secret": [
+                {
+                    ".id": "*1",
+                    "name": "alice",
+                    "profile": PPPOE_BLOCKED_PROFILE_NAME,
+                    "disabled": "false",
+                    "password": "secret",
+                    "service": "any",
+                    "comment": "ispcentric-pppoe",
+                }
+            ],
+            "/ppp/profile": [],
+            "/ppp/active": [],
+            "/queue/simple": [],
+        }
+        disconnects = []
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_set(sock, path, item_id, **props):
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions",
+                side_effect=lambda sock, username: disconnects.append(username) or 0,
+            ),
+        ):
+            _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+                profile=PPPOE_BLOCKED_PROFILE_NAME,
+                rate_limit="",
+            )
+
+        self.assertEqual(disconnects, [])
+
+    def test_profile_flip_to_blocked_kicks(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _ensure_ppp_secret,
+            _pppoe_speed_profile_name,
+        )
+
+        speed = _pppoe_speed_profile_name(5, 10)
+        state = {
+            "/ppp/secret": [
+                {
+                    ".id": "*1",
+                    "name": "alice",
+                    "profile": speed,
+                    "disabled": "false",
+                    "password": "secret",
+                    "service": "any",
+                    "comment": "ispcentric-pppoe",
+                }
+            ],
+            "/ppp/profile": [],
+            "/ppp/active": [],
+            "/queue/simple": [],
+        }
+        disconnects = []
+
+        def fake_set(sock, path, item_id, **props):
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions",
+                side_effect=lambda sock, username: disconnects.append(username) or 1,
+            ),
+        ):
+            _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+                profile=PPPOE_BLOCKED_PROFILE_NAME,
+                rate_limit="",
+            )
+
+        self.assertEqual(disconnects, ["alice"])

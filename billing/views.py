@@ -70,6 +70,8 @@ def _handle_edit_package(request, org, *, success_url_name: str):
         return form, open_modal, redirect(success_url_name)
 
     plan = get_object_or_404(BillingPlan, pk=int(package_id), organization=org)
+    previous_download = int(plan.download_speed_mbps or 0)
+    previous_upload = int(plan.upload_speed_mbps or 0)
     form = BillingPackageRegisterForm(
         request.POST,
         request.FILES,
@@ -79,6 +81,12 @@ def _handle_edit_package(request, org, *, success_url_name: str):
     )
     if form.is_valid():
         plan = form.save()
+        speeds_changed = (
+            int(plan.download_speed_mbps or 0) != previous_download
+            or int(plan.upload_speed_mbps or 0) != previous_upload
+        )
+        if speeds_changed:
+            _reprovision_customers_for_plan_speeds(plan)
         messages.success(
             request,
             f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
@@ -86,6 +94,33 @@ def _handle_edit_package(request, org, *, success_url_name: str):
         return form, open_modal, redirect(success_url_name)
 
     return form, "billing-package-edit-modal", None
+
+
+def _reprovision_customers_for_plan_speeds(plan) -> int:
+    """Push updated package Mbps onto every assigned customer's NAS profile."""
+    if plan is None:
+        return 0
+    try:
+        from core.mikrotik_connect import sync_customer_subscription_access
+    except Exception:
+        return 0
+
+    updated = 0
+    customers = (
+        Customer.objects.filter(plan_id=plan.pk)
+        .select_related("organization", "router", "plan")
+        .iterator()
+    )
+    for customer in customers:
+        try:
+            result = sync_customer_subscription_access(
+                customer, provision=True, reauthenticate=True
+            )
+            if isinstance(result, dict) and result.get("ok"):
+                updated += 1
+        except Exception:
+            continue
+    return updated
 
 
 def _get_posted_package(request, org):

@@ -1072,7 +1072,10 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_welcome_title": "Headline clients see after they log in.",
             "hotspot_welcome_message": "Short message under the headline.",
             "hotspot_welcome_button_label": "Defaults to “Continue browsing” if left blank.",
-            "hotspot_welcome_button_url": "Where the button goes. Leave blank to hide the button link.",
+            "hotspot_welcome_button_url": (
+                "Where Continue browsing opens. Leave blank to use a connectivity check "
+                "page (recommended for captive portals)."
+            ),
             "hotspot_redirect_url": "Full URL clients open after login when the welcome page is off.",
             "hotspot_voucher_validity_hours": "Used when creating new Hotspot vouchers.",
             "hotspot_default_download_mbps": "Default download speed for new vouchers.",

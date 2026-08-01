@@ -5724,6 +5724,38 @@ body.staff-nav-lock {
   flex: 1 1 12rem;
 }
 
+/* Package register / edit modals reuse the PPPoE modal shell */
+.pppoe-grid textarea.form-control {
+  min-height: 5.25rem;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.pppoe-grid .package-active-check {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  align-items: center;
+}
+
+.pppoe-grid .package-active-check input {
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: #0e7c86;
+  flex: 0 0 auto;
+}
+
+.pppoe-grid .package-image-upload {
+  margin-top: 0.15rem;
+}
+
+[data-theme="light"] .pppoe-grid .package-active-check {
+  border-color: rgba(11, 31, 42, 0.1);
+  background: rgba(11, 31, 42, 0.03);
+}
+
 .package-row-name {
   display: flex;
   align-items: center;
