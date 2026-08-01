@@ -709,57 +709,32 @@
       </header>
 
       <div class="body">
-        {% if portal_mode == "pppoe" and hotspot_option_available %}
+        {% if dual_access_tabs or portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %}
           <div class="access-choice" role="tablist" aria-label="Choose how to reconnect">
-            <button type="button" class="is-active" id="choose-pppoe" role="tab" aria-selected="true">
-              Renew PPPoE
-            </button>
-            <button type="button" id="choose-hotspot" role="tab" aria-selected="false">
+            <button
+              type="button"
+              id="choose-hotspot"
+              role="tab"
+              class="{% if portal_mode == 'hotspot' %}is-active{% endif %}"
+              aria-selected="{% if portal_mode == 'hotspot' %}true{% else %}false{% endif %}"
+              aria-controls="panel-hotspot"
+            >
               Pay for Hotspot
             </button>
-          </div>
-          <section class="panel" id="hotspot-choice-panel" hidden>
-            <p class="panel-kicker">Alternate path</p>
-            <h2>Connect through Hotspot</h2>
-            <p>Your PPPoE account will remain unchanged. To buy Hotspot access:</p>
-            {% if hotspot_ssids %}
-              <p class="ssid-list">Available Wi‑Fi: {{ hotspot_ssids|join:", " }}</p>
-            {% endif %}
-            <ol>
-              <li>Disconnect from this expired PPPoE connection.</li>
-              <li>Join the ISP Hotspot Wi‑Fi network.</li>
-              <li>The existing Hotspot payment popup will open for that device.</li>
-            </ol>
-            <p>This does not convert or delete your PPPoE account. You can return here and renew it later.</p>
-          </section>
-        {% elif portal_mode == "hotspot" and pppoe_option_available %}
-          <div class="access-choice" role="tablist" aria-label="Choose how to reconnect">
-            <button type="button" class="is-active" id="choose-hotspot" role="tab" aria-selected="true">
-              Pay for Hotspot
-            </button>
-            <button type="button" id="choose-pppoe" role="tab" aria-selected="false">
+            <button
+              type="button"
+              id="choose-pppoe"
+              role="tab"
+              class="{% if portal_mode == 'pppoe' %}is-active{% endif %}"
+              aria-selected="{% if portal_mode == 'pppoe' %}true{% else %}false{% endif %}"
+              aria-controls="panel-pppoe"
+            >
               Renew PPPoE
             </button>
           </div>
-          <section class="panel" id="pppoe-choice-panel" hidden>
-            <p class="panel-kicker">Alternate path</p>
-            <h2>Renew a PPPoE connection</h2>
-            <p>This Hotspot device account will remain unchanged. To renew PPPoE:</p>
-            <ol>
-              <li>Leave this Hotspot Wi‑Fi and connect through your PPPoE client router.</li>
-              <li>Open any plain http:// site so the renew page appears.</li>
-              {% if pppoe_pay_url %}
-                <li>Or open the PPPoE renew page after you dial in.</li>
-              {% endif %}
-            </ol>
-            {% if pppoe_pay_url %}
-              <p style="margin-top:0.75rem;"><a class="ok" href="{{ pppoe_pay_url }}">Open PPPoE renew page</a></p>
-            {% endif %}
-            <p>This does not convert or delete your Hotspot device. You can return here and pay for Hotspot later.</p>
-          </section>
         {% endif %}
 
-        <section class="facts"{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
+        <section class="facts">
           <div class="fact">
             <dt>Step 1</dt>
             <dd>Pay to connect</dd>
@@ -781,97 +756,204 @@
           <p class="error">{{ error }}</p>
         {% endif %}
 
-        {% if show_payment_form %}
-          <section{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
-            <p class="section-label">Step 2 · Pay from your phone</p>
-
-            {% if customer_name or account_number %}
+        {% if stk_ready and plans %}
+          {# ——— Hotspot payment tab ——— #}
+          {% if portal_mode == "hotspot" or hotspot_option_available %}
+          <section
+            class="pay-panel"
+            id="panel-hotspot"
+            role="tabpanel"
+            data-pay-panel="hotspot"
+            {% if portal_mode != "hotspot" %}hidden{% endif %}
+          >
+            <p class="section-label">Step 2 · Hotspot · Pay from your phone</p>
+            {% if hotspot_mac and hotspot_mac != "$(mac)" %}
               <div class="customer-chip" style="margin-bottom:0.7rem;">
-                {% if customer_name %}<strong>{{ customer_name }}</strong>{% endif %}
-                {% if account_number %}<span>{{ account_number }}</span>{% endif %}
-                {% if package_end %}<span>Ended {{ package_end|date:"M j, Y H:i" }}</span>{% endif %}
+                <strong>This device</strong>
+                <span>{{ hotspot_mac }}</span>
               </div>
             {% endif %}
-
-            {% if stk_ready and plans %}
-              {% if identify_error and require_account_lookup %}
-                <p class="meta" style="margin-bottom:0.7rem;">{{ identify_error }}</p>
-              {% endif %}
-
-              <div class="plans" id="plan-cards" role="listbox" aria-label="Internet packages">
-                {% for plan in plans %}
-                  <button
-                    type="button"
-                    class="plan{% if selected_plan_id == plan.pk or not selected_plan_id and forloop.first %} is-selected{% endif %}"
-                    role="option"
-                    aria-selected="{% if selected_plan_id == plan.pk or not selected_plan_id and forloop.first %}true{% else %}false{% endif %}"
-                    data-plan-id="{{ plan.pk }}"
-                    data-price="{{ plan.price }}"
-                  >
-                    <span class="plan-radio" aria-hidden="true"></span>
-                    <span>
-                      <strong>{{ plan.name }}</strong>
-                      <span>{{ plan.speed_label }}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}</span>
-                    </span>
-                    <span class="plan-price">KES {{ plan.price }}</span>
-                  </button>
-                {% endfor %}
+            <div class="plans" data-plan-cards role="listbox" aria-label="Hotspot packages">
+              {% for plan in plans %}
+                <button
+                  type="button"
+                  class="plan{% if forloop.first %} is-selected{% endif %}"
+                  role="option"
+                  aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
+                  data-plan-id="{{ plan.pk }}"
+                  data-price="{{ plan.price }}"
+                >
+                  <span class="plan-radio" aria-hidden="true"></span>
+                  <span>
+                    <strong>{{ plan.name }}</strong>
+                    <span>{{ plan.speed_label }}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}</span>
+                  </span>
+                  <span class="plan-price">KES {{ plan.price }}</span>
+                </button>
+              {% endfor %}
+            </div>
+            <form
+              class="login"
+              data-payment-form
+              method="post"
+              action="{{ hotspot_payment_start_url|default:payment_start_url }}"
+              style="margin-top:0.75rem;"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
+              <div class="field visually-hidden-select">
+                <label for="hotspot-plan-id">Internet package</label>
+                <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
+                  {% for plan in plans %}
+                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if forloop.first %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
+                  {% endfor %}
+                </select>
               </div>
-
-              <form class="login" id="hotspot-payment-form" method="post" action="{{ payment_start_url }}" style="margin-top:0.75rem;">
-                {% csrf_token %}
-                {% if hotspot_mac %}<input type="hidden" name="mac" value="{{ hotspot_mac }}">{% endif %}
-                {% if customer_token %}<input type="hidden" name="customer_token" value="{{ customer_token }}">{% endif %}
-                {% if require_account_lookup %}
-                <div class="field">
-                  <label for="account_number">Account number</label>
-                  <input id="account_number" name="account_number" type="text" autocomplete="username" placeholder="Your account number" value="{{ account_number|default:'' }}">
-                </div>
-                {% endif %}
-                <div class="field visually-hidden-select">
-                  <label for="plan_id">Internet package</label>
-                  <select id="plan_id" name="plan_id" required>
-                    {% for plan in plans %}
-                      <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if selected_plan_id == plan.pk or not selected_plan_id and forloop.first %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
-                    {% endfor %}
-                  </select>
-                </div>
-                <div class="field">
-                  <label for="phone">M-Pesa phone number</label>
-                  <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" value="{{ phone_value|default:'' }}" required>
-                </div>
-                <button type="submit" class="cta" id="payment-submit">Pay with M-Pesa</button>
-              </form>
-
-              <p class="meta" id="payment-status" role="status" aria-live="polite">
-                {% if portal_mode == "pppoe" %}
-                  Pay to renew. Your connection restores automatically after payment.
-                {% else %}
-                  No username or password is needed. Access opens automatically after payment.
-                {% endif %}
+              <div class="field">
+                <label for="hotspot-phone">M-Pesa phone number</label>
+                <input id="hotspot-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required>
+              </div>
+              <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
+            </form>
+            <p class="meta" data-payment-status role="status" aria-live="polite">
+              No username or password is needed. Access opens automatically after payment.
+            </p>
+            <div class="payment-waiting" data-payment-waiting hidden aria-live="polite">
+              <div class="payment-loader" aria-hidden="true">
+                <svg viewBox="0 0 52 52" focusable="false">
+                  <circle class="ring" cx="26" cy="26" r="20"></circle>
+                  <circle class="arc" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <span class="pulse-dot"></span>
+              </div>
+              <p class="payment-waiting-live">Live</p>
+              <p class="payment-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
+              <p class="payment-waiting-copy" data-waiting-copy>
+                Enter your PIN on your phone. This page updates automatically.
               </p>
-              <div class="payment-waiting" id="payment-waiting" hidden aria-live="polite">
-                <div class="payment-loader" aria-hidden="true">
-                  <svg viewBox="0 0 52 52" focusable="false">
-                    <circle class="ring" cx="26" cy="26" r="20"></circle>
-                    <circle class="arc" cx="26" cy="26" r="20"></circle>
-                  </svg>
-                  <span class="pulse-dot"></span>
-                </div>
-                <p class="payment-waiting-live">Live</p>
-                <p class="payment-waiting-title" id="payment-waiting-title">Waiting for M-Pesa</p>
-                <p class="payment-waiting-copy" id="payment-waiting-copy">
-                  Enter your PIN on your phone. This page updates automatically.
-                </p>
-              </div>
-              <a class="ok" id="continue-browsing" href="{{ welcome_url|default:'http://neverssl.com/' }}" hidden>Continue browsing</a>
-              <button type="button" id="payment-retry" class="retry" hidden>Try again</button>
-            {% else %}
-              <p class="error">M-Pesa payment is not available right now. Please contact {{ org_name }}.</p>
-            {% endif %}
+            </div>
+            <a class="ok" data-continue-browsing href="{{ welcome_url|default:'http://neverssl.com/' }}" hidden>Continue browsing</a>
+            <button type="button" class="retry" data-payment-retry hidden>Try again</button>
           </section>
+          {% endif %}
+
+          {# ——— PPPoE renew tab ——— #}
+          {% if portal_mode == "pppoe" or pppoe_option_available %}
+          <section
+            class="pay-panel"
+            id="panel-pppoe"
+            role="tabpanel"
+            data-pay-panel="pppoe"
+            {% if portal_mode != "pppoe" %}hidden{% endif %}
+          >
+            <p class="section-label">Step 2 · PPPoE · Pay from your phone</p>
+            {% if pppoe_customer_name or pppoe_account_number or customer_name or account_number %}
+              <div class="customer-chip" style="margin-bottom:0.7rem;">
+                {% with name=pppoe_customer_name|default:customer_name acct=pppoe_account_number|default:account_number end=pppoe_package_end|default:package_end %}
+                  {% if name %}<strong>{{ name }}</strong>{% endif %}
+                  {% if acct %}<span>{{ acct }}</span>{% endif %}
+                  {% if end %}<span>Ended {{ end|date:"M j, Y H:i" }}</span>{% endif %}
+                {% endwith %}
+              </div>
+            {% endif %}
+            {% if pppoe_identify_error|default:identify_error %}
+              {% if pppoe_require_account_lookup|default:require_account_lookup %}
+                <p class="meta" style="margin-bottom:0.7rem;">{{ pppoe_identify_error|default:identify_error }}</p>
+              {% endif %}
+            {% endif %}
+            <div class="plans" data-plan-cards role="listbox" aria-label="PPPoE packages">
+              {% for plan in plans %}
+                {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
+                <button
+                  type="button"
+                  class="plan{% if sel == plan.pk or not sel and forloop.first %} is-selected{% endif %}"
+                  role="option"
+                  aria-selected="{% if sel == plan.pk or not sel and forloop.first %}true{% else %}false{% endif %}"
+                  data-plan-id="{{ plan.pk }}"
+                  data-price="{{ plan.price }}"
+                >
+                  <span class="plan-radio" aria-hidden="true"></span>
+                  <span>
+                    <strong>{{ plan.name }}</strong>
+                    <span>{{ plan.speed_label }}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}</span>
+                  </span>
+                  <span class="plan-price">KES {{ plan.price }}</span>
+                </button>
+                {% endwith %}
+              {% endfor %}
+            </div>
+            <form
+              class="login"
+              data-payment-form
+              method="post"
+              action="{{ pppoe_payment_start_url|default:payment_start_url }}"
+              style="margin-top:0.75rem;"
+            >
+              {% csrf_token %}
+              {% with token=pppoe_customer_token|default:customer_token %}
+                {% if token %}<input type="hidden" name="customer_token" value="{{ token }}">{% endif %}
+              {% endwith %}
+              {% if pppoe_require_account_lookup|default:require_account_lookup %}
+              <div class="field">
+                <label for="pppoe-account-number">Account number</label>
+                <input
+                  id="pppoe-account-number"
+                  name="account_number"
+                  type="text"
+                  autocomplete="username"
+                  placeholder="Your account number"
+                  value="{{ pppoe_account_number|default:account_number|default:'' }}"
+                >
+              </div>
+              {% endif %}
+              <div class="field visually-hidden-select">
+                <label for="pppoe-plan-id">Internet package</label>
+                <select id="pppoe-plan-id" name="plan_id" data-plan-select required>
+                  {% for plan in plans %}
+                    {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
+                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if sel == plan.pk or not sel and forloop.first %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
+                    {% endwith %}
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="pppoe-phone">M-Pesa phone number</label>
+                <input
+                  id="pppoe-phone"
+                  name="phone"
+                  type="tel"
+                  inputmode="tel"
+                  autocomplete="tel"
+                  placeholder="07xxxxxxxx"
+                  value="{{ pppoe_phone_value|default:phone_value|default:'' }}"
+                  required
+                >
+              </div>
+              <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
+            </form>
+            <p class="meta" data-payment-status role="status" aria-live="polite">
+              Pay to renew. Your connection restores automatically after payment.
+            </p>
+            <div class="payment-waiting" data-payment-waiting hidden aria-live="polite">
+              <div class="payment-loader" aria-hidden="true">
+                <svg viewBox="0 0 52 52" focusable="false">
+                  <circle class="ring" cx="26" cy="26" r="20"></circle>
+                  <circle class="arc" cx="26" cy="26" r="20"></circle>
+                </svg>
+                <span class="pulse-dot"></span>
+              </div>
+              <p class="payment-waiting-live">Live</p>
+              <p class="payment-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
+              <p class="payment-waiting-copy" data-waiting-copy>
+                Enter your PIN on your phone. This page updates automatically.
+              </p>
+            </div>
+            <a class="ok" data-continue-browsing href="{{ welcome_url|default:'http://neverssl.com/' }}" hidden>Continue browsing</a>
+            <button type="button" class="retry" data-payment-retry hidden>Try again</button>
+          </section>
+          {% endif %}
         {% else %}
-          <p class="meta"{% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %} data-native-renew{% endif %}>
+          <p class="meta">
             {% if portal_mode == "pppoe" %}
               {% if identify_error %}{{ identify_error }}{% else %}
                 Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
@@ -890,280 +972,288 @@
     </main>
   </div>
 
-  {% if portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %}
   <script>
     (function () {
-      var renewButton = document.getElementById("choose-pppoe");
-      var hotspotButton = document.getElementById("choose-hotspot");
-      var altPanel = document.getElementById("hotspot-choice-panel") ||
-        document.getElementById("pppoe-choice-panel");
-      var renewPanels = document.querySelectorAll("[data-native-renew]");
-      var nativeMode = "{{ portal_mode|escapejs }}";
+      var hotspotBtn = document.getElementById("choose-hotspot");
+      var pppoeBtn = document.getElementById("choose-pppoe");
+      var hotspotPanel = document.getElementById("panel-hotspot");
+      var pppoePanel = document.getElementById("panel-pppoe");
+      if (!hotspotBtn || !pppoeBtn || !hotspotPanel || !pppoePanel) return;
 
-      function chooseAlternate(useAlternate) {
-        if (altPanel) altPanel.hidden = !useAlternate;
-        renewPanels.forEach(function (panel) { panel.hidden = useAlternate; });
-        var hotspotActive = nativeMode === "hotspot" ? !useAlternate : useAlternate;
-        var pppoeActive = !hotspotActive;
-        hotspotButton.classList.toggle("is-active", hotspotActive);
-        renewButton.classList.toggle("is-active", pppoeActive);
-        hotspotButton.setAttribute("aria-selected", hotspotActive ? "true" : "false");
-        renewButton.setAttribute("aria-selected", pppoeActive ? "true" : "false");
+      function showMode(mode) {
+        var hotspot = mode === "hotspot";
+        hotspotPanel.hidden = !hotspot;
+        pppoePanel.hidden = hotspot;
+        hotspotBtn.classList.toggle("is-active", hotspot);
+        pppoeBtn.classList.toggle("is-active", !hotspot);
+        hotspotBtn.setAttribute("aria-selected", hotspot ? "true" : "false");
+        pppoeBtn.setAttribute("aria-selected", hotspot ? "false" : "true");
       }
 
-      renewButton.addEventListener("click", function () {
-        chooseAlternate(nativeMode === "hotspot");
-      });
-      hotspotButton.addEventListener("click", function () {
-        chooseAlternate(nativeMode === "pppoe");
-      });
+      hotspotBtn.addEventListener("click", function () { showMode("hotspot"); });
+      pppoeBtn.addEventListener("click", function () { showMode("pppoe"); });
     })();
   </script>
-  {% endif %}
 
-  {% if show_payment_form and stk_ready and plans %}
+  {% if stk_ready and plans %}
   <script>
     (function () {
-      var form = document.getElementById("hotspot-payment-form");
-      var submit = document.getElementById("payment-submit");
-      var retry = document.getElementById("payment-retry");
-      var plan = document.getElementById("plan_id");
-      var status = document.getElementById("payment-status");
-      var waitingPanel = document.getElementById("payment-waiting");
-      var waitingTitle = document.getElementById("payment-waiting-title");
-      var waitingCopy = document.getElementById("payment-waiting-copy");
-      var continueBtn = document.getElementById("continue-browsing");
-      var planCards = document.getElementById("plan-cards");
       var welcomeUrl = "{{ welcome_url|escapejs }}" || "http://neverssl.com/";
-      var pollTimer = null;
       var POLL_FAST_MS = 1500;
       var POLL_SLOW_MS = 5000;
       var POLL_GIVE_UP_MS = 600000;
-      var pollStartedAt = 0;
 
-      function setWaiting(active, title, copy) {
-        if (!waitingPanel) return;
-        waitingPanel.hidden = !active;
-        if (status) status.hidden = !!active;
-        if (active) {
-          if (waitingTitle && title) waitingTitle.textContent = title;
-          if (waitingCopy && copy) waitingCopy.textContent = copy;
+      function bindPaymentRoot(root) {
+        var form = root.querySelector("[data-payment-form]");
+        var submit = root.querySelector("[data-payment-submit]");
+        var retry = root.querySelector("[data-payment-retry]");
+        var plan = root.querySelector("[data-plan-select]");
+        var status = root.querySelector("[data-payment-status]");
+        var waitingPanel = root.querySelector("[data-payment-waiting]");
+        var waitingTitle = root.querySelector("[data-waiting-title]");
+        var waitingCopy = root.querySelector("[data-waiting-copy]");
+        var continueBtn = root.querySelector("[data-continue-browsing]");
+        var planCards = root.querySelector("[data-plan-cards]");
+        if (!form || !submit || !plan) return;
+
+        var pollTimer = null;
+        var pollStartedAt = 0;
+
+        function setWaiting(active, title, copy) {
+          if (!waitingPanel) return;
+          waitingPanel.hidden = !active;
+          if (status) status.hidden = !!active;
+          if (active) {
+            if (waitingTitle && title) waitingTitle.textContent = title;
+            if (waitingCopy && copy) waitingCopy.textContent = copy;
+          }
         }
-      }
 
-      function show(message, isError) {
-        if (status) {
-          status.hidden = false;
-          status.textContent = message;
-          status.className = isError ? "error" : "meta is-waiting";
+        function show(message, isError) {
+          if (status) {
+            status.hidden = false;
+            status.textContent = message;
+            status.className = isError ? "error" : "meta is-waiting";
+          }
+          if (isError) setWaiting(false);
         }
-        if (isError) setWaiting(false);
-      }
 
-      function offerRetry(message) {
-        show(message, true);
-        retry.hidden = false;
-        submit.disabled = false;
-        if (continueBtn) continueBtn.hidden = true;
-        setWaiting(false);
-      }
+        function offerRetry(message) {
+          show(message, true);
+          if (retry) retry.hidden = false;
+          submit.disabled = false;
+          if (continueBtn) continueBtn.hidden = true;
+          setWaiting(false);
+        }
 
-      function stopRetry() {
-        retry.hidden = true;
-      }
+        function stopRetry() {
+          if (retry) retry.hidden = true;
+        }
 
-      function syncPlanCards() {
-        if (!planCards) return;
-        var selected = plan.value;
-        planCards.querySelectorAll(".plan").forEach(function (card) {
-          var active = card.getAttribute("data-plan-id") === selected;
-          card.classList.toggle("is-selected", active);
-          card.setAttribute("aria-selected", active ? "true" : "false");
-        });
-      }
+        function syncPlanCards() {
+          if (!planCards) return;
+          var selected = plan.value;
+          planCards.querySelectorAll(".plan").forEach(function (card) {
+            var active = card.getAttribute("data-plan-id") === selected;
+            card.classList.toggle("is-selected", active);
+            card.setAttribute("aria-selected", active ? "true" : "false");
+          });
+        }
 
-      function updatePayButton() {
-        var option = plan.options[plan.selectedIndex];
-        var amount = option ? option.getAttribute("data-price") : "";
-        submit.textContent = amount ? "Pay KES " + amount + " with M-Pesa" : "Pay with M-Pesa";
-        syncPlanCards();
-      }
+        function updatePayButton() {
+          var option = plan.options[plan.selectedIndex];
+          var amount = option ? option.getAttribute("data-price") : "";
+          submit.textContent = amount ? "Pay KES " + amount + " with M-Pesa" : "Pay with M-Pesa";
+          syncPlanCards();
+        }
 
-      function showContinue(targetUrl) {
-        if (!continueBtn) return;
-        continueBtn.href = targetUrl || welcomeUrl || "http://neverssl.com/";
-        continueBtn.hidden = false;
-        continueBtn.textContent = "Continue browsing";
-      }
+        function showContinue(targetUrl) {
+          if (!continueBtn) return;
+          continueBtn.href = targetUrl || welcomeUrl || "http://neverssl.com/";
+          continueBtn.hidden = false;
+          continueBtn.textContent = "Continue browsing";
+        }
 
-      function openInternet(stkId, token) {
-        setWaiting(false);
-        show("Payment successful. You are online — continue browsing.", false);
-        stopRetry();
-        submit.disabled = true;
-        var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
-        var target =
-          welcomeUrl +
-          separator +
-          "stk=" +
-          encodeURIComponent(stkId) +
-          "&token=" +
-          encodeURIComponent(token);
-        showContinue(target);
-        window.setTimeout(function () {
-          window.location.replace(target);
-        }, 600);
-      }
+        function openInternet(stkId, token) {
+          setWaiting(false);
+          show("Payment successful. You are online — continue browsing.", false);
+          stopRetry();
+          submit.disabled = true;
+          var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+          var target =
+            welcomeUrl +
+            separator +
+            "stk=" +
+            encodeURIComponent(stkId) +
+            "&token=" +
+            encodeURIComponent(token);
+          showContinue(target);
+          window.setTimeout(function () {
+            window.location.replace(target);
+          }, 600);
+        }
 
-      function poll(url, token) {
-        window.clearTimeout(pollTimer);
-        fetch(url + "?token=" + encodeURIComponent(token), {
-          headers: { "Accept": "application/json" },
-          credentials: "same-origin"
-        })
-          .then(function (response) {
-            return response.json().then(function (data) {
-              return { ok: response.ok, data: data };
-            });
+        function poll(url, token) {
+          window.clearTimeout(pollTimer);
+          fetch(url + "?token=" + encodeURIComponent(token), {
+            headers: { "Accept": "application/json" },
+            credentials: "same-origin"
           })
-          .then(function (result) {
-            var data = result.data || {};
-            if (!result.ok || !data.ok) {
-              show(data.error || "Could not check payment.", true);
-              if (data.can_retry === false) {
-                stopRetry();
-                submit.disabled = true;
-              } else {
-                retry.hidden = false;
-                submit.disabled = false;
-              }
-              return;
-            }
-            if (data.success) {
-              stopRetry();
-              if (data.authorized) {
-                openInternet(data.stk_id, token);
+            .then(function (response) {
+              return response.json().then(function (data) {
+                return { ok: response.ok, data: data };
+              });
+            })
+            .then(function (result) {
+              var data = result.data || {};
+              if (!result.ok || !data.ok) {
+                show(data.error || "Could not check payment.", true);
+                if (data.can_retry === false) {
+                  stopRetry();
+                  submit.disabled = true;
+                } else {
+                  if (retry) retry.hidden = false;
+                  submit.disabled = false;
+                }
                 return;
               }
-              var authMsg = data.authorization_error ||
-                "Payment succeeded. Waiting for the router to authorize this device…";
-              if (data.offline) {
-                authMsg = "Payment succeeded. The router is offline — retrying authorization…";
-              }
-              setWaiting(true, "Restoring your connection", authMsg);
-              if (data.can_retry_authorize !== false) {
-                var elapsedAuth = Date.now() - pollStartedAt;
-                if (elapsedAuth < POLL_GIVE_UP_MS) {
-                  pollTimer = window.setTimeout(
-                    function () { poll(url, token); },
-                    POLL_SLOW_MS
-                  );
+              if (data.success) {
+                stopRetry();
+                if (data.authorized) {
+                  openInternet(data.stk_id, token);
                   return;
                 }
+                var authMsg = data.authorization_error ||
+                  "Payment succeeded. Waiting for the router to authorize this device…";
+                if (data.offline) {
+                  authMsg = "Payment succeeded. The router is offline — retrying authorization…";
+                }
+                setWaiting(true, "Restoring your connection", authMsg);
+                if (data.can_retry_authorize !== false) {
+                  var elapsedAuth = Date.now() - pollStartedAt;
+                  if (elapsedAuth < POLL_GIVE_UP_MS) {
+                    pollTimer = window.setTimeout(
+                      function () { poll(url, token); },
+                      POLL_SLOW_MS
+                    );
+                    return;
+                  }
+                }
+                show(
+                  data.authorization_error ||
+                    "Payment succeeded, but the router could not authorize this device. Reload this page in a moment.",
+                  true
+                );
+                return;
               }
-              show(
-                data.authorization_error ||
-                  "Payment succeeded, but the router could not authorize this device. Reload this page in a moment.",
-                true
+              if (data.pending) {
+                var elapsed = Date.now() - pollStartedAt;
+                if (data.expired) {
+                  offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
+                } else {
+                  setWaiting(
+                    true,
+                    "Waiting for M-Pesa",
+                    data.result_desc ||
+                      "Enter your PIN on your phone. This page updates automatically."
+                  );
+                }
+                if (elapsed < POLL_GIVE_UP_MS) {
+                  pollTimer = window.setTimeout(
+                    function () { poll(url, token); },
+                    data.expired ? POLL_SLOW_MS : POLL_FAST_MS
+                  );
+                }
+                return;
+              }
+              offerRetry(
+                data.reason || data.result_desc || "The payment was not completed."
               );
-              return;
-            }
-            if (data.pending) {
-              var elapsed = Date.now() - pollStartedAt;
-              if (data.expired) {
-                offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
-              } else {
-                setWaiting(
-                  true,
-                  "Waiting for M-Pesa",
-                  data.result_desc ||
-                    "Enter your PIN on your phone. This page updates automatically."
-                );
-              }
-              if (elapsed < POLL_GIVE_UP_MS) {
-                pollTimer = window.setTimeout(
-                  function () { poll(url, token); },
-                  data.expired ? POLL_SLOW_MS : POLL_FAST_MS
-                );
-              }
-              return;
-            }
-            offerRetry(
-              data.reason || data.result_desc || "The payment was not completed."
-            );
-            if (data.can_retry === false) {
+              if (data.can_retry === false) stopRetry();
+            })
+            .catch(function (error) {
+              setWaiting(
+                true,
+                "Checking payment status",
+                (error.message || "Could not check payment.") +
+                  " Retrying automatically…"
+              );
               stopRetry();
-            }
-          })
-          .catch(function (error) {
-            setWaiting(
-              true,
-              "Checking payment status",
-              (error.message || "Could not check payment.") +
-                " Retrying automatically…"
-            );
-            stopRetry();
-            pollTimer = window.setTimeout(
-              function () { poll(url, token); },
-              POLL_SLOW_MS
-            );
-          });
-      }
-
-      if (planCards) {
-        planCards.addEventListener("click", function (event) {
-          var card = event.target.closest(".plan");
-          if (!card) return;
-          plan.value = card.getAttribute("data-plan-id");
-          updatePayButton();
-        });
-      }
-
-      form.addEventListener("submit", function (event) {
-        event.preventDefault();
-        window.clearTimeout(pollTimer);
-        stopRetry();
-        submit.disabled = true;
-        pollStartedAt = Date.now();
-        if (continueBtn) continueBtn.hidden = true;
-        setWaiting(
-          true,
-          "Sending M-Pesa prompt",
-          "Please wait while we send the payment request to your phone…"
-        );
-        fetch(form.action, {
-          method: "POST",
-          body: new FormData(form),
-          headers: { "Accept": "application/json" },
-          credentials: "same-origin"
-        })
-          .then(function (response) {
-            return response.json().then(function (data) {
-              return { ok: response.ok, data: data };
+              pollTimer = window.setTimeout(
+                function () { poll(url, token); },
+                POLL_SLOW_MS
+              );
             });
-          })
-          .then(function (result) {
-            var data = result.data || {};
-            if (!result.ok || !data.ok) {
-              throw new Error(data.error || "Could not start payment.");
-            }
-            setWaiting(
-              true,
-              "Waiting for M-Pesa",
-              "M-Pesa prompt sent for KES " + data.amount +
-                ". Check your phone and enter your PIN."
-            );
-            poll(data.status_url, data.status_token);
-          })
-          .catch(function (error) {
-            offerRetry(error.message || "Could not start payment.");
+        }
+
+        if (planCards) {
+          planCards.addEventListener("click", function (event) {
+            var card = event.target.closest(".plan");
+            if (!card) return;
+            plan.value = card.getAttribute("data-plan-id");
+            updatePayButton();
           });
-      });
-      retry.addEventListener("click", function () {
-        form.dispatchEvent(new Event("submit", { cancelable: true }));
-      });
-      plan.addEventListener("change", updatePayButton);
-      updatePayButton();
+        }
+
+        form.addEventListener("submit", function (event) {
+          event.preventDefault();
+          var macInput = form.querySelector('input[name="mac"]');
+          if (macInput) {
+            var macVal = (macInput.value || "").trim();
+            if (!macVal || macVal.indexOf("$(") === 0) {
+              offerRetry("Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.");
+              return;
+            }
+          }
+          window.clearTimeout(pollTimer);
+          stopRetry();
+          submit.disabled = true;
+          pollStartedAt = Date.now();
+          if (continueBtn) continueBtn.hidden = true;
+          setWaiting(
+            true,
+            "Sending M-Pesa prompt",
+            "Please wait while we send the payment request to your phone…"
+          );
+          fetch(form.action, {
+            method: "POST",
+            body: new FormData(form),
+            headers: { "Accept": "application/json" },
+            credentials: "same-origin"
+          })
+            .then(function (response) {
+              return response.json().then(function (data) {
+                return { ok: response.ok, data: data };
+              });
+            })
+            .then(function (result) {
+              var data = result.data || {};
+              if (!result.ok || !data.ok) {
+                throw new Error(data.error || "Could not start payment.");
+              }
+              setWaiting(
+                true,
+                "Waiting for M-Pesa",
+                "M-Pesa prompt sent for KES " + data.amount +
+                  ". Check your phone and enter your PIN."
+              );
+              poll(data.status_url, data.status_token);
+            })
+            .catch(function (error) {
+              offerRetry(error.message || "Could not start payment.");
+            });
+        });
+
+        if (retry) {
+          retry.addEventListener("click", function () {
+            form.dispatchEvent(new Event("submit", { cancelable: true }));
+          });
+        }
+        plan.addEventListener("change", updatePayButton);
+        updatePayButton();
+      }
+
+      document.querySelectorAll("[data-pay-panel]").forEach(bindPaymentRoot);
     })();
   </script>
   {% endif %}

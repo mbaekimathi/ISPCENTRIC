@@ -5146,13 +5146,15 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         if link_login:
             mikrotik_login = True
 
-    # Mirror of the PPPoE → Hotspot handoff. Instructions only — never convert
-    # this Hotspot MAC customer into a PPPoE account from the captive page.
     pppoe_option_available = bool(getattr(org, "pppoe_compulsory", False))
     pppoe_pay_url = ""
+    pppoe_payment_start_url = ""
     if pppoe_option_available:
         pppoe_pay_url = reverse(
             "core:pppoe_pay", kwargs={"join_code": org.join_code}
+        )
+        pppoe_payment_start_url = reverse(
+            "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
         )
 
     return {
@@ -5167,10 +5169,9 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "mpesa_account": org.mpesa_account,
         "plans": plans,
         "portal_mode": "hotspot",
-        # Router-scoped MAC is enough to start payment; link-login confirms
-        # MikroTik captive context but must not hide the form when probes
-        # preserve only the mac query parameter.
-        "show_payment_form": bool(hotspot_mac),
+        "show_payment_form": bool(hotspot_mac) or (
+            pppoe_option_available and stk_ready and bool(plans)
+        ),
         "mikrotik_login": mikrotik_login,
         "link_login": link_login,
         "link_orig": link_orig or urls["welcome_url"],
@@ -5178,12 +5179,37 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "payment_start_url": reverse(
             "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
         ),
+        "hotspot_payment_start_url": reverse(
+            "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
+        ),
         "welcome_url": urls["welcome_url"],
         "error": error,
         "pppoe_option_available": pppoe_option_available,
         "pppoe_pay_url": pppoe_pay_url,
+        "pppoe_payment_start_url": pppoe_payment_start_url,
+        "pppoe_require_account_lookup": True,
+        "pppoe_customer_token": "",
+        "pppoe_customer_name": "",
+        "pppoe_account_number": "",
+        "pppoe_phone_value": "",
+        "pppoe_selected_plan_id": None,
+        "pppoe_package_end": None,
+        "pppoe_identify_error": (
+            "Enter the PPPoE account number for the router you want to renew."
+            if pppoe_option_available
+            else ""
+        ),
         "hotspot_option_available": False,
         "hotspot_ssids": [],
+        "require_account_lookup": False,
+        "customer_token": "",
+        "customer_name": "",
+        "account_number": "",
+        "phone_value": "",
+        "selected_plan_id": None,
+        "package_end": None,
+        "identify_error": "",
+        "dual_access_tabs": bool(hotspot_mac) and pppoe_option_available,
     }
 
 
@@ -5493,8 +5519,12 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             .values_list("wifi_ssid", flat=True)
             .distinct()[:8]
         )
-    # Always offer STK when Daraja is ready. Auto-identify fills the token;
-    # otherwise the user enters account number / phone to continue paying.
+    # Prefer real MAC from the request; otherwise keep MikroTik's $(mac) so CPE /
+    # ISP Hotspot HTML files can substitute it when served by RouterOS.
+    hotspot_mac = ""
+    if request is not None:
+        hotspot_mac = _normalize_hotspot_mac(request.GET.get("mac") or "")
+    hotspot_mac_value = hotspot_mac or "$(mac)"
     show_payment_form = bool(stk_ready and plans)
     return {
         "organization": org,
@@ -5522,19 +5552,60 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "payment_start_url": reverse(
             "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
         ),
+        "pppoe_payment_start_url": reverse(
+            "core:pppoe_payment_start", kwargs={"join_code": org.join_code}
+        ),
+        "hotspot_payment_start_url": reverse(
+            "core:hotspot_payment_start", kwargs={"join_code": org.join_code}
+        ),
         "welcome_url": urls["welcome_url"],
         "identify_error": identify_error,
         "error": "",
-        "hotspot_mac": "",
+        "hotspot_mac": hotspot_mac_value,
         "mikrotik_login": False,
-        # This is only a hand-off choice. It deliberately does not convert the
-        # PPPoE customer or call any Hotspot payment/provisioning code. After
-        # joining the ISP Hotspot SSID, the existing MAC captive flow takes over.
         "hotspot_option_available": hotspot_option_available,
         "hotspot_ssids": hotspot_ssids,
         "pppoe_option_available": False,
         "pppoe_pay_url": "",
+        "pppoe_require_account_lookup": customer is None,
+        "pppoe_customer_token": customer_token,
+        "pppoe_customer_name": getattr(customer, "full_name", "") if customer else "",
+        "pppoe_account_number": getattr(customer, "account_number", "") if customer else "",
+        "pppoe_phone_value": (getattr(customer, "phone", "") or "") if customer else "",
+        "pppoe_selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
+        "pppoe_package_end": getattr(customer, "package_end", None) if customer else None,
+        "pppoe_identify_error": identify_error,
+        "dual_access_tabs": hotspot_option_available,
     }
+
+
+def _find_pppoe_customer_from_token(org, token: str):
+    """Resolve a PPPoE customer from a signed renew-page token (CPE Wi‑Fi URL)."""
+    token = (token or "").strip()
+    if not token:
+        return None
+    try:
+        payload = signing.loads(
+            token,
+            salt="pppoe-payment",
+            max_age=60 * 60 * 24 * 30,
+        )
+    except signing.BadSignature:
+        return None
+    if payload.get("org") != org.pk or payload.get("mode") != "pppoe":
+        return None
+    customer_id = payload.get("cid")
+    if not customer_id:
+        return None
+    return (
+        Customer.objects.filter(
+            pk=customer_id,
+            organization=org,
+            service_type=Customer.ServiceType.PPPOE,
+        )
+        .select_related("plan", "organization", "router")
+        .first()
+    )
 
 
 def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = ""):
@@ -5570,6 +5641,10 @@ def pppoe_pay(request, join_code: str):
     remote = (request.META.get("REMOTE_ADDR") or "").strip()
     customer = find_pppoe_customer_for_ip(org, remote)
     identify_error = ""
+    if customer is None:
+        # CPE Wi‑Fi renew popup installs a signed token so the account for the
+        # connected router is filled without needing a 10.20.0.x pool IP.
+        customer = _find_pppoe_customer_from_token(org, request.GET.get("t") or "")
     if customer is None:
         identify_error = (
             "Could not auto-match this connection. Enter your account number "

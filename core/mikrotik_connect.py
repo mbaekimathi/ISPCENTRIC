@@ -8624,9 +8624,16 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
     return None
 
 
-def _pppoe_pay_portal_url(organization, portal_url: str = "") -> str:
-    """Absolute PPPoE renew/pay URL to install on the CPE Hotspot login page."""
+def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> str:
+    """Absolute PPPoE renew/pay URL to install on the CPE Hotspot login page.
+
+    When ``customer`` is provided, append a signed token so the renew page can
+    auto-fill that account even when the phone is on CPE Wi‑Fi (not 10.20.0.x).
+    """
+    from urllib.parse import urlencode
+
     from django.conf import settings
+    from django.core import signing
     from django.urls import reverse
 
     join_code = (getattr(organization, "join_code", None) or "").strip()
@@ -8635,11 +8642,25 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "") -> str:
     path = reverse("core:pppoe_pay", kwargs={"join_code": join_code})
     base = (portal_url or getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if not base:
-        return path
-    # If caller passed a full pay URL already, keep it.
-    if "/pppoe/" in base and base.rstrip("/").endswith("/pay"):
-        return base
-    return f"{base}{path}"
+        url = path
+    elif "/pppoe/" in base and base.rstrip("/").endswith("/pay"):
+        url = base
+    else:
+        url = f"{base}{path}"
+
+    if customer is not None and getattr(customer, "pk", None) and getattr(organization, "pk", None):
+        token = signing.dumps(
+            {
+                "cid": customer.pk,
+                "org": organization.pk,
+                "mode": "pppoe",
+            },
+            salt="pppoe-payment",
+            compress=True,
+        )
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{urlencode({'t': token})}"
+    return url
 
 
 def sync_customer_subscription_access(
@@ -8752,7 +8773,11 @@ def sync_customer_subscription_access(
             }
         )
 
-    pay_url = _pppoe_pay_portal_url(getattr(customer, "organization", None), portal_url)
+    pay_url = _pppoe_pay_portal_url(
+        getattr(customer, "organization", None),
+        portal_url,
+        customer=customer,
+    )
 
     if not allowed:
         if provision:

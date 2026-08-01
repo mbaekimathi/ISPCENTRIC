@@ -1642,19 +1642,38 @@ class ClientsSurfingStatusTests(TestCase):
         )
 
         self.assertTrue(context["hotspot_option_available"])
+        self.assertTrue(context["dual_access_tabs"])
         self.assertEqual(context["hotspot_ssids"], ["Live ISP Hotspot"])
+        self.assertTrue(context["hotspot_payment_start_url"])
+        self.assertEqual(context["account_number"], self.customer.account_number)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.service_type, "pppoe")
 
     def test_hotspot_portal_offers_pppoe_handoff_without_converting_customer(self):
         from django.test import RequestFactory
 
-        from billing.models import Customer
+        from accounts.models import Organization
+        from billing.models import BillingPlan, Customer
         from core.views import _hotspot_portal_context
 
         self.org.pppoe_compulsory = True
         self.org.hotspot_enabled = True
-        self.org.save(update_fields=["pppoe_compulsory", "hotspot_enabled"])
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Day Pass",
+            price="100.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
         hotspot_customer = Customer.objects.create(
             organization=self.org,
             full_name="Hotspot Device",
@@ -1673,12 +1692,57 @@ class ClientsSurfingStatusTests(TestCase):
         response = self.client.get(f"/hotspot/{self.org.join_code}/pay/?mac=AABBCCDDEE11")
 
         self.assertTrue(context["pppoe_option_available"])
-        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", context["pppoe_pay_url"])
+        self.assertTrue(context["dual_access_tabs"])
+        self.assertTrue(context["pppoe_payment_start_url"])
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Renew PPPoE")
         self.assertContains(response, "Pay for Hotspot")
+        self.assertContains(response, 'id="panel-hotspot"')
+        self.assertContains(response, 'id="panel-pppoe"')
+        self.assertNotContains(response, "Open PPPoE renew page")
         hotspot_customer.refresh_from_db()
         self.assertEqual(hotspot_customer.service_type, "hotspot")
+
+    def test_pppoe_pay_autofills_account_from_signed_token(self):
+        from django.core import signing
+        from django.test import RequestFactory
+
+        from core.views import _find_pppoe_customer_from_token, _pppoe_portal_context
+
+        token = signing.dumps(
+            {
+                "cid": self.customer.pk,
+                "org": self.org.pk,
+                "mode": "pppoe",
+            },
+            salt="pppoe-payment",
+            compress=True,
+        )
+        matched = _find_pppoe_customer_from_token(self.org, token)
+        self.assertEqual(matched.pk, self.customer.pk)
+
+        request = RequestFactory().get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"t": token},
+            REMOTE_ADDR="192.168.88.50",
+        )
+        context = _pppoe_portal_context(
+            self.org, request, customer=matched, identify_error=""
+        )
+        self.assertEqual(context["account_number"], self.customer.account_number)
+        self.assertEqual(context["customer_name"], self.customer.full_name)
+        self.assertTrue(context["customer_token"])
+        self.assertFalse(context["require_account_lookup"])
+
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"t": token},
+            REMOTE_ADDR="192.168.88.50",
+        )
+        self.assertEqual(response.status_code, 200)
+        # Token path must resolve even when the phone is not on 10.20.0.x.
+        self.assertEqual(response.context["account_number"], self.customer.account_number)
+        self.assertFalse(response.context["require_account_lookup"])
 
     def test_hotspot_page_hides_pppoe_choice_when_pppoe_is_off(self):
         self.org.pppoe_compulsory = False
