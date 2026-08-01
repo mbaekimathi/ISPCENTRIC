@@ -60,7 +60,7 @@ class MikroTikRouter(models.Model):
     )
 
     class CleanUplinkMode(models.TextChoices):
-        BYPASS = "bypass", "Starlink Bypass"
+        BYPASS = "bypass", "Modem bypass (MikroTik owns WAN)"
         BEHIND = "behind", "Behind provider router"
 
     clean_uplink_enabled = models.BooleanField(
@@ -78,7 +78,7 @@ class MikroTikRouter(models.Model):
         "WAN interface",
         max_length=64,
         default="ether1",
-        help_text="Port cabled to Starlink / the provider (usually ether1).",
+        help_text="Port cabled to the ISP modem/ONT (usually ether1). PPPoE-out is detected automatically when present.",
     )
     lan_bridge = models.CharField(
         "LAN bridge",
@@ -88,10 +88,10 @@ class MikroTikRouter(models.Model):
     )
     provider_gateway = models.CharField(
         "Provider gateway IP",
-        max_length=64,
+        max_length=255,
         default="192.168.1.1",
         blank=True,
-        help_text="Starlink/ISP admin IP to block when running behind their router.",
+        help_text="ISP modem/ONT admin IP(s) to block in behind-provider mode. Comma-separated allowed (e.g. 192.168.1.1, 192.168.100.1).",
     )
     clean_uplink_separate_wan = models.BooleanField(
         "Separate WAN from bridge",

@@ -528,8 +528,14 @@ class MikroTikCleanUplinkForm(forms.Form):
 
     mode = forms.ChoiceField(
         choices=[
-            ("bypass", "Starlink Bypass — dish/router in bypass, MikroTik owns WAN"),
-            ("behind", "Behind provider — Starlink/ISP router stays on, block its settings"),
+            (
+                "bypass",
+                "Modem bypass",
+            ),
+            (
+                "behind",
+                "Behind provider",
+            ),
         ],
         widget=forms.RadioSelect(attrs={"class": "mikrotik-clean-mode-list"}),
     )
@@ -559,25 +565,29 @@ class MikroTikCleanUplinkForm(forms.Form):
     )
     provider_gateway = forms.CharField(
         required=False,
-        max_length=64,
+        max_length=255,
         widget=forms.TextInput(
             attrs={
                 "class": "input",
-                "placeholder": "192.168.1.1",
+                "placeholder": "192.168.1.1 or 192.168.100.1",
                 "id": "id_clean_uplink_gateway",
                 "autocomplete": "off",
             }
         ),
         label="Provider gateway IP",
-        help_text="Used in behind-provider mode to block the Starlink/ISP admin page.",
+        help_text=(
+            "Behind-provider mode: modem/ONT admin IP. "
+            "Comma-separate several (e.g. 192.168.1.1, 192.168.100.1)."
+        ),
     )
     separate_wan = forms.BooleanField(
         required=False,
         initial=False,
         label="Separate WAN from bridge",
         help_text=(
-            "Only enable if your PC is plugged into ether2–ether5 (LAN). "
-            "If you manage the MikroTik through Starlink/ether1, leave this OFF or you will lose access."
+            "Only enable if your PC is plugged into a LAN port (ether2–ether5). "
+            "If you manage the MikroTik through the ISP modem / ether1, leave this OFF "
+            "or you may lose access."
         ),
         widget=forms.CheckboxInput(attrs={"id": "id_clean_uplink_separate_wan"}),
     )
@@ -594,7 +604,15 @@ class MikroTikCleanUplinkForm(forms.Form):
         return (self.cleaned_data.get("lan_bridge") or "").strip()
 
     def clean_provider_gateway(self):
-        return (self.cleaned_data.get("provider_gateway") or "").strip()
+        raw = (self.cleaned_data.get("provider_gateway") or "").strip()
+        if not raw:
+            return ""
+        from core.mikrotik_connect import parse_provider_gateways
+
+        try:
+            return ", ".join(parse_provider_gateways(raw))
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc)) from exc
 
     def clean(self):
         cleaned = super().clean()
@@ -603,7 +621,7 @@ class MikroTikCleanUplinkForm(forms.Form):
         if mode == "behind" and not gateway:
             self.add_error(
                 "provider_gateway",
-                "Enter the provider gateway IP (often 192.168.1.1 on Starlink).",
+                "Enter the provider gateway IP (e.g. 192.168.1.1, 192.168.0.1, or 192.168.100.1).",
             )
         if not cleaned.get("wan_interface"):
             self.add_error("wan_interface", "Enter the WAN interface name.")

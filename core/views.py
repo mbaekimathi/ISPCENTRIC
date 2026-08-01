@@ -64,6 +64,7 @@ from core.mikrotik_connect import (
     apply_mikrotik_access_changes,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
+    apply_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
     apply_hotspot_on_router,
     check_mikrotik_reachable,
@@ -529,7 +530,7 @@ def _is_bond_port_row(row: dict) -> bool:
 
 
 def _pick_auto_wan(ports: list[dict], *, suggested_wan: str, saved_wan: str) -> str:
-    """Choose the best Internet port from live data."""
+    """Choose the best Internet port from live data (DHCP, PPPoE, or ether)."""
     physical = [p for p in ports if not _is_bond_port_row(p)]
     by_name = {(p.get("name") or "").strip(): p for p in physical}
 
@@ -541,6 +542,17 @@ def _pick_auto_wan(ports: list[dict], *, suggested_wan: str, saved_wan: str) -> 
         if row.get("disabled") or row.get("is_wireless"):
             continue
         return name
+
+    # Prefer a port that already has PPPoE or DHCP uplink configured.
+    for kind in ("pppoe", "dhcp"):
+        for p in physical:
+            if p.get("disabled") or p.get("is_wireless"):
+                continue
+            if (p.get("uplink_kind") or "") != kind:
+                continue
+            name = (p.get("name") or "").strip()
+            if name:
+                return name
 
     running_ether = [
         p
@@ -573,8 +585,8 @@ def suggest_port_roles(
     saved_wan: str = "",
 ) -> dict[str, str]:
     """
-    Auto map ports:
-    - one Internet (WAN) from default route / ether1 / first live uplink
+    Auto map ports for any ISP uplink:
+    - one Internet (WAN) from default route / PPPoE parent / ether1 / first live uplink
     - running customer ports → Customers (LAN)
     - disabled / link-down → Unused
     """
@@ -592,6 +604,11 @@ def suggest_port_roles(
             roles[name] = MikroTikRouter.PortRole.UNUSED
             continue
         # Bridged / Wi‑Fi ports are customer-facing even if the link is currently down.
+        # Ports that already carry DHCP/PPPoE but are not the chosen WAN stay unassigned
+        # so the operator can mark them as backup deliberately.
+        if (row.get("uplink_kind") or "") in {"pppoe", "dhcp"} and name != wan:
+            roles[name] = MikroTikRouter.PortRole.NONE
+            continue
         if row.get("is_bridged") or row.get("is_wireless") or row.get("running"):
             roles[name] = MikroTikRouter.PortRole.LAN
         else:
@@ -1449,6 +1466,15 @@ def mikrotik_ports(request, router_id: int):
                 listed.get("ports") or [],
                 suggested_wan=listed.get("suggested_wan") or "",
             )
+            # Best-effort: put the chosen Internet port on the router WAN list.
+            wan_name = (result.get("wan") or "").strip()
+            if wan_name:
+                apply_mikrotik_single_wan(
+                    router.host,
+                    router.username,
+                    router.password or "",
+                    wan_interface=wan_name,
+                )
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -1560,6 +1586,19 @@ def mikrotik_ports(request, router_id: int):
                     router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
                     router.uplink_ports = [port_name]
                 update_fields.extend(["wan_interface", "uplink_mode", "uplink_ports"])
+                # Best-effort push so RouterOS WAN list matches the chosen Internet port.
+                sync = apply_mikrotik_single_wan(
+                    router.host,
+                    router.username,
+                    router.password or "",
+                    wan_interface=port_name,
+                )
+                if not sync.get("ok"):
+                    messages.warning(
+                        request,
+                        sync.get("error")
+                        or f"Saved {port_name} as Internet, but could not sync the WAN list on the router.",
+                    )
             elif role == MikroTikRouter.PortRole.WAN_BACKUP:
                 roles[port_name] = MikroTikRouter.PortRole.WAN_BACKUP
                 primary = next(
@@ -1744,10 +1783,20 @@ def mikrotik_ports(request, router_id: int):
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
             single_wan = (router.wan_interface or "ether1").strip()
-            if single_wan == (router.bond_interface or "").strip() or single_wan.startswith(
-                "bond"
+            bond_name = (router.bond_interface or "").strip()
+            if (
+                not single_wan
+                or single_wan == bond_name
+                or single_wan.lower().startswith("bond")
             ):
-                single_wan = "ether1"
+                members = [
+                    str(p).strip()
+                    for p in (router.uplink_ports or [])
+                    if str(p).strip()
+                    and not str(p).strip().lower().startswith("bond")
+                    and str(p).strip() != bond_name
+                ]
+                single_wan = members[0] if members else "ether1"
             router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
             router.uplink_ports = [single_wan] if single_wan else []
             router.wan_interface = single_wan or "ether1"

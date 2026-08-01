@@ -454,6 +454,144 @@ def _ensure_dhcp_client(sock: socket.socket, interface: str) -> None:
     )
 
 
+# Candidate LAN plans when the current LAN overlaps the ISP/WAN side.
+# Avoid 10.20.0.0/24 (PPPoE CPE management pool) and 10.9.0.0/24 (WireGuard).
+CLEAN_UPLINK_LAN_CANDIDATES: tuple[tuple[str, str, str], ...] = (
+    ("10.10.0.0/24", "10.10.0.1", "10.10.0.10-10.10.0.200"),
+    ("10.11.0.0/24", "10.11.0.1", "10.11.0.10-10.11.0.200"),
+    ("172.21.0.0/24", "172.21.0.1", "172.21.0.10-172.21.0.200"),
+    ("192.168.88.0/24", "192.168.88.1", "192.168.88.10-192.168.88.200"),
+)
+
+
+def parse_provider_gateways(raw: str) -> list[str]:
+    """Split and validate one or more IPv4 provider admin / gateway addresses."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for part in (raw or "").replace(";", ",").split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            ip = str(ipaddress.IPv4Address(token))
+        except ValueError as exc:
+            raise ValueError(f"Invalid provider gateway IP: {token}") from exc
+        if ip not in seen:
+            seen.add(ip)
+            found.append(ip)
+    return found
+
+
+def _ip_network_from_cidr(value: str) -> ipaddress.IPv4Network | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return ipaddress.ip_interface(text).network
+    except ValueError:
+        try:
+            return ipaddress.ip_network(text, strict=False)
+        except ValueError:
+            return None
+
+
+def _find_pppoe_client_for_wan(sock: socket.socket, wan_interface: str) -> str:
+    """Return PPPoE client interface name bound to wan_interface, if any."""
+    wan_interface = (wan_interface or "").strip()
+    if not wan_interface:
+        return ""
+    for path in ("/interface/pppoe-client", "/interface/pppoe-server"):
+        try:
+            rows = _print(sock, path, props=".id,name,interface,disabled")
+        except Exception:
+            continue
+        for row in rows:
+            if (row.get("interface") or "").strip() != wan_interface:
+                continue
+            if (row.get("disabled") or "").lower() in {"true", "yes"}:
+                continue
+            name = (row.get("name") or "").strip()
+            if name:
+                return name
+    # Also accept an already-named pppoe-out used as the WAN itself.
+    if wan_interface.lower().startswith("pppoe"):
+        return wan_interface
+    return ""
+
+
+def _collect_interface_networks(sock: socket.socket, *interfaces: str) -> list[ipaddress.IPv4Network]:
+    wanted = {name.strip() for name in interfaces if (name or "").strip()}
+    if not wanted:
+        return []
+    nets: list[ipaddress.IPv4Network] = []
+    for row in _print(sock, "/ip/address", props="address,interface"):
+        if (row.get("interface") or "").strip() not in wanted:
+            continue
+        net = _ip_network_from_cidr(row.get("address") or "")
+        if net is not None:
+            nets.append(net)
+    return nets
+
+
+def _detect_dhcp_gateways(sock: socket.socket, wan_interface: str) -> list[str]:
+    """Best-effort ISP gateway from DHCP client status / gateway fields."""
+    gateways: list[str] = []
+    for row in _print(
+        sock,
+        "/ip/dhcp-client",
+        props="interface,gateway,status,disabled",
+    ):
+        if (row.get("interface") or "").strip() != wan_interface:
+            continue
+        if (row.get("disabled") or "").lower() in {"true", "yes"}:
+            continue
+        raw = (row.get("gateway") or "").strip()
+        if not raw:
+            continue
+        # RouterOS may show "192.168.1.1%ether1"
+        token = raw.split("%", 1)[0].strip()
+        try:
+            gateways.append(str(ipaddress.IPv4Address(token)))
+        except ValueError:
+            continue
+    return gateways
+
+
+def _networks_overlap(a: ipaddress.IPv4Network, b: ipaddress.IPv4Network) -> bool:
+    return a.overlaps(b)
+
+
+def pick_clean_uplink_lan_plan(
+    wan_networks: list[ipaddress.IPv4Network],
+    existing_lan: ipaddress.IPv4Network | None = None,
+) -> tuple[str, str, str]:
+    """
+    Choose a LAN network that does not overlap ISP/WAN addressing.
+
+    Prefer keeping the existing LAN when it is already safe.
+    """
+    if existing_lan is not None and not any(
+        _networks_overlap(existing_lan, wan) for wan in wan_networks
+    ):
+        gateway = str(existing_lan.network_address + 1)
+        # Usable hosts excluding network, gateway, broadcast.
+        start = existing_lan.network_address + 10
+        end = existing_lan.broadcast_address - 1
+        if int(end) <= int(start):
+            start = existing_lan.network_address + 2
+            end = existing_lan.broadcast_address - 1
+        ranges = f"{start}-{end}"
+        return str(existing_lan), gateway, ranges
+
+    for network, gateway, ranges in CLEAN_UPLINK_LAN_CANDIDATES:
+        candidate = ipaddress.ip_network(network, strict=False)
+        if any(_networks_overlap(candidate, wan) for wan in wan_networks):
+            continue
+        return network, gateway, ranges
+    # Last resort — still return default even if overlapping (caller notes it).
+    return CLEAN_UPLINK_LAN_CANDIDATES[0]
+
+
 def _ensure_masquerade(sock: socket.socket) -> None:
     for row in _rows_with_tag(
         sock,
@@ -499,13 +637,18 @@ def _ensure_dns_redirect(sock: socket.socket) -> None:
         )
 
 
-def _ensure_filter_rules(sock: socket.socket, *, mode: str, provider_gateway: str) -> None:
+def _ensure_filter_rules(
+    sock: socket.socket,
+    *,
+    mode: str,
+    provider_gateways: list[str] | None = None,
+    provider_networks: list[str] | None = None,
+) -> None:
     """Install tagged filter rules. Existing non-tagged rules are left alone.
 
-    Intentionally does NOT drop all WAN→router or forward-the-rest traffic.
-    Those rules locked operators out when they managed the MikroTik from the
-    Starlink/provider side of ether1. Clean uplink focuses on DNS/NAT and
-    blocking the provider admin page instead.
+    Intentionally does NOT drop all WAN→router traffic. That locked operators
+    out when they managed the MikroTik from the ISP/modem side of the WAN port.
+    Clean uplink focuses on DNS/NAT and blocking provider admin pages instead.
     """
     _remove_tagged(sock, "/ip/firewall/filter")
 
@@ -525,16 +668,35 @@ def _ensure_filter_rules(sock: socket.socket, *, mode: str, provider_gateway: st
         },
     ]
 
-    if mode == "behind" and provider_gateway:
-        rules.insert(
-            1,
-            {
-                "chain": "forward",
-                "action": "drop",
-                "dst-address": provider_gateway,
-                "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
-            },
-        )
+    if mode == "behind":
+        insert_at = 1
+        for gateway in provider_gateways or []:
+            rules.insert(
+                insert_at,
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "dst-address": gateway,
+                    "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
+                },
+            )
+            insert_at += 1
+        for network in provider_networks or []:
+            # Block the ISP modem LAN (private only) so customers cannot open
+            # other admin hosts on that side (ONTs, fibre CPE, etc.).
+            net = _ip_network_from_cidr(network)
+            if net is None or not net.is_private:
+                continue
+            rules.insert(
+                insert_at,
+                {
+                    "chain": "forward",
+                    "action": "drop",
+                    "dst-address": str(net),
+                    "comment": f"{CLEAN_UPLINK_TAG} block provider lan",
+                },
+            )
+            insert_at += 1
 
     for rule in rules:
         _add(sock, "/ip/firewall/filter", **rule)
@@ -569,29 +731,36 @@ def ensure_mikrotik_lan_passthrough(
     *,
     wan_interface: str = "ether1",
     lan_bridge: str = "bridgeLocal",
-    lan_network: str = "10.10.0.0/24",
-    lan_gateway: str = "10.10.0.1",
-    lan_pool_ranges: str = "10.10.0.10-10.10.0.200",
+    lan_network: str = "",
+    lan_gateway: str = "",
+    lan_pool_ranges: str = "",
 ) -> list[str]:
     """
-    Make MikroTik route internet cleanly:
+    Make MikroTik route internet cleanly for any ISP uplink:
 
-    - WAN (Starlink) on wan_interface via DHCP
-    - LAN on a different subnet (default 10.10.0.0/24) with DHCP for clients
+    - WAN via existing PPPoE client when present, otherwise DHCP on wan_interface
+    - LAN on a subnet that does not overlap the ISP/WAN side
     - NAT masquerade out WAN
     """
     wan_interface = (wan_interface or "ether1").strip()
     lan_bridge = (lan_bridge or "bridgeLocal").strip()
     notes: list[str] = []
 
+    pppoe_iface = _find_pppoe_client_for_wan(sock, wan_interface)
+    wan_members = [wan_interface]
+    if pppoe_iface and pppoe_iface != wan_interface:
+        wan_members.append(pppoe_iface)
+        notes.append(f"using PPPoE uplink {pppoe_iface} on {wan_interface}")
+
     # DHCP client belongs on WAN only — never on the LAN bridge.
+    # Skip adding DHCP when PPPoE already owns the uplink.
     for row in _print(sock, "/ip/dhcp-client", props=".id,interface"):
         iface = (row.get("interface") or "").strip()
         item_id = (row.get(".id") or "").strip()
         if iface == lan_bridge and item_id:
             _remove(sock, "/ip/dhcp-client", item_id)
             notes.append(f"removed DHCP client from {lan_bridge}")
-        elif iface == wan_interface and item_id:
+        elif iface == wan_interface and item_id and not pppoe_iface:
             _set(
                 sock,
                 "/ip/dhcp-client",
@@ -600,50 +769,74 @@ def ensure_mikrotik_lan_passthrough(
                 **{"add-default-route": "yes", "use-peer-dns": "no"},
             )
 
-    wan_dhcp = any(
-        (row.get("interface") or "").strip() == wan_interface
-        for row in _print(sock, "/ip/dhcp-client", props="interface")
-    )
-    if not wan_dhcp:
-        _add(
-            sock,
-            "/ip/dhcp-client",
-            interface=wan_interface,
-            disabled="no",
-            **{
-                "add-default-route": "yes",
-                "use-peer-dns": "no",
-                "comment": CLEAN_UPLINK_TAG,
-            },
+    if not pppoe_iface:
+        wan_dhcp = any(
+            (row.get("interface") or "").strip() == wan_interface
+            for row in _print(sock, "/ip/dhcp-client", props="interface")
         )
-        notes.append(f"added DHCP client on {wan_interface}")
+        if not wan_dhcp:
+            _add(
+                sock,
+                "/ip/dhcp-client",
+                interface=wan_interface,
+                disabled="no",
+                **{
+                    "add-default-route": "yes",
+                    "use-peer-dns": "no",
+                    "comment": CLEAN_UPLINK_TAG,
+                },
+            )
+            notes.append(f"added DHCP client on {wan_interface}")
+    else:
+        notes.append("skipped WAN DHCP client (PPPoE present)")
 
-    # LAN must not share the Starlink/WAN subnet.
-    for row in _print(sock, "/ip/address", props=".id,address,interface"):
-        iface = (row.get("interface") or "").strip()
-        address = (row.get("address") or "").strip()
-        item_id = (row.get(".id") or "").strip()
-        if iface != lan_bridge or not item_id:
+    wan_networks = _collect_interface_networks(sock, *wan_members)
+    existing_lan_net: ipaddress.IPv4Network | None = None
+    for row in _print(sock, "/ip/address", props="address,interface"):
+        if (row.get("interface") or "").strip() != lan_bridge:
             continue
-        if address.startswith("10.10.0."):
+        net = _ip_network_from_cidr(row.get("address") or "")
+        if net is not None:
+            existing_lan_net = net
+            break
+
+    if lan_network and lan_gateway and lan_pool_ranges:
+        plan_network, plan_gateway, plan_ranges = lan_network, lan_gateway, lan_pool_ranges
+    else:
+        plan_network, plan_gateway, plan_ranges = pick_clean_uplink_lan_plan(
+            wan_networks, existing_lan_net
+        )
+    plan_net = ipaddress.ip_network(plan_network, strict=False)
+
+    # Drop LAN addresses that collide with WAN or sit outside the chosen plan.
+    for row in _print(sock, "/ip/address", props=".id,address,interface"):
+        if (row.get("interface") or "").strip() != lan_bridge:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        address = (row.get("address") or "").strip()
+        row_net = _ip_network_from_cidr(address)
+        if not item_id or row_net is None:
+            continue
+        overlaps_wan = any(_networks_overlap(row_net, wan) for wan in wan_networks)
+        if row_net == plan_net and not overlaps_wan:
             continue
         _remove(sock, "/ip/address", item_id)
         notes.append(f"removed conflicting LAN address {address}")
 
     has_lan_ip = any(
         (row.get("interface") or "").strip() == lan_bridge
-        and (row.get("address") or "").startswith("10.10.0.")
+        and _ip_network_from_cidr(row.get("address") or "") == plan_net
         for row in _print(sock, "/ip/address", props="address,interface")
     )
     if not has_lan_ip:
         _add(
             sock,
             "/ip/address",
-            address=f"{lan_gateway}/24",
+            address=f"{plan_gateway}/{plan_net.prefixlen}",
             interface=lan_bridge,
             comment=CLEAN_UPLINK_TAG,
         )
-        notes.append(f"set LAN {lan_gateway}/24 on {lan_bridge}")
+        notes.append(f"set LAN {plan_gateway}/{plan_net.prefixlen} on {lan_bridge}")
 
     pool_names = {
         (row.get("name") or "").strip()
@@ -654,10 +847,18 @@ def ensure_mikrotik_lan_passthrough(
             sock,
             "/ip/pool",
             name="ispcentric-lan",
-            ranges=lan_pool_ranges,
+            ranges=plan_ranges,
             comment=CLEAN_UPLINK_TAG,
         )
         notes.append("added LAN DHCP pool")
+    else:
+        for row in _print(sock, "/ip/pool", props=".id,name"):
+            if (row.get("name") or "").strip() != "ispcentric-lan":
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _set(sock, "/ip/pool", item_id, ranges=plan_ranges)
+            break
 
     lan_server_id = ""
     for row in _print(sock, "/ip/dhcp-server", props=".id,interface,name"):
@@ -683,22 +884,23 @@ def ensure_mikrotik_lan_passthrough(
         notes.append("added LAN DHCP server")
 
     has_net = any(
-        (row.get("address") or "").startswith("10.10.0.")
+        _ip_network_from_cidr(row.get("address") or "") == plan_net
         for row in _print(sock, "/ip/dhcp-server/network", props="address")
     )
     if not has_net:
         _add(
             sock,
             "/ip/dhcp-server/network",
-            address=lan_network,
-            gateway=lan_gateway,
-            **{"dns-server": lan_gateway, "comment": CLEAN_UPLINK_TAG},
+            address=str(plan_net),
+            gateway=plan_gateway,
+            **{"dns-server": plan_gateway, "comment": CLEAN_UPLINK_TAG},
         )
-        notes.append("added LAN DHCP network")
+        notes.append(f"added LAN DHCP network {plan_net}")
 
     _ensure_interface_list(sock, "WAN")
     _ensure_interface_list(sock, "LAN")
-    _ensure_list_member(sock, "WAN", wan_interface)
+    for member in wan_members:
+        _ensure_list_member(sock, "WAN", member)
     _ensure_list_member(sock, "LAN", lan_bridge)
     _ensure_masquerade(sock)
     _command(
@@ -710,14 +912,8 @@ def ensure_mikrotik_lan_passthrough(
         ],
     )
 
-    # Provider-admin drop can stay, but keep it disabled while diagnosing passthrough.
-    for row in _print(sock, "/ip/firewall/filter", props=".id,comment,disabled"):
-        if "block provider admin" in (row.get("comment") or ""):
-            item_id = (row.get(".id") or "").strip()
-            if item_id and (row.get("disabled") or "").lower() not in {"true", "yes"}:
-                _set(sock, "/ip/firewall/filter", item_id, disabled="yes")
-                notes.append("paused provider-admin block")
-
+    notes.append(f"wan_mode={'pppoe' if pppoe_iface else 'dhcp'}")
+    notes.append(f"lan_plan={plan_net}")
     return notes
 
 
@@ -742,7 +938,7 @@ def read_mikrotik_clean_uplink(
             nat_hits = _rows_with_tag(sock, "/ip/firewall/nat")
             enabled = bool(filter_hits or nat_hits)
             mode = "behind" if any(
-                "block provider admin" in (row.get("comment") or "") for row in filter_hits
+                "block provider" in (row.get("comment") or "") for row in filter_hits
             ) else "bypass"
             return {
                 "ok": True,
@@ -775,17 +971,21 @@ def set_mikrotik_clean_uplink(
     mode: str = "bypass",
     wan_interface: str = "ether1",
     lan_bridge: str = "bridgeLocal",
-    provider_gateway: str = "192.168.1.1",
+    provider_gateway: str = "",
     separate_wan: bool = True,
     restore_wan_to_bridge: bool = False,
     port: int = 8728,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
     """
-    Apply or remove clean-uplink rules on RouterOS.
+    Apply or remove clean-uplink rules on RouterOS for any ISP uplink.
+
+    Supports DHCP and PPPoE WAN, picks a LAN subnet that does not collide with
+    the provider side, and (in behind mode) blocks one or more provider admin
+    IPs plus the private ISP modem LAN when detected.
 
     Runs in phases and reconnects after unbridging WAN, because that change
-    often drops the active API TCP session and caused timeouts.
+    often drops the active API TCP session.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -795,7 +995,7 @@ def set_mikrotik_clean_uplink(
         mode = "bypass"
     wan_interface = (wan_interface or "ether1").strip()
     lan_bridge = (lan_bridge or "bridgeLocal").strip()
-    provider_gateway = (provider_gateway or "").strip()
+    provider_gateway_raw = (provider_gateway or "").strip()
 
     if not host or not username:
         return {"ok": False, "error": "Router credentials are required."}
@@ -803,8 +1003,13 @@ def set_mikrotik_clean_uplink(
         return {"ok": False, "error": "WAN interface is required."}
     if not lan_bridge:
         return {"ok": False, "error": "LAN bridge is required."}
-    if mode == "behind" and enabled and not provider_gateway:
-        return {"ok": False, "error": "Provider gateway IP is required for behind-provider mode."}
+
+    provider_gateways: list[str] = []
+    if provider_gateway_raw:
+        try:
+            provider_gateways = parse_provider_gateways(provider_gateway_raw)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
 
     try:
         if not enabled:
@@ -841,6 +1046,9 @@ def set_mikrotik_clean_uplink(
             }
 
         wan_was_bridged = False
+        detected_gateways: list[str] = []
+        provider_networks: list[str] = []
+        wan_mode = "dhcp"
 
         # Phase 1: validate interfaces and optionally unbridge WAN.
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
@@ -859,6 +1067,17 @@ def set_mikrotik_clean_uplink(
                     "error": f"LAN bridge “{lan_bridge}” was not found on this MikroTik.",
                 }
 
+            pppoe_iface = _find_pppoe_client_for_wan(sock, wan_interface)
+            if pppoe_iface:
+                wan_mode = "pppoe"
+            detected_gateways = _detect_dhcp_gateways(sock, wan_interface)
+            wan_nets = _collect_interface_networks(
+                sock, wan_interface, *( [pppoe_iface] if pppoe_iface else [])
+            )
+            provider_networks = [
+                str(net) for net in wan_nets if net.is_private
+            ]
+
             if separate_wan:
                 port_id = _bridge_port_id(sock, wan_interface)
                 if port_id:
@@ -873,13 +1092,26 @@ def set_mikrotik_clean_uplink(
                         }
                     wan_was_bridged = True
 
+        if mode == "behind":
+            if not provider_gateways and detected_gateways:
+                provider_gateways = detected_gateways
+            if not provider_gateways:
+                return {
+                    "ok": False,
+                    "error": (
+                        "Provider gateway IP is required for behind-provider mode. "
+                        "Enter the modem/ONT admin IP (e.g. 192.168.1.1 or 192.168.100.1)."
+                    ),
+                }
+
         # Unbridging often kills the current API TCP session — wait, then continue.
         if wan_was_bridged:
             time.sleep(1.5)
             _wait_for_api(host, port=port)
 
-        # Phase 2: lists, DHCP, DNS, NAT, firewall (fresh session).
+        # Phase 2: lists, DHCP/PPPoE, DNS, NAT, firewall (fresh session).
         last_error = ""
+        passthrough_notes: list[str] = []
         for attempt in range(1, 4):
             try:
                 with _api_session(
@@ -887,13 +1119,24 @@ def set_mikrotik_clean_uplink(
                 ) as sock:
                     _ensure_interface_list(sock, "WAN")
                     _ensure_interface_list(sock, "LAN")
-                    _ensure_list_member(sock, "WAN", wan_interface)
-                    _ensure_list_member(sock, "LAN", lan_bridge)
-                    ensure_mikrotik_lan_passthrough(
+                    passthrough_notes = ensure_mikrotik_lan_passthrough(
                         sock,
                         wan_interface=wan_interface,
                         lan_bridge=lan_bridge,
                     )
+                    # Refresh private WAN nets after DHCP/PPPoE may have addressed them.
+                    pppoe_iface = _find_pppoe_client_for_wan(sock, wan_interface)
+                    wan_nets = _collect_interface_networks(
+                        sock,
+                        wan_interface,
+                        *([pppoe_iface] if pppoe_iface else []),
+                    )
+                    provider_networks = [
+                        str(net) for net in wan_nets if net.is_private
+                    ]
+                    if mode == "behind" and not provider_gateways:
+                        provider_gateways = _detect_dhcp_gateways(sock, wan_interface)
+
                     _command(
                         sock,
                         [
@@ -906,7 +1149,10 @@ def set_mikrotik_clean_uplink(
                     _ensure_masquerade(sock)
                     _ensure_dns_redirect(sock)
                     _ensure_filter_rules(
-                        sock, mode=mode, provider_gateway=provider_gateway
+                        sock,
+                        mode=mode,
+                        provider_gateways=provider_gateways if mode == "behind" else None,
+                        provider_networks=provider_networks if mode == "behind" else None,
                     )
                 break
             except (TimeoutError, ConnectionError, OSError) as exc:
@@ -922,15 +1168,26 @@ def set_mikrotik_clean_uplink(
                 time.sleep(1.5 * attempt)
                 _wait_for_api(host, port=port)
 
-        mode_label = "Starlink Bypass" if mode == "bypass" else "Behind provider router"
+        mode_label = (
+            "Modem bypass" if mode == "bypass" else "Behind provider router"
+        )
+        detail = ""
+        if passthrough_notes:
+            detail = " " + "; ".join(
+                n for n in passthrough_notes if n.startswith(("wan_mode=", "lan_plan=", "using "))
+            )
         return {
             "ok": True,
             "enabled": True,
             "mode": mode,
+            "wan_mode": wan_mode,
+            "provider_gateways": provider_gateways,
             "wan_was_bridged": wan_was_bridged,
+            "notes": passthrough_notes,
             "message": (
                 f"Clean uplink enabled ({mode_label}). "
                 "MikroTik will pass internet and block provider settings pages."
+                f"{detail}"
             ),
         }
     except TimeoutError:
@@ -10205,8 +10462,49 @@ def _flag_yes(value: Any) -> bool:
     return str(value or "").strip().lower() in {"true", "yes", "1"}
 
 
+def _pppoe_parent_map(sock: socket.socket) -> dict[str, str]:
+    """Map PPPoE client interface name → physical parent port."""
+    mapping: dict[str, str] = {}
+    try:
+        rows = _print(
+            sock,
+            "/interface/pppoe-client",
+            props="name,interface,disabled",
+        )
+    except Exception:
+        return mapping
+    for row in rows:
+        if _flag_yes(row.get("disabled")):
+            continue
+        name = (row.get("name") or "").strip()
+        parent = (row.get("interface") or "").strip()
+        if name and parent:
+            mapping[name] = parent
+    return mapping
+
+
+def _resolve_wan_to_physical(iface: str, pppoe_parents: dict[str, str] | None = None) -> str:
+    """
+    Map a default-route interface to a physical port when possible.
+
+    Fibre / Safaricom / many Kenyan ISPs dial PPPoE, so the active default route
+    is often `pppoe-out1` while the cable is still on ether1.
+    """
+    iface = (iface or "").strip()
+    if not iface:
+        return ""
+    parents = pppoe_parents or {}
+    if iface in parents:
+        return parents[iface]
+    lower = iface.lower()
+    if lower.startswith("pppoe"):
+        return parents.get(iface, "")
+    return iface
+
+
 def _default_route_wan(sock: socket.socket) -> str:
-    """Best-effort WAN interface from the active default route."""
+    """Best-effort physical WAN port from the active default route (DHCP or PPPoE)."""
+    pppoe_parents = _pppoe_parent_map(sock)
     try:
         routes = _print(
             sock,
@@ -10214,6 +10512,9 @@ def _default_route_wan(sock: socket.socket) -> str:
             props="dst-address,gateway,immediate-gw,active,disabled,distance",
         )
     except (TimeoutError, OSError, ConnectionError):
+        # Fall back to first PPPoE parent if routes are unavailable.
+        if pppoe_parents:
+            return next(iter(pppoe_parents.values()))
         return ""
 
     candidates: list[tuple[int, str]] = []
@@ -10229,11 +10530,16 @@ def _default_route_wan(sock: socket.socket) -> str:
         gateway = (row.get("gateway") or "").strip()
         iface = ""
         for raw in (immediate, gateway):
+            raw = (raw or "").strip()
+            if not raw:
+                continue
             if "%" in raw:
                 iface = raw.split("%", 1)[-1].strip()
-            elif raw and not any(ch.isdigit() for ch in raw.split(".")[0:1]):
-                # gateway may already be an interface name
-                if "/" not in raw and ":" not in raw:
+            elif "/" not in raw and ":" not in raw:
+                # Interface name (pppoe-out1, ether1) — not an IPv4/IPv6 address.
+                try:
+                    ipaddress.ip_address(raw.split("%", 1)[0])
+                except ValueError:
                     iface = raw
             if iface:
                 break
@@ -10242,7 +10548,12 @@ def _default_route_wan(sock: socket.socket) -> str:
             parts = immediate.replace("%", " ").split()
             for part in reversed(parts):
                 token = part.strip()
-                if token and not token[0].isdigit():
+                if not token:
+                    continue
+                try:
+                    ipaddress.ip_address(token)
+                    continue
+                except ValueError:
                     iface = token
                     break
         if iface:
@@ -10250,11 +10561,42 @@ def _default_route_wan(sock: socket.socket) -> str:
                 distance = int(str(row.get("distance") or "1").strip() or "1")
             except ValueError:
                 distance = 1
-            candidates.append((distance, iface))
+            physical = _resolve_wan_to_physical(iface, pppoe_parents) or iface
+            candidates.append((distance, physical))
     if not candidates:
+        if pppoe_parents:
+            return next(iter(pppoe_parents.values()))
         return ""
     candidates.sort(key=lambda item: item[0])
     return candidates[0][1]
+
+
+def _port_uplink_hints(
+    sock: socket.socket,
+) -> dict[str, dict[str, str]]:
+    """
+    Per-physical-port uplink hints: dhcp / pppoe and related interface name.
+
+    Keys are physical (or bond) interface names.
+    """
+    hints: dict[str, dict[str, str]] = {}
+    pppoe_parents = _pppoe_parent_map(sock)
+    for pppoe_name, parent in pppoe_parents.items():
+        hints[parent] = {"kind": "pppoe", "uplink": pppoe_name}
+    try:
+        for row in _print(sock, "/ip/dhcp-client", props="interface,disabled"):
+            if _flag_yes(row.get("disabled")):
+                continue
+            iface = (row.get("interface") or "").strip()
+            if not iface:
+                continue
+            # PPPoE wins when both somehow exist on the same parent.
+            if iface in hints and hints[iface].get("kind") == "pppoe":
+                continue
+            hints[iface] = {"kind": "dhcp", "uplink": iface}
+    except Exception:
+        pass
+    return hints
 
 
 def list_mikrotik_ports(
@@ -10291,6 +10633,7 @@ def list_mikrotik_ports(
             except (TimeoutError, OSError, ConnectionError):
                 bridge_of = {}
 
+            uplink_hints = _port_uplink_hints(sock)
             suggested_wan = _default_route_wan(sock)
             ports: list[dict[str, Any]] = []
             for row in rows:
@@ -10301,6 +10644,7 @@ def list_mikrotik_ports(
                 disabled = _flag_yes(row.get("disabled"))
                 running = _flag_yes(row.get("running"))
                 bridge = bridge_of.get(name, "")
+                hint = uplink_hints.get(name) or {}
                 ports.append(
                     {
                         "id": (row.get(".id") or "").strip(),
@@ -10314,6 +10658,8 @@ def list_mikrotik_ports(
                         "is_wireless": iface_type.lower()
                         in {"wlan", "wifi", "wifiwave2"}
                         or name.lower().startswith(("wlan", "wifi")),
+                        "uplink_kind": hint.get("kind") or "",
+                        "uplink_iface": hint.get("uplink") or "",
                     }
                 )
 
@@ -10352,6 +10698,65 @@ def list_mikrotik_ports(
             "ports": [],
             "suggested_wan": "",
         }
+
+
+def apply_mikrotik_single_wan(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    wan_interface: str,
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """
+    Light sync when an operator marks one port as Internet.
+
+    Puts the physical port (and its PPPoE client, if any) on the WAN list.
+    Does not unbridge or rewrite DHCP — clean-uplink / failover own those.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    wan_interface = (wan_interface or "").strip()
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if not wan_interface:
+        return {"ok": False, "error": "WAN interface is required."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            names = _iface_names(sock)
+            if wan_interface not in names:
+                return {
+                    "ok": False,
+                    "error": f"Port “{wan_interface}” was not found on the router.",
+                }
+            _ensure_interface_list(sock, "WAN")
+            _ensure_uplink_list_member(sock, wan_interface)
+            pppoe_name = _find_pppoe_client_for_wan(sock, wan_interface)
+            if pppoe_name and pppoe_name != wan_interface and pppoe_name in names:
+                _ensure_uplink_list_member(sock, pppoe_name)
+            return {
+                "ok": True,
+                "wan_interface": wan_interface,
+                "pppoe": pppoe_name or "",
+                "uplink_kind": "pppoe" if pppoe_name else "dhcp_or_static",
+                "message": (
+                    f"Internet port {wan_interface} added to WAN list"
+                    + (f" (via {pppoe_name})" if pppoe_name else "")
+                    + "."
+                ),
+            }
+    except TimeoutError:
+        return {"ok": False, "error": "Connection timed out while syncing WAN port."}
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {"ok": False, "error": f"Could not reach {host}:8728. ({exc})"}
 
 
 def set_mikrotik_port_enabled(
@@ -10524,6 +10929,104 @@ def _ensure_uplink_list_member(sock: socket.socket, interface: str) -> None:
     )
 
 
+def _ensure_failover_pppoe_client(
+    sock: socket.socket,
+    physical_port: str,
+    *,
+    distance: int,
+) -> dict[str, str] | None:
+    """
+    If a PPPoE client sits on physical_port, set its default-route-distance.
+
+    Returns the set/add terminal dict, or None when no PPPoE client exists.
+    """
+    physical_port = (physical_port or "").strip()
+    if not physical_port:
+        return None
+    try:
+        rows = _print(
+            sock,
+            "/interface/pppoe-client",
+            props=".id,name,interface,disabled,comment",
+        )
+    except Exception:
+        return None
+    for row in rows:
+        if (row.get("interface") or "").strip() != physical_port:
+            continue
+        if _flag_yes(row.get("disabled")):
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            return {"_reply": "!done"}
+        # RouterOS 6/7: default-route-distance on pppoe-client.
+        attempts = [
+            {
+                "disabled": "no",
+                "add-default-route": "yes",
+                "default-route-distance": str(distance),
+                "use-peer-dns": "no",
+            },
+            {
+                "disabled": "no",
+                "add-default-route": "yes",
+                "default-route-distance": str(distance),
+            },
+            {
+                "disabled": "no",
+                "add-default-route": "yes",
+            },
+        ]
+        last = {"_reply": "!trap", "message": "Could not update PPPoE client."}
+        for props in attempts:
+            last = _set(sock, "/interface/pppoe-client", item_id, **props)
+            if last.get("_reply") not in {"!trap", "!fatal"}:
+                return last
+            # Strip unknown parameters and retry once more via message sniff.
+            unknown = _unknown_parameter_name(last.get("message") or "")
+            if unknown:
+                props = {k: v for k, v in props.items() if k != unknown}
+                last = _set(sock, "/interface/pppoe-client", item_id, **props)
+                if last.get("_reply") not in {"!trap", "!fatal"}:
+                    return last
+        return last
+    return None
+
+
+def _ensure_failover_uplink(
+    sock: socket.socket,
+    interface: str,
+    *,
+    distance: int,
+) -> dict[str, str]:
+    """Configure failover uplink via PPPoE when present, otherwise DHCP."""
+    pppoe_result = _ensure_failover_pppoe_client(
+        sock, interface, distance=distance
+    )
+    if pppoe_result is not None:
+        return pppoe_result
+    return _ensure_failover_dhcp_client(sock, interface, distance=distance)
+
+
+def _disable_member_dhcp_clients(sock: socket.socket, members: list[str]) -> list[str]:
+    """Disable DHCP clients on bond member ports so only the bond owns the WAN."""
+    notes: list[str] = []
+    wanted = {m.strip() for m in members if (m or "").strip()}
+    if not wanted:
+        return notes
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled"):
+        iface = (row.get("interface") or "").strip()
+        if iface not in wanted:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id or _flag_yes(row.get("disabled")):
+            continue
+        terminal = _set(sock, "/ip/dhcp-client", item_id, disabled="yes")
+        if terminal.get("_reply") not in {"!trap", "!fatal"}:
+            notes.append(iface)
+    return notes
+
+
 def _ensure_failover_dhcp_client(
     sock: socket.socket,
     interface: str,
@@ -10691,6 +11194,7 @@ def apply_mikrotik_uplink_bond(
                         ),
                     }
 
+            disabled_dhcp = _disable_member_dhcp_clients(sock, members)
             dhcp = _ensure_bond_dhcp_client(sock, bond_name)
             if dhcp.get("_reply") in {"!trap", "!fatal"}:
                 return {
@@ -10714,6 +11218,7 @@ def apply_mikrotik_uplink_bond(
                 "members": members,
                 "wan_interface": bond_name,
                 "unbridged": unbridged,
+                "disabled_member_dhcp": disabled_dhcp,
                 "message": (
                     f"Bonded {', '.join(members)} as {bond_name} "
                     f"({bond_mode}) for the same provider."
@@ -10783,7 +11288,7 @@ def apply_mikrotik_uplink_failover(
 
             for index, iface in enumerate(ordered):
                 distance = 1 + (index * 10)
-                terminal = _ensure_failover_dhcp_client(
+                terminal = _ensure_failover_uplink(
                     sock, iface, distance=distance
                 )
                 if terminal.get("_reply") in {"!trap", "!fatal"}:
@@ -10793,10 +11298,14 @@ def apply_mikrotik_uplink_failover(
                         "ok": False,
                         "error": _trap_message(
                             terminal,
-                            f"Could not configure DHCP failover on {iface}.",
+                            f"Could not configure failover uplink on {iface}.",
                         ),
                     }
+                # Put physical + PPPoE (if any) into WAN list.
                 _ensure_uplink_list_member(sock, iface)
+                pppoe_name = _find_pppoe_client_for_wan(sock, iface)
+                if pppoe_name and pppoe_name != iface:
+                    _ensure_uplink_list_member(sock, pppoe_name)
 
             # Best-effort: ping-check any default routes we just tagged via DHCP comment.
             # RouterOS often creates dynamic DHCP routes; set check-gateway where possible.

@@ -3,166 +3,169 @@
 {% block title %}Ports — {{ router.name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="mk-page mk-ports-page">
+  <section
+    class="mk-surface mk-ports-surface"
+    id="mikrotik-ports-root"
+    data-ports-live-url="{{ ports_live_url }}"
+    data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
+    data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-csrf-token="{{ csrf_token }}"
+  >
+    <header class="mk-page-hero mk-ports-hero">
+      <div class="mk-page-hero-copy">
+        <p class="mk-page-kicker">Interfaces</p>
+        <h1 class="mk-page-title">Ports</h1>
+        <p class="mk-page-lead">
+          Tell each cable what it’s for on <strong>{{ router.name }}</strong>
+          <span class="mk-host-chip">{{ router.host }}</span>
+        </p>
+      </div>
+      <div class="mk-ports-hero-actions">
+        <form method="post" class="mk-inline-form" data-ports-auto-form {% if is_suspended or ports_loading %}hidden{% endif %}>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="auto_assign_ports">
+          <button type="submit" class="btn btn-primary">Auto-assign</button>
+        </form>
+        <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back</a>
+      </div>
+    </header>
 
-<section
-  class="panel mikrotik-ports-panel"
-  id="mikrotik-ports-root"
-  data-ports-live-url="{{ ports_live_url }}"
-  data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
-  data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
-  data-csrf-token="{{ csrf_token }}"
->
-  <div class="panel-head-row mikrotik-ports-head">
-    <div>
-      <h2>Ports</h2>
-      <p class="panel-sub">
-        Tell each cable what it’s for on <strong>{{ router.name }}</strong>
-        <span class="mikrotik-ports-host">({{ router.host }})</span>.
-      </p>
+    <div class="mk-banner is-info mk-ports-info" data-ports-info {% if not auto_assigned %}hidden{% endif %} role="status"></div>
+
+    <div class="mk-stat-grid mk-stat-grid-3" aria-label="Port role summary" data-ports-summary hidden>
+      <article class="mk-stat is-internet">
+        <p class="mk-stat-label">Internet</p>
+        <p class="mk-stat-value" data-sum-internet>Not set</p>
+        <p class="mk-stat-hint" data-sum-internet-meta>Main WAN</p>
+      </article>
+      <article class="mk-stat is-customers">
+        <p class="mk-stat-label">Customers</p>
+        <p class="mk-stat-value" data-sum-lan>None</p>
+        <p class="mk-stat-hint" data-sum-lan-meta>Assign customer LAN ports</p>
+      </article>
+      <article class="mk-stat is-unused">
+        <p class="mk-stat-label">Unused</p>
+        <p class="mk-stat-value" data-sum-unused>0</p>
+        <p class="mk-stat-hint" data-sum-unused-meta>No unused ports</p>
+      </article>
     </div>
-    <div class="mikrotik-ports-head-actions">
-      <form method="post" class="mikrotik-ports-auto-form" data-ports-auto-form {% if is_suspended or ports_loading %}hidden{% endif %}>
+
+    <p class="mk-help-note mk-ports-hint" data-ports-hint hidden>
+      Auto-assign picks Internet from the live default route
+      <span data-suggested-wan-wrap hidden>(<strong data-suggested-wan></strong>)</span>
+      — works with DHCP or PPPoE —
+      marks other live ports as Customers, and marks quiet ports Unused.
+    </p>
+
+    <div class="mk-uplink-strip" data-uplink-banner>
+      <div class="mk-uplink-strip-copy">
+        <span class="mk-stat-label">Current uplink</span>
+        <strong data-uplink-mode-label>{{ uplink_mode_label }}</strong>
+        <span class="mk-uplink-strip-meta" data-uplink-mode-meta>
+          {% if uplink_mode == "bond" and router.uplink_ports %}
+            {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
+          {% elif uplink_mode == "failover" and router.uplink_ports %}
+            Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
+          {% elif router.wan_interface %}
+            WAN {{ router.wan_interface }}
+          {% endif %}
+        </span>
+      </div>
+      <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
         {% csrf_token %}
-        <input type="hidden" name="action" value="auto_assign_ports">
-        <button type="submit" class="btn btn-primary">Auto-assign ports</button>
-      </form>
-      <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back to router</a>
-    </div>
-  </div>
-
-  <div class="mikrotik-ports-info" data-ports-info {% if not auto_assigned %}hidden{% endif %} role="status"></div>
-
-  <div class="mikrotik-ports-summary" aria-label="Port role summary" data-ports-summary hidden>
-    <article class="mikrotik-ports-summary-card is-internet">
-      <span class="mikrotik-ports-summary-label">Internet</span>
-      <strong data-sum-internet>Not set</strong>
-      <p data-sum-internet-meta>Main WAN</p>
-    </article>
-    <article class="mikrotik-ports-summary-card is-customers">
-      <span class="mikrotik-ports-summary-label">Customers</span>
-      <strong data-sum-lan>None</strong>
-      <p data-sum-lan-meta>Assign customer LAN ports</p>
-    </article>
-    <article class="mikrotik-ports-summary-card is-unused">
-      <span class="mikrotik-ports-summary-label">Unused</span>
-      <strong data-sum-unused>0</strong>
-      <p data-sum-unused-meta>No unused ports</p>
-    </article>
-  </div>
-
-  <p class="mikrotik-ports-hint" data-ports-hint hidden>
-    Auto-assign picks Internet from the live default route
-    <span data-suggested-wan-wrap hidden>(<strong data-suggested-wan></strong>)</span>,
-    marks other live ports as Customers, and marks quiet ports Unused.
-  </p>
-
-  <div class="mikrotik-uplink-mode-banner" data-uplink-banner>
-    <div>
-      <span class="mikrotik-uplink-mode-label">Current uplink</span>
-      <strong data-uplink-mode-label>{{ uplink_mode_label }}</strong>
-      <span class="mikrotik-uplink-mode-meta" data-uplink-mode-meta>
-        {% if uplink_mode == "bond" and router.uplink_ports %}
-          {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
-        {% elif uplink_mode == "failover" and router.uplink_ports %}
-          Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
-        {% elif router.wan_interface %}
-          WAN {{ router.wan_interface }}
-        {% endif %}
-      </span>
-    </div>
-    <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
-      {% csrf_token %}
-      <input type="hidden" name="action" value="clear_multi_uplink">
-      <button type="submit" class="btn btn-ghost btn-sm">Clear bond / failover</button>
-    </form>
-  </div>
-
-  <div class="mikrotik-ports-loading" data-ports-loading-ui {% if not ports_loading %}hidden{% endif %}>
-    <p class="clients-empty-title">Reading ports…</p>
-    <p class="empty">Connecting to {{ router.name }} for live interface status.</p>
-  </div>
-
-  <div class="mikrotik-ports-error" role="alert" data-ports-error {% if not ports_error or ports_loading %}hidden{% endif %}>
-    <p data-ports-error-text>{{ ports_error }}</p>
-    {% if not is_suspended %}
-      <button type="button" class="btn btn-ghost" data-ports-retry>Retry</button>
-    {% endif %}
-  </div>
-
-  <div class="mikrotik-ports-grid" data-ports-grid hidden></div>
-
-  <div class="clients-empty" data-ports-empty hidden>
-    <p class="clients-empty-title">No ports found</p>
-    <p class="empty">This MikroTik did not report any ethernet or wireless ports.</p>
-  </div>
-</section>
-
-<section class="panel mikrotik-ports-panel mikrotik-uplink-config-panel" data-uplink-config hidden>
-  <details class="mikrotik-uplink-advanced" open>
-    <summary>
-      <span>
-        <strong>Two internet links?</strong>
-        <span class="panel-sub">Optional bonding or failover after roles are set.</span>
-      </span>
-    </summary>
-
-    <div class="mikrotik-uplink-config-grid">
-      <form method="post" class="mikrotik-uplink-card">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="apply_bond">
-        <h3>Same provider — bond</h3>
-        <p class="mikrotik-uplink-step">Set two or more ports to <strong>Bonded internet</strong>, then apply.</p>
-
-        <div class="mikrotik-uplink-role-block">
-          <span class="mikrotik-uplink-role-label">Bond members</span>
-          <ul class="mikrotik-uplink-port-list" data-bond-list></ul>
-          <p class="mikrotik-uplink-empty" data-bond-empty>No bond members yet.</p>
-        </div>
-
-        <label class="mikrotik-uplink-field">
-          <span>Bond name</span>
-          <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
-        </label>
-
-        <label class="mikrotik-uplink-field">
-          <span>Bond mode</span>
-          <select name="bond_mode">
-            {% for value, label in bond_mode_choices %}
-              <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
-            {% endfor %}
-          </select>
-        </label>
-
-        <button type="submit" class="btn btn-primary" data-apply-bond disabled>Apply bonding</button>
-        <p class="mikrotik-uplink-hint" data-bond-hint>Need at least 2 bonded ports.</p>
-      </form>
-
-      <form method="post" class="mikrotik-uplink-card">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="apply_failover">
-        <h3>Different providers — failover</h3>
-        <p class="mikrotik-uplink-step">One <strong>Internet</strong> port + one or more <strong>Backup internet</strong> ports.</p>
-
-        <div class="mikrotik-uplink-role-block">
-          <span class="mikrotik-uplink-role-label">Primary</span>
-          <ul class="mikrotik-uplink-port-list" data-primary-list></ul>
-          <p class="mikrotik-uplink-empty" data-primary-empty>No primary Internet yet.</p>
-          <p class="mikrotik-uplink-warn" data-primary-warn hidden>Keep only one Internet primary.</p>
-        </div>
-
-        <div class="mikrotik-uplink-role-block">
-          <span class="mikrotik-uplink-role-label">Backups</span>
-          <ul class="mikrotik-uplink-port-list" data-backup-list></ul>
-          <p class="mikrotik-uplink-empty" data-backup-empty>No backup Internet yet.</p>
-        </div>
-
-        <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
-        <p class="mikrotik-uplink-hint" data-failover-hint>Need 1 Internet + at least 1 Backup internet.</p>
+        <input type="hidden" name="action" value="clear_multi_uplink">
+        <button type="submit" class="btn btn-ghost btn-sm">Clear bond / failover</button>
       </form>
     </div>
-  </details>
-</section>
+
+    <div class="mk-loading" data-ports-loading-ui {% if not ports_loading %}hidden{% endif %}>
+      <div class="mk-loading-pulse" aria-hidden="true"></div>
+      <div>
+        <p class="mk-loading-title">Reading ports…</p>
+        <p class="mk-help-note">Connecting to {{ router.name }} for live interface status.</p>
+      </div>
+    </div>
+
+    <div class="mk-banner is-danger mk-ports-error" role="alert" data-ports-error {% if not ports_error or ports_loading %}hidden{% endif %}>
+      <p data-ports-error-text>{{ ports_error }}</p>
+      {% if not is_suspended %}
+        <button type="button" class="btn btn-ghost" data-ports-retry>Retry</button>
+      {% endif %}
+    </div>
+
+    <div class="mk-ports-grid" data-ports-grid hidden></div>
+
+    <div class="mk-empty" data-ports-empty hidden>
+      <p class="mk-loading-title">No ports found</p>
+      <p class="mk-help-note">This MikroTik did not report any ethernet or wireless ports.</p>
+    </div>
+  </section>
+
+  <section class="mk-surface mk-uplink-config" data-uplink-config hidden>
+    <details class="mk-details" open>
+      <summary>
+        <span class="mk-details-title">Two internet links?</span>
+        <span class="mk-details-sub">Optional bonding or failover after roles are set.</span>
+      </summary>
+
+      <div class="mk-uplink-config-grid">
+        <form method="post" class="mk-uplink-panel">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="apply_bond">
+          <h2>Same provider — bond</h2>
+          <p class="mk-help-note">Set two or more ports to <strong>Bonded internet</strong>, then apply.</p>
+
+          <div class="mk-role-block">
+            <span class="mk-stat-label">Bond members</span>
+            <ul class="mk-chip-list" data-bond-list></ul>
+            <p class="mk-help-note" data-bond-empty>No bond members yet.</p>
+          </div>
+
+          <label class="mk-field">
+            <span>Bond name</span>
+            <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
+          </label>
+
+          <label class="mk-field">
+            <span>Bond mode</span>
+            <select name="bond_mode">
+              {% for value, label in bond_mode_choices %}
+                <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <button type="submit" class="btn btn-primary" data-apply-bond disabled>Apply bonding</button>
+          <p class="mk-help-note" data-bond-hint>Need at least 2 bonded ports.</p>
+        </form>
+
+        <form method="post" class="mk-uplink-panel">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="apply_failover">
+          <h2>Different providers — failover</h2>
+          <p class="mk-help-note">One <strong>Internet</strong> port + one or more <strong>Backup internet</strong> ports.</p>
+
+          <div class="mk-role-block">
+            <span class="mk-stat-label">Primary</span>
+            <ul class="mk-chip-list" data-primary-list></ul>
+            <p class="mk-help-note" data-primary-empty>No primary Internet yet.</p>
+            <p class="mk-help-note is-warn" data-primary-warn hidden>Keep only one Internet primary.</p>
+          </div>
+
+          <div class="mk-role-block">
+            <span class="mk-stat-label">Backups</span>
+            <ul class="mk-chip-list" data-backup-list></ul>
+            <p class="mk-help-note" data-backup-empty>No backup Internet yet.</p>
+          </div>
+
+          <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
+          <p class="mk-help-note" data-failover-hint>Need 1 Internet + at least 1 Backup internet.</p>
+        </form>
+      </div>
+    </details>
+  </section>
+</div>
 
 <script>
 (function () {
@@ -204,7 +207,7 @@
     ul.innerHTML = "";
     (names || []).forEach(function (name) {
       var li = document.createElement("li");
-      li.innerHTML = '<span class="mikrotik-uplink-port-chip' + (chipClass ? " " + chipClass : "") + '">' + esc(name) + "</span>";
+      li.innerHTML = '<span class="mk-chip' + (chipClass ? " " + chipClass : "") + '">' + esc(name) + "</span>";
       ul.appendChild(li);
     });
   }
@@ -215,12 +218,12 @@
       var label = pair[1];
       var active = role === value ? " is-active role-" + value : "";
       return (
-        '<form method="post" class="mikrotik-port-role-pick-form">' +
+        '<form method="post" class="mk-role-form">' +
         '<input type="hidden" name="csrfmiddlewaretoken" value="' + esc(csrf) + '">' +
         '<input type="hidden" name="action" value="set_port_role">' +
         '<input type="hidden" name="port_name" value="' + esc(portName) + '">' +
         '<input type="hidden" name="role" value="' + esc(value) + '">' +
-        '<button type="submit" class="mikrotik-port-role-pick' + active + '"' +
+        '<button type="submit" class="mk-role-pick' + active + '"' +
         (suspended ? " disabled" : "") +
         ">" + esc(label) + "</button></form>"
       );
@@ -232,37 +235,42 @@
     var stateClass = port.disabled ? " is-disabled" : port.running ? " is-up" : " is-down";
     var bondClass = port.is_bond_iface ? " is-bond" : "";
     var statusHtml = port.disabled
-      ? '<span class="mikrotik-wifi-pill is-off">Disabled</span>'
+      ? '<span class="mk-status-pill is-off"><span class="mk-status-dot" aria-hidden="true"></span>Disabled</span>'
       : port.running
-        ? '<span class="mikrotik-wifi-pill is-on">Link up</span>'
-        : '<span class="badge badge-muted">No link</span>';
+        ? '<span class="mk-status-pill is-on"><span class="mk-status-dot" aria-hidden="true"></span>Link up</span>'
+        : '<span class="mk-status-pill is-muted"><span class="mk-status-dot" aria-hidden="true"></span>No link</span>';
     var body;
     if (port.is_bond_iface) {
-      body = '<p class="mikrotik-port-bond-note">Bond interface — managed by multi-uplink settings.</p>';
+      body = '<p class="mk-help-note">Bond interface — managed by multi-uplink settings.</p>';
     } else {
       var advOpen = role === "wan_backup" || role === "bond" || role === "none" ? " open" : "";
       body =
-        '<div class="mikrotik-port-role-picks" role="group" aria-label="Role for ' + esc(port.name) + '">' +
+        '<div class="mk-role-picks" role="group" aria-label="Role for ' + esc(port.name) + '">' +
         rolePickForms(port.name, role, quickRoles) +
         "</div>" +
-        '<details class="mikrotik-port-advanced"' + advOpen + ">" +
+        '<details class="mk-port-more"' + advOpen + ">" +
         "<summary>More roles</summary>" +
-        '<div class="mikrotik-port-role-picks is-advanced">' +
+        '<div class="mk-role-picks is-advanced">' +
         rolePickForms(port.name, role, advancedRoles) +
         "</div></details>";
     }
     return (
-      '<article class="mikrotik-port-card role-' + esc(role) + stateClass + bondClass + '">' +
-      '<header class="mikrotik-port-card-head"><div>' +
-      '<strong class="mikrotik-port-name">' + esc(port.name) + "</strong>" +
-      '<div class="mikrotik-port-card-meta">' +
-      '<span class="mikrotik-port-type">' + esc(port.type || "") + "</span>" +
-      (port.bridge ? '<span class="mikrotik-port-bridge">on ' + esc(port.bridge) + "</span>" : "") +
-      (port.comment ? '<span class="mikrotik-port-comment">' + esc(port.comment) + "</span>" : "") +
+      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + '">' +
+      '<header class="mk-port-card-head"><div>' +
+      '<strong class="mk-port-name">' + esc(port.name) + "</strong>" +
+      '<div class="mk-port-meta">' +
+      '<span class="mk-port-type">' + esc(port.type || "") + "</span>" +
+      (port.bridge ? '<span class="mk-port-bridge">on ' + esc(port.bridge) + "</span>" : "") +
+      (port.uplink_kind === "pppoe"
+        ? '<span class="mk-port-uplink">PPPoE' + (port.uplink_iface ? " · " + esc(port.uplink_iface) : "") + "</span>"
+        : port.uplink_kind === "dhcp"
+          ? '<span class="mk-port-uplink">DHCP</span>'
+          : "") +
+      (port.comment ? '<span class="mk-port-comment">' + esc(port.comment) + "</span>" : "") +
       "</div></div>" + statusHtml + "</header>" +
       body +
-      '<footer class="mikrotik-port-card-foot">' +
-      '<span class="mikrotik-port-current-role">' + esc(port.role_label || role) + "</span>" +
+      '<footer class="mk-port-card-foot">' +
+      '<span class="mk-port-role-label">' + esc(port.role_label || role) + "</span>" +
       '<form method="post">' +
       '<input type="hidden" name="csrfmiddlewaretoken" value="' + esc(csrf) + '">' +
       '<input type="hidden" name="action" value="toggle_port">' +
@@ -298,8 +306,6 @@
     if (info) {
       if (data.auto_assigned && data.auto_assigned_message) {
         info.textContent = data.auto_assigned_message;
-        info.className = "mikrotik-ports-info field-error mikrotik-form-banner";
-        info.style.color = "inherit";
         setHidden(info, false);
       } else {
         setHidden(info, true);
