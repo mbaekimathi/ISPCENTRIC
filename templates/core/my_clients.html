@@ -3,78 +3,107 @@
 {% block title %}My clients — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel clients-panel staff-panel">
-  <div class="panel-head-row">
-    <div>
-      <h2>Clients</h2>
-      <p class="panel-sub">Browse subscribers by how they connect to your network.</p>
+<div class="clients-dash">
+  <header class="clients-dash-hero">
+    <div class="clients-dash-hero-copy">
+      <p class="clients-dash-kicker">Subscribers</p>
+      <p class="clients-dash-lead">
+        Browse internet customers by connection type, check live status, and open a client for details.
+      </p>
     </div>
-    {% if active_tab == 'pppoe' %}
-      <div class="panel-head-actions">
+    <div class="clients-dash-hero-actions">
+      <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Billing</a>
+      {% if active_tab == 'pppoe' %}
         <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
           Register PPPoE client
         </button>
+      {% endif %}
+    </div>
+  </header>
+
+  <div class="clients-dash-stats">
+    <article class="clients-dash-stat">
+      <p class="clients-dash-stat-label">Total</p>
+      <p class="clients-dash-stat-value">{{ pppoe_count|add:static_count|add:hotspot_count }}</p>
+    </article>
+    <article class="clients-dash-stat{% if active_tab == 'pppoe' %} is-active{% endif %}">
+      <p class="clients-dash-stat-label">PPPoE</p>
+      <p class="clients-dash-stat-value">{{ pppoe_count }}</p>
+    </article>
+    <article class="clients-dash-stat{% if active_tab == 'static' %} is-active{% endif %}">
+      <p class="clients-dash-stat-label">Static</p>
+      <p class="clients-dash-stat-value">{{ static_count }}</p>
+    </article>
+    <article class="clients-dash-stat{% if active_tab == 'hotspot' %} is-active{% endif %}">
+      <p class="clients-dash-stat-label">Hotspot</p>
+      <p class="clients-dash-stat-value">{{ hotspot_count }}</p>
+    </article>
+  </div>
+
+  <section class="panel staff-panel staff-panel-solid clients-dash-panel clients-panel">
+    <div class="panel-head-row">
+      <div>
+        <h2>Client list</h2>
+        <p class="panel-sub">Switch tabs to filter by how subscribers connect to your network.</p>
       </div>
+    </div>
+
+    <div class="client-type-tabs" role="tablist" aria-label="Client service types">
+      <a
+        class="client-type-tab{% if active_tab == 'pppoe' %} is-active{% endif %}"
+        role="tab"
+        href="?tab=pppoe"
+        aria-selected="{% if active_tab == 'pppoe' %}true{% else %}false{% endif %}"
+        id="tab-pppoe"
+      >
+        <span class="client-type-tab-label">PPPoE</span>
+        <span class="client-type-tab-count">{{ pppoe_count }}</span>
+      </a>
+      <a
+        class="client-type-tab{% if active_tab == 'static' %} is-active{% endif %}"
+        role="tab"
+        href="?tab=static"
+        aria-selected="{% if active_tab == 'static' %}true{% else %}false{% endif %}"
+        id="tab-static"
+      >
+        <span class="client-type-tab-label">Static</span>
+        <span class="client-type-tab-count">{{ static_count }}</span>
+      </a>
+      <a
+        class="client-type-tab{% if active_tab == 'hotspot' %} is-active{% endif %}"
+        role="tab"
+        href="?tab=hotspot"
+        aria-selected="{% if active_tab == 'hotspot' %}true{% else %}false{% endif %}"
+        id="tab-hotspot"
+      >
+        <span class="client-type-tab-label">Hotspot</span>
+        <span class="client-type-tab-count">{{ hotspot_count }}</span>
+      </a>
+    </div>
+
+    {% if active_tab == 'pppoe' %}
+      {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." service_label="PPPoE" show_pppoe=1 show_router=1 %}
+    {% elif active_tab == 'static' %}
+      {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." service_label="Static" show_router=1 %}
+    {% else %}
+      {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 show_hotspot=1 %}
     {% endif %}
-  </div>
 
-  <div class="client-type-tabs" role="tablist" aria-label="Client service types">
-    <a
-      class="client-type-tab{% if active_tab == 'pppoe' %} is-active{% endif %}"
-      role="tab"
-      href="?tab=pppoe"
-      aria-selected="{% if active_tab == 'pppoe' %}true{% else %}false{% endif %}"
-      id="tab-pppoe"
-    >
-      <span class="client-type-tab-label">PPPoE clients</span>
-      <span class="client-type-tab-count">{{ pppoe_count }}</span>
-    </a>
-    <a
-      class="client-type-tab{% if active_tab == 'static' %} is-active{% endif %}"
-      role="tab"
-      href="?tab=static"
-      aria-selected="{% if active_tab == 'static' %}true{% else %}false{% endif %}"
-      id="tab-static"
-    >
-      <span class="client-type-tab-label">Static clients</span>
-      <span class="client-type-tab-count">{{ static_count }}</span>
-    </a>
-    <a
-      class="client-type-tab{% if active_tab == 'hotspot' %} is-active{% endif %}"
-      role="tab"
-      href="?tab=hotspot"
-      aria-selected="{% if active_tab == 'hotspot' %}true{% else %}false{% endif %}"
-      id="tab-hotspot"
-    >
-      <span class="client-type-tab-label">Hotspot clients</span>
-      <span class="client-type-tab-count">{{ hotspot_count }}</span>
-    </a>
-  </div>
-
-  {% if active_tab == 'pppoe' %}
-    {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." service_label="PPPoE" show_pppoe=1 show_router=1 %}
-  {% elif active_tab == 'static' %}
-    {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." service_label="Static" show_router=1 %}
-  {% else %}
-    {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 show_hotspot=1 %}
-  {% endif %}
-
-  {% if clients_page and clients_page.paginator.num_pages > 1 %}
-    <nav class="clients-pagination" aria-label="Client pages">
-      {% if clients_page.has_previous %}
-        <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}">Previous</a>
-      {% endif %}
-      <span class="clients-pagination-meta">
-        Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
-      </span>
-      {% if clients_page.has_next %}
-        <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}">Next</a>
-      {% endif %}
-    </nav>
-  {% endif %}
-</section>
+    {% if clients_page and clients_page.paginator.num_pages > 1 %}
+      <nav class="clients-pagination" aria-label="Client pages">
+        {% if clients_page.has_previous %}
+          <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}">Previous</a>
+        {% endif %}
+        <span class="clients-pagination-meta">
+          Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
+        </span>
+        {% if clients_page.has_next %}
+          <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}">Next</a>
+        {% endif %}
+      </nav>
+    {% endif %}
+  </section>
+</div>
 
 {# —— Register PPPoE client —— #}
 <div class="role-modal client-action-modal pppoe-modal" id="pppoe-register-modal" {% if open_client_modal != "pppoe-register-modal" %}hidden{% endif %} aria-hidden="{% if open_client_modal == "pppoe-register-modal" %}false{% else %}true{% endif %}">

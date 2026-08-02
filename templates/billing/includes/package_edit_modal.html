@@ -92,6 +92,25 @@
         </section>
 
         <section class="pppoe-section">
+          <h3 class="pppoe-section-title">MikroTik link <span class="pppoe-optional">optional</span></h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <p class="field-hint" style="margin-top:0;">
+                Leave unchecked to offer this package on all MikroTiks. Select one or more to limit it to those routers only.
+              </p>
+              {% if package_edit_form.routers.field.queryset.exists %}
+                <div class="package-router-check-list" id="{{ package_edit_form.routers.id_for_label }}">
+                  {{ package_edit_form.routers }}
+                </div>
+              {% else %}
+                <p class="field-hint">No MikroTiks registered yet — this package will be available to all routers once added.</p>
+              {% endif %}
+              {% if package_edit_form.routers.errors %}<div class="field-error">{{ package_edit_form.routers.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+        </section>
+
+        <section class="pppoe-section">
           <h3 class="pppoe-section-title">Status</h3>
           <div class="pppoe-grid">
             <div class="field field-span-2">

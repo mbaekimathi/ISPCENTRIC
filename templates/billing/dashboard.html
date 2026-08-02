@@ -3,216 +3,163 @@
 {% block title %}Billing — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">
-  {% if organization %}
-    {{ organization.name }} — customers, plans, invoices, and payments.
-  {% else %}
-    Billing module overview.
-  {% endif %}
-</p>
+<div class="billing-dash">
+  <header class="billing-dash-hero">
+    <div class="billing-dash-hero-copy">
+      <p class="billing-dash-kicker">Overview</p>
+      <p class="billing-dash-lead">
+        Track renewals, collect M-Pesa payments, and review recent invoices.
+      </p>
+    </div>
+    <div class="billing-dash-hero-actions">
+      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">Clients</a>
+      <a class="btn btn-ghost" href="{% url 'billing:packages' %}">Packages</a>
+    </div>
+  </header>
 
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Customers</div>
-    <div class="value">{{ stats.customers }}</div>
+  <div class="billing-dash-stats">
+    <article class="billing-dash-stat">
+      <p class="billing-dash-stat-label">Customers</p>
+      <p class="billing-dash-stat-value">{{ stats.customers }}</p>
+    </article>
+    <article class="billing-dash-stat is-good">
+      <p class="billing-dash-stat-label">Active</p>
+      <p class="billing-dash-stat-value">{{ stats.active_customers }}</p>
+    </article>
+    <article class="billing-dash-stat{% if stats.attention_customers %} is-warn{% endif %}">
+      <p class="billing-dash-stat-label">Needs renewal</p>
+      <p class="billing-dash-stat-value">{{ stats.attention_customers }}</p>
+    </article>
+    <article class="billing-dash-stat">
+      <p class="billing-dash-stat-label">Pending invoices</p>
+      <p class="billing-dash-stat-value">{{ stats.pending_invoices }}</p>
+    </article>
+    <article class="billing-dash-stat is-accent billing-dash-stat-wide">
+      <p class="billing-dash-stat-label">Revenue</p>
+      <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue }}</p>
+    </article>
   </div>
-  <div class="stat">
-    <div class="label">Active</div>
-    <div class="value">{{ stats.active_customers }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Needs renewal</div>
-    <div class="value">{{ stats.attention_customers }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Packages</div>
-    <div class="value">{{ stats.packages }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Pending invoices</div>
-    <div class="value">{{ stats.pending_invoices }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Revenue</div>
-    <div class="value">{{ stats.revenue }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Lead payments</div>
-    <div class="value">{{ stats.lead_payments|default:0 }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Lead reversals</div>
-    <div class="value">{{ stats.lead_reversals|default:0 }}</div>
-  </div>
-</div>
 
-<section class="panel staff-panel stack-gap" id="lead-payments">
-  <div class="panel-head-row">
-    <div>
-      <h2>Lead payments</h2>
-      <p class="panel-sub">Sales ticket allocation fees paid by your ISP — including reversed payments.</p>
-    </div>
-    <div class="panel-head-actions">
-      <a class="btn btn-ghost" href="{% url 'core:leads' %}">Open leads</a>
-      <a class="btn btn-ghost" href="{% url 'billing:lead_payments' %}">All lead payments</a>
-    </div>
-  </div>
-  {% if lead_payments %}
-    <div class="table-scroll">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Client</th>
-            <th>Amount</th>
-            <th>M-Pesa Ref</th>
-            <th>Paid</th>
-            <th>Status</th>
-            <th>Reason</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in lead_payments %}
-            <tr class="{% if row.reversed %}is-reversed-lead-payment{% endif %}">
-              <td>
-                <span class="org-code">{{ row.customer.sales_ticket_number|default:row.customer.account_number }}</span>
-              </td>
-              <td>{{ row.customer.full_name }}</td>
-              <td>KES {{ row.amount }}</td>
-              <td>{{ row.receipt|default:"—" }}</td>
-              <td>
-                {% if row.completed_at %}
-                  {{ row.completed_at|date:"d M Y H:i" }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>
-                {% if row.reversed %}
-                  <span class="badge badge-warn">Reversed</span>
-                {% else %}
-                  <span class="badge badge-success">Paid</span>
-                {% endif %}
-              </td>
-              <td>{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No lead allocation payments yet. Accepted leads paid via STK will appear here, including reversals.</p>
-  {% endif %}
-</section>
-
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>Subscriptions needing attention</h2>
-      <p class="panel-sub">Expired packages or clients who have used ¾ or more of their period.</p>
-    </div>
-    <div class="panel-head-actions">
-      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
-    </div>
-  </div>
-  {% if attention_customers %}
-    <div class="table-scroll">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Client</th>
-            <th>Account</th>
-            <th>Package</th>
-            <th>Period</th>
-            <th>Used</th>
-            <th>Status</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in attention_customers %}
-            <tr>
-              <td>
-                <a href="{% url 'core:client_detail' row.customer.pk %}">{{ row.customer.full_name }}</a>
-              </td>
-              <td>{{ row.customer.account_number }}</td>
-              <td>{% if row.customer.plan %}{{ row.customer.plan.name }}{% else %}—{% endif %}</td>
-              <td>
-                {% if row.customer.package_start and row.customer.package_end %}
-                  {{ row.customer.package_start|date:"M j, Y" }} → {{ row.customer.package_end|date:"M j, Y" }}
-                {% elif row.customer.package_end %}
-                  Ends {{ row.customer.package_end|date:"M j, Y" }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>
-                {% if row.progress %}
-                  {{ row.progress.percent }}%
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>
-                {% if row.attention == "expired" %}
-                  <span class="badge badge-warn">Expired</span>
-                {% else %}
-                  <span class="badge">¾ used</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if row.customer.plan and row.customer.plan.price %}
-                  <button
-                    type="button"
-                    class="btn btn-primary btn-sm"
-                    data-stk-pay
-                    data-customer-id="{{ row.customer.pk }}"
-                    data-customer-name="{{ row.customer.full_name }}"
-                    data-account="{{ row.customer.account_number }}"
-                    data-phone="{{ row.customer.phone }}"
-                    data-plan="{{ row.customer.plan.name }}"
-                    data-amount="{{ row.customer.plan.price }}"
-                    data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
-                  >Pay</button>
-                {% else %}
-                  <span class="badge">No package</span>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No expired or nearly exhausted subscriptions right now.</p>
-  {% endif %}
-</section>
-
-<div class="grid-2 stack-gap">
-  <section class="panel staff-panel">
+  <section class="panel staff-panel staff-panel-solid billing-dash-panel">
     <div class="panel-head-row">
       <div>
-        <h2>Packages</h2>
+        <h2>Subscriptions needing attention</h2>
+        <p class="panel-sub">Expired packages or clients who have used ¾ or more of their period.</p>
       </div>
       <div class="panel-head-actions">
-        <a class="btn btn-ghost" href="{% url 'billing:packages' %}">View all</a>
-        <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
-          Register package
-        </button>
+        <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
       </div>
     </div>
-    {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Open Packages in the sidebar to register one." %}
+
+    {% if attention_customers %}
+      <div class="org-table-shell billing-dash-table-shell">
+        <table class="org-table billing-dash-table">
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Package</th>
+              <th>Period</th>
+              <th>Used</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in attention_customers %}
+              <tr class="{% if row.attention == 'expired' %}is-expired{% else %}is-due{% endif %}">
+                <td>
+                  <a class="billing-dash-client" href="{% url 'core:client_detail' row.customer.pk %}">
+                    <strong>{{ row.customer.full_name }}</strong>
+                    <small>{{ row.customer.account_number }}</small>
+                  </a>
+                </td>
+                <td>
+                  {% if row.customer.plan %}
+                    <span class="billing-dash-plan">{{ row.customer.plan.name }}</span>
+                    {% if row.customer.plan.price %}
+                      <small class="billing-dash-muted">KES {{ row.customer.plan.price }}</small>
+                    {% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.customer.package_start and row.customer.package_end %}
+                    <span class="billing-dash-period">
+                      {{ row.customer.package_start|date:"M j" }}
+                      <span aria-hidden="true">→</span>
+                      {{ row.customer.package_end|date:"M j, Y" }}
+                    </span>
+                  {% elif row.customer.package_end %}
+                    Ends {{ row.customer.package_end|date:"M j, Y" }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.progress %}
+                    <div class="billing-dash-progress" title="{{ row.progress.percent }}% used">
+                      <div class="billing-dash-progress-track">
+                        <span
+                          class="billing-dash-progress-fill{% if row.attention == 'expired' %} is-expired{% endif %}"
+                          style="width: {% if row.attention == 'expired' %}100{% else %}{{ row.progress.percent }}{% endif %}%;"
+                        ></span>
+                      </div>
+                      <span class="billing-dash-progress-label">{{ row.progress.percent }}%</span>
+                    </div>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.attention == "expired" %}
+                    <span class="badge badge-warn">Expired</span>
+                  {% else %}
+                    <span class="badge billing-dash-badge-due">¾ used</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if row.customer.plan and row.customer.plan.price %}
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      data-stk-pay
+                      data-customer-id="{{ row.customer.pk }}"
+                      data-customer-name="{{ row.customer.full_name }}"
+                      data-account="{{ row.customer.account_number }}"
+                      data-phone="{{ row.customer.phone }}"
+                      data-plan="{{ row.customer.plan.name }}"
+                      data-amount="{{ row.customer.plan.price }}"
+                      data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
+                    >Collect</button>
+                  {% else %}
+                    <span class="billing-dash-muted">No package</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="billing-dash-empty">
+        <p class="billing-dash-empty-title">All clear</p>
+        <p class="billing-dash-empty-copy">No expired or nearly exhausted subscriptions right now.</p>
+      </div>
+    {% endif %}
   </section>
 
-  <section class="panel staff-panel">
+  <section class="panel staff-panel staff-panel-solid billing-dash-panel">
     <div class="panel-head-row">
       <div>
         <h2>Recent invoices</h2>
+        <p class="panel-sub">Latest billing activity for this organization.</p>
       </div>
     </div>
+
     {% if recent_invoices %}
-      <div class="table-scroll">
-        <table class="table">
+      <div class="org-table-shell billing-dash-table-shell">
+        <table class="org-table billing-dash-table">
           <thead>
             <tr>
               <th>Invoice</th>
@@ -224,72 +171,99 @@
           <tbody>
             {% for inv in recent_invoices %}
               <tr>
-                <td>{{ inv.invoice_number }}</td>
-                <td>{{ inv.customer.full_name }}</td>
-                <td>{% with pay=inv.payments.all|first %}{{ pay.reference|default:"—" }}{% endwith %}</td>
-                <td>{{ inv.amount }}</td>
+                <td><span class="org-code">{{ inv.invoice_number }}</span></td>
+                <td><strong>{{ inv.customer.full_name }}</strong></td>
+                <td>{% with pay=inv.payments.all|first %}<span class="billing-dash-muted">{{ pay.reference|default:"—" }}</span>{% endwith %}</td>
+                <td><strong>KES {{ inv.amount }}</strong></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <p class="empty">No invoices yet. They will appear here once billing starts.</p>
+      <div class="billing-dash-empty">
+        <p class="billing-dash-empty-title">No invoices yet</p>
+        <p class="billing-dash-empty-copy">They will appear here once billing starts.</p>
+      </div>
     {% endif %}
   </section>
 </div>
 
-{% include "billing/includes/package_register_modal.html" %}
-
-<div class="role-modal client-action-modal" id="billing-stk-pay-modal" hidden aria-hidden="true">
+<div class="role-modal client-action-modal pppoe-modal" id="billing-stk-pay-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-client-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="billing-stk-pay-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">M-Pesa STK Push</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="billing-stk-pay-title">
+    <div class="billing-stk-waiting" id="billing-stk-waiting" hidden aria-live="polite">
+      <div class="billing-stk-waiting-card">
+        <span class="billing-stk-spinner" aria-hidden="true"></span>
+        <p class="billing-stk-waiting-live">Waiting</p>
+        <p class="billing-stk-waiting-title" id="billing-stk-waiting-title">Waiting for M-Pesa</p>
+        <p class="billing-stk-waiting-copy" id="billing-stk-waiting-copy">
+          Enter the PIN on the phone. Do not close this window.
+        </p>
+      </div>
+    </div>
+
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">M-Pesa STK Push</p>
         <h2 id="billing-stk-pay-title">Collect payment</h2>
-        <p class="role-modal-sub" id="billing-stk-pay-sub">Prompt the client’s phone to pay the package amount.</p>
+        <p class="role-modal-sub pppoe-sub" id="billing-stk-pay-sub">
+          Prompt the client’s phone to pay the package amount.
+        </p>
       </div>
-      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form id="billing-stk-pay-form" class="mikrotik-action-form" novalidate>
+
+    <form id="billing-stk-pay-form" class="pppoe-form" novalidate>
       {% csrf_token %}
-      <div class="mikrotik-action-scroll">
-        <div class="form-grid mikrotik-simple-grid">
-          <div class="field field-span-2">
-            <label>Client</label>
-            <p id="billing-stk-client" class="page-sub" style="margin:0;"></p>
+      <div class="pppoe-body">
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Payment summary</h3>
+          <dl class="billing-stk-summary">
+            <div class="billing-stk-summary-item billing-stk-summary-span">
+              <dt>Client</dt>
+              <dd id="billing-stk-client">—</dd>
+            </div>
+            <div class="billing-stk-summary-item">
+              <dt>Package</dt>
+              <dd id="billing-stk-plan">—</dd>
+            </div>
+            <div class="billing-stk-summary-item">
+              <dt>Amount</dt>
+              <dd id="billing-stk-amount">—</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Phone</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="billing-stk-phone">M-Pesa phone number</label>
+              <input
+                type="tel"
+                id="billing-stk-phone"
+                name="phone"
+                class="form-control"
+                inputmode="tel"
+                autocomplete="tel"
+                placeholder="07xxxxxxxx"
+                required
+              >
+              <p class="field-hint">
+                STK Push opens on this number — use the client’s M-Pesa phone.
+              </p>
+            </div>
+            <div class="field field-span-2" id="billing-stk-status" hidden>
+              <p class="billing-stk-status-text" id="billing-stk-status-text"></p>
+            </div>
           </div>
-          <div class="field">
-            <label>Package</label>
-            <p id="billing-stk-plan" class="page-sub" style="margin:0;"></p>
-          </div>
-          <div class="field">
-            <label>Amount</label>
-            <p id="billing-stk-amount" class="page-sub" style="margin:0;"></p>
-          </div>
-          <div class="field field-span-2">
-            <label for="billing-stk-phone">M-Pesa phone number</label>
-            <input
-              type="tel"
-              id="billing-stk-phone"
-              name="phone"
-              class="input"
-              inputmode="tel"
-              autocomplete="tel"
-              placeholder="07xxxxxxxx"
-              required
-            >
-            <p class="page-sub" style="margin:0.35rem 0 0;">
-              STK Push opens on <strong>this</strong> number — use the client’s M-Pesa phone.
-            </p>
-          </div>
-          <div class="field field-span-2" id="billing-stk-status" hidden>
-            <p class="page-sub" id="billing-stk-status-text" style="margin:0;"></p>
-          </div>
-        </div>
+        </section>
       </div>
-      <footer class="role-modal-actions">
+
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
         <button type="submit" class="btn btn-primary" id="billing-stk-submit">Send STK Push</button>
       </footer>
@@ -299,7 +273,6 @@
 {% endblock %}
 
 {% block client_extra_js %}
-{% include "billing/includes/package_register_scripts.html" %}
 <script>
 (function () {
   var modal = document.getElementById("billing-stk-pay-modal");
@@ -310,6 +283,9 @@
   var submitBtn = document.getElementById("billing-stk-submit");
   var statusBox = document.getElementById("billing-stk-status");
   var statusText = document.getElementById("billing-stk-status-text");
+  var waiting = document.getElementById("billing-stk-waiting");
+  var waitingTitle = document.getElementById("billing-stk-waiting-title");
+  var waitingCopy = document.getElementById("billing-stk-waiting-copy");
   var clientEl = document.getElementById("billing-stk-client");
   var planEl = document.getElementById("billing-stk-plan");
   var amountEl = document.getElementById("billing-stk-amount");
@@ -330,9 +306,19 @@
     document.body.classList.add("role-modal-open");
   }
 
-  function setStatus(message, show) {
+  function setWaiting(active, title, copy) {
+    if (!waiting) return;
+    waiting.hidden = !active;
+    if (active) {
+      if (waitingTitle && title) waitingTitle.textContent = title;
+      if (waitingCopy && copy) waitingCopy.textContent = copy;
+    }
+  }
+
+  function setStatus(message, show, isError) {
     if (!statusBox || !statusText) return;
     statusText.textContent = message || "";
+    statusText.className = "billing-stk-status-text" + (isError ? " is-error" : "");
     statusBox.hidden = !show;
   }
 
@@ -359,30 +345,49 @@
         .then(function (res) { return res.json(); })
         .then(function (data) {
           if (!data || data.pending) {
-            setStatus(data && data.result_desc ? data.result_desc : "Waiting for M-Pesa confirmation…", true);
+            setWaiting(
+              true,
+              "Waiting for M-Pesa",
+              data && data.result_desc
+                ? data.result_desc
+                : "Enter the PIN on the phone. Do not close this window."
+            );
             if (tries >= 40) {
               stopPoll();
-              setStatus("Timed out waiting for confirmation. Refresh later if the client paid.", true);
-              if (submitBtn) submitBtn.disabled = false;
+              setWaiting(false);
+              setStatus("Timed out waiting for confirmation. Refresh later if the client paid.", true, true);
+              if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Send STK Push";
+              }
             }
             return;
           }
           stopPoll();
           if (data.success) {
-            setStatus(
-              "Payment successful. Subscription updated" +
+            setWaiting(
+              true,
+              "Payment successful",
+              "Subscription updated" +
                 (data.package_end ? (" until " + new Date(data.package_end).toLocaleString()) : "") +
-                ".",
-              true
+                ". Refreshing…"
             );
             setTimeout(function () { window.location.reload(); }, 1200);
           } else {
-            setStatus(data.result_desc || "Payment was not completed.", true);
-            if (submitBtn) submitBtn.disabled = false;
+            setWaiting(false);
+            setStatus(data.result_desc || "Payment was not completed.", true, true);
+            if (submitBtn) {
+              submitBtn.disabled = false;
+              submitBtn.textContent = "Send STK Push";
+            }
           }
         })
         .catch(function () {
-          setStatus("Could not check payment status. Retrying…", true);
+          setWaiting(
+            true,
+            "Checking payment status",
+            "Could not check payment status. Retrying…"
+          );
         });
     }, 3000);
   }
@@ -390,6 +395,7 @@
   document.querySelectorAll("[data-stk-pay]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       stopPoll();
+      setWaiting(false);
       payUrl = btn.getAttribute("data-pay-url") || "";
       if (clientEl) {
         clientEl.textContent =
@@ -398,13 +404,16 @@
           (btn.getAttribute("data-account") || "");
       }
       if (planEl) planEl.textContent = btn.getAttribute("data-plan") || "—";
-      if (amountEl) amountEl.textContent = btn.getAttribute("data-amount") || "—";
+      if (amountEl) {
+        var amount = btn.getAttribute("data-amount") || "—";
+        amountEl.textContent = amount === "—" ? amount : ("KES " + amount);
+      }
       if (phoneInput) phoneInput.value = btn.getAttribute("data-phone") || "";
       if (submitBtn) {
         submitBtn.disabled = false;
         submitBtn.textContent = "Send STK Push";
       }
-      setStatus("", false);
+      setStatus("", false, false);
       openModal();
       if (phoneInput) phoneInput.focus();
     });
@@ -415,14 +424,20 @@
     if (!payUrl) return;
     var phone = phoneInput ? phoneInput.value.trim() : "";
     if (!phone) {
-      setStatus("Enter the client’s M-Pesa phone number.", true);
+      setWaiting(false);
+      setStatus("Enter the client’s M-Pesa phone number.", true, true);
       return;
     }
     if (submitBtn) {
       submitBtn.disabled = true;
       submitBtn.textContent = "Sending…";
     }
-    setStatus("Sending STK Push…", true);
+    setStatus("", false, false);
+    setWaiting(
+      true,
+      "Sending STK Push",
+      "Please wait while we send the payment request to the phone…"
+    );
     var body = new FormData();
     body.append("phone", phone);
     body.append("csrfmiddlewaretoken", csrfToken());
@@ -444,24 +459,27 @@
       .then(function (result) {
         var data = result.data || {};
         if (!result.ok || !data.ok) {
-          setStatus(data.error || "Could not send STK Push.", true);
+          setWaiting(false);
+          setStatus(data.error || "Could not send STK Push.", true, true);
           if (submitBtn) {
             submitBtn.disabled = false;
             submitBtn.textContent = "Send STK Push";
           }
           return;
         }
-        setStatus(
+        setWaiting(
+          true,
+          "Waiting for M-Pesa",
           (data.message || "STK Push sent.") +
-            (data.phone ? (" Phone: " + data.phone) : "") +
-            " Waiting for PIN…",
-          true
+            (data.phone ? (" Phone: " + data.phone + ".") : "") +
+            " Enter the PIN on the phone."
         );
         if (submitBtn) submitBtn.textContent = "Waiting…";
         pollStatus(data.stk_id);
       })
       .catch(function () {
-        setStatus("Network error while sending STK Push.", true);
+        setWaiting(false);
+        setStatus("Network error while sending STK Push.", true, true);
         if (submitBtn) {
           submitBtn.disabled = false;
           submitBtn.textContent = "Send STK Push";
@@ -472,6 +490,7 @@
   modal.addEventListener("click", function (event) {
     if (event.target && event.target.hasAttribute("data-close-client-modal")) {
       stopPoll();
+      setWaiting(false);
     }
   });
 })();

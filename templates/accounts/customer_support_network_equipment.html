@@ -422,7 +422,7 @@
       <div>
         <p class="role-modal-kicker">Scanner</p>
         <h2 id="equipment-stock-camera-title">Scan serial with camera</h2>
-        <p class="role-modal-sub" id="equipment-stock-camera-sub">Point the camera at the barcode or QR code. It saves automatically when read.</p>
+        <p class="role-modal-sub" id="equipment-stock-camera-sub">Keep the camera open and scan one serial after another — each read saves automatically.</p>
       </div>
       <button type="button" class="role-modal-close" data-close-camera-modal aria-label="Close camera">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
@@ -522,7 +522,13 @@
   var cameraHtml5 = null;
   var cameraZxingReader = null;
   var cameraClosing = false;
-  var cameraHandled = false;
+  var cameraPaused = false;
+  var cameraEngine = null;
+  var lastLiveSerial = "";
+  var lastLiveSerialAt = 0;
+  var LIVE_COOLDOWN_MS = 1600;
+  var zxingLoadPromise = null;
+  var html5LoadPromise = null;
   var editId = document.getElementById("edit-equipment-id");
   var editName = document.getElementById("id_edit-name") || document.getElementById("id_equipment_edit_name");
   var editType = document.getElementById("id_edit-equipment_type") || document.getElementById("id_equipment_edit_type");
@@ -825,31 +831,51 @@
 
   function loadZXing() {
     if (window.ZXing) return Promise.resolve(window.ZXing);
-    return new Promise(function (resolve, reject) {
+    if (zxingLoadPromise) return zxingLoadPromise;
+    zxingLoadPromise = new Promise(function (resolve, reject) {
+      var finish = function () {
+        if (window.ZXing) resolve(window.ZXing);
+        else {
+          zxingLoadPromise = null;
+          reject(new Error("Barcode library failed to load."));
+        }
+      };
       var existing = document.querySelector("script[data-zxing-library]");
       if (existing) {
-        existing.addEventListener("load", function () {
-          if (window.ZXing) resolve(window.ZXing);
-          else reject(new Error("Barcode library failed to load."));
-        });
+        if (window.ZXing) {
+          finish();
+          return;
+        }
+        existing.addEventListener("load", finish);
         existing.addEventListener("error", function () {
+          zxingLoadPromise = null;
           reject(new Error("Barcode library failed to load."));
         });
+        var tries = 0;
+        var poll = window.setInterval(function () {
+          if (window.ZXing) {
+            window.clearInterval(poll);
+            finish();
+          } else if (++tries > 40) {
+            window.clearInterval(poll);
+            zxingLoadPromise = null;
+            reject(new Error("Barcode library failed to load."));
+          }
+        }, 100);
         return;
       }
       var script = document.createElement("script");
       script.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
       script.async = true;
       script.setAttribute("data-zxing-library", "1");
-      script.onload = function () {
-        if (window.ZXing) resolve(window.ZXing);
-        else reject(new Error("Barcode library failed to load."));
-      };
+      script.onload = finish;
       script.onerror = function () {
+        zxingLoadPromise = null;
         reject(new Error("Barcode library failed to load."));
       };
       document.head.appendChild(script);
     });
+    return zxingLoadPromise;
   }
 
   function loadImageFromFile(file) {
@@ -954,43 +980,38 @@
   }
 
   function buildDecodeCanvases(img) {
-    var scale = img.naturalWidth > 1800 ? 1800 / img.naturalWidth : 1;
-    var boost = img.naturalWidth < 1000 ? 2.2 : 1;
+    var maxW = 1280;
+    var scale = img.naturalWidth > maxW ? maxW / img.naturalWidth : 1;
+    var boost = img.naturalWidth < 900 ? 1.8 : 1;
     var base = canvasFromImage(img, scale);
-    var large = canvasFromImage(img, scale * boost);
-    var band = makeCanvas(base.width, Math.max(90, Math.floor(base.height * 0.34)));
+    var large = boost > 1 ? canvasFromImage(img, scale * boost) : null;
+    var bandH = Math.max(80, Math.floor(base.height * 0.32));
+    var band = makeCanvas(base.width, bandH);
     var bandCtx = band.getContext("2d", { willReadFrequently: true });
     bandCtx.drawImage(
       base,
       0,
-      Math.floor(base.height * 0.33),
-      base.width,
       Math.floor(base.height * 0.34),
+      base.width,
+      bandH,
       0,
       0,
       band.width,
       band.height
     );
-    var wideBand = makeCanvas(Math.floor(base.width * 1.45), band.height);
-    var wideCtx = wideBand.getContext("2d", { willReadFrequently: true });
-    wideCtx.drawImage(band, 0, 0, wideBand.width, wideBand.height);
     var variants = [
       band,
-      wideBand,
       enhanceCanvas(band, "contrast"),
-      enhanceCanvas(band, "gray"),
-      enhanceCanvas(band, "invert"),
       base,
-      large,
-      cropCenterCanvas(base, 0.75),
+      cropCenterCanvas(base, 0.78),
       enhanceCanvas(base, "contrast"),
-      enhanceCanvas(base, "invert"),
     ];
+    if (large) variants.push(large);
     var canvases = [];
     variants.forEach(function (variant) {
-      [0, 90, 180, 270].forEach(function (deg) {
-        canvases.push(deg ? rotateCanvas(variant, deg) : variant);
-      });
+      canvases.push(variant);
+      canvases.push(rotateCanvas(variant, 90));
+      canvases.push(rotateCanvas(variant, 270));
     });
     return canvases;
   }
@@ -1063,12 +1084,15 @@
     return loadImageFromFile(file)
       .then(function (img) {
         var canvases = buildDecodeCanvases(img);
-        return detectWithZXing(canvases).catch(function () {
-          return detectWithBarcodeDetector(canvases);
-        });
+        var nativeFirst = window.BarcodeDetector
+          ? detectWithBarcodeDetector(canvases).catch(function () {
+              return detectWithZXing(canvases);
+            })
+          : detectWithZXing(canvases);
+        return nativeFirst;
       })
       .then(function (value) {
-        handleCameraCode(value);
+        handleCameraCode(value, { fromPhoto: true });
       })
       .catch(function (err) {
         var message = (err && err.message) || "Could not read a barcode from that photo.";
@@ -1077,15 +1101,33 @@
         }
         setCameraStatus(message);
         showCameraGate(message + " Tip: hold barcode horizontally. Or type the serial manually.", false);
-        cameraHandled = false;
+        cameraPaused = false;
       });
   }
 
-  function stopZXingCamera() {
+  function clearCameraDetectTimer() {
     if (cameraDetectTimer) {
       window.clearTimeout(cameraDetectTimer);
       cameraDetectTimer = null;
     }
+  }
+
+  function stopVideoTracks() {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(function (track) {
+        try { track.stop(); } catch (e) {}
+      });
+      cameraStream = null;
+    }
+    if (cameraVideo) {
+      try { cameraVideo.srcObject = null; } catch (e2) {}
+      cameraVideo.hidden = false;
+      cameraVideo.style.display = "";
+    }
+  }
+
+  function stopZXingCamera() {
+    clearCameraDetectTimer();
     if (cameraZxingReader) {
       try {
         if (typeof cameraZxingReader.stopContinuousDecode === "function") {
@@ -1103,21 +1145,7 @@
 
   function stopNativeCamera() {
     stopZXingCamera();
-    if (cameraDetectTimer) {
-      window.clearTimeout(cameraDetectTimer);
-      cameraDetectTimer = null;
-    }
-    if (cameraStream) {
-      cameraStream.getTracks().forEach(function (track) {
-        track.stop();
-      });
-      cameraStream = null;
-    }
-    if (cameraVideo) {
-      cameraVideo.srcObject = null;
-      cameraVideo.hidden = false;
-      cameraVideo.style.display = "";
-    }
+    stopVideoTracks();
   }
 
   function stopHtml5Camera() {
@@ -1129,12 +1157,18 @@
     });
   }
 
+  function stopAllCameraEngines() {
+    stopZXingCamera();
+    stopVideoTracks();
+    cameraEngine = null;
+    return stopHtml5Camera();
+  }
+
   function closeCameraModal() {
     if (!cameraModal || cameraClosing) return;
     cameraClosing = true;
-    stopZXingCamera();
-    stopNativeCamera();
-    stopHtml5Camera().finally(function () {
+    cameraPaused = true;
+    stopAllCameraEngines().finally(function () {
       hideCameraGate();
       if (cameraReader) {
         cameraReader.innerHTML = "";
@@ -1148,54 +1182,102 @@
       cameraModal.hidden = true;
       cameraModal.setAttribute("aria-hidden", "true");
       cameraClosing = false;
+      cameraPaused = false;
       if (trackingEnabled()) focusScanInput();
     });
   }
 
-  function handleCameraCode(raw) {
-    if (cameraHandled || scanBusy) return;
+  function resumeLiveScan(delayMs) {
+    window.setTimeout(function () {
+      if (!cameraModal || cameraModal.hidden || cameraClosing) return;
+      cameraPaused = false;
+      if (cameraEngine === "native") scheduleNativeTick(0);
+      else if (cameraEngine === "zxing") scheduleZxingTick(0);
+    }, delayMs == null ? 650 : delayMs);
+  }
+
+  function handleCameraCode(raw, opts) {
+    opts = opts || {};
     var serial = (raw || "").trim().toUpperCase();
     if (!serial) return;
-    cameraHandled = true;
-    closeCameraModal();
+    var now = Date.now();
+    if (serial === lastLiveSerial && now - lastLiveSerialAt < LIVE_COOLDOWN_MS) return;
+    if (scanBusy || cameraPaused) return;
+
+    if (sessionSerials.indexOf(serial) !== -1) {
+      lastLiveSerial = serial;
+      lastLiveSerialAt = now;
+      setCameraStatus("“" + serial + "” already saved. Point at the next serial…");
+      setSerialStatus("“" + serial + "” was already scanned in this session.", true);
+      return;
+    }
+
+    cameraPaused = true;
+    lastLiveSerial = serial;
+    lastLiveSerialAt = now;
     if (serialScan) serialScan.value = serial;
+    setCameraStatus("Read “" + serial + "”. Saving…");
     setSerialStatus("Camera read “" + serial + "”. Saving…", false);
-    commitSerialScan();
+    commitSerialScan({
+      fromCamera: !opts.fromPhoto,
+      fromPhoto: !!opts.fromPhoto,
+    });
   }
 
   function loadHtml5Qrcode() {
     if (window.Html5Qrcode) return Promise.resolve(window.Html5Qrcode);
-    return new Promise(function (resolve, reject) {
+    if (html5LoadPromise) return html5LoadPromise;
+    html5LoadPromise = new Promise(function (resolve, reject) {
+      var finish = function () {
+        if (window.Html5Qrcode) resolve(window.Html5Qrcode);
+        else {
+          html5LoadPromise = null;
+          reject(new Error("Scanner library failed to load."));
+        }
+      };
       var existing = document.querySelector("script[data-html5-qrcode]");
       if (existing) {
-        existing.addEventListener("load", function () {
-          if (window.Html5Qrcode) resolve(window.Html5Qrcode);
-          else reject(new Error("Scanner library failed to load."));
-        });
+        if (window.Html5Qrcode) {
+          finish();
+          return;
+        }
+        existing.addEventListener("load", finish);
         existing.addEventListener("error", function () {
+          html5LoadPromise = null;
           reject(new Error("Scanner library failed to load."));
         });
+        var tries = 0;
+        var poll = window.setInterval(function () {
+          if (window.Html5Qrcode) {
+            window.clearInterval(poll);
+            finish();
+          } else if (++tries > 40) {
+            window.clearInterval(poll);
+            html5LoadPromise = null;
+            reject(new Error("Scanner library failed to load."));
+          }
+        }, 100);
         return;
       }
       var script = document.createElement("script");
       script.src = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
       script.async = true;
       script.setAttribute("data-html5-qrcode", "1");
-      script.onload = function () {
-        if (window.Html5Qrcode) resolve(window.Html5Qrcode);
-        else reject(new Error("Scanner library failed to load."));
-      };
+      script.onload = finish;
       script.onerror = function () {
+        html5LoadPromise = null;
         reject(new Error("Scanner library failed to load."));
       };
       document.head.appendChild(script);
     });
+    return html5LoadPromise;
   }
 
   function startHtml5Camera() {
     if (!cameraReader) return Promise.reject(new Error("Camera view missing."));
     hideCameraGate();
     stopZXingCamera();
+    stopVideoTracks();
     if (cameraVideo) {
       cameraVideo.hidden = true;
       cameraVideo.style.display = "none";
@@ -1221,7 +1303,7 @@
       if (formats.length) options.formatsToSupport = formats;
       cameraHtml5 = new Html5Qrcode("equipment-stock-camera-reader", options);
       var config = {
-        fps: 15,
+        fps: 20,
         qrbox: function (viewWidth, viewHeight) {
           return {
             width: Math.floor(viewWidth * 0.94),
@@ -1251,7 +1333,9 @@
           function () {}
         );
       }).then(function () {
-        setCameraStatus("Camera open. Align the barcode inside the wide guide.");
+        cameraEngine = "html5";
+        cameraPaused = false;
+        setCameraStatus("Camera open. Scan continuously — each serial saves automatically.");
       });
     });
   }
@@ -1268,7 +1352,7 @@
           reject(new Error("Camera opened but no video frames arrived."));
           return;
         }
-        window.setTimeout(check, 120);
+        window.setTimeout(check, 80);
       };
       check();
     });
@@ -1278,6 +1362,12 @@
     cameraStream = stream;
     stream.getVideoTracks().forEach(function (track) {
       track.enabled = true;
+      try {
+        var caps = track.getCapabilities && track.getCapabilities();
+        if (caps && caps.focusMode && caps.focusMode.indexOf("continuous") !== -1) {
+          track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(function () {});
+        }
+      } catch (e) {}
     });
     cameraVideo.setAttribute("autoplay", "");
     cameraVideo.setAttribute("muted", "");
@@ -1297,6 +1387,60 @@
     });
   }
 
+  function getBackCameraStream() {
+    var tryConstraints = [
+      {
+        audio: false,
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+      },
+      { audio: false, video: { facingMode: "environment" } },
+      { audio: false, video: true },
+    ];
+    var getStream = function (index) {
+      if (index >= tryConstraints.length) {
+        return Promise.reject(new Error("Could not start camera video."));
+      }
+      return navigator.mediaDevices.getUserMedia(tryConstraints[index]).catch(function (err) {
+        if (index === tryConstraints.length - 1) throw err;
+        return getStream(index + 1);
+      });
+    };
+    return getStream(0);
+  }
+
+  function scheduleZxingTick(delayMs) {
+    clearCameraDetectTimer();
+    cameraDetectTimer = window.setTimeout(function () {
+      if (!cameraZxingReader || !cameraStream || cameraModal.hidden || cameraPaused || cameraClosing) return;
+      var run;
+      if (typeof cameraZxingReader.decodeOnceFromVideoElement === "function") {
+        run = cameraZxingReader.decodeOnceFromVideoElement(cameraVideo);
+      } else if (typeof cameraZxingReader.decodeFromVideoElement === "function") {
+        run = cameraZxingReader.decodeFromVideoElement(cameraVideo);
+      } else {
+        var canvas = makeCanvas(cameraVideo.videoWidth || 640, cameraVideo.videoHeight || 480);
+        var ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+        run = cameraZxingReader.decodeFromCanvas
+          ? cameraZxingReader.decodeFromCanvas(canvas)
+          : Promise.reject(new Error("no-decode"));
+      }
+      Promise.resolve(run)
+        .then(function (result) {
+          var text = result && (result.getText ? result.getText() : result.text);
+          if (text) handleCameraCode(text);
+          else scheduleZxingTick(90);
+        })
+        .catch(function () {
+          scheduleZxingTick(90);
+        });
+    }, delayMs == null ? 90 : delayMs);
+  }
+
   function startZXingLiveCamera() {
     if (!cameraVideo || !canUseLiveCamera()) {
       return Promise.reject(new Error("ZXing live scanner unavailable."));
@@ -1310,60 +1454,44 @@
     setCameraStatus("Requesting camera permission…");
     return loadZXing().then(function (ZXing) {
       stopZXingCamera();
-      cameraZxingReader = new ZXing.BrowserMultiFormatReader(zxingHints(ZXing), 150);
-      var tryConstraints = [
-        { audio: false, video: { facingMode: { ideal: "environment" } } },
-        { audio: false, video: { facingMode: "environment" } },
-        { audio: false, video: true },
-      ];
-      var getStream = function (index) {
-        if (index >= tryConstraints.length) {
-          return Promise.reject(new Error("Could not start camera video."));
-        }
-        return navigator.mediaDevices.getUserMedia(tryConstraints[index]).catch(function (err) {
-          if (index === tryConstraints.length - 1) throw err;
-          return getStream(index + 1);
-        });
-      };
-      return getStream(0).then(function (stream) {
+      cameraZxingReader = new ZXing.BrowserMultiFormatReader(zxingHints(ZXing), 100);
+      return getBackCameraStream().then(function (stream) {
         return attachStreamToVideo(stream).then(function () {
-          setCameraStatus("Camera open. Hold the barcode steady in the frame.");
-          var decodeOnce = function () {
-            if (!cameraZxingReader || !cameraStream || cameraModal.hidden || cameraHandled) return;
-            var run;
-            if (typeof cameraZxingReader.decodeOnceFromVideoElement === "function") {
-              run = cameraZxingReader.decodeOnceFromVideoElement(cameraVideo);
-            } else if (typeof cameraZxingReader.decodeFromVideoElement === "function") {
-              run = cameraZxingReader.decodeFromVideoElement(cameraVideo);
-            } else {
-              var canvas = makeCanvas(cameraVideo.videoWidth || 640, cameraVideo.videoHeight || 480);
-              var ctx = canvas.getContext("2d", { willReadFrequently: true });
-              ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
-              run = cameraZxingReader.decodeFromCanvas
-                ? cameraZxingReader.decodeFromCanvas(canvas)
-                : Promise.reject(new Error("no-decode"));
-            }
-            Promise.resolve(run)
-              .then(function (result) {
-                var text = result && (result.getText ? result.getText() : result.text);
-                if (text) handleCameraCode(text);
-                else cameraDetectTimer = window.setTimeout(decodeOnce, 120);
-              })
-              .catch(function () {
-                cameraDetectTimer = window.setTimeout(decodeOnce, 120);
-              });
-          };
-          cameraDetectTimer = window.setTimeout(decodeOnce, 200);
+          cameraEngine = "zxing";
+          cameraPaused = false;
+          setCameraStatus("Camera open. Scan continuously — each serial saves automatically.");
+          scheduleZxingTick(120);
         });
       });
     });
+  }
+
+  var nativeDetector = null;
+
+  function scheduleNativeTick(delayMs) {
+    clearCameraDetectTimer();
+    cameraDetectTimer = window.setTimeout(function () {
+      if (!cameraStream || cameraModal.hidden || cameraPaused || cameraClosing || !nativeDetector) return;
+      nativeDetector
+        .detect(cameraVideo)
+        .then(function (codes) {
+          if (codes && codes.length && codes[0].rawValue) {
+            handleCameraCode(codes[0].rawValue);
+            return;
+          }
+          scheduleNativeTick(70);
+        })
+        .catch(function () {
+          scheduleNativeTick(120);
+        });
+    }, delayMs == null ? 70 : delayMs);
   }
 
   function startNativeCamera() {
     if (!cameraVideo || !canUseLiveCamera() || !window.BarcodeDetector) {
       return Promise.reject(new Error("Native scanner unavailable."));
     }
-    var detector = new BarcodeDetector({
+    nativeDetector = new BarcodeDetector({
       formats: [
         "code_128", "code_39", "code_93", "codabar", "itf",
         "ean_13", "ean_8", "upc_a", "upc_e",
@@ -1377,27 +1505,13 @@
       cameraReader.innerHTML = "";
     }
     setCameraStatus("Requesting camera permission…");
-    return navigator.mediaDevices
-      .getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } })
+    return getBackCameraStream()
       .then(attachStreamToVideo)
       .then(function () {
-        setCameraStatus("Camera open. Hold the barcode steady in the frame.");
-        var tick = function () {
-          if (!cameraStream || cameraModal.hidden || cameraHandled) return;
-          detector
-            .detect(cameraVideo)
-            .then(function (codes) {
-              if (codes && codes.length && codes[0].rawValue) {
-                handleCameraCode(codes[0].rawValue);
-                return;
-              }
-              cameraDetectTimer = window.setTimeout(tick, 180);
-            })
-            .catch(function () {
-              cameraDetectTimer = window.setTimeout(tick, 220);
-            });
-        };
-        cameraDetectTimer = window.setTimeout(tick, 250);
+        cameraEngine = "native";
+        cameraPaused = false;
+        setCameraStatus("Camera open. Scan continuously — each serial saves automatically.");
+        scheduleNativeTick(100);
       });
   }
 
@@ -1414,16 +1528,31 @@
       return "Camera permission worked, but the live preview stayed black. Use Take photo instead.";
     }
     if (name === "SecurityError" || /secure|https|insecure/i.test(message) || !window.isSecureContext) {
-      return "Live camera needs HTTPS. Use Take a photo instead — that opens your phone camera.";
+      return "Live camera needs HTTPS (or localhost). Use Take a photo instead — that opens your phone camera.";
     }
     return message || "Could not open the live camera.";
   }
 
   function beginLiveCamera() {
     setCameraStatus("Requesting camera permission…");
-    return startZXingLiveCamera()
-      .catch(function () { return startHtml5Camera(); })
-      .catch(function () { return startNativeCamera(); })
+    cameraPaused = false;
+    return stopAllCameraEngines()
+      .then(function () {
+        // Native BarcodeDetector is typically fastest on Chromium; then ZXing; then html5-qrcode.
+        if (window.BarcodeDetector) {
+          return startNativeCamera().catch(function () {
+            return stopAllCameraEngines().then(function () {
+              return startZXingLiveCamera();
+            });
+          });
+        }
+        return startZXingLiveCamera();
+      })
+      .catch(function () {
+        return stopAllCameraEngines().then(function () {
+          return startHtml5Camera();
+        });
+      })
       .catch(function (err) {
         var text = explainCameraError(err);
         setCameraStatus(text);
@@ -1437,14 +1566,16 @@
       return;
     }
     if (!cameraModal) return;
-    cameraHandled = false;
+    cameraPaused = false;
+    lastLiveSerial = "";
+    lastLiveSerialAt = 0;
     cameraModal.hidden = false;
     cameraModal.setAttribute("aria-hidden", "false");
     hideCameraGate();
 
     if (!canUseLiveCamera()) {
       if (cameraSub) {
-        cameraSub.textContent = "This page is on HTTP, so the browser will not show a live-camera permission prompt. Use your phone camera via the button below.";
+        cameraSub.textContent = "This page is on HTTP outside localhost, so the browser will not show a live-camera permission prompt. Use your phone camera via the button below.";
       }
       showCameraGate(
         "Tap “Take a photo instead” to open your phone camera and scan the serial.",
@@ -1455,31 +1586,40 @@
     }
 
     if (cameraSub) {
-      cameraSub.textContent = "Allow camera, then hold the serial barcode horizontally inside the wide green box.";
+      cameraSub.textContent = "Keep scanning — each barcode/QR saves automatically. Close when finished.";
     }
-    showCameraGate("Tap Allow camera & scan so your phone can ask for permission.", true);
-    setCameraStatus("Waiting for you to allow camera access…");
+    setCameraStatus("Opening camera…");
+    // Camera button click is a user gesture — start immediately (no second Allow tap).
+    beginLiveCamera();
   }
 
-  function commitSerialScan() {
+  function commitSerialScan(opts) {
+    opts = opts || {};
     if (!trackingEnabled() || scanBusy || !serialScan) return;
     var serial = (serialScan.value || "").trim().toUpperCase();
     if (!serial) {
       setScanReady("error");
       setSerialStatus("Scan or type a serial number first.", true);
-      focusScanInput();
+      if (opts.fromCamera) resumeLiveScan(400);
+      else focusScanInput();
       return;
     }
     if (sessionSerials.indexOf(serial) !== -1) {
       setScanReady("error");
       setSerialStatus("“" + serial + "” was already scanned in this session.", true);
-      focusScanInput();
+      if (opts.fromCamera) {
+        setCameraStatus("“" + serial + "” already saved. Point at the next serial…");
+        resumeLiveScan(500);
+      } else {
+        focusScanInput();
+      }
       return;
     }
     var id = stockId && stockId.value;
     if (!id) {
       setScanReady("error");
       setSerialStatus("Missing equipment.", true);
+      if (opts.fromCamera) resumeLiveScan(400);
       return;
     }
     var action = (dirOut && dirOut.checked) ? "stock_out" : "stock_in";
@@ -1526,16 +1666,39 @@
           false
         );
         if (submitBtn) submitBtn.textContent = "Done";
+        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
+          setCameraStatus(
+            "Saved “" + serial + "” (" + sessionScanCount + "). Point at the next serial…"
+          );
+        }
+        if (opts.fromPhoto && cameraModal && !cameraModal.hidden) {
+          setCameraStatus(
+            "Saved “" + serial + "”. Take another photo or keep scanning."
+          );
+          showCameraGate(
+            "Saved “" + serial + "”. Take another photo for the next serial, or close when done.",
+            canUseLiveCamera()
+          );
+        }
       })
       .catch(function (err) {
         setScanReady("error");
         setSerialStatus((err && err.message) || "Scan failed.", true);
+        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
+          setCameraStatus((err && err.message) || "Save failed. Try the next serial…");
+        }
       })
       .finally(function () {
         scanBusy = false;
         serialScan.disabled = false;
         if (serialSaveBtn) serialSaveBtn.disabled = false;
-        focusScanInput();
+        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
+          resumeLiveScan(700);
+        } else if (!opts.fromPhoto) {
+          focusScanInput();
+        } else {
+          cameraPaused = false;
+        }
       });
   }
 
@@ -1547,8 +1710,8 @@
     if (enabled) {
       if (serialsHint) {
         serialsHint.textContent = isOut
-          ? "Each scan issues 1 unit from stock, then waits for the next serial."
-          : "Each scan receives 1 unit into stock, then waits for the next serial.";
+          ? "Camera stays open for continuous stock-out scans. Or type/wedge a serial and press Enter."
+          : "Camera stays open for continuous scan-and-save. Or type/wedge a serial and press Enter.";
       }
       if (serialScan) {
         serialScan.placeholder = isOut
@@ -1605,8 +1768,17 @@
     stockModal.hidden = false;
     stockModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
-    if (trackingEnabled()) focusScanInput();
-    else if (stockAmount) stockAmount.focus();
+    if (trackingEnabled()) {
+      focusScanInput();
+      // Warm barcode libraries so the first camera open is faster.
+      if (window.BarcodeDetector) {
+        try { new BarcodeDetector({ formats: ["code_128", "qr_code"] }); } catch (e) {}
+      } else {
+        loadZXing().catch(function () {});
+      }
+    } else if (stockAmount) {
+      stockAmount.focus();
+    }
   }
 
   function closeStockModal() {

@@ -9,6 +9,7 @@
           <th>General</th>
           <th>Price</th>
           <th>Period</th>
+          <th>MikroTik</th>
           <th>Status</th>
           {% if show_package_actions %}
             <th><span class="visually-hidden">Actions</span></th>
@@ -34,6 +35,11 @@
             <td>{{ plan.price }}</td>
             <td>{{ plan.get_duration_display }}</td>
             <td>
+              <span class="package-router-scope{% if plan.router_scope_label == 'All MikroTiks' %} is-all{% endif %}" title="{{ plan.router_scope_label }}">
+                {{ plan.router_scope_label }}
+              </span>
+            </td>
+            <td>
               <span class="badge{% if plan.is_active %} badge-success{% else %} badge-muted{% endif %}">
                 {% if plan.is_active %}Active{% else %}Suspended{% endif %}
               </span>
@@ -54,6 +60,7 @@
                     data-package-upload="{{ plan.upload_speed_mbps }}"
                     data-package-active="{% if plan.is_active %}1{% else %}0{% endif %}"
                     data-package-image="{% if plan.image %}{{ plan.image.url }}{% endif %}"
+                    data-package-routers="{% for r in plan.routers.all %}{{ r.id }}{% if not forloop.last %},{% endif %}{% endfor %}"
                     aria-label="Edit {{ plan.name }}"
                   >Edit</button>
                   <button

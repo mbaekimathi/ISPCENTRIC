@@ -1,6 +1,6 @@
 {% if customers %}
-  <div class="clients-table-wrap">
-    <table class="table clients-type-table">
+  <div class="org-table-shell clients-dash-table-shell">
+    <table class="org-table clients-type-table">
       <thead>
         <tr>
           <th>Name</th>
@@ -93,8 +93,13 @@
     </table>
   </div>
 {% else %}
-  <div class="clients-empty">
-    <p class="clients-empty-title">{{ empty_title }}</p>
-    <p class="empty">{{ empty_text }}</p>
+  <div class="clients-dash-empty">
+    <p class="clients-dash-empty-title">{{ empty_title }}</p>
+    <p class="clients-dash-empty-copy">{{ empty_text }}</p>
+    {% if show_pppoe %}
+      <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+        Register PPPoE client
+      </button>
+    {% endif %}
   </div>
 {% endif %}

@@ -17,6 +17,29 @@ from billing.models import BillingPlan, Customer
 RENEW_TOKEN_SALT = "ispcentric-subscription-renew"
 
 
+def plans_for_router(organization, router=None, *, active_only=True):
+    """Plans for an org, optionally limited to a MikroTik.
+
+    Empty plan.routers means the package is available on every router.
+    """
+    from django.db.models import Count
+
+    qs = BillingPlan.objects.filter(organization=organization)
+    if active_only:
+        qs = qs.filter(is_active=True)
+    if router is None:
+        return qs.order_by("price", "name")
+    router_id = getattr(router, "pk", router)
+    if not router_id:
+        return qs.order_by("price", "name")
+    return (
+        qs.annotate(_router_links=Count("routers"))
+        .filter(Q(_router_links=0) | Q(routers=router_id))
+        .distinct()
+        .order_by("price", "name")
+    )
+
+
 def generate_customer_account_number(organization, *, prefix: str = "CLT") -> str:
     """Create a unique account number for a customer in this organization."""
     org_id = getattr(organization, "pk", None) or 0

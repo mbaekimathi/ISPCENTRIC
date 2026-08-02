@@ -252,11 +252,6 @@ def dashboard(request):
         return blocked
 
     org = resolve_organization(request.user, request)
-    package_form, open_modal, early = _handle_register_package(
-        request, org, success_url_name="billing:dashboard"
-    )
-    if early:
-        return early
 
     if org:
         customer_stats = Customer.objects.filter(organization=org).aggregate(
@@ -275,7 +270,6 @@ def dashboard(request):
             "active_customers": customer_stats["active_customers"] or 0,
             "pending_invoices": invoice_stats["pending_invoices"] or 0,
             "revenue": revenue,
-            "packages": BillingPlan.objects.filter(organization=org).count(),
         }
         recent_invoices = (
             Invoice.objects.filter(organization=org)
@@ -283,30 +277,18 @@ def dashboard(request):
             .prefetch_related("payments")
             .order_by("-issued_at")[:8]
         )
-        packages = (
-            BillingPlan.objects.filter(organization=org)
-            .order_by("price", "name")[:6]
-        )
         attention_customers = customers_needing_renewal_attention(org)
         stats["attention_customers"] = len(attention_customers)
-        lead_payments = _lead_payment_rows(org)
-        stats["lead_payments"] = len(lead_payments)
-        stats["lead_reversals"] = sum(1 for row in lead_payments if row["reversed"])
     else:
         stats = {
             "customers": 0,
             "active_customers": 0,
             "pending_invoices": 0,
             "revenue": 0,
-            "packages": 0,
             "attention_customers": 0,
-            "lead_payments": 0,
-            "lead_reversals": 0,
         }
         recent_invoices = Invoice.objects.none()
-        packages = BillingPlan.objects.none()
         attention_customers = []
-        lead_payments = []
 
     return render(
         request,
@@ -319,10 +301,6 @@ def dashboard(request):
             stats=stats,
             recent_invoices=recent_invoices,
             attention_customers=attention_customers,
-            packages=packages,
-            package_form=package_form,
-            open_billing_modal=open_modal,
-            lead_payments=lead_payments,
         ),
     )
 
@@ -438,6 +416,7 @@ def packages(request):
             customer_count=Count("customers"),
             stk_count=Count("stk_push_requests"),
         )
+        .prefetch_related("routers")
         .order_by("price", "name")
         if org
         else BillingPlan.objects.none()

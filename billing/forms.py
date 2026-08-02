@@ -130,10 +130,22 @@ class PppoeClientRegisterForm(forms.ModelForm):
         if not self.is_bound and not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
             self.fields["cpe_username"].initial = "admin"
         if organization is not None:
-            self.fields["plan"].queryset = BillingPlan.objects.filter(
-                organization=organization,
-                is_active=True,
-            ).order_by("price", "name")
+            from billing.services import plans_for_router
+
+            router = None
+            if self.is_bound:
+                raw_router = self.data.get("router")
+                if raw_router:
+                    router = (
+                        MikroTikRouter.objects.filter(
+                            pk=raw_router, organization=organization
+                        ).first()
+                    )
+            elif self.initial.get("router"):
+                router = self.initial.get("router")
+            elif getattr(self.instance, "router_id", None):
+                router = self.instance.router
+            self.fields["plan"].queryset = plans_for_router(organization, router)
             self.fields["router"].queryset = MikroTikRouter.objects.filter(
                 organization=organization,
             ).order_by("name")
@@ -198,6 +210,13 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
                 self.add_error("pppoe_username", "That PPPoE username is already registered.")
+        plan = cleaned.get("plan")
+        router = cleaned.get("router")
+        if plan and router and not plan.is_available_on_router(router):
+            self.add_error(
+                "plan",
+                "That package is not linked to the selected MikroTik.",
+            )
         return cleaned
 
     def clean_router(self):
@@ -485,9 +504,10 @@ class CustomerPackageForm(forms.ModelForm):
         self.fields["plan"].required = True
         self.fields["plan"].empty_label = "Select a plan"
         if self.organization:
-            self.fields["plan"].queryset = BillingPlan.objects.filter(
-                organization=self.organization, is_active=True,
-            )
+            from billing.services import plans_for_router
+
+            router = getattr(self.instance, "router", None)
+            self.fields["plan"].queryset = plans_for_router(self.organization, router)
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
 
@@ -495,6 +515,11 @@ class CustomerPackageForm(forms.ModelForm):
         plan = self.cleaned_data.get("plan")
         if not plan:
             raise forms.ValidationError("Select a billing plan.")
+        router = getattr(self.instance, "router", None)
+        if plan and router and not plan.is_available_on_router(router):
+            raise forms.ValidationError(
+                "That package is not linked to this client’s MikroTik."
+            )
         return plan
 
     def save(self, commit=True):
@@ -805,9 +830,10 @@ class CustomerPackagePeriodForm(forms.ModelForm):
             "id": "id_package_plan",
         })
         if self.organization:
-            self.fields["plan"].queryset = BillingPlan.objects.filter(
-                organization=self.organization, is_active=True,
-            )
+            from billing.services import plans_for_router
+
+            router = getattr(self.instance, "router", None)
+            self.fields["plan"].queryset = plans_for_router(self.organization, router)
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
 
@@ -899,6 +925,11 @@ class CustomerPackagePeriodForm(forms.ModelForm):
         plan = self.cleaned_data.get("plan")
         if not plan:
             raise forms.ValidationError("Select a billing plan.")
+        router = getattr(self.instance, "router", None)
+        if plan and router and not plan.is_available_on_router(router):
+            raise forms.ValidationError(
+                "That package is not linked to this client’s MikroTik."
+            )
         return plan
 
     def clean(self):
@@ -969,6 +1000,14 @@ class CustomerPackagePeriodForm(forms.ModelForm):
 class BillingPackageRegisterForm(forms.ModelForm):
     """Register a new billing package / plan for an organization."""
 
+    routers = forms.ModelMultipleChoiceField(
+        label="MikroTik routers",
+        required=False,
+        queryset=MikroTikRouter.objects.none(),
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Optional. Leave unchecked to use this package on all MikroTiks.",
+    )
+
     class Meta:
         model = BillingPlan
         fields = [
@@ -980,6 +1019,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration",
             "image",
             "is_active",
+            "routers",
         ]
         widgets = {
             "name": forms.TextInput(
@@ -1051,6 +1091,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration": "Billing period",
             "image": "Package image",
             "is_active": "Active package",
+            "routers": "MikroTik routers",
         }
 
     def __init__(self, *args, organization=None, id_prefix="package", **kwargs):
@@ -1060,9 +1101,16 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["description"].required = False
         self.fields["image"].required = False
         self.fields["is_active"].required = False
+        self.fields["routers"].required = False
         # Default Active only for new packages — keep the saved value when editing.
         if not self.is_bound and not getattr(self.instance, "pk", None):
             self.fields["is_active"].initial = True
+        if self.organization is not None:
+            self.fields["routers"].queryset = MikroTikRouter.objects.filter(
+                organization=self.organization,
+            ).order_by("name")
+        else:
+            self.fields["routers"].queryset = MikroTikRouter.objects.none()
         id_map = {
             "name": f"id_{self.id_prefix}_name",
             "description": f"id_{self.id_prefix}_description",
@@ -1072,10 +1120,13 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "duration": f"id_{self.id_prefix}_duration",
             "image": f"id_{self.id_prefix}_image",
             "is_active": f"id_{self.id_prefix}_is_active",
+            "routers": f"id_{self.id_prefix}_routers",
         }
         for field_name, field_id in id_map.items():
             if field_name in self.fields:
                 self.fields[field_name].widget.attrs["id"] = field_id
+        # CheckboxSelectMultiple renders one id per option; keep a stable container id.
+        self.fields["routers"].widget.attrs["class"] = "package-router-checks"
 
     def clean_name(self):
         name = (self.cleaned_data.get("name") or "").strip()
@@ -1129,6 +1180,17 @@ class BillingPackageRegisterForm(forms.ModelForm):
             raise forms.ValidationError("Enter an upload speed of at least 1 Mbps.")
         return speed
 
+    def clean_routers(self):
+        routers = self.cleaned_data.get("routers")
+        if not routers:
+            return routers
+        if self.organization is None:
+            return routers
+        invalid = [r for r in routers if r.organization_id != self.organization.pk]
+        if invalid:
+            raise forms.ValidationError("Choose MikroTiks from this organization only.")
+        return routers
+
     def save(self, commit=True):
         plan = super().save(commit=False)
         plan.organization = self.organization
@@ -1137,4 +1199,5 @@ class BillingPackageRegisterForm(forms.ModelForm):
         plan.sync_general_speed()
         if commit:
             plan.save()
+            self.save_m2m()
         return plan

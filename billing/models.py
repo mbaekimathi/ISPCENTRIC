@@ -39,6 +39,13 @@ class BillingPlan(models.Model):
         help_text="Optional package image shown on billing screens.",
     )
     is_active = models.BooleanField(default=True)
+    routers = models.ManyToManyField(
+        "core.MikroTikRouter",
+        blank=True,
+        related_name="billing_plans",
+        help_text="Optional. Leave empty to offer this package on all MikroTiks; "
+        "select specific routers to limit where it can be used.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -57,6 +64,35 @@ class BillingPlan(models.Model):
         if down:
             return f"{down} Mbps"
         return "—"
+
+    @property
+    def router_scope_label(self) -> str:
+        """Short label for package tables: All MikroTiks vs linked names."""
+        # Prefer prefetched cache when available (dashboard/packages lists).
+        prefetched = getattr(self, "_prefetched_objects_cache", {})
+        if "routers" in prefetched:
+            linked = list(prefetched["routers"])
+        else:
+            linked = list(self.routers.all())
+        if not linked:
+            return "All MikroTiks"
+        names = [r.name for r in linked[:3]]
+        extra = len(linked) - len(names)
+        label = ", ".join(names)
+        if extra > 0:
+            label = f"{label} +{extra}"
+        return label
+
+    def is_available_on_router(self, router) -> bool:
+        """True when unlinked (all routers) or explicitly linked to this router."""
+        if router is None:
+            return True
+        router_id = getattr(router, "pk", router)
+        if not router_id:
+            return True
+        if not self.routers.exists():
+            return True
+        return self.routers.filter(pk=router_id).exists()
 
     def sync_general_speed(self) -> None:
         """General speed follows the package download rate."""

@@ -147,6 +147,14 @@
       var active = document.getElementById("id_edit_package_is_active");
       if (active) active.checked = btn.getAttribute("data-package-active") === "1";
 
+      var selectedRouters = (btn.getAttribute("data-package-routers") || "")
+        .split(",")
+        .map(function (v) { return v.trim(); })
+        .filter(Boolean);
+      document.querySelectorAll('#billing-package-edit-form input[name="routers"]').forEach(function (box) {
+        box.checked = selectedRouters.indexOf(String(box.value)) !== -1;
+      });
+
       var imageInput = document.getElementById("id_edit_package_image");
       if (imageInput) imageInput.value = "";
 

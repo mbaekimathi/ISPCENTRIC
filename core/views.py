@@ -45,6 +45,7 @@ from billing.services import (
     customer_receives_internet,
     customer_subscription_expired,
     make_renew_token,
+    plans_for_router,
     resolve_lead_allocation_fee,
 )
 from billing.stk import (
@@ -126,11 +127,6 @@ CLIENT_SIDEBARS = {
             {"key": "billing", "label": "Billings", "url_name": "billing:dashboard"},
             {"key": "account", "label": "My account", "url_name": "core:my_account"},
             {"key": "leads", "label": "Leads", "url_name": "core:leads"},
-            {
-                "key": "leads_billing",
-                "label": "Leads billing",
-                "url_name": "billing:lead_payments",
-            },
             {"key": "technicians", "label": "Technicians", "url_name": "core:technicians"},
         ],
     },
@@ -3129,7 +3125,7 @@ def my_clients(request):
             active_nav="clients",
             page_title="My clients",
             page_kicker="Subscribers",
-            page_subtitle="Internet customers linked to this organization, grouped by service type.",
+            page_subtitle="Browse subscribers by connection type and open a client for details.",
             active_tab=tab,
             pppoe_customers=pppoe_customers,
             static_customers=static_customers,
@@ -3362,10 +3358,8 @@ def client_detail(request, customer_id: int):
         plan_durations_json=json.dumps(
             {
                 str(p.pk): p.duration
-                for p in BillingPlan.objects.filter(organization=org, is_active=True)
+                for p in (plans_for_router(org, customer.router) if org else [])
             }
-            if org
-            else {}
         ),
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),
@@ -5155,9 +5149,6 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     message = (org.hotspot_login_message or "").strip() or (
         "Choose a package and pay with M-Pesa. This device will connect automatically."
     )
-    plans = list(
-        BillingPlan.objects.filter(organization=org, is_active=True).order_by("price")[:8]
-    )
     has_mpesa = bool(org.mpesa_payment_type and org.mpesa_number)
     stk_ready = bool(org.effective_daraja_credentials().get("ready"))
 
@@ -5172,6 +5163,14 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         error = (request.GET.get("error") or "").strip()
         if link_login:
             mikrotik_login = True
+
+    from billing.services import plans_for_router
+    from core.mikrotik_connect import find_hotspot_router_for_mac
+
+    portal_router = None
+    if hotspot_mac:
+        portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
+    plans = list(plans_for_router(org, portal_router)[:8])
 
     pppoe_option_available = bool(getattr(org, "pppoe_compulsory", False))
     pppoe_pay_url = ""
@@ -5359,6 +5358,14 @@ def hotspot_payment_start(request, join_code: str):
     if router is None:
         return JsonResponse(
             {"ok": False, "error": "No active Hotspot router is available."},
+            status=400,
+        )
+    if not plan.is_available_on_router(router):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "That package is not available on this Hotspot router.",
+            },
             status=400,
         )
 
@@ -5600,9 +5607,10 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
 
     urls = hotspot_portal_urls(org.join_code, request)
-    plans = list(
-        BillingPlan.objects.filter(organization=org, is_active=True).order_by("price")[:8]
-    )
+    from billing.services import plans_for_router
+
+    customer_router = getattr(customer, "router", None) if customer else None
+    plans = list(plans_for_router(org, customer_router)[:8])
     current_plan_id = getattr(customer, "plan_id", None) if customer else None
     if current_plan_id and not any(p.pk == current_plan_id for p in plans):
         current_plan = (
@@ -5613,6 +5621,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             )
             .first()
         )
+        # Always keep the customer's current package selectable for renew.
         if current_plan is not None:
             plans.insert(0, current_plan)
     has_mpesa = bool(org.mpesa_payment_type and org.mpesa_number)
@@ -5870,6 +5879,14 @@ def pppoe_payment_start(request, join_code: str):
         organization=org,
         is_active=True,
     )
+    if customer.router_id and not plan.is_available_on_router(customer.router):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "That package is not available on this client’s MikroTik.",
+            },
+            status=400,
+        )
     phone = (request.POST.get("phone") or "").strip() or (customer.phone or "")
     customer.phone = phone
     customer.save(update_fields=["phone"])

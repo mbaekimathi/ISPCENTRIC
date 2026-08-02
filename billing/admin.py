@@ -28,9 +28,11 @@ class BillingPlanAdmin(admin.ModelAdmin):
         "upload_speed_mbps",
         "speed_mbps",
         "duration",
+        "routers",
         "is_active",
         "created_at",
     )
+    filter_horizontal = ("routers",)
 
 
 @admin.register(Customer)
