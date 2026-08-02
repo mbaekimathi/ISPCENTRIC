@@ -59,6 +59,9 @@
       <div class="account-session-row"><span>Phone</span><strong>{{ customer.phone|default:"—" }}</strong></div>
       <div class="account-session-row"><span>Email</span><strong>{{ customer.email|default:"—" }}</strong></div>
       <div class="account-session-row"><span>Address</span><strong>{{ customer.address|default:"—" }}</strong></div>
+      {% if customer.house_number %}
+        <div class="account-session-row"><span>House number</span><strong>{{ customer.house_number }}</strong></div>
+      {% endif %}
       <div class="account-session-row"><span>Registered</span><strong>{{ customer.created_at|date:"M j, Y · g:i A" }}</strong></div>
 
       <p class="mikrotik-router-profile-group">
@@ -131,38 +134,27 @@
   <span aria-hidden="true">&larr;</span> Back to clients
 </a>
 
-<nav class="client-cat-nav" aria-label="Client sections">
-  <a class="client-cat-nav-item is-overview" href="#client-overview">
+<p class="page-sub client-page-lead">
+  {{ customer.get_service_type_display }} · {{ customer.account_number }}
+  {% if customer.phone %} · {{ customer.phone }}{% endif %}
+</p>
+
+<nav class="client-cat-nav" aria-label="Client sections" data-client-tabs role="tablist">
+  <button type="button" class="client-cat-nav-item is-overview is-active" role="tab" id="client-tab-overview" data-client-tab="overview" aria-selected="true" aria-controls="client-overview">
     <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-4 0-8 2-8 4v1h16v-1c0-2-4-4-8-4Z"/></svg></span>
     Overview
-  </a>
-  <a class="client-cat-nav-item is-billing" href="#client-package-period">
+  </button>
+  <button type="button" class="client-cat-nav-item is-billing" role="tab" id="client-tab-package" data-client-tab="package" aria-selected="false" aria-controls="client-package-period">
     <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Zm0 4H5V6h14Zm-7 9H5v-2h7Zm7 0h-5v-2h5Zm0-3H5v-2h14Z"/></svg></span>
     Package
-  </a>
-  {% if can_live_usage %}
-  <a class="client-cat-nav-item is-live" href="#client-usage">
-    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
-    Live
-  </a>
-  {% endif %}
-  {% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
-  <a class="client-cat-nav-item is-access" href="#client-router-access">
-    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 0 1 14 0h2a9 9 0 0 0-9-9Zm0 4a5 5 0 0 0-5 5h2a3 3 0 0 1 6 0h2a5 5 0 0 0-5-5Zm-1 7h2v7h-2Z"/></svg></span>
-    Wi‑Fi
-  </a>
-  <a class="client-cat-nav-item is-router" href="#client-router-data">
-    <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 15h16v2H4Zm2 3h2v2H6Zm4 0h8v2h-8ZM4 6h16a1 1 0 0 1 1 1v5H3V7a1 1 0 0 1 1-1Zm2 2v2h2V8Z"/></svg></span>
-    Router
-  </a>
-  {% endif %}
-  <a class="client-cat-nav-item is-invoices" href="#client-billing">
+  </button>
+  <button type="button" class="client-cat-nav-item is-invoices" role="tab" id="client-tab-billing" data-client-tab="billing" aria-selected="false" aria-controls="client-billing">
     <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2h10l4 4v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm9 1.5V7h3.5ZM8 11h8v1.5H8Zm0 3h8v1.5H8Zm0 3h5V18.5H8Z"/></svg></span>
     Billing
-  </a>
+  </button>
 </nav>
 
-<section class="panel client-hero" id="client-overview" data-cat="overview">
+<section class="panel client-hero" id="client-overview" data-cat="overview" data-client-tab-panel="overview" role="tabpanel" aria-labelledby="client-tab-overview">
   <div class="client-hero-main">
     <button
       type="button"
@@ -188,7 +180,7 @@
     </button>
 
     <div class="client-hero-status">
-      <span class="badge">{{ customer.get_status_display }}</span>
+      <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
       {% if customer.router %}
         <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
           <span class="mikrotik-link-dot" aria-hidden="true"></span>
@@ -248,6 +240,10 @@
   class="panel client-package-period"
   id="client-package-period"
   data-cat="billing"
+  data-client-tab-panel="package"
+  role="tabpanel"
+  aria-labelledby="client-tab-package"
+  hidden
   data-subscription-url="{% url 'core:client_subscription' customer.id %}"
   data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
   data-package-duration="{{ package_duration|default:'' }}"
@@ -331,6 +327,7 @@
   class="panel client-usage-panel"
   id="client-usage"
   data-cat="live"
+  data-client-tab-panel="overview"
   data-usage-url="{% url 'core:client_usage' customer.id %}"
   data-can-live="{% if can_live_usage %}1{% else %}0{% endif %}"
   data-plan-down-mbps="{% if customer.plan %}{{ customer.plan.download_speed_mbps }}{% else %}0{% endif %}"
@@ -421,7 +418,7 @@
   </dl>
 </section>
 {% else %}
-<section class="panel client-live-empty">
+<section class="panel client-live-empty" data-client-tab-panel="overview">
   <p class="mikrotik-detail-kicker">Live session</p>
   <p class="client-live-empty-text">
     {% if not customer.router %}
@@ -436,7 +433,7 @@
 {% endif %}
 
 {% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
-<section class="panel client-access-panel" id="client-router-access" data-cat="access">
+<section class="panel client-access-panel" id="client-router-access" data-cat="access" data-client-tab-panel="overview">
   <div class="mikrotik-detail-toolbar">
     <div class="mikrotik-detail-toolbar-copy">
       <p class="client-cat client-cat-access">
@@ -508,7 +505,7 @@
   </dl>
 
   {% if can_access_wifi %}
-  <div class="mikrotik-detail-actions" style="margin-top:0.75rem">
+  <div class="mikrotik-detail-actions client-section-cta">
     <a class="btn btn-primary" href="{% url 'core:client_wifi_settings' customer.id %}">Manage Wi‑Fi settings</a>
   </div>
   {% endif %}
@@ -526,6 +523,7 @@
   class="panel client-usage-panel"
   id="client-router-data"
   data-cat="router"
+  data-client-tab-panel="overview"
   data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"
 >
   <div class="mikrotik-detail-toolbar">
@@ -598,8 +596,8 @@
 
   <div data-router-device-wrap hidden>
     <h3 class="client-billing-subhead">Connected devices</h3>
-    <div class="clients-table-wrap">
-      <table class="table clients-type-table">
+    <div class="org-table-shell client-detail-table-shell">
+      <table class="org-table org-table-client-devices">
         <thead><tr><th>Device</th><th>IP</th><th>MAC</th><th>Connection</th><th>Traffic</th></tr></thead>
         <tbody data-router-device-list></tbody>
       </table>
@@ -609,48 +607,54 @@
 {% endif %}
 
 <div
-  class="role-modal client-action-modal"
+  class="role-modal client-action-modal pppoe-modal"
   id="client-update-package-modal"
   {% if open_client_modal != "client-update-package-modal" %}hidden{% endif %}
   aria-hidden="{% if open_client_modal == "client-update-package-modal" %}false{% else %}true{% endif %}"
 >
   <div class="role-modal-backdrop" data-close-client-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-update-package-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Package</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-update-package-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Package</p>
         <h2 id="client-update-package-title">Update package</h2>
-        <p class="role-modal-sub">
+        <p class="role-modal-sub pppoe-sub">
           Change the client's billing plan. If a package period is already set, the end date is recalculated from the new plan.
         </p>
       </div>
-      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form method="post" class="mikrotik-action-form client-package-ajax-form" id="client-update-package-form" novalidate>
+    <form method="post" class="pppoe-form client-package-ajax-form" id="client-update-package-form" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="update_package">
-      <div class="mikrotik-action-scroll">
+      <div class="pppoe-body">
         {% if package_form.non_field_errors %}
-          <div class="field-error mikrotik-form-banner">{{ package_form.non_field_errors|striptags }}</div>
+          <div class="field-error pppoe-banner">{{ package_form.non_field_errors|striptags }}</div>
         {% endif %}
-        <div class="form-grid mikrotik-simple-grid">
-          <div class="field" style="grid-column:1/-1">
-            <label for="{{ package_form.plan.id_for_label }}">{{ package_form.plan.label }}</label>
-            {{ package_form.plan }}
-            {% if package_form.plan.errors %}<div class="field-error">{{ package_form.plan.errors|striptags }}</div>{% endif %}
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Internet plan</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ package_form.plan.id_for_label }}">{{ package_form.plan.label }}</label>
+              <div class="pppoe-select">{{ package_form.plan }}</div>
+              {% if package_form.plan.errors %}<div class="field-error">{{ package_form.plan.errors|striptags }}</div>{% endif %}
+              <p class="field-hint">Current plan is pre-selected. Pick another package to switch.</p>
+            </div>
           </div>
-        </div>
+        </section>
       </div>
-      <div class="role-modal-actions">
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
         <button type="submit" class="btn btn-primary" data-save-label="Save package">Save package</button>
-      </div>
+      </footer>
     </form>
   </div>
 </div>
 
 <div
-  class="role-modal client-action-modal"
+  class="role-modal client-action-modal pppoe-modal"
   id="client-package-period-modal"
   {% if open_client_modal != "client-package-period-modal" %}hidden{% endif %}
   aria-hidden="{% if open_client_modal == "client-package-period-modal" %}false{% else %}true{% endif %}"
@@ -658,12 +662,12 @@
   data-plan-durations="{{ plan_durations_json }}"
 >
   <div class="role-modal-backdrop" data-close-client-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="client-package-period-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Package period</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-package-period-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Billing cycle</p>
         <h2 id="client-package-period-title">Update period</h2>
-        <p class="role-modal-sub">
+        <p class="role-modal-sub pppoe-sub">
           {% if package_duration == "hourly" %}
             Hourly package — pick start and end times on the clock. Leave end blank to auto-set one hour later.
           {% else %}
@@ -671,38 +675,43 @@
           {% endif %}
         </p>
       </div>
-      <button type="button" class="role-modal-close" data-close-client-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form method="post" class="mikrotik-action-form client-package-ajax-form" id="client-package-period-form" novalidate>
+    <form method="post" class="pppoe-form client-package-ajax-form" id="client-package-period-form" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="update_package_period">
-      <div class="mikrotik-action-scroll">
+      <div class="pppoe-body">
         {% if package_period_form.non_field_errors %}
-          <div class="field-error mikrotik-form-banner">{{ package_period_form.non_field_errors|striptags }}</div>
+          <div class="field-error pppoe-banner">{{ package_period_form.non_field_errors|striptags }}</div>
         {% endif %}
-        <div class="form-grid mikrotik-simple-grid">
-          <div class="field">
-            <label for="{{ package_period_form.package_start.id_for_label }}">{{ package_period_form.package_start.label }}</label>
-            {{ package_period_form.package_start }}
-            {% if package_period_form.package_start.errors %}<div class="field-error">{{ package_period_form.package_start.errors|striptags }}</div>{% endif %}
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Period dates</h3>
+          <div class="pppoe-grid">
+            <div class="field">
+              <label for="{{ package_period_form.package_start.id_for_label }}">{{ package_period_form.package_start.label }}</label>
+              {{ package_period_form.package_start }}
+              {% if package_period_form.package_start.errors %}<div class="field-error">{{ package_period_form.package_start.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ package_period_form.package_end.id_for_label }}">{{ package_period_form.package_end.label }}</label>
+              {{ package_period_form.package_end }}
+              {% if package_period_form.package_end.errors %}<div class="field-error">{{ package_period_form.package_end.errors|striptags }}</div>{% endif %}
+              {% if package_period_form.package_end.help_text %}<p class="field-hint">{{ package_period_form.package_end.help_text }}</p>{% endif %}
+            </div>
           </div>
-          <div class="field">
-            <label for="{{ package_period_form.package_end.id_for_label }}">{{ package_period_form.package_end.label }}</label>
-            {{ package_period_form.package_end }}
-            {% if package_period_form.package_end.errors %}<div class="field-error">{{ package_period_form.package_end.errors|striptags }}</div>{% endif %}
-            {% if package_period_form.package_end.help_text %}<p class="field-hint">{{ package_period_form.package_end.help_text }}</p>{% endif %}
-          </div>
-        </div>
+        </section>
       </div>
-      <div class="role-modal-actions">
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
         <button type="submit" class="btn btn-primary" data-save-label="Save period">Save period</button>
-      </div>
+      </footer>
     </form>
   </div>
 </div>
 
-<section class="panel client-billing-analysis" id="client-billing" data-cat="invoices">
+<section class="panel client-billing-analysis" id="client-billing" data-cat="invoices" data-client-tab-panel="billing" role="tabpanel" aria-labelledby="client-tab-billing" hidden>
   <div class="mikrotik-detail-toolbar">
     <div class="mikrotik-detail-toolbar-copy">
       <p class="client-cat client-cat-invoices">
@@ -745,8 +754,8 @@
     <div>
       <h3 class="client-billing-subhead">Recent invoices</h3>
       {% if invoices %}
-        <div class="clients-table-wrap">
-          <table class="table clients-type-table">
+        <div class="org-table-shell client-detail-table-shell">
+          <table class="org-table org-table-client-billing">
             <thead>
               <tr>
                 <th>Invoice</th>
@@ -759,10 +768,10 @@
             <tbody>
               {% for inv in invoices %}
                 <tr>
-                  <td>{{ inv.invoice_number }}</td>
-                  <td>{% with pay=inv.payments.all|first %}{{ pay.reference|default:"—" }}{% endwith %}</td>
+                  <td><span class="org-code">{{ inv.invoice_number }}</span></td>
+                  <td>{% with pay=inv.payments.all|first %}<span class="org-code">{{ pay.reference|default:"—" }}</span>{% endwith %}</td>
                   <td>{{ inv.amount }}</td>
-                  <td><span class="badge">{{ inv.get_status_display }}</span></td>
+                  <td><span class="org-status org-status-{{ inv.status }}">{{ inv.get_status_display }}</span></td>
                   <td>{{ inv.due_date|date:"M j, Y" }}</td>
                 </tr>
               {% endfor %}
@@ -776,8 +785,8 @@
     <div>
       <h3 class="client-billing-subhead">Recent payments</h3>
       {% if payments %}
-        <div class="clients-table-wrap">
-          <table class="table clients-type-table">
+        <div class="org-table-shell client-detail-table-shell">
+          <table class="org-table org-table-client-billing">
             <thead>
               <tr>
                 <th>M-Pesa Ref</th>
@@ -789,7 +798,7 @@
             <tbody>
               {% for pay in payments %}
                 <tr>
-                  <td>{{ pay.reference|default:"—" }}</td>
+                  <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
                   <td>{{ pay.amount }}</td>
                   <td>{{ pay.get_method_display }}</td>
                   <td>{{ pay.received_at|date:"M j, Y" }}</td>
@@ -906,6 +915,10 @@
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
+    var focusEl = modal.querySelector(".pppoe-body select, .pppoe-body input:not([type='hidden']), .pppoe-body textarea");
+    if (focusEl) {
+      setTimeout(function () { focusEl.focus(); }, 40);
+    }
   }
 
   function closeClientModal(modal) {
@@ -1793,47 +1806,95 @@
 
 <script>
 (function () {
-  var nav = document.querySelector(".client-cat-nav");
+  var nav = document.querySelector("[data-client-tabs]");
   if (!nav) return;
-  var links = Array.prototype.slice.call(nav.querySelectorAll(".client-cat-nav-item"));
-  if (!links.length) return;
+  var tabs = Array.prototype.slice.call(nav.querySelectorAll("[data-client-tab]"));
+  var panels = Array.prototype.slice.call(document.querySelectorAll("[data-client-tab-panel]"));
+  if (!tabs.length || !panels.length) return;
 
-  var sections = links
-    .map(function (link) {
-      var id = (link.getAttribute("href") || "").replace(/^#/, "");
-      var el = id ? document.getElementById(id) : null;
-      return el ? { link: link, el: el } : null;
-    })
-    .filter(Boolean);
+  var HASH_TO_TAB = {
+    "client-overview": "overview",
+    "client-usage": "overview",
+    "client-router-access": "overview",
+    "client-wifi": "overview",
+    "client-router-data": "overview",
+    "client-package-period": "package",
+    "client-update-package-modal": "package",
+    "client-package-period-modal": "package",
+    "client-billing": "billing"
+  };
 
-  function setActive(link) {
-    links.forEach(function (item) {
-      item.classList.toggle("is-active", item === link);
+  function activateTab(name, opts) {
+    opts = opts || {};
+    if (!name) name = "overview";
+    var matched = false;
+    tabs.forEach(function (tab) {
+      var on = tab.getAttribute("data-client-tab") === name;
+      tab.classList.toggle("is-active", on);
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+      if (on) matched = true;
     });
+    if (!matched) {
+      activateTab("overview", opts);
+      return;
+    }
+    panels.forEach(function (panel) {
+      var on = panel.getAttribute("data-client-tab-panel") === name;
+      panel.hidden = !on;
+      panel.classList.toggle("is-tab-active", on);
+    });
+    if (opts.updateHash !== false) {
+      var hashId = name === "package" ? "client-package-period"
+        : name === "billing" ? "client-billing"
+        : "client-overview";
+      if (history.replaceState) {
+        history.replaceState(null, "", "#" + hashId);
+      } else {
+        location.hash = hashId;
+      }
+    }
   }
 
-  if (sections[0]) setActive(sections[0].link);
-
-  if ("IntersectionObserver" in window) {
-    var observer = new IntersectionObserver(
-      function (entries) {
-        var visible = entries
-          .filter(function (entry) { return entry.isIntersecting; })
-          .sort(function (a, b) { return b.intersectionRatio - a.intersectionRatio; })[0];
-        if (!visible) return;
-        var match = sections.find(function (item) { return item.el === visible.target; });
-        if (match) setActive(match.link);
-      },
-      { rootMargin: "-20% 0px -55% 0px", threshold: [0.15, 0.35, 0.55] }
-    );
-    sections.forEach(function (item) { observer.observe(item.el); });
+  function tabFromHash() {
+    var raw = (location.hash || "").replace(/^#/, "");
+    if (!raw) return "overview";
+    return HASH_TO_TAB[raw] || "overview";
   }
 
-  links.forEach(function (link) {
-    link.addEventListener("click", function () {
-      setActive(link);
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      activateTab(tab.getAttribute("data-client-tab"));
+    });
+    tab.addEventListener("keydown", function (e) {
+      var idx = tabs.indexOf(tab);
+      if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        var next = e.key === "ArrowRight"
+          ? tabs[(idx + 1) % tabs.length]
+          : tabs[(idx - 1 + tabs.length) % tabs.length];
+        next.focus();
+        activateTab(next.getAttribute("data-client-tab"));
+      }
     });
   });
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var modalId = btn.getAttribute("data-open-modal") || "";
+      if (modalId.indexOf("package") !== -1) activateTab("package", { updateHash: false });
+    });
+  });
+
+  window.addEventListener("hashchange", function () {
+    activateTab(tabFromHash(), { updateHash: false });
+  });
+
+  {% if open_client_modal == "client-update-package-modal" or open_client_modal == "client-package-period-modal" %}
+  activateTab("package", { updateHash: false });
+  {% else %}
+  activateTab(tabFromHash(), { updateHash: false });
+  {% endif %}
 })();
 </script>
 

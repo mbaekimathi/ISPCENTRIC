@@ -10780,10 +10780,15 @@ body.staff-nav-lock {
   border-radius: 999px;
   background: var(--surface);
   color: var(--ink);
+  font: inherit;
   font-size: 0.76rem;
   font-weight: 750;
+  line-height: 1.2;
   text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
   box-shadow: 0 4px 14px rgba(8, 16, 22, 0.06);
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
@@ -10903,8 +10908,29 @@ body.staff-nav-lock {
   min-height: 2.3rem;
 }
 
+.client-detail-page .btn-ghost {
+  color: var(--ink);
+  background: var(--surface);
+  border: 1.5px solid var(--border-strong);
+}
+
 .client-detail-page .btn-primary {
-  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent);
+  background: linear-gradient(135deg, #0c7a84 0%, #07545c 100%);
+  color: #fff;
+  border: 1px solid #064850;
+  box-shadow: 0 10px 22px rgba(7, 84, 92, 0.28);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+}
+
+.client-detail-page .btn-primary:hover {
+  background: linear-gradient(135deg, #0a6a72 0%, #064850 100%);
+  color: #fff;
+}
+
+[data-theme="dark"] .client-detail-page .btn-primary {
+  background: linear-gradient(135deg, #1aa0ab 0%, #0c7a84 100%);
+  border-color: #0e8a94;
+  color: #fff;
 }
 
 /* Hero ------------------------------------------------------------------- */
@@ -11708,7 +11734,8 @@ body {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--sea) 0%, var(--sea-deep) 100%);
+  background: linear-gradient(135deg, #0c7a84 0%, #07545c 100%);
+  color: #fff;
 }
 
 .btn-signal {
@@ -12102,8 +12129,10 @@ textarea.form-control {
   padding: 0.4rem;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 6%, transparent);
+  width: fit-content;
+  max-width: 100%;
 }
 
 [data-theme="dark"] .client-cat-nav {
@@ -12112,44 +12141,74 @@ textarea.form-control {
 }
 
 .client-cat-nav-item.is-active {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--sea) 14%, transparent);
+  transform: none;
+  box-shadow: 0 6px 16px color-mix(in srgb, currentColor 16%, transparent);
 }
 
 .client-cat-nav-item.is-overview.is-active {
   background: var(--cat-overview-soft);
   color: var(--cat-overview);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-overview) 28%, transparent);
 }
 
 .client-cat-nav-item.is-billing.is-active {
   background: var(--cat-billing-soft);
   color: var(--cat-billing);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-billing) 28%, transparent);
 }
 
 .client-cat-nav-item.is-live.is-active {
   background: var(--cat-live-soft);
   color: var(--cat-live);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-live) 28%, transparent);
 }
 
 .client-cat-nav-item.is-access.is-active {
   background: var(--cat-access-soft);
   color: var(--cat-access);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-access) 28%, transparent);
 }
 
 .client-cat-nav-item.is-router.is-active {
   background: var(--cat-router-soft);
   color: var(--cat-router);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-router) 28%, transparent);
 }
 
 .client-cat-nav-item.is-invoices.is-active {
   background: var(--cat-invoices-soft);
   color: var(--cat-invoices);
-  border-color: transparent;
+  border-color: color-mix(in srgb, var(--cat-invoices) 28%, transparent);
+}
+
+.client-cat-nav-item.is-active .client-cat-ico {
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+  background: color-mix(in srgb, currentColor 18%, var(--surface));
+}
+
+[data-client-tab-panel][hidden] {
+  display: none !important;
+}
+
+[data-client-tab-panel].is-tab-active {
+  animation: clientTabIn 0.28s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+@keyframes clientTabIn {
+  from {
+    opacity: 0;
+    transform: translateY(0.45rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-client-tab-panel].is-tab-active {
+    animation: none;
+  }
 }
 
 .client-detail-page > .panel {
@@ -12184,6 +12243,475 @@ textarea.form-control {
 
 .client-profile-open:hover {
   transform: translateY(-1px);
+}
+
+/* Client detail ? visibility, contrast, responsive polish */
+.client-detail-page > .client-page-lead {
+  margin: -0.25rem 0 0.95rem;
+  max-width: 48rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.client-detail-page > .panel {
+  border-color: var(--border-strong);
+  background:
+    radial-gradient(120% 90% at 100% 0%, var(--section-soft), transparent 55%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-solid, var(--surface)) 96%, transparent),
+      var(--surface-2)
+    );
+}
+
+.client-detail-page .client-kv dt,
+.client-detail-page .client-usage-stat span,
+.client-detail-page .mikrotik-live-label {
+  opacity: 1;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.client-detail-page .client-kv strong,
+.client-detail-page .client-hero-chip-value,
+.client-detail-page .mikrotik-live-value,
+.client-detail-page .client-usage-stat strong {
+  color: var(--ink);
+}
+
+.client-detail-page .client-kv dd > span,
+.client-detail-page .mikrotik-live-hint,
+.client-detail-page .client-access-hint {
+  opacity: 1;
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.client-detail-page .mikrotik-live-stamp {
+  opacity: 1;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.client-detail-page .panel-sub {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.client-detail-page .client-subscription-banner {
+  border: 1px solid transparent;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.client-detail-page .client-subscription-banner.is-active {
+  border-color: color-mix(in srgb, var(--cat-live) 35%, var(--border));
+  background: var(--cat-live-soft);
+  color: var(--cat-live);
+}
+
+.client-detail-page .client-subscription-banner.is-blocked {
+  border-color: color-mix(in srgb, var(--cat-invoices) 35%, var(--border));
+  background: var(--cat-invoices-soft);
+  color: var(--cat-invoices);
+}
+
+.client-detail-page .client-hero-status .org-status {
+  font-size: 0.78rem;
+}
+
+.client-section-cta {
+  margin-top: 0.85rem;
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* Icons ? stronger contrast + size so chips stay readable */
+.client-detail-page .client-row-ico,
+.client-detail-page .client-cat-ico,
+.client-detail-page .client-cat-nav-item .client-cat-ico {
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 0.55rem;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #fff 8%, transparent) inset,
+    0 1px 2px color-mix(in srgb, #000 10%, transparent);
+}
+
+.client-detail-page .client-row-ico {
+  background: color-mix(in srgb, currentColor 18%, var(--surface-2));
+  color: var(--ink);
+}
+
+.client-detail-page .client-cat-ico,
+.client-detail-page .client-cat-nav-item .client-cat-ico {
+  background: color-mix(in srgb, currentColor 18%, var(--surface));
+}
+
+.client-detail-page .client-row-ico svg,
+.client-detail-page .client-cat-ico svg,
+.client-detail-page .client-cat-nav-item .client-cat-ico svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  display: block;
+  flex: 0 0 auto;
+  opacity: 1;
+  filter: drop-shadow(0 0.5px 0 color-mix(in srgb, #000 18%, transparent));
+}
+
+.client-detail-page [data-cat="overview"] .client-row-ico,
+.client-detail-page [data-hero-chip] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-overview) 22%, var(--surface));
+  color: var(--cat-overview);
+  border-color: color-mix(in srgb, var(--cat-overview) 40%, transparent);
+}
+
+.client-detail-page [data-cat="billing"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
+  color: var(--cat-billing);
+  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
+}
+
+.client-detail-page [data-cat="live"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
+  color: var(--cat-live);
+  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
+}
+
+.client-detail-page [data-cat="live"] [data-ico="down"] .client-row-ico {
+  background: color-mix(in srgb, #4f8cff 22%, var(--surface));
+  color: #3b82f6;
+  border-color: color-mix(in srgb, #4f8cff 42%, transparent);
+}
+
+.client-detail-page [data-cat="live"] [data-ico="up"] .client-row-ico {
+  background: color-mix(in srgb, #e8a317 22%, var(--surface));
+  color: #d97706;
+  border-color: color-mix(in srgb, #e8a317 42%, transparent);
+}
+
+.client-detail-page [data-cat="access"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-access) 22%, var(--surface));
+  color: var(--cat-access);
+  border-color: color-mix(in srgb, var(--cat-access) 40%, transparent);
+}
+
+.client-detail-page [data-cat="router"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-router) 22%, var(--surface));
+  color: var(--cat-router);
+  border-color: color-mix(in srgb, var(--cat-router) 40%, transparent);
+}
+
+.client-detail-page [data-cat="invoices"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-invoices) 22%, var(--surface));
+  color: var(--cat-invoices);
+  border-color: color-mix(in srgb, var(--cat-invoices) 40%, transparent);
+}
+
+.client-detail-page [data-cat="invoices"] [data-ico="paid"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
+  color: var(--cat-live);
+  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
+}
+
+.client-detail-page [data-cat="invoices"] [data-ico="pending"] .client-row-ico {
+  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
+  color: var(--cat-billing);
+  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
+}
+
+.client-detail-page .client-cat-billing .client-cat-ico {
+  color: var(--cat-billing);
+  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--cat-billing) 38%, transparent);
+}
+
+.client-detail-page .client-cat-live .client-cat-ico {
+  color: var(--cat-live);
+  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--cat-live) 38%, transparent);
+}
+
+.client-detail-page .client-cat-access .client-cat-ico {
+  color: var(--cat-access);
+  background: color-mix(in srgb, var(--cat-access) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--cat-access) 38%, transparent);
+}
+
+.client-detail-page .client-cat-router .client-cat-ico {
+  color: var(--cat-router);
+  background: color-mix(in srgb, var(--cat-router) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--cat-router) 38%, transparent);
+}
+
+.client-detail-page .client-cat-invoices .client-cat-ico {
+  color: var(--cat-invoices);
+  background: color-mix(in srgb, var(--cat-invoices) 22%, var(--surface));
+  border-color: color-mix(in srgb, var(--cat-invoices) 38%, transparent);
+}
+
+.client-detail-page .client-cat-nav-item.is-overview .client-cat-ico {
+  color: var(--cat-overview);
+  border-color: color-mix(in srgb, var(--cat-overview) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-overview) 20%, var(--surface));
+}
+
+.client-detail-page .client-cat-nav-item.is-billing .client-cat-ico {
+  color: var(--cat-billing);
+  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-billing) 20%, var(--surface));
+}
+
+.client-detail-page .client-cat-nav-item.is-live .client-cat-ico {
+  color: var(--cat-live);
+  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-live) 20%, var(--surface));
+}
+
+.client-detail-page .client-cat-nav-item.is-access .client-cat-ico {
+  color: var(--cat-access);
+  border-color: color-mix(in srgb, var(--cat-access) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-access) 20%, var(--surface));
+}
+
+.client-detail-page .client-cat-nav-item.is-router .client-cat-ico {
+  color: var(--cat-router);
+  border-color: color-mix(in srgb, var(--cat-router) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-router) 20%, var(--surface));
+}
+
+.client-detail-page .client-cat-nav-item.is-invoices .client-cat-ico {
+  color: var(--cat-invoices);
+  border-color: color-mix(in srgb, var(--cat-invoices) 40%, transparent);
+  background: color-mix(in srgb, var(--cat-invoices) 20%, var(--surface));
+}
+
+.client-detail-page .mikrotik-secret-toggle,
+.client-detail-page .password-toggle {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.client-detail-page .mikrotik-secret-toggle svg,
+.client-detail-page .password-toggle svg {
+  opacity: 1;
+  color: var(--ink);
+}
+
+.org-actions-icons .org-action-icon {
+  width: 2.15rem;
+  height: 2.15rem;
+  color: var(--ink);
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--ink) 22%, var(--border-strong));
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
+}
+
+.org-actions-icons .org-action-icon svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  opacity: 1;
+}
+
+.org-actions-icons .org-action-warn {
+  color: #c2410c;
+  background: color-mix(in srgb, #c2410c 12%, var(--surface));
+  border-color: color-mix(in srgb, #c2410c 35%, var(--border));
+}
+
+.org-actions-icons .org-action-success {
+  color: #15803d;
+  background: color-mix(in srgb, #15803d 12%, var(--surface));
+  border-color: color-mix(in srgb, #15803d 35%, var(--border));
+}
+
+.org-actions-icons .org-action-danger {
+  color: #dc2626;
+  background: color-mix(in srgb, #dc2626 12%, var(--surface));
+  border-color: color-mix(in srgb, #dc2626 35%, var(--border));
+}
+
+[data-theme="dark"] .org-actions-icons .org-action-icon {
+  color: #e8eef2;
+  background: color-mix(in srgb, #fff 8%, var(--surface-2));
+  border-color: color-mix(in srgb, #fff 18%, var(--border));
+}
+
+[data-theme="dark"] .client-detail-page .client-row-ico svg,
+[data-theme="dark"] .client-detail-page .client-cat-ico svg,
+[data-theme="dark"] .client-detail-page .client-cat-nav-item .client-cat-ico svg {
+  filter: drop-shadow(0 0.5px 0 color-mix(in srgb, #000 40%, transparent));
+}
+
+.client-detail-table-shell {
+  margin-top: 0.55rem;
+  max-width: 100%;
+}
+
+.client-detail-page .org-table-client-billing,
+.client-detail-page .org-table-client-devices {
+  min-width: 0;
+}
+
+.client-detail-page .org-table-client-billing th,
+.client-detail-page .org-table-client-billing td,
+.client-detail-page .org-table-client-devices th,
+.client-detail-page .org-table-client-devices td {
+  padding: 0.75rem 0.9rem;
+  font-size: 0.86rem;
+}
+
+.org-status-paid {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.org-status-pending {
+  background: var(--signal-soft);
+  color: var(--chip-signal-fg, #b45309);
+}
+
+.org-status-overdue {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.org-status-draft,
+.org-status-cancelled {
+  background: var(--surface-3);
+  color: var(--ink-soft);
+}
+
+.client-detail-page .client-billing-split > div {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #fff 3%, transparent), transparent 50%),
+    var(--surface);
+  border-color: var(--border-strong);
+}
+
+.client-detail-page .client-access-note {
+  color: var(--ink-soft);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+@media (max-width: 1100px) {
+  .client-detail-page .client-kv-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .client-detail-page > .client-page-lead {
+    font-size: 0.88rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .client-cat-nav {
+    border-radius: 16px;
+    gap: 0.35rem;
+  }
+
+  .client-detail-page .client-kv-list,
+  .client-detail-page .client-kv-row,
+  .client-detail-page .client-usage-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .client-detail-page .mikrotik-detail-actions {
+    flex-wrap: wrap;
+  }
+
+  .client-detail-page .mikrotik-detail-actions .btn {
+    flex: 1 1 calc(50% - 0.35rem);
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .client-profile-open-hint {
+    width: 100%;
+    justify-content: center;
+    margin-left: 0;
+  }
+
+  .client-detail-table-shell {
+    border-radius: 14px;
+  }
+
+  .client-detail-page .org-table-client-billing,
+  .client-detail-page .org-table-client-devices {
+    min-width: 32rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .client-detail-page > .panel {
+    padding: 0.8rem 0.75rem 0.85rem;
+  }
+
+  .client-detail-page .mikrotik-detail-toolbar-copy h2 {
+    font-size: 1.05rem;
+  }
+
+  .client-cat-nav-item {
+    padding: 0.4rem 0.65rem;
+    font-size: 0.72rem;
+  }
+
+  .client-detail-page .mikrotik-detail-actions .btn {
+    flex: 1 1 100%;
+  }
+}
+
+/* Client detail package modals ? compact sheet on the shared pppoe pattern */
+.client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
+  width: min(100%, 28.5rem);
+  max-height: min(92dvh, 34rem);
+}
+
+.client-action-modal.pppoe-modal .pppoe-body {
+  padding-top: 1rem;
+  padding-bottom: 1.05rem;
+}
+
+.client-action-modal.pppoe-modal .pppoe-section:last-child {
+  margin-bottom: 0;
+}
+
+.client-action-modal.pppoe-modal .pppoe-select select,
+.client-action-modal.pppoe-modal .pppoe-body input[type="date"],
+.client-action-modal.pppoe-modal .pppoe-body input[type="time"],
+.client-action-modal.pppoe-modal .pppoe-body input[type="text"] {
+  min-height: 2.65rem;
+}
+
+@media (min-width: 720px) {
+  .client-action-modal.pppoe-modal {
+    place-items: center;
+    padding: 1.25rem;
+  }
+
+  .client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
+    border-radius: 20px;
+    max-height: min(88dvh, 32rem);
+  }
+
+  .client-action-modal.pppoe-modal .pppoe-panel::before {
+    display: none;
+  }
+}
+
+@media (max-width: 719px) {
+  .client-action-modal.pppoe-modal .pppoe-foot {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
+  }
+
+  .client-action-modal.pppoe-modal .pppoe-foot .btn {
+    flex: 1 1 auto;
+  }
 }
 
 /* Org admin pages */
@@ -12653,12 +13181,22 @@ h1, h2, h3, h4,
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--sea) 88%, #fff) 0%, var(--sea) 45%, var(--sea-deep) 100%);
-  box-shadow: 0 14px 30px color-mix(in srgb, var(--sea) 28%, transparent);
+  background: linear-gradient(135deg, #0c7a84 0%, #07545c 100%);
+  color: #fff;
+  border: 1px solid #064850;
+  box-shadow: 0 14px 30px rgba(7, 84, 92, 0.28);
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .btn-primary {
+  background: linear-gradient(135deg, #1aa0ab 0%, #0c7a84 100%);
+  border-color: #0e8a94;
+  color: #fff;
 }
 
 .btn-signal {
   background: linear-gradient(135deg, color-mix(in srgb, var(--signal) 90%, #fff), var(--signal));
+  color: var(--signal-ink);
 }
 
 .btn:hover {
