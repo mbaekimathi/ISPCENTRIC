@@ -111,6 +111,7 @@
             <div class="field">
               <label for="{{ pppoe_form.phone.id_for_label }}">{{ pppoe_form.phone.label }}</label>
               {{ pppoe_form.phone }}
+              <p class="field-hint">Account number is set from this phone automatically.</p>
               {% if pppoe_form.phone.errors %}<div class="field-error">{{ pppoe_form.phone.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">

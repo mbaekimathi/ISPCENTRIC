@@ -1,0 +1,806 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>Leads{% if customers %} ({{ customers|length }}){% endif %}</h2>
+      <p class="panel-sub">Pay to allocate an open ticket to your ISP, or reverse an allocation to return it to the pool.</p>
+    </div>
+    <div class="panel-head-actions">
+      <a class="btn btn-ghost" href="{% url 'billing:lead_payments' %}">Leads billing</a>
+    </div>
+  </div>
+
+  {% if customers %}
+    <div class="org-table-shell">
+      <table class="org-table org-table-leads">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Name</th>
+            <th>Location</th>
+            <th>ISP</th>
+            <th class="col-optional">Package</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for customer in customers %}
+            <tr>
+              <td><span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span></td>
+              <td>
+                <strong>{{ customer.full_name }}</strong>
+                {% if customer.building_name %}
+                  <small class="lead-location-line">{{ customer.building_name }}{% if customer.house_number %} · {{ customer.house_number }}{% endif %}</small>
+                {% endif %}
+              </td>
+              <td>
+                {% if customer.location_lat and customer.location_lng %}
+                  {% with maps_label=customer.building_name|default:customer.address %}
+                  <a
+                    class="lead-maps-link"
+                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ customer.location_lat }},{{ customer.location_lng }}&amp;z=18"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open {{ maps_label|default:'exact location' }} in Google Maps"
+                  >
+                    <span class="lead-maps-label">
+                      {% if customer.building_name %}{{ customer.building_name }}{% elif customer.address %}{{ customer.address }}{% else %}Open map{% endif %}
+                    </span>
+                    {% if customer.address %}
+                      <small class="lead-location-line">{{ customer.address }}</small>
+                    {% else %}
+                      <small class="lead-location-line">Lat {{ customer.location_lat }}, Lng {{ customer.location_lng }}</small>
+                    {% endif %}
+                  </a>
+                  {% endwith %}
+                {% elif customer.address or customer.building_name %}
+                  <a
+                    class="lead-maps-link"
+                    href="https://www.google.com/maps/search/?api=1&amp;query={% if customer.building_name %}{{ customer.building_name|urlencode }}{% if customer.address %}%2C%20{% endif %}{% endif %}{% if customer.address %}{{ customer.address|urlencode }}{% endif %}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Search this place in Google Maps"
+                  >
+                    <span class="lead-maps-label">
+                      {% if customer.building_name %}{{ customer.building_name }}{% else %}{{ customer.address }}{% endif %}
+                    </span>
+                    {% if customer.building_name and customer.address %}
+                      <small class="lead-location-line">{{ customer.address }}</small>
+                    {% endif %}
+                  </a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                {% if customer.organization %}
+                  {{ customer.organization.name }}
+                {% else %}
+                  — Open —
+                {% endif %}
+              </td>
+              <td class="col-optional">{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</td>
+              <td>
+                <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+              </td>
+              <td>
+                <div class="org-actions lead-ticket-actions">
+                  {% if organization.phone %}
+                    <a
+                      href="tel:{{ organization.phone }}"
+                      class="org-action-call"
+                      title="Call {{ organization.name }} ({{ organization.phone }})"
+                    >Call support</a>
+                  {% else %}
+                    <span class="lead-action-muted">No company phone</span>
+                  {% endif %}
+
+                  {% if customer.status == "new" %}
+                    <button
+                      type="button"
+                      class="org-action-success"
+                      data-lead-accept
+                      data-pay-url="{% url 'core:lead_allocation_stk_pay' customer.id %}"
+                      data-customer-name="{{ customer.full_name }}"
+                      data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
+                      data-amount="{{ customer.allocation_amount_display|default:'—' }}"
+                      data-phone="{{ allocation_phone }}"
+                      {% if customer.allocation_fee_error %}data-fee-error="{{ customer.allocation_fee_error }}"{% endif %}
+                      title="Pay sales commission to allocate this client to your ISP"
+                    >
+                      Accept
+                    </button>
+                    <form
+                      method="post"
+                      action="{% url 'core:lead_not_interested' customer.id %}"
+                      onsubmit="return confirm('Hide ticket {{ customer.sales_ticket_number|default:customer.account_number }} as not interested?');"
+                    >
+                      {% csrf_token %}
+                      <button type="submit" class="org-action-danger" title="Hide this ticket">
+                        Not interested
+                      </button>
+                    </form>
+                  {% elif customer.status == "allocated" or customer.status == "allocated_open" or customer.status == "allocated_closed" %}
+                    {% if customer.phone %}
+                      <a
+                        href="tel:{{ customer.phone }}"
+                        class="org-action-call"
+                        title="Call client {{ customer.phone }}"
+                      >{{ customer.phone }}</a>
+                    {% else %}
+                      <span class="lead-action-muted">No client phone</span>
+                    {% endif %}
+                    {% if customer.status == "allocated_open" %}
+                      <span class="lead-action-muted" title="Technician request is open">Tech: open</span>
+                    {% elif customer.assigned_technician %}
+                      <span class="lead-action-muted" title="Assigned technician">
+                        Tech:
+                        {% if customer.assigned_technician.user.get_full_name %}
+                          {{ customer.assigned_technician.user.get_full_name }}
+                        {% else %}
+                          {{ customer.assigned_technician.user.username }}
+                        {% endif %}
+                      </span>
+                    {% endif %}
+                    <button
+                      type="button"
+                      class="org-action-danger"
+                      data-lead-reverse
+                      data-reverse-url="{% url 'core:lead_reverse' customer.id %}"
+                      data-customer-name="{{ customer.full_name }}"
+                      data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
+                      data-client-name="{{ customer.full_name }}"
+                      {% if customer.assigned_technician %}
+                        data-technician-name="{% if customer.assigned_technician.user.get_full_name %}{{ customer.assigned_technician.user.get_full_name }}{% else %}{{ customer.assigned_technician.user.username }}{% endif %}"
+                      {% else %}
+                        data-technician-name=""
+                      {% endif %}
+                      title="Reverse allocation payment and reopen ticket"
+                    >
+                      Reverse
+                    </button>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">No open or allocated clients for your organization yet.</p>
+  {% endif %}
+</section>
+
+<div class="role-modal client-action-modal lead-stk-modal" id="lead-stk-pay-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-lead-modal></div>
+  <div class="role-modal-panel lead-stk-panel" role="dialog" aria-modal="true" aria-labelledby="lead-stk-pay-title">
+    <div class="lead-stk-loading" id="lead-stk-loading" hidden aria-live="polite">
+      <div class="lead-stk-loading-card">
+        <span class="lead-stk-spinner" aria-hidden="true"></span>
+        <p class="lead-stk-loading-title" id="lead-stk-loading-title">Waiting for M-Pesa</p>
+        <p class="lead-stk-loading-text" id="lead-stk-loading-text">Enter the PIN on your phone. Do not close this window.</p>
+      </div>
+    </div>
+    <header class="role-modal-head lead-stk-head">
+      <div>
+        <p class="role-modal-kicker">M-Pesa STK Push</p>
+        <h2 id="lead-stk-pay-title">Accept lead</h2>
+        <p class="role-modal-sub" id="lead-stk-pay-sub">Pay the sales commission to assign this ticket to your ISP.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-lead-modal aria-label="Close">×</button>
+    </header>
+    <form id="lead-stk-pay-form" class="lead-stk-form" novalidate>
+      {% csrf_token %}
+      <div class="lead-stk-body">
+        <dl class="lead-stk-summary">
+          <div class="lead-stk-summary-item lead-stk-summary-lead">
+            <dt>Lead</dt>
+            <dd id="lead-stk-client"></dd>
+          </div>
+          <div class="lead-stk-summary-item lead-stk-summary-amount">
+            <dt>Amount</dt>
+            <dd id="lead-stk-amount"></dd>
+          </div>
+        </dl>
+
+        <div class="lead-stk-field">
+          <label for="lead-stk-phone">M-Pesa phone number</label>
+          <input
+            type="tel"
+            id="lead-stk-phone"
+            name="phone"
+            class="lead-stk-input"
+            inputmode="tel"
+            autocomplete="tel"
+            placeholder="07xxxxxxxx"
+            required
+          >
+          <p class="lead-stk-hint">STK Push opens on this number — use the phone paying for allocation.</p>
+        </div>
+
+        <div class="lead-stk-tech">
+          <label class="lead-stk-check">
+            <input type="checkbox" id="lead-stk-request-tech" name="request_technician" value="1">
+            <span>
+              <strong>Request technician</strong>
+              <small>Optional installation / site visit</small>
+            </span>
+          </label>
+          <div class="lead-stk-tech-options" id="lead-stk-tech-options" hidden>
+            <label class="lead-stk-tech-label" for="lead-stk-technician">Assign to</label>
+            <div class="lead-stk-select-wrap">
+              <select id="lead-stk-technician" name="technician_choice" class="lead-stk-input lead-stk-select">
+                <option value="open" selected>Open — any technician</option>
+                {% for tech in technicians %}
+                  <option value="{{ tech.id }}">
+                    {% if tech.user.get_full_name %}{{ tech.user.get_full_name }}{% else %}{{ tech.user.username }}{% endif %}{% if tech.organization %} · {{ tech.organization.name }}{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+              {% if not technicians %}
+                <p class="lead-stk-hint">No active technicians found. Add a technician employee, or leave Open.</p>
+              {% else %}
+                <p class="lead-stk-hint">Pick a technician, or leave Open for the pool.</p>
+              {% endif %}
+          </div>
+        </div>
+
+        <div class="lead-stk-status" id="lead-stk-status" hidden>
+          <p id="lead-stk-status-text"></p>
+        </div>
+      </div>
+      <footer class="role-modal-actions lead-stk-actions">
+        <button type="button" class="btn btn-ghost" data-close-lead-modal id="lead-stk-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="lead-stk-submit">Send STK Push</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<div class="role-modal client-action-modal lead-stk-modal" id="lead-reverse-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-lead-reverse></div>
+  <div class="role-modal-panel lead-stk-panel" role="dialog" aria-modal="true" aria-labelledby="lead-reverse-title">
+    <header class="role-modal-head lead-stk-head">
+      <div>
+        <p class="role-modal-kicker">Payment reversal</p>
+        <h2 id="lead-reverse-title">Reverse allocation</h2>
+        <p class="role-modal-sub">This returns the ticket to New and marks the allocation payment as reversed.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-lead-reverse aria-label="Close">×</button>
+    </header>
+    <form id="lead-reverse-form" class="lead-stk-form" method="post" novalidate>
+      {% csrf_token %}
+      <div class="lead-stk-body">
+        <dl class="lead-stk-summary">
+          <div class="lead-stk-summary-item lead-stk-summary-lead">
+            <dt>Lead</dt>
+            <dd id="lead-reverse-client"></dd>
+          </div>
+        </dl>
+        <div class="lead-stk-field">
+          <label for="lead-reverse-category">Reason for reversal</label>
+          <div class="lead-stk-select-wrap">
+            <select
+              id="lead-reverse-category"
+              name="reason_category"
+              class="lead-stk-input lead-stk-select"
+              required
+            >
+              <option value="" selected disabled>Choose a reason…</option>
+              <option value="wrong_location">Wrong location</option>
+              <option value="full_capacity">Full capacity</option>
+              <option value="not_fibre_ready">Not fibre ready</option>
+              <option value="technician">Technician</option>
+              <option value="client">Client</option>
+              <option value="other">Other reason</option>
+            </select>
+          </div>
+        </div>
+        <div class="lead-stk-field" id="lead-reverse-detail-wrap" hidden>
+          <div class="lead-reverse-person" id="lead-reverse-person" hidden>
+            <span class="lead-reverse-person-label" id="lead-reverse-person-label">Name</span>
+            <strong id="lead-reverse-person-name"></strong>
+          </div>
+          <label for="lead-reverse-detail" id="lead-reverse-detail-label">Details</label>
+          <textarea
+            id="lead-reverse-detail"
+            name="reason_detail"
+            class="lead-stk-input lead-stk-textarea"
+            rows="3"
+            maxlength="220"
+            placeholder="Add details for this reason"
+          ></textarea>
+          <p class="lead-stk-hint" id="lead-reverse-detail-hint">Required for Technician, Client, and Other reason.</p>
+        </div>
+        <input type="hidden" name="reason" id="lead-reverse-reason" value="">
+        <div class="lead-stk-status is-error" id="lead-reverse-status" hidden>
+          <p id="lead-reverse-status-text"></p>
+        </div>
+      </div>
+      <footer class="role-modal-actions lead-stk-actions">
+        <button type="button" class="btn btn-ghost" data-close-lead-reverse>Cancel</button>
+        <button type="submit" class="btn btn-primary lead-reverse-submit" id="lead-reverse-submit">Reverse payment</button>
+      </footer>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  var modal = document.getElementById("lead-stk-pay-modal");
+  var form = document.getElementById("lead-stk-pay-form");
+  if (!modal || !form) return;
+
+  var panel = modal.querySelector(".lead-stk-panel");
+  var phoneInput = document.getElementById("lead-stk-phone");
+  var submitBtn = document.getElementById("lead-stk-submit");
+  var cancelBtn = document.getElementById("lead-stk-cancel");
+  var statusBox = document.getElementById("lead-stk-status");
+  var statusText = document.getElementById("lead-stk-status-text");
+  var clientEl = document.getElementById("lead-stk-client");
+  var amountEl = document.getElementById("lead-stk-amount");
+  var requestTech = document.getElementById("lead-stk-request-tech");
+  var techOptions = document.getElementById("lead-stk-tech-options");
+  var techSelect = document.getElementById("lead-stk-technician");
+  var loadingEl = document.getElementById("lead-stk-loading");
+  var loadingTitle = document.getElementById("lead-stk-loading-title");
+  var loadingText = document.getElementById("lead-stk-loading-text");
+  var payUrl = "";
+  var pollTimer = null;
+  var isWaiting = false;
+  var statusUrlTemplate = "{% url 'core:lead_allocation_stk_status' 0 %}".replace("/0/", "/__ID__/");
+
+  function csrfToken() {
+    var input = form.querySelector("input[name=csrfmiddlewaretoken]");
+    if (input && input.value) return input.value;
+    var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+    return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function syncTechnicianUi() {
+    var wantsTech = !!(requestTech && requestTech.checked);
+    if (techOptions) techOptions.hidden = !wantsTech;
+  }
+
+  function resetTechnicianUi() {
+    if (requestTech) requestTech.checked = false;
+    if (techSelect) techSelect.value = "open";
+    syncTechnicianUi();
+  }
+
+  function setFormLocked(locked) {
+    isWaiting = !!locked;
+    if (panel) panel.classList.toggle("is-waiting", isWaiting);
+    if (loadingEl) loadingEl.hidden = !isWaiting;
+    form.querySelectorAll("input, select, button").forEach(function (el) {
+      if (el === submitBtn || el === cancelBtn) return;
+      el.disabled = isWaiting;
+    });
+    document.querySelectorAll("[data-close-lead-modal]").forEach(function (el) {
+      el.disabled = isWaiting;
+      el.setAttribute("aria-disabled", isWaiting ? "true" : "false");
+      if (isWaiting) el.setAttribute("tabindex", "-1");
+      else el.removeAttribute("tabindex");
+    });
+    if (cancelBtn) cancelBtn.disabled = isWaiting;
+    if (submitBtn) submitBtn.disabled = isWaiting;
+  }
+
+  function setLoadingCopy(title, text) {
+    if (loadingTitle) loadingTitle.textContent = title || "Waiting for M-Pesa";
+    if (loadingText) {
+      loadingText.textContent = text || "Enter the PIN on your phone. Do not close this window.";
+    }
+  }
+
+  function unlockForRetry(buttonLabel) {
+    setFormLocked(false);
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = buttonLabel || "Try again";
+    }
+  }
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    if (isWaiting) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    stopPoll();
+    setFormLocked(false);
+  }
+
+  function setStatus(message, show, isError) {
+    if (!statusBox || !statusText) return;
+    statusText.textContent = message || "";
+    statusBox.hidden = !show;
+    statusBox.classList.toggle("is-error", !!isError);
+  }
+
+  function failureMessage(data) {
+    var reason = "";
+    if (data) reason = (data.reason || data.result_desc || data.error || "").trim();
+    if (!reason) reason = "The payment was not completed.";
+    if (/try again/i.test(reason)) return reason;
+    return reason + " Please try again.";
+  }
+
+  function stopPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function statusUrl(stkId) {
+    return statusUrlTemplate.replace("__ID__", String(stkId));
+  }
+
+  function pollStatus(stkId) {
+    stopPoll();
+    setFormLocked(true);
+    setLoadingCopy(
+      "Waiting for M-Pesa",
+      "Confirm the payment on your phone. This window is locked until M-Pesa responds."
+    );
+    var tries = 0;
+    pollTimer = setInterval(function () {
+      tries += 1;
+      fetch(statusUrl(stkId), {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || data.pending) {
+            var pendingMsg = (data && (data.result_desc || data.reason)) || "Waiting for M-Pesa confirmation…";
+            setLoadingCopy("Waiting for M-Pesa", pendingMsg);
+            setStatus(pendingMsg, true);
+            if (tries >= 40 || (data && data.expired)) {
+              stopPoll();
+              setStatus(
+                (data && data.reason ? data.reason + " " : "") +
+                  "No confirmation yet. Please try again.",
+                true,
+                true
+              );
+              unlockForRetry("Try again");
+            }
+            return;
+          }
+          stopPoll();
+          if (data.success) {
+            setLoadingCopy("Payment successful", "Allocating this lead to your ISP…");
+            var phoneMsg = data.customer_phone
+              ? (" Client phone: " + data.customer_phone + ".")
+              : "";
+            setStatus("Payment successful. Ticket allocated to your ISP." + phoneMsg, true);
+            setTimeout(function () { window.location.reload(); }, 1200);
+          } else {
+            setStatus(failureMessage(data), true, true);
+            unlockForRetry("Try again");
+          }
+        })
+        .catch(function () {
+          if (tries >= 40) {
+            stopPoll();
+            setStatus("Could not confirm payment status. Please try again.", true, true);
+            unlockForRetry("Try again");
+            return;
+          }
+          setLoadingCopy("Checking payment…", "Connection issue — retrying status check.");
+        });
+    }, 3000);
+  }
+
+  if (requestTech) requestTech.addEventListener("change", syncTechnicianUi);
+
+  document.querySelectorAll("[data-close-lead-modal]").forEach(function (el) {
+    el.addEventListener("click", function (event) {
+      if (isWaiting) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      closeModal();
+    });
+  });
+
+  document.querySelectorAll("[data-lead-accept]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      stopPoll();
+      setFormLocked(false);
+      payUrl = btn.getAttribute("data-pay-url") || "";
+      var feeError = (btn.getAttribute("data-fee-error") || "").trim();
+      if (clientEl) {
+        clientEl.textContent =
+          (btn.getAttribute("data-customer-name") || "") +
+          " · " +
+          (btn.getAttribute("data-ticket") || "");
+      }
+      if (amountEl) amountEl.textContent = btn.getAttribute("data-amount") || "—";
+      if (phoneInput) phoneInput.value = btn.getAttribute("data-phone") || "";
+      resetTechnicianUi();
+      if (submitBtn) {
+        submitBtn.disabled = !!feeError;
+        submitBtn.textContent = "Send STK Push";
+      }
+      if (feeError) {
+        setStatus(feeError, true, true);
+      } else {
+        setStatus("", false);
+      }
+      openModal();
+      if (phoneInput && !feeError) phoneInput.focus();
+    });
+  });
+
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    if (!payUrl || isWaiting) return;
+    var phone = phoneInput ? phoneInput.value.trim() : "";
+    if (!phone) {
+      setStatus("Enter the M-Pesa phone number.", true, true);
+      return;
+    }
+    var wantsTech = !!(requestTech && requestTech.checked);
+    var choice = techSelect ? (techSelect.value || "open") : "open";
+    setFormLocked(true);
+    setLoadingCopy("Sending STK Push", "Prompting M-Pesa on " + phone + "…");
+    if (submitBtn) submitBtn.textContent = "Sending…";
+    setStatus("Sending STK Push…", true);
+    var body = new FormData();
+    body.append("phone", phone);
+    body.append("csrfmiddlewaretoken", csrfToken());
+    if (wantsTech) {
+      body.append("request_technician", "1");
+      if (choice === "open") {
+        body.append("technician_mode", "open");
+      } else {
+        body.append("technician_mode", "assigned");
+        body.append("technician_id", choice);
+      }
+    }
+    fetch(payUrl, {
+      method: "POST",
+      body: body,
+      headers: {
+        "X-CSRFToken": csrfToken(),
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json"
+      },
+      credentials: "same-origin"
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { ok: res.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        var data = result.data || {};
+        if (!result.ok || !data.ok) {
+          setStatus(failureMessage(data), true, true);
+          unlockForRetry("Try again");
+          return;
+        }
+        setStatus(
+          (data.message || "STK Push sent.") +
+            (data.phone ? (" Phone: " + data.phone) : "") +
+            " Waiting for PIN…",
+          true
+        );
+        pollStatus(data.stk_id);
+      })
+      .catch(function () {
+        setStatus("Network error while sending STK Push. Please try again.", true, true);
+        unlockForRetry("Try again");
+      });
+  });
+})();
+
+(function () {
+  var modal = document.getElementById("lead-reverse-modal");
+  var form = document.getElementById("lead-reverse-form");
+  if (!modal || !form) return;
+
+  var clientEl = document.getElementById("lead-reverse-client");
+  var categorySelect = document.getElementById("lead-reverse-category");
+  var detailWrap = document.getElementById("lead-reverse-detail-wrap");
+  var detailLabel = document.getElementById("lead-reverse-detail-label");
+  var detailInput = document.getElementById("lead-reverse-detail");
+  var detailHint = document.getElementById("lead-reverse-detail-hint");
+  var personBox = document.getElementById("lead-reverse-person");
+  var personLabel = document.getElementById("lead-reverse-person-label");
+  var personName = document.getElementById("lead-reverse-person-name");
+  var reasonHidden = document.getElementById("lead-reverse-reason");
+  var statusBox = document.getElementById("lead-reverse-status");
+  var statusText = document.getElementById("lead-reverse-status-text");
+  var submitBtn = document.getElementById("lead-reverse-submit");
+  var currentClientName = "";
+  var currentTechnicianName = "";
+
+  var DETAIL_CATEGORIES = {
+    technician: "Technician details",
+    client: "Client details",
+    other: "Other reason details"
+  };
+
+  var CATEGORY_LABELS = {
+    wrong_location: "Wrong location",
+    full_capacity: "Full capacity",
+    not_fibre_ready: "Not fibre ready",
+    technician: "Technician",
+    client: "Client",
+    other: "Other reason"
+  };
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    setError("");
+  }
+
+  function setError(message) {
+    if (!statusBox || !statusText) return;
+    statusText.textContent = message || "";
+    statusBox.hidden = !message;
+  }
+
+  function needsDetail(category) {
+    return Object.prototype.hasOwnProperty.call(DETAIL_CATEGORIES, category);
+  }
+
+  function syncPersonUi(category) {
+    var showPerson = false;
+    var label = "";
+    var name = "";
+    if (category === "technician") {
+      label = "Assigned technician";
+      name = currentTechnicianName || "No technician was assigned to this ticket";
+      showPerson = true;
+    } else if (category === "client") {
+      label = "Client";
+      name = currentClientName || "—";
+      showPerson = true;
+    }
+    if (personBox) personBox.hidden = !showPerson;
+    if (personLabel) personLabel.textContent = label;
+    if (personName) personName.textContent = name;
+  }
+
+  function syncDetailUi() {
+    var category = categorySelect ? categorySelect.value : "";
+    var showDetail = needsDetail(category);
+    if (detailWrap) detailWrap.hidden = !showDetail;
+    if (detailInput) {
+      detailInput.required = showDetail;
+      if (!showDetail) detailInput.value = "";
+    }
+    if (detailLabel && showDetail) {
+      detailLabel.textContent = DETAIL_CATEGORIES[category] || "Details";
+    }
+    if (detailHint) {
+      if (category === "technician") {
+        detailHint.textContent = currentTechnicianName
+          ? "Add why this relates to " + currentTechnicianName + "."
+          : "No technician was assigned. Add details about the technician issue.";
+      } else if (category === "client") {
+        detailHint.textContent = currentClientName
+          ? "Add why this relates to " + currentClientName + "."
+          : "Add details about the client issue.";
+      } else {
+        detailHint.textContent = "Required for Technician, Client, and Other reason.";
+      }
+    }
+    syncPersonUi(category);
+  }
+
+  function buildReason() {
+    var category = categorySelect ? categorySelect.value : "";
+    var label = CATEGORY_LABELS[category] || "";
+    if (!label) return "";
+    if (!needsDetail(category)) return label;
+    var detail = detailInput ? detailInput.value.trim() : "";
+    if (!detail) return "";
+    if (category === "technician" && currentTechnicianName) {
+      return label + " (" + currentTechnicianName + "): " + detail;
+    }
+    if (category === "client" && currentClientName) {
+      return label + " (" + currentClientName + "): " + detail;
+    }
+    return label + ": " + detail;
+  }
+
+  if (categorySelect) categorySelect.addEventListener("change", function () {
+    setError("");
+    syncDetailUi();
+    if (needsDetail(categorySelect.value) && detailInput) detailInput.focus();
+  });
+
+  document.querySelectorAll("[data-close-lead-reverse]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+
+  document.querySelectorAll("[data-lead-reverse]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var url = btn.getAttribute("data-reverse-url") || "";
+      if (!url) return;
+      form.setAttribute("action", url);
+      currentClientName = (btn.getAttribute("data-client-name") || btn.getAttribute("data-customer-name") || "").trim();
+      currentTechnicianName = (btn.getAttribute("data-technician-name") || "").trim();
+      if (clientEl) {
+        clientEl.textContent =
+          (btn.getAttribute("data-customer-name") || "") +
+          " · " +
+          (btn.getAttribute("data-ticket") || "");
+      }
+      if (categorySelect) categorySelect.value = "";
+      if (detailInput) detailInput.value = "";
+      if (reasonHidden) reasonHidden.value = "";
+      syncDetailUi();
+      setError("");
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Reverse payment";
+      }
+      openModal();
+      if (categorySelect) categorySelect.focus();
+    });
+  });
+
+  form.addEventListener("submit", function (event) {
+    var category = categorySelect ? categorySelect.value : "";
+    if (!category || !CATEGORY_LABELS[category]) {
+      event.preventDefault();
+      setError("Choose a reason for this reversal.");
+      if (categorySelect) categorySelect.focus();
+      return;
+    }
+    if (needsDetail(category)) {
+      var detail = detailInput ? detailInput.value.trim() : "";
+      if (!detail) {
+        event.preventDefault();
+        setError("Enter details for “" + CATEGORY_LABELS[category] + "”.");
+        if (detailInput) detailInput.focus();
+        return;
+      }
+    }
+    var reason = buildReason();
+    if (!reason) {
+      event.preventDefault();
+      setError("Choose a valid reversal reason.");
+      return;
+    }
+    if (reasonHidden) reasonHidden.value = reason;
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Reversing…";
+    }
+  });
+})();
+</script>
+{% endblock %}

@@ -11,6 +11,7 @@ from billing.services import (
     apply_subscription_renewal,
     customer_pppoe_secret_disabled,
     customer_receives_internet,
+    generate_account_number_from_phone,
     subscription_period_allows,
 )
 
@@ -216,11 +217,45 @@ class FulfillIdempotencyTests(TestCase):
         self.assertIsNotNone(end_after_first)
 
         stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "ABC123")
+        self.assertEqual(stk.payment.reference, "ABC123")
+
         second = fulfill_successful_stk(stk, mpesa_receipt="ABC123")
         self.customer.refresh_from_db()
         self.assertTrue(second["ok"])
         self.assertTrue(second["already_applied"])
         self.assertEqual(self.customer.package_end, end_after_first)
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_callback_backfills_mpesa_receipt_after_query(self, sync_mock):
+        """STK Query may confirm first without a receipt; callback fills it in."""
+        from billing.models import Payment, StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_RECEIPT",
+            status=StkPushRequest.Status.PENDING,
+        )
+
+        first = fulfill_successful_stk(stk, mpesa_receipt="")
+        self.assertTrue(first["ok"])
+        stk.refresh_from_db()
+        self.assertEqual(stk.payment.reference, "ws_CO_RECEIPT")
+        self.assertEqual(stk.mpesa_receipt, "")
+
+        second = fulfill_successful_stk(stk, mpesa_receipt="QWERTY99")
+        self.assertTrue(second["ok"])
+        self.assertTrue(second["already_applied"])
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "QWERTY99")
+        payment = Payment.objects.get(pk=stk.payment_id)
+        self.assertEqual(payment.reference, "QWERTY99")
 
     @patch("core.mikrotik_connect.sync_customer_subscription_access")
     def test_fulfill_applies_the_package_that_was_charged(self, sync_mock):
@@ -255,4 +290,36 @@ class FulfillIdempotencyTests(TestCase):
         self.assertGreater(
             self.customer.package_end - before,
             timedelta(hours=23),
+        )
+        stk.refresh_from_db()
+        self.assertEqual(stk.payment.reference, "PLAN123")
+
+
+class AccountNumberFromPhoneTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-acct", password="x")
+        self.org = Organization.objects.create(
+            name="Acct ISP",
+            owner=self.owner,
+            join_code="112233",
+        )
+
+    def test_local_phone_becomes_msisdn_account(self):
+        self.assertEqual(
+            generate_account_number_from_phone("0712345678", organization=self.org),
+            "254712345678",
+        )
+
+    def test_collision_appends_suffix(self):
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Existing",
+            phone="0712345678",
+            account_number="254712345678",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+        )
+        self.assertEqual(
+            generate_account_number_from_phone("0712345678", organization=self.org),
+            "254712345678-2",
         )

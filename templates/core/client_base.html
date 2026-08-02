@@ -29,10 +29,13 @@
               {% csrf_token %}
               <button type="submit">{{ item.label }}</button>
             </form>
+          {% elif item.url_name %}
+            <a
+              class="{% if sidebar_active == item.key %}active{% endif %}"
+              href="{% url item.url_name %}{% if item.anchor %}#{{ item.anchor }}{% endif %}"
+            >{{ item.label }}</a>
           {% elif item.href %}
             <a class="{% if sidebar_active == item.key %}active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
-          {% else %}
-            <a class="{% if sidebar_active == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
           {% endif %}
         {% endfor %}
       </nav>
@@ -93,7 +96,7 @@
             <span class="account-menu-copy">
               <span class="account-menu-name">{% if organization %}{{ organization.name }}{% else %}Client{% endif %}</span>
               <span class="account-menu-meta">
-                {% if can_switch_roles and is_viewing_as_client %}
+                {% if can_access_client_portal and is_viewing_as_client %}
                   Viewing as client
                 {% elif organization %}
                   {{ organization.get_status_display }}
@@ -123,7 +126,7 @@
                 <span class="role-view-hint">Account</span>
                 <span class="role-chip role-chip-login">Client</span>
               </div>
-              {% if can_switch_roles and is_viewing_as_client %}
+              {% if can_access_client_portal and is_viewing_as_client %}
                 <div class="role-identity-row">
                   <span class="role-view-hint">Viewing</span>
                   <span class="role-chip role-chip-view">{{ organization.name|default:"Client" }}</span>
@@ -158,20 +161,25 @@
             </div>
 
             <div class="account-menu-links">
+              <a href="#edit-profile" id="open-owner-profile" role="menuitem" aria-haspopup="dialog" aria-controls="owner-profile-modal" data-open-owner-profile>Edit my profile</a>
               <a href="{% url 'core:my_account' %}" role="menuitem" class="{% if active_nav == 'account' %}is-active{% endif %}">My account</a>
               <a href="{% url 'core:system_settings' %}" role="menuitem" class="{% if active_nav == 'settings' %}is-active{% endif %}">System settings</a>
               {% if can_switch_roles %}
                 <button type="button" class="account-menu-link-btn" id="open-role-switch" role="menuitem" aria-haspopup="dialog" aria-controls="role-switch-modal">
                   Role switch
                 </button>
+              {% elif can_access_client_portal and is_viewing_as_client %}
+                <form method="post" action="{% url 'roles:customer_support_exit_client_portal' %}" class="account-menu-logout">
+                  {% csrf_token %}
+                  <button type="submit" role="menuitem">Exit client portal</button>
+                </form>
               {% endif %}
               <form method="post" action="{% url 'accounts:logout' %}" class="account-menu-logout">
                 {% csrf_token %}
                 <button type="submit" role="menuitem">Log out</button>
               </form>
             </div>
-          </div>
-        </div>
+          </div>        </div>
       </div>
     </header>
 
@@ -185,6 +193,8 @@
 {% if can_switch_roles %}
 {% include "accounts/includes/role_switch_modal.html" %}
 {% endif %}
+
+{% include "core/includes/owner_profile_modal.html" %}
 
 <script>
 (function () {
@@ -254,12 +264,13 @@
   var menu = document.getElementById("account-menu");
   var trigger = document.getElementById("account-menu-trigger");
   var panel = document.getElementById("account-menu-panel");
+  function closeAccountMenu() {
+    if (!panel || !trigger || !menu) return;
+    panel.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    menu.classList.remove("is-open");
+  }
   if (menu && trigger && panel) {
-    function closeMenu() {
-      panel.hidden = true;
-      trigger.setAttribute("aria-expanded", "false");
-      menu.classList.remove("is-open");
-    }
     function openMenu() {
       document.querySelectorAll("[data-topbar-profile]").forEach(function (profile) {
         var profilePanel = profile.querySelector("[data-topbar-profile-panel]");
@@ -275,28 +286,70 @@
     trigger.addEventListener("click", function (e) {
       e.stopPropagation();
       if (panel.hidden) openMenu();
-      else closeMenu();
+      else closeAccountMenu();
     });
     document.addEventListener("click", function (e) {
-      if (!menu.contains(e.target)) closeMenu();
+      if (!menu.contains(e.target)) closeAccountMenu();
     });
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape") {
-        if (!panel.hidden) closeMenu();
+        if (!panel.hidden) closeAccountMenu();
         if (app && app.classList.contains("nav-open")) setNav(false);
       }
     });
+  }
+
+  var profileModal = document.getElementById("owner-profile-modal");
+  var openProfileBtn = document.getElementById("open-owner-profile");
+  function openOwnerProfileModal(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (!profileModal) return;
+    closeAccountMenu();
+    profileModal.hidden = false;
+    profileModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    var firstError = profileModal.querySelector(".field-error");
+    var target = firstError
+      ? firstError.parentNode.querySelector("input, select, textarea")
+      : profileModal.querySelector(".pppoe-body input");
+    if (target) target.focus({ preventScroll: !!firstError });
+  }
+  function closeOwnerProfileModal() {
+    if (!profileModal || profileModal.hidden) return;
+    profileModal.hidden = true;
+    profileModal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".role-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+    if (openProfileBtn) openProfileBtn.focus();
+  }
+  window.openOwnerProfileModal = openOwnerProfileModal;
+  if (openProfileBtn) {
+    openProfileBtn.addEventListener("click", openOwnerProfileModal);
+  }
+  document.querySelectorAll("[data-open-owner-profile]").forEach(function (btn) {
+    btn.addEventListener("click", openOwnerProfileModal);
+  });
+  if (profileModal) {
+    profileModal.querySelectorAll("[data-close-owner-profile]").forEach(function (el) {
+      el.addEventListener("click", closeOwnerProfileModal);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !profileModal.hidden) closeOwnerProfileModal();
+    });
+    if (!profileModal.hidden) {
+      openOwnerProfileModal();
+    }
   }
 
   var modal = document.getElementById("role-switch-modal");
   var openBtn = document.getElementById("open-role-switch");
   if (modal && openBtn) {
     function openModal() {
-      if (panel && !panel.hidden) {
-        panel.hidden = true;
-        trigger.setAttribute("aria-expanded", "false");
-        menu.classList.remove("is-open");
-      }
+      closeAccountMenu();
       modal.hidden = false;
       modal.setAttribute("aria-hidden", "false");
       document.body.classList.add("role-modal-open");
@@ -306,7 +359,9 @@
     function closeModal() {
       modal.hidden = true;
       modal.setAttribute("aria-hidden", "true");
-      document.body.classList.remove("role-modal-open");
+      if (!document.querySelector(".role-modal:not([hidden])")) {
+        document.body.classList.remove("role-modal-open");
+      }
       openBtn.focus();
     }
     openBtn.addEventListener("click", openModal);

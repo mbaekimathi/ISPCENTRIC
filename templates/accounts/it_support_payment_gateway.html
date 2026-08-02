@@ -8,11 +8,12 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="org-edit"
+<section class="org-edit org-edit--settings company-settings-page"
          data-stk-live-root
          data-status-url="{% url 'roles:it_support_payment_gateway_status' %}">
   <div class="org-edit-intro">
     <div class="org-edit-hero">
+      <div class="company-settings-icon company-settings-icon--pay" aria-hidden="true">M</div>
       <div class="org-edit-hero-copy">
         <p class="org-edit-kicker">M-Pesa · Daraja</p>
         <h2>STK Push</h2>
@@ -27,6 +28,7 @@
             <span class="org-edit-meta-item">Updated {{ gateway.updated_at|date:"d M Y H:i" }}</span>
           {% endif %}
         </div>
+        <p class="org-edit-owner">Configure Safaricom Lipa Na M-Pesa Online credentials for phone payment prompts.</p>
       </div>
     </div>
   </div>
@@ -109,9 +111,7 @@
 
       <div class="form-group">
         <label>Account reference</label>
-        <p class="form-control" style="display:flex;align-items:center;min-height:2.5rem;margin:0;">
-          Client account number
-        </p>
+        <p class="company-settings-readonly">Client account number</p>
         <p class="field-hint">
           STK Push <strong>AccountReference</strong> always uses the paying client’s account number
           (for example <code>CLT-0001-A1B2C3</code>), not a fixed gateway value.
@@ -145,9 +145,9 @@
         {{ form.callback_url }}
         {% if form.callback_url.help_text %}<p class="field-hint">{{ form.callback_url.help_text }}</p>{% endif %}
         {% if form.callback_url.errors %}<div class="field-error">{{ form.callback_url.errors|striptags }}</div>{% endif %}
-        <p class="field-hint" data-sandbox-callback-hint>
+        <p class="field-hint company-settings-callback-hint" data-sandbox-callback-hint>
           Local sandbox callback:
-          <button type="button" class="btn btn-ghost" style="padding:0.15rem 0.5rem;margin-left:0.35rem;" data-use-sandbox-callback>
+          <button type="button" class="btn btn-ghost company-settings-inline-btn" data-use-sandbox-callback>
             Use {{ sandbox_callback_url }}
           </button>
         </p>
@@ -156,7 +156,8 @@
 
     <div class="org-edit-actions">
       <button type="submit" class="btn btn-primary">Save STK Push settings</button>
-      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Back to dashboard</a>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support_company_settings' %}">Back to company settings</a>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Dashboard</a>
     </div>
   </form>
 </section>

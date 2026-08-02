@@ -1,0 +1,62 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<p class="client-page-lead">
+  <a href="{% url allocate_list_url_name %}">← Back to employees</a>
+</p>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>{{ member.user.get_full_name|default:member.user.username }}</h2>
+      <p class="panel-sub">
+        {{ member.get_role_display }}
+        {% if member.organization %} · {{ member.organization.name }}{% endif %}
+        · {{ member.get_status_display }}
+      </p>
+    </div>
+  </div>
+</section>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>Equipment{% if equipment_list %} ({{ equipment_list|length }}){% endif %}</h2>
+      <p class="panel-sub">Registered network equipment inventory.</p>
+    </div>
+  </div>
+
+  {% if equipment_list %}
+    <div class="org-table-shell">
+      <table class="org-table">
+        <thead>
+          <tr>
+            <th>Equipment</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in equipment_list %}
+            <tr>
+              <td>
+                <strong>{{ item.name }}</strong>
+                <small class="lead-location-line">{{ item.get_equipment_type_display }}</small>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">No network equipment registered yet.</p>
+  {% endif %}
+</section>
+{% endblock %}

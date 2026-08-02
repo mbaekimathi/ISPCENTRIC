@@ -103,12 +103,13 @@
     <div class="org-edit-panel">
       <header class="org-edit-panel-head">
         <h3>Access</h3>
-        <p>Assign organization, role, and account status. Login code stays {{ member.login_code }}.</p>
+        <p>Assign role and status. Organization is optional for Sales and Technician.</p>
       </header>
 
       <div class="form-group">
         <label for="{{ form.organization.id_for_label }}">{{ form.organization.label }}</label>
         {{ form.organization }}
+        {% if form.organization.help_text %}<p class="field-hint">{{ form.organization.help_text }}</p>{% endif %}
         {% if form.organization.errors %}<div class="field-error">{{ form.organization.errors|striptags }}</div>{% endif %}
       </div>
 

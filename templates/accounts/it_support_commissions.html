@@ -1,0 +1,44 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_commissions_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit org-edit--settings company-settings-page">
+  <div class="org-edit-intro">
+    <div class="org-edit-hero">
+      <div class="company-settings-icon" aria-hidden="true">%</div>
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Sales incentives</p>
+        <h2>{{ page_title }}</h2>
+        <div class="org-edit-meta">
+          <span class="org-status org-status-active">Per role</span>
+          <span class="org-edit-meta-item">{{ commission_role_links|length }} roles</span>
+        </div>
+        <p class="org-edit-owner">{{ page_subtitle }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="org-edit-panel">
+    <header class="org-edit-panel-head">
+      <h3>Choose a role</h3>
+      <p>Use the sidebar to open a role and set its commission rate.</p>
+    </header>
+    <p class="empty">Select Super admin, Administrator, Manager, IT support, Sales, or Technician from the sidebar.</p>
+  </div>
+
+  <div class="org-edit-actions">
+    <a class="btn btn-ghost" href="{% url 'roles:it_support_company_settings' %}">Back to company settings</a>
+    <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Dashboard</a>
+  </div>
+</section>
+{% endblock %}

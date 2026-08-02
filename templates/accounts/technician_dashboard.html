@@ -1,0 +1,29 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">Dashboard</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel stack-gap">
+  <div class="panel-head-row">
+    <div>
+      <h2>Field modules</h2>
+      <p class="panel-sub">Open the tools you use on site.</p>
+    </div>
+  </div>
+  <div class="role-highlight-grid">
+    {% for link in module_links %}
+      <a class="role-highlight-card" href="{% url link.url_name %}">
+        <span class="role-highlight-index">{{ link.index }}</span>
+        <p>{{ link.label }}</p>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

@@ -1,30 +1,51 @@
 from functools import wraps
+import json
 
+from django.db import transaction
+from django.db.models import Q
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.views.decorators.http import require_http_methods, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from accounts.forms import (
     EmployeeAdminEditForm,
+    LeadRegisterForm,
+    NATIONAL_PHONE_LENGTHS,
+    NetworkEquipmentRegisterForm,
     OrganizationEditForm,
+    CompanyProfileForm,
     PaymentGatewayForm,
+    RegisterForm,
+    RoleCommissionForm,
+    SalesCommissionForm,
 )
-from accounts.models import Employee, Organization, PaymentGateway
+from accounts.models import (
+    CompanyProfile,
+    Employee,
+    Lead,
+    NetworkEquipment,
+    Organization,
+    PaymentGateway,
+    RoleCommission,
+)
 from accounts.mpesa_daraja import check_stk_configuration, normalize_gateway_values
 from accounts.routing import (
     CLIENT_VIEW_VALUE,
     ROLE_DASHBOARD_NAMES,
     ROLE_SLUGS,
     SWITCHABLE_ROLES,
+    can_access_client_portal,
     can_switch_roles,
+    clear_client_view,
     home_url_for_user,
     set_client_view,
     set_role_view,
     switchable_clients_list,
     switchable_role_options,
 )
+from billing.models import Customer, InstallationDecline, InstallationReject
 
 
 ROLE_PAGE = {
@@ -49,13 +70,13 @@ ROLE_PAGE = {
         ],
     },
     Employee.Role.MANAGER: {
-        "title": "Manager Dashboard",
-        "subtitle": "Team performance and daily operations.",
-        "url_name": "roles:manager",
+        "title": "Customer support",
+        "subtitle": "Client care, sales coordination, and field support.",
+        "url_name": "roles:customer_support",
         "highlights": [
-            "Track team targets",
-            "Review customer accounts",
-            "Coordinate field and sales work",
+            "Support ISP clients",
+            "Coordinate sales and technicians",
+            "Track network equipment",
         ],
     },
     Employee.Role.IT_SUPPORT: {
@@ -485,7 +506,377 @@ def administrator_hr(request):
 
 @role_required(Employee.Role.MANAGER)
 def manager_dashboard(request):
-    return _role_dashboard(request, Employee.Role.MANAGER)
+    employee = request.user.employee_profile
+    meta = ROLE_PAGE[Employee.Role.MANAGER]
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.MANAGER)
+    return render(
+        request,
+        "accounts/customer_support_dashboard.html",
+        {
+            "page_title": meta["title"],
+            "page_subtitle": meta["subtitle"],
+            "current_page": "dashboard",
+            "dashboard_url_name": "roles:customer_support",
+            "module_links": [
+                {
+                    "index": "01",
+                    "label": "ISP clients",
+                    "url_name": "roles:customer_support_isp_clients",
+                },
+                {
+                    "index": "02",
+                    "label": "Sales",
+                    "url_name": "roles:customer_support_sales",
+                },
+                {
+                    "index": "03",
+                    "label": "Approved sales",
+                    "url_name": "roles:customer_support_approved_sales",
+                },
+                {
+                    "index": "04",
+                    "label": "Technician",
+                    "url_name": "roles:customer_support_technician",
+                },
+                {
+                    "index": "05",
+                    "label": "Allocated",
+                    "url_name": "roles:customer_support_allocated",
+                },
+                {
+                    "index": "06",
+                    "label": "Network equipment",
+                    "url_name": "roles:customer_support_network_equipment",
+                },
+                {
+                    "index": "07",
+                    "label": "Register equipment",
+                    "url_name": "roles:customer_support_network_equipment",
+                    "query": "register=1",
+                },
+                {
+                    "index": "08",
+                    "label": "Allocate",
+                    "url_name": "roles:customer_support_allocate",
+                },
+            ],
+        },
+    )
+
+
+def _prepare_manager_view(request):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.MANAGER)
+    return employee
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_isp_clients(request):
+    from django.db.models import Count
+
+    _prepare_manager_view(request)
+    clients = list(
+        Organization.objects.select_related("owner")
+        .annotate(
+            staff_count=Count("employees", distinct=True),
+            customer_count=Count("customers", distinct=True),
+        )
+        .order_by("-created_at")
+    )
+    return render(
+        request,
+        "accounts/customer_support_isp_clients.html",
+        {
+            "page_title": "ISP clients",
+            "page_kicker": "Clients",
+            "page_subtitle": "ISP company accounts registered on ISPCENTRIC.",
+            "current_page": "isp_clients",
+            "dashboard_url_name": "roles:customer_support",
+            "clients": clients,
+            "clients_count": len(clients),
+            "empty_text": "No ISP clients are registered yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+@require_POST
+def manager_open_client_portal(request, pk):
+    _prepare_manager_view(request)
+    client = get_object_or_404(Organization, pk=pk)
+    set_client_view(request, client.pk)
+    messages.success(request, f"Opened client portal for {client.name}.")
+    return redirect("core:workspace")
+
+
+@role_required(Employee.Role.MANAGER)
+@require_POST
+def manager_exit_client_portal(request):
+    _prepare_manager_view(request)
+    clear_client_view(request)
+    messages.success(request, "Returned to Customer support.")
+    return redirect("roles:customer_support_isp_clients")
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_sales(request):
+    _prepare_manager_view(request)
+    sales = list(
+        Customer.objects.filter(
+            status=Customer.Status.NEW,
+            organization__isnull=True,
+        )
+        .select_related("plan", "registered_by")
+        .order_by("-created_at")[:300]
+    )
+    return render(
+        request,
+        "accounts/customer_support_sales.html",
+        {
+            "page_title": "Sales",
+            "page_kicker": "Operations",
+            "page_subtitle": "All new sales tickets waiting for ISP allocation.",
+            "current_page": "sales",
+            "dashboard_url_name": "roles:customer_support",
+            "sales": sales,
+            "empty_text": "No new sales tickets are open yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_approved_sales(request):
+    _prepare_manager_view(request)
+    sales = list(
+        Customer.objects.exclude(status=Customer.Status.NEW)
+        .select_related(
+            "organization",
+            "plan",
+            "registered_by",
+            "assigned_technician",
+            "assigned_technician__user",
+        )
+        .order_by("-created_at")[:300]
+    )
+    return render(
+        request,
+        "accounts/customer_support_approved_sales.html",
+        {
+            "page_title": "Approved sales",
+            "page_kicker": "Operations",
+            "page_subtitle": "Sales tickets that are no longer new.",
+            "current_page": "approved_sales",
+            "dashboard_url_name": "roles:customer_support",
+            "sales": sales,
+            "empty_text": "No approved sales tickets yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_technician(request):
+    _prepare_manager_view(request)
+    tickets = list(
+        Customer.objects.filter(status=Customer.Status.ALLOCATED_OPEN)
+        .select_related(
+            "organization",
+            "plan",
+            "assigned_technician",
+            "assigned_technician__user",
+            "registered_by",
+        )
+        .order_by("-created_at")[:300]
+    )
+    return render(
+        request,
+        "accounts/customer_support_technician.html",
+        {
+            "page_title": "Technician",
+            "page_kicker": "Field work",
+            "page_subtitle": "All allocated-open installation tickets in the technician pool.",
+            "current_page": "technician",
+            "dashboard_url_name": "roles:customer_support",
+            "tickets": tickets,
+            "empty_text": "No allocated-open tickets yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_allocated(request):
+    _prepare_manager_view(request)
+    tickets = list(
+        Customer.objects.filter(status=Customer.Status.ALLOCATED_CLOSED)
+        .select_related(
+            "organization",
+            "plan",
+            "assigned_technician",
+            "assigned_technician__user",
+            "registered_by",
+        )
+        .order_by("-created_at")[:300]
+    )
+    return render(
+        request,
+        "accounts/customer_support_allocated.html",
+        {
+            "page_title": "Allocated",
+            "page_kicker": "Field work",
+            "page_subtitle": "All allocated-closed tickets assigned to a technician.",
+            "current_page": "allocated",
+            "dashboard_url_name": "roles:customer_support",
+            "tickets": tickets,
+            "empty_text": "No allocated-closed tickets yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_network_equipment(request):
+    _prepare_manager_view(request)
+
+    open_register_modal = False
+    open_stock_modal = False
+    stock_equipment = None
+    stock_direction = "in"
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        if action in {"stock_in", "stock_out"}:
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            stock_equipment = equipment
+            stock_direction = "in" if action == "stock_in" else "out"
+            open_stock_modal = True
+            try:
+                amount = int(request.POST.get("amount") or "0")
+            except (TypeError, ValueError):
+                amount = 0
+            if amount < 1:
+                messages.error(request, "Enter a quantity of at least 1.")
+            elif action == "stock_out" and amount > equipment.quantity:
+                messages.error(
+                    request,
+                    f"Cannot stock out {amount}. Only {equipment.quantity} in stock.",
+                )
+            else:
+                if action == "stock_in":
+                    equipment.quantity += amount
+                    verb = "Stocked in"
+                else:
+                    equipment.quantity -= amount
+                    verb = "Stocked out"
+                equipment.save(update_fields=["quantity", "updated_at"])
+                messages.success(
+                    request,
+                    f"{verb} {amount} × “{equipment.name}”. Stock is now {equipment.quantity}.",
+                )
+                redirect_name = (
+                    f"roles:{request.resolver_match.url_name}"
+                    if request.resolver_match and request.resolver_match.url_name
+                    else "roles:customer_support_network_equipment"
+                )
+                return redirect(redirect_name)
+            form = NetworkEquipmentRegisterForm()
+        else:
+            form = NetworkEquipmentRegisterForm(request.POST)
+            if form.is_valid():
+                equipment = form.save(created_by=request.user)
+                messages.success(
+                    request,
+                    f"Equipment “{equipment.name}” registered.",
+                )
+                redirect_name = (
+                    f"roles:{request.resolver_match.url_name}"
+                    if request.resolver_match and request.resolver_match.url_name
+                    else "roles:customer_support_network_equipment"
+                )
+                return redirect(redirect_name)
+            open_register_modal = True
+    else:
+        form = NetworkEquipmentRegisterForm()
+        open_register_modal = bool(request.GET.get("register"))
+
+    equipment_list = list(
+        NetworkEquipment.objects.select_related("created_by").order_by("-created_at")[:200]
+    )
+    return render(
+        request,
+        "accounts/customer_support_network_equipment.html",
+        {
+            "page_title": "Network equipment",
+            "page_kicker": "Infrastructure",
+            "page_subtitle": "Register and track network equipment used for installs and repairs.",
+            "current_page": (
+                "register_equipment" if open_register_modal else "network_equipment"
+            ),
+            "dashboard_url_name": "roles:customer_support",
+            "form": form,
+            "equipment_list": equipment_list,
+            "equipment_count": len(equipment_list),
+            "open_register_modal": open_register_modal,
+            "open_stock_modal": open_stock_modal,
+            "stock_equipment": stock_equipment,
+            "stock_direction": stock_direction,
+            "empty_text": "No network equipment records yet. Use Register equipment in the sidebar to add one.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_allocate(request):
+    _prepare_manager_view(request)
+
+    employees = list(
+        Employee.objects.select_related("user", "organization").order_by(
+            "user__first_name", "user__last_name", "user__username"
+        )
+    )
+    return render(
+        request,
+        "accounts/customer_support_allocate.html",
+        {
+            "page_title": "Allocate",
+            "page_kicker": "Infrastructure",
+            "page_subtitle": "Choose an employee to allocate network equipment to.",
+            "current_page": "allocate",
+            "dashboard_url_name": "roles:customer_support",
+            "employees": employees,
+            "employees_count": len(employees),
+            "empty_text": "No employees registered yet.",
+        },
+    )
+
+
+@role_required(Employee.Role.MANAGER)
+def manager_allocate_employee(request, pk):
+    _prepare_manager_view(request)
+    member = get_object_or_404(
+        Employee.objects.select_related("user", "organization"),
+        pk=pk,
+    )
+    equipment_list = list(NetworkEquipment.objects.order_by("name"))
+    return render(
+        request,
+        "accounts/customer_support_allocate_employee.html",
+        {
+            "page_title": "Allocate equipment",
+            "page_kicker": "Infrastructure",
+            "page_subtitle": (
+                f"Network equipment inventory for "
+                f"{member.user.get_full_name() or member.user.username}."
+            ),
+            "current_page": "allocate",
+            "dashboard_url_name": "roles:customer_support",
+            "member": member,
+            "equipment_list": equipment_list,
+            "allocate_list_url_name": "roles:customer_support_allocate",
+        },
+    )
 
 
 @role_required(Employee.Role.IT_SUPPORT)
@@ -682,11 +1073,810 @@ def it_support_payment_gateway_status(request):
     return JsonResponse(result)
 
 
+def _it_support_settings_page(
+    request,
+    *,
+    current_page,
+    page_title,
+    page_kicker,
+    page_subtitle,
+    empty_text,
+):
+    _prepare_it_support_view(request)
+    return render(
+        request,
+        "accounts/it_support_settings.html",
+        {
+            "page_title": page_title,
+            "page_kicker": page_kicker,
+            "page_subtitle": page_subtitle,
+            "empty_text": empty_text,
+            "current_page": current_page,
+            "dashboard_url_name": "roles:it_support",
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_settings(request):
+    _prepare_it_support_view(request)
+    profile = CompanyProfile.get_solo()
+
+    if request.method == "POST":
+        form = CompanyProfileForm(request.POST, request.FILES, instance=profile)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Company profile saved.")
+            return redirect("roles:it_support_company_settings")
+    else:
+        form = CompanyProfileForm(instance=profile)
+
+    return render(
+        request,
+        "accounts/it_support_company_settings.html",
+        {
+            "page_title": "Company settings",
+            "page_kicker": "Company",
+            "page_subtitle": "Update the platform app name, contact details, and logo.",
+            "current_page": "company_settings",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "company_profile": profile,
+        },
+    )
+
+
+def _commission_role_links():
+    links = []
+    for row in RoleCommission.commissionable_rows():
+        links.append(
+            {
+                "role": row.role,
+                "label": row.get_role_display(),
+                "slug": ROLE_SLUGS.get(row.role, row.role.replace("_", "-")),
+                "enabled": row.enabled,
+                "rate_display": row.rate_display,
+            }
+        )
+    return links
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_commissions(request):
+    _prepare_it_support_view(request)
+    return render(
+        request,
+        "accounts/it_support_commissions.html",
+        {
+            "page_title": "Commissions",
+            "page_kicker": "Company",
+            "page_subtitle": "Set commission rates for each employee role from the sidebar.",
+            "current_page": "commissions",
+            "dashboard_url_name": "roles:it_support",
+            "commission_role_links": _commission_role_links(),
+            "commission_role_slug": "",
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_commission_role(request, role_slug):
+    _prepare_it_support_view(request)
+    role_key = None
+    for key, slug in ROLE_SLUGS.items():
+        if slug == role_slug and key in RoleCommission.COMMISSIONABLE_ROLES:
+            role_key = key
+            break
+    if role_key is None:
+        messages.error(request, "Unknown role for commission settings.")
+        return redirect("roles:it_support_commissions")
+
+    commission = RoleCommission.for_role(role_key)
+    is_sales = role_key == Employee.Role.SALES
+    form_class = SalesCommissionForm if is_sales else RoleCommissionForm
+    if is_sales and commission.rate_type not in {
+        RoleCommission.RateType.PER_TICKET,
+        RoleCommission.RateType.PER_TICKET_PACKAGE,
+    }:
+        commission.rate_type = RoleCommission.RateType.PER_TICKET
+        commission.save(update_fields=["rate_type", "updated_at"])
+
+    if request.method == "POST":
+        form = form_class(request.POST, instance=commission)
+        if form.is_valid():
+            form.save()
+            messages.success(
+                request,
+                f"Saved commission settings for {commission.get_role_display()}.",
+            )
+            return redirect("roles:it_support_commission_role", role_slug=role_slug)
+    else:
+        form = form_class(instance=commission)
+
+    return render(
+        request,
+        "accounts/it_support_commission_role.html",
+        {
+            "page_title": f"{commission.get_role_display()} commissions",
+            "page_kicker": "Commissions",
+            "page_subtitle": (
+                "Set a fixed ticket price or a percentage of the package price."
+                if is_sales
+                else "Configure when this role earns commission and at what rate."
+            ),
+            "current_page": "commissions",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "commission": commission,
+            "role_slug": role_slug,
+            "role_label": commission.get_role_display(),
+            "commission_role_links": _commission_role_links(),
+            "commission_role_slug": role_slug,
+            "is_sales_commission": is_sales,
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_system_settings(request):
+    return _it_support_settings_page(
+        request,
+        current_page="system_settings",
+        page_title="System settings",
+        page_kicker="Settings",
+        page_subtitle="Platform-wide preferences, notifications, and integrations.",
+        empty_text="Additional system preferences are coming soon.",
+    )
+
+
 @role_required(Employee.Role.SALES)
 def sales_dashboard(request):
-    return _role_dashboard(request, Employee.Role.SALES)
+    employee = request.user.employee_profile
+    meta = ROLE_PAGE[Employee.Role.SALES]
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.SALES)
+    return render(
+        request,
+        "accounts/sales_dashboard.html",
+        {
+            "page_title": meta["title"],
+            "page_subtitle": meta["subtitle"],
+            "current_page": "dashboard",
+            "dashboard_url_name": "roles:sales",
+            "module_links": [
+                {
+                    "index": "01",
+                    "label": "Lead Management",
+                    "url_name": "roles:sales_lead_management",
+                },
+                {
+                    "index": "02",
+                    "label": "Customer Registration",
+                    "url_name": "roles:sales_customer_registration",
+                },
+                {
+                    "index": "03",
+                    "label": "Sales Orders",
+                    "url_name": "roles:sales_orders",
+                },
+                {
+                    "index": "04",
+                    "label": "Installation Requests",
+                    "url_name": "roles:sales_installation_requests",
+                },
+                {
+                    "index": "05",
+                    "label": "Promotions & Discounts",
+                    "url_name": "roles:sales_promotions_discounts",
+                },
+                {
+                    "index": "06",
+                    "label": "Commissions",
+                    "url_name": "roles:sales_commissions",
+                },
+                {
+                    "index": "07",
+                    "label": "Reports",
+                    "url_name": "roles:sales_reports",
+                },
+            ],
+        },
+    )
+
+
+def _sales_module_page(request, *, current_page, page_title, page_kicker, page_subtitle, empty_text):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.SALES)
+    return render(
+        request,
+        "accounts/sales_module.html",
+        {
+            "page_title": page_title,
+            "page_kicker": page_kicker,
+            "page_subtitle": page_subtitle,
+            "empty_text": empty_text,
+            "current_page": current_page,
+            "dashboard_url_name": "roles:sales",
+        },
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_lead_management(request):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.SALES)
+
+    # Sales may be platform-level (no organization) and still register leads
+    # against any ISP via preferred_isp.
+    organization = employee.organization
+
+    from billing.models import BillingPlan
+
+    open_register_modal = False
+    if request.method == "POST":
+        form = LeadRegisterForm(request.POST, organization=organization)
+        if form.is_valid():
+            lead = form.save(created_by=request.user)
+            messages.success(
+                request,
+                f"Lead {lead.lead_number} registered for {lead.full_name}.",
+            )
+            return redirect("roles:sales_lead_management")
+        open_register_modal = True
+    else:
+        form = LeadRegisterForm(organization=organization)
+
+    lead_qs = Lead.objects.select_related(
+        "preferred_package",
+        "preferred_isp",
+        "organization",
+        "created_by",
+    ).filter(created_by=request.user)
+    leads = lead_qs.order_by("-created_at")[:100]
+    packages_by_org = {}
+    all_packages = []
+    package_qs = (
+        BillingPlan.objects.filter(is_active=True)
+        .select_related("organization")
+        .order_by("price", "name")
+    )
+    for plan in package_qs:
+        row = {
+            "id": plan.pk,
+            "label": f"{plan.name} — {plan.price} ({plan.speed_label})",
+        }
+        packages_by_org.setdefault(str(plan.organization_id), []).append(row)
+        all_packages.append(row)
+
+    return render(
+        request,
+        "accounts/sales_lead_management.html",
+        {
+            "page_title": "Lead Management",
+            "page_kicker": "Sales",
+            "page_subtitle": "Register and track sales leads.",
+            "current_page": "lead_management",
+            "dashboard_url_name": "roles:sales",
+            "form": form,
+            "leads": leads,
+            "open_register_modal": open_register_modal,
+            "default_org_id": organization.pk if organization else "",
+            "packages_by_org_json": json.dumps(packages_by_org),
+            "all_packages_json": json.dumps(all_packages),
+            "phone_lengths_json": json.dumps(NATIONAL_PHONE_LENGTHS),
+        },
+    )
+
+
+@role_required(Employee.Role.SALES)
+@require_GET
+def sales_places(request):
+    """Live location suggestions for sales lead registration."""
+    from core.places import search_locations
+
+    query = (request.GET.get("q") or "").strip()
+    return JsonResponse(search_locations(query, limit=6))
+
+
+@role_required(Employee.Role.SALES)
+@require_GET
+def sales_place_details(request):
+    """Resolve a place_id or free-text location to coordinates for sales leads."""
+    from core.places import resolve_location
+
+    place_id = (request.GET.get("place_id") or "").strip()
+    query = (request.GET.get("q") or "").strip()
+    details = resolve_location(query, place_id=place_id)
+    if not details:
+        return JsonResponse({"ok": False, "error": "Place not found."}, status=404)
+    return JsonResponse({"ok": True, **details})
+
+
+@role_required(Employee.Role.SALES)
+def sales_customer_registration(request):
+    from django.db import transaction
+
+    from billing.forms import SalesClientRegisterForm
+    from billing.models import Customer
+
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.SALES)
+
+    # Sales staff may be platform-level (no organization) and still register
+    # personal clients against any ISP, or create new ISP / business accounts.
+    organization = employee.organization
+    organizations = Organization.objects.order_by("name")
+
+    selected_type = ""
+    open_register_modal = False
+    client_form = SalesClientRegisterForm(
+        organization=organization,
+        organizations=organizations,
+        prefix="client",
+    )
+    isp_form = RegisterForm(prefix="isp")
+
+    if request.method == "POST":
+        selected_type = (request.POST.get("registration_type") or "").strip()
+        open_register_modal = True
+        if selected_type == "client":
+            client_form = SalesClientRegisterForm(
+                request.POST,
+                organization=organization,
+                organizations=organizations,
+                prefix="client",
+            )
+            if client_form.is_valid():
+                customer = client_form.save(registered_by=request.user)
+                org_label = (
+                    customer.organization.name
+                    if customer.organization_id
+                    else "no specific ISP provider"
+                )
+                messages.success(
+                    request,
+                    (
+                        f"PPPoE client “{customer.full_name}” registered "
+                        f"(ticket {customer.sales_ticket_number}, "
+                        f"account {customer.account_number}) — {org_label}."
+                    ),
+                )
+                return redirect("roles:sales_customer_registration")
+        elif selected_type == "isp":
+            isp_form = RegisterForm(request.POST, request.FILES, prefix="isp")
+            if isp_form.is_valid():
+                with transaction.atomic():
+                    user = isp_form.save(commit=False)
+                    user.email = isp_form.cleaned_data["email"]
+                    user.save()
+                    org = Organization.objects.create(
+                        name=isp_form.cleaned_data["company_name"],
+                        owner=user,
+                        phone=isp_form.cleaned_data.get("phone", ""),
+                        profile_photo=isp_form.cleaned_data.get("profile_photo"),
+                        status=Organization.Status.REGISTERED,
+                        registered_by=request.user,
+                    )
+                messages.success(
+                    request,
+                    (
+                        f"Business (ISP) “{org.name}” registered. "
+                        f"Owner login: {user.username}."
+                    ),
+                )
+                return redirect("roles:sales_customer_registration")
+        else:
+            messages.error(
+                request,
+                "Choose what to register: PPPoE client or business (ISP).",
+            )
+
+    client_qs = Customer.objects.select_related("organization").filter(
+        registered_by=request.user
+    )
+    recent_clients = client_qs.order_by("-created_at")[:20]
+    recent_isps = (
+        organizations.filter(registered_by=request.user)
+        .select_related("owner")
+        .order_by("-created_at")[:20]
+    )
+
+    return render(
+        request,
+        "accounts/sales_customer_registration.html",
+        {
+            "page_title": "Customer Registration",
+            "page_kicker": "Sales",
+            "page_subtitle": "Register a PPPoE client, or create a business (ISP) account.",
+            "current_page": "customer_registration",
+            "dashboard_url_name": "roles:sales",
+            "selected_type": selected_type,
+            "open_register_modal": open_register_modal,
+            "client_form": client_form,
+            "isp_form": isp_form,
+            "recent_clients": recent_clients,
+            "recent_isps": recent_isps,
+            "employee_organization": organization,
+            "phone_lengths_json": json.dumps(NATIONAL_PHONE_LENGTHS),
+        },
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_orders(request):
+    return _sales_module_page(
+        request,
+        current_page="sales_orders",
+        page_title="Sales Orders",
+        page_kicker="Sales",
+        page_subtitle="Review and manage sales orders.",
+        empty_text="No sales orders yet.",
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_installation_requests(request):
+    return _sales_module_page(
+        request,
+        current_page="installation_requests",
+        page_title="Installation Requests",
+        page_kicker="Sales",
+        page_subtitle="Submit and track installation requests for new customers.",
+        empty_text="No installation requests yet.",
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_promotions_discounts(request):
+    return _sales_module_page(
+        request,
+        current_page="promotions_discounts",
+        page_title="Promotions & Discounts",
+        page_kicker="Sales",
+        page_subtitle="Manage active promotions and discount offers.",
+        empty_text="No promotions or discounts yet.",
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_commissions(request):
+    return _sales_module_page(
+        request,
+        current_page="commissions",
+        page_title="Commissions",
+        page_kicker="Sales",
+        page_subtitle="View commission earnings and payouts.",
+        empty_text="No commission records yet.",
+    )
+
+
+@role_required(Employee.Role.SALES)
+def sales_reports(request):
+    return _sales_module_page(
+        request,
+        current_page="reports",
+        page_title="Reports",
+        page_kicker="Sales",
+        page_subtitle="Sales performance and conversion reports.",
+        empty_text="No sales reports yet.",
+    )
 
 
 @role_required(Employee.Role.TECHNICIAN)
 def technician_dashboard(request):
-    return _role_dashboard(request, Employee.Role.TECHNICIAN)
+    employee = request.user.employee_profile
+    meta = ROLE_PAGE[Employee.Role.TECHNICIAN]
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+    return render(
+        request,
+        "accounts/technician_dashboard.html",
+        {
+            "page_title": meta["title"],
+            "page_subtitle": meta["subtitle"],
+            "current_page": "dashboard",
+            "dashboard_url_name": "roles:technician",
+            "module_links": [
+                {
+                    "index": "01",
+                    "label": "New Customer Installation",
+                    "url_name": "roles:technician_installations",
+                },
+                {
+                    "index": "02",
+                    "label": "Fault Tickets",
+                    "url_name": "roles:technician_fault_tickets",
+                },
+                {
+                    "index": "03",
+                    "label": "Network Equipment",
+                    "url_name": "roles:technician_network_equipment",
+                },
+            ],
+        },
+    )
+
+
+def _technician_module_page(request, *, current_page, page_title, page_kicker, page_subtitle, empty_text):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+    return render(
+        request,
+        "accounts/technician_module.html",
+        {
+            "page_title": page_title,
+            "page_kicker": page_kicker,
+            "page_subtitle": page_subtitle,
+            "empty_text": empty_text,
+            "current_page": current_page,
+            "dashboard_url_name": "roles:technician",
+        },
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_installations(request):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    # Open pool: allocated-open, plus closed tickets with no assignee.
+    # Closed assigned: only tickets for the technician in session.
+    # Hide tickets this technician marked as not interested.
+    tickets = list(
+        Customer.objects.filter(
+            Q(status=Customer.Status.ALLOCATED_OPEN)
+            | Q(
+                status=Customer.Status.ALLOCATED_CLOSED,
+                assigned_technician__isnull=True,
+            )
+            | Q(
+                status=Customer.Status.ALLOCATED_CLOSED,
+                assigned_technician=employee,
+            )
+        )
+        .exclude(installation_declines__technician=employee)
+        .select_related(
+            "organization",
+            "plan",
+            "assigned_technician",
+            "assigned_technician__user",
+        )
+        .distinct()
+        .order_by("-created_at")[:200]
+    )
+
+    return render(
+        request,
+        "accounts/technician_installations.html",
+        {
+            "page_title": "New Customer Installation",
+            "page_kicker": "Field work",
+            "page_subtitle": (
+                "Open technician requests and tickets assigned to you."
+            ),
+            "empty_text": "No open or assigned installation tickets yet.",
+            "current_page": "installations",
+            "dashboard_url_name": "roles:technician",
+            "tickets": tickets,
+            "employee_profile": employee,
+        },
+    )
+
+
+def _technician_installation_is_open_pool(customer: Customer) -> bool:
+    if customer.status == Customer.Status.ALLOCATED_OPEN:
+        return True
+    return (
+        customer.status == Customer.Status.ALLOCATED_CLOSED
+        and customer.assigned_technician_id is None
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+@require_POST
+def technician_installation_accept(request, customer_id):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    with transaction.atomic():
+        customer = (
+            Customer.objects.select_for_update()
+            .filter(pk=customer_id)
+            .first()
+        )
+        if customer is None:
+            messages.error(request, "That installation ticket was not found.")
+            return redirect("roles:technician_installations")
+
+        ticket = customer.sales_ticket_number or customer.account_number
+        if InstallationDecline.objects.filter(
+            customer=customer, technician=employee
+        ).exists():
+            messages.error(
+                request,
+                f"Ticket {ticket} was hidden after you marked it not interested.",
+            )
+            return redirect("roles:technician_installations")
+
+        if customer.assigned_technician_id == employee.pk:
+            messages.info(request, f"Ticket {ticket} is already assigned to you.")
+            return redirect("roles:technician_installations")
+
+        if not _technician_installation_is_open_pool(customer):
+            if customer.assigned_technician_id:
+                messages.error(
+                    request,
+                    f"Ticket {ticket} was already accepted by another technician.",
+                )
+            else:
+                messages.error(request, f"Ticket {ticket} is not available to accept.")
+            return redirect("roles:technician_installations")
+
+        customer.status = Customer.Status.ALLOCATED_CLOSED
+        customer.assigned_technician = employee
+        customer.save(update_fields=["status", "assigned_technician"])
+        InstallationDecline.objects.filter(
+            customer=customer, technician=employee
+        ).delete()
+
+    messages.success(
+        request,
+        f"Accepted ticket {ticket}. ISP details are now visible.",
+    )
+    return redirect("roles:technician_installations")
+
+
+@role_required(Employee.Role.TECHNICIAN)
+@require_POST
+def technician_installation_not_interested(request, customer_id):
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    reason_labels = dict(InstallationDecline.Reason.choices)
+    detail_required = InstallationDecline.DETAIL_REQUIRED
+    category = (request.POST.get("reason_category") or "").strip()
+    detail = (request.POST.get("reason_detail") or "").strip()
+    reason = (request.POST.get("reason") or "").strip()
+
+    label = reason_labels.get(category)
+    if not label:
+        messages.error(request, "Choose a reason for not interested.")
+        return redirect("roles:technician_installations")
+    if category in detail_required and not detail:
+        messages.error(request, f"Enter details for “{label}”.")
+        return redirect("roles:technician_installations")
+
+    if category in detail_required:
+        reason = f"{label}: {detail}"[:255]
+    else:
+        reason = label
+
+    with transaction.atomic():
+        customer = (
+            Customer.objects.select_for_update()
+            .filter(pk=customer_id)
+            .first()
+        )
+        if customer is None:
+            messages.error(request, "That installation ticket was not found.")
+            return redirect("roles:technician_installations")
+
+        ticket = customer.sales_ticket_number or customer.account_number
+        open_pool = _technician_installation_is_open_pool(customer)
+        assigned_to_me = customer.assigned_technician_id == employee.pk
+        if not open_pool and not assigned_to_me:
+            messages.error(request, f"Ticket {ticket} is not available to hide.")
+            return redirect("roles:technician_installations")
+
+        # If this tech had accepted it, release it back to the open pool.
+        if assigned_to_me:
+            customer.status = Customer.Status.ALLOCATED_OPEN
+            customer.assigned_technician = None
+            customer.save(update_fields=["status", "assigned_technician"])
+
+        InstallationDecline.objects.update_or_create(
+            customer=customer,
+            technician=employee,
+            defaults={
+                "reason_category": category,
+                "reason": reason,
+            },
+        )
+
+    messages.success(
+        request,
+        f"Marked ticket {ticket} as not interested ({reason}). It is hidden for you.",
+    )
+    return redirect("roles:technician_installations")
+
+
+@role_required(Employee.Role.TECHNICIAN)
+@require_POST
+def technician_installation_reject(request, customer_id):
+    """Release an accepted ticket back to the allocated-open pool."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    reason_labels = dict(InstallationReject.Reason.choices)
+    detail_required = InstallationReject.DETAIL_REQUIRED
+    category = (request.POST.get("reason_category") or "").strip()
+    detail = (request.POST.get("reason_detail") or "").strip()
+
+    label = reason_labels.get(category)
+    if not label:
+        messages.error(request, "Choose a reason for rejecting this ticket.")
+        return redirect("roles:technician_installations")
+    if category in detail_required and not detail:
+        messages.error(request, f"Enter a note for “{label}”.")
+        return redirect("roles:technician_installations")
+
+    if category in detail_required:
+        reason = f"{label}: {detail}"[:255]
+    else:
+        reason = label
+
+    with transaction.atomic():
+        customer = (
+            Customer.objects.select_for_update()
+            .filter(pk=customer_id)
+            .first()
+        )
+        if customer is None:
+            messages.error(request, "That installation ticket was not found.")
+            return redirect("roles:technician_installations")
+
+        ticket = customer.sales_ticket_number or customer.account_number
+        if customer.assigned_technician_id != employee.pk:
+            messages.error(
+                request,
+                f"Only the assigned technician can reject ticket {ticket}.",
+            )
+            return redirect("roles:technician_installations")
+
+        customer.status = Customer.Status.ALLOCATED_OPEN
+        customer.assigned_technician = None
+        customer.save(update_fields=["status", "assigned_technician"])
+        InstallationReject.objects.create(
+            customer=customer,
+            technician=employee,
+            reason_category=category,
+            reason=reason,
+        )
+
+    messages.success(
+        request,
+        f"Rejected ticket {ticket} ({reason}). It is back in the open pool.",
+    )
+    return redirect("roles:technician_installations")
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_fault_tickets(request):
+    return _technician_module_page(
+        request,
+        current_page="fault_tickets",
+        page_title="Fault Tickets",
+        page_kicker="Field work",
+        page_subtitle="Active and recent fault tickets for field resolution.",
+        empty_text="No fault tickets are open yet.",
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_network_equipment(request):
+    return _technician_module_page(
+        request,
+        current_page="network_equipment",
+        page_title="Network Equipment",
+        page_kicker="Field work",
+        page_subtitle="Network equipment used for installs and repairs.",
+        empty_text="No network equipment records yet.",
+    )

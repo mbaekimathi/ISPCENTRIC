@@ -9,7 +9,7 @@ from accounts.models import Employee, Organization
 ROLE_DASHBOARD_NAMES = {
     Employee.Role.SUPER_ADMIN: "roles:super_admin",
     Employee.Role.ADMINISTRATOR: "roles:administrator",
-    Employee.Role.MANAGER: "roles:manager",
+    Employee.Role.MANAGER: "roles:customer_support",
     Employee.Role.IT_SUPPORT: "roles:it_support",
     Employee.Role.SALES: "roles:sales",
     Employee.Role.TECHNICIAN: "roles:technician",
@@ -18,7 +18,7 @@ ROLE_DASHBOARD_NAMES = {
 ROLE_SLUGS = {
     Employee.Role.SUPER_ADMIN: "super-admin",
     Employee.Role.ADMINISTRATOR: "administrator",
-    Employee.Role.MANAGER: "manager",
+    Employee.Role.MANAGER: "customer-support",
     Employee.Role.IT_SUPPORT: "it-support",
     Employee.Role.SALES: "sales",
     Employee.Role.TECHNICIAN: "technician",
@@ -33,7 +33,7 @@ ROLE_NAV_ITEMS = {
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:administrator"},
     ],
     Employee.Role.MANAGER: [
-        {"key": "dashboard", "label": "Dashboard", "url_name": "roles:manager"},
+        {"key": "dashboard", "label": "Dashboard", "url_name": "roles:customer_support"},
     ],
     Employee.Role.IT_SUPPORT: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:it_support"},
@@ -56,15 +56,125 @@ ROLE_DASHBOARD_ONLY_NAV = {
         {"key": "clients", "label": "Client management", "url_name": "roles:administrator_clients"},
         {"key": "hr", "label": "Human resource", "url_name": "roles:administrator_hr"},
     ],
+    Employee.Role.MANAGER: [
+        {"key": "isp_clients", "label": "ISP clients", "url_name": "roles:customer_support_isp_clients"},
+        {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
+        {
+            "key": "approved_sales",
+            "label": "Approved sales",
+            "url_name": "roles:customer_support_approved_sales",
+        },
+        {"key": "technician", "label": "Technician", "url_name": "roles:customer_support_technician"},
+        {"key": "allocated", "label": "Allocated", "url_name": "roles:customer_support_allocated"},
+        {
+            "key": "network_equipment",
+            "label": "Network equipment",
+            "url_name": "roles:customer_support_network_equipment",
+        },
+        {
+            "key": "register_equipment",
+            "label": "Register equipment",
+            "url_name": "roles:customer_support_network_equipment",
+            "query": "register=1",
+        },
+        {
+            "key": "allocate",
+            "label": "Allocate",
+            "url_name": "roles:customer_support_allocate",
+        },
+    ],
     Employee.Role.IT_SUPPORT: [
         {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
         {
-            "key": "payment_gateway",
-            "label": "Payment Gateway",
-            "url_name": "roles:it_support_payment_gateway",
+            "key": "company_settings",
+            "label": "Company settings",
+            "url_name": "roles:it_support_company_settings",
+        },
+        {
+            "key": "system_settings",
+            "label": "System settings",
+            "url_name": "roles:it_support_system_settings",
+        },
+    ],
+    Employee.Role.SALES: [
+        {
+            "key": "lead_management",
+            "label": "Lead Management",
+            "url_name": "roles:sales_lead_management",
+        },
+        {
+            "key": "customer_registration",
+            "label": "Customer Registration",
+            "url_name": "roles:sales_customer_registration",
+        },
+        {
+            "key": "sales_orders",
+            "label": "Sales Orders",
+            "url_name": "roles:sales_orders",
+        },
+        {
+            "key": "installation_requests",
+            "label": "Installation Requests",
+            "url_name": "roles:sales_installation_requests",
+        },
+        {
+            "key": "promotions_discounts",
+            "label": "Promotions & Discounts",
+            "url_name": "roles:sales_promotions_discounts",
+        },
+        {
+            "key": "commissions",
+            "label": "Commissions",
+            "url_name": "roles:sales_commissions",
+        },
+        {
+            "key": "reports",
+            "label": "Reports",
+            "url_name": "roles:sales_reports",
+        },
+    ],
+    Employee.Role.TECHNICIAN: [
+        {
+            "key": "installations",
+            "label": "New Customer Installation",
+            "url_name": "roles:technician_installations",
+        },
+        {
+            "key": "fault_tickets",
+            "label": "Fault Tickets",
+            "url_name": "roles:technician_fault_tickets",
+        },
+        {
+            "key": "network_equipment",
+            "label": "Network Equipment",
+            "url_name": "roles:technician_network_equipment",
         },
     ],
 }
+
+# Sidebar links shown while inside IT Support company settings and related pages.
+# These are rendered only by those page templates (not the dashboard nav).
+IT_SUPPORT_COMPANY_SETTINGS_NAV = [
+    {
+        "key": "company_settings",
+        "label": "Company settings",
+        "url_name": "roles:it_support_company_settings",
+    },
+    {
+        "key": "payment_gateway",
+        "label": "Payment Gateway",
+        "url_name": "roles:it_support_payment_gateway",
+    },
+    {
+        "key": "commissions",
+        "label": "Commissions",
+        "url_name": "roles:it_support_commissions",
+    },
+]
+
+IT_SUPPORT_COMPANY_SETTINGS_PAGES = frozenset(
+    item["key"] for item in IT_SUPPORT_COMPANY_SETTINGS_NAV
+)
 
 SWITCHABLE_ROLES = [
     Employee.Role.SUPER_ADMIN,
@@ -86,8 +196,44 @@ SWITCHABLE_CLIENTS_CACHE_KEY = "switchable_clients:v1"
 SWITCHABLE_CLIENTS_TTL = 60
 
 
+# Customer support sales section links (shown on Sales / Approved sales pages).
+CUSTOMER_SUPPORT_SALES_NAV = [
+    {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
+    {
+        "key": "approved_sales",
+        "label": "Approved sales",
+        "url_name": "roles:customer_support_approved_sales",
+    },
+]
+
+# Customer support equipment section links.
+CUSTOMER_SUPPORT_EQUIPMENT_NAV = [
+    {
+        "key": "network_equipment",
+        "label": "Network equipment",
+        "url_name": "roles:customer_support_network_equipment",
+    },
+    {
+        "key": "register_equipment",
+        "label": "Register equipment",
+        "url_name": "roles:customer_support_network_equipment",
+        "query": "register=1",
+    },
+    {
+        "key": "allocate",
+        "label": "Allocate",
+        "url_name": "roles:customer_support_allocate",
+    },
+]
+
+
 def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
-    """Dashboard at top, role links in the middle, Logout pinned to the bottom."""
+    """Dashboard at top, page-only module links on the dashboard, Logout at the bottom.
+
+    Module links in ROLE_DASHBOARD_ONLY_NAV appear only on the dashboard page.
+    They do not follow you onto other pages unless added to that page's nav.
+    Company settings sub-links (Payment Gateway, Commissions) are template-only.
+    """
     items = list(ROLE_NAV_ITEMS.get(role, []))
     if not any(item.get("key") == "dashboard" for item in items):
         dash = ROLE_DASHBOARD_NAMES.get(role)
@@ -95,6 +241,17 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
             items.insert(0, {"key": "dashboard", "label": "Dashboard", "url_name": dash})
     if current_page == "dashboard":
         items.extend(ROLE_DASHBOARD_ONLY_NAV.get(role, []))
+    elif role == Employee.Role.MANAGER and current_page in {
+        "sales",
+        "approved_sales",
+    }:
+        items.extend(CUSTOMER_SUPPORT_SALES_NAV)
+    elif role == Employee.Role.MANAGER and current_page in {
+        "network_equipment",
+        "register_equipment",
+        "allocate",
+    }:
+        items.extend(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
     return {
         "main": items,
         "end": [{"key": "logout", "label": "Logout", "action": "logout"}],
@@ -103,12 +260,48 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
 
 def page_key_from_path(path: str) -> str | None:
     path = (path or "").rstrip("/") + "/"
+    if "/isp-clients/" in path:
+        return "isp_clients"
     if "/clients/" in path:
         return "clients"
     if "/human-resources/" in path:
         return "hr"
     if "/payment-gateway/" in path:
         return "payment_gateway"
+    if "/company-settings/" in path:
+        return "company_settings"
+    if "/system-settings/" in path:
+        return "system_settings"
+    if "/installations/" in path:
+        return "installations"
+    if "/fault-tickets/" in path:
+        return "fault_tickets"
+    if "/network-equipment/" in path:
+        return "network_equipment"
+    if "/customer-support/allocate/" in path or "/manager/allocate/" in path:
+        return "allocate"
+    if "/lead-management/" in path:
+        return "lead_management"
+    if "/customer-registration/" in path:
+        return "customer_registration"
+    if "/sales-orders/" in path:
+        return "sales_orders"
+    if "/installation-requests/" in path:
+        return "installation_requests"
+    if "/promotions-discounts/" in path:
+        return "promotions_discounts"
+    if "/commissions/" in path:
+        return "commissions"
+    if "/reports/" in path:
+        return "reports"
+    if "/customer-support/approved-sales/" in path or "/manager/approved-sales/" in path:
+        return "approved_sales"
+    if "/customer-support/sales/" in path or "/manager/sales/" in path:
+        return "sales"
+    if "/customer-support/allocated/" in path or "/manager/allocated/" in path:
+        return "allocated"
+    if "/customer-support/technician/" in path or "/manager/technician/" in path:
+        return "technician"
     if path.endswith("/dashboard/"):
         return "dashboard"
     if "/employee/profile/" in path:
@@ -124,6 +317,19 @@ def can_switch_roles(employee) -> bool:
     )
 
 
+def can_access_client_portal(employee) -> bool:
+    """IT Support and Customer support can open an ISP client workspace."""
+    return (
+        employee is not None
+        and employee.can_access_workspace
+        and employee.role
+        in {
+            Employee.Role.IT_SUPPORT,
+            Employee.Role.MANAGER,
+        }
+    )
+
+
 def clear_client_view(request) -> None:
     request.session.pop(SESSION_CLIENT_VIEW, None)
     if hasattr(request, "_client_view_organization"):
@@ -133,7 +339,7 @@ def clear_client_view(request) -> None:
 
 
 def get_client_view_org_id(request, employee) -> int | None:
-    if not can_switch_roles(employee):
+    if not can_access_client_portal(employee):
         return None
     raw = request.session.get(SESSION_CLIENT_VIEW)
     try:
@@ -239,10 +445,13 @@ def home_url_for_user(user, request=None) -> str:
     if employee is not None:
         if not employee.can_access_workspace:
             return reverse("accounts:employee_pending")
-        if request is not None and can_switch_roles(employee):
+        if request is not None and can_access_client_portal(employee):
             if is_viewing_as_client(request, employee):
                 return reverse("core:workspace")
-            role = get_role_view(request, employee) or employee.role
+            if can_switch_roles(employee):
+                role = get_role_view(request, employee) or employee.role
+            else:
+                role = employee.role
         else:
             role = employee.role
         name = ROLE_DASHBOARD_NAMES.get(role)

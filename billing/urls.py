@@ -6,6 +6,7 @@ app_name = "billing"
 
 urlpatterns = [
     path("dashboard/", views.dashboard, name="dashboard"),
+    path("lead-payments/", views.lead_payments, name="lead_payments"),
     path("packages/", views.packages, name="packages"),
     path(
         "customers/<int:customer_id>/stk-pay/",

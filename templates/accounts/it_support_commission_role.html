@@ -1,0 +1,213 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_commissions_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit org-edit--settings company-settings-page">
+  <div class="org-edit-intro">
+    <div class="org-edit-hero">
+      <div class="company-settings-icon" aria-hidden="true">%</div>
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Role commission</p>
+        <h2>{{ role_label }}</h2>
+        <div class="org-edit-meta">
+          {% if commission.enabled %}
+            <span class="org-status org-status-active">Enabled · {{ commission.rate_display }}</span>
+          {% else %}
+            <span class="org-status org-status-suspended">Disabled</span>
+          {% endif %}
+          {% if commission.updated_at %}
+            <span class="org-edit-meta-item">Updated {{ commission.updated_at|date:"d M Y H:i" }}</span>
+          {% endif %}
+        </div>
+        <p class="org-edit-owner">{{ page_subtitle }}</p>
+      </div>
+    </div>
+  </div>
+
+  <form method="post" class="org-edit-form" id="role-commission-form" novalidate>
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="notice notice-error">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="org-edit-panel settings-policy-panel{% if commission.enabled or form.enabled.value %} is-policy-on{% endif %}" data-commission-activate>
+      <header class="org-edit-panel-head settings-policy-head">
+        <div>
+          <h3>Enable commissions</h3>
+          <p>Allow people with the {{ role_label }} role to earn commission.</p>
+        </div>
+        <span class="mikrotik-wifi-pill{% if commission.enabled or form.enabled.value %} is-on{% else %} is-off{% endif %}" data-commission-pill>
+          {% if commission.enabled or form.enabled.value %}On{% else %}Off{% endif %}
+        </span>
+      </header>
+
+      <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.enabled.id_for_label }}">
+        {{ form.enabled }}
+        <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+        <span class="mikrotik-wifi-switch-text" data-commission-switch-label>
+          {% if commission.enabled or form.enabled.value %}Enabled{% else %}Disabled{% endif %}
+        </span>
+      </label>
+      {% if form.enabled.help_text %}<p class="settings-policy-hint">{{ form.enabled.help_text }}</p>{% endif %}
+      {% if form.enabled.errors %}<div class="field-error">{{ form.enabled.errors|striptags }}</div>{% endif %}
+    </div>
+
+    <div class="org-edit-panel" data-commission-rates {% if not commission.enabled and not form.enabled.value and not form.errors %}hidden{% endif %}>
+      <header class="org-edit-panel-head">
+        {% if is_sales_commission %}
+          <h3>Ticket commission</h3>
+          <p>Choose exactly one sales commission module, then set its price or percentage.</p>
+        {% else %}
+          <h3>Commission rate</h3>
+          <p>Choose a percentage of the sale or a flat amount in KES.</p>
+        {% endif %}
+      </header>
+
+      {% if is_sales_commission %}
+        <div class="form-group">
+          <span class="company-settings-readonly-label">{{ form.rate_type.label }}</span>
+          <p class="field-hint">{{ form.rate_type.help_text }}</p>
+          <div class="commission-module-picker" data-sales-module-picker>
+            {% with selected_module=form.rate_type.value|default:form.initial.rate_type|default:commission.rate_type %}
+              {% for value, choice_label in form.fields.rate_type.choices %}
+                <label class="commission-module-option{% if selected_module == value %} is-selected{% endif %}">
+                  <input
+                    type="radio"
+                    name="{{ form.rate_type.name }}"
+                    value="{{ value }}"
+                    class="commission-module-radio"
+                    {% if selected_module == value %}checked{% endif %}
+                    required
+                  >
+                  <span class="commission-module-option-copy">
+                    <strong>{{ choice_label }}</strong>
+                    {% if value == "per_ticket" %}
+                      <span>Fixed KES amount for every sales ticket.</span>
+                    {% else %}
+                      <span>Percentage of the ticket’s package price.</span>
+                    {% endif %}
+                  </span>
+                </label>
+              {% endfor %}
+            {% endwith %}
+          </div>
+          {% if form.rate_type.errors %}<div class="field-error">{{ form.rate_type.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.rate_value.id_for_label }}" data-sales-rate-label>{{ form.rate_value.label }}</label>
+          {{ form.rate_value }}
+          <p class="field-hint" data-sales-rate-hint>{{ form.rate_value.help_text }}</p>
+          {% if form.rate_value.errors %}<div class="field-error">{{ form.rate_value.errors|striptags }}</div>{% endif %}
+        </div>
+      {% else %}
+        <div class="org-edit-grid">
+          <div class="form-group">
+            <label for="{{ form.rate_type.id_for_label }}">{{ form.rate_type.label }}</label>
+            {{ form.rate_type }}
+            {% if form.rate_type.help_text %}<p class="field-hint">{{ form.rate_type.help_text }}</p>{% endif %}
+            {% if form.rate_type.errors %}<div class="field-error">{{ form.rate_type.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="form-group">
+            <label for="{{ form.rate_value.id_for_label }}">{{ form.rate_value.label }}</label>
+            {{ form.rate_value }}
+            {% if form.rate_value.help_text %}<p class="field-hint">{{ form.rate_value.help_text }}</p>{% endif %}
+            {% if form.rate_value.errors %}<div class="field-error">{{ form.rate_value.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="form-group">
+        <label for="{{ form.notes.id_for_label }}">{{ form.notes.label }}</label>
+        {{ form.notes }}
+        {% if form.notes.help_text %}<p class="field-hint">{{ form.notes.help_text }}</p>{% endif %}
+        {% if form.notes.errors %}<div class="field-error">{{ form.notes.errors|striptags }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="org-edit-actions">
+      <button type="submit" class="btn btn-primary">Save {{ role_label|lower }} commission</button>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support_commissions' %}">All roles</a>
+    </div>
+  </form>
+</section>
+
+<script>
+(function () {
+  var enabledInput = document.getElementById("id_commission_enabled");
+  var rates = document.querySelector("[data-commission-rates]");
+  var panel = document.querySelector("[data-commission-activate]");
+  var pill = document.querySelector("[data-commission-pill]");
+  var label = document.querySelector("[data-commission-switch-label]");
+  var modulePicker = document.querySelector("[data-sales-module-picker]");
+  var rateRadios = modulePicker
+    ? modulePicker.querySelectorAll('input[type="radio"][name="rate_type"]')
+    : [];
+  var rateLabel = document.querySelector("[data-sales-rate-label]");
+  var rateHint = document.querySelector("[data-sales-rate-hint]");
+  var rateValue = document.getElementById("id_commission_rate_value");
+
+  function selectedRateType() {
+    for (var i = 0; i < rateRadios.length; i++) {
+      if (rateRadios[i].checked) return rateRadios[i].value;
+    }
+    return "per_ticket";
+  }
+
+  function syncEnabled() {
+    if (!enabledInput) return;
+    var on = !!enabledInput.checked;
+    if (rates) rates.hidden = !on;
+    if (panel) panel.classList.toggle("is-policy-on", on);
+    if (pill) {
+      pill.textContent = on ? "On" : "Off";
+      pill.classList.toggle("is-on", on);
+      pill.classList.toggle("is-off", !on);
+    }
+    if (label) label.textContent = on ? "Enabled" : "Disabled";
+  }
+
+  function syncSalesRate() {
+    var packagePct = selectedRateType() === "per_ticket_package";
+    if (modulePicker) {
+      modulePicker.querySelectorAll(".commission-module-option").forEach(function (option) {
+        var input = option.querySelector('input[type="radio"]');
+        option.classList.toggle("is-selected", !!(input && input.checked));
+      });
+    }
+    if (rateLabel) {
+      rateLabel.textContent = packagePct
+        ? "Percentage of package price"
+        : "Price per ticket (KES)";
+    }
+    if (rateHint) {
+      rateHint.textContent = packagePct
+        ? "Share of the ticket package price, e.g. 10.00 for 10%."
+        : "Fixed amount earned for each sales ticket, e.g. 500.00.";
+    }
+    if (rateValue) {
+      rateValue.placeholder = packagePct ? "e.g. 10.00" : "e.g. 500.00";
+    }
+  }
+
+  if (enabledInput) {
+    enabledInput.addEventListener("change", syncEnabled);
+    syncEnabled();
+  }
+  rateRadios.forEach(function (radio) {
+    radio.addEventListener("change", syncSalesRate);
+  });
+  syncSalesRate();
+})();
+</script>
+{% endblock %}

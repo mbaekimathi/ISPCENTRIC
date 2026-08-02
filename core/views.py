@@ -14,6 +14,7 @@ from http.cookies import SimpleCookie
 from urllib.parse import urlencode, urlsplit
 
 from django.contrib import messages
+from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
 from django.core.cache import cache
@@ -26,9 +27,10 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
-from accounts.forms import HotspotSettingsForm, OrganizationEditForm, PppoeSettingsForm
+from accounts.forms import HotspotSettingsForm, OrganizationEditForm, OwnerProfileForm, PppoeSettingsForm
 from accounts.models import Employee, Organization, PaymentGateway
 from accounts.routing import (
+    can_access_client_portal,
     can_switch_roles,
     get_client_view_organization,
     home_url_for_user,
@@ -39,11 +41,17 @@ from billing.forms import (
     CustomerPeriodForm,
     PppoeClientRegisterForm,
 )
-from billing.models import BillingPlan, Customer, Invoice, Payment
+from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from billing.services import (
     customer_receives_internet,
     customer_subscription_expired,
     make_renew_token,
+    resolve_lead_allocation_fee,
+)
+from billing.stk import (
+    refresh_stk_status,
+    reverse_lead_allocation,
+    start_lead_allocation_stk_payment,
 )
 from core import wireguard
 from core.forms import (
@@ -118,7 +126,12 @@ CLIENT_SIDEBARS = {
             {"key": "clients", "label": "My clients", "url_name": "core:my_clients"},
             {"key": "billing", "label": "Billings", "url_name": "billing:dashboard"},
             {"key": "account", "label": "My account", "url_name": "core:my_account"},
-            {"key": "sales", "label": "Sales representatives", "url_name": "core:sales_reps"},
+            {"key": "leads", "label": "Leads", "url_name": "core:leads"},
+            {
+                "key": "leads_billing",
+                "label": "Leads billing",
+                "url_name": "billing:lead_payments",
+            },
             {"key": "technicians", "label": "Technicians", "url_name": "core:technicians"},
         ],
     },
@@ -187,6 +200,11 @@ CLIENT_SIDEBARS = {
         "label": "Billings",
         "items": [
             {"key": "billing", "label": "Billing overview", "url_name": "billing:dashboard"},
+            {
+                "key": "leads_billing",
+                "label": "Lead payments",
+                "url_name": "billing:lead_payments",
+            },
             {"key": "packages", "label": "Packages", "url_name": "billing:packages"},
             {
                 "key": "register_package",
@@ -202,10 +220,15 @@ CLIENT_SIDEBARS = {
             {"key": "account", "label": "Account details", "url_name": "core:my_account"},
         ],
     },
-    "sales": {
-        "label": "Sales representatives",
+    "leads": {
+        "label": "Leads",
         "items": [
-            {"key": "sales", "label": "Sales team", "url_name": "core:sales_reps"},
+            {"key": "leads", "label": "All leads", "url_name": "core:leads"},
+            {
+                "key": "leads_billing",
+                "label": "Leads billing",
+                "url_name": "billing:lead_payments",
+            },
         ],
     },
     "technicians": {
@@ -247,7 +270,7 @@ def resolve_organization(user, request=None):
 
 
 def client_workspace_required(view_func):
-    """Allow organization owners and IT Support client-view sessions."""
+    """Allow organization owners and staff client-view sessions."""
 
     @wraps(view_func)
     @login_required
@@ -265,7 +288,17 @@ def build_client_nav(active_nav: str) -> dict:
     """Dashboard at top, page links in the middle, settings + logout at the bottom."""
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
     reserved = {"workspace", "settings", "logout"}
-    page_items = [item for item in sidebar.get("items", []) if item.get("key") not in reserved]
+    page_items = []
+    for item in sidebar.get("items", []):
+        if item.get("key") in reserved:
+            continue
+        row = dict(item)
+        if row.get("url_name") and row.get("anchor") and not row.get("href"):
+            try:
+                row["href"] = f"{reverse(row['url_name'])}#{row['anchor']}"
+            except Exception:  # noqa: BLE001 — keep plain url_name fallback
+                pass
+        page_items.append(row)
     return {
         "main": [
             *CLIENT_COMMON_NAV_START,
@@ -719,8 +752,24 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     org = resolve_organization(request.user, request)
     is_owner = bool(org and (org.owner_id == request.user.id or viewing_client))
+    # Anyone in the client workspace can edit their own login via the popup.
+    can_edit_owner_profile = True
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
     nav = build_client_nav(active_nav)
+
+    owner_profile_form = extra.pop("owner_profile_form", None)
+    open_owner_profile_modal = bool(extra.pop("open_owner_profile_modal", False))
+    if owner_profile_form is None:
+        owner_profile_form = OwnerProfileForm(
+            user=request.user,
+            initial={
+                "username": request.user.username,
+                "first_name": request.user.first_name,
+                "last_name": request.user.last_name,
+                "email": request.user.email,
+            },
+        )
+
     ctx = {
         "organization": org,
         "is_owner": is_owner,
@@ -731,6 +780,13 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
         "client_nav_end": nav["end"],
         "is_viewing_as_client": viewing_client,
         "can_switch_roles": can_switch_roles(employee) if employee else False,
+        "can_access_client_portal": (
+            can_access_client_portal(employee) if employee else False
+        ),
+        "can_edit_owner_profile": can_edit_owner_profile,
+        "owner_profile_form": owner_profile_form,
+        "open_owner_profile_modal": open_owner_profile_modal,
+        "employee_profile": employee,
     }
     ctx.update(extra)
     return ctx
@@ -3265,6 +3321,7 @@ def client_detail(request, customer_id: int):
     invoices = (
         list(
             Invoice.objects.filter(customer=customer, organization=org)
+            .prefetch_related("payments")
             .order_by("-issued_at")[:8]
         )
         if org
@@ -5141,7 +5198,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     if request is not None:
         link_login = (request.GET.get("link-login-only") or request.GET.get("link_login_only") or "").strip()
         link_orig = (request.GET.get("dst") or request.GET.get("link-orig") or "").strip()
-        hotspot_mac = _normalize_hotspot_mac(request.GET.get("mac") or "")
+        hotspot_mac = _resolve_request_hotspot_mac(org, request)
         error = (request.GET.get("error") or "").strip()
         if link_login:
             mikrotik_login = True
@@ -5192,6 +5249,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "pppoe_pay_url": pppoe_pay_url,
         "pppoe_payment_start_url": pppoe_payment_start_url,
         "pppoe_require_account_lookup": True,
+        "pppoe_account_locked": False,
         "pppoe_customer_token": "",
         "pppoe_customer_name": "",
         "pppoe_account_number": "",
@@ -5224,13 +5282,88 @@ def _normalize_hotspot_mac(value: str) -> str:
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2)).upper()
 
 
+def _resolve_request_hotspot_mac(org, request) -> str:
+    """
+    Best-effort device MAC for captive Hotspot payment.
+
+    Prefer query/cookie values from RouterOS redirects; fall back to looking the
+    client IP up on the organization's Hotspot NAS tables.
+    """
+    if request is None:
+        return ""
+    candidates = [
+        request.GET.get("mac") or "",
+        request.POST.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ]
+    for raw in candidates:
+        mac = _normalize_hotspot_mac(raw)
+        if mac:
+            remote = (request.META.get("REMOTE_ADDR") or "").strip()
+            if remote:
+                try:
+                    from core.mikrotik_connect import remember_hotspot_mac_for_ip
+
+                    remember_hotspot_mac_for_ip(org, remote, mac)
+                except Exception:
+                    pass
+            return mac
+    remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    if not remote:
+        return ""
+    try:
+        from core.mikrotik_connect import find_hotspot_mac_for_ip
+
+        return _normalize_hotspot_mac(find_hotspot_mac_for_ip(org, remote) or "")
+    except Exception:
+        return ""
+
+
+def _set_hotspot_mac_cookie(response, mac: str):
+    mac = _normalize_hotspot_mac(mac)
+    if not mac or response is None:
+        return response
+    response.set_cookie(
+        "hs_mac",
+        mac,
+        max_age=60 * 60 * 24,
+        samesite="Lax",
+        httponly=False,
+    )
+    return response
+
+
+def _set_pppoe_account_cookie(response, token: str):
+    token = (token or "").strip()
+    if not token or response is None:
+        return response
+    response.set_cookie(
+        "pppoe_pay",
+        token,
+        max_age=60 * 60 * 24 * 30,
+        samesite="Lax",
+        httponly=True,
+    )
+    return response
+
+
+def _make_pppoe_customer_token(org, customer) -> str:
+    if customer is None or org is None:
+        return ""
+    return signing.dumps(
+        {"cid": customer.pk, "org": org.pk, "mode": "pppoe"},
+        salt="pppoe-payment",
+        compress=True,
+    )
+
+
 @require_POST
 def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
     from billing.stk import start_subscription_stk_payment
 
     org = get_object_or_404(Organization, join_code=join_code)
-    mac = _normalize_hotspot_mac(request.POST.get("mac") or "")
+    mac = _resolve_request_hotspot_mac(org, request)
     if not mac:
         return JsonResponse(
             {"ok": False, "error": "Could not identify this device. Rejoin the Hotspot and try again."},
@@ -5488,11 +5621,9 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     org = get_object_or_404(Organization, join_code=join_code)
-    return render(
-        request,
-        "core/hotspot_portal_login.html",
-        _hotspot_portal_context(org, mikrotik_login=False, request=request),
-    )
+    context = _hotspot_portal_context(org, mikrotik_login=False, request=request)
+    response = render(request, "core/hotspot_portal_login.html", context)
+    return _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
 
 
 def _pppoe_portal_context(org, request, customer=None, identify_error: str = ""):
@@ -5506,11 +5637,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     stk_ready = bool(org.effective_daraja_credentials().get("ready"))
     customer_token = ""
     if customer is not None:
-        customer_token = signing.dumps(
-            {"cid": customer.pk, "org": org.pk, "mode": "pppoe"},
-            salt="pppoe-payment",
-            compress=True,
-        )
+        customer_token = _make_pppoe_customer_token(org, customer)
     hotspot_option_available = bool(getattr(org, "hotspot_enabled", False))
     hotspot_ssids = []
     if hotspot_option_available:
@@ -5523,11 +5650,11 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             .values_list("wifi_ssid", flat=True)
             .distinct()[:8]
         )
-    # Prefer real MAC from the request; otherwise keep MikroTik's $(mac) so CPE /
-    # ISP Hotspot HTML files can substitute it when served by RouterOS.
+    # Prefer real MAC from the request / NAS IP lookup; otherwise keep MikroTik's
+    # $(mac) so CPE / ISP Hotspot HTML files can substitute it when served by RouterOS.
     hotspot_mac = ""
     if request is not None:
-        hotspot_mac = _normalize_hotspot_mac(request.GET.get("mac") or "")
+        hotspot_mac = _resolve_request_hotspot_mac(org, request)
     hotspot_mac_value = hotspot_mac or "$(mac)"
     show_payment_form = bool(stk_ready and plans)
     pppoe_start = public_absolute_url(
@@ -5574,6 +5701,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "pppoe_option_available": False,
         "pppoe_pay_url": "",
         "pppoe_require_account_lookup": customer is None,
+        "pppoe_account_locked": customer is not None,
         "pppoe_customer_token": customer_token,
         "pppoe_customer_name": getattr(customer, "full_name", "") if customer else "",
         "pppoe_account_number": getattr(customer, "account_number", "") if customer else "",
@@ -5652,17 +5780,32 @@ def pppoe_pay(request, join_code: str):
         # connected router is filled without needing a 10.20.0.x pool IP.
         customer = _find_pppoe_customer_from_token(org, request.GET.get("t") or "")
     if customer is None:
+        # Same browser returning to renew — reuse the last matched account.
+        customer = _find_pppoe_customer_from_token(
+            org, request.COOKIES.get("pppoe_pay") or ""
+        )
+    if customer is None:
         identify_error = (
             "Could not auto-match this connection. Enter your account number "
             "or M-Pesa phone to pay and restore internet."
         )
-    return render(
-        request,
-        "core/hotspot_portal_login.html",
-        _pppoe_portal_context(
-            org, request, customer=customer, identify_error=identify_error
-        ),
+    context = _pppoe_portal_context(
+        org, request, customer=customer, identify_error=identify_error
     )
+    response = render(request, "core/hotspot_portal_login.html", context)
+    response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
+    if customer is not None:
+        response = _set_pppoe_account_cookie(
+            response, context.get("customer_token") or ""
+        )
+        if remote:
+            try:
+                from core.mikrotik_connect import remember_pppoe_customer_session_ip
+
+                remember_pppoe_customer_session_ip(customer, remote)
+            except Exception:
+                pass
+    return response
 
 
 @require_POST
@@ -5678,7 +5821,7 @@ def pppoe_payment_start(request, join_code: str):
             payload = signing.loads(
                 token,
                 salt="pppoe-payment",
-                max_age=60 * 60 * 6,
+                max_age=60 * 60 * 24 * 30,
             )
         except signing.BadSignature:
             return JsonResponse(
@@ -5895,12 +6038,68 @@ def hotspot_alogin_page(request, join_code: str):
 
 
 @client_workspace_required
+@require_POST
+def save_owner_profile(request):
+    """Save login profile from the Edit profile popup (available on any /app page)."""
+    org = resolve_organization(request.user, request)
+    employee = getattr(request.user, "employee_profile", None)
+    viewing_client = bool(employee and is_viewing_as_client(request, employee))
+    next_url = (request.POST.get("next") or "").strip() or reverse("core:my_account")
+    if not next_url.startswith("/"):
+        next_url = reverse("core:my_account")
+
+    form = OwnerProfileForm(request.POST, user=request.user)
+    if form.is_valid():
+        form.save()
+        if form.cleaned_data.get("password1"):
+            update_session_auth_hash(request, request.user)
+            messages.success(request, "Profile and password updated.")
+        else:
+            messages.success(request, "Profile details updated.")
+        return redirect(next_url)
+
+    messages.error(request, "Could not save profile. Check the highlighted fields.")
+    gateway = PaymentGateway.get_solo() if org else None
+    return render(
+        request,
+        "core/my_account.html",
+        client_page_context(
+            request,
+            active_nav="account",
+            page_title="My account",
+            page_kicker="Company",
+            page_subtitle=(
+                "Update your login profile, company details, Paybill or Till, "
+                "and Daraja STK Push for subscription payments."
+            ),
+            form=OrganizationEditForm(instance=org) if org else None,
+            can_edit=bool(org and (org.owner_id == request.user.id or viewing_client)),
+            can_edit_profile=True,
+            owner_profile_form=form,
+            open_owner_profile_modal=True,
+            platform_gateway=gateway,
+            platform_gateway_ready=bool(gateway and gateway.is_stk_ready()),
+            daraja_status=org.effective_daraja_credentials() if org else None,
+            receive_type=(org.mpesa_payment_type if org else "") or "",
+        ),
+    )
+
+
+@client_workspace_required
 def my_account(request):
     org = resolve_organization(request.user, request)
     employee = getattr(request.user, "employee_profile", None)
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
+    can_edit_profile = bool(
+        not viewing_client
+        and (
+            (org and org.owner_id == request.user.id)
+            or Organization.objects.filter(owner_id=request.user.id).exists()
+        )
+    )
     platform_gateway = PaymentGateway.get_solo() if org else None
+    form = OrganizationEditForm(instance=org) if org and can_edit else None
 
     if request.method == "POST" and can_edit and org:
         form = OrganizationEditForm(request.POST, request.FILES, instance=org)
@@ -5922,8 +6121,6 @@ def my_account(request):
             else:
                 messages.success(request, "Account details updated.")
             return redirect("core:my_account")
-    else:
-        form = OrganizationEditForm(instance=org) if org and can_edit else None
 
     daraja_status = org.effective_daraja_credentials() if org else None
 
@@ -5936,44 +6133,250 @@ def my_account(request):
             page_title="My account",
             page_kicker="Company",
             page_subtitle=(
-                "Update company details, choose Paybill or Till, "
-                "and enable Daraja STK Push for subscription payments."
+                "Update your login profile, company details, Paybill or Till, "
+                "and Daraja STK Push for subscription payments."
             ),
             form=form,
             can_edit=can_edit,
+            can_edit_profile=can_edit_profile,
             platform_gateway=platform_gateway,
             platform_gateway_ready=bool(
                 platform_gateway and platform_gateway.is_stk_ready()
             ),
             daraja_status=daraja_status,
             receive_type=(org.mpesa_payment_type if org else "") or "",
+            open_owner_profile_modal=(request.GET.get("edit") or "").strip().lower()
+            in {"1", "profile", "true"},
         ),
     )
 
 
 @client_workspace_required
-def sales_reps(request):
+def leads(request):
     org = resolve_organization(request.user, request)
-    members = (
-        Employee.objects.filter(organization=org, role=Employee.Role.SALES)
-        .select_related("user")
-        .order_by("user__first_name", "user__username")
+    # Open = NEW with no ISP yet (visible to every company).
+    # Allocated open/closed = assigned to THIS company only after successful payment.
+    customer_qs = (
+        Customer.objects.select_related(
+            "organization",
+            "plan",
+            "registered_by",
+            "assigned_technician",
+            "assigned_technician__user",
+        )
+        .filter(
+            Q(status=Customer.Status.NEW, organization__isnull=True)
+            | Q(status__in=Customer.ALLOCATED_STATUSES, organization=org)
+        )
+        .order_by("-created_at")
         if org
-        else Employee.objects.none()
+        else Customer.objects.none()
     )
+    customers = list(customer_qs[:200])
+    pay_phone = (org.phone if org else "") or ""
+    for customer in customers:
+        if customer.status != Customer.Status.NEW:
+            customer.allocation_amount_display = ""
+            continue
+        fee = resolve_lead_allocation_fee(organization=org, customer=customer)
+        customer.allocation_amount_display = (
+            fee.get("amount_display") if fee.get("ok") else ""
+        )
+        customer.allocation_fee_error = "" if fee.get("ok") else (fee.get("error") or "")
+
+    technicians = []
+    if org:
+        technicians = list(
+            Employee.objects.filter(
+                role=Employee.Role.TECHNICIAN,
+                status=Employee.Status.ACTIVE,
+            )
+            .filter(Q(organization=org) | Q(organization__isnull=True))
+            .select_related("user", "organization")
+            .order_by(
+                "organization_id",
+                "user__first_name",
+                "user__last_name",
+                "user__username",
+            )
+        )
+        # If this ISP has no linked/unassigned techs, fall back to all active technicians.
+        if not technicians:
+            technicians = list(
+                Employee.objects.filter(
+                    role=Employee.Role.TECHNICIAN,
+                    status=Employee.Status.ACTIVE,
+                )
+                .select_related("user", "organization")
+                .order_by("user__first_name", "user__last_name", "user__username")
+            )
     return render(
         request,
-        "core/staff_role_list.html",
+        "core/leads.html",
         client_page_context(
             request,
-            active_nav="sales",
-            page_title="Sales representatives",
-            page_kicker="Team",
-            page_subtitle="Sales staff assigned to this organization.",
-            members=members,
-            empty_text="No sales representatives are assigned to this company yet.",
+            active_nav="leads",
+            page_title="Leads",
+            page_kicker="Sales",
+            page_subtitle="Open clients and clients allocated to your ISP.",
+            customers=customers,
+            allocation_phone=pay_phone,
+            technicians=technicians,
         ),
     )
+
+
+def _lead_action_customer(request, customer_id):
+    """Return a lead the active ISP may act on, or None."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return None, None
+    customer = (
+        Customer.objects.filter(pk=customer_id)
+        .filter(
+            Q(status=Customer.Status.NEW, organization__isnull=True)
+            | Q(status__in=Customer.ALLOCATED_STATUSES, organization=org)
+        )
+        .select_related("organization", "plan", "assigned_technician")
+        .first()
+    )
+    return org, customer
+
+
+@client_workspace_required
+@require_POST
+def lead_allocation_stk_pay(request, customer_id):
+    """Send STK Push to pay for allocating an open lead to this ISP."""
+    org, customer = _lead_action_customer(request, customer_id)
+    if org is None:
+        return JsonResponse({"ok": False, "error": "No organization linked."}, status=400)
+    if customer is None or customer.status != Customer.Status.NEW:
+        return JsonResponse(
+            {"ok": False, "error": "That lead is no longer available."},
+            status=400,
+        )
+
+    phone = (request.POST.get("phone") or "").strip()
+    request_technician = (request.POST.get("request_technician") or "").strip().lower() in {
+        "1",
+        "true",
+        "on",
+        "yes",
+    }
+    technician_mode = (request.POST.get("technician_mode") or "").strip()
+    technician_id = request.POST.get("technician_id")
+    result = start_lead_allocation_stk_payment(
+        organization=org,
+        customer=customer,
+        phone=phone,
+        user=request.user,
+        request=request,
+        request_technician=request_technician,
+        technician_mode=technician_mode,
+        technician_id=technician_id,
+    )
+    status = 200 if result.get("ok") else 400
+    return JsonResponse(result, status=status)
+
+
+@client_workspace_required
+@require_GET
+def lead_allocation_stk_status(request, stk_id: int):
+    """Poll lead-allocation STK status for the active ISP."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization linked."}, status=400)
+
+    stk = get_object_or_404(
+        StkPushRequest.objects.select_related("customer", "organization"),
+        pk=stk_id,
+        organization=org,
+        purpose=StkPushRequest.Purpose.LEAD_ALLOCATION,
+    )
+    payload = refresh_stk_status(stk)
+    if payload.get("success"):
+        customer = stk.customer
+        customer.refresh_from_db(fields=["status", "phone", "organization_id"])
+        payload["customer_status"] = customer.status
+        payload["allocated"] = customer.status in Customer.ALLOCATED_STATUSES
+        payload["customer_phone"] = customer.phone or ""
+    return JsonResponse(payload)
+
+
+@client_workspace_required
+@require_POST
+def lead_reverse(request, customer_id):
+    """Reverse allocation payment record and return the ticket to New."""
+    org, customer = _lead_action_customer(request, customer_id)
+    if customer is None or customer.status not in Customer.ALLOCATED_STATUSES:
+        messages.error(request, "That allocated lead is no longer available.")
+        return redirect("core:leads")
+
+    reason_labels = {
+        "wrong_location": "Wrong location",
+        "full_capacity": "Full capacity",
+        "not_fibre_ready": "Not fibre ready",
+        "technician": "Technician",
+        "client": "Client",
+        "other": "Other reason",
+    }
+    detail_required = {"technician", "client", "other"}
+    category = (request.POST.get("reason_category") or "").strip()
+    detail = (request.POST.get("reason_detail") or "").strip()
+    reason = (request.POST.get("reason") or "").strip()
+
+    label = reason_labels.get(category)
+    if not label:
+        messages.error(request, "Choose a reason for this reversal.")
+        return redirect("core:leads")
+    if category in detail_required and not detail:
+        messages.error(request, f"Enter details for “{label}”.")
+        return redirect("core:leads")
+
+    if category in detail_required:
+        reason = f"{label}: {detail}"
+    else:
+        reason = label
+
+    result = reverse_lead_allocation(
+        organization=org,
+        customer=customer,
+        user=request.user,
+        reason=reason,
+    )
+    ticket = customer.sales_ticket_number or customer.account_number
+    if result.get("ok"):
+        messages.success(
+            request,
+            result.get("message")
+            or f"Reversed allocation for {customer.full_name} ({ticket}). Ticket is New again.",
+        )
+    else:
+        messages.error(request, result.get("error") or "Could not reverse this allocation.")
+    return redirect("core:leads")
+
+
+@client_workspace_required
+@require_POST
+def lead_not_interested(request, customer_id):
+    org, customer = _lead_action_customer(request, customer_id)
+    if customer is None:
+        messages.error(request, "That lead is no longer available.")
+        return redirect("core:leads")
+    if customer.status != Customer.Status.NEW:
+        messages.error(request, "Only open tickets can be marked not interested.")
+        return redirect("core:leads")
+
+    # Leave open-pool ownership empty but mark disposition so it leaves every leads queue.
+    customer.organization = org
+    customer.status = Customer.Status.NOT_INTERESTED
+    customer.save(update_fields=["organization", "status"])
+    ticket = customer.sales_ticket_number or customer.account_number
+    messages.success(
+        request,
+        f"Marked {customer.full_name} ({ticket}) as not interested. Ticket hidden.",
+    )
+    return redirect("core:leads")
 
 
 @client_workspace_required

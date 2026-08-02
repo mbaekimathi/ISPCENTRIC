@@ -3,6 +3,8 @@ from datetime import date, datetime, time, timedelta
 from django import forms
 from django.utils import timezone
 
+from accounts.countries import DEFAULT_COUNTRY, country_choices, get_country_options, option_for_value
+from accounts.forms import national_phone_length, validate_and_normalize_phone
 from billing.models import BillingPlan, Customer
 from billing.services import compute_package_end
 from core.models import MikroTikRouter
@@ -185,17 +187,250 @@ class PppoeClientRegisterForm(forms.ModelForm):
         customer.service_type = Customer.ServiceType.PPPOE
         customer.status = Customer.Status.ACTIVE
         if not customer.account_number:
-            from billing.services import generate_customer_account_number
+            from billing.services import generate_account_number_from_phone
 
-            customer.account_number = generate_customer_account_number(
-                self.organization,
-                prefix="PPP",
+            customer.account_number = generate_account_number_from_phone(
+                customer.phone,
+                organization=self.organization,
             )
         if customer.plan_id and not customer.package_start:
             customer.package_start = timezone.localtime()
             customer.package_end = compute_package_end(
                 customer.package_start,
                 customer.plan,
+            )
+        if commit:
+            customer.save()
+        return customer
+
+
+class SalesClientRegisterForm(forms.ModelForm):
+    """Sales registration of a personal client (contact + map location)."""
+
+    place_id = forms.CharField(
+        required=False,
+        widget=forms.HiddenInput(attrs={"id": "id_client_place_id"}),
+    )
+    location_lat = forms.DecimalField(
+        required=False,
+        max_digits=9,
+        decimal_places=6,
+        widget=forms.HiddenInput(attrs={"id": "id_client_location_lat"}),
+    )
+    location_lng = forms.DecimalField(
+        required=False,
+        max_digits=9,
+        decimal_places=6,
+        widget=forms.HiddenInput(attrs={"id": "id_client_location_lng"}),
+    )
+    country_code = forms.ChoiceField(
+        label="Country",
+        choices=country_choices,
+        initial=DEFAULT_COUNTRY,
+        widget=forms.HiddenInput(attrs={"id": "id_client_country_code"}),
+    )
+
+    class Meta:
+        model = Customer
+        fields = [
+            "organization",
+            "full_name",
+            "phone",
+            "email",
+            "address",
+            "location_lat",
+            "location_lng",
+            "building_name",
+            "house_number",
+        ]
+        widgets = {
+            "organization": forms.Select(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_client_organization",
+                }
+            ),
+            "full_name": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "FULL NAME",
+                    "autocomplete": "name",
+                    "autocapitalize": "characters",
+                }
+            ),
+            "phone": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper phone-local",
+                    "placeholder": "7XX XXX XXX",
+                    "autocomplete": "tel-national",
+                    "inputmode": "tel",
+                    "id": "id_client_phone",
+                }
+            ),
+            "email": forms.EmailInput(
+                attrs={
+                    "class": "form-control text-lower",
+                    "placeholder": "you@email.com",
+                    "autocomplete": "email",
+                    "autocapitalize": "off",
+                }
+            ),
+            "address": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "START TYPING A PLACE OR ADDRESS…",
+                    "autocomplete": "off",
+                    "autocapitalize": "characters",
+                    "spellcheck": "false",
+                    "id": "id_client_location",
+                    "role": "combobox",
+                    "aria-autocomplete": "list",
+                    "aria-controls": "client-location-suggest",
+                }
+            ),
+            "building_name": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "BUILDING NAME",
+                    "autocomplete": "organization",
+                    "autocapitalize": "characters",
+                    "id": "id_client_building_name",
+                }
+            ),
+            "house_number": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "HOUSE / UNIT NUMBER (OPTIONAL)",
+                    "autocomplete": "address-line2",
+                    "autocapitalize": "characters",
+                    "id": "id_client_house_number",
+                }
+            ),
+        }
+        labels = {
+            "organization": "ISP provider",
+            "full_name": "Full name",
+            "phone": "Phone number",
+            "email": "Email",
+            "address": "Location",
+            "building_name": "Building name",
+            "house_number": "House number",
+        }
+
+    def __init__(self, *args, organization=None, organizations=None, **kwargs):
+        from core.forms import CoordinateField
+
+        super().__init__(*args, **kwargs)
+        self.organization = organization
+
+        from accounts.models import Organization
+
+        self.fields["location_lat"] = CoordinateField(
+            widget=forms.HiddenInput(attrs={"id": "id_client_location_lat"})
+        )
+        self.fields["location_lng"] = CoordinateField(
+            widget=forms.HiddenInput(attrs={"id": "id_client_location_lng"})
+        )
+
+        org_qs = organizations
+        if org_qs is None:
+            org_qs = Organization.objects.order_by("name")
+        self.fields["organization"].queryset = org_qs
+        self.fields["organization"].required = False
+        self.fields["organization"].empty_label = "— No specific ISP provider —"
+        self.fields["email"].required = False
+        self.fields["address"].required = True
+        self.fields["building_name"].required = True
+        self.fields["house_number"].required = False
+        self.country_options = get_country_options()
+        selected = DEFAULT_COUNTRY
+        if self.is_bound:
+            selected = self.data.get(self.add_prefix("country_code")) or selected
+        elif self.fields["country_code"].initial:
+            selected = self.fields["country_code"].initial
+        self.selected_country = option_for_value(selected or DEFAULT_COUNTRY)
+        self.phone_national_length = national_phone_length(selected or DEFAULT_COUNTRY)
+
+    def clean_full_name(self):
+        name = (self.cleaned_data.get("full_name") or "").strip().upper()
+        if not name:
+            raise forms.ValidationError("Enter the client’s full name.")
+        return name
+
+    def clean_email(self):
+        return (self.cleaned_data.get("email") or "").strip().lower()
+
+    def clean_address(self):
+        return (self.cleaned_data.get("address") or "").strip().upper()
+
+    def clean_building_name(self):
+        name = (self.cleaned_data.get("building_name") or "").strip().upper()
+        if not name:
+            raise forms.ValidationError("Enter the building name.")
+        return name
+
+    def clean_house_number(self):
+        return (self.cleaned_data.get("house_number") or "").strip().upper()
+
+    def clean(self):
+        from core.places import apply_resolved_coords
+
+        cleaned = super().clean()
+        self.organization = cleaned.get("organization")
+
+        country = cleaned.get("country_code") or DEFAULT_COUNTRY
+        try:
+            cleaned["phone"] = validate_and_normalize_phone(
+                country, cleaned.get("phone") or "", required=True
+            )
+        except forms.ValidationError as exc:
+            self.add_error("phone", exc)
+
+        location = cleaned.get("address") or ""
+        if not location:
+            self.add_error("address", "Enter and select a location.")
+            return cleaned
+
+        label, lat, lng = apply_resolved_coords(
+            location,
+            cleaned.get("location_lat"),
+            cleaned.get("location_lng"),
+            place_id=cleaned.get("place_id") or "",
+        )
+        cleaned["address"] = (label or "").strip().upper()
+        cleaned["location_lat"] = lat
+        cleaned["location_lng"] = lng
+        if lat is None or lng is None:
+            self.add_error(
+                "address",
+                "Choose a suggested location so latitude and longitude can be saved.",
+            )
+        return cleaned
+
+    def save(self, commit=True, *, registered_by=None):
+        customer = super().save(commit=False)
+        customer.organization = self.cleaned_data.get("organization")
+        self.organization = customer.organization
+        customer.service_type = Customer.ServiceType.PPPOE
+        customer.status = (
+            Customer.Status.ALLOCATED
+            if customer.organization_id
+            else Customer.Status.NEW
+        )
+        if registered_by is not None:
+            customer.registered_by = registered_by
+        if not customer.account_number:
+            from billing.services import generate_account_number_from_phone
+
+            customer.account_number = generate_account_number_from_phone(
+                customer.phone,
+                organization=customer.organization,
+            )
+        if not customer.sales_ticket_number:
+            from billing.services import generate_sales_ticket_number
+
+            customer.sales_ticket_number = generate_sales_ticket_number(
+                customer.organization
             )
         if commit:
             customer.save()

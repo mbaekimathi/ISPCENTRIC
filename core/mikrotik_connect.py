@@ -8440,6 +8440,93 @@ def is_hotspot_pool_ip(ip: str) -> bool:
         return False
 
 
+def _format_hotspot_mac(mac_address: str) -> str:
+    compact = _mac_compact(mac_address)
+    if len(compact) != 12:
+        return ""
+    return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+
+
+def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
+    """
+    Resolve a client MAC from the IP Django sees on a Hotspot request.
+
+    Captive probes sometimes land on the pay page without RouterOS ``mac=``
+    substitution. Look up the same IP in Hotspot host/active, DHCP leases, and ARP.
+    """
+    client_ip = (client_ip or "").strip()
+    if not client_ip:
+        return ""
+
+    org_id = getattr(organization, "pk", None)
+    cache_key = f"captive:hs-ip-mac:{org_id}:{client_ip}"
+    cached = _captive_cache_get(cache_key)
+    if isinstance(cached, str) and cached:
+        return cached
+
+    from core.models import MikroTikRouter
+
+    routers = list(
+        MikroTikRouter.objects.filter(
+            organization=organization,
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        ).order_by("id")
+    )
+    for router in routers:
+        host = router.api_host
+        username = (router.username or "").strip()
+        if not host or not username:
+            continue
+        try:
+            with _api_session(
+                host, username, router.password or "", timeout=_CAPTIVE_API_TIMEOUT
+            ) as sock:
+                for path, props in (
+                    ("/ip/hotspot/host", "mac-address,address"),
+                    ("/ip/hotspot/active", "mac-address,address"),
+                    ("/ip/dhcp-server/lease", "mac-address,address,active-mac-address"),
+                    ("/ip/arp", "mac-address,address"),
+                ):
+                    rows = _print(
+                        sock,
+                        path,
+                        props=props,
+                        query={"address": client_ip},
+                    )
+                    if not rows:
+                        rows = _print(sock, path, props=props)
+                    for row in rows:
+                        if (row.get("address") or "").strip() != client_ip:
+                            continue
+                        mac = _format_hotspot_mac(
+                            row.get("active-mac-address")
+                            or row.get("mac-address")
+                            or ""
+                        )
+                        if mac:
+                            _captive_cache_set(
+                                cache_key, mac, _CAPTIVE_PPPOE_IP_CACHE_TTL
+                            )
+                            return mac
+        except Exception:
+            continue
+    return ""
+
+
+def remember_hotspot_mac_for_ip(organization, client_ip: str, mac_address: str) -> None:
+    """Cache a known Hotspot client IP → MAC mapping."""
+    client_ip = (client_ip or "").strip()
+    mac = _format_hotspot_mac(mac_address)
+    org_id = getattr(organization, "pk", None)
+    if not client_ip or not mac or not org_id:
+        return
+    _captive_cache_set(
+        f"captive:hs-ip-mac:{org_id}:{client_ip}",
+        mac,
+        _CAPTIVE_PPPOE_IP_CACHE_TTL,
+    )
+
+
 def _fallback_captive_organization():
     """Best-effort org when the client IP cannot be matched to a live NAS session."""
     from accounts.models import Organization
@@ -10196,11 +10283,13 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
     else:
         base = pay_url.rstrip("/")
         sep = "?"
-    # Pass MikroTik session vars so the payment page can post login back to the router.
+    # Pass MikroTik session vars so the payment page can identify the device.
+    # Put mac first so it survives if other substituted fields contain '&'.
+    # Prefer $(mac) (widely substituted); keep $(mac-esc) as a second param.
     target = (
         f"{base}{sep}"
-        f"dst=$(link-orig-esc)"
-        f"&mac=$(mac-esc)"
+        f"mac=$(mac)"
+        f"&dst=$(link-orig-esc)"
         f"&username=$(username-esc)"
         f"&link-login-only=$(link-login-only-esc)"
         f"&error=$(error-esc)"

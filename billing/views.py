@@ -207,6 +207,43 @@ def _handle_delete_package(request, org, *, success_url_name: str):
     return redirect(success_url_name)
 
 
+def _lead_payment_rows(org):
+    """Successful lead-allocation STK rows for an ISP, including reversals."""
+    rows = []
+    if not org:
+        return rows
+    for stk in (
+        StkPushRequest.objects.filter(
+            organization=org,
+            purpose=StkPushRequest.Purpose.LEAD_ALLOCATION,
+            status=StkPushRequest.Status.SUCCESS,
+        )
+        .select_related("customer", "invoice", "payment")
+        .order_by("-completed_at", "-pk")[:40]
+    ):
+        raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        notes = (stk.invoice.notes if stk.invoice_id else "") or ""
+        reversed_payment = bool(raw.get("lead_allocation_reversed")) or (
+            "[LEAD ALLOCATION REVERSED]" in notes
+        )
+        rows.append(
+            {
+                "stk": stk,
+                "customer": stk.customer,
+                "invoice": stk.invoice,
+                "payment": stk.payment,
+                "reversed": reversed_payment,
+                "reversal_reason": (raw.get("reversal_reason") or "").strip(),
+                "amount": stk.amount,
+                "completed_at": stk.completed_at,
+                "receipt": stk.mpesa_receipt
+                or (stk.payment.reference if stk.payment_id else "")
+                or "",
+            }
+        )
+    return rows
+
+
 @login_required
 def dashboard(request):
     """Billing module dashboard."""
@@ -243,6 +280,7 @@ def dashboard(request):
         recent_invoices = (
             Invoice.objects.filter(organization=org)
             .select_related("customer")
+            .prefetch_related("payments")
             .order_by("-issued_at")[:8]
         )
         packages = (
@@ -251,6 +289,9 @@ def dashboard(request):
         )
         attention_customers = customers_needing_renewal_attention(org)
         stats["attention_customers"] = len(attention_customers)
+        lead_payments = _lead_payment_rows(org)
+        stats["lead_payments"] = len(lead_payments)
+        stats["lead_reversals"] = sum(1 for row in lead_payments if row["reversed"])
     else:
         stats = {
             "customers": 0,
@@ -259,10 +300,13 @@ def dashboard(request):
             "revenue": 0,
             "packages": 0,
             "attention_customers": 0,
+            "lead_payments": 0,
+            "lead_reversals": 0,
         }
         recent_invoices = Invoice.objects.none()
         packages = BillingPlan.objects.none()
         attention_customers = []
+        lead_payments = []
 
     return render(
         request,
@@ -278,6 +322,33 @@ def dashboard(request):
             packages=packages,
             package_form=package_form,
             open_billing_modal=open_modal,
+            lead_payments=lead_payments,
+        ),
+    )
+
+
+@login_required
+def lead_payments(request):
+    """Lead allocation payments and reversals for the active ISP."""
+    blocked = _require_client_workspace(request)
+    if blocked:
+        return blocked
+
+    org = resolve_organization(request.user, request)
+    rows = _lead_payment_rows(org)
+    return render(
+        request,
+        "billing/lead_payments.html",
+        client_page_context(
+            request,
+            active_nav="billing",
+            sidebar_active="leads_billing",
+            page_title="Lead payments",
+            page_kicker="Billings",
+            page_subtitle="Sales ticket allocation fees paid by your ISP, including reversals.",
+            lead_payments=rows,
+            lead_payment_count=len(rows),
+            lead_reversal_count=sum(1 for row in rows if row["reversed"]),
         ),
     )
 

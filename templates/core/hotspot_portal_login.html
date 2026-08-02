@@ -54,8 +54,12 @@
         calc(0.85rem + env(safe-area-inset-right, 0px))
         calc(0.85rem + env(safe-area-inset-bottom, 0px))
         calc(0.85rem + env(safe-area-inset-left, 0px));
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif;
       color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-size-adjust: 100%;
+      -webkit-text-size-adjust: 100%;
       background:
         radial-gradient(ellipse 90% 55% at 8% -5%, rgba(14, 124, 134, 0.34), transparent 55%),
         radial-gradient(ellipse 70% 45% at 100% 100%, rgba(232, 163, 23, 0.16), transparent 48%),
@@ -121,9 +125,9 @@
       border-radius: 999px;
       border: 1px solid rgba(14, 124, 134, 0.28);
       background: var(--brand-soft);
-      font-size: 0.66rem;
-      font-weight: 800;
-      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: var(--brand);
     }
@@ -138,9 +142,9 @@
       border-radius: 999px;
       background: rgba(21, 128, 61, 0.12);
       color: var(--ok);
-      font-size: 0.68rem;
-      font-weight: 800;
-      letter-spacing: 0.06em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
     }
 
@@ -161,17 +165,17 @@
 
     h1 {
       margin: 0;
-      font-size: clamp(1.28rem, 5.4vw, 1.6rem);
-      line-height: 1.18;
-      letter-spacing: -0.03em;
-      font-weight: 800;
+      font-size: clamp(1.35rem, 5.4vw, 1.7rem);
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      font-weight: 700;
     }
 
     .msg {
       margin: 0.55rem 0 0;
       max-width: 42ch;
-      font-size: clamp(0.9rem, 3.5vw, 0.98rem);
-      line-height: 1.5;
+      font-size: clamp(0.94rem, 3.5vw, 1.02rem);
+      line-height: 1.55;
       color: var(--muted);
       white-space: pre-wrap;
     }
@@ -222,9 +226,9 @@
 
     .panel-kicker {
       margin: 0 0 0.55rem;
-      font-size: 0.68rem;
-      font-weight: 800;
-      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: var(--brand);
     }
@@ -742,8 +746,13 @@
           {% if has_mpesa %}
             {% if mpesa_type == "paybill" %}
               <div class="fact"><dt>Paybill</dt><dd>{{ mpesa_number }}</dd></div>
-              {% if mpesa_account %}<div class="fact"><dt>Account</dt><dd>{{ mpesa_account }}</dd></div>{% endif %}
-              <div class="fact"><dt>Reference</dt><dd>Your account number</dd></div>
+              {% if mpesa_account %}
+                <div class="fact"><dt>Account</dt><dd>{{ mpesa_account }}</dd></div>
+              {% elif account_number %}
+                <div class="fact"><dt>Account</dt><dd>{{ account_number }}</dd></div>
+              {% else %}
+                <div class="fact"><dt>Account</dt><dd>Your account number</dd></div>
+              {% endif %}
             {% else %}
               <div class="fact"><dt>Buy Goods Till</dt><dd>{{ mpesa_number }}</dd></div>
             {% endif %}
@@ -832,7 +841,6 @@
                 Enter your PIN on your phone. This page updates automatically.
               </p>
             </div>
-            <a class="ok" data-continue-browsing href="{{ welcome_url|default:'http://neverssl.com/' }}" hidden>Continue browsing</a>
             <button type="button" class="retry" data-payment-retry hidden>Try again</button>
           </section>
           {% endif %}
@@ -893,7 +901,7 @@
               {% with token=pppoe_customer_token|default:customer_token %}
                 {% if token %}<input type="hidden" name="customer_token" value="{{ token }}">{% endif %}
               {% endwith %}
-              {% if pppoe_require_account_lookup|default:require_account_lookup %}
+              {% with acct=pppoe_account_number|default:account_number|default:'' %}
               <div class="field">
                 <label for="pppoe-account-number">Account number</label>
                 <input
@@ -902,10 +910,14 @@
                   type="text"
                   autocomplete="username"
                   placeholder="Your account number"
-                  value="{{ pppoe_account_number|default:account_number|default:'' }}"
+                  value="{{ acct }}"
+                  {% if pppoe_account_locked and acct %}readonly aria-readonly="true"{% endif %}
                 >
+                {% if pppoe_account_locked and acct %}
+                  <p class="meta" style="margin:0.35rem 0 0;">Account selected for this connection.</p>
+                {% endif %}
               </div>
-              {% endif %}
+              {% endwith %}
               <div class="field visually-hidden-select">
                 <label for="pppoe-plan-id">Internet package</label>
                 <select id="pppoe-plan-id" name="plan_id" data-plan-select required>
@@ -948,7 +960,6 @@
                 Enter your PIN on your phone. This page updates automatically.
               </p>
             </div>
-            <a class="ok" data-continue-browsing href="{{ welcome_url|default:'http://neverssl.com/' }}" hidden>Continue browsing</a>
             <button type="button" class="retry" data-payment-retry hidden>Try again</button>
           </section>
           {% endif %}
@@ -962,9 +973,6 @@
               Rejoin this Wi‑Fi to open the passwordless payment page for your device.
             {% endif %}
           </p>
-          {% if welcome_url %}
-            <a class="ok" href="{{ welcome_url }}">Preview continue-browsing page</a>
-          {% endif %}
         {% endif %}
 
         <p class="foot-note">Secured M-Pesa STK · {{ org_name }}</p>
@@ -1012,7 +1020,6 @@
         var waitingPanel = root.querySelector("[data-payment-waiting]");
         var waitingTitle = root.querySelector("[data-waiting-title]");
         var waitingCopy = root.querySelector("[data-waiting-copy]");
-        var continueBtn = root.querySelector("[data-continue-browsing]");
         var planCards = root.querySelector("[data-plan-cards]");
         if (!form || !submit || !plan) return;
 
@@ -1024,6 +1031,7 @@
           waitingPanel.hidden = !active;
           if (status) status.hidden = !!active;
           if (active) {
+            stopRetry();
             if (waitingTitle && title) waitingTitle.textContent = title;
             if (waitingCopy && copy) waitingCopy.textContent = copy;
           }
@@ -1042,7 +1050,6 @@
           show(message, true);
           if (retry) retry.hidden = false;
           submit.disabled = false;
-          if (continueBtn) continueBtn.hidden = true;
           setWaiting(false);
         }
 
@@ -1067,17 +1074,10 @@
           syncPlanCards();
         }
 
-        function showContinue(targetUrl) {
-          if (!continueBtn) return;
-          continueBtn.href = targetUrl || welcomeUrl || "http://neverssl.com/";
-          continueBtn.hidden = false;
-          continueBtn.textContent = "Continue browsing";
-        }
-
         function openInternet(stkId, token) {
           setWaiting(false);
-          show("Payment successful. You are online — continue browsing.", false);
           stopRetry();
+          show("Payment successful. You are online.", false);
           submit.disabled = true;
           var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
           var target =
@@ -1087,7 +1087,6 @@
             encodeURIComponent(stkId) +
             "&token=" +
             encodeURIComponent(token);
-          showContinue(target);
           window.setTimeout(function () {
             window.location.replace(target);
           }, 600);
@@ -1107,14 +1106,31 @@
             .then(function (result) {
               var data = result.data || {};
               if (!result.ok || !data.ok) {
-                show(data.error || "Could not check payment.", true);
+                // Keep waiting silently on transient status errors; only offer
+                // retry when the server says this payment cannot continue.
                 if (data.can_retry === false) {
+                  show(data.error || "Could not check payment.", true);
                   stopRetry();
                   submit.disabled = true;
-                } else {
-                  if (retry) retry.hidden = false;
-                  submit.disabled = false;
+                  setWaiting(false);
+                  return;
                 }
+                var elapsedErr = Date.now() - pollStartedAt;
+                if (elapsedErr < POLL_GIVE_UP_MS) {
+                  setWaiting(
+                    true,
+                    "Checking payment status",
+                    (data.error || "Could not check payment.") +
+                      " Retrying automatically…"
+                  );
+                  stopRetry();
+                  pollTimer = window.setTimeout(
+                    function () { poll(url, token); },
+                    POLL_SLOW_MS
+                  );
+                  return;
+                }
+                offerRetry(data.error || "Could not check payment.");
                 return;
               }
               if (data.success) {
@@ -1144,25 +1160,31 @@
                     "Payment succeeded, but the router could not authorize this device. Reload this page in a moment.",
                   true
                 );
+                stopRetry();
                 return;
               }
               if (data.pending) {
                 var elapsed = Date.now() - pollStartedAt;
                 if (data.expired) {
+                  // M-Pesa prompt cancelled / timed out — payment unsuccessful.
+                  window.clearTimeout(pollTimer);
                   offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
-                } else {
-                  setWaiting(
-                    true,
-                    "Waiting for M-Pesa",
-                    data.result_desc ||
-                      "Enter your PIN on your phone. This page updates automatically."
-                  );
+                  return;
                 }
+                stopRetry();
+                setWaiting(
+                  true,
+                  "Waiting for M-Pesa",
+                  data.result_desc ||
+                    "Enter your PIN on your phone. This page updates automatically."
+                );
                 if (elapsed < POLL_GIVE_UP_MS) {
                   pollTimer = window.setTimeout(
                     function () { poll(url, token); },
-                    data.expired ? POLL_SLOW_MS : POLL_FAST_MS
+                    POLL_FAST_MS
                   );
+                } else {
+                  offerRetry("The M-Pesa prompt timed out. Try again.");
                 }
                 return;
               }
@@ -1172,17 +1194,22 @@
               if (data.can_retry === false) stopRetry();
             })
             .catch(function (error) {
-              setWaiting(
-                true,
-                "Checking payment status",
-                (error.message || "Could not check payment.") +
-                  " Retrying automatically…"
-              );
-              stopRetry();
-              pollTimer = window.setTimeout(
-                function () { poll(url, token); },
-                POLL_SLOW_MS
-              );
+              var elapsedCatch = Date.now() - pollStartedAt;
+              if (elapsedCatch < POLL_GIVE_UP_MS) {
+                setWaiting(
+                  true,
+                  "Checking payment status",
+                  (error.message || "Could not check payment.") +
+                    " Retrying automatically…"
+                );
+                stopRetry();
+                pollTimer = window.setTimeout(
+                  function () { poll(url, token); },
+                  POLL_SLOW_MS
+                );
+                return;
+              }
+              offerRetry(error.message || "Could not check payment.");
             });
         }
 
@@ -1203,8 +1230,8 @@
             var macVal = (macInput.value || "").trim();
             if (!macVal || macVal.indexOf("$(") === 0) {
               try {
-                var fromUrl = new URLSearchParams(window.location.search).get("mac") || "";
-                fromUrl = fromUrl.trim();
+                var params = new URLSearchParams(window.location.search);
+                var fromUrl = (params.get("mac") || "").trim();
                 if (fromUrl && fromUrl.indexOf("$(") !== 0) {
                   macInput.value = fromUrl;
                   macVal = fromUrl;
@@ -1212,7 +1239,21 @@
               } catch (err) {}
             }
             if (!macVal || macVal.indexOf("$(") === 0) {
-              offerRetry("Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.");
+              try {
+                var cookieMatch = document.cookie.match(/(?:^|;\s*)hs_mac=([^;]+)/);
+                var fromCookie = cookieMatch ? decodeURIComponent(cookieMatch[1]).trim() : "";
+                if (fromCookie && fromCookie.indexOf("$(") !== 0) {
+                  macInput.value = fromCookie;
+                  macVal = fromCookie;
+                }
+              } catch (err2) {}
+            }
+            if (!macVal || macVal.indexOf("$(") === 0) {
+              show(
+                "Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.",
+                true
+              );
+              stopRetry();
               return;
             }
           }
@@ -1220,7 +1261,6 @@
           stopRetry();
           submit.disabled = true;
           pollStartedAt = Date.now();
-          if (continueBtn) continueBtn.hidden = true;
           setWaiting(
             true,
             "Sending M-Pesa prompt",
@@ -1242,6 +1282,7 @@
               if (!result.ok || !data.ok) {
                 throw new Error(data.error || "Could not start payment.");
               }
+              stopRetry();
               setWaiting(
                 true,
                 "Waiting for M-Pesa",
@@ -1256,6 +1297,7 @@
         });
 
         if (retry) {
+          retry.hidden = true;
           retry.addEventListener("click", function () {
             form.dispatchEvent(new Event("submit", { cancelable: true }));
           });

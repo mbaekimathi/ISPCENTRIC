@@ -1,0 +1,131 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_company_settings_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit org-edit--settings company-settings-page">
+  <div class="org-edit-intro">
+    <div class="org-edit-hero">
+      {% if company_profile.logo %}
+        <img class="org-edit-avatar" src="{{ company_profile.logo.url }}" alt="" width="76" height="76" loading="lazy" decoding="async">
+      {% else %}
+        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ company_profile.app_name|default:"I"|slice:":1"|upper }}</span>
+      {% endif %}
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">Platform identity</p>
+        <h2>{{ company_profile.app_name|default:"Company profile" }}</h2>
+        <div class="org-edit-meta">
+          <span class="org-status org-status-active">Live profile</span>
+          {% if company_profile.updated_at %}
+            <span class="org-edit-meta-item">Updated {{ company_profile.updated_at|date:"d M Y H:i" }}</span>
+          {% endif %}
+        </div>
+        <p class="org-edit-owner">{{ page_subtitle }}</p>
+      </div>
+    </div>
+  </div>
+
+  <form method="post" enctype="multipart/form-data" class="org-edit-form" id="company-profile-form" novalidate>
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+      <div class="notice notice-error">{{ form.non_field_errors }}</div>
+    {% endif %}
+
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Company details</h3>
+        <p>App name and contact details shown across staff and client surfaces.</p>
+      </header>
+
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.app_name.id_for_label }}">{{ form.app_name.label }}</label>
+          {{ form.app_name }}
+          {% if form.app_name.help_text %}<p class="field-hint">{{ form.app_name.help_text }}</p>{% endif %}
+          {% if form.app_name.errors %}<div class="field-error">{{ form.app_name.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label>
+          {{ form.email }}
+          {% if form.email.help_text %}<p class="field-hint">{{ form.email.help_text }}</p>{% endif %}
+          {% if form.email.errors %}<div class="field-error">{{ form.email.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+          {{ form.phone }}
+          {% if form.phone.help_text %}<p class="field-hint">{{ form.phone.help_text }}</p>{% endif %}
+          {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.whatsapp.id_for_label }}">{{ form.whatsapp.label }}</label>
+          {{ form.whatsapp }}
+          {% if form.whatsapp.help_text %}<p class="field-hint">{{ form.whatsapp.help_text }}</p>{% endif %}
+          {% if form.whatsapp.errors %}<div class="field-error">{{ form.whatsapp.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="org-edit-panel">
+      <header class="org-edit-panel-head">
+        <h3>Brand logo</h3>
+        <p>Used in the staff sidebar and other branded surfaces.</p>
+      </header>
+
+      <div class="org-edit-photo">
+        {% if company_profile.logo %}
+          <img class="org-edit-photo-preview" data-photo-preview src="{{ company_profile.logo.url }}" alt="Current logo" width="76" height="76" loading="lazy" decoding="async">
+        {% else %}
+          <span class="org-edit-photo-preview org-edit-avatar-fallback" data-photo-fallback aria-hidden="true">{{ company_profile.app_name|default:"I"|slice:":1"|upper }}</span>
+          <img class="org-edit-photo-preview" data-photo-preview hidden alt="" width="76" height="76">
+        {% endif %}
+        <div class="org-edit-photo-fields">
+          <label class="org-edit-file" for="{{ form.logo.id_for_label }}">
+            <span class="org-edit-file-btn">Choose logo</span>
+            <span class="org-edit-file-hint">{% if form.logo.help_text %}{{ form.logo.help_text }}{% else %}PNG or JPG, square works best.{% endif %}</span>
+            {{ form.logo }}
+          </label>
+          {% if form.logo.errors %}<div class="field-error">{{ form.logo.errors|striptags }}</div>{% endif %}
+          {% if company_profile.logo %}
+            <label class="company-settings-clear" for="{{ form.clear_logo.id_for_label }}">
+              {{ form.clear_logo }}
+              <span>{{ form.clear_logo.label }}</span>
+            </label>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="org-edit-actions">
+      <button type="submit" class="btn btn-primary">Save company profile</button>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Back to dashboard</a>
+    </div>
+  </form>
+</section>
+
+<script>
+(function () {
+  var input = document.getElementById("{{ form.logo.id_for_label }}");
+  var preview = document.querySelector("[data-photo-preview]");
+  var fallback = document.querySelector("[data-photo-fallback]");
+  if (!input || !preview) return;
+  input.addEventListener("change", function () {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var url = URL.createObjectURL(file);
+    preview.src = url;
+    preview.hidden = false;
+    if (fallback) fallback.hidden = true;
+  });
+})();
+</script>
+{% endblock %}

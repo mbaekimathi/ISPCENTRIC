@@ -1,0 +1,336 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>Equipment{% if equipment_count %} ({{ equipment_count }}){% endif %}</h2>
+      <p class="panel-sub">Inventory used for installs and field repairs.</p>
+    </div>
+  </div>
+
+  {% if equipment_list %}
+    <div class="org-table-shell">
+      <table class="org-table">
+        <thead>
+          <tr>
+            <th>Equipment</th>
+            <th>Stock</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in equipment_list %}
+            <tr>
+              <td>
+                <strong>{{ item.name }}</strong>
+                <small class="lead-location-line">{{ item.get_equipment_type_display }}</small>
+              </td>
+              <td>{{ item.quantity }}</td>
+              <td>
+                <div class="org-actions org-actions-icons">
+                  <button
+                    type="button"
+                    class="org-action-icon"
+                    data-open-stock-modal
+                    data-equipment-id="{{ item.pk }}"
+                    data-equipment-name="{{ item.name }}"
+                    data-equipment-stock="{{ item.quantity }}"
+                    title="Stock in / out"
+                    aria-label="Stock in or out for {{ item.name }}"
+                  >
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                      <path fill="currentColor" d="M20 6h-2.18A3 3 0 0 0 15 4H9a3 3 0 0 0-2.82 2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zM9 6h6a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2zm3 12a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
+                    </svg>
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">{{ empty_text }}</p>
+  {% endif %}
+</section>
+
+<div
+  class="role-modal client-action-modal pppoe-modal"
+  id="equipment-register-modal"
+  {% if not open_register_modal %}hidden{% endif %}
+  aria-hidden="{% if open_register_modal %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-equipment-modal></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="equipment-register-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Infrastructure</p>
+        <h2 id="equipment-register-title">Register equipment</h2>
+        <p class="role-modal-sub pppoe-sub">Add network gear to the install and repair inventory.</p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-equipment-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form method="post" class="pppoe-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="register">
+
+      <div class="pppoe-body">
+        {% if form.non_field_errors %}
+          <div class="field-error pppoe-banner">{{ form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Equipment details</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ form.name.id_for_label }}">{{ form.name.label }} *</label>
+              {{ form.name }}
+              {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label for="{{ form.equipment_type.id_for_label }}">{{ form.equipment_type.label }} *</label>
+              <div class="pppoe-select">{{ form.equipment_type }}</div>
+              {% if form.equipment_type.errors %}<div class="field-error">{{ form.equipment_type.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="pppoe-foot">
+        <button type="button" class="btn btn-ghost" data-close-equipment-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save equipment</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal pppoe-modal equipment-stock-modal"
+  id="equipment-stock-modal"
+  {% if not open_stock_modal %}hidden{% endif %}
+  aria-hidden="{% if open_stock_modal %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-stock-modal></div>
+  <div class="role-modal-panel pppoe-panel equipment-stock-panel" role="dialog" aria-modal="true" aria-labelledby="equipment-stock-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Stock</p>
+        <h2 id="equipment-stock-title">Update stock</h2>
+        <p class="role-modal-sub pppoe-sub">Add units in, or remove units from inventory.</p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-stock-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form method="post" class="pppoe-form equipment-stock-form" id="equipment-stock-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="equipment_id" id="stock-equipment-id" value="{% if stock_equipment %}{{ stock_equipment.pk }}{% endif %}">
+      <input type="hidden" name="action" id="stock-action" value="{% if stock_direction == 'out' %}stock_out{% else %}stock_in{% endif %}">
+
+      <div class="pppoe-body equipment-stock-body">
+        <div class="equipment-stock-summary">
+          <div class="equipment-stock-summary-item">
+            <span class="equipment-stock-summary-label">Equipment</span>
+            <strong id="equipment-stock-name">
+              {% if stock_equipment %}{{ stock_equipment.name }}{% else %}—{% endif %}
+            </strong>
+          </div>
+          <div class="equipment-stock-summary-item equipment-stock-summary-qty">
+            <span class="equipment-stock-summary-label">On hand</span>
+            <strong id="equipment-stock-current">
+              {% if stock_equipment %}{{ stock_equipment.quantity }}{% else %}0{% endif %}
+            </strong>
+          </div>
+        </div>
+
+        <div class="equipment-stock-choice" role="radiogroup" aria-label="Stock movement">
+          <label class="equipment-stock-choice-card{% if stock_direction != 'out' %} is-selected{% endif %}" id="stock-choice-in">
+            <input type="radio" name="stock_direction" value="in" {% if stock_direction != 'out' %}checked{% endif %} id="stock-dir-in">
+            <span class="equipment-stock-choice-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M11 5v6H5v2h6v6h2v-6h6v-2h-6V5z"/></svg>
+            </span>
+            <span class="equipment-stock-choice-copy">
+              <strong>Stock in</strong>
+              <small>Receive units into inventory</small>
+            </span>
+          </label>
+          <label class="equipment-stock-choice-card{% if stock_direction == 'out' %} is-selected{% endif %}" id="stock-choice-out">
+            <input type="radio" name="stock_direction" value="out" {% if stock_direction == 'out' %}checked{% endif %} id="stock-dir-out">
+            <span class="equipment-stock-choice-icon equipment-stock-choice-icon-out" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 11h14v2H5z"/></svg>
+            </span>
+            <span class="equipment-stock-choice-copy">
+              <strong>Stock out</strong>
+              <small>Issue units from inventory</small>
+            </span>
+          </label>
+        </div>
+
+        <div class="equipment-stock-qty-field">
+          <label for="stock-amount">Quantity</label>
+          <div class="equipment-stock-stepper">
+            <button type="button" class="equipment-stock-step" id="stock-amount-dec" aria-label="Decrease quantity">−</button>
+            <input
+              type="number"
+              class="form-control equipment-stock-amount"
+              name="amount"
+              id="stock-amount"
+              min="1"
+              step="1"
+              value="1"
+              required
+              inputmode="numeric"
+            >
+            <button type="button" class="equipment-stock-step" id="stock-amount-inc" aria-label="Increase quantity">+</button>
+          </div>
+          <p class="equipment-stock-hint" id="equipment-stock-hint">Adds to the current stock level.</p>
+        </div>
+      </div>
+
+      <footer class="pppoe-foot equipment-stock-foot">
+        <button type="button" class="btn btn-ghost" data-close-stock-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="stock-submit-btn">Stock in</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var registerModal = document.getElementById("equipment-register-modal");
+  var stockModal = document.getElementById("equipment-stock-modal");
+  var openRegisterOnLoad = {% if open_register_modal %}true{% else %}false{% endif %};
+  var openStockOnLoad = {% if open_stock_modal %}true{% else %}false{% endif %};
+  var stockId = document.getElementById("stock-equipment-id");
+  var stockAction = document.getElementById("stock-action");
+  var stockName = document.getElementById("equipment-stock-name");
+  var stockCurrent = document.getElementById("equipment-stock-current");
+  var stockHint = document.getElementById("equipment-stock-hint");
+  var stockAmount = document.getElementById("stock-amount");
+  var dirIn = document.getElementById("stock-dir-in");
+  var dirOut = document.getElementById("stock-dir-out");
+  var choiceIn = document.getElementById("stock-choice-in");
+  var choiceOut = document.getElementById("stock-choice-out");
+  var submitBtn = document.getElementById("stock-submit-btn");
+  var decBtn = document.getElementById("stock-amount-dec");
+  var incBtn = document.getElementById("stock-amount-inc");
+
+  function anyModalOpen() {
+    return document.querySelector(".role-modal:not([hidden])");
+  }
+
+  function openRegisterModal() {
+    if (!registerModal) return;
+    registerModal.hidden = false;
+    registerModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    var first = registerModal.querySelector("#id_equipment_name");
+    if (first) first.focus();
+  }
+
+  function closeRegisterModal() {
+    if (!registerModal) return;
+    registerModal.hidden = true;
+    registerModal.setAttribute("aria-hidden", "true");
+    if (!anyModalOpen()) document.body.classList.remove("role-modal-open");
+    if (window.location.search.indexOf("register=") !== -1) {
+      history.replaceState({}, "", window.location.pathname);
+    }
+  }
+
+  function syncStockAction() {
+    var isOut = dirOut && dirOut.checked;
+    if (stockAction) stockAction.value = isOut ? "stock_out" : "stock_in";
+    if (submitBtn) {
+      submitBtn.textContent = isOut ? "Stock out" : "Stock in";
+      submitBtn.classList.toggle("btn-stock-out", !!isOut);
+    }
+    if (choiceIn) choiceIn.classList.toggle("is-selected", !isOut);
+    if (choiceOut) choiceOut.classList.toggle("is-selected", !!isOut);
+    if (stockModal) stockModal.classList.toggle("is-stock-out", !!isOut);
+    if (stockHint) {
+      stockHint.textContent = isOut
+        ? "Subtracts from the current stock level."
+        : "Adds to the current stock level.";
+    }
+  }
+
+  function openStockModal(id, name, stock) {
+    if (!stockModal) return;
+    if (stockId) stockId.value = id || "";
+    if (stockName) stockName.textContent = name || "—";
+    if (stockCurrent) stockCurrent.textContent = stock || "0";
+    if (stockAmount) stockAmount.value = "1";
+    if (dirIn) dirIn.checked = true;
+    syncStockAction();
+    stockModal.hidden = false;
+    stockModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (stockAmount) stockAmount.focus();
+  }
+
+  function closeStockModal() {
+    if (!stockModal) return;
+    stockModal.hidden = true;
+    stockModal.setAttribute("aria-hidden", "true");
+    if (!anyModalOpen()) document.body.classList.remove("role-modal-open");
+  }
+
+  function bumpAmount(delta) {
+    if (!stockAmount) return;
+    var value = parseInt(stockAmount.value, 10);
+    if (!isFinite(value) || value < 1) value = 1;
+    value = Math.max(1, value + delta);
+    stockAmount.value = String(value);
+  }
+
+  document.querySelectorAll("[data-close-equipment-modal]").forEach(function (el) {
+    el.addEventListener("click", closeRegisterModal);
+  });
+  document.querySelectorAll("[data-close-stock-modal]").forEach(function (el) {
+    el.addEventListener("click", closeStockModal);
+  });
+  document.querySelectorAll("[data-open-stock-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openStockModal(
+        btn.getAttribute("data-equipment-id"),
+        btn.getAttribute("data-equipment-name"),
+        btn.getAttribute("data-equipment-stock")
+      );
+    });
+  });
+  if (dirIn) dirIn.addEventListener("change", syncStockAction);
+  if (dirOut) dirOut.addEventListener("change", syncStockAction);
+  if (decBtn) decBtn.addEventListener("click", function () { bumpAmount(-1); });
+  if (incBtn) incBtn.addEventListener("click", function () { bumpAmount(1); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (stockModal && !stockModal.hidden) closeStockModal();
+    else if (registerModal && !registerModal.hidden) closeRegisterModal();
+  });
+
+  syncStockAction();
+  if (openRegisterOnLoad) openRegisterModal();
+  if (openStockOnLoad) {
+    stockModal.hidden = false;
+    stockModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    syncStockAction();
+  }
+})();
+</script>
+{% endblock %}

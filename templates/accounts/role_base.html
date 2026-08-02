@@ -5,7 +5,20 @@
   <div class="staff-nav-scrim" id="staff-nav-scrim" hidden></div>
   <aside class="sidebar staff-sidebar" id="staff-sidebar">
     <div class="staff-sidebar-top">
-      <a class="brand staff-brand" href="{% url dashboard_url_name %}">ISP<span>CENTRIC</span></a>
+      <a class="brand staff-brand" href="{% url dashboard_url_name %}">
+        {% if company_profile and company_profile.logo %}
+          <img class="staff-brand-logo" src="{{ company_profile.logo.url }}" alt="" width="28" height="28" decoding="async">
+        {% endif %}
+        {% if company_profile and company_profile.app_name %}
+          {% if company_profile.app_name|upper == "ISPCENTRIC" %}
+            ISP<span>CENTRIC</span>
+          {% else %}
+            {{ company_profile.app_name }}
+          {% endif %}
+        {% else %}
+          ISP<span>CENTRIC</span>
+        {% endif %}
+      </a>
       <button type="button" class="staff-nav-close" id="staff-nav-close" aria-label="Close menu">×</button>
     </div>
     {% if staff_nav_main or staff_nav_end %}
@@ -14,7 +27,7 @@
       <nav class="staff-sidebar-nav-main">
         {% block staff_nav %}
           {% for item in staff_nav_main %}
-            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}">{{ item.label }}</a>
+            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
           {% endfor %}
         {% endblock %}
       </nav>

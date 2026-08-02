@@ -5,9 +5,11 @@ from __future__ import annotations
 import secrets
 from calendar import monthrange
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from django.core import signing
+from django.db.models import Q
 from django.utils import timezone
 
 from billing.models import BillingPlan, Customer
@@ -23,6 +25,41 @@ def generate_customer_account_number(organization, *, prefix: str = "CLT") -> st
         if not Customer.objects.filter(account_number=candidate).exists():
             return candidate
     raise RuntimeError("Could not generate a unique account number.")
+
+
+def generate_sales_ticket_number(organization=None) -> str:
+    """Create a unique sales ticket number like PPP-A1B2."""
+    for _ in range(80):
+        candidate = f"PPP-{secrets.token_hex(2).upper()}"
+        if not Customer.objects.filter(sales_ticket_number=candidate).exists():
+            return candidate
+    raise RuntimeError("Could not generate a unique sales ticket number.")
+
+
+def generate_account_number_from_phone(phone: str, *, organization=None) -> str:
+    """
+    Build a unique account number from the client's phone digits.
+
+    Prefers a normalized Kenyan MSISDN (2547… / 2541…) when the input looks
+    like a local mobile number; otherwise uses the raw digits. Falls back to a
+    random PPP-prefixed code if the phone has no usable digits.
+    """
+    msisdn = normalize_kenya_msisdn(phone)
+    digits = msisdn or "".join(ch for ch in str(phone or "") if ch.isdigit())
+    if not digits:
+        return generate_customer_account_number(organization, prefix="PPP")
+
+    base = digits[:40]
+    if not Customer.objects.filter(account_number=base).exists():
+        return base
+
+    for index in range(2, 100):
+        suffix = f"-{index}"
+        candidate = f"{base[: 40 - len(suffix)]}{suffix}"
+        if not Customer.objects.filter(account_number=candidate).exists():
+            return candidate
+
+    return generate_customer_account_number(organization, prefix="PPP")
 
 
 def _as_local_datetime(value) -> datetime | None:
@@ -307,15 +344,17 @@ def create_renewal_invoice_and_payment(
     amount,
     reference: str = "",
     recorded_by=None,
+    notes: str = "M-Pesa STK Push subscription renewal",
+    invoice_prefix: str = "REN",
 ):
-    """Create a paid invoice + M-Pesa payment row for a successful renewal."""
+    """Create a paid invoice + M-Pesa payment row for a successful STK payment."""
     from billing.models import Invoice, Payment
 
     now = timezone.localtime()
     stamp = now.strftime("%Y%m%d%H%M%S")
-    invoice_number = f"REN-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
+    invoice_number = f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
     while Invoice.objects.filter(invoice_number=invoice_number).exists():
-        invoice_number = f"REN-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
+        invoice_number = f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
     invoice = Invoice.objects.create(
         organization=organization,
         customer=customer,
@@ -325,7 +364,7 @@ def create_renewal_invoice_and_payment(
         due_date=now.date(),
         issued_at=now,
         paid_at=now,
-        notes="M-Pesa STK Push subscription renewal",
+        notes=notes,
     )
     payment = Payment.objects.create(
         organization=organization,
@@ -337,6 +376,186 @@ def create_renewal_invoice_and_payment(
         recorded_by=recorded_by,
     )
     return invoice, payment
+
+
+def resolve_lead_allocation_plan(organization, customer=None):
+    """Pick a billing package linked to this lead (or cheapest for the ISP)."""
+    from billing.models import BillingPlan
+
+    if customer is not None and customer.plan_id:
+        return customer.plan
+    return (
+        BillingPlan.objects.filter(organization=organization, is_active=True)
+        .order_by("price", "name")
+        .first()
+    )
+
+
+def resolve_lead_allocation_technician_options(
+    *,
+    organization,
+    request_technician: bool,
+    technician_mode: str = "",
+    technician_id=None,
+) -> dict:
+    """
+    Validate Accept-lead technician options.
+
+    - No specific technician selected → allocated_open (open for any tech)
+    - Specific technician selected → allocated_closed + assignee
+    """
+    from accounts.models import Employee
+
+    mode = (technician_mode or "").strip().lower()
+    # Without a concrete assignee, keep the ticket open for technicians.
+    if not request_technician or mode in {"", "open", "none"}:
+        return {
+            "ok": True,
+            "request_technician": bool(request_technician),
+            "mode": "open",
+            "technician": None,
+            "status": Customer.Status.ALLOCATED_OPEN,
+        }
+
+    if mode != "assigned":
+        return {
+            "ok": False,
+            "error": "Choose Open or select a technician.",
+        }
+
+    try:
+        tech_pk = int(technician_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Select a technician employee."}
+
+    technician = (
+        Employee.objects.select_related("user")
+        .filter(
+            pk=tech_pk,
+            role=Employee.Role.TECHNICIAN,
+            status=Employee.Status.ACTIVE,
+        )
+        .filter(Q(organization=organization) | Q(organization__isnull=True))
+        .first()
+    )
+    if technician is None:
+        # Allow any active technician in the system when none are org-linked.
+        technician = (
+            Employee.objects.select_related("user")
+            .filter(
+                pk=tech_pk,
+                role=Employee.Role.TECHNICIAN,
+                status=Employee.Status.ACTIVE,
+            )
+            .first()
+        )
+    if technician is None:
+        return {
+            "ok": False,
+            "error": "Choose an active technician from your organization.",
+        }
+    return {
+        "ok": True,
+        "request_technician": True,
+        "mode": "assigned",
+        "technician": technician,
+        "status": Customer.Status.ALLOCATED_CLOSED,
+    }
+
+
+def resolve_lead_allocation_fee(*, organization=None, customer=None) -> dict:
+    """
+    Price a lead-allocation STK from IT Support → Sales commission settings.
+
+    - per_ticket → fixed KES amount (rate_value)
+    - per_ticket_package → rate_value % of the lead's package price
+    """
+    from accounts.models import Employee, RoleCommission
+
+    commission = RoleCommission.for_role(Employee.Role.SALES)
+    if not commission.enabled:
+        return {
+            "ok": False,
+            "error": (
+                "Sales commission is disabled. "
+                "Enable it under IT Support → Commissions → Sales."
+            ),
+            "commission": commission,
+        }
+
+    rate = Decimal(commission.rate_value or 0)
+    plan = customer.plan if customer is not None and customer.plan_id else None
+    if plan is None and organization is not None:
+        plan = resolve_lead_allocation_plan(organization, customer)
+
+    if commission.rate_type == RoleCommission.RateType.PER_TICKET:
+        amount = rate.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if amount <= 0:
+            return {
+                "ok": False,
+                "error": (
+                    "Set a per-ticket sales commission greater than zero "
+                    "in IT Support → Commissions → Sales."
+                ),
+                "commission": commission,
+            }
+        return {
+            "ok": True,
+            "amount": amount,
+            "plan": plan,
+            "commission": commission,
+            "amount_display": f"KES {amount}",
+        }
+
+    if commission.rate_type == RoleCommission.RateType.PER_TICKET_PACKAGE:
+        if plan is None:
+            return {
+                "ok": False,
+                "error": (
+                    "Sales commission is % of package, but this lead has no package. "
+                    "Assign a package on the ticket or switch to per-ticket commission."
+                ),
+                "commission": commission,
+            }
+        package_price = Decimal(plan.price or 0)
+        if package_price <= 0:
+            return {
+                "ok": False,
+                "error": "Lead package price must be greater than zero.",
+                "commission": commission,
+                "plan": plan,
+            }
+        amount = (package_price * rate / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if amount <= 0:
+            return {
+                "ok": False,
+                "error": (
+                    "Computed sales commission is zero. "
+                    "Check the package % in IT Support → Commissions → Sales."
+                ),
+                "commission": commission,
+                "plan": plan,
+            }
+        return {
+            "ok": True,
+            "amount": amount,
+            "plan": plan,
+            "commission": commission,
+            "amount_display": f"KES {amount}",
+            "package_price": package_price,
+            "percent": rate,
+        }
+
+    return {
+        "ok": False,
+        "error": (
+            "Configure a sales ticket commission module "
+            "in IT Support → Commissions → Sales."
+        ),
+        "commission": commission,
+    }
 
 
 def compute_package_end(

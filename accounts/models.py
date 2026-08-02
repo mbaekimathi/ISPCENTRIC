@@ -182,6 +182,14 @@ class Organization(models.Model):
         blank=True,
         help_text="Passkey for your Paybill or Till Lipa Na M-Pesa Online shortcode.",
     )
+    registered_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="registered_organizations",
+        null=True,
+        blank=True,
+        help_text="Sales staff (or other user) who registered this ISP / business.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -340,7 +348,7 @@ class Employee(models.Model):
         PENDING = "pending", "Pending role allocation"
         SUPER_ADMIN = "super_admin", "Super admin"
         ADMINISTRATOR = "administrator", "Administrator"
-        MANAGER = "manager", "Manager"
+        MANAGER = "manager", "Customer support"
         IT_SUPPORT = "it_support", "IT support"
         SALES = "sales", "Sales"
         TECHNICIAN = "technician", "Technician"
@@ -402,6 +410,129 @@ class Employee(models.Model):
         if self.organization_id:
             return f"{self.user.username} @ {self.organization.name}"
         return self.user.username
+
+
+class Lead(models.Model):
+    """Sales lead captured by the sales team."""
+
+    class CustomerCategory(models.TextChoices):
+        HOME = "home", "Home internet"
+        BUSINESS = "business", "Business internet"
+        ISP_CLIENT = "isp_client", "ISP client"
+        HOTSPOT_CLIENT = "hotspot_client", "Hotspot client"
+
+    class ServiceType(models.TextChoices):
+        HOME_INTERNET = "home_internet", "Home internet"
+        BUSINESS_INTERNET = "business_internet", "Business internet"
+        DEDICATED_LINK = "dedicated_link", "Dedicated link"
+        STARLINK_INSTALLATION = "starlink_installation", "Starlink installation"
+        HOTSPOT = "hotspot", "Hotspot"
+
+    class LeadSource(models.TextChoices):
+        WALK_IN = "walk_in", "Walk-in"
+        PHONE_CALL = "phone_call", "Phone call"
+        REFERRAL = "referral", "Referral"
+        WEBSITE = "website", "Website"
+        SOCIAL_MEDIA = "social_media", "Social media"
+        FIELD_VISIT = "field_visit", "Field visit"
+        OTHER = "other", "Other"
+
+    class Status(models.TextChoices):
+        NEW = "new", "New"
+        CONTACTED = "contacted", "Contacted"
+        QUALIFIED = "qualified", "Qualified"
+        CONVERTED = "converted", "Converted"
+        LOST = "lost", "Lost"
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="leads",
+        null=True,
+        blank=True,
+        help_text="Sales organization that owns this lead (optional until an ISP is chosen).",
+    )
+    lead_number = models.CharField(max_length=40, unique=True, db_index=True)
+    customer_category = models.CharField(
+        max_length=20,
+        choices=CustomerCategory.choices,
+        default=CustomerCategory.HOME,
+        db_index=True,
+    )
+    full_name = models.CharField("Full name / company name", max_length=150)
+    phone = models.CharField("Phone / company number", max_length=30)
+    alternative_phone = models.CharField(
+        "Alternative phone / company number",
+        max_length=30,
+        blank=True,
+    )
+    email = models.EmailField(blank=True)
+    location = models.CharField(max_length=255, blank=True)
+    location_lat = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    location_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    service_type = models.CharField(
+        max_length=32,
+        choices=ServiceType.choices,
+        default=ServiceType.HOME_INTERNET,
+        db_index=True,
+    )
+    preferred_package = models.ForeignKey(
+        "billing.BillingPlan",
+        on_delete=models.SET_NULL,
+        related_name="leads",
+        null=True,
+        blank=True,
+    )
+    preferred_isp = models.ForeignKey(
+        Organization,
+        on_delete=models.SET_NULL,
+        related_name="preferred_leads",
+        null=True,
+        blank=True,
+        help_text="Optional preferred ISP from registered organizations",
+    )
+    lead_source = models.CharField(
+        max_length=32,
+        choices=LeadSource.choices,
+        default=LeadSource.WALK_IN,
+    )
+    preferred_installation_date = models.DateField(
+        "Preferred installation date",
+        null=True,
+        blank=True,
+    )
+    customer_requirements = models.TextField(blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.NEW,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="created_leads",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_lead"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.lead_number} — {self.full_name}"
+
+    @classmethod
+    def generate_lead_number(cls, organization) -> str:
+        org_id = getattr(organization, "pk", None) or 0
+        for _ in range(40):
+            candidate = f"LD-{org_id:04d}-{secrets.token_hex(3).upper()}"
+            if not cls.objects.filter(lead_number=candidate).exists():
+                return candidate
+        raise RuntimeError("Could not generate a unique lead number.")
 
 
 class PaymentGateway(models.Model):
@@ -560,3 +691,190 @@ class PaymentGateway(models.Model):
     def __str__(self):
         status = "enabled" if self.enabled else "disabled"
         return f"{self.get_provider_display()} ({status})"
+
+
+class CompanyProfile(models.Model):
+    """Platform company / app profile (singleton, managed by IT Support)."""
+
+    app_name = models.CharField(
+        "App name",
+        max_length=120,
+        default="ISPCENTRIC",
+        help_text="Brand name shown across the platform.",
+    )
+    email = models.EmailField("Email", blank=True)
+    phone = models.CharField("Phone number", max_length=30, blank=True)
+    whatsapp = models.CharField("WhatsApp number", max_length=30, blank=True)
+    logo = models.ImageField(
+        "Logo",
+        upload_to="company/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Company logo shown in the workspace.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_company_profile"
+        verbose_name = "Company profile"
+        verbose_name_plural = "Company profile"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        self.logo = maybe_optimize_image_field(self.logo)
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(
+            pk=1,
+            defaults={"app_name": "ISPCENTRIC"},
+        )
+        return obj
+
+    def __str__(self):
+        return self.app_name or "Company profile"
+
+
+class RoleCommission(models.Model):
+    """Commission rate settings for an employee role (managed by IT Support)."""
+
+    class RateType(models.TextChoices):
+        PERCENT = "percent", "Percentage"
+        FLAT = "flat", "Flat amount"
+        PER_TICKET = "per_ticket", "Per ticket"
+        PER_TICKET_PACKAGE = "per_ticket_package", "Per ticket package %"
+
+    COMMISSIONABLE_ROLES = (
+        Employee.Role.SUPER_ADMIN,
+        Employee.Role.ADMINISTRATOR,
+        Employee.Role.MANAGER,
+        Employee.Role.IT_SUPPORT,
+        Employee.Role.SALES,
+        Employee.Role.TECHNICIAN,
+    )
+
+    role = models.CharField(
+        "Role",
+        max_length=32,
+        choices=Employee.Role.choices,
+        unique=True,
+        db_index=True,
+    )
+    enabled = models.BooleanField(
+        "Enable commissions",
+        default=False,
+        help_text="Turn on commission tracking for this role.",
+    )
+    rate_type = models.CharField(
+        "Rate type",
+        max_length=32,
+        choices=RateType.choices,
+        default=RateType.PERCENT,
+    )
+    rate_value = models.DecimalField(
+        "Rate value",
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text="Percentage, flat amount, or price per ticket in KES.",
+    )
+    notes = models.CharField(
+        "Notes",
+        max_length=255,
+        blank=True,
+        help_text="Optional note about how this commission is calculated.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_role_commission"
+        ordering = ["role"]
+        verbose_name = "Role commission"
+        verbose_name_plural = "Role commissions"
+
+    def __str__(self):
+        return f"{self.get_role_display()} commission"
+
+    @property
+    def rate_display(self) -> str:
+        value = self.rate_value
+        if self.rate_type == self.RateType.PERCENT:
+            return f"{value}%"
+        if self.rate_type == self.RateType.PER_TICKET:
+            return f"KES {value} / ticket"
+        if self.rate_type == self.RateType.PER_TICKET_PACKAGE:
+            return f"{value}% of package"
+        return f"KES {value}"
+
+    @classmethod
+    def for_role(cls, role: str):
+        defaults = {}
+        if role == Employee.Role.SALES:
+            defaults = {"rate_type": cls.RateType.PER_TICKET}
+        obj, _ = cls.objects.get_or_create(role=role, defaults=defaults)
+        return obj
+
+    @classmethod
+    def commissionable_rows(cls):
+        """Return RoleCommission rows for every assignable role, creating missing ones."""
+        existing = {row.role: row for row in cls.objects.filter(role__in=cls.COMMISSIONABLE_ROLES)}
+        rows = []
+        for role in cls.COMMISSIONABLE_ROLES:
+            row = existing.get(role)
+            if row is None:
+                defaults = {}
+                if role == Employee.Role.SALES:
+                    defaults = {"rate_type": cls.RateType.PER_TICKET}
+                row = cls.objects.create(role=role, **defaults)
+            rows.append(row)
+        return rows
+
+
+class NetworkEquipment(models.Model):
+    """Inventory item used for installs and field repairs."""
+
+    class EquipmentType(models.TextChoices):
+        ROUTER = "router", "Router"
+        ONU = "onu", "ONU / ONT"
+        SWITCH = "switch", "Switch"
+        RADIO = "radio", "Radio / antenna"
+        CABLE = "cable", "Cable"
+        CONNECTOR = "connector", "Connector / splitter"
+        POWER = "power", "Power / PoE"
+        OTHER = "other", "Other"
+
+    name = models.CharField("Equipment name", max_length=150)
+    equipment_type = models.CharField(
+        "Type",
+        max_length=20,
+        choices=EquipmentType.choices,
+        default=EquipmentType.ROUTER,
+        db_index=True,
+    )
+    quantity = models.PositiveIntegerField(
+        "Stock quantity",
+        default=0,
+        help_text="Current units in stock.",
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="registered_network_equipment",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_network_equipment"
+        ordering = ["-created_at"]
+        verbose_name = "Network equipment"
+        verbose_name_plural = "Network equipment"
+
+    def __str__(self):
+        return self.name

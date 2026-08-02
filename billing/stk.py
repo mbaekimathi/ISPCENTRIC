@@ -7,18 +7,36 @@ import logging
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.models import PaymentGateway
 from accounts.mpesa_daraja import initiate_stk_push, query_stk_push
-from billing.models import Customer, StkPushRequest
+from billing.models import Customer, Invoice, StkPushRequest
 from billing.services import (
     apply_subscription_renewal,
     create_renewal_invoice_and_payment,
     normalize_kenya_msisdn,
+    resolve_lead_allocation_fee,
+    resolve_lead_allocation_technician_options,
 )
 
 logger = logging.getLogger(__name__)
+
+# Keys that must survive Daraja callback/query overwrites of raw_callback.
+_STK_RAW_PRESERVE_KEYS = (
+    "lead_allocation_options",
+    "environment",
+    "initiate",
+)
+
+
+def _merge_stk_raw_callback(existing, incoming) -> dict:
+    """Merge callback/query payload onto stored STK raw data without dropping options."""
+    base = existing if isinstance(existing, dict) else {}
+    update = incoming if isinstance(incoming, dict) else {}
+    preserved = {key: base[key] for key in _STK_RAW_PRESERVE_KEYS if key in base}
+    return {**preserved, **update}
 
 
 def _callback_metadata_map(items) -> dict:
@@ -222,6 +240,423 @@ def start_subscription_stk_payment(
     }
 
 
+def start_lead_allocation_stk_payment(
+    *,
+    organization,
+    customer: Customer,
+    phone: str,
+    user=None,
+    request=None,
+    request_technician: bool = False,
+    technician_mode: str = "",
+    technician_id=None,
+) -> dict:
+    """Initiate STK Push so an ISP can pay to allocate an open sales lead."""
+    if customer.status != Customer.Status.NEW or customer.organization_id is not None:
+        return {"ok": False, "error": "This lead is no longer available to accept."}
+
+    tech_opts = resolve_lead_allocation_technician_options(
+        organization=organization,
+        request_technician=request_technician,
+        technician_mode=technician_mode,
+        technician_id=technician_id,
+    )
+    if not tech_opts.get("ok"):
+        return {"ok": False, "error": tech_opts.get("error") or "Invalid technician options."}
+
+    fee = resolve_lead_allocation_fee(organization=organization, customer=customer)
+    if not fee.get("ok"):
+        return {"ok": False, "error": fee.get("error") or "Sales commission is not configured."}
+    amount = Decimal(fee["amount"])
+    plan = fee.get("plan")
+    technician = tech_opts.get("technician")
+
+    creds = organization.effective_daraja_credentials()
+    if not creds.get("enabled"):
+        return {"ok": False, "error": "Enable Daraja STK Push on My Account first."}
+    if not creds.get("ready"):
+        return {
+            "ok": False,
+            "error": creds.get("message") or "Daraja STK Push is not ready yet.",
+        }
+
+    msisdn = normalize_kenya_msisdn(phone or organization.phone or customer.phone)
+    if not (msisdn.startswith("254") and len(msisdn) == 12):
+        return {
+            "ok": False,
+            "error": "Enter a valid Kenyan mobile number (e.g. 07xxxxxxxx).",
+        }
+
+    ticket = (customer.sales_ticket_number or customer.account_number or f"C{customer.pk}")[:64]
+    account_ref = f"LEAD-{ticket}"[:64]
+    environment = (
+        creds.get("environment") or PaymentGateway.Environment.SANDBOX
+    ).strip().lower()
+
+    allocation_options = {
+        "request_technician": bool(tech_opts.get("request_technician")),
+        "mode": tech_opts.get("mode") or "none",
+        "technician_id": technician.pk if technician is not None else None,
+        "status": tech_opts.get("status"),
+    }
+
+    stk = StkPushRequest.objects.create(
+        organization=organization,
+        customer=customer,
+        plan=plan,
+        purpose=StkPushRequest.Purpose.LEAD_ALLOCATION,
+        amount=amount,
+        phone=msisdn,
+        account_reference=account_ref,
+        initiated_by=user if getattr(user, "is_authenticated", False) else None,
+        status=StkPushRequest.Status.PENDING,
+        raw_callback={"lead_allocation_options": allocation_options},
+    )
+
+    def _send(env: str) -> dict:
+        return initiate_stk_push(
+            consumer_key=creds["consumer_key"],
+            consumer_secret=creds["consumer_secret"],
+            passkey=creds["passkey"],
+            shortcode=creds["shortcode"],
+            payment_type=creds.get("payment_type") or "",
+            amount=amount,
+            phone=msisdn,
+            account_reference=account_ref,
+            callback_url=resolve_stk_callback_url(
+                creds, request=request, environment=env
+            ),
+            environment=env,
+            description="Lead allocation",
+        )
+
+    result = _send(environment)
+    used_env = environment
+    if (
+        not result.get("ok")
+        and environment == PaymentGateway.Environment.SANDBOX
+        and _is_invalid_access_token_error(result)
+    ):
+        retry = _send(PaymentGateway.Environment.PRODUCTION)
+        if retry.get("ok"):
+            result = retry
+            used_env = PaymentGateway.Environment.PRODUCTION
+            logger.warning(
+                "Lead STK sandbox rejected credentials; production OK org=%s stk=%s",
+                organization.pk,
+                stk.pk,
+            )
+        else:
+            result = retry
+
+    if not result.get("ok"):
+        error = result.get("error") or "STK Push failed."
+        if _is_invalid_access_token_error(result):
+            error = (
+                "Daraja rejected the access token for STK Push. "
+                "In IT Support → Payment Gateway, set Environment to match your "
+                "consumer key/secret (Production vs Sandbox)."
+            )
+        stk.status = StkPushRequest.Status.FAILED
+        stk.result_desc = error[:255]
+        stk.completed_at = timezone.now()
+        stk.raw_callback = {"initiate_error": result, "environment": used_env}
+        stk.save(
+            update_fields=["status", "result_desc", "completed_at", "raw_callback"]
+        )
+        return {"ok": False, "error": error, "stk_id": stk.pk}
+
+    stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
+    stk.checkout_request_id = (result.get("checkout_request_id") or "")[:64]
+    stk.result_desc = (result.get("customer_message") or "STK Push sent.")[:255]
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    stk.raw_callback = {
+        **raw,
+        "initiate": result.get("data") or {},
+        "environment": used_env,
+        "lead_allocation_options": allocation_options,
+    }
+    stk.save(
+        update_fields=[
+            "merchant_request_id",
+            "checkout_request_id",
+            "result_desc",
+            "raw_callback",
+        ]
+    )
+    return {
+        "ok": True,
+        "stk_id": stk.pk,
+        "checkout_request_id": stk.checkout_request_id,
+        "message": (
+            result.get("customer_message")
+            or f"STK Push sent to {msisdn}. Enter the M-Pesa PIN to allocate this lead."
+        ),
+        "amount": str(amount),
+        "phone": msisdn,
+        "customer_name": customer.full_name,
+        "account_number": customer.account_number,
+        "ticket_number": customer.sales_ticket_number or "",
+        "plan_name": plan.name if plan is not None else "",
+        "purpose": StkPushRequest.Purpose.LEAD_ALLOCATION,
+        "allocation_status": allocation_options.get("status"),
+        "request_technician": allocation_options.get("request_technician"),
+        "technician_mode": allocation_options.get("mode"),
+        "environment": used_env,
+        "shortcode": creds.get("shortcode") or "",
+    }
+
+
+def _persist_stk_receipt_fields(
+    stk: StkPushRequest,
+    *,
+    raw: dict | None,
+    result_desc: str,
+    result_code: int,
+    receipt: str,
+) -> dict:
+    """Idempotent receipt/status updates after fulfillment already applied."""
+    update_fields: list[str] = []
+    if raw is not None:
+        update_fields.append("raw_callback")
+    if result_desc:
+        update_fields.append("result_desc")
+    if result_code is not None:
+        update_fields.append("result_code")
+    if receipt:
+        update_fields.append("mpesa_receipt")
+    if update_fields:
+        stk.save(update_fields=list(dict.fromkeys(update_fields)))
+    if receipt and stk.payment_id:
+        payment = stk.payment
+        current_ref = (payment.reference or "").strip()
+        if not current_ref or current_ref == (stk.checkout_request_id or "").strip():
+            payment.reference = receipt[:100]
+            payment.save(update_fields=["reference"])
+    return {
+        "ok": True,
+        "already_applied": True,
+        "stk_id": stk.pk,
+        "package_start": stk.customer.package_start,
+        "package_end": stk.customer.package_end,
+        "mpesa_receipt": stk.mpesa_receipt,
+        "purpose": stk.purpose,
+        "customer_status": stk.customer.status,
+    }
+
+
+def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
+    """Assign the lead to the paying ISP and mark it allocated."""
+    from accounts.models import Employee
+
+    customer = Customer.objects.select_for_update().select_related("plan").get(
+        pk=stk.customer_id
+    )
+    if (
+        customer.status in Customer.ALLOCATED_STATUSES
+        and customer.organization_id == stk.organization_id
+    ):
+        pass
+    elif customer.status != Customer.Status.NEW or customer.organization_id is not None:
+        stk.status = StkPushRequest.Status.FAILED
+        stk.result_desc = "Lead was taken by another ISP before payment completed."[:255]
+        stk.completed_at = timezone.now()
+        stk.save(
+            update_fields=[
+                "status",
+                "result_code",
+                "result_desc",
+                "mpesa_receipt",
+                "raw_callback",
+                "completed_at",
+            ]
+        )
+        return {
+            "ok": False,
+            "error": stk.result_desc,
+            "stk_id": stk.pk,
+        }
+
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    options = raw.get("lead_allocation_options") or {}
+    target_status = options.get("status") or Customer.Status.ALLOCATED_OPEN
+    if target_status not in {
+        Customer.Status.ALLOCATED_OPEN,
+        Customer.Status.ALLOCATED_CLOSED,
+        Customer.Status.ALLOCATED,
+    }:
+        target_status = Customer.Status.ALLOCATED_OPEN
+
+    technician = None
+    tech_id = options.get("technician_id")
+    if tech_id and target_status == Customer.Status.ALLOCATED_CLOSED:
+        technician = (
+            Employee.objects.filter(
+                pk=tech_id,
+                role=Employee.Role.TECHNICIAN,
+                status=Employee.Status.ACTIVE,
+            )
+            .filter(Q(organization_id=stk.organization_id) | Q(organization__isnull=True))
+            .first()
+        )
+        if technician is None:
+            technician = Employee.objects.filter(
+                pk=tech_id,
+                role=Employee.Role.TECHNICIAN,
+                status=Employee.Status.ACTIVE,
+            ).first()
+
+    # Closed assignment requires a concrete technician; otherwise keep open pool.
+    if target_status == Customer.Status.ALLOCATED_CLOSED and technician is None:
+        target_status = Customer.Status.ALLOCATED_OPEN
+
+    paid_plan = stk.plan or customer.plan
+    update_fields = ["organization", "status", "assigned_technician"]
+    customer.organization = stk.organization
+    customer.status = target_status
+    customer.assigned_technician = technician
+    if paid_plan is not None and customer.plan_id != paid_plan.pk:
+        customer.plan = paid_plan
+        update_fields.append("plan")
+    customer.save(update_fields=update_fields)
+
+    invoice = stk.invoice
+    payment = stk.payment
+    if invoice is None or payment is None:
+        invoice, payment = create_renewal_invoice_and_payment(
+            customer=customer,
+            organization=stk.organization,
+            amount=stk.amount,
+            reference=stk.mpesa_receipt or stk.checkout_request_id,
+            recorded_by=stk.initiated_by,
+            notes="M-Pesa STK Push lead allocation",
+            invoice_prefix="LEAD",
+        )
+        stk.invoice = invoice
+        stk.payment = payment
+
+    stk.status = StkPushRequest.Status.SUCCESS
+    stk.subscription_applied = True
+    stk.completed_at = timezone.now()
+    stk.save(
+        update_fields=[
+            "status",
+            "result_code",
+            "result_desc",
+            "mpesa_receipt",
+            "raw_callback",
+            "invoice",
+            "payment",
+            "subscription_applied",
+            "completed_at",
+        ]
+    )
+    return {
+        "ok": True,
+        "already_applied": False,
+        "stk_id": stk.pk,
+        "purpose": StkPushRequest.Purpose.LEAD_ALLOCATION,
+        "customer_status": customer.status,
+        "customer_phone": customer.phone or "",
+        "assigned_technician_id": technician.pk if technician else None,
+        "mpesa_receipt": stk.mpesa_receipt,
+        "invoice_number": invoice.invoice_number if invoice else "",
+        "package_start": customer.package_start,
+        "package_end": customer.package_end,
+    }
+
+
+@transaction.atomic
+def reverse_lead_allocation(
+    *,
+    organization,
+    customer: Customer,
+    user=None,
+    reason: str = "",
+) -> dict:
+    """
+    Reverse an allocated lead payment record and return the ticket to the open pool.
+    Status flips to NEW immediately; M-Pesa refund must be handled out-of-band.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        return {"ok": False, "error": "Enter a reason for this reversal."}
+    if len(reason) > 255:
+        reason = reason[:255]
+
+    if (
+        customer.status not in Customer.ALLOCATED_STATUSES
+        or customer.organization_id != organization.pk
+    ):
+        return {"ok": False, "error": "Only tickets allocated to your ISP can be reversed."}
+
+    stk = (
+        StkPushRequest.objects.select_for_update()
+        .filter(
+            organization=organization,
+            customer=customer,
+            purpose=StkPushRequest.Purpose.LEAD_ALLOCATION,
+            status=StkPushRequest.Status.SUCCESS,
+            subscription_applied=True,
+        )
+        .select_related("payment", "invoice")
+        .order_by("-completed_at", "-pk")
+        .first()
+    )
+
+    if stk is not None:
+        payment = stk.payment
+        raw_existing = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        if raw_existing.get("lead_allocation_reversed"):
+            return {"ok": False, "error": "This allocation was already reversed."}
+
+        if payment is not None:
+            note = (payment.invoice.notes if payment.invoice_id else "") or ""
+            if "[LEAD ALLOCATION REVERSED]" in note:
+                return {"ok": False, "error": "This allocation was already reversed."}
+            if payment.invoice_id:
+                inv = payment.invoice
+                inv.notes = (
+                    f"{(inv.notes or '').strip()} "
+                    f"[LEAD ALLOCATION REVERSED] Reason: {reason}"
+                ).strip()
+                inv.status = Invoice.Status.CANCELLED
+                inv.save(update_fields=["notes", "status"])
+            payment.reference = (
+                f"REV-{(payment.reference or stk.mpesa_receipt or str(stk.pk))}"[:100]
+            )
+            payment.save(update_fields=["reference"])
+
+        raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        raw = {
+            **raw,
+            "lead_allocation_reversed": True,
+            "reversed_at": timezone.now().isoformat(),
+            "reversal_reason": reason,
+        }
+        if user is not None and getattr(user, "pk", None):
+            raw["reversed_by"] = user.pk
+        stk.raw_callback = raw
+        stk.result_desc = f"Reversed: {reason}"[:255]
+        stk.save(update_fields=["raw_callback", "result_desc"])
+
+    customer.organization = None
+    customer.status = Customer.Status.NEW
+    customer.assigned_technician = None
+    customer.save(update_fields=["organization", "status", "assigned_technician"])
+    return {
+        "ok": True,
+        "customer_id": customer.pk,
+        "ticket_number": customer.sales_ticket_number or customer.account_number,
+        "status": customer.status,
+        "reason": reason,
+        "message": (
+            "Allocation reversed. Ticket is New again. "
+            "Process the M-Pesa refund separately if needed."
+        ),
+    }
+
+
 @transaction.atomic
 def fulfill_successful_stk(
     stk: StkPushRequest,
@@ -231,28 +666,31 @@ def fulfill_successful_stk(
     mpesa_receipt: str = "",
     raw: dict | None = None,
 ) -> dict:
-    """Mark STK success, renew subscription, and record invoice/payment (idempotent)."""
+    """Mark STK success and apply purpose-specific fulfillment (idempotent)."""
     stk = StkPushRequest.objects.select_for_update().select_related(
-        "customer", "customer__plan", "plan", "organization"
+        "customer", "customer__plan", "plan", "organization", "payment"
     ).get(pk=stk.pk)
 
-    if raw:
-        stk.raw_callback = raw
+    if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
     stk.result_code = result_code
     if result_desc:
         stk.result_desc = result_desc[:255]
-    if mpesa_receipt:
-        stk.mpesa_receipt = mpesa_receipt[:64]
+    receipt = (mpesa_receipt or "").strip()
+    if receipt:
+        stk.mpesa_receipt = receipt[:64]
 
     if stk.status == StkPushRequest.Status.SUCCESS and stk.subscription_applied:
-        return {
-            "ok": True,
-            "already_applied": True,
-            "stk_id": stk.pk,
-            "package_start": stk.customer.package_start,
-            "package_end": stk.customer.package_end,
-            "mpesa_receipt": stk.mpesa_receipt,
-        }
+        return _persist_stk_receipt_fields(
+            stk,
+            raw=stk.raw_callback if raw is not None else None,
+            result_desc=result_desc,
+            result_code=result_code,
+            receipt=receipt,
+        )
+
+    if stk.purpose == StkPushRequest.Purpose.LEAD_ALLOCATION:
+        return _fulfill_lead_allocation_stk(stk)
 
     customer = stk.customer
     paid_plan = stk.plan or customer.plan
@@ -362,8 +800,8 @@ def mark_stk_failed(
             pass
     if result_desc:
         stk.result_desc = result_desc[:255]
-    if raw:
-        stk.raw_callback = raw
+    if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
     stk.completed_at = timezone.now()
     stk.save(
         update_fields=[

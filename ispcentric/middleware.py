@@ -273,6 +273,31 @@ class HotspotCaptiveProbeMiddleware:
                     target = f"{target}{sep}{urlencode({'t': token})}"
             except Exception:
                 pass
+        else:
+            # Captive probes often skip RouterOS login.html, so attach MAC from
+            # the Hotspot host table when the client IP is known.
+            try:
+                from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
+
+                from core.mikrotik_connect import find_hotspot_mac_for_ip
+
+                mac = find_hotspot_mac_for_ip(org, remote)
+                if mac:
+                    parts = urlsplit(target)
+                    q = parse_qs(parts.query, keep_blank_values=True)
+                    if not q.get("mac"):
+                        q["mac"] = [mac]
+                        target = urlunsplit(
+                            (
+                                parts.scheme,
+                                parts.netloc,
+                                parts.path,
+                                urlencode(q, doseq=True),
+                                parts.fragment,
+                            )
+                        )
+            except Exception:
+                pass
         try:
             # Match OS captive probe bursts so the popup stays immediate.
             cache.set(cache_key, target, 20)

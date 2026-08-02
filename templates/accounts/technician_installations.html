@@ -1,0 +1,402 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>Installations{% if tickets %} ({{ tickets|length }}){% endif %}</h2>
+      <p class="panel-sub">Open technician requests and tickets assigned to you.</p>
+    </div>
+  </div>
+
+  {% if tickets %}
+    <div class="org-table-shell">
+      <table class="org-table org-table-leads">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Location</th>
+            <th>ISP phone</th>
+            <th>ISP</th>
+            <th>Status</th>
+            <th>Assignment</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ticket in tickets %}
+            <tr>
+              <td><span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span></td>
+              <td>
+                {% if ticket.location_lat and ticket.location_lng %}
+                  {% with maps_label=ticket.building_name|default:ticket.address %}
+                  <a
+                    class="lead-maps-link"
+                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <span class="lead-maps-label">
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                    </span>
+                    {% if ticket.address %}
+                      <small class="lead-location-line">{{ ticket.address }}</small>
+                    {% endif %}
+                  </a>
+                  {% endwith %}
+                {% elif ticket.address or ticket.building_name %}
+                  {{ ticket.building_name|default:ticket.address }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                {% if ticket.assigned_technician_id == employee_profile.id %}
+                  {% if ticket.organization and ticket.organization.phone %}
+                    <a href="tel:{{ ticket.organization.phone }}">{{ ticket.organization.phone }}</a>
+                  {% else %}
+                    —
+                  {% endif %}
+                {% else %}
+                  <span class="lead-action-muted">Hidden until accepted</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if ticket.assigned_technician_id == employee_profile.id %}
+                  {% if ticket.organization %}
+                    {{ ticket.organization.name }}
+                  {% else %}
+                    —
+                  {% endif %}
+                {% else %}
+                  <span class="lead-action-muted">Hidden until accepted</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+              </td>
+              <td>
+                {% if ticket.assigned_technician_id == employee_profile.id %}
+                  <span class="org-status org-status-active">Assigned to you</span>
+                {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+                  <span class="lead-action-muted">Open pool</span>
+                {% elif ticket.assigned_technician %}
+                  {% if ticket.assigned_technician.user.get_full_name %}
+                    {{ ticket.assigned_technician.user.get_full_name }}
+                  {% else %}
+                    {{ ticket.assigned_technician.user.username }}
+                  {% endif %}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <div class="org-actions lead-ticket-actions">
+                  {% if ticket.assigned_technician_id == employee_profile.id %}
+                    <button
+                      type="button"
+                      class="org-action-warn"
+                      data-tech-reason
+                      data-reason-mode="reject"
+                      data-reason-url="{% url 'roles:technician_installation_reject' ticket.id %}"
+                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                      title="Return this ticket to Allocated — open"
+                    >
+                      Reject ticket
+                    </button>
+                    <button
+                      type="button"
+                      class="org-action-danger"
+                      data-tech-reason
+                      data-reason-mode="decline"
+                      data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
+                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                      title="Hide this ticket for you"
+                    >
+                      Not interested
+                    </button>
+                  {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+                    <form
+                      method="post"
+                      action="{% url 'roles:technician_installation_accept' ticket.id %}"
+                    >
+                      {% csrf_token %}
+                      <button type="submit" class="org-action-success" title="Accept this installation ticket">
+                        Accept
+                      </button>
+                    </form>
+                    <button
+                      type="button"
+                      class="org-action-danger"
+                      data-tech-reason
+                      data-reason-mode="decline"
+                      data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
+                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                      title="Hide this ticket for you"
+                    >
+                      Not interested
+                    </button>
+                  {% else %}
+                    <span class="lead-action-muted">—</span>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">{{ empty_text }}</p>
+  {% endif %}
+</section>
+
+<div
+  class="role-modal client-action-modal"
+  id="tech-reason-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-tech-reason></div>
+  <div class="role-modal-panel lead-stk-panel" role="dialog" aria-modal="true" aria-labelledby="tech-reason-title">
+    <header class="role-modal-head lead-stk-head">
+      <div>
+        <p class="role-modal-kicker">Field work</p>
+        <h2 id="tech-reason-title">Not interested</h2>
+        <p class="role-modal-sub" id="tech-reason-sub">Choose a reason to hide this installation ticket for you.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-tech-reason aria-label="Close">×</button>
+    </header>
+    <form id="tech-reason-form" class="lead-stk-form" method="post" novalidate>
+      {% csrf_token %}
+      <div class="lead-stk-body">
+        <dl class="lead-stk-summary">
+          <div class="lead-stk-summary-item">
+            <dt>Ticket</dt>
+            <dd id="tech-reason-ticket"></dd>
+          </div>
+        </dl>
+        <div class="lead-stk-field">
+          <label for="tech-reason-category">Reason</label>
+          <div class="lead-stk-select-wrap">
+            <select
+              id="tech-reason-category"
+              name="reason_category"
+              class="lead-stk-input lead-stk-select"
+              required
+            >
+              <option value="" selected disabled>Choose a reason…</option>
+              <option value="too_far">Too far / wrong location</option>
+              <option value="no_capacity">No capacity / too busy</option>
+              <option value="site_not_ready">Site not ready</option>
+              <option value="access_issue">Access / security issue</option>
+              <option value="client_unavailable" data-modes="reject">Client unavailable</option>
+              <option value="other">Other reason</option>
+            </select>
+          </div>
+        </div>
+        <div class="lead-stk-field" id="tech-reason-detail-wrap" hidden>
+          <label for="tech-reason-detail" id="tech-reason-detail-label">Note</label>
+          <textarea
+            id="tech-reason-detail"
+            name="reason_detail"
+            class="lead-stk-input lead-stk-textarea"
+            rows="3"
+            maxlength="220"
+            placeholder="Add a note for this reason"
+          ></textarea>
+          <p class="lead-stk-hint" id="tech-reason-detail-hint">Required for this reason.</p>
+        </div>
+        <input type="hidden" name="reason" id="tech-reason-value" value="">
+        <div class="lead-stk-status is-error" id="tech-reason-status" hidden>
+          <p id="tech-reason-status-text"></p>
+        </div>
+      </div>
+      <footer class="role-modal-actions lead-stk-actions">
+        <button type="button" class="btn btn-ghost" data-close-tech-reason>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="tech-reason-submit">Hide ticket</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("tech-reason-modal");
+  var form = document.getElementById("tech-reason-form");
+  if (!modal || !form) return;
+
+  var titleEl = document.getElementById("tech-reason-title");
+  var subEl = document.getElementById("tech-reason-sub");
+  var submitBtn = document.getElementById("tech-reason-submit");
+  var categorySelect = document.getElementById("tech-reason-category");
+  var detailWrap = document.getElementById("tech-reason-detail-wrap");
+  var detailInput = document.getElementById("tech-reason-detail");
+  var detailLabel = document.getElementById("tech-reason-detail-label");
+  var detailHint = document.getElementById("tech-reason-detail-hint");
+  var reasonInput = document.getElementById("tech-reason-value");
+  var ticketEl = document.getElementById("tech-reason-ticket");
+  var statusBox = document.getElementById("tech-reason-status");
+  var statusText = document.getElementById("tech-reason-status-text");
+  var currentMode = "decline";
+
+  var MODE_COPY = {
+    decline: {
+      title: "Not interested",
+      sub: "Choose a reason to hide this installation ticket for you.",
+      submit: "Hide ticket",
+      detailRequired: { other: "Other reason" }
+    },
+    reject: {
+      title: "Reject ticket",
+      sub: "Choose a reason to return this ticket to Allocated — open.",
+      submit: "Reject ticket",
+      detailRequired: {
+        client_unavailable: "Client unavailable",
+        other: "Other reason"
+      }
+    }
+  };
+
+  var CATEGORY_LABELS = {
+    too_far: "Too far / wrong location",
+    no_capacity: "No capacity / too busy",
+    site_not_ready: "Site not ready",
+    access_issue: "Access / security issue",
+    client_unavailable: "Client unavailable",
+    other: "Other reason"
+  };
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    setError("");
+    form.reset();
+    if (categorySelect) categorySelect.selectedIndex = 0;
+    syncDetailUi();
+  }
+
+  function setError(message) {
+    if (!statusBox || !statusText) return;
+    statusText.textContent = message || "";
+    statusBox.hidden = !message;
+  }
+
+  function syncModeOptions() {
+    if (!categorySelect) return;
+    Array.prototype.forEach.call(categorySelect.options, function (opt) {
+      if (!opt.value) return;
+      var modes = opt.getAttribute("data-modes");
+      if (!modes) {
+        opt.hidden = false;
+        opt.disabled = false;
+        return;
+      }
+      var allowed = modes.split(/\s+/).indexOf(currentMode) !== -1;
+      opt.hidden = !allowed;
+      opt.disabled = !allowed;
+    });
+  }
+
+  function syncDetailUi() {
+    var copy = MODE_COPY[currentMode] || MODE_COPY.decline;
+    var category = categorySelect ? categorySelect.value : "";
+    var requiredLabel = copy.detailRequired[category];
+    var showDetail = !!requiredLabel;
+    if (detailWrap) detailWrap.hidden = !showDetail;
+    if (detailInput) {
+      detailInput.required = showDetail;
+      if (!showDetail) detailInput.value = "";
+    }
+    if (detailLabel) detailLabel.textContent = "Note";
+    if (detailHint) {
+      detailHint.textContent = requiredLabel
+        ? "Required when you choose “" + requiredLabel + "”."
+        : "Add a note for this reason.";
+    }
+  }
+
+  function applyMode(mode) {
+    currentMode = mode === "reject" ? "reject" : "decline";
+    var copy = MODE_COPY[currentMode];
+    if (titleEl) titleEl.textContent = copy.title;
+    if (subEl) subEl.textContent = copy.sub;
+    if (submitBtn) submitBtn.textContent = copy.submit;
+    syncModeOptions();
+    syncDetailUi();
+  }
+
+  function buildReason() {
+    var category = categorySelect ? categorySelect.value : "";
+    var label = CATEGORY_LABELS[category] || "";
+    if (!label) return "";
+    var copy = MODE_COPY[currentMode] || MODE_COPY.decline;
+    if (!copy.detailRequired[category]) return label;
+    var detail = detailInput ? detailInput.value.trim() : "";
+    if (!detail) return "";
+    return label + ": " + detail;
+  }
+
+  document.querySelectorAll("[data-tech-reason]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var mode = btn.getAttribute("data-reason-mode") || "decline";
+      var url = btn.getAttribute("data-reason-url") || "";
+      if (ticketEl) ticketEl.textContent = btn.getAttribute("data-ticket") || "—";
+      form.action = url;
+      setError("");
+      if (categorySelect) categorySelect.selectedIndex = 0;
+      if (detailInput) detailInput.value = "";
+      applyMode(mode);
+      openModal();
+    });
+  });
+
+  modal.querySelectorAll("[data-close-tech-reason]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.hidden) closeModal();
+  });
+
+  if (categorySelect) {
+    categorySelect.addEventListener("change", function () {
+      setError("");
+      syncDetailUi();
+    });
+  }
+
+  form.addEventListener("submit", function (event) {
+    var copy = MODE_COPY[currentMode] || MODE_COPY.decline;
+    var category = categorySelect ? categorySelect.value : "";
+    if (!CATEGORY_LABELS[category] || (categorySelect.options[categorySelect.selectedIndex] || {}).disabled) {
+      event.preventDefault();
+      setError("Choose a reason.");
+      return;
+    }
+    if (copy.detailRequired[category] && !(detailInput && detailInput.value.trim())) {
+      event.preventDefault();
+      setError("Enter a note for “" + copy.detailRequired[category] + "”.");
+      return;
+    }
+    if (reasonInput) reasonInput.value = buildReason();
+  });
+})();
+</script>
+{% endblock %}

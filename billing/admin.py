@@ -37,6 +37,7 @@ class BillingPlanAdmin(admin.ModelAdmin):
 class CustomerAdmin(admin.ModelAdmin):
     list_display = (
         "full_name",
+        "sales_ticket_number",
         "account_number",
         "service_type",
         "pppoe_username",
@@ -47,7 +48,13 @@ class CustomerAdmin(admin.ModelAdmin):
         "organization",
     )
     list_filter = ("status", "service_type")
-    search_fields = ("full_name", "account_number", "phone", "pppoe_username")
+    search_fields = (
+        "full_name",
+        "sales_ticket_number",
+        "account_number",
+        "phone",
+        "pppoe_username",
+    )
     autocomplete_fields = ("plan",)
     raw_id_fields = ("router", "organization")
 

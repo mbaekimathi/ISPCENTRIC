@@ -1,0 +1,85 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Lead payments — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">
+  {% if page_subtitle %}
+    {{ page_subtitle }}
+  {% elif organization %}
+    {{ organization.name }} — allocation fees and reversals.
+  {% else %}
+    Lead allocation payments.
+  {% endif %}
+</p>
+
+<div class="stat-grid">
+  <div class="stat">
+    <div class="label">Lead payments</div>
+    <div class="value">{{ lead_payment_count|default:0 }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">Reversed</div>
+    <div class="value">{{ lead_reversal_count|default:0 }}</div>
+  </div>
+</div>
+
+<section class="panel staff-panel stack-gap" id="lead-payments">
+  <div class="panel-head-row">
+    <div>
+      <h2>Lead payments</h2>
+      <p class="panel-sub">Sales ticket allocation fees paid by your ISP — including reversed payments.</p>
+    </div>
+    <div class="panel-head-actions">
+      <a class="btn btn-ghost" href="{% url 'core:leads' %}">Open leads</a>
+      <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Billing overview</a>
+    </div>
+  </div>
+  {% if lead_payments %}
+    <div class="table-scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Client</th>
+            <th>Amount</th>
+            <th>M-Pesa Ref</th>
+            <th>Paid</th>
+            <th>Status</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in lead_payments %}
+            <tr class="{% if row.reversed %}is-reversed-lead-payment{% endif %}">
+              <td>
+                <span class="org-code">{{ row.customer.sales_ticket_number|default:row.customer.account_number }}</span>
+              </td>
+              <td>{{ row.customer.full_name }}</td>
+              <td>KES {{ row.amount }}</td>
+              <td>{{ row.receipt|default:"—" }}</td>
+              <td>
+                {% if row.completed_at %}
+                  {{ row.completed_at|date:"d M Y H:i" }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                {% if row.reversed %}
+                  <span class="badge badge-warn">Reversed</span>
+                {% else %}
+                  <span class="badge badge-success">Paid</span>
+                {% endif %}
+              </td>
+              <td>{% if row.reversed %}{{ row.reversal_reason|default:"—" }}{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">No lead allocation payments yet. Accepted leads paid via STK will appear here, including reversals.</p>
+  {% endif %}
+</section>
+{% endblock %}

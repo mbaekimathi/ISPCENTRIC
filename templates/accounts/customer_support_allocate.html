@@ -1,0 +1,101 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel staff-panel-solid stack-gap-lg">
+  <div class="panel-head-row">
+    <div>
+      <h2>Employees{% if employees_count %} ({{ employees_count }}){% endif %}</h2>
+      <p class="panel-sub">Select an employee to open their allocate page.</p>
+    </div>
+  </div>
+
+  {% if employees %}
+    <div class="org-search-bar">
+      <label class="visually-hidden" for="allocate-search">Search employees</label>
+      <input
+        type="search"
+        id="allocate-search"
+        class="org-search-input"
+        placeholder="Search by name, email, phone, role, or organization…"
+        autocomplete="off"
+        spellcheck="false"
+      >
+    </div>
+
+    <div class="org-table-shell">
+      <table class="org-table org-table-hr" id="allocate-table">
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Role</th>
+            <th class="col-optional">Organization</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for member in employees %}
+            <tr
+              data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {% if member.organization %}{{ member.organization.name }}{% endif %}"
+            >
+              <td>
+                <div class="org-identity">
+                  {% if member.profile_photo %}
+                    <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+                  {% else %}
+                    <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
+                  {% endif %}
+                  <div class="org-owner">
+                    <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
+                    {% if member.user.email %}<small>{{ member.user.email }}</small>{% endif %}
+                  </div>
+                </div>
+              </td>
+              <td>{{ member.get_role_display }}</td>
+              <td class="col-optional">{% if member.organization %}{{ member.organization.name }}{% else %}—{% endif %}</td>
+              <td>
+                <span class="org-status org-status-{{ member.status }}">{{ member.get_status_display }}</span>
+              </td>
+              <td>
+                <a
+                  class="btn btn-primary btn-sm"
+                  href="{% url 'roles:customer_support_allocate_employee' member.pk %}"
+                >
+                  Allocate
+                </a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty">{{ empty_text }}</p>
+  {% endif %}
+</section>
+
+<script>
+(function () {
+  var input = document.getElementById("allocate-search");
+  var table = document.getElementById("allocate-table");
+  if (!input || !table) return;
+  var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+  input.addEventListener("input", function () {
+    var q = (input.value || "").trim().toLowerCase();
+    rows.forEach(function (row) {
+      var hay = (row.getAttribute("data-search") || "").toLowerCase();
+      row.hidden = q && hay.indexOf(q) === -1;
+    });
+  });
+})();
+</script>
+{% endblock %}

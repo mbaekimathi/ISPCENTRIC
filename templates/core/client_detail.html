@@ -750,6 +750,7 @@
             <thead>
               <tr>
                 <th>Invoice</th>
+                <th>M-Pesa Ref</th>
                 <th>Amount</th>
                 <th>Status</th>
                 <th>Due</th>
@@ -759,6 +760,7 @@
               {% for inv in invoices %}
                 <tr>
                   <td>{{ inv.invoice_number }}</td>
+                  <td>{% with pay=inv.payments.all|first %}{{ pay.reference|default:"—" }}{% endwith %}</td>
                   <td>{{ inv.amount }}</td>
                   <td><span class="badge">{{ inv.get_status_display }}</span></td>
                   <td>{{ inv.due_date|date:"M j, Y" }}</td>
@@ -778,7 +780,7 @@
           <table class="table clients-type-table">
             <thead>
               <tr>
-                <th>Reference</th>
+                <th>M-Pesa Ref</th>
                 <th>Amount</th>
                 <th>Method</th>
                 <th>Received</th>
@@ -787,7 +789,7 @@
             <tbody>
               {% for pay in payments %}
                 <tr>
-                  <td>{{ pay.reference|default:pay.invoice.invoice_number }}</td>
+                  <td>{{ pay.reference|default:"—" }}</td>
                   <td>{{ pay.amount }}</td>
                   <td>{{ pay.get_method_display }}</td>
                   <td>{{ pay.received_at|date:"M j, Y" }}</td>

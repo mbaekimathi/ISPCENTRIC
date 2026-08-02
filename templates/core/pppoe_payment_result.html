@@ -49,8 +49,12 @@
       justify-content: center;
       padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
                calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif;
       color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-size-adjust: 100%;
+      -webkit-text-size-adjust: 100%;
       background:
         radial-gradient(ellipse 90% 60% at 10% 0%, rgba(14, 124, 134, 0.28), transparent 55%),
         radial-gradient(ellipse 70% 50% at 100% 100%, rgba(31, 111, 235, 0.2), transparent 50%),
@@ -80,9 +84,9 @@
       border-radius: 999px;
       border: 1px solid rgba(14, 124, 134, 0.28);
       background: var(--tint);
-      font-size: 0.68rem;
-      font-weight: 800;
-      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: var(--brand);
     }

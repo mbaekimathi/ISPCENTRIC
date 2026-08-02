@@ -70,9 +70,21 @@ class BillingPlan(models.Model):
 
 class Customer(models.Model):
     class Status(models.TextChoices):
+        NEW = "new", "New"
+        ALLOCATED = "allocated", "Allocated"
+        ALLOCATED_OPEN = "allocated_open", "Allocated — open"
+        ALLOCATED_CLOSED = "allocated_closed", "Allocated — closed"
+        ACCEPTED = "accepted", "Accepted"
+        NOT_INTERESTED = "not_interested", "Not interested"
         ACTIVE = "active", "Active"
         SUSPENDED = "suspended", "Suspended"
         INACTIVE = "inactive", "Inactive"
+
+    ALLOCATED_STATUSES = (
+        Status.ALLOCATED,
+        Status.ALLOCATED_OPEN,
+        Status.ALLOCATED_CLOSED,
+    )
 
     class ServiceType(models.TextChoices):
         PPPOE = "pppoe", "PPPoE"
@@ -83,12 +95,37 @@ class Customer(models.Model):
         "accounts.Organization",
         on_delete=models.CASCADE,
         related_name="customers",
+        null=True,
+        blank=True,
+        help_text="ISP this client belongs to. Optional until a specific provider is assigned.",
     )
     full_name = models.CharField(max_length=150)
     phone = models.CharField(max_length=30)
     email = models.EmailField(blank=True)
-    address = models.CharField(max_length=255, blank=True)
+    address = models.CharField(
+        "Location",
+        max_length=255,
+        blank=True,
+        help_text="Map place name selected during registration.",
+    )
+    location_lat = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True
+    )
+    location_lng = models.DecimalField(
+        max_digits=9, decimal_places=6, null=True, blank=True
+    )
+    building_name = models.CharField(max_length=150, blank=True)
+    house_number = models.CharField(max_length=60, blank=True)
     account_number = models.CharField(max_length=40, unique=True)
+    sales_ticket_number = models.CharField(
+        "Sales ticket number",
+        max_length=40,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Generated when sales registers this client.",
+    )
     service_type = models.CharField(
         max_length=20,
         choices=ServiceType.choices,
@@ -150,6 +187,22 @@ class Customer(models.Model):
         related_name="customers",
         help_text="MikroTik this client is provisioned on.",
     )
+    registered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="registered_customers",
+        null=True,
+        blank=True,
+        help_text="Sales staff (or other user) who registered this client.",
+    )
+    assigned_technician = models.ForeignKey(
+        "accounts.Employee",
+        on_delete=models.SET_NULL,
+        related_name="assigned_customers",
+        null=True,
+        blank=True,
+        help_text="Technician assigned when this lead was allocated (closed assignment).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -179,6 +232,81 @@ class Customer(models.Model):
 
     def __str__(self):
         return f"{self.full_name} ({self.account_number})"
+
+
+class InstallationDecline(models.Model):
+    """Per-technician hide of an installation ticket with a reason."""
+
+    class Reason(models.TextChoices):
+        TOO_FAR = "too_far", "Too far / wrong location"
+        NO_CAPACITY = "no_capacity", "No capacity / too busy"
+        SITE_NOT_READY = "site_not_ready", "Site not ready"
+        ACCESS_ISSUE = "access_issue", "Access / security issue"
+        OTHER = "other", "Other reason"
+
+    DETAIL_REQUIRED = {Reason.OTHER}
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="installation_declines",
+    )
+    technician = models.ForeignKey(
+        "accounts.Employee",
+        on_delete=models.CASCADE,
+        related_name="installation_declines",
+    )
+    reason_category = models.CharField(max_length=40, choices=Reason.choices)
+    reason = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "billing_installation_decline"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["customer", "technician"],
+                name="bill_inst_decline_cust_tech_uniq",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.customer_id} declined by {self.technician_id}: {self.reason}"
+
+
+class InstallationReject(models.Model):
+    """Reason logged when a technician returns a ticket to allocated-open."""
+
+    class Reason(models.TextChoices):
+        TOO_FAR = "too_far", "Too far / wrong location"
+        NO_CAPACITY = "no_capacity", "No capacity / too busy"
+        SITE_NOT_READY = "site_not_ready", "Site not ready"
+        ACCESS_ISSUE = "access_issue", "Access / security issue"
+        CLIENT_UNAVAILABLE = "client_unavailable", "Client unavailable"
+        OTHER = "other", "Other reason"
+
+    DETAIL_REQUIRED = {Reason.OTHER, Reason.CLIENT_UNAVAILABLE}
+
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="installation_rejects",
+    )
+    technician = models.ForeignKey(
+        "accounts.Employee",
+        on_delete=models.CASCADE,
+        related_name="installation_rejects",
+    )
+    reason_category = models.CharField(max_length=40, choices=Reason.choices)
+    reason = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "billing_installation_reject"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.customer_id} rejected by {self.technician_id}: {self.reason}"
 
 
 class Invoice(models.Model):
@@ -262,6 +390,10 @@ class StkPushRequest(models.Model):
         FAILED = "failed", "Failed"
         CANCELLED = "cancelled", "Cancelled"
 
+    class Purpose(models.TextChoices):
+        SUBSCRIPTION = "subscription", "Subscription renewal"
+        LEAD_ALLOCATION = "lead_allocation", "Lead allocation"
+
     organization = models.ForeignKey(
         "accounts.Organization",
         on_delete=models.CASCADE,
@@ -279,6 +411,12 @@ class StkPushRequest(models.Model):
         blank=True,
         related_name="stk_push_requests",
         help_text="Package selected and priced when this payment attempt began.",
+    )
+    purpose = models.CharField(
+        max_length=32,
+        choices=Purpose.choices,
+        default=Purpose.SUBSCRIPTION,
+        db_index=True,
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     phone = models.CharField(max_length=20)

@@ -616,6 +616,41 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_hotspot_probe_attaches_mac_when_host_known(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+        from urllib.parse import parse_qs, urlparse
+
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.50.50.20",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_hotspot_mac_for_ip",
+            return_value="AA:BB:CC:DD:EE:20",
+        ):
+            response = middleware(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        mac = parse_qs(urlparse(response.url).query).get("mac", [""])[0]
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:20")
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_pppoe_pool_probe_redirects_to_pppoe_pay_page(self):
         from django.http import HttpResponse
         from django.test import RequestFactory
@@ -1801,9 +1836,10 @@ class ClientsSurfingStatusTests(TestCase):
             "http://billing.example:8000/pppoe/123456/pay/?t=signed.token.value"
         )
         self.assertIn("t=signed.token.value", html)
-        self.assertIn("mac=$(mac-esc)", html)
+        self.assertIn("mac=$(mac)", html)
         self.assertNotIn("?t=signed.token.value/?", html)
-        self.assertIn("&mac=$(mac-esc)", html)
+        # mac must lead the appended query so other fields cannot erase it.
+        self.assertIn("t=signed.token.value&mac=$(mac)", html)
 
     def test_pppoe_pay_accepts_mac_query_for_hotspot_tab(self):
         from django.core import signing
@@ -1873,6 +1909,46 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["account_number"], self.customer.account_number)
         self.assertFalse(response.context["require_account_lookup"])
+
+    def test_remembered_hotspot_ip_mac_autofills_pay_page(self):
+        from django.core.cache import cache
+        from unittest.mock import patch
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+        from core.mikrotik_connect import remember_hotspot_mac_for_ip
+
+        cache.clear()
+        self.org.hotspot_enabled = True
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Hotspot Hour",
+            price="50.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        remember_hotspot_mac_for_ip(self.org, "10.50.50.44", "11:22:33:44:55:66")
+        with patch(
+            "core.mikrotik_connect._api_session",
+            side_effect=AssertionError("API should not be required when IP MAC is cached"),
+        ):
+            response = self.client.get(
+                f"/hotspot/{self.org.join_code}/pay/",
+                REMOTE_ADDR="10.50.50.44",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["hotspot_mac"], "11:22:33:44:55:66")
+        self.assertContains(response, 'name="mac" value="11:22:33:44:55:66"')
+        self.assertEqual(response.cookies.get("hs_mac").value, "11:22:33:44:55:66")
 
     def test_hotspot_page_hides_pppoe_choice_when_pppoe_is_off(self):
         self.org.pppoe_compulsory = False

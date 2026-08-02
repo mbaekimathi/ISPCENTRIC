@@ -11,7 +11,7 @@
     html, body {
       margin: 0;
       min-height: 100%;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif;
       background:
         radial-gradient(ellipse 80% 50% at 10% 0%, rgba(14, 124, 134, 0.35), transparent 55%),
         rgba(8, 16, 28, 0.82);
@@ -47,26 +47,27 @@
       padding: 0.28rem 0.65rem;
       border-radius: 999px;
       background: rgba(14, 124, 134, 0.12);
-      font-size: 0.68rem;
-      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: #0e7c86;
-      font-weight: 800;
+      font-weight: 700;
     }
     h1 {
-      font-size: 1.35rem;
+      font-size: clamp(1.3rem, 5vw, 1.45rem);
       line-height: 1.2;
       letter-spacing: -0.02em;
+      font-weight: 700;
       margin: 0 0 0.65rem;
     }
     p {
       margin: 0 0 0.65rem;
-      line-height: 1.45;
-      font-size: 0.95rem;
+      line-height: 1.55;
+      font-size: 0.98rem;
       color: #4a6573;
     }
     .meta {
-      font-size: 0.8rem;
+      font-size: 0.85rem;
       color: #64748b;
       margin-top: 0.85rem;
     }
@@ -78,11 +79,11 @@
       text-align: left;
     }
     .pay-title {
-      font-size: 0.7rem;
-      letter-spacing: 0.12em;
+      font-size: 0.75rem;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
       color: #0e7c86;
-      font-weight: 800;
+      font-weight: 700;
       margin: 0 0 0.4rem;
     }
     .pay p { margin: 0.2rem 0; color: #0b1f2a; }

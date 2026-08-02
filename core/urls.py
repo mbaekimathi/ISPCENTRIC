@@ -180,7 +180,28 @@ urlpatterns = [
         name="hotspot_alogin_page",
     ),
     path("app/account/", views.my_account, name="my_account"),
-    path("app/sales-representatives/", views.sales_reps, name="sales_reps"),
+    path("app/account/profile/", views.save_owner_profile, name="save_owner_profile"),
+    path("app/leads/", views.leads, name="leads"),
+    path(
+        "app/leads/<int:customer_id>/allocate/stk/",
+        views.lead_allocation_stk_pay,
+        name="lead_allocation_stk_pay",
+    ),
+    path(
+        "app/leads/stk/<int:stk_id>/status/",
+        views.lead_allocation_stk_status,
+        name="lead_allocation_stk_status",
+    ),
+    path(
+        "app/leads/<int:customer_id>/reverse/",
+        views.lead_reverse,
+        name="lead_reverse",
+    ),
+    path(
+        "app/leads/<int:customer_id>/not-interested/",
+        views.lead_not_interested,
+        name="lead_not_interested",
+    ),
     path("app/technicians/", views.technicians, name="technicians"),
     path("app/settings/", views.system_settings, name="system_settings"),
 ]
