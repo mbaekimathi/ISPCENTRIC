@@ -3104,11 +3104,19 @@ def my_clients(request):
         "hotspot": Customer.ServiceType.HOTSPOT,
     }[tab]
 
+    clients_query = (request.GET.get("q") or "").strip()
     tab_qs = (
         base_qs.filter(service_type=service_type)
         .select_related("plan", "router")
         .order_by("-created_at")
     )
+    if clients_query:
+        tab_qs = tab_qs.filter(
+            Q(full_name__icontains=clients_query)
+            | Q(phone__icontains=clients_query)
+            | Q(account_number__icontains=clients_query)
+            | Q(pppoe_username__icontains=clients_query)
+        )
     paginator = Paginator(tab_qs, 100)
     page_obj = paginator.get_page(request.GET.get("page") or 1)
     page_customers = list(page_obj)
@@ -3134,6 +3142,8 @@ def my_clients(request):
             static_count=static_count,
             hotspot_count=hotspot_count,
             clients_page=page_obj,
+            clients_query=clients_query,
+            clients_match_count=paginator.count,
             pppoe_form=pppoe_form,
             open_client_modal=open_modal,
             billing_plans_exist=bool(

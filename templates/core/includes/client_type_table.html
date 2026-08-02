@@ -14,78 +14,116 @@
       </thead>
       <tbody>
         {% for c in customers %}
-          <tr>
-            <td>
-              <a class="clients-name-link" href="{% url 'core:client_detail' c.id %}">
-                <strong class="clients-name">{{ c.full_name }}</strong>
-              </a>
-              {% if c.phone %}<span class="clients-phone">{{ c.phone }}</span>{% endif %}
+          <tr
+            class="clients-type-row tone-{% if show_pppoe %}pppoe{% elif show_hotspot %}hotspot{% else %}static{% endif %}"
+            data-client-row
+            style="--row-i: {{ forloop.counter0 }}"
+            data-search="{{ c.full_name|default:'' }} {{ c.phone|default:'' }} {{ c.account_number|default:'' }} {{ c.pppoe_username|default:'' }}"
+          >
+            <td data-label="Name">
+              <div class="clients-cell-value clients-cell-value-name">
+                <a class="clients-name-link" href="{% url 'core:client_detail' c.id %}">
+                  <span class="clients-avatar" aria-hidden="true">{{ c.full_name|default:"?"|slice:":1"|upper }}</span>
+                  <span class="clients-name-stack">
+                    <strong class="clients-name">{{ c.full_name }}</strong>
+                    {% if c.phone %}
+                      <span class="clients-phone">
+                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.4 11.4 0 0 0 .57 3.6 1 1 0 0 1-.25 1Z"/></svg>
+                        {{ c.phone }}
+                      </span>
+                    {% endif %}
+                  </span>
+                </a>
+              </div>
             </td>
-            <td class="clients-account-cell">
-              <strong class="clients-account-number">{{ c.account_number }}</strong>
-              <span class="clients-account-plan">{% if c.plan %}{{ c.plan.name }}{% else %}—{% endif %}</span>
-              {% if not show_pppoe %}
-                <span class="badge clients-account-status">{{ c.get_status_display }}</span>
-              {% endif %}
+            <td class="clients-account-cell" data-label="Account">
+              <div class="clients-cell-value">
+                <strong class="clients-account-number">
+                  <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 6h16v2H4zm0 5h16v2H4zm0 5h10v2H4z"/></svg>
+                  {{ c.account_number }}
+                </strong>
+                <span class="clients-account-plan">{% if c.plan %}{{ c.plan.name }}{% else %}—{% endif %}</span>
+                {% if not show_pppoe %}
+                  <span class="badge clients-account-status">{{ c.get_status_display }}</span>
+                {% endif %}
+              </div>
             </td>
             {% if show_pppoe %}
-              <td class="clients-pppoe-cell">
-                <strong class="clients-pppoe-user">{{ c.pppoe_username|default:"—" }}</strong>
-                {% if c.pppoe_password %}
-                  <span class="mikrotik-secret clients-pppoe-secret">
-                    <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-                    <span class="mikrotik-secret-value" data-secret-value hidden>{{ c.pppoe_password }}</span>
-                    <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show password">
-                      <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                      <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-                    </button>
-                  </span>
-                {% else %}
-                  <span class="clients-pppoe-pass-none">No password</span>
-                {% endif %}
+              <td class="clients-pppoe-cell" data-label="PPPoE user">
+                <div class="clients-cell-value">
+                  <strong class="clients-pppoe-user">{{ c.pppoe_username|default:"—" }}</strong>
+                  {% if c.pppoe_password %}
+                    <span class="mikrotik-secret clients-pppoe-secret">
+                      <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+                      <span class="mikrotik-secret-value" data-secret-value hidden>{{ c.pppoe_password }}</span>
+                      <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show password">
+                        <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                        <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                      </button>
+                    </span>
+                  {% else %}
+                    <span class="clients-pppoe-pass-none">No password</span>
+                  {% endif %}
+                </div>
               </td>
             {% endif %}
             {% if show_pppoe %}
-              <td class="clients-internet-cell">
-                <span
-                  class="badge clients-surf-badge is-checking"
-                  data-client-surf="{{ c.id }}"
-                  {% if c.pppoe_username %}data-pppoe-user="{{ c.pppoe_username }}"{% endif %}
-                  title="Checking live PPPoE session…"
-                >Checking…</span>
+              <td class="clients-internet-cell" data-label="Internet">
+                <div class="clients-cell-value">
+                  <span
+                    class="badge clients-surf-badge is-checking"
+                    data-client-surf="{{ c.id }}"
+                    {% if c.pppoe_username %}data-pppoe-user="{{ c.pppoe_username }}"{% endif %}
+                    title="Checking live PPPoE session…"
+                  >Checking…</span>
+                </div>
               </td>
             {% endif %}
             {% if show_router %}
-              <td class="clients-router-cell">
-                {% if c.router %}
-                  <a class="clients-router-name" href="{% url 'core:mikrotik_detail' c.router.id %}">{{ c.router.name }}</a>
-                  <span class="mikrotik-link-status is-checking" data-router-status="{{ c.router.id }}" data-router-host="{{ c.router.host }}">
-                    <span class="mikrotik-link-dot" aria-hidden="true"></span>
-                    <span class="mikrotik-link-label">Checking…</span>
-                  </span>
-                {% else %}
-                  <span class="clients-router-none">No router</span>
-                {% endif %}
+              <td class="clients-router-cell" data-label="Router">
+                <div class="clients-cell-value">
+                  {% if c.router %}
+                    <a class="clients-router-name" href="{% url 'core:mikrotik_detail' c.router.id %}">
+                      <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 7h16v3H4Zm2 5h12v7H6Zm3 2v3h2v-3Zm4 0v3h2v-3Z"/></svg>
+                      {{ c.router.name }}
+                    </a>
+                    <span class="mikrotik-link-status is-checking" data-router-status="{{ c.router.id }}" data-router-host="{{ c.router.host }}">
+                      <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                      <span class="mikrotik-link-label">Checking…</span>
+                    </span>
+                  {% else %}
+                    <span class="clients-router-none">No router</span>
+                  {% endif %}
+                </div>
               </td>
             {% endif %}
             {% if show_hotspot %}
-              <td>
-                <span
-                  class="badge clients-surf-badge is-checking"
-                  data-hotspot-surf="{{ c.id }}"
-                  title="Checking active Hotspot internet session…"
-                >Checking…</span>
+              <td data-label="Internet">
+                <div class="clients-cell-value">
+                  <span
+                    class="badge clients-surf-badge is-checking"
+                    data-hotspot-surf="{{ c.id }}"
+                    title="Checking active Hotspot internet session…"
+                  >Checking…</span>
+                </div>
               </td>
-              <td>
-                <span
-                  class="badge clients-surf-badge is-checking"
-                  data-hotspot-connected="{{ c.id }}"
-                  title="Checking whether this device is connected to the Hotspot network…"
-                >Checking…</span>
+              <td data-label="Wi-Fi router">
+                <div class="clients-cell-value">
+                  <span
+                    class="badge clients-surf-badge is-checking"
+                    data-hotspot-connected="{{ c.id }}"
+                    title="Checking whether this device is connected to the Hotspot network…"
+                  >Checking…</span>
+                </div>
               </td>
             {% endif %}
-            <td class="clients-row-actions">
-              <a class="btn btn-ghost clients-view-btn" href="{% url 'core:client_detail' c.id %}">View</a>
+            <td class="clients-row-actions" data-label="Actions">
+              <div class="clients-cell-value">
+                <a class="btn clients-view-btn" href="{% url 'core:client_detail' c.id %}">
+                  View
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h12m0 0-4-4m4 4-4 4"/></svg>
+                </a>
+              </div>
             </td>
           </tr>
         {% endfor %}
@@ -93,13 +131,26 @@
     </table>
   </div>
 {% else %}
-  <div class="clients-dash-empty">
-    <p class="clients-dash-empty-title">{{ empty_title }}</p>
-    <p class="clients-dash-empty-copy">{{ empty_text }}</p>
-    {% if show_pppoe %}
-      <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
-        Register PPPoE client
-      </button>
+  <div class="clients-dash-empty" data-clients-empty>
+    <span class="clients-dash-empty-ico" aria-hidden="true">
+      {% if clients_query %}
+        <svg viewBox="0 0 24 24" width="28" height="28"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5M9 11h4"/></svg>
+      {% else %}
+        <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg>
+      {% endif %}
+    </span>
+    {% if clients_query %}
+      <p class="clients-dash-empty-title">{{ empty_search_title|default:"No clients match your search" }}</p>
+      <p class="clients-dash-empty-copy">{{ empty_search_text|default:"Try another name or phone number." }}</p>
+    {% else %}
+      <p class="clients-dash-empty-title">{{ empty_title }}</p>
+      <p class="clients-dash-empty-copy">{{ empty_text }}</p>
+      {% if show_pppoe %}
+        <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+          Register PPPoE client
+        </button>
+      {% endif %}
     {% endif %}
   </div>
 {% endif %}

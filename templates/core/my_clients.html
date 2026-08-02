@@ -3,105 +3,183 @@
 {% block title %}My clients — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="clients-dash">
+<div class="clients-dash is-tab-{{ active_tab }}" data-clients-dash data-active-tab="{{ active_tab }}">
   <header class="clients-dash-hero">
-    <div class="clients-dash-hero-copy">
-      <p class="clients-dash-kicker">Subscribers</p>
-      <p class="clients-dash-lead">
-        Browse internet customers by connection type, check live status, and open a client for details.
-      </p>
+    <div class="clients-dash-hero-main">
+      <span class="clients-dash-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg>
+      </span>
+      <div class="clients-dash-hero-copy">
+        <p class="clients-dash-kicker">Subscribers</p>
+        <h2 class="clients-dash-title">My clients</h2>
+        <p class="clients-dash-lead">
+          Search by name or phone, switch connection type, and open a client for details.
+        </p>
+      </div>
     </div>
     <div class="clients-dash-hero-actions">
-      <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Billing</a>
+      <a class="btn btn-ghost clients-hero-btn" href="{% url 'billing:dashboard' %}">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
+        Billing
+      </a>
       {% if active_tab == 'pppoe' %}
-        <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+        <button type="button" class="btn btn-primary clients-hero-btn" data-open-modal="pppoe-register-modal">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
           Register PPPoE client
         </button>
       {% endif %}
     </div>
   </header>
 
-  <div class="clients-dash-stats">
-    <article class="clients-dash-stat">
-      <p class="clients-dash-stat-label">Total</p>
-      <p class="clients-dash-stat-value">{{ pppoe_count|add:static_count|add:hotspot_count }}</p>
-    </article>
-    <article class="clients-dash-stat{% if active_tab == 'pppoe' %} is-active{% endif %}">
-      <p class="clients-dash-stat-label">PPPoE</p>
-      <p class="clients-dash-stat-value">{{ pppoe_count }}</p>
-    </article>
-    <article class="clients-dash-stat{% if active_tab == 'static' %} is-active{% endif %}">
-      <p class="clients-dash-stat-label">Static</p>
-      <p class="clients-dash-stat-value">{{ static_count }}</p>
-    </article>
-    <article class="clients-dash-stat{% if active_tab == 'hotspot' %} is-active{% endif %}">
-      <p class="clients-dash-stat-label">Hotspot</p>
-      <p class="clients-dash-stat-value">{{ hotspot_count }}</p>
-    </article>
+  <div class="clients-dash-stats" role="navigation" aria-label="Client type counts">
+    <a class="clients-dash-stat tone-total" href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}" style="--i:0">
+      <span class="clients-dash-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16.5 13.5A3.75 3.75 0 1 0 12.75 9.75 3.75 3.75 0 0 0 16.5 13.5ZM7.5 14.25A3 3 0 1 0 4.5 11.25 3 3 0 0 0 7.5 14.25Zm9 1.5c-2.7 0-8.25 1.35-8.25 4.05V21h12v-1.2c0-2.7-5.55-4.05-8.25-4.05Zm-9-.75c-.3 0-.6 0-.9.05C4.05 15.9 1.5 16.95 1.5 18.75V21h4.5v-1.95c0-.75.3-1.8 1.5-2.7-.3-.1-.6-.15-.9-.15Z"/></svg>
+      </span>
+      <div class="clients-dash-stat-text">
+        <p class="clients-dash-stat-label">Total</p>
+        <p class="clients-dash-stat-value">{{ pppoe_count|add:static_count|add:hotspot_count }}</p>
+      </div>
+    </a>
+    <a class="clients-dash-stat tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}" href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}" style="--i:1">
+      <span class="clients-dash-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+      </span>
+      <div class="clients-dash-stat-text">
+        <p class="clients-dash-stat-label">PPPoE</p>
+        <p class="clients-dash-stat-value">{{ pppoe_count }}</p>
+      </div>
+    </a>
+    <a class="clients-dash-stat tone-static{% if active_tab == 'static' %} is-active{% endif %}" href="?tab=static{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}" style="--i:2">
+      <span class="clients-dash-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6h16v3H4Zm0 4.5h10V14H4Zm0 4.5h16v3H4Z"/></svg>
+      </span>
+      <div class="clients-dash-stat-text">
+        <p class="clients-dash-stat-label">Static</p>
+        <p class="clients-dash-stat-value">{{ static_count }}</p>
+      </div>
+    </a>
+    <a class="clients-dash-stat tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}" href="?tab=hotspot{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}" style="--i:3">
+      <span class="clients-dash-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+      </span>
+      <div class="clients-dash-stat-text">
+        <p class="clients-dash-stat-label">Hotspot</p>
+        <p class="clients-dash-stat-value">{{ hotspot_count }}</p>
+      </div>
+    </a>
   </div>
 
   <section class="panel staff-panel staff-panel-solid clients-dash-panel clients-panel">
-    <div class="panel-head-row">
-      <div>
-        <h2>Client list</h2>
-        <p class="panel-sub">Switch tabs to filter by how subscribers connect to your network.</p>
+    <div class="clients-toolbar">
+      <div class="clients-toolbar-copy">
+        <h2>
+          <span class="clients-toolbar-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6h16v2H4Zm0 5h16v2H4Zm0 5h10v2H4Z"/></svg>
+          </span>
+          Client list
+        </h2>
+        <p class="panel-sub clients-panel-sub">Filter by connection type, then search by name or phone.</p>
       </div>
+      <label class="clients-search" for="clients-live-search">
+        <span class="clients-search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>
+        </span>
+        <input
+          type="search"
+          id="clients-live-search"
+          class="clients-search-input"
+          name="q"
+          value="{{ clients_query|default:'' }}"
+          placeholder="Search name or phone…"
+          autocomplete="off"
+          spellcheck="false"
+          enterkeyhint="search"
+          data-clients-search
+          aria-controls="clients-list-host"
+        >
+        <button type="button" class="clients-search-clear" data-clients-search-clear hidden aria-label="Clear search">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </label>
     </div>
 
     <div class="client-type-tabs" role="tablist" aria-label="Client service types">
       <a
-        class="client-type-tab{% if active_tab == 'pppoe' %} is-active{% endif %}"
+        class="client-type-tab tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
         role="tab"
-        href="?tab=pppoe"
+        href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}"
         aria-selected="{% if active_tab == 'pppoe' %}true{% else %}false{% endif %}"
         id="tab-pppoe"
       >
+        <span class="client-type-tab-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+        </span>
         <span class="client-type-tab-label">PPPoE</span>
         <span class="client-type-tab-count">{{ pppoe_count }}</span>
       </a>
       <a
-        class="client-type-tab{% if active_tab == 'static' %} is-active{% endif %}"
+        class="client-type-tab tone-static{% if active_tab == 'static' %} is-active{% endif %}"
         role="tab"
-        href="?tab=static"
+        href="?tab=static{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}"
         aria-selected="{% if active_tab == 'static' %}true{% else %}false{% endif %}"
         id="tab-static"
       >
+        <span class="client-type-tab-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M4 6h16v3H4Zm0 4.5h10V14H4Zm0 4.5h16v3H4Z"/></svg>
+        </span>
         <span class="client-type-tab-label">Static</span>
         <span class="client-type-tab-count">{{ static_count }}</span>
       </a>
       <a
-        class="client-type-tab{% if active_tab == 'hotspot' %} is-active{% endif %}"
+        class="client-type-tab tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
         role="tab"
-        href="?tab=hotspot"
+        href="?tab=hotspot{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}"
         aria-selected="{% if active_tab == 'hotspot' %}true{% else %}false{% endif %}"
         id="tab-hotspot"
       >
+        <span class="client-type-tab-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+        </span>
         <span class="client-type-tab-label">Hotspot</span>
         <span class="client-type-tab-count">{{ hotspot_count }}</span>
       </a>
     </div>
 
-    {% if active_tab == 'pppoe' %}
-      {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." service_label="PPPoE" show_pppoe=1 show_router=1 %}
-    {% elif active_tab == 'static' %}
-      {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." service_label="Static" show_router=1 %}
-    {% else %}
-      {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." service_label="Hotspot" show_router=1 show_hotspot=1 %}
-    {% endif %}
+    <div class="clients-search-meta" data-clients-search-meta {% if not clients_query %}hidden{% endif %}>
+      <span class="clients-search-meta-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>
+      </span>
+      <span data-clients-search-summary>
+        {% if clients_query %}
+          {{ clients_match_count }} match{{ clients_match_count|pluralize:"es" }} for “{{ clients_query }}”
+        {% endif %}
+      </span>
+    </div>
 
-    {% if clients_page and clients_page.paginator.num_pages > 1 %}
-      <nav class="clients-pagination" aria-label="Client pages">
-        {% if clients_page.has_previous %}
-          <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}">Previous</a>
-        {% endif %}
-        <span class="clients-pagination-meta">
-          Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
-        </span>
-        {% if clients_page.has_next %}
-          <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}">Next</a>
-        {% endif %}
-      </nav>
-    {% endif %}
+    <div id="clients-list-host" class="clients-list-host" data-clients-list-host>
+      {% if active_tab == 'pppoe' %}
+        {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." empty_search_title="No PPPoE clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 clients_query=clients_query %}
+      {% elif active_tab == 'static' %}
+        {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." empty_search_title="No static clients match your search" empty_search_text="Try another name or phone number." service_label="Static" show_router=1 clients_query=clients_query %}
+      {% else %}
+        {% include "core/includes/client_type_table.html" with customers=hotspot_customers empty_title="No Hotspot clients yet" empty_text="Hotspot subscribers for this organization will appear here." empty_search_title="No Hotspot clients match your search" empty_search_text="Try another name or phone number." service_label="Hotspot" show_router=1 show_hotspot=1 clients_query=clients_query %}
+      {% endif %}
+
+      {% if clients_page and clients_page.paginator.num_pages > 1 %}
+        <nav class="clients-pagination" aria-label="Client pages">
+          {% if clients_page.has_previous %}
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}">Previous</a>
+          {% endif %}
+          <span class="clients-pagination-meta">
+            Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
+          </span>
+          {% if clients_page.has_next %}
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}">Next</a>
+          {% endif %}
+        </nav>
+      {% endif %}
+    </div>
   </section>
 </div>
 
@@ -239,6 +317,147 @@
 {% endblock %}
 
 {% block client_extra_js %}
+<script>
+(function () {
+  var dash = document.querySelector("[data-clients-dash]");
+  var searchInput = document.querySelector("[data-clients-search]");
+  var clearBtn = document.querySelector("[data-clients-search-clear]");
+  var listHost = document.querySelector("[data-clients-list-host]");
+  var meta = document.querySelector("[data-clients-search-meta]");
+  var summary = document.querySelector("[data-clients-search-summary]");
+  var activeTab = dash ? (dash.getAttribute("data-active-tab") || "pppoe") : "pppoe";
+  var debounceTimer = null;
+  var fetchSeq = 0;
+  var lastServerQuery = "{% if clients_query %}{{ clients_query|escapejs }}{% endif %}";
+
+  function normalize(value) {
+    return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function digits(value) {
+    return String(value || "").replace(/\D+/g, "");
+  }
+
+  function rowMatches(row, query) {
+    if (!query) return true;
+    var hay = normalize(row.getAttribute("data-search"));
+    if (hay.indexOf(query) !== -1) return true;
+    var qDigits = digits(query);
+    return !!(qDigits && digits(hay).indexOf(qDigits) !== -1);
+  }
+
+  function updateChrome(query, visible, total) {
+    if (clearBtn) clearBtn.hidden = !query;
+    if (!meta || !summary) return;
+    if (!query) {
+      meta.hidden = true;
+      summary.textContent = "";
+      return;
+    }
+    meta.hidden = false;
+    summary.textContent = visible + " match" + (visible === 1 ? "" : "es") + " for “" + query + "”"
+      + (total && total !== visible ? " on this page" : "");
+  }
+
+  function filterLocal(query) {
+    if (!listHost) return;
+    var rows = listHost.querySelectorAll("[data-client-row]");
+    var visible = 0;
+    var q = normalize(query);
+    rows.forEach(function (row) {
+      var show = rowMatches(row, q);
+      row.hidden = !show;
+      row.classList.toggle("is-search-hidden", !show);
+      if (show) visible += 1;
+    });
+    var emptyLocal = listHost.querySelector("[data-clients-local-empty]");
+    if (rows.length) {
+      if (!emptyLocal) {
+        emptyLocal = document.createElement("div");
+        emptyLocal.className = "clients-dash-empty clients-local-empty";
+        emptyLocal.setAttribute("data-clients-local-empty", "");
+        emptyLocal.innerHTML = '<p class="clients-dash-empty-title">No clients match on this page</p><p class="clients-dash-empty-copy">Keep typing — we will search the full list.</p>';
+        listHost.appendChild(emptyLocal);
+      }
+      emptyLocal.hidden = !(q && visible === 0);
+    }
+    updateChrome(query, visible, rows.length);
+    if (listHost) listHost.classList.toggle("is-filtering", !!q);
+  }
+
+  function serverSearch(query) {
+    var q = String(query || "").trim();
+    if (q === lastServerQuery) {
+      filterLocal(q);
+      return;
+    }
+    var seq = ++fetchSeq;
+    var url = new URL(window.location.href);
+    url.searchParams.set("tab", activeTab);
+    if (q) url.searchParams.set("q", q);
+    else url.searchParams.delete("q");
+    url.searchParams.delete("page");
+    if (listHost) listHost.classList.add("is-search-loading");
+    fetch(url.toString(), {
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "text/html" },
+      credentials: "same-origin",
+    })
+      .then(function (res) { return res.text(); })
+      .then(function (html) {
+        if (seq !== fetchSeq || !listHost) return;
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var next = doc.querySelector("[data-clients-list-host]");
+        if (!next) return;
+        listHost.innerHTML = next.innerHTML;
+        lastServerQuery = q;
+        history.replaceState({}, "", url.toString());
+        if (typeof window.__clientsBindSecrets === "function") {
+          window.__clientsBindSecrets(listHost);
+        }
+        filterLocal(q);
+        if (typeof window.__clientsRefreshSurf === "function") {
+          window.__clientsRefreshSurf(true);
+        }
+      })
+      .catch(function () {
+        filterLocal(q);
+      })
+      .finally(function () {
+        if (seq === fetchSeq && listHost) listHost.classList.remove("is-search-loading");
+      });
+  }
+
+  if (searchInput) {
+    filterLocal(searchInput.value || "");
+    if (clearBtn) clearBtn.hidden = !(searchInput.value || "").trim();
+    searchInput.addEventListener("input", function () {
+      var value = searchInput.value || "";
+      filterLocal(value);
+      window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(function () {
+        serverSearch(value);
+      }, 280);
+    });
+    searchInput.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && searchInput.value) {
+        event.preventDefault();
+        searchInput.value = "";
+        filterLocal("");
+        serverSearch("");
+      }
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener("click", function () {
+      if (!searchInput) return;
+      searchInput.value = "";
+      searchInput.focus();
+      filterLocal("");
+      serverSearch("");
+    });
+  }
+})();
+</script>
 <script>
 (function () {
   var FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
@@ -413,27 +632,31 @@
     });
   });
 
-  document.querySelectorAll(".clients-pppoe-secret").forEach(function (wrap) {
-    var mask = wrap.querySelector("[data-secret-mask]");
-    var value = wrap.querySelector("[data-secret-value]");
-    var btn = wrap.querySelector("[data-toggle-secret]");
-    if (!mask || !value || !btn) return;
-    var len = (value.textContent || "").length;
-    mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
-    btn.addEventListener("click", function (e) {
-      e.stopPropagation();
-      var showing = !value.hidden;
-      value.hidden = showing;
-      mask.hidden = !showing;
-      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
-      var eye = btn.querySelector(".icon-eye");
-      var eyeOff = btn.querySelector(".icon-eye-off");
-      if (eye && eyeOff) {
-        eye.hidden = !showing;
-        eyeOff.hidden = showing;
-      }
+  window.__clientsBindSecrets = function (root) {
+    (root || document).querySelectorAll(".clients-pppoe-secret").forEach(function (wrap) {
+      var mask = wrap.querySelector("[data-secret-mask]");
+      var value = wrap.querySelector("[data-secret-value]");
+      var btn = wrap.querySelector("[data-toggle-secret]");
+      if (!mask || !value || !btn || btn.getAttribute("data-bound-secret") === "1") return;
+      btn.setAttribute("data-bound-secret", "1");
+      var len = (value.textContent || "").length;
+      mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var showing = !value.hidden;
+        value.hidden = showing;
+        mask.hidden = !showing;
+        btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+        var eye = btn.querySelector(".icon-eye");
+        var eyeOff = btn.querySelector(".icon-eye-off");
+        if (eye && eyeOff) {
+          eye.hidden = !showing;
+          eyeOff.hidden = showing;
+        }
+      });
     });
-  });
+  };
+  window.__clientsBindSecrets(document);
 })();
 </script>
 {% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}
@@ -500,9 +723,6 @@
 {% if active_tab == 'pppoe' or active_tab == 'hotspot' %}
 <script>
 (function () {
-  var surfBadges = document.querySelectorAll("[data-client-surf], [data-hotspot-surf]");
-  var connectionBadges = document.querySelectorAll("[data-hotspot-connected]");
-  if (!surfBadges.length && !connectionBadges.length) return;
   var surfUrl = "{% url 'core:clients_surfing' %}";
   var service = "{{ active_tab|escapejs }}";
   var timer = null;
@@ -525,6 +745,9 @@
   }
 
   function refreshSurf(force) {
+    var surfBadges = document.querySelectorAll("[data-client-surf], [data-hotspot-surf]");
+    var connectionBadges = document.querySelectorAll("[data-hotspot-connected]");
+    if (!surfBadges.length && !connectionBadges.length) return;
     if (document.hidden || inFlight) return;
     inFlight = true;
     var url = surfUrl + "?service=" + encodeURIComponent(service);
@@ -575,6 +798,7 @@
       .finally(function () { inFlight = false; });
   }
 
+  window.__clientsRefreshSurf = refreshSurf;
   refreshSurf(true);
   timer = setInterval(function () { refreshSurf(false); }, 10000);
   document.addEventListener("visibilitychange", function () {

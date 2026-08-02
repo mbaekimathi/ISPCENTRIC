@@ -4538,8 +4538,65 @@ body.staff-nav-lock {
 }
 
 .clients-dash {
+  --clients-tone: #0e7c86;
+  --clients-tone-soft: color-mix(in srgb, #0e7c86 16%, transparent);
+  --clients-tone-strong: #0b6b74;
   display: grid;
   gap: 1.15rem;
+}
+
+.clients-dash.is-tab-pppoe {
+  --clients-tone: #0e7c86;
+  --clients-tone-soft: color-mix(in srgb, #0e7c86 16%, transparent);
+  --clients-tone-strong: #0b6b74;
+}
+
+.clients-dash.is-tab-static {
+  --clients-tone: #c27803;
+  --clients-tone-soft: color-mix(in srgb, #c27803 16%, transparent);
+  --clients-tone-strong: #a16207;
+}
+
+.clients-dash.is-tab-hotspot {
+  --clients-tone: #059669;
+  --clients-tone-soft: color-mix(in srgb, #059669 16%, transparent);
+  --clients-tone-strong: #047857;
+}
+
+@keyframes clientsRise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes clientsIconPop {
+  0% { transform: scale(0.86); }
+  60% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+
+@keyframes clientsShimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+
+@keyframes clientsPulseDot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.55; }
+}
+
+@keyframes clientsSurfGlow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success, #059669) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--success, #059669) 18%, transparent); }
+}
+
+@keyframes clientsSearchSpin {
+  to { transform: rotate(360deg); }
 }
 
 .clients-dash-hero {
@@ -4547,22 +4604,54 @@ body.staff-nav-lock {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem 1.5rem;
-  padding: 1.2rem 1.3rem;
-  border-radius: calc(var(--radius, 14px) + 4px);
-  border: 1px solid var(--border);
+  padding: 1.4rem 1.45rem;
+  border-radius: calc(var(--radius, 14px) + 6px);
+  border: 1px solid color-mix(in srgb, var(--clients-tone) 22%, var(--border));
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--sea) 14%, transparent), transparent 46%),
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--clients-tone) 22%, transparent), transparent 54%),
+    linear-gradient(135deg, color-mix(in srgb, var(--clients-tone) 12%, transparent), transparent 48%),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #fff), var(--surface));
   box-shadow: var(--shadow, 0 10px 28px rgba(0, 0, 0, 0.12));
+  animation: clientsRise 0.45s ease both;
+}
+
+.clients-dash-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.clients-dash-hero-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 1rem;
+  color: #fff;
+  background: linear-gradient(145deg, var(--clients-tone), var(--clients-tone-strong));
+  box-shadow: 0 10px 20px color-mix(in srgb, var(--clients-tone) 28%, transparent);
+  animation: clientsIconPop 0.55s ease both 0.08s;
 }
 
 .clients-dash-kicker {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.3rem;
   font-size: 0.72rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--sea, #0e7c86);
+  color: var(--clients-tone);
+}
+
+.clients-dash-title {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.45rem, 2.4vw, 1.85rem);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: var(--ink);
 }
 
 .clients-dash-lead {
@@ -4580,6 +4669,16 @@ body.staff-nav-lock {
   flex: 0 0 auto;
 }
 
+.clients-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.clients-hero-btn svg {
+  flex: 0 0 auto;
+}
+
 .clients-dash-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4587,15 +4686,38 @@ body.staff-nav-lock {
 }
 
 .clients-dash-stat {
+  --stat-tone: var(--clients-tone);
   position: relative;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
   padding: 0.95rem 1rem;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid var(--border);
   background:
-    linear-gradient(165deg, color-mix(in srgb, var(--sea) 8%, transparent), transparent 58%),
+    linear-gradient(165deg, color-mix(in srgb, var(--stat-tone) 10%, transparent), transparent 58%),
     var(--surface);
   box-shadow: 0 1px 0 color-mix(in srgb, #fff 4%, transparent) inset;
+  color: inherit;
+  text-decoration: none;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  animation: clientsRise 0.45s ease both;
+  animation-delay: calc(0.05s + (var(--i, 0) * 0.05s));
+}
+
+.clients-dash-stat.tone-total { --stat-tone: #0e7c86; }
+.clients-dash-stat.tone-pppoe { --stat-tone: #0e7c86; }
+.clients-dash-stat.tone-static { --stat-tone: #c27803; }
+.clients-dash-stat.tone-hotspot { --stat-tone: #059669; }
+
+.clients-dash-stat:hover,
+.clients-dash-stat:focus-visible {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--stat-tone) 40%, var(--border));
+  box-shadow: 0 14px 26px color-mix(in srgb, var(--stat-tone) 16%, transparent);
+  outline: none;
+  text-decoration: none;
 }
 
 .clients-dash-stat::before {
@@ -4604,18 +4726,39 @@ body.staff-nav-lock {
   inset: 0 auto 0 0;
   width: 3px;
   border-radius: 3px 0 0 3px;
-  background: linear-gradient(180deg, var(--sea, #0e7c86), color-mix(in srgb, var(--sea) 40%, #e8a317));
+  background: linear-gradient(180deg, var(--stat-tone), color-mix(in srgb, var(--stat-tone) 45%, #e8a317));
 }
 
 .clients-dash-stat.is-active {
-  border-color: color-mix(in srgb, var(--sea) 35%, var(--border));
+  border-color: color-mix(in srgb, var(--stat-tone) 42%, var(--border));
   background:
-    linear-gradient(165deg, color-mix(in srgb, var(--sea) 14%, transparent), transparent 58%),
+    linear-gradient(165deg, color-mix(in srgb, var(--stat-tone) 18%, transparent), transparent 58%),
     var(--surface);
 }
 
-.clients-dash-stat.is-active::before {
-  background: linear-gradient(180deg, #14b8a6, #0e7c86);
+.clients-dash-stat.is-active .clients-dash-stat-ico {
+  transform: scale(1.06);
+  box-shadow: 0 8px 16px color-mix(in srgb, var(--stat-tone) 28%, transparent);
+}
+
+.clients-dash-stat-ico {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 2.45rem;
+  height: 2.45rem;
+  border-radius: 0.85rem;
+  color: #fff;
+  background: linear-gradient(145deg, var(--stat-tone), color-mix(in srgb, var(--stat-tone) 70%, #0b1f2a));
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.clients-dash-stat:hover .clients-dash-stat-ico {
+  transform: scale(1.08) rotate(-4deg);
+}
+
+.clients-dash-stat-text {
+  min-width: 0;
 }
 
 .clients-dash-stat-label {
@@ -4628,7 +4771,7 @@ body.staff-nav-lock {
 }
 
 .clients-dash-stat-value {
-  margin: 0.4rem 0 0;
+  margin: 0.35rem 0 0;
   font-family: var(--font-display);
   font-size: clamp(1.45rem, 2.2vw, 1.85rem);
   font-weight: 750;
@@ -4639,6 +4782,160 @@ body.staff-nav-lock {
 
 .clients-dash-panel {
   margin: 0;
+  animation: clientsRise 0.5s ease both 0.12s;
+}
+
+.clients-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.9rem 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.15rem;
+}
+
+.clients-toolbar-copy h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.clients-toolbar-ico {
+  display: grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border-radius: 0.55rem;
+  color: var(--clients-tone);
+  background: var(--clients-tone-soft);
+}
+
+.clients-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 16rem;
+  max-width: 24rem;
+  min-width: min(100%, 14rem);
+}
+
+.clients-search-icon {
+  position: absolute;
+  left: 0.85rem;
+  display: inline-flex;
+  color: var(--clients-tone);
+  pointer-events: none;
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.clients-search:focus-within .clients-search-icon {
+  transform: scale(1.08);
+  color: var(--clients-tone-strong);
+}
+
+.clients-search-input {
+  width: 100%;
+  height: 2.75rem;
+  padding: 0.65rem 2.4rem 0.65rem 2.55rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--clients-tone) 26%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--clients-tone) 7%, var(--surface)), var(--surface));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.95rem;
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.clients-search-input::placeholder {
+  color: color-mix(in srgb, var(--ink-soft) 85%, transparent);
+}
+
+.clients-search-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--clients-tone) 58%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--clients-tone) 18%, transparent),
+    0 1px 0 color-mix(in srgb, #fff 5%, transparent) inset;
+}
+
+.clients-search-clear {
+  position: absolute;
+  right: 0.45rem;
+  display: grid;
+  place-items: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink-soft) 12%, transparent);
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.clients-search-clear:hover,
+.clients-search-clear:focus-visible {
+  background: color-mix(in srgb, var(--clients-tone) 16%, transparent);
+  color: var(--clients-tone);
+  transform: rotate(90deg);
+  outline: none;
+}
+
+.clients-search-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.15rem 0 0.75rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--clients-tone-strong);
+  background: var(--clients-tone-soft);
+  animation: clientsRise 0.25s ease both;
+}
+
+.clients-search-meta-ico {
+  display: inline-flex;
+}
+
+.clients-list-host {
+  position: relative;
+  min-width: 0;
+}
+
+.clients-list-host.is-search-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--clients-tone) 75%, transparent),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: clientsShimmer 0.9s linear infinite;
+  z-index: 2;
+}
+
+.clients-list-host.is-search-loading {
+  opacity: 0.78;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.clients-type-row.is-search-hidden {
+  display: none !important;
+}
+
+.clients-local-empty[hidden] {
+  display: none !important;
 }
 
 .clients-dash-table-shell {
@@ -4647,13 +4944,27 @@ body.staff-nav-lock {
 
 .clients-dash-empty {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.4rem;
   justify-items: start;
   margin-top: 0.35rem;
-  padding: 1.35rem 1.1rem;
-  border-radius: 14px;
-  border: 1px dashed color-mix(in srgb, var(--border) 90%, var(--sea));
-  background: color-mix(in srgb, var(--sea) 5%, transparent);
+  padding: 1.5rem 1.2rem;
+  border-radius: 16px;
+  border: 1px dashed color-mix(in srgb, var(--clients-tone) 35%, var(--border));
+  background:
+    radial-gradient(80% 80% at 0% 0%, var(--clients-tone-soft), transparent 60%),
+    color-mix(in srgb, var(--clients-tone) 5%, transparent);
+  animation: clientsRise 0.35s ease both;
+}
+
+.clients-dash-empty-ico {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  margin-bottom: 0.2rem;
+  border-radius: 1rem;
+  color: var(--clients-tone);
+  background: color-mix(in srgb, var(--clients-tone) 12%, transparent);
 }
 
 .clients-dash-empty-title {
@@ -4668,6 +4979,12 @@ body.staff-nav-lock {
   font-size: 0.9rem;
 }
 
+.clients-dash-empty .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .clients-surf-badge {
   display: inline-flex;
   gap: 0.35rem;
@@ -4675,7 +4992,7 @@ body.staff-nav-lock {
   min-width: 6.5rem;
   justify-content: center;
   margin-top: 0;
-  transition: background 0.2s ease, color 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
 .clients-surf-badge.is-checking {
@@ -4686,6 +5003,7 @@ body.staff-nav-lock {
 .clients-surf-badge.is-surfing {
   background: var(--success-soft);
   color: var(--success);
+  animation: clientsSurfGlow 1.8s ease-in-out infinite;
 }
 
 .clients-surf-badge.is-not-surfing {
@@ -4704,35 +5022,58 @@ body.staff-nav-lock {
 .client-type-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.35rem;
   margin: 0.85rem 0 1rem;
-  padding: 0.28rem;
-  border-radius: 14px;
+  padding: 0.3rem;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--ink-soft) 8%, transparent);
   border: 1px solid var(--border);
 }
 
 .client-type-tab {
+  --tab-tone: var(--clients-tone);
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.62rem 0.95rem;
-  border-radius: 10px;
+  gap: 0.45rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
   text-decoration: none;
   color: inherit;
   opacity: 0.78;
-  transition: background 0.15s ease, opacity 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.18s ease, opacity 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
 }
+
+.client-type-tab.tone-pppoe { --tab-tone: #0e7c86; }
+.client-type-tab.tone-static { --tab-tone: #c27803; }
+.client-type-tab.tone-hotspot { --tab-tone: #059669; }
 
 .client-type-tab:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--sea) 8%, transparent);
+  background: color-mix(in srgb, var(--tab-tone) 10%, transparent);
 }
 
 .client-type-tab.is-active {
   opacity: 1;
-  background: color-mix(in srgb, var(--sea) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sea) 32%, transparent);
+  color: var(--tab-tone);
+  background: color-mix(in srgb, var(--tab-tone) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tab-tone) 34%, transparent);
+  transform: translateY(-1px);
+}
+
+.client-type-tab-ico {
+  display: grid;
+  place-items: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  color: var(--tab-tone);
+  background: color-mix(in srgb, var(--tab-tone) 14%, transparent);
+  transition: transform 0.18s ease;
+}
+
+.client-type-tab:hover .client-type-tab-ico,
+.client-type-tab.is-active .client-type-tab-ico {
+  transform: scale(1.08);
 }
 
 .client-type-tab-label {
@@ -4751,8 +5092,8 @@ body.staff-nav-lock {
 }
 
 .client-type-tab.is-active .client-type-tab-count {
-  background: color-mix(in srgb, var(--sea) 22%, transparent);
-  color: var(--sea, #0e7c86);
+  background: color-mix(in srgb, var(--tab-tone) 22%, transparent);
+  color: var(--tab-tone);
 }
 
 .clients-type-table {
@@ -4763,10 +5104,67 @@ body.staff-nav-lock {
   width: 1%;
 }
 
+.clients-type-row {
+  --row-tone: var(--clients-tone);
+  animation: clientsRise 0.4s ease both;
+  animation-delay: calc(0.04s + (min(var(--row-i, 0), 12) * 0.03s));
+}
+
+.clients-type-row.tone-pppoe { --row-tone: #0e7c86; }
+.clients-type-row.tone-static { --row-tone: #c27803; }
+.clients-type-row.tone-hotspot { --row-tone: #059669; }
+
+.clients-name-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.clients-avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 0.8rem;
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: linear-gradient(145deg, var(--row-tone), color-mix(in srgb, var(--row-tone) 65%, #0b1f2a));
+  box-shadow: 0 6px 14px color-mix(in srgb, var(--row-tone) 22%, transparent);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.clients-name-stack {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.clients-name-link:hover .clients-avatar,
+.clients-name-link:focus-visible .clients-avatar {
+  transform: scale(1.06) rotate(-3deg);
+  box-shadow: 0 10px 18px color-mix(in srgb, var(--row-tone) 28%, transparent);
+}
+
 .clients-name-link:hover .clients-name,
 .clients-name-link:focus-visible .clients-name {
-  color: var(--sea, #0e7c86);
+  color: var(--row-tone);
   text-decoration: none;
+}
+
+.org-table-shell:has(.clients-type-table) {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.clients-type-table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 @media (max-width: 900px) {
@@ -4776,8 +5174,23 @@ body.staff-nav-lock {
 }
 
 @media (max-width: 720px) {
+  .clients-dash {
+    gap: 0.85rem;
+  }
+
   .clients-dash-hero {
     flex-direction: column;
+    padding: 1rem 1rem 1.05rem;
+    border-radius: 14px;
+  }
+
+  .clients-dash-title {
+    font-size: 1.4rem;
+  }
+
+  .clients-dash-lead {
+    max-width: none;
+    font-size: 0.9rem;
   }
 
   .clients-dash-hero-actions {
@@ -4786,7 +5199,270 @@ body.staff-nav-lock {
 
   .clients-dash-hero-actions .btn {
     flex: 1 1 auto;
+    justify-content: center;
+    text-align: center;
   }
+
+  .clients-dash-stat {
+    padding: 0.8rem 0.85rem;
+  }
+
+  .clients-dash-stat-value {
+    font-size: 1.35rem;
+  }
+
+  .clients-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .clients-search {
+    max-width: none;
+  }
+
+  .clients-panel .panel-sub {
+    font-size: 0.85rem;
+  }
+
+  .client-type-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    margin: 0.7rem 0 0.85rem;
+  }
+
+  .client-type-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .client-type-tab {
+    flex: 0 0 auto;
+    padding: 0.55rem 0.8rem;
+  }
+
+  .clients-pagination {
+    justify-content: space-between;
+  }
+
+  .clients-pagination .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .clients-dash-empty {
+    padding: 1.15rem 0.95rem;
+  }
+
+  .clients-dash-empty .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* Stack client rows as cards — no horizontal scroll on phones / tablets */
+@media (max-width: 960px) {
+  .org-table-shell:has(.clients-type-table) {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .clients-type-table {
+    width: 100%;
+    min-width: 0 !important;
+    border-collapse: separate;
+    border-spacing: 0 0.75rem;
+  }
+
+  .clients-type-table thead {
+    display: none;
+  }
+
+  .clients-type-table tbody {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .clients-type-table tr.clients-type-row {
+    display: grid;
+    gap: 0.05rem;
+    margin: 0;
+    padding: 0.95rem 1rem;
+    border: 1px solid color-mix(in srgb, var(--row-tone, var(--clients-tone)) 28%, var(--border));
+    border-radius: 16px;
+    background:
+      linear-gradient(165deg, color-mix(in srgb, var(--row-tone, var(--clients-tone)) 8%, transparent), transparent 50%),
+      color-mix(in srgb, var(--surface-solid, var(--surface)) 92%, transparent);
+    box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
+  }
+
+  .clients-type-table tr.clients-type-row:hover td {
+    background: transparent;
+  }
+
+  .clients-type-table th,
+  .clients-type-table td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.85rem;
+    width: 100%;
+    min-width: 0 !important;
+    padding: 0.42rem 0;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+    vertical-align: top;
+  }
+
+  .clients-type-table td:last-child {
+    border-bottom: 0;
+    padding-top: 0.7rem;
+    padding-bottom: 0;
+  }
+
+  .clients-type-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    max-width: 38%;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .clients-type-table .clients-cell-value {
+    display: grid;
+    justify-items: end;
+    gap: 0.18rem;
+    min-width: 0;
+    text-align: right;
+  }
+
+  .clients-type-table td[data-label="Name"] {
+    display: block;
+    padding-top: 0;
+    padding-bottom: 0.65rem;
+    margin-bottom: 0.1rem;
+  }
+
+  .clients-type-table td[data-label="Name"]::before {
+    display: none;
+  }
+
+  .clients-type-table .clients-cell-value-name {
+    justify-items: start;
+    text-align: left;
+    gap: 0.2rem;
+  }
+
+  .clients-type-table td[data-label="Name"] .clients-name-link {
+    width: 100%;
+  }
+
+  .clients-type-table td[data-label="Name"] .clients-name {
+    font-size: 1.05rem;
+  }
+
+  .clients-type-table td[data-label="Account"],
+  .clients-type-table td[data-label="PPPoE user"],
+  .clients-type-table td[data-label="Router"] {
+    align-items: flex-start;
+  }
+
+  .clients-type-table .clients-pppoe-secret,
+  .clients-type-table .mikrotik-link-status {
+    justify-content: flex-end;
+  }
+
+  .clients-type-table td[data-label="Internet"],
+  .clients-type-table td[data-label="Wi-Fi router"] {
+    align-items: center;
+  }
+
+  .clients-type-table td[data-label="Actions"] {
+    display: block;
+  }
+
+  .clients-type-table td[data-label="Actions"]::before {
+    display: none;
+  }
+
+  .clients-type-table td[data-label="Actions"] .clients-cell-value {
+    display: block;
+    width: 100%;
+    text-align: left;
+  }
+
+  .clients-type-table .clients-row-actions {
+    text-align: left;
+    white-space: normal;
+  }
+
+  .clients-type-table .clients-view-btn {
+    width: 100%;
+    padding: 0.6rem 0.85rem;
+    font-size: 0.9rem;
+  }
+
+  .clients-surf-badge {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .clients-dash-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .clients-dash-hero-copy .clients-dash-lead {
+    display: none;
+  }
+
+  .clients-panel-sub {
+    display: none;
+  }
+
+  .clients-type-table tr.clients-type-row {
+    padding: 0.85rem 0.85rem;
+  }
+
+  .clients-type-table td[data-label="Account"],
+  .clients-type-table td[data-label="PPPoE user"],
+  .clients-type-table td[data-label="Router"],
+  .clients-type-table td[data-label="Internet"],
+  .clients-type-table td[data-label="Wi-Fi router"] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.3rem;
+  }
+
+  .clients-type-table td[data-label="Account"]::before,
+  .clients-type-table td[data-label="PPPoE user"]::before,
+  .clients-type-table td[data-label="Router"]::before,
+  .clients-type-table td[data-label="Internet"]::before,
+  .clients-type-table td[data-label="Wi-Fi router"]::before {
+    max-width: none;
+  }
+
+  .clients-type-table .clients-cell-value {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .clients-type-table .clients-pppoe-secret,
+  .clients-type-table .mikrotik-link-status {
+    justify-content: flex-start;
+  }
+}
+
+.clients-cell-value {
+  min-width: 0;
 }
 
 .clients-name {
@@ -4794,21 +5470,33 @@ body.staff-nav-lock {
   font-weight: 700;
 }
 
-.clients-name-link {
-  color: inherit;
-  text-decoration: none;
-}
-
-.clients-name-link:hover .clients-name,
-.clients-name-link:focus-visible .clients-name {
-  text-decoration: underline;
-}
-
 .clients-phone {
-  display: block;
-  margin-top: 0.15rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  margin-top: 0;
   font-size: 0.82rem;
-  opacity: 0.72;
+  opacity: 0.78;
+  color: var(--ink-soft);
+}
+
+.clients-phone svg {
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+
+.clients-account-number,
+.clients-router-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.clients-account-number svg,
+.clients-router-name svg {
+  flex: 0 0 auto;
+  color: var(--row-tone, var(--clients-tone));
+  opacity: 0.9;
 }
 
 .clients-account-cell {
@@ -4898,8 +5586,66 @@ body.staff-nav-lock {
 }
 
 .clients-view-btn {
-  padding: 0.28rem 0.7rem;
-  font-size: 0.82rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--row-tone, var(--clients-tone)) 28%, var(--border));
+  background: color-mix(in srgb, var(--row-tone, var(--clients-tone)) 10%, transparent);
+  color: var(--row-tone, var(--clients-tone));
+  font-size: 0.84rem;
+  font-weight: 750;
+  text-decoration: none;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.clients-view-btn svg {
+  transition: transform 0.18s ease;
+}
+
+.clients-view-btn:hover,
+.clients-view-btn:focus-visible {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--row-tone, var(--clients-tone)) 18%, transparent);
+  border-color: color-mix(in srgb, var(--row-tone, var(--clients-tone)) 45%, var(--border));
+  color: var(--row-tone, var(--clients-tone));
+  outline: none;
+  text-decoration: none;
+}
+
+.clients-view-btn:hover svg,
+.clients-view-btn:focus-visible svg {
+  transform: translateX(2px);
+}
+
+.clients-dash .mikrotik-link-status.is-connected .mikrotik-link-dot {
+  animation: clientsPulseDot 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clients-dash-hero,
+  .clients-dash-hero-mark,
+  .clients-dash-stat,
+  .clients-dash-panel,
+  .clients-type-row,
+  .clients-search-meta,
+  .clients-dash-empty,
+  .clients-surf-badge.is-surfing,
+  .clients-list-host.is-search-loading::after,
+  .clients-dash .mikrotik-link-status.is-connected .mikrotik-link-dot {
+    animation: none !important;
+  }
+
+  .clients-dash-stat:hover,
+  .clients-dash-stat:focus-visible,
+  .clients-view-btn:hover,
+  .clients-view-btn:focus-visible,
+  .clients-name-link:hover .clients-avatar,
+  .clients-search-clear:hover {
+    transform: none;
+  }
 }
 
 .client-detail-page {
@@ -5658,12 +6404,9 @@ body.staff-nav-lock {
 }
 
 @media (max-width: 720px) {
-  .client-type-tabs {
-    flex-direction: column;
-  }
-
   .client-type-tab {
     justify-content: space-between;
+    min-width: 7.5rem;
   }
 }
 
