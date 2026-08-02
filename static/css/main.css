@@ -5096,10 +5096,6 @@ body.staff-nav-lock {
   color: var(--tab-tone);
 }
 
-.clients-type-table {
-  min-width: 720px;
-}
-
 .clients-type-table .clients-row-actions {
   width: 1%;
 }
@@ -5214,6 +5210,8 @@ body.staff-nav-lock {
   .clients-toolbar {
     align-items: stretch;
     flex-direction: column;
+    gap: 0.55rem;
+    margin-bottom: 0;
   }
 
   .clients-search {
@@ -5229,7 +5227,7 @@ body.staff-nav-lock {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
-    margin: 0.7rem 0 0.85rem;
+    margin: 0.4rem 0 0.45rem;
   }
 
   .client-type-tabs::-webkit-scrollbar {
@@ -5238,7 +5236,20 @@ body.staff-nav-lock {
 
   .client-type-tab {
     flex: 0 0 auto;
-    padding: 0.55rem 0.8rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .clients-search-meta {
+    margin: 0 0 0.4rem;
+    padding: 0.25rem 0.6rem;
+  }
+
+  .clients-dash-table-shell {
+    margin-top: 0;
+  }
+
+  .clients-list-host {
+    margin-top: 0;
   }
 
   .clients-pagination {
@@ -5261,156 +5272,65 @@ body.staff-nav-lock {
   }
 }
 
-/* Stack client rows as cards — no horizontal scroll on phones / tablets */
+/* Clients list: keep table layout and scroll horizontally on small screens */
+.org-table-shell:has(.clients-type-table),
+.clients-dash-table-shell {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.clients-type-table {
+  width: max-content;
+  min-width: 720px;
+}
+
+.clients-type-table th,
+.clients-type-table td {
+  white-space: nowrap;
+}
+
+.clients-type-table .clients-name-stack,
+.clients-type-table .clients-account-plan,
+.clients-type-table .clients-pppoe-pass-none {
+  white-space: nowrap;
+}
+
+.clients-type-table .clients-phone {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clients-scroll-hint {
+  display: none;
+}
+
 @media (max-width: 960px) {
-  .org-table-shell:has(.clients-type-table) {
-    overflow: visible;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
+  .clients-dash-table-shell {
+    margin-inline: -0.1rem;
+    padding-bottom: 0.2rem;
+    border-radius: 14px;
   }
 
   .clients-type-table {
-    width: 100%;
-    min-width: 0 !important;
-    border-collapse: separate;
-    border-spacing: 0 0.75rem;
-  }
-
-  .clients-type-table thead {
-    display: none;
-  }
-
-  .clients-type-table tbody {
-    display: grid;
-    gap: 0.75rem;
-  }
-
-  .clients-type-table tr.clients-type-row {
-    display: grid;
-    gap: 0.05rem;
-    margin: 0;
-    padding: 0.95rem 1rem;
-    border: 1px solid color-mix(in srgb, var(--row-tone, var(--clients-tone)) 28%, var(--border));
-    border-radius: 16px;
-    background:
-      linear-gradient(165deg, color-mix(in srgb, var(--row-tone, var(--clients-tone)) 8%, transparent), transparent 50%),
-      color-mix(in srgb, var(--surface-solid, var(--surface)) 92%, transparent);
-    box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
-  }
-
-  .clients-type-table tr.clients-type-row:hover td {
-    background: transparent;
+    min-width: 820px;
   }
 
   .clients-type-table th,
   .clients-type-table td {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.85rem;
-    width: 100%;
-    min-width: 0 !important;
-    padding: 0.42rem 0;
-    border: 0;
-    border-bottom: 1px solid var(--border);
-    font-size: 0.9rem;
-    vertical-align: top;
+    padding: 0.85rem 1rem;
   }
 
-  .clients-type-table td:last-child {
-    border-bottom: 0;
-    padding-top: 0.7rem;
-    padding-bottom: 0;
-  }
-
-  .clients-type-table td::before {
-    content: attr(data-label);
-    flex: 0 0 auto;
-    max-width: 38%;
-    font-size: 0.7rem;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--ink-soft);
-  }
-
-  .clients-type-table .clients-cell-value {
-    display: grid;
-    justify-items: end;
-    gap: 0.18rem;
-    min-width: 0;
-    text-align: right;
-  }
-
-  .clients-type-table td[data-label="Name"] {
-    display: block;
-    padding-top: 0;
-    padding-bottom: 0.65rem;
-    margin-bottom: 0.1rem;
-  }
-
-  .clients-type-table td[data-label="Name"]::before {
-    display: none;
-  }
-
-  .clients-type-table .clients-cell-value-name {
-    justify-items: start;
-    text-align: left;
-    gap: 0.2rem;
-  }
-
-  .clients-type-table td[data-label="Name"] .clients-name-link {
-    width: 100%;
-  }
-
-  .clients-type-table td[data-label="Name"] .clients-name {
-    font-size: 1.05rem;
-  }
-
-  .clients-type-table td[data-label="Account"],
-  .clients-type-table td[data-label="PPPoE user"],
-  .clients-type-table td[data-label="Router"] {
-    align-items: flex-start;
-  }
-
-  .clients-type-table .clients-pppoe-secret,
-  .clients-type-table .mikrotik-link-status {
-    justify-content: flex-end;
-  }
-
-  .clients-type-table td[data-label="Internet"],
-  .clients-type-table td[data-label="Wi-Fi router"] {
+  .clients-dash:has(.clients-type-table) .clients-scroll-hint {
+    display: inline-flex;
     align-items: center;
-  }
-
-  .clients-type-table td[data-label="Actions"] {
-    display: block;
-  }
-
-  .clients-type-table td[data-label="Actions"]::before {
-    display: none;
-  }
-
-  .clients-type-table td[data-label="Actions"] .clients-cell-value {
-    display: block;
-    width: 100%;
-    text-align: left;
-  }
-
-  .clients-type-table .clients-row-actions {
-    text-align: left;
-    white-space: normal;
-  }
-
-  .clients-type-table .clients-view-btn {
-    width: 100%;
-    padding: 0.6rem 0.85rem;
-    font-size: 0.9rem;
-  }
-
-  .clients-surf-badge {
-    min-width: 0;
+    gap: 0.35rem;
+    margin: 0 0 0.3rem;
+    font-size: 0.78rem;
+    font-weight: 650;
+    color: var(--ink-soft);
   }
 }
 
@@ -5428,36 +5348,14 @@ body.staff-nav-lock {
     display: none;
   }
 
-  .clients-type-table tr.clients-type-row {
-    padding: 0.85rem 0.85rem;
+  .clients-type-table {
+    min-width: 860px;
   }
 
-  .clients-type-table td[data-label="Account"],
-  .clients-type-table td[data-label="PPPoE user"],
-  .clients-type-table td[data-label="Router"],
-  .clients-type-table td[data-label="Internet"],
-  .clients-type-table td[data-label="Wi-Fi router"] {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.3rem;
-  }
-
-  .clients-type-table td[data-label="Account"]::before,
-  .clients-type-table td[data-label="PPPoE user"]::before,
-  .clients-type-table td[data-label="Router"]::before,
-  .clients-type-table td[data-label="Internet"]::before,
-  .clients-type-table td[data-label="Wi-Fi router"]::before {
-    max-width: none;
-  }
-
-  .clients-type-table .clients-cell-value {
-    justify-items: start;
-    text-align: left;
-  }
-
-  .clients-type-table .clients-pppoe-secret,
-  .clients-type-table .mikrotik-link-status {
-    justify-content: flex-start;
+  .clients-dash-hero-mark {
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: 0.85rem;
   }
 }
 
