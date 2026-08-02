@@ -260,11 +260,20 @@ class RouterDialTargetTests(SimpleTestCase):
         self.assertNotIn("192.168.88.1", hosts)
 
     @override_settings(HOSTED=False)
-    def test_on_lan_still_falls_back_to_the_default_address(self):
-        hosts = _router_api_host_candidates(_router(), candidate_hosts=[])
+    def test_discover_false_skips_lan_discovery_scan(self):
+        with patch(
+            "core.mikrotik_discovery.discover_mikrotik_devices",
+            return_value=[{"ip": "192.168.88.50"}],
+        ) as discover:
+            hosts = _router_api_host_candidates(
+                _router(),
+                candidate_hosts=[],
+                discover=False,
+            )
 
+        discover.assert_not_called()
         self.assertEqual(hosts[0], "192.168.1.104")
-        self.assertIn("192.168.88.1", hosts)
+        self.assertNotIn("192.168.88.50", hosts)
 
     @override_settings(HOSTED=False)
     def test_on_lan_dials_the_saved_address_untouched(self):
@@ -1085,6 +1094,198 @@ class PppoeRouterFallbackTests(TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("Assign a MikroTik router", result["error"])
+
+
+class FastPppoeProvisionTests(TestCase):
+    """Registration pushes only /ppp/secret — no full stack rebuild."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        self.owner = User.objects.create_user("fast-pppoe-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Fast PPPoE ISP",
+            owner=self.owner,
+            join_code="112233",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Edge NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.8",
+            username="admin",
+            password="secret",
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="FAST CLIENT",
+            phone="254711223344",
+            account_number="254711223344",
+            house_number="B12",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="254711223344",
+            pppoe_password="dialpass",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+        )
+
+    def _capture_discover(self, *, ensure_stack: bool) -> bool:
+        captured = {}
+
+        def fake_candidates(router, candidate_hosts=None, *, discover=True):
+            captured["discover"] = discover
+            return []
+
+        original = mikrotik_connect._router_api_host_candidates
+        mikrotik_connect._router_api_host_candidates = fake_candidates
+        try:
+            mikrotik_connect.provision_customer_pppoe(
+                self.customer,
+                ensure_stack=ensure_stack,
+            )
+        finally:
+            mikrotik_connect._router_api_host_candidates = original
+        return bool(captured.get("discover"))
+
+    def test_ensure_stack_false_disables_host_discovery(self):
+        self.assertFalse(self._capture_discover(ensure_stack=False))
+
+    def test_ensure_stack_true_keeps_host_discovery(self):
+        self.assertTrue(self._capture_discover(ensure_stack=True))
+
+
+class PppoeClientRegisterFormTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("form-pppoe-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Form PPPoE ISP",
+            owner=self.owner,
+            join_code="998877",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Form NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.9",
+            username="admin",
+            password="secret",
+        )
+
+    def test_uppercases_fields_autofills_username_and_saves_house_number(self):
+        from billing.forms import PppoeClientRegisterForm
+        from billing.models import Customer
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "jane doe",
+                "phone": "0711223344",
+                "email": "Jane@Example.COM",
+                "router": str(self.router.pk),
+                "address": "ngong road",
+                "house_number": "a-14",
+                "plan": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organization=self.org,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        customer = form.save()
+        self.assertEqual(customer.full_name, "JANE DOE")
+        self.assertEqual(customer.phone, "0711223344")
+        self.assertEqual(customer.email, "jane@example.com")
+        self.assertEqual(customer.address, "NGONG ROAD")
+        self.assertEqual(customer.house_number, "A-14")
+        self.assertEqual(customer.pppoe_username, "0711223344")
+        self.assertEqual(customer.router_id, self.router.pk)
+        self.assertEqual(customer.service_type, Customer.ServiceType.PPPOE)
+
+
+class MyClientsRegisterViewTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("clients-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Clients ISP",
+            owner=self.owner,
+            join_code="556677",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Clients NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.10",
+            username="admin",
+            password="secret",
+        )
+        self.client.force_login(self.owner)
+
+    def test_register_saves_immediately_and_provisions_in_background(self):
+        from billing.models import Customer
+
+        started = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                started.append(self)
+
+        with (
+            patch("core.views.threading.Thread", FakeThread),
+            patch(
+                "core.views.provision_customer_pppoe",
+                return_value={"ok": True, "message": "pushed"},
+            ) as provision,
+        ):
+            response = self.client.post(
+                "/app/clients/",
+                {
+                    "action": "register_pppoe",
+                    "full_name": "john smith",
+                    "phone": "0722334455",
+                    "email": "",
+                    "router": str(self.router.pk),
+                    "address": "westlands",
+                    "house_number": "12b",
+                    "plan": "",
+                    "pppoe_username": "",
+                    "pppoe_password": "pass1234",
+                    "cpe_username": "admin",
+                    "cpe_password": "",
+                },
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertIn("tab=pppoe", response["Location"])
+            self.assertEqual(len(started), 1)
+            self.assertTrue(started[0].daemon)
+
+            customer = Customer.objects.get(phone="0722334455")
+            self.assertEqual(customer.full_name, "JOHN SMITH")
+            self.assertEqual(customer.house_number, "12B")
+            self.assertEqual(customer.pppoe_username, "0722334455")
+
+            # Run the deferred worker while the provision mock is still active.
+            with patch("django.db.connection.close"):
+                started[0].target()
+
+            provision.assert_called_once()
+            self.assertFalse(provision.call_args.kwargs.get("ensure_stack", True))
+            self.assertEqual(provision.call_args.args[0].pk, customer.pk)
 
 
 class CaptivePortalDhcpOptionTests(SimpleTestCase):

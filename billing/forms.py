@@ -19,9 +19,10 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "full_name",
             "phone",
             "email",
-            "address",
-            "plan",
             "router",
+            "address",
+            "house_number",
+            "plan",
             "pppoe_username",
             "pppoe_password",
             "cpe_username",
@@ -30,14 +31,14 @@ class PppoeClientRegisterForm(forms.ModelForm):
         widgets = {
             "full_name": forms.TextInput(
                 attrs={
-                    "class": "form-control",
+                    "class": "form-control text-upper",
                     "placeholder": "Full name",
                     "autocomplete": "name",
                 }
             ),
             "phone": forms.TextInput(
                 attrs={
-                    "class": "form-control",
+                    "class": "form-control text-upper",
                     "placeholder": "Phone number",
                     "autocomplete": "tel",
                 }
@@ -49,18 +50,25 @@ class PppoeClientRegisterForm(forms.ModelForm):
                     "autocomplete": "email",
                 }
             ),
+            "router": forms.Select(attrs={"class": "form-control", "id": "id_pppoe_router"}),
             "address": forms.TextInput(
                 attrs={
-                    "class": "form-control",
+                    "class": "form-control text-upper",
                     "placeholder": "Install address (optional)",
                     "autocomplete": "street-address",
                 }
             ),
+            "house_number": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "House / unit number",
+                    "autocomplete": "address-line2",
+                }
+            ),
             "plan": forms.Select(attrs={"class": "form-control"}),
-            "router": forms.Select(attrs={"class": "form-control", "id": "id_pppoe_router"}),
             "pppoe_username": forms.TextInput(
                 attrs={
-                    "class": "form-control",
+                    "class": "form-control text-upper",
                     "placeholder": "PPPoE username",
                     "autocomplete": "off",
                 }
@@ -95,9 +103,10 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "full_name": "Full name",
             "phone": "Phone",
             "email": "Email",
-            "address": "Address",
-            "plan": "Billing plan",
             "router": "MikroTik router",
+            "address": "Address",
+            "house_number": "House number",
+            "plan": "Billing plan",
             "pppoe_username": "PPPoE username",
             "pppoe_password": "PPPoE password",
             "cpe_username": "CPE username",
@@ -109,9 +118,11 @@ class PppoeClientRegisterForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["email"].required = False
         self.fields["address"].required = False
+        self.fields["house_number"].required = False
         self.fields["plan"].required = False
         self.fields["cpe_username"].required = False
         self.fields["cpe_password"].required = False
+        self.fields["pppoe_username"].required = False
         # Router is required so the PPPoE secret can be installed on the NAS.
         self.fields["router"].required = True
         self.fields["plan"].empty_label = "No plan yet"
@@ -131,31 +142,28 @@ class PppoeClientRegisterForm(forms.ModelForm):
             self.fields["router"].queryset = MikroTikRouter.objects.none()
 
     def clean_full_name(self):
-        name = (self.cleaned_data.get("full_name") or "").strip()
+        name = (self.cleaned_data.get("full_name") or "").strip().upper()
         if not name:
             raise forms.ValidationError("Enter the client’s full name.")
         return name
 
     def clean_phone(self):
-        phone = (self.cleaned_data.get("phone") or "").strip()
+        phone = (self.cleaned_data.get("phone") or "").strip().upper()
         if not phone:
             raise forms.ValidationError("Enter a phone number.")
         return phone
 
+    def clean_email(self):
+        return (self.cleaned_data.get("email") or "").strip().lower()
+
+    def clean_address(self):
+        return (self.cleaned_data.get("address") or "").strip().upper()
+
+    def clean_house_number(self):
+        return (self.cleaned_data.get("house_number") or "").strip().upper()
+
     def clean_pppoe_username(self):
-        username = (self.cleaned_data.get("pppoe_username") or "").strip()
-        if not username:
-            raise forms.ValidationError("Enter the PPPoE username.")
-        qs = Customer.objects.filter(
-            organization=self.organization,
-            service_type=Customer.ServiceType.PPPOE,
-            pppoe_username__iexact=username,
-        )
-        if self.instance and self.instance.pk:
-            qs = qs.exclude(pk=self.instance.pk)
-        if self.organization and qs.exists():
-            raise forms.ValidationError("That PPPoE username is already registered.")
-        return username
+        return (self.cleaned_data.get("pppoe_username") or "").strip().upper()
 
     def clean_pppoe_password(self):
         password = self.cleaned_data.get("pppoe_password") or ""
@@ -170,6 +178,27 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
     def clean_cpe_password(self):
         return self.cleaned_data.get("cpe_password") or ""
+
+    def clean(self):
+        cleaned = super().clean()
+        phone = (cleaned.get("phone") or "").strip().upper()
+        username = (cleaned.get("pppoe_username") or "").strip().upper()
+        if not username and phone:
+            username = phone
+        cleaned["pppoe_username"] = username
+        if not username:
+            self.add_error("pppoe_username", "Enter the PPPoE username.")
+        elif self.organization:
+            qs = Customer.objects.filter(
+                organization=self.organization,
+                service_type=Customer.ServiceType.PPPOE,
+                pppoe_username__iexact=username,
+            )
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                self.add_error("pppoe_username", "That PPPoE username is already registered.")
+        return cleaned
 
     def clean_router(self):
         router = self.cleaned_data.get("router")

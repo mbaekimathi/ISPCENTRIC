@@ -6787,11 +6787,21 @@ def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
 
 
 def _current_ppp_secret_profile(sock: socket.socket, username: str) -> str:
-    username = (username or "").strip().lower()
+    username = (username or "").strip()
     if not username:
         return ""
-    for row in _print(sock, "/ppp/secret", props="name,profile"):
-        if (row.get("name") or "").strip().lower() == username:
+    rows = _print(
+        sock,
+        "/ppp/secret",
+        props="name,profile",
+        query={"name": username},
+    )
+    if not rows:
+        # Fallback: older RouterOS may ignore exact name queries.
+        rows = _print(sock, "/ppp/secret", props="name,profile")
+    needle = username.lower()
+    for row in rows:
+        if (row.get("name") or "").strip().lower() == needle:
             return (row.get("profile") or "").strip()
     return ""
 
@@ -6822,7 +6832,15 @@ def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     if not username:
         return 0
     removed = 0
-    for row in _print(sock, "/ppp/active", props=".id,name"):
+    rows = _print(
+        sock,
+        "/ppp/active",
+        props=".id,name",
+        query={"name": username},
+    )
+    if not rows:
+        rows = _print(sock, "/ppp/active", props=".id,name")
+    for row in rows:
         if (row.get("name") or "").strip().lower() != username.lower():
             continue
         item_id = (row.get(".id") or "").strip()
@@ -6906,11 +6924,19 @@ def _ensure_ppp_secret(
     secret_id = ""
     previous_profile = ""
     previous_disabled = ""
-    for row in _print(
+    rows = _print(
         sock,
         "/ppp/secret",
         props=".id,name,profile,service,disabled,comment",
-    ):
+        query={"name": username},
+    )
+    if not rows:
+        rows = _print(
+            sock,
+            "/ppp/secret",
+            props=".id,name,profile,service,disabled,comment",
+        )
+    for row in rows:
         if (row.get("name") or "").strip().lower() == username.lower():
             secret_id = (row.get(".id") or "").strip()
             previous_profile = (row.get("profile") or "").strip()
@@ -7157,7 +7183,12 @@ def on_router_lan() -> bool:
     return not bool(getattr(settings, "HOSTED", False))
 
 
-def _router_api_host_candidates(router, candidate_hosts: list[str] | None = None) -> list[str]:
+def _router_api_host_candidates(
+    router,
+    candidate_hosts: list[str] | None = None,
+    *,
+    discover: bool = True,
+) -> list[str]:
     host = (getattr(router, "host", None) or "").strip()
     tunnel = (getattr(router, "vpn_address", None) or "").strip()
     lan_only = ["192.168.88.1"] if on_router_lan() else []
@@ -7171,7 +7202,7 @@ def _router_api_host_candidates(router, candidate_hosts: list[str] | None = None
             continue
         dialled.add(target)
         hosts.append(value)
-    if not candidate_hosts and on_router_lan():
+    if discover and not candidate_hosts and on_router_lan():
         try:
             from core.mikrotik_discovery import discover_mikrotik_devices
 
@@ -7217,6 +7248,9 @@ def provision_customer_pppoe(
     “invalid username or password” / “confirm your username and password”.
 
     force_disabled: optional override for /ppp/secret disabled flag.
+    ensure_stack: when True, also ensure the full PPPoE server stack exists (slow).
+      Registration should pass False — the stack is already pushed when the router
+      is onboarded / PPPoE settings are applied.
     """
     if customer is None:
         return {"ok": False, "error": "No customer provided."}
@@ -7302,19 +7336,39 @@ def provision_customer_pppoe(
     comment = f"{PPP_SECRET_TAG} {getattr(customer, 'account_number', '')}".strip()
     rate_limit = _pppoe_rate_limit_for_customer(customer)
 
-    hosts = _router_api_host_candidates(target, candidate_hosts)
+    # Registration / secret-only pushes: skip LAN discovery (saves ~2s) and use
+    # a tight API probe instead of multi-port reachability.
+    hosts = _router_api_host_candidates(
+        target,
+        candidate_hosts,
+        discover=bool(ensure_stack),
+    )
     last_error = ""
     working_host = ""
     action = ""
     notes: list[str] = []
     kicked = 0
+    probe_timeout = 1.5 if ensure_stack else 0.8
 
     for candidate in hosts:
-        probe = check_mikrotik_reachable(candidate, timeout=1.5)
-        via = (probe.get("via") or "").strip()
-        attempt_timeout = 3.0 if via == "ping" else 12.0
-        if not probe.get("online") and candidate != host:
-            continue
+        if ensure_stack:
+            probe = check_mikrotik_reachable(candidate, timeout=probe_timeout)
+            via = (probe.get("via") or "").strip()
+            attempt_timeout = 3.0 if via == "ping" else 12.0
+            if not probe.get("online") and candidate != host:
+                continue
+        else:
+            # Fast path: only care whether API 8728 answers.
+            try:
+                with socket.create_connection(
+                    (dial_host(candidate), 8728), timeout=probe_timeout
+                ):
+                    via = "api"
+            except OSError:
+                if candidate != host:
+                    continue
+                via = ""
+            attempt_timeout = 4.0
         try:
             with _api_session(candidate, api_user, api_password, timeout=attempt_timeout) as sock:
                 if ensure_stack:
@@ -7330,9 +7384,11 @@ def provision_customer_pppoe(
                     )
                     notes.extend(stack_notes)
                 previous_profile = _current_ppp_secret_profile(sock, username)
-                session_was_blocked = _active_pppoe_session_is_blocked(
-                    sock, username
-                )
+                session_was_blocked = False
+                if ensure_stack or previous_profile:
+                    session_was_blocked = _active_pppoe_session_is_blocked(
+                        sock, username
+                    )
                 # When blocking, install pay-page redirect/allow before the kick
                 # so the CPE's first redial already has captive NAT in place.
                 if profile == PPPOE_BLOCKED_PROFILE_NAME:

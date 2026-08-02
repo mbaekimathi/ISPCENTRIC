@@ -847,6 +847,10 @@ class NetworkEquipment(models.Model):
         POWER = "power", "Power / PoE"
         OTHER = "other", "Other"
 
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        SUSPENDED = "suspended", "Suspended"
+
     name = models.CharField("Equipment name", max_length=150)
     equipment_type = models.CharField(
         "Type",
@@ -859,6 +863,17 @@ class NetworkEquipment(models.Model):
         "Stock quantity",
         default=0,
         help_text="Current units in stock.",
+    )
+    track_serials = models.BooleanField(
+        "Track serial numbers",
+        default=False,
+        help_text="When enabled, stock movements require serial numbers for this equipment.",
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_index=True,
     )
     created_by = models.ForeignKey(
         User,
@@ -878,3 +893,100 @@ class NetworkEquipment(models.Model):
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_suspended(self) -> bool:
+        return self.status == self.Status.SUSPENDED
+
+
+class NetworkEquipmentSerial(models.Model):
+    """Tracked serial / barcode unit for network equipment stock."""
+
+    class Status(models.TextChoices):
+        IN_STOCK = "in_stock", "In stock"
+        ISSUED = "issued", "Issued"
+
+    equipment = models.ForeignKey(
+        NetworkEquipment,
+        on_delete=models.CASCADE,
+        related_name="serials",
+    )
+    serial_number = models.CharField("Serial number", max_length=120, db_index=True)
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.IN_STOCK,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="registered_equipment_serials",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    issued_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_network_equipment_serial"
+        ordering = ["-created_at"]
+        verbose_name = "Equipment serial"
+        verbose_name_plural = "Equipment serials"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["equipment", "serial_number"],
+                name="uniq_equipment_serial_number",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.serial_number} ({self.equipment.name})"
+
+
+class NetworkEquipmentAllocation(models.Model):
+    """Equipment units currently (or previously) allocated to an employee."""
+
+    equipment = models.ForeignKey(
+        NetworkEquipment,
+        on_delete=models.CASCADE,
+        related_name="allocations",
+    )
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name="equipment_allocations",
+    )
+    quantity = models.PositiveIntegerField(default=1)
+    serial = models.ForeignKey(
+        NetworkEquipmentSerial,
+        on_delete=models.SET_NULL,
+        related_name="allocations",
+        null=True,
+        blank=True,
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    allocated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="equipment_allocations_made",
+        null=True,
+        blank=True,
+    )
+    allocated_at = models.DateTimeField(auto_now_add=True)
+    returned_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "accounts_network_equipment_allocation"
+        ordering = ["-allocated_at"]
+        verbose_name = "Equipment allocation"
+        verbose_name_plural = "Equipment allocations"
+
+    def __str__(self):
+        label = self.serial.serial_number if self.serial_id else f"×{self.quantity}"
+        return f"{self.equipment.name} {label} → {self.employee}"
+
+    @property
+    def is_active(self) -> bool:
+        return self.returned_at is None

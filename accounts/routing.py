@@ -72,12 +72,6 @@ ROLE_DASHBOARD_ONLY_NAV = {
             "url_name": "roles:customer_support_network_equipment",
         },
         {
-            "key": "register_equipment",
-            "label": "Register equipment",
-            "url_name": "roles:customer_support_network_equipment",
-            "query": "register=1",
-        },
-        {
             "key": "allocate",
             "label": "Allocate",
             "url_name": "roles:customer_support_allocate",
@@ -214,17 +208,18 @@ CUSTOMER_SUPPORT_EQUIPMENT_NAV = [
         "url_name": "roles:customer_support_network_equipment",
     },
     {
-        "key": "register_equipment",
-        "label": "Register equipment",
-        "url_name": "roles:customer_support_network_equipment",
-        "query": "register=1",
-    },
-    {
         "key": "allocate",
         "label": "Allocate",
         "url_name": "roles:customer_support_allocate",
     },
 ]
+
+CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV = {
+    "key": "register_equipment",
+    "label": "Register equipment",
+    "url_name": "roles:customer_support_network_equipment",
+    "query": "register=1",
+}
 
 
 def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
@@ -251,7 +246,11 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
         "register_equipment",
         "allocate",
     }:
-        items.extend(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
+        equipment_nav = list(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
+        # Register equipment is only shown on the network equipment page.
+        if current_page in {"network_equipment", "register_equipment"}:
+            equipment_nav.insert(1, CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV)
+        items.extend(equipment_nav)
     return {
         "main": items,
         "end": [{"key": "logout", "label": "Logout", "action": "logout"}],

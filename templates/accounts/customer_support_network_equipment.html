@@ -24,8 +24,10 @@
         <thead>
           <tr>
             <th>Equipment</th>
+            <th>Qty</th>
+            <th>Status</th>
             <th>Stock</th>
-            <th>Actions</th>
+            <th>Manage</th>
           </tr>
         </thead>
         <tbody>
@@ -35,23 +37,89 @@
                 <strong>{{ item.name }}</strong>
                 <small class="lead-location-line">{{ item.get_equipment_type_display }}</small>
               </td>
-              <td>{{ item.quantity }}</td>
+              <td data-equipment-qty-cell="{{ item.pk }}">{{ item.quantity }}</td>
+              <td>
+                <span class="org-status org-status-{{ item.status }}">{{ item.get_status_display }}</span>
+              </td>
+              <td>
+                {% if item.status != "suspended" %}
+                  <div class="org-actions org-actions-icons">
+                    <button
+                      type="button"
+                      class="org-action-icon"
+                      data-open-stock-modal
+                      data-equipment-id="{{ item.pk }}"
+                      data-equipment-name="{{ item.name }}"
+                      data-equipment-stock="{{ item.quantity }}"
+                      data-equipment-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
+                      title="Stock in / out"
+                      aria-label="Stock in or out for {{ item.name }}"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M20 6h-2.18A3 3 0 0 0 15 4H9a3 3 0 0 0-2.82 2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zM9 6h6a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2zm3 12a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
+                      </svg>
+                    </button>
+                  </div>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
               <td>
                 <div class="org-actions org-actions-icons">
                   <button
                     type="button"
                     class="org-action-icon"
-                    data-open-stock-modal
+                    data-open-edit-modal
                     data-equipment-id="{{ item.pk }}"
                     data-equipment-name="{{ item.name }}"
-                    data-equipment-stock="{{ item.quantity }}"
-                    title="Stock in / out"
-                    aria-label="Stock in or out for {{ item.name }}"
+                    data-equipment-type="{{ item.equipment_type }}"
+                    title="Edit"
+                    aria-label="Edit {{ item.name }}"
                   >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                      <path fill="currentColor" d="M20 6h-2.18A3 3 0 0 0 15 4H9a3 3 0 0 0-2.82 2H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zM9 6h6a1 1 0 0 1 0 2H9a1 1 0 0 1 0-2zm3 12a3 3 0 1 1 3-3 3 3 0 0 1-3 3z"/>
-                    </svg>
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
                   </button>
+                  {% if item.status == "suspended" %}
+                    <form method="post">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="unsuspend">
+                      <input type="hidden" name="equipment_id" value="{{ item.pk }}">
+                      <button
+                        type="submit"
+                        class="org-action-icon org-action-success"
+                        title="Unsuspend"
+                        aria-label="Unsuspend {{ item.name }}"
+                      >
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1.2 14.4-3.7-3.7 1.4-1.4 2.3 2.3 4.9-4.9 1.4 1.4z"/></svg>
+                      </button>
+                    </form>
+                  {% else %}
+                    <form method="post">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="suspend">
+                      <input type="hidden" name="equipment_id" value="{{ item.pk }}">
+                      <button
+                        type="submit"
+                        class="org-action-icon org-action-warn"
+                        title="Suspend"
+                        aria-label="Suspend {{ item.name }}"
+                      >
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"/></svg>
+                      </button>
+                    </form>
+                  {% endif %}
+                  <form method="post" onsubmit="return confirm('Delete {{ item.name|escapejs }}? This cannot be undone.');">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="delete">
+                    <input type="hidden" name="equipment_id" value="{{ item.pk }}">
+                    <button
+                      type="submit"
+                      class="org-action-icon org-action-danger"
+                      title="Delete"
+                      aria-label="Delete {{ item.name }}"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 7h12v2H6zm2 3h8l-.7 10.1a1.5 1.5 0 0 1-1.5 1.4H10.2a1.5 1.5 0 0 1-1.5-1.4L8 10zm3-5h2l1 1h4v2H6V6h4z"/></svg>
+                    </button>
+                  </form>
                 </div>
               </td>
             </tr>
@@ -112,6 +180,60 @@
       <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-equipment-modal>Cancel</button>
         <button type="submit" class="btn btn-primary">Save equipment</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal pppoe-modal"
+  id="equipment-edit-modal"
+  {% if not open_edit_modal %}hidden{% endif %}
+  aria-hidden="{% if open_edit_modal %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-edit-modal></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="equipment-edit-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Infrastructure</p>
+        <h2 id="equipment-edit-title">Edit equipment</h2>
+        <p class="role-modal-sub pppoe-sub">Update the equipment name or type.</p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-edit-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form method="post" class="pppoe-form" id="equipment-edit-form" novalidate>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="edit">
+      <input type="hidden" name="equipment_id" id="edit-equipment-id" value="{% if edit_form.instance.pk %}{{ edit_form.instance.pk }}{% endif %}">
+
+      <div class="pppoe-body">
+        {% if edit_form.non_field_errors %}
+          <div class="field-error pppoe-banner">{{ edit_form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Equipment details</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ edit_form.name.id_for_label }}">{{ edit_form.name.label }} *</label>
+              {{ edit_form.name }}
+              {% if edit_form.name.errors %}<div class="field-error">{{ edit_form.name.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label for="{{ edit_form.equipment_type.id_for_label }}">{{ edit_form.equipment_type.label }} *</label>
+              <div class="pppoe-select">{{ edit_form.equipment_type }}</div>
+              {% if edit_form.equipment_type.errors %}<div class="field-error">{{ edit_form.equipment_type.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="pppoe-foot">
+        <button type="button" class="btn btn-ghost" data-close-edit-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save changes</button>
       </footer>
     </form>
   </div>
@@ -180,8 +302,92 @@
           </label>
         </div>
 
-        <div class="equipment-stock-qty-field">
-          <label for="stock-amount">Quantity</label>
+        <div class="equipment-stock-track-block">
+          <label class="equipment-stock-track" for="stock-track-serials">
+            <input
+              type="checkbox"
+              name="track_serials"
+              value="1"
+              id="stock-track-serials"
+              {% if stock_track_serials %}checked{% endif %}
+            >
+            <span>
+              <strong>Track serial numbers</strong>
+              <small>Turn on to scan units one by one. Each scan saves and updates quantity.</small>
+            </span>
+          </label>
+
+          <div class="equipment-stock-track-verify" id="equipment-stock-track-verify" hidden>
+            <p class="equipment-stock-track-verify-title">Enter your 6-digit verification code to turn off serial tracking.</p>
+            <div class="equipment-stock-track-verify-row">
+              <input
+                type="password"
+                inputmode="numeric"
+                pattern="[0-9]{6}"
+                maxlength="6"
+                autocomplete="one-time-code"
+                class="form-control"
+                id="stock-track-verify-code"
+                placeholder="6-digit code"
+                aria-label="6-digit verification code"
+              >
+              <button type="button" class="btn btn-primary" id="stock-track-verify-confirm">Confirm</button>
+              <button type="button" class="btn btn-ghost" id="stock-track-verify-cancel">Cancel</button>
+            </div>
+            <p class="equipment-stock-track-verify-error" id="stock-track-verify-error" hidden>Incorrect verification code.</p>
+          </div>
+        </div>
+
+        <div class="equipment-stock-serials" id="equipment-stock-serials" {% if not stock_track_serials %}hidden{% endif %}>
+          <div class="equipment-stock-scan-loop" id="equipment-stock-scan-loop">
+            <div class="equipment-stock-scan-ready" id="equipment-stock-scan-ready">
+              <span class="equipment-stock-scan-ready-dot" aria-hidden="true"></span>
+              <strong id="equipment-stock-scan-ready-text">Ready to scan</strong>
+              <small id="equipment-stock-serials-hint">Scan a barcode or type a serial, then press Enter.</small>
+            </div>
+
+            <div class="equipment-stock-serial-scan">
+              <label for="stock-serial-scan">Scan serial</label>
+              <div class="equipment-stock-serial-scan-field">
+                <input
+                  type="text"
+                  class="form-control equipment-stock-serial-input"
+                  id="stock-serial-scan"
+                  autocomplete="off"
+                  spellcheck="false"
+                  enterkeyhint="done"
+                  placeholder="Waiting for next serial…"
+                >
+                <button
+                  type="button"
+                  class="equipment-stock-camera-btn"
+                  id="stock-serial-camera-btn"
+                  title="Open camera scanner"
+                  aria-label="Open camera scanner"
+                >
+                  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                    <path fill="currentColor" d="M9 3L7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.2A2.8 2.8 0 1 0 12 9.2a2.8 2.8 0 0 0 0 5.6z"/>
+                  </svg>
+                </button>
+              </div>
+              <button type="button" class="btn btn-primary" id="stock-serial-save-btn">Save</button>
+            </div>
+            <p class="equipment-stock-serial-status" id="equipment-stock-serial-status" hidden></p>
+          </div>
+
+          <div class="equipment-stock-scanned-panel" id="equipment-stock-scanned-panel">
+            <div class="equipment-stock-scanned-head">
+              <span>Scanned serials</span>
+              <strong id="equipment-stock-scanned-count">0</strong>
+            </div>
+            <ul class="equipment-stock-serial-scanned" id="equipment-stock-serial-scanned">
+              <li class="equipment-stock-serial-empty" id="equipment-stock-serial-empty">No serials scanned yet. Start scanning above.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="equipment-stock-qty-field" id="equipment-stock-qty-field">
+          <label for="stock-amount" id="stock-amount-label">Quantity</label>
           <div class="equipment-stock-stepper">
             <button type="button" class="equipment-stock-step" id="stock-amount-dec" aria-label="Decrease quantity">−</button>
             <input
@@ -209,11 +415,62 @@
   </div>
 </div>
 
+<div class="role-modal equipment-stock-camera-modal" id="equipment-stock-camera-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-camera-modal></div>
+  <div class="role-modal-panel equipment-stock-camera-panel" role="dialog" aria-modal="true" aria-labelledby="equipment-stock-camera-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Scanner</p>
+        <h2 id="equipment-stock-camera-title">Scan serial with camera</h2>
+        <p class="role-modal-sub" id="equipment-stock-camera-sub">Point the camera at the barcode or QR code. It saves automatically when read.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-close-camera-modal aria-label="Close camera">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="equipment-stock-camera-body">
+      <div class="equipment-stock-camera-viewport" id="equipment-stock-camera-viewport">
+        <video
+          id="equipment-stock-camera-video"
+          class="equipment-stock-camera-video"
+          autoplay
+          muted
+          playsinline
+          webkit-playsinline
+        ></video>
+        <div id="equipment-stock-camera-reader" class="equipment-stock-camera-reader" hidden></div>
+        <div class="equipment-stock-camera-frame" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+        <div class="equipment-stock-camera-gate" id="equipment-stock-camera-gate" hidden>
+          <p id="equipment-stock-camera-gate-text">Camera access is required to scan serials.</p>
+          <button type="button" class="btn btn-primary" id="equipment-stock-camera-allow-btn">Allow camera &amp; scan</button>
+          <button type="button" class="btn btn-ghost" id="equipment-stock-camera-photo-btn">Take a photo instead</button>
+        </div>
+      </div>
+      <p class="equipment-stock-camera-status" id="equipment-stock-camera-status">Starting camera…</p>
+      <input
+        type="file"
+        id="equipment-stock-camera-file"
+        accept="image/*"
+        capture="environment"
+        hidden
+      >
+    </div>
+    <footer class="pppoe-foot equipment-stock-camera-foot">
+      <button type="button" class="btn btn-ghost" data-close-camera-modal>Close camera</button>
+      <button type="button" class="btn btn-primary" id="equipment-stock-camera-photo-footer-btn">Take photo</button>
+    </footer>
+  </div>
+</div>
+
 <script>
 (function () {
   var registerModal = document.getElementById("equipment-register-modal");
+  var editModal = document.getElementById("equipment-edit-modal");
   var stockModal = document.getElementById("equipment-stock-modal");
   var openRegisterOnLoad = {% if open_register_modal %}true{% else %}false{% endif %};
+  var openEditOnLoad = {% if open_edit_modal %}true{% else %}false{% endif %};
   var openStockOnLoad = {% if open_stock_modal %}true{% else %}false{% endif %};
   var stockId = document.getElementById("stock-equipment-id");
   var stockAction = document.getElementById("stock-action");
@@ -228,6 +485,47 @@
   var submitBtn = document.getElementById("stock-submit-btn");
   var decBtn = document.getElementById("stock-amount-dec");
   var incBtn = document.getElementById("stock-amount-inc");
+  var trackSerials = document.getElementById("stock-track-serials");
+  var serialsWrap = document.getElementById("equipment-stock-serials");
+  var serialsHint = document.getElementById("equipment-stock-serials-hint");
+  var serialScanned = document.getElementById("equipment-stock-serial-scanned");
+  var serialEmpty = document.getElementById("equipment-stock-serial-empty");
+  var serialScannedCount = document.getElementById("equipment-stock-scanned-count");
+  var serialScan = document.getElementById("stock-serial-scan");
+  var serialSaveBtn = document.getElementById("stock-serial-save-btn");
+  var serialCameraBtn = document.getElementById("stock-serial-camera-btn");
+  var serialStatus = document.getElementById("equipment-stock-serial-status");
+  var scanReadyText = document.getElementById("equipment-stock-scan-ready-text");
+  var scanLoop = document.getElementById("equipment-stock-scan-loop");
+  var amountLabel = document.getElementById("stock-amount-label");
+  var cameraModal = document.getElementById("equipment-stock-camera-modal");
+  var cameraVideo = document.getElementById("equipment-stock-camera-video");
+  var cameraReader = document.getElementById("equipment-stock-camera-reader");
+  var cameraStatus = document.getElementById("equipment-stock-camera-status");
+  var cameraSub = document.getElementById("equipment-stock-camera-sub");
+  var cameraGate = document.getElementById("equipment-stock-camera-gate");
+  var cameraGateText = document.getElementById("equipment-stock-camera-gate-text");
+  var cameraAllowBtn = document.getElementById("equipment-stock-camera-allow-btn");
+  var cameraPhotoBtn = document.getElementById("equipment-stock-camera-photo-btn");
+  var cameraPhotoFooterBtn = document.getElementById("equipment-stock-camera-photo-footer-btn");
+  var cameraFileInput = document.getElementById("equipment-stock-camera-file");
+  var trackVerify = document.getElementById("equipment-stock-track-verify");
+  var trackVerifyCode = document.getElementById("stock-track-verify-code");
+  var trackVerifyConfirm = document.getElementById("stock-track-verify-confirm");
+  var trackVerifyCancel = document.getElementById("stock-track-verify-cancel");
+  var trackVerifyError = document.getElementById("stock-track-verify-error");
+  var sessionScanCount = 0;
+  var sessionSerials = [];
+  var scanBusy = false;
+  var cameraStream = null;
+  var cameraDetectTimer = null;
+  var cameraHtml5 = null;
+  var cameraZxingReader = null;
+  var cameraClosing = false;
+  var cameraHandled = false;
+  var editId = document.getElementById("edit-equipment-id");
+  var editName = document.getElementById("id_edit-name") || document.getElementById("id_equipment_edit_name");
+  var editType = document.getElementById("id_edit-equipment_type") || document.getElementById("id_equipment_edit_type");
 
   function anyModalOpen() {
     return document.querySelector(".role-modal:not([hidden])");
@@ -252,64 +550,1106 @@
     }
   }
 
+  function openEditModal(id, name, type) {
+    if (!editModal) return;
+    if (editId) editId.value = id || "";
+    if (editName && name != null) editName.value = name;
+    if (editType && type != null) editType.value = type;
+    editModal.hidden = false;
+    editModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (editName) editName.focus();
+  }
+
+  function closeEditModal() {
+    if (!editModal) return;
+    editModal.hidden = true;
+    editModal.setAttribute("aria-hidden", "true");
+    if (!anyModalOpen()) document.body.classList.remove("role-modal-open");
+  }
+
+  function currentAmount() {
+    var value = parseInt(stockAmount && stockAmount.value, 10);
+    if (!isFinite(value) || value < 0) return 0;
+    return value;
+  }
+
+  function trackingEnabled() {
+    return !!(trackSerials && trackSerials.checked);
+  }
+
+  function setScanReady(state, message) {
+    if (scanLoop) {
+      scanLoop.classList.remove("is-saving", "is-error", "is-success");
+      if (state) scanLoop.classList.add("is-" + state);
+    }
+    if (scanReadyText) {
+      if (state === "saving") scanReadyText.textContent = "Saving serial…";
+      else if (state === "error") scanReadyText.textContent = "Scan failed — try again";
+      else if (state === "success") scanReadyText.textContent = "Saved — ready for next scan";
+      else scanReadyText.textContent = message || "Ready to scan";
+    }
+  }
+
+  function setSerialStatus(message, isError) {
+    if (!serialStatus) return;
+    if (!message) {
+      serialStatus.hidden = true;
+      serialStatus.textContent = "";
+      serialStatus.classList.remove("is-error", "is-success");
+      return;
+    }
+    serialStatus.hidden = false;
+    serialStatus.textContent = message;
+    serialStatus.classList.toggle("is-error", !!isError);
+    serialStatus.classList.toggle("is-success", !isError);
+  }
+
+  function updateEquipmentStockDisplay(quantity) {
+    var qty = String(quantity);
+    if (stockCurrent) stockCurrent.textContent = qty;
+    var id = stockId && stockId.value;
+    if (!id) return;
+    document.querySelectorAll('[data-open-stock-modal][data-equipment-id="' + id + '"]').forEach(function (btn) {
+      btn.setAttribute("data-equipment-stock", qty);
+    });
+    document.querySelectorAll('[data-equipment-qty-cell="' + id + '"]').forEach(function (cell) {
+      cell.textContent = qty;
+    });
+  }
+
+  function refreshScannedList() {
+    if (!serialScanned) return;
+    serialScanned.innerHTML = "";
+    if (!sessionSerials.length) {
+      var empty = document.createElement("li");
+      empty.className = "equipment-stock-serial-empty";
+      empty.id = "equipment-stock-serial-empty";
+      empty.textContent = "No serials scanned yet. Start scanning above.";
+      serialScanned.appendChild(empty);
+      serialEmpty = empty;
+    } else {
+      serialEmpty = null;
+      sessionSerials.forEach(function (serial, index) {
+        var item = document.createElement("li");
+        item.className = "equipment-stock-serial-item";
+        var num = document.createElement("span");
+        num.className = "equipment-stock-serial-num";
+        num.textContent = String(index + 1);
+        var code = document.createElement("span");
+        code.className = "equipment-stock-serial-code";
+        code.textContent = serial;
+        var mark = document.createElement("span");
+        mark.className = "equipment-stock-serial-mark";
+        mark.textContent = "Saved";
+        item.appendChild(num);
+        item.appendChild(code);
+        item.appendChild(mark);
+        serialScanned.appendChild(item);
+      });
+      serialScanned.scrollTop = serialScanned.scrollHeight;
+    }
+    if (serialScannedCount) serialScannedCount.textContent = String(sessionSerials.length);
+  }
+
+  function resetScanSession() {
+    sessionScanCount = 0;
+    sessionSerials = [];
+    scanBusy = false;
+    if (serialScan) {
+      serialScan.value = "";
+      serialScan.disabled = false;
+    }
+    if (serialSaveBtn) serialSaveBtn.disabled = false;
+    refreshScannedList();
+    setSerialStatus("");
+    setScanReady("", "Ready to scan");
+  }
+
+  function syncQuantityMode() {
+    var enabled = trackingEnabled();
+    var isOut = !!(dirOut && dirOut.checked);
+    if (!stockAmount) return;
+    stockAmount.readOnly = enabled;
+    if (decBtn) decBtn.disabled = enabled;
+    if (incBtn) incBtn.disabled = enabled;
+    if (amountLabel) {
+      amountLabel.textContent = enabled ? "Quantity this session" : "Quantity";
+    }
+    if (enabled) {
+      stockAmount.min = "0";
+      stockAmount.value = String(sessionScanCount);
+      if (stockHint) {
+        stockHint.textContent = isOut
+          ? "Each successful scan stocks out 1 unit and updates on-hand stock."
+          : "Each successful scan stocks in 1 unit and updates on-hand stock.";
+      }
+    } else {
+      stockAmount.min = "1";
+      if (!stockAmount.value || parseInt(stockAmount.value, 10) < 1) {
+        stockAmount.value = "1";
+      }
+    }
+  }
+
+  function hideTrackVerify() {
+    if (trackVerify) trackVerify.hidden = true;
+    if (trackVerifyCode) trackVerifyCode.value = "";
+    if (trackVerifyError) trackVerifyError.hidden = true;
+    if (trackVerifyConfirm) trackVerifyConfirm.disabled = false;
+  }
+
+  function showTrackVerify() {
+    if (!trackVerify) return;
+    trackVerify.hidden = false;
+    if (trackVerifyError) trackVerifyError.hidden = true;
+    if (trackVerifyCode) {
+      trackVerifyCode.value = "";
+      trackVerifyCode.focus();
+    }
+  }
+
+  function csrfToken() {
+    var el = document.querySelector("#equipment-stock-form [name=csrfmiddlewaretoken]");
+    return el ? el.value : "";
+  }
+
+  function updateTrackSerialAttr(enabled) {
+    var id = stockId && stockId.value;
+    if (!id) return;
+    document.querySelectorAll('[data-open-stock-modal][data-equipment-id="' + id + '"]').forEach(function (btn) {
+      btn.setAttribute("data-equipment-track-serials", enabled ? "1" : "0");
+    });
+  }
+
+  function saveTrackSerialsLive(enable, verificationCode) {
+    var id = stockId && stockId.value;
+    if (!id) return Promise.reject(new Error("Missing equipment."));
+    var body = new URLSearchParams();
+    body.set("csrfmiddlewaretoken", csrfToken());
+    body.set("action", "set_track_serials");
+    body.set("equipment_id", id);
+    if (enable) body.set("track_serials", "1");
+    if (verificationCode) body.set("verification_code", verificationCode);
+    return fetch(window.location.pathname, {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json",
+      },
+      body: body,
+      credentials: "same-origin",
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok || !data.ok) {
+          throw new Error((data && data.error) || "Could not save.");
+        }
+        updateTrackSerialAttr(!!data.track_serials);
+        return data;
+      });
+    });
+  }
+
+  function confirmDisableSerialTracking() {
+    var entered = (trackVerifyCode && trackVerifyCode.value ? trackVerifyCode.value : "").replace(/\D/g, "");
+    if (entered.length !== 6) {
+      if (trackVerifyError) {
+        trackVerifyError.textContent = "Enter your 6-digit verification code.";
+        trackVerifyError.hidden = false;
+      }
+      if (trackVerifyCode) trackVerifyCode.focus();
+      return;
+    }
+    if (trackVerifyConfirm) trackVerifyConfirm.disabled = true;
+    saveTrackSerialsLive(false, entered)
+      .then(function () {
+        if (trackSerials) trackSerials.checked = false;
+        hideTrackVerify();
+        resetScanSession();
+        syncSerialPanel();
+      })
+      .catch(function (err) {
+        if (trackVerifyError) {
+          trackVerifyError.textContent = (err && err.message) || "Incorrect verification code.";
+          trackVerifyError.hidden = false;
+        }
+        if (trackVerifyCode) {
+          trackVerifyCode.focus();
+          trackVerifyCode.select();
+        }
+        if (trackVerifyConfirm) trackVerifyConfirm.disabled = false;
+      });
+  }
+
+  function focusScanInput() {
+    if (!serialScan || serialScan.disabled) return;
+    window.setTimeout(function () {
+      serialScan.focus();
+      serialScan.select();
+    }, 0);
+  }
+
+  function setCameraStatus(message) {
+    if (cameraStatus) cameraStatus.textContent = message || "";
+  }
+
+  function showCameraGate(message, showAllow) {
+    if (cameraGate) cameraGate.hidden = false;
+    if (cameraGateText) cameraGateText.textContent = message || "Camera access is required to scan serials.";
+    if (cameraAllowBtn) cameraAllowBtn.hidden = !showAllow;
+    if (cameraVideo) cameraVideo.hidden = true;
+    if (cameraReader) cameraReader.hidden = true;
+  }
+
+  function hideCameraGate() {
+    if (cameraGate) cameraGate.hidden = true;
+  }
+
+  function canUseLiveCamera() {
+    return !!(
+      window.isSecureContext &&
+      navigator.mediaDevices &&
+      typeof navigator.mediaDevices.getUserMedia === "function"
+    );
+  }
+
+  function openNativePhotoCapture() {
+    if (!cameraFileInput) {
+      setCameraStatus("Photo capture is not available on this device.");
+      return;
+    }
+    setCameraStatus("Opening phone camera…");
+    cameraFileInput.value = "";
+    cameraFileInput.click();
+  }
+
+  function loadZXing() {
+    if (window.ZXing) return Promise.resolve(window.ZXing);
+    return new Promise(function (resolve, reject) {
+      var existing = document.querySelector("script[data-zxing-library]");
+      if (existing) {
+        existing.addEventListener("load", function () {
+          if (window.ZXing) resolve(window.ZXing);
+          else reject(new Error("Barcode library failed to load."));
+        });
+        existing.addEventListener("error", function () {
+          reject(new Error("Barcode library failed to load."));
+        });
+        return;
+      }
+      var script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
+      script.async = true;
+      script.setAttribute("data-zxing-library", "1");
+      script.onload = function () {
+        if (window.ZXing) resolve(window.ZXing);
+        else reject(new Error("Barcode library failed to load."));
+      };
+      script.onerror = function () {
+        reject(new Error("Barcode library failed to load."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function loadImageFromFile(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        reject(new Error("Could not open the photo."));
+      };
+      img.src = url;
+    });
+  }
+
+  function makeCanvas(width, height) {
+    var canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.floor(width));
+    canvas.height = Math.max(1, Math.floor(height));
+    return canvas;
+  }
+
+  function canvasFromImage(img, scale) {
+    scale = scale || 1;
+    var canvas = makeCanvas(img.naturalWidth * scale, img.naturalHeight * scale);
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+
+  function enhanceCanvas(source, mode) {
+    var canvas = makeCanvas(source.width, source.height);
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(source, 0, 0);
+    var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    var data = imageData.data;
+    for (var i = 0; i < data.length; i += 4) {
+      var gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
+      if (mode === "contrast") {
+        gray = gray < 140 ? 0 : 255;
+      } else if (mode === "invert") {
+        gray = 255 - gray;
+      }
+      data[i] = data[i + 1] = data[i + 2] = gray;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+
+  function rotateCanvas(source, degrees) {
+    var radians = (degrees * Math.PI) / 180;
+    var sin = Math.abs(Math.sin(radians));
+    var cos = Math.abs(Math.cos(radians));
+    var width = source.width;
+    var height = source.height;
+    var canvas = makeCanvas(width * cos + height * sin, width * sin + height * cos);
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(radians);
+    ctx.drawImage(source, -width / 2, -height / 2);
+    return canvas;
+  }
+
+  function cropCenterCanvas(source, ratio) {
+    ratio = ratio || 0.72;
+    var width = Math.floor(source.width * ratio);
+    var height = Math.floor(source.height * ratio);
+    var x = Math.floor((source.width - width) / 2);
+    var y = Math.floor((source.height - height) / 2);
+    var canvas = makeCanvas(width, height);
+    var ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(source, x, y, width, height, 0, 0, width, height);
+    return canvas;
+  }
+
+  function zxingHints(ZXing) {
+    var hints = new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.CODE_128,
+      ZXing.BarcodeFormat.CODE_39,
+      ZXing.BarcodeFormat.CODE_93,
+      ZXing.BarcodeFormat.CODABAR,
+      ZXing.BarcodeFormat.ITF,
+      ZXing.BarcodeFormat.EAN_13,
+      ZXing.BarcodeFormat.EAN_8,
+      ZXing.BarcodeFormat.UPC_A,
+      ZXing.BarcodeFormat.UPC_E,
+      ZXing.BarcodeFormat.QR_CODE,
+      ZXing.BarcodeFormat.DATA_MATRIX,
+      ZXing.BarcodeFormat.AZTEC,
+      ZXing.BarcodeFormat.PDF_417,
+    ]);
+    if (ZXing.DecodeHintType.ALSO_INVERTED != null) {
+      hints.set(ZXing.DecodeHintType.ALSO_INVERTED, true);
+    }
+    return hints;
+  }
+
+  function buildDecodeCanvases(img) {
+    var scale = img.naturalWidth > 1800 ? 1800 / img.naturalWidth : 1;
+    var boost = img.naturalWidth < 1000 ? 2.2 : 1;
+    var base = canvasFromImage(img, scale);
+    var large = canvasFromImage(img, scale * boost);
+    var band = makeCanvas(base.width, Math.max(90, Math.floor(base.height * 0.34)));
+    var bandCtx = band.getContext("2d", { willReadFrequently: true });
+    bandCtx.drawImage(
+      base,
+      0,
+      Math.floor(base.height * 0.33),
+      base.width,
+      Math.floor(base.height * 0.34),
+      0,
+      0,
+      band.width,
+      band.height
+    );
+    var wideBand = makeCanvas(Math.floor(base.width * 1.45), band.height);
+    var wideCtx = wideBand.getContext("2d", { willReadFrequently: true });
+    wideCtx.drawImage(band, 0, 0, wideBand.width, wideBand.height);
+    var variants = [
+      band,
+      wideBand,
+      enhanceCanvas(band, "contrast"),
+      enhanceCanvas(band, "gray"),
+      enhanceCanvas(band, "invert"),
+      base,
+      large,
+      cropCenterCanvas(base, 0.75),
+      enhanceCanvas(base, "contrast"),
+      enhanceCanvas(base, "invert"),
+    ];
+    var canvases = [];
+    variants.forEach(function (variant) {
+      [0, 90, 180, 270].forEach(function (deg) {
+        canvases.push(deg ? rotateCanvas(variant, deg) : variant);
+      });
+    });
+    return canvases;
+  }
+
+  function detectWithBarcodeDetector(canvases) {
+    if (!window.BarcodeDetector) return Promise.reject(new Error("no-native-decode"));
+    var detector = new BarcodeDetector({
+      formats: [
+        "qr_code", "code_128", "code_39", "code_93", "ean_13", "ean_8",
+        "upc_a", "upc_e", "itf", "codabar", "data_matrix", "pdf417", "aztec",
+      ],
+    });
+    var index = 0;
+    var tryNext = function () {
+      if (index >= canvases.length) {
+        return Promise.reject(new Error("No barcode found with native detector."));
+      }
+      var canvas = canvases[index++];
+      return detector.detect(canvas).then(function (codes) {
+        if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
+        return tryNext();
+      }).catch(function () {
+        return tryNext();
+      });
+    };
+    return tryNext();
+  }
+
+  function detectWithZXing(canvases) {
+    return loadZXing().then(function (ZXing) {
+      var reader = new ZXing.BrowserMultiFormatReader(zxingHints(ZXing), 300);
+
+      function decodeCanvas(canvas) {
+        if (typeof reader.decodeFromCanvas === "function") {
+          return reader.decodeFromCanvas(canvas);
+        }
+        return new Promise(function (resolve, reject) {
+          var img = new Image();
+          img.onload = function () {
+            reader.decodeFromImage(img).then(resolve).catch(reject);
+          };
+          img.onerror = reject;
+          img.src = canvas.toDataURL("image/jpeg", 0.95);
+        });
+      }
+
+      var index = 0;
+      var tryNext = function () {
+        if (index >= canvases.length) {
+          return Promise.reject(new Error("No barcode or QR code found in the photo."));
+        }
+        var canvas = canvases[index++];
+        return decodeCanvas(canvas).then(function (result) {
+          if (result && typeof result.getText === "function") return result.getText();
+          if (result && result.text) return result.text;
+          throw new Error("empty");
+        }).catch(function () {
+          return tryNext();
+        });
+      };
+      return tryNext().finally(function () {
+        try { reader.reset(); } catch (e) {}
+      });
+    });
+  }
+
+  function decodeImageFile(file) {
+    setCameraStatus("Reading barcode / QR from photo…");
+    hideCameraGate();
+    return loadImageFromFile(file)
+      .then(function (img) {
+        var canvases = buildDecodeCanvases(img);
+        return detectWithZXing(canvases).catch(function () {
+          return detectWithBarcodeDetector(canvases);
+        });
+      })
+      .then(function (value) {
+        handleCameraCode(value);
+      })
+      .catch(function (err) {
+        var message = (err && err.message) || "Could not read a barcode from that photo.";
+        if (/MultiFormat|NotFoundException/i.test(message)) {
+          message = "No barcode or QR code found. Fill the frame with the bars, keep it sharp, and try again.";
+        }
+        setCameraStatus(message);
+        showCameraGate(message + " Tip: hold barcode horizontally. Or type the serial manually.", false);
+        cameraHandled = false;
+      });
+  }
+
+  function stopZXingCamera() {
+    if (cameraDetectTimer) {
+      window.clearTimeout(cameraDetectTimer);
+      cameraDetectTimer = null;
+    }
+    if (cameraZxingReader) {
+      try {
+        if (typeof cameraZxingReader.stopContinuousDecode === "function") {
+          cameraZxingReader.stopContinuousDecode();
+        }
+      } catch (e) {}
+      try {
+        if (typeof cameraZxingReader.reset === "function") {
+          cameraZxingReader.reset();
+        }
+      } catch (e2) {}
+      cameraZxingReader = null;
+    }
+  }
+
+  function stopNativeCamera() {
+    stopZXingCamera();
+    if (cameraDetectTimer) {
+      window.clearTimeout(cameraDetectTimer);
+      cameraDetectTimer = null;
+    }
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(function (track) {
+        track.stop();
+      });
+      cameraStream = null;
+    }
+    if (cameraVideo) {
+      cameraVideo.srcObject = null;
+      cameraVideo.hidden = false;
+      cameraVideo.style.display = "";
+    }
+  }
+
+  function stopHtml5Camera() {
+    if (!cameraHtml5) return Promise.resolve();
+    var scanner = cameraHtml5;
+    cameraHtml5 = null;
+    return scanner.stop().catch(function () {}).then(function () {
+      try { scanner.clear(); } catch (e) {}
+    });
+  }
+
+  function closeCameraModal() {
+    if (!cameraModal || cameraClosing) return;
+    cameraClosing = true;
+    stopZXingCamera();
+    stopNativeCamera();
+    stopHtml5Camera().finally(function () {
+      hideCameraGate();
+      if (cameraReader) {
+        cameraReader.innerHTML = "";
+        cameraReader.hidden = true;
+        cameraReader.style.display = "";
+      }
+      if (cameraVideo) {
+        cameraVideo.hidden = false;
+        cameraVideo.style.display = "";
+      }
+      cameraModal.hidden = true;
+      cameraModal.setAttribute("aria-hidden", "true");
+      cameraClosing = false;
+      if (trackingEnabled()) focusScanInput();
+    });
+  }
+
+  function handleCameraCode(raw) {
+    if (cameraHandled || scanBusy) return;
+    var serial = (raw || "").trim().toUpperCase();
+    if (!serial) return;
+    cameraHandled = true;
+    closeCameraModal();
+    if (serialScan) serialScan.value = serial;
+    setSerialStatus("Camera read “" + serial + "”. Saving…", false);
+    commitSerialScan();
+  }
+
+  function loadHtml5Qrcode() {
+    if (window.Html5Qrcode) return Promise.resolve(window.Html5Qrcode);
+    return new Promise(function (resolve, reject) {
+      var existing = document.querySelector("script[data-html5-qrcode]");
+      if (existing) {
+        existing.addEventListener("load", function () {
+          if (window.Html5Qrcode) resolve(window.Html5Qrcode);
+          else reject(new Error("Scanner library failed to load."));
+        });
+        existing.addEventListener("error", function () {
+          reject(new Error("Scanner library failed to load."));
+        });
+        return;
+      }
+      var script = document.createElement("script");
+      script.src = "https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js";
+      script.async = true;
+      script.setAttribute("data-html5-qrcode", "1");
+      script.onload = function () {
+        if (window.Html5Qrcode) resolve(window.Html5Qrcode);
+        else reject(new Error("Scanner library failed to load."));
+      };
+      script.onerror = function () {
+        reject(new Error("Scanner library failed to load."));
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  function startHtml5Camera() {
+    if (!cameraReader) return Promise.reject(new Error("Camera view missing."));
+    hideCameraGate();
+    stopZXingCamera();
+    if (cameraVideo) {
+      cameraVideo.hidden = true;
+      cameraVideo.style.display = "none";
+    }
+    cameraReader.hidden = false;
+    cameraReader.style.display = "block";
+    cameraReader.innerHTML = "";
+    setCameraStatus("Requesting camera permission…");
+    return loadHtml5Qrcode().then(function (Html5Qrcode) {
+      var formats = [];
+      var F = window.Html5QrcodeSupportedFormats;
+      if (F) {
+        formats = [
+          F.CODE_128, F.CODE_39, F.CODE_93, F.CODABAR, F.ITF,
+          F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E,
+          F.QR_CODE, F.DATA_MATRIX, F.AZTEC, F.PDF_417,
+        ].filter(function (v) { return v != null; });
+      }
+      var options = {
+        verbose: false,
+        experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+      };
+      if (formats.length) options.formatsToSupport = formats;
+      cameraHtml5 = new Html5Qrcode("equipment-stock-camera-reader", options);
+      var config = {
+        fps: 15,
+        qrbox: function (viewWidth, viewHeight) {
+          return {
+            width: Math.floor(viewWidth * 0.94),
+            height: Math.max(90, Math.floor(viewHeight * 0.28)),
+          };
+        },
+        aspectRatio: 0.75,
+        disableFlip: false,
+      };
+      var cameras = Html5Qrcode.getCameras
+        ? Html5Qrcode.getCameras().catch(function () { return []; })
+        : Promise.resolve([]);
+      return cameras.then(function (devices) {
+        var cameraIdOrConfig = { facingMode: "environment" };
+        if (devices && devices.length) {
+          var back = devices.find(function (d) {
+            return /back|rear|environment/i.test(d.label || "");
+          });
+          cameraIdOrConfig = (back || devices[devices.length - 1]).id;
+        }
+        return cameraHtml5.start(
+          cameraIdOrConfig,
+          config,
+          function (decodedText) {
+            handleCameraCode(decodedText);
+          },
+          function () {}
+        );
+      }).then(function () {
+        setCameraStatus("Camera open. Align the barcode inside the wide guide.");
+      });
+    });
+  }
+
+  function waitForVideoFrames(video, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var started = Date.now();
+      var check = function () {
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          resolve(video);
+          return;
+        }
+        if (Date.now() - started > (timeoutMs || 2500)) {
+          reject(new Error("Camera opened but no video frames arrived."));
+          return;
+        }
+        window.setTimeout(check, 120);
+      };
+      check();
+    });
+  }
+
+  function attachStreamToVideo(stream) {
+    cameraStream = stream;
+    stream.getVideoTracks().forEach(function (track) {
+      track.enabled = true;
+    });
+    cameraVideo.setAttribute("autoplay", "");
+    cameraVideo.setAttribute("muted", "");
+    cameraVideo.setAttribute("playsinline", "");
+    cameraVideo.setAttribute("webkit-playsinline", "");
+    cameraVideo.muted = true;
+    cameraVideo.playsInline = true;
+    cameraVideo.hidden = false;
+    cameraVideo.style.display = "block";
+    cameraVideo.srcObject = stream;
+    var playPromise = cameraVideo.play();
+    var played = playPromise && typeof playPromise.then === "function"
+      ? playPromise.catch(function () {})
+      : Promise.resolve();
+    return played.then(function () {
+      return waitForVideoFrames(cameraVideo, 2800);
+    });
+  }
+
+  function startZXingLiveCamera() {
+    if (!cameraVideo || !canUseLiveCamera()) {
+      return Promise.reject(new Error("ZXing live scanner unavailable."));
+    }
+    hideCameraGate();
+    if (cameraReader) {
+      cameraReader.hidden = true;
+      cameraReader.style.display = "none";
+      cameraReader.innerHTML = "";
+    }
+    setCameraStatus("Requesting camera permission…");
+    return loadZXing().then(function (ZXing) {
+      stopZXingCamera();
+      cameraZxingReader = new ZXing.BrowserMultiFormatReader(zxingHints(ZXing), 150);
+      var tryConstraints = [
+        { audio: false, video: { facingMode: { ideal: "environment" } } },
+        { audio: false, video: { facingMode: "environment" } },
+        { audio: false, video: true },
+      ];
+      var getStream = function (index) {
+        if (index >= tryConstraints.length) {
+          return Promise.reject(new Error("Could not start camera video."));
+        }
+        return navigator.mediaDevices.getUserMedia(tryConstraints[index]).catch(function (err) {
+          if (index === tryConstraints.length - 1) throw err;
+          return getStream(index + 1);
+        });
+      };
+      return getStream(0).then(function (stream) {
+        return attachStreamToVideo(stream).then(function () {
+          setCameraStatus("Camera open. Hold the barcode steady in the frame.");
+          var decodeOnce = function () {
+            if (!cameraZxingReader || !cameraStream || cameraModal.hidden || cameraHandled) return;
+            var run;
+            if (typeof cameraZxingReader.decodeOnceFromVideoElement === "function") {
+              run = cameraZxingReader.decodeOnceFromVideoElement(cameraVideo);
+            } else if (typeof cameraZxingReader.decodeFromVideoElement === "function") {
+              run = cameraZxingReader.decodeFromVideoElement(cameraVideo);
+            } else {
+              var canvas = makeCanvas(cameraVideo.videoWidth || 640, cameraVideo.videoHeight || 480);
+              var ctx = canvas.getContext("2d", { willReadFrequently: true });
+              ctx.drawImage(cameraVideo, 0, 0, canvas.width, canvas.height);
+              run = cameraZxingReader.decodeFromCanvas
+                ? cameraZxingReader.decodeFromCanvas(canvas)
+                : Promise.reject(new Error("no-decode"));
+            }
+            Promise.resolve(run)
+              .then(function (result) {
+                var text = result && (result.getText ? result.getText() : result.text);
+                if (text) handleCameraCode(text);
+                else cameraDetectTimer = window.setTimeout(decodeOnce, 120);
+              })
+              .catch(function () {
+                cameraDetectTimer = window.setTimeout(decodeOnce, 120);
+              });
+          };
+          cameraDetectTimer = window.setTimeout(decodeOnce, 200);
+        });
+      });
+    });
+  }
+
+  function startNativeCamera() {
+    if (!cameraVideo || !canUseLiveCamera() || !window.BarcodeDetector) {
+      return Promise.reject(new Error("Native scanner unavailable."));
+    }
+    var detector = new BarcodeDetector({
+      formats: [
+        "code_128", "code_39", "code_93", "codabar", "itf",
+        "ean_13", "ean_8", "upc_a", "upc_e",
+        "qr_code", "data_matrix", "pdf417", "aztec",
+      ],
+    });
+    hideCameraGate();
+    if (cameraReader) {
+      cameraReader.hidden = true;
+      cameraReader.style.display = "none";
+      cameraReader.innerHTML = "";
+    }
+    setCameraStatus("Requesting camera permission…");
+    return navigator.mediaDevices
+      .getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" } } })
+      .then(attachStreamToVideo)
+      .then(function () {
+        setCameraStatus("Camera open. Hold the barcode steady in the frame.");
+        var tick = function () {
+          if (!cameraStream || cameraModal.hidden || cameraHandled) return;
+          detector
+            .detect(cameraVideo)
+            .then(function (codes) {
+              if (codes && codes.length && codes[0].rawValue) {
+                handleCameraCode(codes[0].rawValue);
+                return;
+              }
+              cameraDetectTimer = window.setTimeout(tick, 180);
+            })
+            .catch(function () {
+              cameraDetectTimer = window.setTimeout(tick, 220);
+            });
+        };
+        cameraDetectTimer = window.setTimeout(tick, 250);
+      });
+  }
+
+  function explainCameraError(err) {
+    var name = (err && err.name) || "";
+    var message = (err && err.message) || "";
+    if (name === "NotAllowedError" || /permission|denied/i.test(message)) {
+      return "Camera permission was denied. Tap Allow camera, or use Take a photo instead.";
+    }
+    if (name === "NotFoundError" || /not found|no device/i.test(message)) {
+      return "No camera was found on this device.";
+    }
+    if (/no video frames/i.test(message)) {
+      return "Camera permission worked, but the live preview stayed black. Use Take photo instead.";
+    }
+    if (name === "SecurityError" || /secure|https|insecure/i.test(message) || !window.isSecureContext) {
+      return "Live camera needs HTTPS. Use Take a photo instead — that opens your phone camera.";
+    }
+    return message || "Could not open the live camera.";
+  }
+
+  function beginLiveCamera() {
+    setCameraStatus("Requesting camera permission…");
+    return startZXingLiveCamera()
+      .catch(function () { return startHtml5Camera(); })
+      .catch(function () { return startNativeCamera(); })
+      .catch(function (err) {
+        var text = explainCameraError(err);
+        setCameraStatus(text);
+        showCameraGate(text, canUseLiveCamera());
+      });
+  }
+
+  function openCameraModal() {
+    if (!trackingEnabled()) {
+      setSerialStatus("Turn on serial tracking first.", true);
+      return;
+    }
+    if (!cameraModal) return;
+    cameraHandled = false;
+    cameraModal.hidden = false;
+    cameraModal.setAttribute("aria-hidden", "false");
+    hideCameraGate();
+
+    if (!canUseLiveCamera()) {
+      if (cameraSub) {
+        cameraSub.textContent = "This page is on HTTP, so the browser will not show a live-camera permission prompt. Use your phone camera via the button below.";
+      }
+      showCameraGate(
+        "Tap “Take a photo instead” to open your phone camera and scan the serial.",
+        false
+      );
+      setCameraStatus("Live camera permission is blocked on HTTP. Photo scan still works.");
+      return;
+    }
+
+    if (cameraSub) {
+      cameraSub.textContent = "Allow camera, then hold the serial barcode horizontally inside the wide green box.";
+    }
+    showCameraGate("Tap Allow camera & scan so your phone can ask for permission.", true);
+    setCameraStatus("Waiting for you to allow camera access…");
+  }
+
+  function commitSerialScan() {
+    if (!trackingEnabled() || scanBusy || !serialScan) return;
+    var serial = (serialScan.value || "").trim().toUpperCase();
+    if (!serial) {
+      setScanReady("error");
+      setSerialStatus("Scan or type a serial number first.", true);
+      focusScanInput();
+      return;
+    }
+    if (sessionSerials.indexOf(serial) !== -1) {
+      setScanReady("error");
+      setSerialStatus("“" + serial + "” was already scanned in this session.", true);
+      focusScanInput();
+      return;
+    }
+    var id = stockId && stockId.value;
+    if (!id) {
+      setScanReady("error");
+      setSerialStatus("Missing equipment.", true);
+      return;
+    }
+    var action = (dirOut && dirOut.checked) ? "stock_out" : "stock_in";
+    scanBusy = true;
+    serialScan.disabled = true;
+    if (serialSaveBtn) serialSaveBtn.disabled = true;
+    setScanReady("saving");
+    setSerialStatus("Saving “" + serial + "”…");
+    var body = new URLSearchParams();
+    body.set("csrfmiddlewaretoken", csrfToken());
+    body.set("action", action);
+    body.set("equipment_id", id);
+    body.set("amount", "1");
+    body.set("track_serials", "1");
+    body.set("stock_direction", action === "stock_out" ? "out" : "in");
+    body.append("serial_number", serial);
+    fetch(window.location.pathname, {
+      method: "POST",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json",
+      },
+      body: body,
+      credentials: "same-origin",
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          if (!res.ok || !data.ok) {
+            throw new Error((data && data.error) || "Scan failed.");
+          }
+          return data;
+        });
+      })
+      .then(function (data) {
+        sessionSerials.push(serial);
+        sessionScanCount = sessionSerials.length;
+        if (stockAmount) stockAmount.value = String(sessionScanCount);
+        updateEquipmentStockDisplay(data.quantity);
+        refreshScannedList();
+        serialScan.value = "";
+        setScanReady("success");
+        setSerialStatus(
+          "“" + serial + "” saved. On hand: " + data.quantity + ". Scan the next serial.",
+          false
+        );
+        if (submitBtn) submitBtn.textContent = "Done";
+      })
+      .catch(function (err) {
+        setScanReady("error");
+        setSerialStatus((err && err.message) || "Scan failed.", true);
+      })
+      .finally(function () {
+        scanBusy = false;
+        serialScan.disabled = false;
+        if (serialSaveBtn) serialSaveBtn.disabled = false;
+        focusScanInput();
+      });
+  }
+
+  function syncSerialPanel() {
+    var enabled = trackingEnabled();
+    var isOut = !!(dirOut && dirOut.checked);
+    if (serialsWrap) serialsWrap.hidden = !enabled;
+    syncQuantityMode();
+    if (enabled) {
+      if (serialsHint) {
+        serialsHint.textContent = isOut
+          ? "Each scan issues 1 unit from stock, then waits for the next serial."
+          : "Each scan receives 1 unit into stock, then waits for the next serial.";
+      }
+      if (serialScan) {
+        serialScan.placeholder = isOut
+          ? "Scan serial to stock out…"
+          : "Scan serial to stock in…";
+      }
+      if (submitBtn) submitBtn.textContent = "Done";
+      setScanReady(sessionScanCount ? "success" : "", sessionScanCount ? "Saved — ready for next scan" : "Ready to scan");
+    } else {
+      setSerialStatus("");
+      if (serialScan) serialScan.value = "";
+      setScanReady("");
+    }
+  }
+
   function syncStockAction() {
     var isOut = dirOut && dirOut.checked;
     if (stockAction) stockAction.value = isOut ? "stock_out" : "stock_in";
-    if (submitBtn) {
-      submitBtn.textContent = isOut ? "Stock out" : "Stock in";
-      submitBtn.classList.toggle("btn-stock-out", !!isOut);
-    }
     if (choiceIn) choiceIn.classList.toggle("is-selected", !isOut);
     if (choiceOut) choiceOut.classList.toggle("is-selected", !!isOut);
     if (stockModal) stockModal.classList.toggle("is-stock-out", !!isOut);
-    if (stockHint) {
+    if (trackingEnabled()) {
+      if (submitBtn) {
+        submitBtn.textContent = "Done";
+        submitBtn.classList.toggle("btn-stock-out", !!isOut);
+      }
+    } else if (submitBtn) {
+      submitBtn.textContent = isOut ? "Stock out" : "Stock in";
+      submitBtn.classList.toggle("btn-stock-out", !!isOut);
+    }
+    if (!trackingEnabled() && stockHint) {
       stockHint.textContent = isOut
         ? "Subtracts from the current stock level."
         : "Adds to the current stock level.";
     }
+    syncSerialPanel();
   }
 
-  function openStockModal(id, name, stock) {
+  function openStockModal(id, name, stock, track) {
     if (!stockModal) return;
     if (stockId) stockId.value = id || "";
     if (stockName) stockName.textContent = name || "—";
     if (stockCurrent) stockCurrent.textContent = stock || "0";
-    if (stockAmount) stockAmount.value = "1";
     if (dirIn) dirIn.checked = true;
+    if (trackSerials) {
+      trackSerials.checked = track === true || track === "1" || track === 1;
+    }
+    hideTrackVerify();
+    resetScanSession();
+    if (stockAmount) {
+      stockAmount.value = trackingEnabled() ? "0" : "1";
+    }
     syncStockAction();
     stockModal.hidden = false;
     stockModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
-    if (stockAmount) stockAmount.focus();
+    if (trackingEnabled()) focusScanInput();
+    else if (stockAmount) stockAmount.focus();
   }
 
   function closeStockModal() {
     if (!stockModal) return;
+    closeCameraModal();
+    hideTrackVerify();
+    resetScanSession();
     stockModal.hidden = true;
     stockModal.setAttribute("aria-hidden", "true");
     if (!anyModalOpen()) document.body.classList.remove("role-modal-open");
   }
 
   function bumpAmount(delta) {
-    if (!stockAmount) return;
-    var value = parseInt(stockAmount.value, 10);
-    if (!isFinite(value) || value < 1) value = 1;
-    value = Math.max(1, value + delta);
+    if (!stockAmount || trackingEnabled()) return;
+    var value = Math.max(1, currentAmount() + delta);
     stockAmount.value = String(value);
   }
 
   document.querySelectorAll("[data-close-equipment-modal]").forEach(function (el) {
     el.addEventListener("click", closeRegisterModal);
   });
+  document.querySelectorAll("[data-close-edit-modal]").forEach(function (el) {
+    el.addEventListener("click", closeEditModal);
+  });
   document.querySelectorAll("[data-close-stock-modal]").forEach(function (el) {
     el.addEventListener("click", closeStockModal);
+  });
+  document.querySelectorAll("[data-open-edit-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openEditModal(
+        btn.getAttribute("data-equipment-id"),
+        btn.getAttribute("data-equipment-name"),
+        btn.getAttribute("data-equipment-type")
+      );
+    });
   });
   document.querySelectorAll("[data-open-stock-modal]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       openStockModal(
         btn.getAttribute("data-equipment-id"),
         btn.getAttribute("data-equipment-name"),
-        btn.getAttribute("data-equipment-stock")
+        btn.getAttribute("data-equipment-stock"),
+        btn.getAttribute("data-equipment-track-serials")
       );
     });
   });
@@ -317,19 +1657,128 @@
   if (dirOut) dirOut.addEventListener("change", syncStockAction);
   if (decBtn) decBtn.addEventListener("click", function () { bumpAmount(-1); });
   if (incBtn) incBtn.addEventListener("click", function () { bumpAmount(1); });
+  if (serialScan) {
+    serialScan.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      commitSerialScan();
+    });
+  }
+  if (serialSaveBtn) {
+    serialSaveBtn.addEventListener("click", function () {
+      commitSerialScan();
+    });
+  }
+  if (serialCameraBtn) {
+    serialCameraBtn.addEventListener("click", function () {
+      openCameraModal();
+    });
+  }
+  if (cameraAllowBtn) {
+    cameraAllowBtn.addEventListener("click", function () {
+      beginLiveCamera();
+    });
+  }
+  if (cameraPhotoBtn) {
+    cameraPhotoBtn.addEventListener("click", function () {
+      openNativePhotoCapture();
+    });
+  }
+  if (cameraPhotoFooterBtn) {
+    cameraPhotoFooterBtn.addEventListener("click", function () {
+      openNativePhotoCapture();
+    });
+  }
+  if (cameraFileInput) {
+    cameraFileInput.addEventListener("change", function () {
+      var file = cameraFileInput.files && cameraFileInput.files[0];
+      if (!file) return;
+      decodeImageFile(file);
+    });
+  }
+  document.querySelectorAll("[data-close-camera-modal]").forEach(function (el) {
+    el.addEventListener("click", closeCameraModal);
+  });
+  var stockForm = document.getElementById("equipment-stock-form");
+  if (stockForm) {
+    stockForm.addEventListener("submit", function (event) {
+      if (!trackingEnabled()) return;
+      event.preventDefault();
+      closeStockModal();
+    });
+  }
+  if (trackSerials) {
+    trackSerials.addEventListener("change", function () {
+      if (trackSerials.checked) {
+        hideTrackVerify();
+        resetScanSession();
+        if (stockAmount) stockAmount.value = "0";
+        syncSerialPanel();
+        trackSerials.disabled = true;
+        saveTrackSerialsLive(true)
+          .then(function () {
+            focusScanInput();
+          })
+          .catch(function () {
+            trackSerials.checked = false;
+            syncSerialPanel();
+            if (trackVerifyError) {
+              trackVerifyError.textContent = "Could not save serial tracking. Try again.";
+              trackVerifyError.hidden = false;
+              if (trackVerify) trackVerify.hidden = false;
+            }
+          })
+          .finally(function () {
+            trackSerials.disabled = false;
+          });
+        return;
+      }
+      // Keep tracking on until the 6-digit code is confirmed and saved.
+      trackSerials.checked = true;
+      showTrackVerify();
+    });
+  }
+  if (trackVerifyConfirm) {
+    trackVerifyConfirm.addEventListener("click", confirmDisableSerialTracking);
+  }
+  if (trackVerifyCancel) {
+    trackVerifyCancel.addEventListener("click", hideTrackVerify);
+  }
+  if (trackVerifyCode) {
+    trackVerifyCode.addEventListener("input", function () {
+      trackVerifyCode.value = trackVerifyCode.value.replace(/\D/g, "").slice(0, 6);
+      if (trackVerifyError) trackVerifyError.hidden = true;
+    });
+    trackVerifyCode.addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        confirmDisableSerialTracking();
+      }
+    });
+  }
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (stockModal && !stockModal.hidden) closeStockModal();
+    if (cameraModal && !cameraModal.hidden) closeCameraModal();
+    else if (stockModal && !stockModal.hidden) closeStockModal();
+    else if (editModal && !editModal.hidden) closeEditModal();
     else if (registerModal && !registerModal.hidden) closeRegisterModal();
   });
 
   syncStockAction();
   if (openRegisterOnLoad) openRegisterModal();
+  if (openEditOnLoad) {
+    editModal.hidden = false;
+    editModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
   if (openStockOnLoad) {
     stockModal.hidden = false;
     stockModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
+    resetScanSession();
+    if (trackingEnabled() && stockAmount) stockAmount.value = "0";
     syncStockAction();
+    if (trackingEnabled()) focusScanInput();
   }
 })();
 </script>

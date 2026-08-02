@@ -111,7 +111,7 @@
             <div class="field">
               <label for="{{ pppoe_form.phone.id_for_label }}">{{ pppoe_form.phone.label }}</label>
               {{ pppoe_form.phone }}
-              <p class="field-hint">Account number is set from this phone automatically.</p>
+              <p class="field-hint">Account number and PPPoE username are set from this phone automatically.</p>
               {% if pppoe_form.phone.errors %}<div class="field-error">{{ pppoe_form.phone.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
@@ -120,9 +120,19 @@
               {% if pppoe_form.email.errors %}<div class="field-error">{{ pppoe_form.email.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field field-span-2">
+              <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
+              <div class="pppoe-select">{{ pppoe_form.router }}</div>
+              {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
               <label for="{{ pppoe_form.address.id_for_label }}">{{ pppoe_form.address.label }} <span class="pppoe-optional">optional</span></label>
               {{ pppoe_form.address }}
               {% if pppoe_form.address.errors %}<div class="field-error">{{ pppoe_form.address.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ pppoe_form.house_number.id_for_label }}">{{ pppoe_form.house_number.label }} <span class="pppoe-optional">optional</span></label>
+              {{ pppoe_form.house_number }}
+              {% if pppoe_form.house_number.errors %}<div class="field-error">{{ pppoe_form.house_number.errors|striptags }}</div>{% endif %}
             </div>
           </div>
         </section>
@@ -130,11 +140,6 @@
         <section class="pppoe-section">
           <h3 class="pppoe-section-title">Connection</h3>
           <div class="pppoe-grid">
-            <div class="field field-span-2">
-              <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
-              <div class="pppoe-select">{{ pppoe_form.router }}</div>
-              {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
-            </div>
             <div class="field field-span-2">
               <label for="{{ pppoe_form.plan.id_for_label }}">{{ pppoe_form.plan.label }} <span class="pppoe-optional">optional</span></label>
               <div class="pppoe-select">{{ pppoe_form.plan }}</div>
@@ -289,16 +294,36 @@
   openModal("{{ open_client_modal|escapejs }}");
   {% endif %}
 
-  var nameInput = document.getElementById("{{ pppoe_form.full_name.id_for_label|escapejs }}");
+  var phoneInput = document.getElementById("{{ pppoe_form.phone.id_for_label|escapejs }}");
   var userInput = document.getElementById("{{ pppoe_form.pppoe_username.id_for_label|escapejs }}");
-  if (nameInput && userInput) {
-    var userEdited = !!userInput.value;
-    userInput.addEventListener("input", function () { userEdited = true; });
-    nameInput.addEventListener("input", function () {
-      if (userEdited) return;
-      userInput.value = nameInput.value.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24);
+  var userEdited = false;
+  if (phoneInput && userInput) {
+    userEdited = !!(userInput.value && userInput.value !== (phoneInput.value || "").toUpperCase());
+    userInput.addEventListener("input", function () {
+      userEdited = true;
     });
+    function syncUsernameFromPhone() {
+      if (userEdited) return;
+      userInput.value = (phoneInput.value || "").toUpperCase();
+    }
+    phoneInput.addEventListener("input", syncUsernameFromPhone);
+    syncUsernameFromPhone();
   }
+
+  document.querySelectorAll(".pppoe-form input.text-upper, .pppoe-form textarea.text-upper").forEach(function (el) {
+    el.addEventListener("input", function () {
+      var start = el.selectionStart;
+      var end = el.selectionEnd;
+      var next = el.value.toUpperCase();
+      if (el.value !== next) {
+        el.value = next;
+        if (typeof start === "number") el.setSelectionRange(start, end);
+      }
+      if (phoneInput && userInput && el === phoneInput && !userEdited) {
+        userInput.value = next;
+      }
+    });
+  });
 
   function randomPassword() {
     var chars = "abcdefghjkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ";
@@ -338,7 +363,7 @@
     form.addEventListener("submit", function () {
       var submit = form.querySelector("[data-pppoe-submit]");
       if (!submit || submit.disabled) return;
-      submit.textContent = "Registering…";
+      submit.textContent = "Saving…";
       window.setTimeout(function () { submit.disabled = true; }, 0);
     });
   });

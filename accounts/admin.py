@@ -6,6 +6,8 @@ from .models import (
     Employee,
     Lead,
     NetworkEquipment,
+    NetworkEquipmentAllocation,
+    NetworkEquipmentSerial,
     Organization,
     PaymentGateway,
     RoleCommission,
@@ -144,10 +146,51 @@ class NetworkEquipmentAdmin(admin.ModelAdmin):
         "name",
         "equipment_type",
         "quantity",
+        "track_serials",
+        "status",
         "created_by",
         "created_at",
     )
-    list_filter = ("equipment_type",)
+    list_filter = ("equipment_type", "status", "track_serials")
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("created_by",)
+
+
+@admin.register(NetworkEquipmentSerial)
+class NetworkEquipmentSerialAdmin(admin.ModelAdmin):
+    list_display = (
+        "serial_number",
+        "equipment",
+        "status",
+        "created_by",
+        "created_at",
+        "issued_at",
+    )
+    list_filter = ("status", "equipment")
+    search_fields = ("serial_number", "equipment__name")
+    readonly_fields = ("created_at", "updated_at", "issued_at")
+    raw_id_fields = ("equipment", "created_by")
+
+
+@admin.register(NetworkEquipmentAllocation)
+class NetworkEquipmentAllocationAdmin(admin.ModelAdmin):
+    list_display = (
+        "equipment",
+        "employee",
+        "quantity",
+        "serial",
+        "allocated_at",
+        "returned_at",
+        "allocated_by",
+    )
+    list_filter = ("returned_at", "equipment")
+    search_fields = (
+        "equipment__name",
+        "serial__serial_number",
+        "employee__user__username",
+        "employee__user__first_name",
+        "employee__user__last_name",
+    )
+    raw_id_fields = ("equipment", "employee", "serial", "allocated_by")
+    readonly_fields = ("allocated_at",)

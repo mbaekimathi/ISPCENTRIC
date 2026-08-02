@@ -3063,28 +3063,34 @@ def my_clients(request):
             pppoe_form = PppoeClientRegisterForm(request.POST, organization=org)
             if pppoe_form.is_valid():
                 customer = pppoe_form.save()
-                provision = provision_customer_pppoe(customer)
-                if provision.get("ok"):
-                    messages.success(
-                        request,
-                        (
-                            f"PPPoE client “{customer.full_name}” registered "
-                            f"({customer.account_number}). "
-                            f"{provision.get('message') or 'Login installed on MikroTik.'}"
-                        ),
-                    )
-                else:
-                    messages.warning(
-                        request,
-                        (
-                            f"PPPoE client “{customer.full_name}” saved "
-                            f"({customer.account_number}), but the username/password "
-                            f"was not installed on the MikroTik yet — "
-                            f"{provision.get('error') or 'API unreachable'}. "
-                            "Open MikroTik → Reconnect, then push PPPoE settings "
-                            "(or re-save this client) before the CPE can dial in."
-                        ),
-                    )
+                customer_pk = customer.pk
+                account_number = customer.account_number
+                full_name = customer.full_name
+
+                def _bg_provision(pk: int = customer_pk) -> None:
+                    from django.db import connection
+
+                    try:
+                        cust = Customer.objects.select_related(
+                            "plan", "router", "organization"
+                        ).get(pk=pk)
+                        # Secret-only push: stack already lives on the onboarded router.
+                        provision_customer_pppoe(cust, ensure_stack=False)
+                    except Exception:
+                        pass
+                    finally:
+                        connection.close()
+
+                threading.Thread(target=_bg_provision, daemon=True).start()
+                messages.success(
+                    request,
+                    (
+                        f"PPPoE client “{full_name}” registered "
+                        f"({account_number}). "
+                        "Installing the login on MikroTik in the background — "
+                        "the CPE can dial once the push finishes."
+                    ),
+                )
                 return redirect(f"{reverse('core:my_clients')}?tab=pppoe")
             open_modal = "pppoe-register-modal"
             tab = "pppoe"

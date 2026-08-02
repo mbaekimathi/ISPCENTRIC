@@ -2214,7 +2214,7 @@ class LeadRegisterForm(forms.ModelForm):
 
 
 class NetworkEquipmentRegisterForm(forms.ModelForm):
-    """Register network equipment used for installs and repairs."""
+    """Register or edit network equipment used for installs and repairs."""
 
     class Meta:
         model = NetworkEquipment
@@ -2240,9 +2240,15 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
             "equipment_type": "Type",
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            self.fields["name"].widget.attrs["id"] = "id_equipment_edit_name"
+            self.fields["equipment_type"].widget.attrs["id"] = "id_equipment_edit_type"
+
     def save(self, commit=True, *, created_by=None):
         equipment = super().save(commit=False)
-        if created_by is not None:
+        if created_by is not None and not equipment.pk:
             equipment.created_by = created_by
         if commit:
             equipment.save()

@@ -26,6 +26,8 @@ from accounts.models import (
     Employee,
     Lead,
     NetworkEquipment,
+    NetworkEquipmentAllocation,
+    NetworkEquipmentSerial,
     Organization,
     PaymentGateway,
     RoleCommission,
@@ -551,12 +553,6 @@ def manager_dashboard(request):
                 },
                 {
                     "index": "07",
-                    "label": "Register equipment",
-                    "url_name": "roles:customer_support_network_equipment",
-                    "query": "register=1",
-                },
-                {
-                    "index": "08",
                     "label": "Allocate",
                     "url_name": "roles:customer_support_allocate",
                 },
@@ -737,14 +733,79 @@ def manager_allocated(request):
 def manager_network_equipment(request):
     _prepare_manager_view(request)
 
+    def _redirect_equipment():
+        redirect_name = (
+            f"roles:{request.resolver_match.url_name}"
+            if request.resolver_match and request.resolver_match.url_name
+            else "roles:customer_support_network_equipment"
+        )
+        return redirect(redirect_name)
+
     open_register_modal = False
+    open_edit_modal = False
     open_stock_modal = False
     stock_equipment = None
     stock_direction = "in"
+    stock_track_serials = False
+    stock_serial_values = []
+    edit_form = NetworkEquipmentRegisterForm(prefix="edit")
+    form = NetworkEquipmentRegisterForm()
 
     if request.method == "POST":
         action = (request.POST.get("action") or "").strip()
+        if action == "set_track_serials":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            enable = request.POST.get("track_serials") == "1"
+            employee = getattr(request.user, "employee_profile", None)
+            if not enable:
+                code = "".join(
+                    ch
+                    for ch in (request.POST.get("verification_code") or "")
+                    if ch.isdigit()
+                )
+                if (
+                    employee is None
+                    or not employee.login_code
+                    or code != str(employee.login_code)
+                ):
+                    return JsonResponse(
+                        {
+                            "ok": False,
+                            "error": "Incorrect verification code.",
+                            "track_serials": equipment.track_serials,
+                        },
+                        status=400,
+                    )
+            equipment.track_serials = enable
+            equipment.save(update_fields=["track_serials", "updated_at"])
+            return JsonResponse(
+                {
+                    "ok": True,
+                    "track_serials": equipment.track_serials,
+                }
+            )
         if action in {"stock_in", "stock_out"}:
+            wants_json = (
+                request.headers.get("X-Requested-With") == "XMLHttpRequest"
+                or "application/json" in (request.headers.get("Accept") or "").lower()
+            )
+
+            def stock_error(message, status=400):
+                if wants_json:
+                    return JsonResponse(
+                        {
+                            "ok": False,
+                            "error": message,
+                            "quantity": equipment.quantity,
+                        },
+                        status=status,
+                    )
+                messages.error(request, message)
+                return None
+
             equipment = get_object_or_404(
                 NetworkEquipment,
                 pk=request.POST.get("equipment_id"),
@@ -752,36 +813,190 @@ def manager_network_equipment(request):
             stock_equipment = equipment
             stock_direction = "in" if action == "stock_in" else "out"
             open_stock_modal = True
-            try:
-                amount = int(request.POST.get("amount") or "0")
-            except (TypeError, ValueError):
-                amount = 0
-            if amount < 1:
-                messages.error(request, "Enter a quantity of at least 1.")
-            elif action == "stock_out" and amount > equipment.quantity:
-                messages.error(
-                    request,
-                    f"Cannot stock out {amount}. Only {equipment.quantity} in stock.",
-                )
-            else:
-                if action == "stock_in":
-                    equipment.quantity += amount
-                    verb = "Stocked in"
+            stock_track_serials = request.POST.get("track_serials") == "1"
+            if equipment.track_serials:
+                stock_track_serials = True
+            raw_serials = request.POST.getlist("serial_number")
+            serials = []
+            seen = set()
+            serial_error = False
+            for raw in raw_serials:
+                value = (raw or "").strip().upper()
+                if not value:
+                    continue
+                if value in seen:
+                    err = stock_error(f"Duplicate serial “{value}” in this movement.")
+                    if err is not None:
+                        return err
+                    serial_error = True
+                    break
+                seen.add(value)
+                serials.append(value)
+            stock_serial_values = list(serials) if serials else [""]
+            if not serial_error:
+                if equipment.is_suspended:
+                    err = stock_error("Suspended equipment cannot be stocked.")
+                    if err is not None:
+                        return err
                 else:
-                    equipment.quantity -= amount
-                    verb = "Stocked out"
-                equipment.save(update_fields=["quantity", "updated_at"])
-                messages.success(
-                    request,
-                    f"{verb} {amount} × “{equipment.name}”. Stock is now {equipment.quantity}.",
-                )
-                redirect_name = (
-                    f"roles:{request.resolver_match.url_name}"
-                    if request.resolver_match and request.resolver_match.url_name
-                    else "roles:customer_support_network_equipment"
-                )
-                return redirect(redirect_name)
-            form = NetworkEquipmentRegisterForm()
+                    try:
+                        amount = int(request.POST.get("amount") or "0")
+                    except (TypeError, ValueError):
+                        amount = 0
+                    if amount < 1:
+                        err = stock_error("Enter a quantity of at least 1.")
+                        if err is not None:
+                            return err
+                    elif action == "stock_out" and amount > equipment.quantity:
+                        err = stock_error(
+                            f"Cannot stock out {amount}. Only {equipment.quantity} in stock."
+                        )
+                        if err is not None:
+                            return err
+                    elif stock_track_serials and len(serials) != amount:
+                        err = stock_error(
+                            f"Enter exactly {amount} serial number(s) for this movement."
+                        )
+                        if err is not None:
+                            return err
+                    else:
+                        from django.utils import timezone
+
+                        try:
+                            with transaction.atomic():
+                                if action == "stock_in":
+                                    if stock_track_serials:
+                                        existing = set(
+                                            NetworkEquipmentSerial.objects.filter(
+                                                equipment=equipment,
+                                                serial_number__in=serials,
+                                            ).values_list("serial_number", flat=True)
+                                        )
+                                        if existing:
+                                            raise ValueError(
+                                                "Serial already exists: "
+                                                + ", ".join(sorted(existing))
+                                            )
+                                        NetworkEquipmentSerial.objects.bulk_create(
+                                            [
+                                                NetworkEquipmentSerial(
+                                                    equipment=equipment,
+                                                    serial_number=serial,
+                                                    status=NetworkEquipmentSerial.Status.IN_STOCK,
+                                                    created_by=request.user,
+                                                )
+                                                for serial in serials
+                                            ]
+                                        )
+                                    equipment.quantity += amount
+                                    verb = "Stocked in"
+                                else:
+                                    if stock_track_serials:
+                                        units = list(
+                                            NetworkEquipmentSerial.objects.select_for_update().filter(
+                                                equipment=equipment,
+                                                serial_number__in=serials,
+                                                status=NetworkEquipmentSerial.Status.IN_STOCK,
+                                            )
+                                        )
+                                        found = {unit.serial_number for unit in units}
+                                        missing = [s for s in serials if s not in found]
+                                        if missing:
+                                            raise ValueError(
+                                                "Serial not in stock: "
+                                                + ", ".join(missing)
+                                            )
+                                        now = timezone.now()
+                                        for unit in units:
+                                            unit.status = NetworkEquipmentSerial.Status.ISSUED
+                                            unit.issued_at = now
+                                            unit.save(
+                                                update_fields=[
+                                                    "status",
+                                                    "issued_at",
+                                                    "updated_at",
+                                                ]
+                                            )
+                                    equipment.quantity -= amount
+                                    verb = "Stocked out"
+                                update_fields = ["quantity", "updated_at"]
+                                if stock_track_serials and not equipment.track_serials:
+                                    equipment.track_serials = True
+                                    update_fields.append("track_serials")
+                                equipment.save(update_fields=update_fields)
+                        except ValueError as exc:
+                            err = stock_error(str(exc))
+                            if err is not None:
+                                return err
+                        else:
+                            if wants_json:
+                                return JsonResponse(
+                                    {
+                                        "ok": True,
+                                        "quantity": equipment.quantity,
+                                        "amount": amount,
+                                        "action": action,
+                                        "serials": serials,
+                                        "message": (
+                                            f"{verb} {amount} × “{equipment.name}”. "
+                                            f"Stock is now {equipment.quantity}."
+                                        ),
+                                    }
+                                )
+                            messages.success(
+                                request,
+                                f"{verb} {amount} × “{equipment.name}”. "
+                                f"Stock is now {equipment.quantity}.",
+                            )
+                            return _redirect_equipment()
+        elif action == "edit":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            edit_form = NetworkEquipmentRegisterForm(
+                request.POST,
+                instance=equipment,
+                prefix="edit",
+            )
+            if edit_form.is_valid():
+                edited = edit_form.save()
+                messages.success(request, f"Updated “{edited.name}”.")
+                return _redirect_equipment()
+            open_edit_modal = True
+        elif action == "suspend":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            if equipment.is_suspended:
+                messages.info(request, f"“{equipment.name}” is already suspended.")
+            else:
+                equipment.status = NetworkEquipment.Status.SUSPENDED
+                equipment.save(update_fields=["status", "updated_at"])
+                messages.success(request, f"Suspended “{equipment.name}”.")
+            return _redirect_equipment()
+        elif action == "unsuspend":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            if not equipment.is_suspended:
+                messages.info(request, f"“{equipment.name}” is not suspended.")
+            else:
+                equipment.status = NetworkEquipment.Status.ACTIVE
+                equipment.save(update_fields=["status", "updated_at"])
+                messages.success(request, f"Unsuspended “{equipment.name}”.")
+            return _redirect_equipment()
+        elif action == "delete":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            name = equipment.name
+            equipment.delete()
+            messages.success(request, f"Deleted “{name}”.")
+            return _redirect_equipment()
         else:
             form = NetworkEquipmentRegisterForm(request.POST)
             if form.is_valid():
@@ -790,15 +1005,9 @@ def manager_network_equipment(request):
                     request,
                     f"Equipment “{equipment.name}” registered.",
                 )
-                redirect_name = (
-                    f"roles:{request.resolver_match.url_name}"
-                    if request.resolver_match and request.resolver_match.url_name
-                    else "roles:customer_support_network_equipment"
-                )
-                return redirect(redirect_name)
+                return _redirect_equipment()
             open_register_modal = True
     else:
-        form = NetworkEquipmentRegisterForm()
         open_register_modal = bool(request.GET.get("register"))
 
     equipment_list = list(
@@ -816,12 +1025,17 @@ def manager_network_equipment(request):
             ),
             "dashboard_url_name": "roles:customer_support",
             "form": form,
+            "edit_form": edit_form,
             "equipment_list": equipment_list,
             "equipment_count": len(equipment_list),
             "open_register_modal": open_register_modal,
+            "open_edit_modal": open_edit_modal,
             "open_stock_modal": open_stock_modal,
             "stock_equipment": stock_equipment,
             "stock_direction": stock_direction,
+            "stock_track_serials": stock_track_serials,
+            "stock_serial_values": stock_serial_values,
+            "stock_serial_values_json": json.dumps(stock_serial_values),
             "empty_text": "No network equipment records yet. Use Register equipment in the sidebar to add one.",
         },
     )
@@ -859,7 +1073,164 @@ def manager_allocate_employee(request, pk):
         Employee.objects.select_related("user", "organization"),
         pk=pk,
     )
-    equipment_list = list(NetworkEquipment.objects.order_by("name"))
+
+    def _redirect_allocate():
+        return redirect("roles:customer_support_allocate_employee", pk=member.pk)
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        if action == "allocate":
+            equipment = get_object_or_404(
+                NetworkEquipment,
+                pk=request.POST.get("equipment_id"),
+            )
+            if equipment.is_suspended:
+                messages.error(request, "Suspended equipment cannot be allocated.")
+                return _redirect_allocate()
+            if equipment.quantity < 1:
+                messages.error(request, f"“{equipment.name}” has no stock available.")
+                return _redirect_allocate()
+
+            from django.utils import timezone
+
+            try:
+                with transaction.atomic():
+                    if equipment.track_serials:
+                        raw_serials = request.POST.getlist("serial_number")
+                        serials = []
+                        seen = set()
+                        for raw in raw_serials:
+                            value = (raw or "").strip().upper()
+                            if not value:
+                                continue
+                            if value in seen:
+                                raise ValueError(f"Duplicate serial “{value}”.")
+                            seen.add(value)
+                            serials.append(value)
+                        if not serials:
+                            raise ValueError("Scan or enter at least one serial to allocate.")
+                        if len(serials) > equipment.quantity:
+                            raise ValueError(
+                                f"Cannot allocate {len(serials)}. Only {equipment.quantity} in stock."
+                            )
+                        units = list(
+                            NetworkEquipmentSerial.objects.select_for_update().filter(
+                                equipment=equipment,
+                                serial_number__in=serials,
+                                status=NetworkEquipmentSerial.Status.IN_STOCK,
+                            )
+                        )
+                        found = {unit.serial_number for unit in units}
+                        missing = [s for s in serials if s not in found]
+                        if missing:
+                            raise ValueError(
+                                "Serial not in stock: " + ", ".join(missing)
+                            )
+                        now = timezone.now()
+                        for unit in units:
+                            unit.status = NetworkEquipmentSerial.Status.ISSUED
+                            unit.issued_at = now
+                            unit.save(
+                                update_fields=["status", "issued_at", "updated_at"]
+                            )
+                            NetworkEquipmentAllocation.objects.create(
+                                equipment=equipment,
+                                employee=member,
+                                quantity=1,
+                                serial=unit,
+                                allocated_by=request.user,
+                            )
+                        equipment.quantity -= len(units)
+                        equipment.save(update_fields=["quantity", "updated_at"])
+                        messages.success(
+                            request,
+                            f"Allocated {len(units)} serial(s) of “{equipment.name}” "
+                            f"to {member.user.get_full_name() or member.user.username}.",
+                        )
+                    else:
+                        try:
+                            amount = int(request.POST.get("amount") or "0")
+                        except (TypeError, ValueError):
+                            amount = 0
+                        if amount < 1:
+                            raise ValueError("Enter a quantity of at least 1.")
+                        if amount > equipment.quantity:
+                            raise ValueError(
+                                f"Cannot allocate {amount}. Only {equipment.quantity} in stock."
+                            )
+                        equipment.quantity -= amount
+                        equipment.save(update_fields=["quantity", "updated_at"])
+                        NetworkEquipmentAllocation.objects.create(
+                            equipment=equipment,
+                            employee=member,
+                            quantity=amount,
+                            allocated_by=request.user,
+                        )
+                        messages.success(
+                            request,
+                            f"Allocated {amount} × “{equipment.name}” "
+                            f"to {member.user.get_full_name() or member.user.username}.",
+                        )
+            except ValueError as exc:
+                messages.error(request, str(exc))
+            return _redirect_allocate()
+
+        if action == "return":
+            allocation = get_object_or_404(
+                NetworkEquipmentAllocation.objects.select_related(
+                    "equipment", "serial"
+                ),
+                pk=request.POST.get("allocation_id"),
+                employee=member,
+                returned_at__isnull=True,
+            )
+            from django.utils import timezone
+
+            with transaction.atomic():
+                equipment = NetworkEquipment.objects.select_for_update().get(
+                    pk=allocation.equipment_id
+                )
+                if allocation.serial_id:
+                    serial = NetworkEquipmentSerial.objects.select_for_update().get(
+                        pk=allocation.serial_id
+                    )
+                    serial.status = NetworkEquipmentSerial.Status.IN_STOCK
+                    serial.issued_at = None
+                    serial.save(update_fields=["status", "issued_at", "updated_at"])
+                equipment.quantity += allocation.quantity
+                equipment.save(update_fields=["quantity", "updated_at"])
+                allocation.returned_at = timezone.now()
+                allocation.save(update_fields=["returned_at"])
+            messages.success(
+                request,
+                f"Returned {allocation.quantity} × “{allocation.equipment.name}” to stock.",
+            )
+            return _redirect_allocate()
+
+    active_allocations = list(
+        NetworkEquipmentAllocation.objects.filter(
+            employee=member,
+            returned_at__isnull=True,
+        )
+        .select_related("equipment", "serial", "allocated_by")
+        .order_by("-allocated_at")
+    )
+    equipment_list = list(
+        NetworkEquipment.objects.filter(status=NetworkEquipment.Status.ACTIVE)
+        .order_by("name")
+    )
+    serial_options = {}
+    for item in equipment_list:
+        if item.track_serials:
+            serial_options[str(item.pk)] = list(
+                NetworkEquipmentSerial.objects.filter(
+                    equipment=item,
+                    status=NetworkEquipmentSerial.Status.IN_STOCK,
+                )
+                .order_by("serial_number")
+                .values_list("serial_number", flat=True)[:300]
+            )
+
     return render(
         request,
         "accounts/customer_support_allocate_employee.html",
@@ -867,13 +1238,15 @@ def manager_allocate_employee(request, pk):
             "page_title": "Allocate equipment",
             "page_kicker": "Infrastructure",
             "page_subtitle": (
-                f"Network equipment inventory for "
+                f"Assign network equipment to "
                 f"{member.user.get_full_name() or member.user.username}."
             ),
             "current_page": "allocate",
             "dashboard_url_name": "roles:customer_support",
             "member": member,
             "equipment_list": equipment_list,
+            "active_allocations": active_allocations,
+            "serial_options_json": json.dumps(serial_options),
             "allocate_list_url_name": "roles:customer_support_allocate",
         },
     )
