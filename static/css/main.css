@@ -3539,17 +3539,27 @@ body.staff-nav-lock {
 .role-modal {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  z-index: 1200;
   display: grid;
   place-items: end center;
   padding: 0;
+  margin: 0;
+  transform: none !important;
+  filter: none !important;
 }
 
 .role-modal-backdrop {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  background: rgba(8, 16, 22, 0.62);
-  backdrop-filter: blur(4px);
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: rgba(8, 16, 22, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
 .role-modal-panel {
@@ -10324,6 +10334,11 @@ body.staff-nav-lock {
   min-width: 0;
 }
 
+.pppoe-grid[hidden],
+[data-period-mode][hidden] {
+  display: none !important;
+}
+
 .pppoe-grid > .field {
   min-width: 0;
 }
@@ -11508,7 +11523,7 @@ body {
 }
 
 /* ??? Page content entrance ??? */
-.staff-app .staff-main > * {
+.staff-app .staff-main > *:not(.role-modal) {
   animation: uiRise 0.5s var(--ease-out) both;
 }
 
@@ -11519,14 +11534,21 @@ body {
 .staff-app .staff-main > *:nth-child(5) { animation-delay: 0.18s; }
 .staff-app .staff-main > *:nth-child(6) { animation-delay: 0.22s; }
 
+/* Keep client detail free of transform so fixed modals cover the viewport */
+.staff-app .staff-main > .client-detail-page,
+.staff-app .staff-main > .role-modal {
+  animation: none !important;
+  transform: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+}
+
 @keyframes uiRise {
   from {
     opacity: 0;
-    transform: translateY(12px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
@@ -12190,38 +12212,212 @@ textarea.form-control {
   display: none !important;
 }
 
-[data-client-tab-panel].is-tab-active {
-  animation: clientTabIn 0.28s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+[data-client-tab-panel]:not([hidden]) {
+  opacity: 1 !important;
+  transform: none !important;
+  animation: none !important;
+  visibility: visible;
 }
 
-@keyframes clientTabIn {
-  from {
-    opacity: 0;
-    transform: translateY(0.45rem);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
+/* Force readable icons, links, and detail copy on client detail */
+.client-detail-page {
+  color: var(--ink);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  [data-client-tab-panel].is-tab-active {
-    animation: none;
-  }
+.client-detail-page .client-back-link {
+  color: var(--ink);
+  border-color: var(--border-strong);
+  background: var(--surface-solid, #fff);
+  font-weight: 800;
+}
+
+.client-detail-page .client-page-lead,
+.client-detail-page .page-sub {
+  color: var(--ink-soft);
+  opacity: 1;
+  font-weight: 650;
+}
+
+.client-detail-page a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon) {
+  color: #0a5c64;
+  font-weight: 750;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.15em;
+}
+
+[data-theme="dark"] .client-detail-page a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon) {
+  color: #7dd3fc;
+}
+
+.client-detail-page .client-profile-kicker,
+.client-detail-page .client-profile-account,
+.client-detail-page .client-profile-open-hint {
+  color: var(--ink-soft);
+  opacity: 1;
+}
+
+.client-detail-page .client-profile-name {
+  color: var(--ink);
+}
+
+.client-detail-page .client-profile-avatar {
+  background: #0c7a84;
+  color: #fff;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #0c7a84 22%, transparent);
+}
+
+.client-detail-page .client-profile-open-hint {
+  color: var(--ink);
+  border-color: var(--border-strong);
+  background: var(--surface-solid, #fff);
+}
+
+.client-detail-page .mikrotik-link-status {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.client-detail-page .mikrotik-link-status.is-checking {
+  color: var(--ink-soft);
+}
+
+.client-detail-page .client-kv dt,
+.client-detail-page .client-usage-stat span,
+.client-detail-page .client-live-fact dt,
+.client-detail-page .client-access-label,
+.client-detail-page .mikrotik-live-label {
+  opacity: 1;
+  color: var(--ink-soft);
+  font-weight: 800;
+}
+
+.client-detail-page .client-kv strong,
+.client-detail-page .client-hero-chip-value,
+.client-detail-page .client-usage-stat strong,
+.client-detail-page .client-live-fact strong,
+.client-detail-page .client-access-value,
+.client-detail-page .mikrotik-live-value {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.client-detail-page .client-kv dd > span,
+.client-detail-page .client-live-fact span,
+.client-detail-page .client-access-hint,
+.client-detail-page .mikrotik-live-hint,
+.client-detail-page .panel-sub {
+  opacity: 1;
+  color: var(--ink-soft);
+  font-weight: 650;
+}
+
+.client-detail-page .client-row-ico,
+.client-detail-page .client-cat-ico {
+  opacity: 1;
+  visibility: visible;
+}
+
+.client-detail-page .client-row-ico svg,
+.client-detail-page .client-cat-ico svg,
+.client-detail-page .client-cat-nav-item .client-cat-ico svg {
+  opacity: 1;
+  visibility: visible;
+  fill: currentColor;
+  color: inherit;
+  filter: none;
+}
+
+.client-detail-page [data-cat="overview"] .client-row-ico,
+.client-detail-page [data-hero-chip] .client-row-ico {
+  background: #d8f1f3;
+  color: #07545c;
+  border-color: #0c7a84;
+}
+
+.client-detail-page [data-cat="billing"] .client-row-ico {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #d97706;
+}
+
+.client-detail-page [data-cat="live"] .client-row-ico {
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #059669;
+}
+
+.client-detail-page [data-cat="access"] .client-row-ico {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #2563eb;
+}
+
+.client-detail-page [data-cat="router"] .client-row-ico {
+  background: #ede9fe;
+  color: #5b21b6;
+  border-color: #7c3aed;
+}
+
+.client-detail-page [data-cat="invoices"] .client-row-ico {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #dc2626;
+}
+
+.client-detail-page .client-cat-nav-item .client-cat-ico {
+  border-width: 1.5px;
+}
+
+.client-detail-page .client-cat-nav-item.is-overview .client-cat-ico {
+  background: #d8f1f3;
+  color: #07545c;
+  border-color: #0c7a84;
+}
+
+.client-detail-page .client-cat-nav-item.is-billing .client-cat-ico {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #d97706;
+}
+
+.client-detail-page .client-cat-nav-item.is-invoices .client-cat-ico {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #dc2626;
+}
+
+.client-detail-page .org-status {
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  font-weight: 800;
+}
+
+.client-detail-page .org-status-active {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.client-detail-page h2,
+.client-detail-page .mikrotik-detail-toolbar-copy h2 {
+  color: var(--ink);
 }
 
 .client-detail-page > .panel {
-  animation: uiRise 0.45s var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
   scroll-margin-top: 4.5rem;
+  opacity: 1;
+  transform: none;
+  animation: none;
 }
 
-.client-detail-page > .panel:nth-of-type(1) { animation-delay: 0.02s; }
-.client-detail-page > .panel:nth-of-type(2) { animation-delay: 0.06s; }
-.client-detail-page > .panel:nth-of-type(3) { animation-delay: 0.1s; }
-.client-detail-page > .panel:nth-of-type(4) { animation-delay: 0.14s; }
-.client-detail-page > .panel:nth-of-type(5) { animation-delay: 0.18s; }
-.client-detail-page > .panel:nth-of-type(6) { animation-delay: 0.22s; }
+.client-detail-page > .panel:nth-of-type(1),
+.client-detail-page > .panel:nth-of-type(2),
+.client-detail-page > .panel:nth-of-type(3),
+.client-detail-page > .panel:nth-of-type(4),
+.client-detail-page > .panel:nth-of-type(5),
+.client-detail-page > .panel:nth-of-type(6) {
+  animation: none;
+  animation-delay: 0s;
+}
 
 .client-detail-page .client-hero {
   border-radius: 18px;
@@ -12328,27 +12524,16 @@ textarea.form-control {
   justify-content: flex-start;
 }
 
-/* Icons ? stronger contrast + size so chips stay readable */
+/* Icons ? solid high-contrast chips (wins over soft color-mix) */
 .client-detail-page .client-row-ico,
 .client-detail-page .client-cat-ico,
 .client-detail-page .client-cat-nav-item .client-cat-ico {
-  width: 1.85rem;
-  height: 1.85rem;
+  width: 1.9rem;
+  height: 1.9rem;
   border-radius: 0.55rem;
-  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, #fff 8%, transparent) inset,
-    0 1px 2px color-mix(in srgb, #000 10%, transparent);
-}
-
-.client-detail-page .client-row-ico {
-  background: color-mix(in srgb, currentColor 18%, var(--surface-2));
-  color: var(--ink);
-}
-
-.client-detail-page .client-cat-ico,
-.client-detail-page .client-cat-nav-item .client-cat-ico {
-  background: color-mix(in srgb, currentColor 18%, var(--surface));
+  border: 1.5px solid currentColor;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  opacity: 1;
 }
 
 .client-detail-page .client-row-ico svg,
@@ -12357,136 +12542,78 @@ textarea.form-control {
   width: 1.05rem;
   height: 1.05rem;
   display: block;
-  flex: 0 0 auto;
   opacity: 1;
-  filter: drop-shadow(0 0.5px 0 color-mix(in srgb, #000 18%, transparent));
+  filter: none;
+  fill: currentColor;
 }
 
 .client-detail-page [data-cat="overview"] .client-row-ico,
-.client-detail-page [data-hero-chip] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-overview) 22%, var(--surface));
-  color: var(--cat-overview);
-  border-color: color-mix(in srgb, var(--cat-overview) 40%, transparent);
+.client-detail-page [data-hero-chip] .client-row-ico,
+.client-detail-page .client-cat-nav-item.is-overview .client-cat-ico {
+  background: #d8f1f3;
+  color: #07545c;
+  border-color: #0c7a84;
 }
 
-.client-detail-page [data-cat="billing"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
-  color: var(--cat-billing);
-  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
+.client-detail-page [data-cat="billing"] .client-row-ico,
+.client-detail-page .client-cat-billing .client-cat-ico,
+.client-detail-page .client-cat-nav-item.is-billing .client-cat-ico {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #d97706;
 }
 
-.client-detail-page [data-cat="live"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
-  color: var(--cat-live);
-  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
+.client-detail-page [data-cat="live"] .client-row-ico,
+.client-detail-page .client-cat-live .client-cat-ico {
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #059669;
 }
 
 .client-detail-page [data-cat="live"] [data-ico="down"] .client-row-ico {
-  background: color-mix(in srgb, #4f8cff 22%, var(--surface));
-  color: #3b82f6;
-  border-color: color-mix(in srgb, #4f8cff 42%, transparent);
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #2563eb;
 }
 
 .client-detail-page [data-cat="live"] [data-ico="up"] .client-row-ico {
-  background: color-mix(in srgb, #e8a317 22%, var(--surface));
-  color: #d97706;
-  border-color: color-mix(in srgb, #e8a317 42%, transparent);
+  background: #ffedd5;
+  color: #c2410c;
+  border-color: #ea580c;
 }
 
-.client-detail-page [data-cat="access"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-access) 22%, var(--surface));
-  color: var(--cat-access);
-  border-color: color-mix(in srgb, var(--cat-access) 40%, transparent);
+.client-detail-page [data-cat="access"] .client-row-ico,
+.client-detail-page .client-cat-access .client-cat-ico {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #2563eb;
 }
 
-.client-detail-page [data-cat="router"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-router) 22%, var(--surface));
-  color: var(--cat-router);
-  border-color: color-mix(in srgb, var(--cat-router) 40%, transparent);
+.client-detail-page [data-cat="router"] .client-row-ico,
+.client-detail-page .client-cat-router .client-cat-ico {
+  background: #ede9fe;
+  color: #5b21b6;
+  border-color: #7c3aed;
 }
 
-.client-detail-page [data-cat="invoices"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-invoices) 22%, var(--surface));
-  color: var(--cat-invoices);
-  border-color: color-mix(in srgb, var(--cat-invoices) 40%, transparent);
+.client-detail-page [data-cat="invoices"] .client-row-ico,
+.client-detail-page .client-cat-invoices .client-cat-ico,
+.client-detail-page .client-cat-nav-item.is-invoices .client-cat-ico {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #dc2626;
 }
 
 .client-detail-page [data-cat="invoices"] [data-ico="paid"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
-  color: var(--cat-live);
-  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
+  background: #d1fae5;
+  color: #065f46;
+  border-color: #059669;
 }
 
 .client-detail-page [data-cat="invoices"] [data-ico="pending"] .client-row-ico {
-  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
-  color: var(--cat-billing);
-  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
-}
-
-.client-detail-page .client-cat-billing .client-cat-ico {
-  color: var(--cat-billing);
-  background: color-mix(in srgb, var(--cat-billing) 22%, var(--surface));
-  border-color: color-mix(in srgb, var(--cat-billing) 38%, transparent);
-}
-
-.client-detail-page .client-cat-live .client-cat-ico {
-  color: var(--cat-live);
-  background: color-mix(in srgb, var(--cat-live) 22%, var(--surface));
-  border-color: color-mix(in srgb, var(--cat-live) 38%, transparent);
-}
-
-.client-detail-page .client-cat-access .client-cat-ico {
-  color: var(--cat-access);
-  background: color-mix(in srgb, var(--cat-access) 22%, var(--surface));
-  border-color: color-mix(in srgb, var(--cat-access) 38%, transparent);
-}
-
-.client-detail-page .client-cat-router .client-cat-ico {
-  color: var(--cat-router);
-  background: color-mix(in srgb, var(--cat-router) 22%, var(--surface));
-  border-color: color-mix(in srgb, var(--cat-router) 38%, transparent);
-}
-
-.client-detail-page .client-cat-invoices .client-cat-ico {
-  color: var(--cat-invoices);
-  background: color-mix(in srgb, var(--cat-invoices) 22%, var(--surface));
-  border-color: color-mix(in srgb, var(--cat-invoices) 38%, transparent);
-}
-
-.client-detail-page .client-cat-nav-item.is-overview .client-cat-ico {
-  color: var(--cat-overview);
-  border-color: color-mix(in srgb, var(--cat-overview) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-overview) 20%, var(--surface));
-}
-
-.client-detail-page .client-cat-nav-item.is-billing .client-cat-ico {
-  color: var(--cat-billing);
-  border-color: color-mix(in srgb, var(--cat-billing) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-billing) 20%, var(--surface));
-}
-
-.client-detail-page .client-cat-nav-item.is-live .client-cat-ico {
-  color: var(--cat-live);
-  border-color: color-mix(in srgb, var(--cat-live) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-live) 20%, var(--surface));
-}
-
-.client-detail-page .client-cat-nav-item.is-access .client-cat-ico {
-  color: var(--cat-access);
-  border-color: color-mix(in srgb, var(--cat-access) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-access) 20%, var(--surface));
-}
-
-.client-detail-page .client-cat-nav-item.is-router .client-cat-ico {
-  color: var(--cat-router);
-  border-color: color-mix(in srgb, var(--cat-router) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-router) 20%, var(--surface));
-}
-
-.client-detail-page .client-cat-nav-item.is-invoices .client-cat-ico {
-  color: var(--cat-invoices);
-  border-color: color-mix(in srgb, var(--cat-invoices) 40%, transparent);
-  background: color-mix(in srgb, var(--cat-invoices) 20%, var(--surface));
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #d97706;
 }
 
 .client-detail-page .mikrotik-secret-toggle,
@@ -12505,7 +12632,7 @@ textarea.form-control {
   width: 2.15rem;
   height: 2.15rem;
   color: var(--ink);
-  background: var(--surface);
+  background: var(--surface-solid, #fff);
   border-color: color-mix(in srgb, var(--ink) 22%, var(--border-strong));
   box-shadow: 0 1px 2px color-mix(in srgb, #000 8%, transparent);
 }
@@ -12518,32 +12645,26 @@ textarea.form-control {
 
 .org-actions-icons .org-action-warn {
   color: #c2410c;
-  background: color-mix(in srgb, #c2410c 12%, var(--surface));
-  border-color: color-mix(in srgb, #c2410c 35%, var(--border));
+  background: #ffedd5;
+  border-color: #ea580c;
 }
 
 .org-actions-icons .org-action-success {
   color: #15803d;
-  background: color-mix(in srgb, #15803d 12%, var(--surface));
-  border-color: color-mix(in srgb, #15803d 35%, var(--border));
+  background: #dcfce7;
+  border-color: #16a34a;
 }
 
 .org-actions-icons .org-action-danger {
-  color: #dc2626;
-  background: color-mix(in srgb, #dc2626 12%, var(--surface));
-  border-color: color-mix(in srgb, #dc2626 35%, var(--border));
+  color: #b91c1c;
+  background: #fee2e2;
+  border-color: #dc2626;
 }
 
 [data-theme="dark"] .org-actions-icons .org-action-icon {
   color: #e8eef2;
-  background: color-mix(in srgb, #fff 8%, var(--surface-2));
-  border-color: color-mix(in srgb, #fff 18%, var(--border));
-}
-
-[data-theme="dark"] .client-detail-page .client-row-ico svg,
-[data-theme="dark"] .client-detail-page .client-cat-ico svg,
-[data-theme="dark"] .client-detail-page .client-cat-nav-item .client-cat-ico svg {
-  filter: drop-shadow(0 0.5px 0 color-mix(in srgb, #000 40%, transparent));
+  background: color-mix(in srgb, #fff 10%, var(--surface-2));
+  border-color: color-mix(in srgb, #fff 22%, var(--border));
 }
 
 .client-detail-table-shell {
@@ -12666,15 +12787,32 @@ textarea.form-control {
   }
 }
 
-/* Client detail package modals ? compact sheet on the shared pppoe pattern */
+/* Client detail package modals ? full-viewport overlay + compact panel */
+.client-action-modal.pppoe-modal {
+  place-items: center;
+  padding: 1rem;
+  z-index: 1300;
+}
+
+.client-action-modal.pppoe-modal .role-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 14, 20, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
 .client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
   width: min(100%, 28.5rem);
-  max-height: min(92dvh, 34rem);
+  max-height: min(90dvh, 36rem);
+  position: relative;
+  z-index: 1;
 }
 
 .client-action-modal.pppoe-modal .pppoe-body {
   padding-top: 1rem;
   padding-bottom: 1.05rem;
+  overflow: auto;
 }
 
 .client-action-modal.pppoe-modal .pppoe-section:last-child {
@@ -12688,6 +12826,10 @@ textarea.form-control {
   min-height: 2.65rem;
 }
 
+.client-action-modal.pppoe-modal [data-period-mode][hidden] {
+  display: none !important;
+}
+
 @media (min-width: 720px) {
   .client-action-modal.pppoe-modal {
     place-items: center;
@@ -12696,7 +12838,7 @@ textarea.form-control {
 
   .client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
     border-radius: 20px;
-    max-height: min(88dvh, 32rem);
+    max-height: min(88dvh, 34rem);
   }
 
   .client-action-modal.pppoe-modal .pppoe-panel::before {
@@ -12705,6 +12847,11 @@ textarea.form-control {
 }
 
 @media (max-width: 719px) {
+  .client-action-modal.pppoe-modal {
+    place-items: end center;
+    padding: 0;
+  }
+
   .client-action-modal.pppoe-modal .pppoe-foot {
     padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }

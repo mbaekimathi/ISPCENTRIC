@@ -710,86 +710,252 @@ class CustomerPeriodForm(forms.ModelForm):
 
 
 class CustomerPackagePeriodForm(forms.ModelForm):
-    """Legacy combined form kept for compatibility."""
+    """Set plan and package window together.
+
+    Hourly plans use clock fields; other durations use date fields.
+    The template shows the matching pair based on the selected plan.
+    """
+
+    start_date = forms.DateField(
+        label="Package starts",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_package_start_date",
+            },
+        ),
+    )
+    end_date = forms.DateField(
+        label="Package ends",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_package_end_date",
+                "readonly": "readonly",
+            },
+        ),
+        help_text="Auto-fills from the selected package period when you change the start date.",
+    )
+    start_time = forms.TimeField(
+        label="Starts at",
+        required=False,
+        input_formats=["%H:%M", "%H:%M:%S"],
+        widget=forms.TimeInput(
+            format="%H:%M",
+            attrs={
+                "class": "form-control",
+                "type": "time",
+                "id": "id_package_start_time",
+            },
+        ),
+    )
+    end_time = forms.TimeField(
+        label="Ends at",
+        required=False,
+        input_formats=["%H:%M", "%H:%M:%S"],
+        widget=forms.TimeInput(
+            format="%H:%M",
+            attrs={
+                "class": "form-control",
+                "type": "time",
+                "id": "id_package_end_time",
+                "readonly": "readonly",
+            },
+        ),
+        help_text="Auto-fills one hour after the start time for hourly packages.",
+    )
+    service_day = forms.DateField(
+        label="Day",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_package_service_day",
+            },
+        ),
+        help_text="Which calendar day this hourly package applies to.",
+    )
 
     class Meta:
         model = Customer
-        fields = ["plan", "package_start", "package_end"]
-        widgets = {
-            "plan": forms.Select(attrs={"class": "form-control", "id": "id_package_plan"}),
-            "package_start": forms.DateInput(
-                format="%Y-%m-%d",
-                attrs={
-                    "class": "form-control",
-                    "type": "date",
-                    "id": "id_package_start",
-                },
-            ),
-            "package_end": forms.DateInput(
-                format="%Y-%m-%d",
-                attrs={
-                    "class": "form-control",
-                    "type": "date",
-                    "id": "id_package_end",
-                },
-            ),
-        }
+        fields = ["plan"]
         labels = {
             "plan": "Package / plan",
-            "package_start": "Package starts",
-            "package_end": "Package ends",
         }
 
     def __init__(self, *args, organization=None, **kwargs):
         self.organization = organization
         super().__init__(*args, **kwargs)
-        self.fields["plan"].required = False
-        self.fields["plan"].empty_label = "No plan"
+
+        self.fields["plan"].required = True
+        self.fields["plan"].empty_label = "Select a plan"
+        self.fields["plan"].widget.attrs.update({
+            "class": "form-control",
+            "id": "id_package_plan",
+        })
         if self.organization:
             self.fields["plan"].queryset = BillingPlan.objects.filter(
                 organization=self.organization, is_active=True,
             )
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
-        self.fields["package_start"].required = True
-        self.fields["package_end"].required = False
-        self.fields["package_start"].input_formats = ["%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"]
-        self.fields["package_end"].input_formats = ["%Y-%m-%d", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S"]
-        plan = getattr(self.instance, "plan", None)
-        if plan and plan.duration:
-            self.fields["package_end"].help_text = (
-                f"Auto-updates from the {plan.get_duration_display().lower()} package "
-                "when you change the start date. You can still set a custom end date."
+
+        plan = self._resolve_plan()
+        self.is_hourly = bool(
+            plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY
+        )
+
+        start = getattr(self.instance, "package_start", None)
+        end = getattr(self.instance, "package_end", None)
+        today = timezone.localdate()
+        if start:
+            local_start = timezone.localtime(start)
+            self.fields["start_date"].initial = local_start.date()
+            self.fields["start_time"].initial = local_start.time().replace(
+                second=0, microsecond=0
             )
+            self.fields["service_day"].initial = local_start.date()
         else:
-            self.fields["package_end"].help_text = (
-                "Assign a billing plan to auto-calculate the end date from package settings."
+            self.fields["service_day"].initial = today
+        if end:
+            local_end = timezone.localtime(end)
+            self.fields["end_date"].initial = local_end.date()
+            self.fields["end_time"].initial = local_end.time().replace(
+                second=0, microsecond=0
             )
 
-    def clean_package_start(self):
-        start = self.cleaned_data.get("package_start")
-        if not start:
-            raise forms.ValidationError("Enter when the package starts.")
-        return start
+        if plan and plan.duration == BillingPlan.Duration.HOURLY:
+            self.fields["service_day"].help_text = (
+                "Defaults to today. Pick another day if this hourly package should run then."
+            )
+        elif plan and plan.duration:
+            self.fields["end_date"].help_text = (
+                f"Auto-fills from the {plan.get_duration_display().lower()} package "
+                "when you change the plan or start date."
+            )
+
+    def _resolve_plan(self):
+        data = getattr(self, "data", None)
+        if data is not None:
+            raw = data.get("plan")
+            if raw:
+                try:
+                    return self.fields["plan"].queryset.filter(pk=raw).first()
+                except (TypeError, ValueError):
+                    pass
+        return getattr(self.instance, "plan", None)
+
+    def _combine_time(self, value, *, base_day: date | None = None):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value if timezone.is_aware(value) else timezone.make_aware(
+                value, timezone.get_current_timezone()
+            )
+        if isinstance(value, time):
+            day = base_day or timezone.localdate()
+            return timezone.make_aware(
+                datetime.combine(day, value),
+                timezone.get_current_timezone(),
+            )
+        if isinstance(value, date):
+            return timezone.make_aware(
+                datetime.combine(value, time.min),
+                timezone.get_current_timezone(),
+            )
+        return value
+
+    def _combine_date(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            local = value if timezone.is_aware(value) else timezone.make_aware(
+                value, timezone.get_current_timezone()
+            )
+            local = timezone.localtime(local)
+            return timezone.make_aware(
+                datetime.combine(local.date(), time.min),
+                timezone.get_current_timezone(),
+            )
+        if isinstance(value, date):
+            return timezone.make_aware(
+                datetime.combine(value, time.min),
+                timezone.get_current_timezone(),
+            )
+        return value
+
+    def clean_plan(self):
+        plan = self.cleaned_data.get("plan")
+        if not plan:
+            raise forms.ValidationError("Select a billing plan.")
+        return plan
 
     def clean(self):
         cleaned = super().clean()
-        start = cleaned.get("package_start")
-        end = cleaned.get("package_end")
         plan = cleaned.get("plan")
+        is_hourly = bool(
+            plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY
+        )
+        self.is_hourly = is_hourly
 
-        if start and plan and end is None:
+        if is_hourly:
+            day = cleaned.get("service_day")
+            start_raw = cleaned.get("start_time")
+            end_raw = cleaned.get("end_time")
+            if not day:
+                self.add_error("service_day", "Select the day.")
+                return cleaned
+            if not start_raw:
+                self.add_error("start_time", "Enter the start time.")
+                return cleaned
+            start = self._combine_time(start_raw, base_day=day)
+            end = None
+            if end_raw not in (None, ""):
+                end = self._combine_time(end_raw, base_day=day)
+                if end and isinstance(start, datetime) and end < start:
+                    end = end + timedelta(days=1)
+        else:
+            start_raw = cleaned.get("start_date")
+            end_raw = cleaned.get("end_date")
+            if not start_raw:
+                self.add_error("start_date", "Enter when the package starts.")
+                return cleaned
+            start = self._combine_date(start_raw)
+            end = self._combine_date(end_raw) if end_raw not in (None, "") else None
+
+        if start and plan:
             computed = compute_package_end(start, plan)
             if computed is not None:
-                cleaned["package_end"] = computed
                 end = computed
 
         if start and end and end < start:
-            self.add_error("package_end", "End date cannot be before the start date.")
+            field = "end_time" if is_hourly else "end_date"
+            self.add_error(
+                field,
+                "End time cannot be before the start time."
+                if is_hourly
+                else "End date cannot be before the start date.",
+            )
+
+        cleaned["package_start"] = start
+        cleaned["package_end"] = end
         return cleaned
 
     def save(self, commit=True):
         customer = super().save(commit=False)
+        customer.package_start = self.cleaned_data.get("package_start")
+        customer.package_end = self.cleaned_data.get("package_end")
         if customer.package_start and customer.plan_id and not customer.package_end:
             customer.package_end = compute_package_end(
                 customer.package_start,

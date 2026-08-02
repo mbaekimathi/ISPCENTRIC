@@ -4,375 +4,277 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#0b1520">
-  <title>{{ page_title }} — {{ org_name }}</title>
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#e8eef3">
+  <title>{% if portal_mode == "pppoe" %}Renew connection{% else %}Get online{% endif %} — {{ org_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-      --brand: #0e7c86;
-      --brand-ink: #fff;
-      --brand-soft: rgba(14, 124, 134, 0.12);
-      --accent: #e8a317;
-      --surface: #ffffff;
-      --surface-2: #f4f8f9;
-      --text: #0f1b2d;
-      --muted: #5b6b82;
-      --line: rgba(15, 27, 45, 0.1);
-      --shadow: 0 1.5rem 3.5rem rgba(3, 12, 22, 0.45);
-      --ok: #15803d;
-      --danger: #b91c1c;
-      --radius: clamp(1rem, 4vw, 1.35rem);
-    }
-
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --surface: #131c28;
-        --surface-2: #1a2433;
-        --text: #eaf1fa;
-        --muted: #9db0c8;
-        --line: rgba(255, 255, 255, 0.1);
-        --brand: #2ea3ad;
-        --brand-ink: #04121a;
-        --brand-soft: rgba(46, 163, 173, 0.16);
-        --ok: #4ade80;
-        --danger: #fca5a5;
-      }
+      --ink: #102033;
+      --muted: #5a6b7f;
+      --line: rgba(16, 32, 51, 0.1);
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-solid: #ffffff;
+      --wash: #f3f6f9;
+      --brand: #0c6e78;
+      --brand-deep: #084e56;
+      --brand-soft: rgba(12, 110, 120, 0.1);
+      --brand-ink: #ffffff;
+      --accent: #c98512;
+      --ok: #157a42;
+      --danger: #b42318;
+      --shadow: 0 1px 1px rgba(16, 32, 51, 0.04), 0 18px 48px rgba(16, 32, 51, 0.12);
+      --radius: 1.25rem;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      /* System stack only — captive users often have no web fonts yet */
+      --font: "Segoe UI Variable", "Segoe UI", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+      --display: "Segoe UI Variable Display", "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
     }
 
     html { -webkit-text-size-adjust: 100%; }
+
     body {
       margin: 0;
       min-height: 100vh;
       min-height: 100dvh;
-      display: flex;
-      align-items: stretch;
-      justify-content: center;
+      display: grid;
+      place-items: center;
       padding:
-        calc(0.85rem + env(safe-area-inset-top, 0px))
-        calc(0.85rem + env(safe-area-inset-right, 0px))
-        calc(0.85rem + env(safe-area-inset-bottom, 0px))
-        calc(0.85rem + env(safe-area-inset-left, 0px));
-      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Helvetica Neue", sans-serif;
-      color: var(--text);
+        calc(1rem + env(safe-area-inset-top, 0px))
+        calc(1rem + env(safe-area-inset-right, 0px))
+        calc(1rem + env(safe-area-inset-bottom, 0px))
+        calc(1rem + env(safe-area-inset-left, 0px));
+      font-family: var(--font);
+      color: var(--ink);
+      background-color: #e7eef4;
+      background-image:
+        radial-gradient(ellipse 80% 55% at 12% -10%, rgba(12, 110, 120, 0.18), transparent 55%),
+        radial-gradient(ellipse 60% 45% at 100% 0%, rgba(201, 133, 18, 0.12), transparent 50%),
+        radial-gradient(ellipse 70% 50% at 80% 110%, rgba(12, 110, 120, 0.1), transparent 55%),
+        linear-gradient(180deg, #eef3f7 0%, #e2eaef 100%);
+      background-attachment: fixed;
       -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-      text-size-adjust: 100%;
-      -webkit-text-size-adjust: 100%;
-      background:
-        radial-gradient(ellipse 90% 55% at 8% -5%, rgba(14, 124, 134, 0.34), transparent 55%),
-        radial-gradient(ellipse 70% 45% at 100% 100%, rgba(232, 163, 23, 0.16), transparent 48%),
-        radial-gradient(ellipse 50% 40% at 70% 10%, rgba(31, 111, 235, 0.14), transparent 50%),
-        #0b1520;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0.35;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.45'/%3E%3C/svg%3E");
+      mix-blend-mode: multiply;
     }
 
     .shell {
-      margin: auto;
-      width: min(100%, 28rem);
-      animation: rise 0.32s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+      position: relative;
+      z-index: 1;
+      width: min(100%, 26.5rem);
+      animation: rise 0.55s var(--ease) both;
     }
 
     @keyframes rise {
-      from { opacity: 0; transform: translateY(0.85rem) scale(0.985); }
-    }
-
-    .card {
-      overflow: hidden;
-      border-radius: var(--radius);
-      background: var(--surface);
-      box-shadow: var(--shadow);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      animation: cardIn 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
-    }
-
-    @keyframes cardIn {
-      from { opacity: 0; transform: translateY(0.9rem) scale(0.985); }
+      from { opacity: 0; transform: translateY(1rem); }
       to { opacity: 1; transform: none; }
     }
 
+    .stage {
+      overflow: hidden;
+      border-radius: calc(var(--radius) + 0.15rem);
+      background: var(--surface);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.7);
+      box-shadow: var(--shadow);
+    }
+
     .hero {
-      position: relative;
-      padding: clamp(1.15rem, 4.5vw, 1.55rem) clamp(1.1rem, 4.5vw, 1.45rem) 1.05rem;
+      padding: clamp(1.35rem, 5vw, 1.75rem) clamp(1.2rem, 5vw, 1.55rem) 1.15rem;
       background:
-        linear-gradient(165deg, rgba(14, 124, 134, 0.16), transparent 58%),
-        linear-gradient(180deg, var(--surface-2), var(--surface));
+        linear-gradient(165deg, rgba(12, 110, 120, 0.08), transparent 62%),
+        linear-gradient(180deg, #f8fbfc, transparent);
       border-bottom: 1px solid var(--line);
-      text-align: left;
-    }
-
-    .hero::after {
-      content: "";
-      position: absolute;
-      inset: auto 0 0;
-      height: 2px;
-      background: linear-gradient(90deg, var(--brand), var(--accent), transparent 75%);
-      opacity: 0.85;
-    }
-
-    .hero-row {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 0.85rem;
     }
 
     .brand {
-      margin: 0 0 0.55rem;
-      display: inline-flex;
-      align-items: center;
-      padding: 0.28rem 0.6rem;
-      border-radius: 999px;
-      border: 1px solid rgba(14, 124, 134, 0.28);
-      background: var(--brand-soft);
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--brand);
+      margin: 0 0 0.85rem;
+      font-family: var(--display);
+      font-size: clamp(1.55rem, 6.2vw, 1.95rem);
+      font-weight: 800;
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      color: var(--ink);
     }
 
-    .live-pill {
-      flex: 0 0 auto;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      margin-top: 0.1rem;
-      padding: 0.28rem 0.65rem;
-      border-radius: 999px;
-      background: rgba(21, 128, 61, 0.12);
-      color: var(--ok);
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-    }
-
-    .live-pill::before {
-      content: "";
-      width: 0.45rem;
-      height: 0.45rem;
-      border-radius: 50%;
-      background: currentColor;
-      box-shadow: 0 0 0 0 rgba(21, 128, 61, 0.45);
-      animation: ping 1.6s ease-out infinite;
-    }
-
-    @keyframes ping {
-      70% { box-shadow: 0 0 0 0.45rem rgba(21, 128, 61, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(21, 128, 61, 0); }
-    }
-
-    h1 {
+    .hero h1 {
       margin: 0;
-      font-size: clamp(1.35rem, 5.4vw, 1.7rem);
-      line-height: 1.2;
-      letter-spacing: -0.02em;
+      font-size: clamp(1.05rem, 3.8vw, 1.2rem);
       font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--brand-deep);
     }
 
     .msg {
-      margin: 0.55rem 0 0;
-      max-width: 42ch;
-      font-size: clamp(0.94rem, 3.5vw, 1.02rem);
-      line-height: 1.55;
+      margin: 0.45rem 0 0;
+      max-width: 36ch;
+      font-size: 0.92rem;
+      line-height: 1.5;
       color: var(--muted);
-      white-space: pre-wrap;
     }
 
     .body {
-      padding: clamp(1rem, 4vw, 1.25rem) clamp(1.1rem, 4.5vw, 1.45rem)
+      padding: clamp(1rem, 4vw, 1.25rem) clamp(1.15rem, 4.5vw, 1.45rem)
                calc(1.15rem + env(safe-area-inset-bottom, 0px));
       display: grid;
-      gap: 0.9rem;
+      gap: 1rem;
     }
 
     .access-choice {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.45rem;
-      padding: 0.3rem;
-      border-radius: 999px;
-      background: var(--surface-2);
+      gap: 0.35rem;
+      padding: 0.28rem;
+      border-radius: 0.85rem;
+      background: var(--wash);
       border: 1px solid var(--line);
     }
 
     .access-choice button {
       border: 0;
-      border-radius: 999px;
-      padding: 0.7rem 0.55rem;
+      border-radius: 0.65rem;
+      padding: 0.72rem 0.5rem;
       background: transparent;
       color: var(--muted);
-      font: 700 0.82rem/1.1 inherit;
+      font: 700 0.8rem/1.1 var(--font);
       cursor: pointer;
-      transition: background 0.18s ease, color 0.18s ease, transform 0.12s ease;
+      transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
     }
 
     .access-choice button.is-active {
-      background: var(--brand);
-      color: var(--brand-ink);
-      box-shadow: 0 8px 18px rgba(14, 124, 134, 0.28);
+      background: var(--surface-solid);
+      color: var(--ink);
+      box-shadow: 0 1px 2px rgba(16, 32, 51, 0.06), 0 6px 16px rgba(16, 32, 51, 0.06);
     }
 
-    .access-choice button:active { transform: scale(0.98); }
-
-    .panel {
-      padding: 0.95rem;
-      border-radius: 1rem;
-      border: 1px solid var(--line);
-      background: var(--surface-2);
-      text-align: left;
-    }
-
-    .panel-kicker {
-      margin: 0 0 0.55rem;
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--brand);
-    }
-
-    .panel h2 {
-      margin: 0 0 0.4rem;
-      font-size: 1.02rem;
-      letter-spacing: -0.02em;
-    }
-
-    .panel p,
-    .panel li {
-      margin: 0.25rem 0;
-      color: var(--muted);
-      font-size: 0.88rem;
-      line-height: 1.45;
-    }
-
-    .panel ol { margin: 0.45rem 0 0; padding-left: 1.15rem; }
-
-    .ssid-list {
-      margin: 0.55rem 0;
-      padding: 0.55rem 0.7rem;
-      border-radius: 0.7rem;
-      background: rgba(14, 124, 134, 0.1);
-      color: var(--text);
-      font-weight: 700;
-      font-size: 0.88rem;
-    }
-
-    .facts {
-      margin: 0;
-      padding: 0.15rem 0.85rem;
-      border-radius: 1rem;
-      border: 1px solid var(--line);
-      background: var(--brand-soft);
-      text-align: left;
-    }
-
-    .fact {
+    .pay-strip {
       display: flex;
       flex-wrap: wrap;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 0.25rem 1rem;
-      padding: 0.7rem 0;
-      border-top: 1px solid var(--line);
-    }
-
-    .fact:first-child { border-top: 0; }
-
-    .fact dt {
-      margin: 0;
-      font-size: 0.78rem;
-      font-weight: 650;
-      color: var(--muted);
-    }
-
-    .fact dd {
-      margin: 0;
-      font-size: 0.95rem;
-      font-weight: 800;
-      text-align: right;
-      overflow-wrap: anywhere;
-    }
-
-    .customer-chip {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem 0.75rem;
       align-items: center;
-      padding: 0.7rem 0.85rem;
+      gap: 0.45rem 0.85rem;
+      padding: 0.75rem 0.9rem;
       border-radius: 0.9rem;
+      background: var(--wash);
       border: 1px solid var(--line);
-      background: var(--surface-2);
-      text-align: left;
-      font-size: 0.88rem;
+      font-size: 0.82rem;
     }
 
-    .customer-chip strong {
-      font-size: 0.95rem;
+    .pay-strip-label {
+      font-weight: 700;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 0.68rem;
+    }
+
+    .pay-strip-value {
+      font-weight: 800;
+      color: var(--ink);
       letter-spacing: -0.01em;
     }
 
-    .customer-chip span { color: var(--muted); }
+    .pay-strip-sep {
+      width: 1px;
+      height: 1rem;
+      background: var(--line);
+    }
+
+    .customer-chip {
+      display: grid;
+      gap: 0.15rem;
+      padding: 0.85rem 0.95rem;
+      border-radius: 0.9rem;
+      border: 1px solid var(--line);
+      background: linear-gradient(165deg, var(--brand-soft), var(--surface-solid));
+    }
+
+    .customer-chip strong {
+      font-size: 0.98rem;
+      letter-spacing: -0.02em;
+    }
+
+    .customer-chip span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .customer-chip .chip-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.75rem;
+      margin-top: 0.15rem;
+    }
 
     .section-label {
-      margin: 0 0 0.45rem;
-      font-size: 0.72rem;
+      margin: 0 0 0.55rem;
+      font-size: 0.7rem;
       font-weight: 800;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
       color: var(--muted);
-      text-align: left;
     }
+
+    .pay-panel { display: grid; gap: 0.85rem; }
+    .pay-panel[hidden] { display: none !important; }
 
     .plans {
       display: grid;
       gap: 0.5rem;
-      text-align: left;
     }
 
     .plan {
       display: grid;
       grid-template-columns: auto 1fr auto;
-      gap: 0.7rem;
+      gap: 0.75rem;
       align-items: center;
       width: 100%;
-      padding: 0.85rem 0.9rem;
-      border-radius: 1rem;
+      padding: 0.9rem 0.95rem;
+      border-radius: 0.95rem;
       border: 1.5px solid var(--line);
-      background: var(--surface);
+      background: var(--surface-solid);
       color: inherit;
       font: inherit;
       text-align: left;
       cursor: pointer;
-      transition: border-color 0.18s ease, background 0.18s ease, transform 0.14s ease, box-shadow 0.18s ease;
+      transition:
+        border-color 0.2s ease,
+        background 0.2s ease,
+        transform 0.18s var(--ease),
+        box-shadow 0.2s ease;
     }
 
     .plan:hover {
-      border-color: rgba(14, 124, 134, 0.45);
-      transform: translateY(-2px);
-      box-shadow: 0 10px 22px rgba(14, 124, 134, 0.12);
+      border-color: rgba(12, 110, 120, 0.35);
+      transform: translateY(-1px);
     }
 
     .plan.is-selected {
       border-color: var(--brand);
-      background: linear-gradient(165deg, var(--brand-soft), var(--surface));
-      box-shadow: 0 0 0 3px rgba(14, 124, 134, 0.14), 0 10px 22px rgba(14, 124, 134, 0.12);
+      background: linear-gradient(160deg, rgba(12, 110, 120, 0.08), #fff 55%);
+      box-shadow: 0 0 0 3px var(--brand-soft);
     }
 
     .plan-radio {
-      width: 1.05rem;
-      height: 1.05rem;
+      width: 1.1rem;
+      height: 1.1rem;
       border-radius: 50%;
-      border: 2px solid rgba(91, 107, 130, 0.45);
+      border: 2px solid rgba(90, 107, 127, 0.4);
       display: grid;
       place-items: center;
-      flex: 0 0 auto;
     }
 
-    .plan.is-selected .plan-radio {
-      border-color: var(--brand);
-    }
+    .plan.is-selected .plan-radio { border-color: var(--brand); }
 
     .plan.is-selected .plan-radio::after {
       content: "";
@@ -380,38 +282,46 @@
       height: 0.45rem;
       border-radius: 50%;
       background: var(--brand);
+      animation: pop 0.25s var(--ease);
+    }
+
+    @keyframes pop {
+      from { transform: scale(0.4); opacity: 0; }
+      to { transform: none; opacity: 1; }
     }
 
     .plan strong {
       display: block;
       font-size: 0.95rem;
-      letter-spacing: -0.01em;
+      font-weight: 800;
+      letter-spacing: -0.015em;
     }
 
-    .plan span {
+    .plan .plan-meta {
       display: block;
-      margin-top: 0.15rem;
+      margin-top: 0.12rem;
       color: var(--muted);
       font-size: 0.78rem;
+      font-weight: 600;
     }
 
     .plan-price {
       font-size: 0.95rem;
       font-weight: 800;
-      color: var(--brand);
+      color: var(--brand-deep);
       white-space: nowrap;
+      letter-spacing: -0.02em;
     }
 
     form.login {
       display: grid;
-      gap: 0.7rem;
-      text-align: left;
+      gap: 0.75rem;
     }
 
     .field label {
       display: block;
-      margin-bottom: 0.3rem;
-      font-size: 0.78rem;
+      margin-bottom: 0.35rem;
+      font-size: 0.76rem;
       font-weight: 750;
       color: var(--muted);
     }
@@ -419,17 +329,29 @@
     .field input,
     .field select {
       width: 100%;
-      min-height: 2.85rem;
+      min-height: 3rem;
       border: 1.5px solid var(--line);
-      border-radius: 999px;
-      padding: 0.7rem 0.95rem;
-      font: inherit;
-      font-weight: 650;
-      color: var(--text);
-      background: var(--surface);
+      border-radius: 0.85rem;
+      padding: 0.75rem 0.95rem;
+      font: 650 1rem/1.2 var(--font);
+      color: var(--ink);
+      background: var(--surface-solid);
       appearance: none;
       -webkit-appearance: none;
-      transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.12s ease;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .field select {
+      padding-right: 2.6rem;
+      background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position:
+        calc(100% - 1.2rem) calc(50% - 0.12rem),
+        calc(100% - 0.85rem) calc(50% - 0.12rem);
+      background-size: 0.35rem 0.35rem, 0.35rem 0.35rem;
+      background-repeat: no-repeat;
+      cursor: pointer;
     }
 
     .field input:focus,
@@ -437,57 +359,45 @@
       border-color: var(--brand);
       box-shadow: 0 0 0 4px var(--brand-soft);
       outline: none;
-      transform: translateY(-1px);
     }
 
-    .field select {
-      background-image:
-        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
-        linear-gradient(135deg, var(--muted) 50%, transparent 50%);
-      background-position:
-        calc(100% - 1.15rem) calc(50% - 0.12rem),
-        calc(100% - 0.8rem) calc(50% - 0.12rem);
-      background-size: 0.35rem 0.35rem, 0.35rem 0.35rem;
-      background-repeat: no-repeat;
-      padding-right: 2.4rem;
+    .field input[readonly] {
+      background: var(--wash);
+      color: var(--ink);
     }
 
-    .visually-hidden-select {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      padding: 0;
-      margin: -1px;
-      overflow: hidden;
-      clip: rect(0, 0, 0, 0);
-      white-space: nowrap;
-      border: 0;
+    .field-hint {
+      margin: 0.35rem 0 0;
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-weight: 600;
     }
 
-    button.cta,
-    .ok {
+    .field-hint-inline {
+      font-weight: 650;
+      color: var(--muted);
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    button.cta {
       display: block;
       width: 100%;
       border: 0;
-      border-radius: 999px;
+      border-radius: 0.9rem;
       padding: 0.95rem 1.1rem;
-      min-height: 3.05rem;
-      background: linear-gradient(135deg, #14949f 0%, var(--brand) 55%, #09565e 100%);
+      min-height: 3.15rem;
+      background: linear-gradient(165deg, #12838e 0%, var(--brand) 48%, var(--brand-deep) 100%);
       color: var(--brand-ink);
-      font: 800 1rem/1 inherit;
-      letter-spacing: -0.01em;
+      font: 800 1rem/1 var(--font);
+      letter-spacing: -0.015em;
       cursor: pointer;
-      text-decoration: none;
-      text-align: center;
-      box-shadow: 0 12px 24px rgba(14, 124, 134, 0.28);
+      box-shadow: 0 10px 24px rgba(12, 110, 120, 0.28);
       transition: filter 0.15s ease, transform 0.12s ease, box-shadow 0.18s ease;
     }
 
-    button.cta:hover,
-    .ok:hover { filter: brightness(1.06); }
-
-    button.cta:active,
-    .ok:active { transform: scale(0.985); }
+    button.cta:hover { filter: brightness(1.05); }
+    button.cta:active { transform: scale(0.985); }
 
     button.cta:disabled {
       opacity: 0.65;
@@ -498,58 +408,105 @@
 
     .status,
     .meta {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.55rem;
       margin: 0;
-      padding: 0.75rem 0.85rem;
+      padding: 0.8rem 0.9rem;
       border-radius: 0.85rem;
-      background: var(--surface-2);
+      background: var(--wash);
       border: 1px solid var(--line);
       color: var(--muted);
-      font-size: 0.86rem;
+      font-size: 0.84rem;
       line-height: 1.45;
-      text-align: left;
+      font-weight: 600;
     }
 
-    .status::before,
-    .meta::before {
-      content: "";
-      flex: 0 0 auto;
-      width: 0.5rem;
-      height: 0.5rem;
-      margin-top: 0.35rem;
-      border-radius: 50%;
-      background: var(--brand);
-      animation: pulse 1.4s ease-in-out infinite;
-    }
-
-    .status.is-waiting::before,
-    .meta.is-waiting::before {
-      background: #0369a1;
+    .meta.is-waiting {
+      border-color: rgba(12, 110, 120, 0.25);
+      background: var(--brand-soft);
+      color: var(--brand-deep);
     }
 
     .payment-waiting {
       display: grid;
       justify-items: center;
-      gap: 0.7rem;
+      gap: 0.55rem;
       margin: 0;
-      padding: 1.05rem 0.95rem 1rem;
+      padding: 1.15rem 1rem;
       border-radius: 1rem;
-      border: 1px solid rgba(3, 105, 161, 0.22);
+      border: 1px solid rgba(12, 110, 120, 0.18);
       background:
-        radial-gradient(ellipse 70% 80% at 50% 0%, rgba(3, 105, 161, 0.14), transparent 65%),
-        var(--surface-2);
+        radial-gradient(ellipse 80% 70% at 50% 0%, rgba(12, 110, 120, 0.1), transparent 65%),
+        var(--wash);
       text-align: center;
+      animation: rise 0.35s var(--ease) both;
     }
 
     .payment-waiting[hidden] { display: none !important; }
 
+    .pay-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding:
+        calc(1rem + env(safe-area-inset-top, 0px))
+        calc(1rem + env(safe-area-inset-right, 0px))
+        calc(1rem + env(safe-area-inset-bottom, 0px))
+        calc(1rem + env(safe-area-inset-left, 0px));
+      background: rgba(10, 22, 34, 0.48);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      animation: fadeIn 0.22s ease both;
+    }
+
+    .pay-overlay[hidden] { display: none !important; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .pay-overlay-card {
+      width: min(100%, 22rem);
+      display: grid;
+      justify-items: center;
+      gap: 0.65rem;
+      padding: 1.6rem 1.35rem 1.35rem;
+      border-radius: 1.25rem;
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      background:
+        radial-gradient(ellipse 90% 70% at 50% 0%, rgba(12, 110, 120, 0.12), transparent 60%),
+        rgba(255, 255, 255, 0.96);
+      box-shadow: 0 24px 60px rgba(8, 18, 30, 0.28);
+      text-align: center;
+      animation: rise 0.35s var(--ease) both;
+    }
+
+    .pay-overlay.is-error .pay-overlay-card {
+      background:
+        radial-gradient(ellipse 90% 70% at 50% 0%, rgba(180, 35, 24, 0.08), transparent 60%),
+        rgba(255, 255, 255, 0.96);
+    }
+
+    .pay-overlay.is-error .payment-loader { display: none; }
+    .pay-overlay.is-error .payment-waiting-live { color: var(--danger); }
+    .pay-overlay:not(.is-error) .pay-overlay-actions { display: none; }
+
+    body.is-paying {
+      overflow: hidden;
+    }
+
+    body.is-paying .shell {
+      filter: saturate(0.85) brightness(0.92);
+      pointer-events: none;
+      user-select: none;
+    }
+
     .payment-loader {
       position: relative;
-      width: 3.5rem;
-      height: 3.5rem;
-      color: #0369a1;
+      width: 3.25rem;
+      height: 3.25rem;
+      color: var(--brand);
     }
 
     .payment-loader svg {
@@ -562,7 +519,7 @@
       fill: none;
       stroke: currentColor;
       stroke-width: 3.2;
-      opacity: 0.22;
+      opacity: 0.2;
     }
 
     .payment-loader .arc {
@@ -579,8 +536,8 @@
       position: absolute;
       inset: 0;
       margin: auto;
-      width: 0.55rem;
-      height: 0.55rem;
+      width: 0.5rem;
+      height: 0.5rem;
       border-radius: 50%;
       background: currentColor;
       animation: pay-dot 1.2s ease-in-out infinite;
@@ -594,32 +551,31 @@
 
     .payment-waiting-title {
       margin: 0;
-      font-size: 0.95rem;
+      font-size: 0.98rem;
       font-weight: 800;
-      letter-spacing: -0.01em;
-      color: var(--text);
+      letter-spacing: -0.02em;
+      color: var(--ink);
     }
 
     .payment-waiting-copy {
       margin: 0;
       max-width: 28ch;
-      font-size: 0.84rem;
+      font-size: 0.82rem;
       line-height: 1.45;
       color: var(--muted);
+      font-weight: 600;
     }
 
     .payment-waiting-live {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      padding: 0.28rem 0.65rem;
-      border-radius: 999px;
-      background: rgba(3, 105, 161, 0.12);
-      color: #0369a1;
+      gap: 0.35rem;
+      margin: 0;
       font-size: 0.68rem;
       font-weight: 800;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      color: var(--brand);
     }
 
     .payment-waiting-live::before {
@@ -631,68 +587,140 @@
       animation: pulse 1.2s ease-in-out infinite;
     }
 
-    @media (prefers-color-scheme: dark) {
-      .payment-waiting {
-        border-color: rgba(96, 200, 245, 0.22);
-        background:
-          radial-gradient(ellipse 70% 80% at 50% 0%, rgba(96, 200, 245, 0.12), transparent 65%),
-          var(--surface-2);
-      }
-      .payment-loader,
-      .payment-waiting-live { color: #60c8f5; }
-      .payment-waiting-live { background: rgba(96, 200, 245, 0.14); }
+    @keyframes pulse {
+      50% { opacity: 0.35; transform: scale(0.75); }
     }
 
     .error {
       display: block;
       margin: 0;
-      padding: 0.75rem 0.85rem;
+      padding: 0.8rem 0.9rem;
       border-radius: 0.85rem;
-      border: 1px solid rgba(185, 28, 28, 0.28);
-      background: rgba(185, 28, 28, 0.1);
+      border: 1px solid rgba(180, 35, 24, 0.22);
+      background: rgba(180, 35, 24, 0.08);
       color: var(--danger);
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       line-height: 1.45;
-      text-align: left;
-    }
-
-    .error::before { display: none; }
-
-    @keyframes pulse {
-      50% { opacity: 0.3; transform: scale(0.7); }
+      font-weight: 650;
     }
 
     .retry {
       width: 100%;
       border: 1.5px solid var(--line);
       border-radius: 0.85rem;
-      padding: 0.8rem 1rem;
-      background: var(--surface-2);
-      color: var(--text);
-      font: 700 0.92rem/1 inherit;
+      padding: 0.85rem 1rem;
+      background: var(--surface-solid);
+      color: var(--ink);
+      font: 750 0.92rem/1 var(--font);
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease;
+    }
+
+    .retry:hover {
+      border-color: var(--brand);
+      color: var(--brand-deep);
+    }
+
+    .pay-overlay-actions {
+      display: grid;
+      gap: 0.5rem;
+      width: 100%;
+      margin-top: 0.35rem;
+    }
+
+    .pay-overlay-actions .retry {
+      background: linear-gradient(165deg, #12838e 0%, var(--brand) 48%, var(--brand-deep) 100%);
+      border: 0;
+      color: #fff;
+    }
+
+    .pay-overlay-actions .retry:hover {
+      color: #fff;
+      filter: brightness(1.05);
+    }
+
+    .pay-overlay-dismiss {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: 700 0.84rem/1 var(--font);
+      padding: 0.55rem;
       cursor: pointer;
     }
 
-    .retry:hover { border-color: var(--brand); color: var(--brand); }
-
     .foot-note {
-      margin: 0;
+      margin: 0.15rem 0 0;
       text-align: center;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
+      font-weight: 650;
       color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    .panel {
+      padding: 0.95rem;
+      border-radius: 1rem;
+      border: 1px solid var(--line);
+      background: var(--wash);
+    }
+
+    .panel-kicker {
+      margin: 0 0 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--brand);
+    }
+
+    .panel h2 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+      letter-spacing: -0.02em;
+    }
+
+    .panel p,
+    .panel li {
+      margin: 0.25rem 0;
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.45;
+      font-weight: 600;
+    }
+
+    .ssid-list {
+      margin: 0.55rem 0;
+      padding: 0.55rem 0.7rem;
+      border-radius: 0.7rem;
+      background: var(--brand-soft);
+      color: var(--ink);
+      font-weight: 750;
+      font-size: 0.88rem;
     }
 
     @media (min-width: 40rem) {
-      body {
-        align-items: center;
-        padding: 1.5rem;
-      }
+      body { padding: 1.75rem; }
+      .shell { width: min(100%, 28.5rem); }
+    }
 
-      .shell { width: min(100%, 30rem); }
+    @media (max-width: 22rem) {
+      .plan {
+        grid-template-columns: auto 1fr;
+        grid-template-rows: auto auto;
+      }
+      .plan-price {
+        grid-column: 2;
+        justify-self: start;
+      }
+      .pay-strip-sep { display: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      *, *::before { animation: none !important; transition: none !important; }
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
       .payment-loader .arc { stroke-dasharray: none; opacity: 0.85; }
       .payment-loader .pulse-dot { opacity: 1; transform: none; }
     }
@@ -700,16 +728,21 @@
 </head>
 <body>
   <div class="shell">
-    <main class="card" role="main">
+    <main class="stage" role="main">
       <header class="hero">
-        <div class="hero-row">
-          <div>
-            <p class="brand">{{ org_name }}</p>
-            <h1>{{ page_title }}</h1>
-          </div>
-          <span class="live-pill" aria-hidden="true">Live</span>
-        </div>
-        {% if page_message %}<p class="msg">{{ page_message }}</p>{% endif %}
+        <p class="brand">{{ org_name }}</p>
+        <h1>
+          {% if portal_mode == "pppoe" %}
+            Renew your connection
+          {% else %}
+            Get back online
+          {% endif %}
+        </h1>
+        {% if page_message %}
+          <p class="msg">{{ page_message }}</p>
+        {% else %}
+          <p class="msg">Choose a package and confirm with M-Pesa on your phone.</p>
+        {% endif %}
       </header>
 
       <div class="body">
@@ -723,7 +756,7 @@
               aria-selected="{% if portal_mode == 'hotspot' %}true{% else %}false{% endif %}"
               aria-controls="panel-hotspot"
             >
-              Pay for Hotspot
+              Hotspot
             </button>
             <button
               type="button"
@@ -733,40 +766,38 @@
               aria-selected="{% if portal_mode == 'pppoe' %}true{% else %}false{% endif %}"
               aria-controls="panel-pppoe"
             >
-              Renew PPPoE
+              Home / PPPoE
             </button>
           </div>
         {% endif %}
 
-        <section class="facts">
-          <div class="fact">
-            <dt>Step 1</dt>
-            <dd>Pay to connect</dd>
-          </div>
-          {% if has_mpesa %}
+        {% if has_mpesa %}
+          <div class="pay-strip" aria-label="M-Pesa details">
             {% if mpesa_type == "paybill" %}
-              <div class="fact"><dt>Paybill</dt><dd>{{ mpesa_number }}</dd></div>
-              {% if mpesa_account %}
-                <div class="fact"><dt>Account</dt><dd>{{ mpesa_account }}</dd></div>
-              {% elif account_number %}
-                <div class="fact"><dt>Account</dt><dd>{{ account_number }}</dd></div>
-              {% else %}
-                <div class="fact"><dt>Account</dt><dd>Your account number</dd></div>
+              <span class="pay-strip-label">Paybill</span>
+              <span class="pay-strip-value">{{ mpesa_number }}</span>
+              {% if mpesa_account or account_number %}
+                <span class="pay-strip-sep" aria-hidden="true"></span>
+                <span class="pay-strip-label">Account</span>
+                <span class="pay-strip-value">{% firstof mpesa_account account_number "Your account" %}</span>
               {% endif %}
             {% else %}
-              <div class="fact"><dt>Buy Goods Till</dt><dd>{{ mpesa_number }}</dd></div>
+              <span class="pay-strip-label">Till</span>
+              <span class="pay-strip-value">{{ mpesa_number }}</span>
             {% endif %}
-          {% else %}
-            <div class="fact"><dt>Payment</dt><dd>Contact {{ org_name }}</dd></div>
-          {% endif %}
-        </section>
+          </div>
+        {% else %}
+          <div class="pay-strip">
+            <span class="pay-strip-label">Payment</span>
+            <span class="pay-strip-value">Contact {{ org_name }}</span>
+          </div>
+        {% endif %}
 
         {% if error %}
           <p class="error">{{ error }}</p>
         {% endif %}
 
         {% if stk_ready and plans %}
-          {# ——— Hotspot payment tab ——— #}
           {% if portal_mode == "hotspot" or hotspot_option_available %}
           <section
             class="pay-panel"
@@ -775,77 +806,45 @@
             data-pay-panel="hotspot"
             {% if portal_mode != "hotspot" %}hidden{% endif %}
           >
-            <p class="section-label">Step 2 · Hotspot · Pay from your phone</p>
             {% if hotspot_mac and hotspot_mac != "$(mac)" %}
-              <div class="customer-chip" style="margin-bottom:0.7rem;">
+              <div class="customer-chip">
                 <strong>This device</strong>
                 <span>{{ hotspot_mac }}</span>
               </div>
             {% endif %}
-            <div class="plans" data-plan-cards role="listbox" aria-label="Hotspot packages">
-              {% for plan in plans %}
-                <button
-                  type="button"
-                  class="plan{% if forloop.first %} is-selected{% endif %}"
-                  role="option"
-                  aria-selected="{% if forloop.first %}true{% else %}false{% endif %}"
-                  data-plan-id="{{ plan.pk }}"
-                  data-price="{{ plan.price }}"
-                >
-                  <span class="plan-radio" aria-hidden="true"></span>
-                  <span>
-                    <strong>{{ plan.name }}</strong>
-                    <span>{{ plan.speed_label }}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}</span>
-                  </span>
-                  <span class="plan-price">KES {{ plan.price }}</span>
-                </button>
-              {% endfor %}
-            </div>
+
             <form
               class="login"
               data-payment-form
               method="post"
               action="{{ hotspot_payment_start_url|default:payment_start_url }}"
-              style="margin-top:0.75rem;"
             >
               {% csrf_token %}
               <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
-              <div class="field visually-hidden-select">
-                <label for="hotspot-plan-id">Internet package</label>
+              <div class="field">
+                <label for="hotspot-plan-id">Package</label>
                 <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
                   {% for plan in plans %}
-                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if forloop.first %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
+                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if forloop.first %} selected{% endif %}>
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}
+                    </option>
                   {% endfor %}
                 </select>
               </div>
               <div class="field">
                 <label for="hotspot-phone">M-Pesa phone number</label>
                 <input id="hotspot-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required>
+                <p class="field-hint">We’ll send the M-Pesa prompt to this number</p>
               </div>
               <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
             </form>
+
             <p class="meta" data-payment-status role="status" aria-live="polite">
-              No username or password is needed. Access opens automatically after payment.
+              No password needed. Access opens automatically after payment.
             </p>
-            <div class="payment-waiting" data-payment-waiting hidden aria-live="polite">
-              <div class="payment-loader" aria-hidden="true">
-                <svg viewBox="0 0 52 52" focusable="false">
-                  <circle class="ring" cx="26" cy="26" r="20"></circle>
-                  <circle class="arc" cx="26" cy="26" r="20"></circle>
-                </svg>
-                <span class="pulse-dot"></span>
-              </div>
-              <p class="payment-waiting-live">Live</p>
-              <p class="payment-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
-              <p class="payment-waiting-copy" data-waiting-copy>
-                Enter your PIN on your phone. This page updates automatically.
-              </p>
-            </div>
-            <button type="button" class="retry" data-payment-retry hidden>Try again</button>
           </section>
           {% endif %}
 
-          {# ——— PPPoE renew tab ——— #}
           {% if portal_mode == "pppoe" or pppoe_option_available %}
           <section
             class="pay-panel"
@@ -854,48 +853,29 @@
             data-pay-panel="pppoe"
             {% if portal_mode != "pppoe" %}hidden{% endif %}
           >
-            <p class="section-label">Step 2 · PPPoE · Pay from your phone</p>
             {% if pppoe_customer_name or pppoe_account_number or customer_name or account_number %}
-              <div class="customer-chip" style="margin-bottom:0.7rem;">
+              <div class="customer-chip">
                 {% with name=pppoe_customer_name|default:customer_name acct=pppoe_account_number|default:account_number end=pppoe_package_end|default:package_end %}
                   {% if name %}<strong>{{ name }}</strong>{% endif %}
-                  {% if acct %}<span>{{ acct }}</span>{% endif %}
-                  {% if end %}<span>Ended {{ end|date:"M j, Y H:i" }}</span>{% endif %}
+                  <div class="chip-meta">
+                    {% if acct %}<span>{{ acct }}</span>{% endif %}
+                    {% if end %}<span>Ended {{ end|date:"M j, Y H:i" }}</span>{% endif %}
+                  </div>
                 {% endwith %}
               </div>
             {% endif %}
+
             {% if pppoe_identify_error|default:identify_error %}
               {% if pppoe_require_account_lookup|default:require_account_lookup %}
-                <p class="meta" style="margin-bottom:0.7rem;">{{ pppoe_identify_error|default:identify_error }}</p>
+                <p class="meta">{{ pppoe_identify_error|default:identify_error }}</p>
               {% endif %}
             {% endif %}
-            <div class="plans" data-plan-cards role="listbox" aria-label="PPPoE packages">
-              {% for plan in plans %}
-                {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
-                <button
-                  type="button"
-                  class="plan{% if sel == plan.pk or not sel and forloop.first %} is-selected{% endif %}"
-                  role="option"
-                  aria-selected="{% if sel == plan.pk or not sel and forloop.first %}true{% else %}false{% endif %}"
-                  data-plan-id="{{ plan.pk }}"
-                  data-price="{{ plan.price }}"
-                >
-                  <span class="plan-radio" aria-hidden="true"></span>
-                  <span>
-                    <strong>{{ plan.name }}</strong>
-                    <span>{{ plan.speed_label }}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}</span>
-                  </span>
-                  <span class="plan-price">KES {{ plan.price }}</span>
-                </button>
-                {% endwith %}
-              {% endfor %}
-            </div>
+
             <form
               class="login"
               data-payment-form
               method="post"
               action="{{ pppoe_payment_start_url|default:payment_start_url }}"
-              style="margin-top:0.75rem;"
             >
               {% csrf_token %}
               {% with token=pppoe_customer_token|default:customer_token %}
@@ -903,29 +883,38 @@
               {% endwith %}
               {% with acct=pppoe_account_number|default:account_number|default:'' %}
               <div class="field">
-                <label for="pppoe-account-number">Account number</label>
+                <label for="pppoe-account-number">Account number <span class="field-hint-inline">(or phone number)</span></label>
                 <input
                   id="pppoe-account-number"
                   name="account_number"
                   type="text"
+                  inputmode="tel"
                   autocomplete="username"
-                  placeholder="Your account number"
+                  placeholder="Account or 07xxxxxxxx"
                   value="{{ acct }}"
                   {% if pppoe_account_locked and acct %}readonly aria-readonly="true"{% endif %}
                 >
                 {% if pppoe_account_locked and acct %}
-                  <p class="meta" style="margin:0.35rem 0 0;">Account selected for this connection.</p>
+                  <p class="field-hint">Matched to this connection</p>
+                {% else %}
+                  <p class="field-hint">Use your account number or the phone number on your account</p>
                 {% endif %}
               </div>
               {% endwith %}
-              <div class="field visually-hidden-select">
-                <label for="pppoe-plan-id">Internet package</label>
+              <div class="field">
+                <label for="pppoe-plan-id">Package</label>
                 <select id="pppoe-plan-id" name="plan_id" data-plan-select required>
+                  {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
                   {% for plan in plans %}
-                    {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
-                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if sel == plan.pk or not sel and forloop.first %} selected{% endif %}>{{ plan.name }} — KES {{ plan.price }} · {{ plan.speed_label }}</option>
-                    {% endwith %}
+                    <option
+                      value="{{ plan.pk }}"
+                      data-price="{{ plan.price }}"
+                      {% if sel == plan.pk or not sel and forloop.first %}selected{% endif %}
+                    >
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if sel == plan.pk %} (current){% endif %}
+                    </option>
                   {% endfor %}
+                  {% endwith %}
                 </select>
               </div>
               <div class="field">
@@ -943,24 +932,10 @@
               </div>
               <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
             </form>
+
             <p class="meta" data-payment-status role="status" aria-live="polite">
-              Pay to renew. Your connection restores automatically after payment.
+              After payment, your connection restores automatically.
             </p>
-            <div class="payment-waiting" data-payment-waiting hidden aria-live="polite">
-              <div class="payment-loader" aria-hidden="true">
-                <svg viewBox="0 0 52 52" focusable="false">
-                  <circle class="ring" cx="26" cy="26" r="20"></circle>
-                  <circle class="arc" cx="26" cy="26" r="20"></circle>
-                </svg>
-                <span class="pulse-dot"></span>
-              </div>
-              <p class="payment-waiting-live">Live</p>
-              <p class="payment-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
-              <p class="payment-waiting-copy" data-waiting-copy>
-                Enter your PIN on your phone. This page updates automatically.
-              </p>
-            </div>
-            <button type="button" class="retry" data-payment-retry hidden>Try again</button>
           </section>
           {% endif %}
         {% else %}
@@ -975,10 +950,41 @@
           </p>
         {% endif %}
 
-        <p class="foot-note">Secured M-Pesa STK · {{ org_name }}</p>
+        <p class="foot-note">Secured with M-Pesa STK · {{ org_name }}</p>
       </div>
     </main>
   </div>
+
+  {% if stk_ready and plans %}
+  <div
+    class="pay-overlay"
+    data-payment-waiting
+    hidden
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="pay-waiting-title"
+    aria-describedby="pay-waiting-copy"
+  >
+    <div class="pay-overlay-card">
+      <div class="payment-loader" aria-hidden="true">
+        <svg viewBox="0 0 52 52" focusable="false">
+          <circle class="ring" cx="26" cy="26" r="20"></circle>
+          <circle class="arc" cx="26" cy="26" r="20"></circle>
+        </svg>
+        <span class="pulse-dot"></span>
+      </div>
+      <p class="payment-waiting-live" data-waiting-live>Waiting</p>
+      <p class="payment-waiting-title" id="pay-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
+      <p class="payment-waiting-copy" id="pay-waiting-copy" data-waiting-copy>
+        Enter your PIN on your phone. This page updates automatically.
+      </p>
+      <div class="pay-overlay-actions">
+        <button type="button" class="retry" data-payment-retry>Try again</button>
+        <button type="button" class="pay-overlay-dismiss" data-payment-dismiss>Back to form</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <script>
     (function () {
@@ -1011,31 +1017,56 @@
       var POLL_SLOW_MS = 5000;
       var POLL_GIVE_UP_MS = 600000;
 
+      var overlay = document.querySelector("[data-payment-waiting]");
+      var waitingTitle = overlay && overlay.querySelector("[data-waiting-title]");
+      var waitingCopy = overlay && overlay.querySelector("[data-waiting-copy]");
+      var waitingLive = overlay && overlay.querySelector("[data-waiting-live]");
+      var retryBtn = overlay && overlay.querySelector("[data-payment-retry]");
+      var dismissBtn = overlay && overlay.querySelector("[data-payment-dismiss]");
+      var activeCtx = null;
+
+      function setWaiting(active, title, copy, isError) {
+        if (!overlay) return;
+        overlay.hidden = !active;
+        overlay.classList.toggle("is-error", !!isError);
+        document.body.classList.toggle("is-paying", !!active);
+        if (waitingLive) {
+          waitingLive.textContent = isError ? "Failed" : "Waiting";
+        }
+        if (active) {
+          if (waitingTitle && title) waitingTitle.textContent = title;
+          if (waitingCopy && copy) waitingCopy.textContent = copy;
+        }
+      }
+
+      function closeOverlay() {
+        setWaiting(false);
+        if (activeCtx && activeCtx.submit) {
+          activeCtx.submit.disabled = false;
+        }
+      }
+
+      if (retryBtn) {
+        retryBtn.addEventListener("click", function () {
+          if (!activeCtx || !activeCtx.form) return;
+          setWaiting(false);
+          activeCtx.form.dispatchEvent(new Event("submit", { cancelable: true }));
+        });
+      }
+      if (dismissBtn) {
+        dismissBtn.addEventListener("click", closeOverlay);
+      }
+
       function bindPaymentRoot(root) {
         var form = root.querySelector("[data-payment-form]");
         var submit = root.querySelector("[data-payment-submit]");
-        var retry = root.querySelector("[data-payment-retry]");
         var plan = root.querySelector("[data-plan-select]");
         var status = root.querySelector("[data-payment-status]");
-        var waitingPanel = root.querySelector("[data-payment-waiting]");
-        var waitingTitle = root.querySelector("[data-waiting-title]");
-        var waitingCopy = root.querySelector("[data-waiting-copy]");
-        var planCards = root.querySelector("[data-plan-cards]");
         if (!form || !submit || !plan) return;
 
         var pollTimer = null;
         var pollStartedAt = 0;
-
-        function setWaiting(active, title, copy) {
-          if (!waitingPanel) return;
-          waitingPanel.hidden = !active;
-          if (status) status.hidden = !!active;
-          if (active) {
-            stopRetry();
-            if (waitingTitle && title) waitingTitle.textContent = title;
-            if (waitingCopy && copy) waitingCopy.textContent = copy;
-          }
-        }
+        var ctx = { form: form, submit: submit, status: status };
 
         function show(message, isError) {
           if (status) {
@@ -1043,40 +1074,32 @@
             status.textContent = message;
             status.className = isError ? "error" : "meta is-waiting";
           }
-          if (isError) setWaiting(false);
         }
 
         function offerRetry(message) {
-          show(message, true);
-          if (retry) retry.hidden = false;
+          activeCtx = ctx;
+          setWaiting(
+            true,
+            "Payment not completed",
+            message || "The payment was not completed.",
+            true
+          );
           submit.disabled = false;
-          setWaiting(false);
-        }
-
-        function stopRetry() {
-          if (retry) retry.hidden = true;
-        }
-
-        function syncPlanCards() {
-          if (!planCards) return;
-          var selected = plan.value;
-          planCards.querySelectorAll(".plan").forEach(function (card) {
-            var active = card.getAttribute("data-plan-id") === selected;
-            card.classList.toggle("is-selected", active);
-            card.setAttribute("aria-selected", active ? "true" : "false");
-          });
+          show(message || "The payment was not completed.", true);
         }
 
         function updatePayButton() {
           var option = plan.options[plan.selectedIndex];
           var amount = option ? option.getAttribute("data-price") : "";
           submit.textContent = amount ? "Pay KES " + amount + " with M-Pesa" : "Pay with M-Pesa";
-          syncPlanCards();
         }
 
         function openInternet(stkId, token) {
-          setWaiting(false);
-          stopRetry();
+          setWaiting(
+            true,
+            "You're online",
+            "Payment successful. Restoring your connection…"
+          );
           show("Payment successful. You are online.", false);
           submit.disabled = true;
           var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
@@ -1106,13 +1129,9 @@
             .then(function (result) {
               var data = result.data || {};
               if (!result.ok || !data.ok) {
-                // Keep waiting silently on transient status errors; only offer
-                // retry when the server says this payment cannot continue.
                 if (data.can_retry === false) {
-                  show(data.error || "Could not check payment.", true);
-                  stopRetry();
+                  offerRetry(data.error || "Could not check payment.");
                   submit.disabled = true;
-                  setWaiting(false);
                   return;
                 }
                 var elapsedErr = Date.now() - pollStartedAt;
@@ -1123,7 +1142,6 @@
                     (data.error || "Could not check payment.") +
                       " Retrying automatically…"
                   );
-                  stopRetry();
                   pollTimer = window.setTimeout(
                     function () { poll(url, token); },
                     POLL_SLOW_MS
@@ -1134,7 +1152,6 @@
                 return;
               }
               if (data.success) {
-                stopRetry();
                 if (data.authorized) {
                   openInternet(data.stk_id, token);
                   return;
@@ -1155,23 +1172,19 @@
                     return;
                   }
                 }
-                show(
+                offerRetry(
                   data.authorization_error ||
-                    "Payment succeeded, but the router could not authorize this device. Reload this page in a moment.",
-                  true
+                    "Payment succeeded, but the router could not authorize this device. Reload this page in a moment."
                 );
-                stopRetry();
                 return;
               }
               if (data.pending) {
                 var elapsed = Date.now() - pollStartedAt;
                 if (data.expired) {
-                  // M-Pesa prompt cancelled / timed out — payment unsuccessful.
                   window.clearTimeout(pollTimer);
                   offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
                   return;
                 }
-                stopRetry();
                 setWaiting(
                   true,
                   "Waiting for M-Pesa",
@@ -1191,7 +1204,6 @@
               offerRetry(
                 data.reason || data.result_desc || "The payment was not completed."
               );
-              if (data.can_retry === false) stopRetry();
             })
             .catch(function (error) {
               var elapsedCatch = Date.now() - pollStartedAt;
@@ -1202,7 +1214,6 @@
                   (error.message || "Could not check payment.") +
                     " Retrying automatically…"
                 );
-                stopRetry();
                 pollTimer = window.setTimeout(
                   function () { poll(url, token); },
                   POLL_SLOW_MS
@@ -1213,20 +1224,10 @@
             });
         }
 
-        if (planCards) {
-          planCards.addEventListener("click", function (event) {
-            var card = event.target.closest(".plan");
-            if (!card) return;
-            plan.value = card.getAttribute("data-plan-id");
-            updatePayButton();
-          });
-        }
-
         form.addEventListener("submit", function (event) {
           event.preventDefault();
           var macInput = form.querySelector('input[name="mac"]');
           if (macInput) {
-            // CPE/ISP Hotspot redirects pass mac=; fill if the template still has $(mac).
             var macVal = (macInput.value || "").trim();
             if (!macVal || macVal.indexOf("$(") === 0) {
               try {
@@ -1249,16 +1250,14 @@
               } catch (err2) {}
             }
             if (!macVal || macVal.indexOf("$(") === 0) {
-              show(
-                "Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.",
-                true
+              offerRetry(
+                "Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again."
               );
-              stopRetry();
               return;
             }
           }
           window.clearTimeout(pollTimer);
-          stopRetry();
+          activeCtx = ctx;
           submit.disabled = true;
           pollStartedAt = Date.now();
           setWaiting(
@@ -1282,7 +1281,6 @@
               if (!result.ok || !data.ok) {
                 throw new Error(data.error || "Could not start payment.");
               }
-              stopRetry();
               setWaiting(
                 true,
                 "Waiting for M-Pesa",
@@ -1296,12 +1294,6 @@
             });
         });
 
-        if (retry) {
-          retry.hidden = true;
-          retry.addEventListener("click", function () {
-            form.dispatchEvent(new Event("submit", { cancelable: true }));
-          });
-        }
         plan.addEventListener("change", updatePayButton);
         updatePayButton();
       }

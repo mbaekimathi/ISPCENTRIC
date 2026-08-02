@@ -37,8 +37,7 @@ from accounts.routing import (
     is_viewing_as_client,
 )
 from billing.forms import (
-    CustomerPackageForm,
-    CustomerPeriodForm,
+    CustomerPackagePeriodForm,
     PppoeClientRegisterForm,
 )
 from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
@@ -183,15 +182,9 @@ CLIENT_SIDEBARS = {
             {"key": "wifi", "label": "Wi‑Fi settings", "anchor": "client-wifi"},
             {
                 "key": "package",
-                "label": "Package period",
-                "action": "open_modal",
-                "modal": "client-package-period-modal",
-            },
-            {
-                "key": "update_package",
                 "label": "Update package",
                 "action": "open_modal",
-                "modal": "client-update-package-modal",
+                "modal": "client-package-modal",
             },
             {"key": "billing", "label": "Billing analysis", "anchor": "client-billing"},
         ],
@@ -419,15 +412,9 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
         [
             {
                 "key": "package",
-                "label": "Package period",
-                "action": "open_modal",
-                "modal": "client-package-period-modal",
-            },
-            {
-                "key": "update_package",
                 "label": "Update package",
                 "action": "open_modal",
-                "modal": "client-update-package-modal",
+                "modal": "client-package-modal",
             },
             {"key": "billing", "label": "Billing analysis", "href": f"{base}#client-billing"},
         ]
@@ -3181,8 +3168,7 @@ def client_detail(request, customer_id: int):
 
     wifi_ssid_display = (customer.cpe_wifi_ssid or "").strip()
     wifi_password_display = customer.cpe_wifi_password or ""
-    package_form = CustomerPackageForm(instance=customer, organization=org)
-    package_period_form = CustomerPeriodForm(instance=customer, organization=org)
+    package_form = CustomerPackagePeriodForm(instance=customer, organization=org)
     open_client_modal = ""
 
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
@@ -3260,68 +3246,47 @@ def client_detail(request, customer_id: int):
             messages.success(request, "Router password saved.")
             return redirect("core:client_detail", customer_id=customer.pk)
 
-        if action == "update_package":
-            package_form = CustomerPackageForm(request.POST, instance=customer, organization=org)
+        if action in ("update_package", "update_package_period", "update_package_and_period"):
+            package_form = CustomerPackagePeriodForm(
+                request.POST, instance=customer, organization=org
+            )
             if package_form.is_valid():
                 customer = package_form.save()
                 provision = bool(customer.pppoe_username and customer.router_id)
                 _enqueue_subscription_sync(customer.pk, provision)
 
                 if is_ajax:
+                    if customer.plan_id and customer.package_start and customer.package_end:
+                        msg = (
+                            f"Package set to {customer.plan.name} "
+                            f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()})."
+                        )
+                    elif customer.plan_id:
+                        msg = f"Package set to {customer.plan.name}."
+                    else:
+                        msg = "Package updated."
                     return _package_json_response(
                         customer,
-                        message=(
-                            f"Package updated to {customer.plan.name}."
-                            if customer.plan_id
-                            else "Package updated."
-                        ),
+                        message=msg,
                         provision=provision,
                     )
 
-                messages.success(
-                    request,
-                    f"Package updated to {customer.plan.name}." if customer.plan_id else "Package updated.",
-                )
+                if customer.plan_id and customer.package_start and customer.package_end:
+                    messages.success(
+                        request,
+                        f"Package set to {customer.plan.name} "
+                        f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()}).",
+                    )
+                elif customer.plan_id:
+                    messages.success(request, f"Package set to {customer.plan.name}.")
+                else:
+                    messages.success(request, "Package updated.")
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             if is_ajax:
                 errors = json.loads(package_form.errors.as_json())
                 return JsonResponse({"ok": False, "errors": errors}, status=400)
-            open_client_modal = "client-update-package-modal"
-
-        elif action == "update_package_period":
-            package_period_form = CustomerPeriodForm(request.POST, instance=customer, organization=org)
-            if package_period_form.is_valid():
-                customer = package_period_form.save()
-                provision = bool(customer.pppoe_username and customer.router_id)
-                _enqueue_subscription_sync(customer.pk, provision)
-
-                if is_ajax:
-                    return _package_json_response(
-                        customer,
-                        message=(
-                            f"Package period updated "
-                            f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()})."
-                            if customer.package_start and customer.package_end
-                            else "Package period updated."
-                        ),
-                        provision=provision,
-                    )
-
-                if customer.package_start and customer.package_end:
-                    messages.success(
-                        request,
-                        f"Package period updated "
-                        f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()}).",
-                    )
-                else:
-                    messages.success(request, "Package period updated.")
-                return redirect("core:client_detail", customer_id=customer.pk)
-
-            if is_ajax:
-                errors = json.loads(package_period_form.errors.as_json())
-                return JsonResponse({"ok": False, "errors": errors}, status=400)
-            open_client_modal = "client-package-period-modal"
+            open_client_modal = "client-package-modal"
 
 
     invoices = (
@@ -3390,7 +3355,6 @@ def client_detail(request, customer_id: int):
         wifi_ssid_display=wifi_ssid_display,
         wifi_password_display=wifi_password_display,
         package_form=package_form,
-        package_period_form=package_period_form,
         package_duration=getattr(customer.plan, "duration", "") or "",
         package_duration_label=(
             customer.plan.get_duration_display() if customer.plan_id else ""
@@ -5263,11 +5227,11 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "pppoe_selected_plan_id": None,
         "pppoe_package_end": None,
         "pppoe_identify_error": (
-            "Enter the PPPoE account number for the router you want to renew."
+            "Enter the PPPoE account number or phone number for the router you want to renew."
             if pppoe_option_available
             else ""
         ),
-        "hotspot_option_available": False,
+        "hotspot_option_available": True,
         "hotspot_ssids": [],
         "require_account_lookup": False,
         "customer_token": "",
@@ -5277,7 +5241,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "selected_plan_id": None,
         "package_end": None,
         "identify_error": "",
-        "dual_access_tabs": bool(hotspot_mac) and pppoe_option_available,
+        "dual_access_tabs": bool(pppoe_option_available),
     }
 
 
@@ -5639,6 +5603,18 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     plans = list(
         BillingPlan.objects.filter(organization=org, is_active=True).order_by("price")[:8]
     )
+    current_plan_id = getattr(customer, "plan_id", None) if customer else None
+    if current_plan_id and not any(p.pk == current_plan_id for p in plans):
+        current_plan = (
+            BillingPlan.objects.filter(
+                pk=current_plan_id,
+                organization=org,
+                is_active=True,
+            )
+            .first()
+        )
+        if current_plan is not None:
+            plans.insert(0, current_plan)
     has_mpesa = bool(org.mpesa_payment_type and org.mpesa_number)
     stk_ready = bool(org.effective_daraja_credentials().get("ready"))
     customer_token = ""
@@ -5759,19 +5735,31 @@ def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = 
         service_type=Customer.ServiceType.PPPOE,
         status=Customer.Status.ACTIVE,
     ).select_related("plan", "organization", "router")
-    if account_number:
-        match = qs.filter(account_number__iexact=account_number).order_by("id").first()
-        if match is not None:
-            return match
-    if phone:
-        msisdn = normalize_kenya_msisdn(phone)
+
+    def match_by_phone(raw: str):
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        msisdn = normalize_kenya_msisdn(raw)
         candidates = list(qs.exclude(phone="").order_by("id")[:500])
         for row in candidates:
             if normalize_kenya_msisdn(row.phone or "") == msisdn:
                 return row
-            raw = (row.phone or "").strip()
-            if raw and raw == phone:
+            stored = (row.phone or "").strip()
+            if stored and stored == raw:
                 return row
+        return None
+
+    if account_number:
+        match = qs.filter(account_number__iexact=account_number).order_by("id").first()
+        if match is not None:
+            return match
+        # Allow phone typed into the account field.
+        match = match_by_phone(account_number)
+        if match is not None:
+            return match
+    if phone:
+        return match_by_phone(phone)
     return None
 
 
@@ -5793,7 +5781,7 @@ def pppoe_pay(request, join_code: str):
     if customer is None:
         identify_error = (
             "Could not auto-match this connection. Enter your account number "
-            "or M-Pesa phone to pay and restore internet."
+            "or phone number to pay and restore internet."
         )
     context = _pppoe_portal_context(
         org, request, customer=customer, identify_error=identify_error
@@ -5859,7 +5847,7 @@ def pppoe_payment_start(request, join_code: str):
                     "ok": False,
                     "error": (
                         "Could not find this PPPoE account. Check the account "
-                        "number or the phone used when registering."
+                        "number or phone number on the account."
                     ),
                 },
                 status=404,
