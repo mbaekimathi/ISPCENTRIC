@@ -60,6 +60,13 @@
   </aside>
 
   <div class="staff-workspace">
+    <div class="mikrotik-page-loader" id="mikrotik-page-loader" hidden aria-hidden="true" role="status">
+      <div class="mikrotik-page-loader-card">
+        <span class="mikrotik-page-spinner" aria-hidden="true"></span>
+        <p class="mikrotik-page-loader-title">Loading…</p>
+        <p class="mikrotik-page-loader-sub">Please wait</p>
+      </div>
+    </div>
     <header class="staff-topbar">
       <div class="staff-topbar-left">
         <button type="button" class="staff-nav-toggle" id="staff-nav-toggle" aria-label="Open menu" aria-controls="staff-sidebar" aria-expanded="false">
@@ -372,6 +379,90 @@
       if (e.key === "Escape" && !modal.hidden) closeModal();
     });
   }
+
+  // Professional page loader for MikroTik navigation / long form posts.
+  (function () {
+    var loader = document.getElementById("mikrotik-page-loader");
+    if (!loader) return;
+    var titleEl = loader.querySelector(".mikrotik-page-loader-title");
+    var subEl = loader.querySelector(".mikrotik-page-loader-sub");
+    var hideTimer = null;
+
+    function showLoader(title, sub) {
+      if (titleEl) titleEl.textContent = title || "Loading…";
+      if (subEl) subEl.textContent = sub || "Please wait";
+      loader.hidden = false;
+      loader.setAttribute("aria-hidden", "false");
+      document.body.classList.add("mikrotik-page-loading");
+      if (hideTimer) clearTimeout(hideTimer);
+      // Safety: never leave the overlay stuck if navigation is cancelled.
+      hideTimer = setTimeout(function () {
+        loader.hidden = true;
+        loader.setAttribute("aria-hidden", "true");
+        document.body.classList.remove("mikrotik-page-loading");
+      }, 45000);
+    }
+
+    function isMikrotikHref(href) {
+      if (!href) return false;
+      try {
+        var url = new URL(href, window.location.origin);
+        if (url.origin !== window.location.origin) return false;
+        return /\/app\/mikrotik(\/|$)/.test(url.pathname);
+      } catch (e) {
+        return false;
+      }
+    }
+
+    document.addEventListener("click", function (e) {
+      if (e.defaultPrevented) return;
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var link = e.target.closest && e.target.closest("a[href]");
+      if (!link) return;
+      if (link.target && link.target !== "" && link.target !== "_self") return;
+      if (link.hasAttribute("download")) return;
+      var href = link.getAttribute("href") || "";
+      if (!href || href.charAt(0) === "#" || href.indexOf("javascript:") === 0) return;
+      if (!isMikrotikHref(href)) return;
+      var samePath = false;
+      try {
+        samePath = new URL(href, window.location.origin).pathname === window.location.pathname
+          && new URL(href, window.location.origin).search === window.location.search;
+      } catch (err) {}
+      if (samePath) return;
+      showLoader("Opening MikroTik…", "Loading page");
+    }, true);
+
+    document.addEventListener("submit", function (e) {
+      var form = e.target;
+      if (!form || form.tagName !== "FORM") return;
+      if (e.defaultPrevented) return;
+      if (form.getAttribute("data-no-page-loader") === "1") return;
+      if (form.id === "mikrotik-password-form") return;
+      var action = form.getAttribute("action") || window.location.href;
+      var onMikrotikPage = /\/app\/mikrotik(\/|$)/.test(window.location.pathname);
+      if (!onMikrotikPage && !isMikrotikHref(action)) return;
+      var submitter = e.submitter;
+      var label = (submitter && (submitter.getAttribute("data-loading-label") || submitter.textContent || "")).trim();
+      // Defer so AJAX forms can preventDefault without flashing the overlay.
+      setTimeout(function () {
+        if (e.defaultPrevented) return;
+        showLoader(label || "Applying changes…", "Talking to the MikroTik — this can take a moment");
+        if (submitter && !submitter.disabled) {
+          submitter.classList.add("is-busy");
+          var existing = submitter.querySelector(".mikrotik-btn-spinner");
+          if (!existing) {
+            var spin = document.createElement("span");
+            spin.className = "mikrotik-btn-spinner";
+            spin.setAttribute("aria-hidden", "true");
+            submitter.insertBefore(spin, submitter.firstChild);
+          } else {
+            existing.hidden = false;
+          }
+        }
+      }, 0);
+    });
+  })();
 })();
 </script>
 {% endblock %}

@@ -36,6 +36,7 @@
 
     <div class="mikrotik-router-profile-status">
       <span class="mikrotik-link-status is-checking" id="mikrotik-hero-link" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+        <span class="mikrotik-link-spinner" aria-hidden="true"></span>
         <span class="mikrotik-link-dot" aria-hidden="true"></span>
         <span class="mikrotik-link-label">Checking…</span>
       </span>
@@ -184,12 +185,22 @@
         data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
         {% if is_suspended %}disabled{% endif %}
       >Reconnect</button>
-      <button type="button" class="btn btn-ghost" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>Refresh live</button>
+      <button type="button" class="btn btn-ghost" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>
+        <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
+        <span class="mikrotik-btn-label">Refresh live</span>
+      </button>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik' %}">Back to routers</a>
     </div>
   </div>
 
-  <section class="mikrotik-live" id="mikrotik-live" aria-live="polite" data-live-url="{% url 'core:mikrotik_live' router.id %}" data-suspended="{% if is_suspended %}1{% else %}0{% endif %}">
+  <section class="mikrotik-live is-loading" id="mikrotik-live" aria-live="polite" data-live-url="{% url 'core:mikrotik_live' router.id %}" data-suspended="{% if is_suspended %}1{% else %}0{% endif %}">
+    <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended %}hidden{% endif %} role="status" aria-live="polite">
+      <span class="mikrotik-page-spinner" aria-hidden="true"></span>
+      <div>
+        <p class="mikrotik-live-loading-title">Loading live data…</p>
+        <p class="mikrotik-live-loading-sub">Connecting to {{ router.name }} over RouterOS API.</p>
+      </div>
+    </div>
     <div class="mikrotik-live-head">
       <div>
         <h3>Live overview</h3>
@@ -334,7 +345,7 @@
       </div>
       <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">×</button>
     </header>
-    <form id="mikrotik-password-form" class="mikrotik-action-form" novalidate>
+    <form id="mikrotik-password-form" class="mikrotik-action-form" data-no-page-loader="1" novalidate>
       <div class="mikrotik-action-scroll">
         <div class="field-error mikrotik-form-banner" id="mikrotik-password-error" hidden></div>
         <div class="form-grid mikrotik-simple-grid">
@@ -668,10 +679,16 @@
   var noticeText = document.getElementById("mikrotik-access-notice-text");
   var noticeReason = document.getElementById("mikrotik-access-notice-reason");
   var noticeRetry = document.getElementById("mikrotik-access-notice-retry");
+  var liveLoading = document.getElementById("mikrotik-live-loading");
   var timer = null;
   var inFlight = false;
   var lastReason = "";
   var noticeShownFor = "";
+
+  function clearLiveLoading() {
+    liveRoot.classList.remove("is-loading");
+    if (liveLoading) liveLoading.hidden = true;
+  }
 
   function $(sel) {
     return liveRoot.querySelector(sel) || (facts && facts.querySelector(sel)) || document.querySelector(sel);
@@ -759,6 +776,7 @@
   }
 
   function showBlocked(reason, openPopup) {
+    clearLiveLoading();
     setHero(false);
     liveRoot.classList.add("is-offline");
     liveRoot.classList.remove("is-online");
@@ -781,6 +799,7 @@
   }
 
   function renderLive(data) {
+    clearLiveLoading();
     if (!data || !data.ok || !data.online) {
       showBlocked(friendlyReason(data || {}), true);
       return;
@@ -852,13 +871,23 @@
 
   function loadLive(force) {
     if (suspended) {
+      clearLiveLoading();
       showBlocked("This MikroTik account is suspended in ISPCENTRIC.", force || !noticeShownFor);
       return;
     }
     if (inFlight || document.hidden) return;
     inFlight = true;
-    if (refreshBtn) refreshBtn.disabled = true;
+    if (refreshBtn) {
+      refreshBtn.disabled = true;
+      refreshBtn.classList.add("is-busy");
+      var spin = refreshBtn.querySelector(".mikrotik-btn-spinner");
+      if (spin) spin.hidden = false;
+    }
     if (subEl && force) subEl.textContent = "Refreshing…";
+    if (force && liveLoading) {
+      liveRoot.classList.add("is-loading");
+      liveLoading.hidden = false;
+    }
     var url = liveUrl + (force ? (liveUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1" : "");
     fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
@@ -869,11 +898,17 @@
         renderLive(result.data || { ok: false, error: "Could not read live data from the router." });
       })
       .catch(function () {
+        clearLiveLoading();
         showBlocked("ISPCENTRIC could not contact the live-data service. Refresh and try again.", true);
       })
       .finally(function () {
         inFlight = false;
-        if (refreshBtn) refreshBtn.disabled = false;
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          refreshBtn.classList.remove("is-busy");
+          var spinDone = refreshBtn.querySelector(".mikrotik-btn-spinner");
+          if (spinDone) spinDone.hidden = true;
+        }
       });
   }
 

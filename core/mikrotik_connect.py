@@ -5589,8 +5589,13 @@ def test_mikrotik_api_login(
     *,
     port: int = 8728,
     timeout: float = 5.0,
+    include_wifi: bool = True,
 ) -> dict[str, Any]:
-    """Attempt RouterOS API login. Returns identity/board plus current wifi settings when readable."""
+    """Attempt RouterOS API login. Returns identity/board plus current wifi settings when readable.
+
+    Pass include_wifi=False for status/health probes — Wi‑Fi reads often dominate
+    latency and are not needed to decide Connected vs auth_failed.
+    """
     host = (host or "").strip()
     username = (username or "").strip()
     password = password or ""
@@ -5606,14 +5611,19 @@ def test_mikrotik_api_login(
             if login_error:
                 return login_error
             result = _fetch_identity(sock, host)
-            # Read Wi‑Fi on a dedicated session; keep this short so Connect
-            # stays responsive even when wireless packages are slow/unavailable.
-            wifi = read_mikrotik_wifi(
-                host, username, password, port=port, timeout=min(timeout, 3.0)
-            )
-            result["wifi_ssid"] = wifi.get("wifi_ssid") or ""
-            result["wifi_password"] = wifi.get("wifi_password") or ""
-            result["wifi_mode"] = wifi.get("wifi_mode") or ""
+            if include_wifi:
+                # Read Wi‑Fi on a dedicated session; keep this short so Connect
+                # stays responsive even when wireless packages are slow/unavailable.
+                wifi = read_mikrotik_wifi(
+                    host, username, password, port=port, timeout=min(timeout, 3.0)
+                )
+                result["wifi_ssid"] = wifi.get("wifi_ssid") or ""
+                result["wifi_password"] = wifi.get("wifi_password") or ""
+                result["wifi_mode"] = wifi.get("wifi_mode") or ""
+            else:
+                result["wifi_ssid"] = ""
+                result["wifi_password"] = ""
+                result["wifi_mode"] = ""
             return result
     except TimeoutError:
         return {"ok": False, "error": "Connection timed out. Is the router reachable on API port 8728?"}

@@ -6928,6 +6928,25 @@ body.staff-nav-lock {
   letter-spacing: 0.01em;
 }
 
+.mikrotik-link-spinner {
+  display: none;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 2px solid rgba(138, 154, 163, 0.35);
+  border-top-color: #5b8fa8;
+  flex: 0 0 auto;
+  animation: mk-spin 0.7s linear infinite;
+}
+
+.mikrotik-link-status.is-checking .mikrotik-link-spinner {
+  display: inline-block;
+}
+
+.mikrotik-link-status.is-checking .mikrotik-link-dot {
+  display: none;
+}
+
 .mikrotik-link-dot {
   width: 0.55rem;
   height: 0.55rem;
@@ -20267,4 +20286,147 @@ h1, h2, h3, h4,
   color: #0f766e;
   font-weight: 600;
 }
+
+/* —— MikroTik professional loading states —— */
+.mikrotik-page-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: color-mix(in srgb, var(--bg, #0b1217) 72%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.mikrotik-page-loader[hidden] {
+  display: none !important;
+}
+
+.mikrotik-page-loader-card {
+  display: grid;
+  justify-items: center;
+  gap: 0.55rem;
+  min-width: min(100%, 16rem);
+  padding: 1.35rem 1.5rem 1.25rem;
+  border-radius: 18px;
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.12));
+  background: var(--surface, #121a21);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  text-align: center;
+}
+
+.mikrotik-page-spinner,
+.mikrotik-btn-spinner {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 50%;
+  border: 3px solid color-mix(in srgb, var(--sea, #0e7c86) 28%, transparent);
+  border-top-color: var(--sea, #0e7c86);
+  animation: mk-spin 0.75s linear infinite;
+}
+
+.mikrotik-btn-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-width: 2px;
+  display: inline-block;
+  vertical-align: -0.12em;
+  margin-right: 0.4rem;
+}
+
+.mikrotik-btn-spinner[hidden] {
+  display: none !important;
+}
+
+.mikrotik-page-loader-title,
+.mikrotik-live-loading-title {
+  margin: 0;
+  font-weight: 750;
+  font-size: 0.98rem;
+  color: var(--ink, #e8eef2);
+}
+
+.mikrotik-page-loader-sub,
+.mikrotik-live-loading-sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted, #8a9aa3);
+}
+
+body.mikrotik-page-loading {
+  cursor: progress;
+}
+
+#mikrotik-refresh-status,
+#mikrotik-live-refresh,
+.btn.is-busy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+}
+
+#mikrotik-refresh-status.is-busy,
+#mikrotik-live-refresh.is-busy,
+.btn.is-busy {
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.mikrotik-live {
+  position: relative;
+}
+
+.mikrotik-live-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-bottom: 1rem;
+  padding: 1rem 1.05rem;
+  border-radius: 14px;
+  border: 1px dashed var(--border-strong, rgba(255, 255, 255, 0.14));
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+
+.mikrotik-live-loading[hidden] {
+  display: none !important;
+}
+
+.mikrotik-live.is-loading .mikrotik-live-grid,
+.mikrotik-live.is-loading .mikrotik-uplink {
+  opacity: 0.45;
+  pointer-events: none;
+  filter: saturate(0.85);
+}
+
+.mikrotik-live .mikrotik-page-spinner {
+  flex: 0 0 auto;
+}
+
+[data-theme="light"] .mikrotik-page-loader {
+  background: color-mix(in srgb, #f4f7f8 78%, transparent);
+}
+
+[data-theme="light"] .mikrotik-page-loader-card {
+  background: #fff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
+}
+
+[data-theme="light"] .mikrotik-link-spinner {
+  border-color: rgba(14, 124, 134, 0.22);
+  border-top-color: #0e7c86;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mikrotik-page-spinner,
+  .mikrotik-btn-spinner,
+  .mikrotik-link-spinner,
+  .mk-loading-pulse {
+    animation: none;
+    border-top-color: var(--sea, #0e7c86);
+  }
+}
+
 

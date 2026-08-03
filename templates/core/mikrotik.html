@@ -12,7 +12,10 @@
       <p class="panel-sub">Onboarded MikroTik devices for Hotspot, PPPoE, and live health checks.</p>
     </div>
     <div class="panel-head-actions">
-      <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>Refresh status</button>
+      <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
+        <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
+        <span class="mikrotik-btn-label">Refresh status</span>
+      </button>
       <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
     </div>
   </div>
@@ -48,6 +51,7 @@
                 <div class="mikrotik-router-connection">
                   <span class="org-code mikrotik-router-host" data-router-host-cell="{{ router.id }}">{{ router.host }}</span>
                   <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+                    <span class="mikrotik-link-spinner" aria-hidden="true"></span>
                     <span class="mikrotik-link-dot" aria-hidden="true"></span>
                     <span class="mikrotik-link-label">Checking…</span>
                   </span>
@@ -152,7 +156,7 @@
       </div>
       <button type="button" class="role-modal-close" data-close-password-modal aria-label="Close">×</button>
     </header>
-    <form id="mikrotik-password-form" class="mikrotik-action-form" novalidate>
+    <form id="mikrotik-password-form" class="mikrotik-action-form" data-no-page-loader="1" novalidate>
       <input type="hidden" id="mikrotik-password-router-id" value="">
       <input type="hidden" id="mikrotik-password-reconnect-url" value="">
       <div class="mikrotik-action-scroll">
@@ -2449,6 +2453,13 @@
     if (document.hidden) return;
     var url = statusUrl;
     if (force) url += (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+    var refreshBtn = document.getElementById("mikrotik-refresh-status");
+    if (force && refreshBtn) {
+      refreshBtn.classList.add("is-busy");
+      refreshBtn.disabled = true;
+      var spin = refreshBtn.querySelector(".mikrotik-btn-spinner");
+      if (spin) spin.hidden = false;
+    }
     fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
@@ -2485,6 +2496,14 @@
         document.querySelectorAll("[data-router-status]").forEach(function (el) {
           if (el.classList.contains("is-checking")) setStatus(el, false);
         });
+      })
+      .finally(function () {
+        if (force && refreshBtn) {
+          refreshBtn.classList.remove("is-busy");
+          refreshBtn.disabled = false;
+          var spinDone = refreshBtn.querySelector(".mikrotik-btn-spinner");
+          if (spinDone) spinDone.hidden = true;
+        }
       });
   }
 
@@ -2646,7 +2665,8 @@
   function startPolling() {
     if (started) return;
     started = true;
-    refreshStatus(true);
+    // Use cache when available so the page feels instant; Refresh status forces a probe.
+    refreshStatus(false);
     timer = setInterval(function () { refreshStatus(false); }, 30000);
   }
   if (window.requestIdleCallback) window.requestIdleCallback(startPolling, { timeout: 1200 });

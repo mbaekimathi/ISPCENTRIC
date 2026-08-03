@@ -2486,12 +2486,31 @@ def mikrotik_clean_uplink(request, router_id: int):
 
 def _ports_live_payload(router: MikroTikRouter) -> dict:
     """Read live ports/uplink and optionally auto-assign empty role maps."""
-    listed = list_mikrotik_ports(
-        router.host,
-        router.username,
-        router.password or "",
-        timeout=6.0,
-    )
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Ports list and uplink multi-read are independent RouterOS sessions —
+    # run them together so the ports page fills in sooner.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ports_future = pool.submit(
+            list_mikrotik_ports,
+            router.host,
+            router.username,
+            router.password or "",
+            timeout=6.0,
+        )
+        uplink_future = pool.submit(
+            read_mikrotik_uplink_multi,
+            router.host,
+            router.username,
+            router.password or "",
+            timeout=5.0,
+        )
+        listed = ports_future.result()
+        try:
+            uplink_live = uplink_future.result()
+        except Exception:
+            uplink_live = {"ok": False}
+
     if not listed.get("ok"):
         return {
             "ok": False,
@@ -2534,13 +2553,6 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
                 "is_bond_iface": _is_bond_port_row(row),
             }
         )
-
-    uplink_live = read_mikrotik_uplink_multi(
-        router.host,
-        router.username,
-        router.password or "",
-        timeout=5.0,
-    )
 
     physical_ports = [p for p in ports if not p.get("is_bond_iface")]
     bond_member_ports = [
@@ -3451,11 +3463,13 @@ def mikrotik_status(request):
         backfill = {}
         if online and via == "api":
             # Port 8728 is open — verify saved credentials so "Connected" means usable.
+            # Skip Wi‑Fi reads: status only needs auth + hardware IDs.
             login = test_mikrotik_api_login(
                 host,
                 router.username,
                 router.password or "",
-                timeout=2.5,
+                timeout=2.0,
+                include_wifi=False,
             )
             if login.get("ok"):
                 auth_ok = True
