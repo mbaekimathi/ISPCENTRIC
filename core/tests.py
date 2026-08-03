@@ -80,11 +80,15 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn(":do { /ip service enable [find where name=api] } on-error={}", script)
         self.assertIn("ispcentric API: enabled and listening on port 8728", script)
         self.assertIn("name=api and disabled=no and port=8728", script)
-        # Hotspot otherwise refuses 8728 for unpaid LAN clients.
-        self.assertIn('comment="ispcentric-hotspot-bypass-192"', script)
-        self.assertIn("type=bypassed address=192.168.0.0/16", script)
+        # Hotspot bypass is tunnel-subnet only — never whole customer LAN ranges.
+        self.assertIn('comment="ispcentric-vpn-hotspot-bypass"', script)
+        self.assertIn("type=bypassed address=10.9.0.0/24", script)
+        self.assertNotIn("type=bypassed address=192.168.0.0/16", script)
+        self.assertNotIn("type=bypassed address=10.0.0.0/8", script)
+        self.assertNotIn("type=bypassed address=172.16.0.0/12", script)
+        self.assertNotIn('comment="ispcentric-hotspot-bypass-192"', script)
         self.assertIn(
-            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } '
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
             "on-error={}",
             script,
         )
@@ -148,7 +152,9 @@ class WireGuardKeyTests(SimpleTestCase):
         cleanup_lines = [
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
-            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } '
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
+            "on-error={}",
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-vpn-hotspot-bypass"] } '
             "on-error={}",
             "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
             "/ip address remove [find where interface=ispcentric-vpn]",
@@ -985,13 +991,18 @@ class CaptiveGatewayHostTests(TestCase):
     @override_settings(
         PUBLIC_BASE_URL="http://192.168.88.254:8000",
         ALLOWED_HOSTS=["192.168.88.254", "localhost"],
+        HOSTED=False,
     )
     def test_gateway_ip_host_is_rewritten_and_redirected(self):
-        response = self.client.get(
-            "/generate_204",
-            HTTP_HOST="192.168.88.1",
-            REMOTE_ADDR="192.168.88.77",
-        )
+        with patch(
+            "core.hotspot_portal.local_ipv4_addresses",
+            return_value={"192.168.88.254"},
+        ):
+            response = self.client.get(
+                "/generate_204",
+                HTTP_HOST="192.168.88.1",
+                REMOTE_ADDR="192.168.88.77",
+            )
 
         self.assertEqual(response.status_code, 302)
         self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
@@ -1408,11 +1419,15 @@ class HotspotPushUrlDerivationTests(TestCase):
             password="secret",
         )
 
-    @override_settings(PUBLIC_BASE_URL="http://192.168.88.254:8000")
+    @override_settings(PUBLIC_BASE_URL="http://192.168.88.254:8000", HOSTED=False, DEBUG=True)
     def test_sweep_style_push_still_sends_portal_urls(self):
         from core.mikrotik_connect import apply_hotspot_on_router
 
         with (
+            patch(
+                "core.hotspot_portal.local_ipv4_addresses",
+                return_value={"192.168.88.254"},
+            ),
             patch(
                 "core.mikrotik_connect.check_mikrotik_reachable",
                 return_value={"online": True, "via": "api"},
@@ -1571,17 +1586,81 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
             self.assertEqual(unreachable_base_url_reason("http://41.90.1.2"), "")
             self.assertEqual(unreachable_base_url_reason("http://127.0.0.1:8000"), "")
 
-    @override_settings(PUBLIC_BASE_URL="http://10.10.0.168:8000")
-    def test_portal_urls_carry_the_reason_for_the_settings_page(self):
-        from core.hotspot_portal import hotspot_portal_urls
+    @override_settings(PUBLIC_BASE_URL="http://10.10.0.168:8000", HOSTED=False, DEBUG=True)
+    def test_stale_local_public_base_url_is_replaced_with_lan_ip(self):
+        from core.hotspot_portal import hotspot_portal_urls, public_base_url
 
         with patch(
             "core.hotspot_portal.local_ipv4_addresses",
-            return_value={"192.168.88.254"},
+            return_value={"192.168.1.135", "10.9.0.3"},
+        ), patch(
+            "core.hotspot_portal._default_route_ipv4",
+            return_value="192.168.1.135",
         ):
+            base = public_base_url()
             urls = hotspot_portal_urls("606060")
-        self.assertFalse(urls["base_is_loopback"])
+        self.assertEqual(base, "http://192.168.1.135:8000")
+        self.assertEqual(urls["base_url"], "http://192.168.1.135:8000")
+        self.assertTrue(urls["pay_url"].startswith("http://192.168.1.135:8000/hotspot/"))
+        self.assertTrue(urls["base_auto_selected"])
         self.assertIn("10.10.0.168", urls["base_unreachable_reason"])
+
+    @override_settings(PUBLIC_BASE_URL="auto", HOSTED=False, DEBUG=True)
+    def test_auto_sentinel_picks_lan_ip_not_wireguard(self):
+        from core.hotspot_portal import public_base_url
+
+        with patch(
+            "core.hotspot_portal.local_ipv4_addresses",
+            return_value={"10.9.0.3", "192.168.1.135"},
+        ), patch(
+            "core.hotspot_portal._default_route_ipv4",
+            return_value="10.9.0.3",
+        ), override_settings(WIREGUARD_SUBNET="10.9.0.0/24"):
+            # Default route may be the WG interface; still prefer a non-tunnel LAN IP.
+            base = public_base_url()
+        self.assertEqual(base, "http://192.168.1.135:8000")
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://192.168.88.254:8000",
+        HOSTED=True,
+        ALLOWED_HOSTS=["isp.richcom.co.ke", "*"],
+        DEBUG=False,
+    )
+    def test_hosted_ignores_stale_private_public_base_url(self):
+        from core.hotspot_portal import public_base_url
+
+        with patch(
+            "core.hotspot_portal.local_ipv4_addresses",
+            return_value={"10.0.0.5"},
+        ):
+            base = public_base_url()
+        self.assertEqual(base, "http://isp.richcom.co.ke")
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        HOSTED=True,
+        DEBUG=False,
+    )
+    def test_hosted_keeps_public_hostname(self):
+        from core.hotspot_portal import hotspot_portal_urls, public_base_url
+
+        self.assertEqual(public_base_url(), "http://isp.richcom.co.ke")
+        urls = hotspot_portal_urls("606060")
+        self.assertEqual(
+            urls["pay_url"],
+            "http://isp.richcom.co.ke/hotspot/606060/pay/",
+        )
+        self.assertFalse(urls["base_auto_selected"])
+
+    @override_settings(PUBLIC_BASE_URL="http://192.168.1.135:8000", HOSTED=False, DEBUG=True)
+    def test_usable_local_public_base_url_is_kept(self):
+        from core.hotspot_portal import public_base_url
+
+        with patch(
+            "core.hotspot_portal.local_ipv4_addresses",
+            return_value={"192.168.1.135"},
+        ):
+            self.assertEqual(public_base_url(), "http://192.168.1.135:8000")
 
 
 class CompulsoryHotspotFallbackTests(SimpleTestCase):

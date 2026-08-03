@@ -9689,6 +9689,59 @@ def _ensure_daraja_walled_garden(sock: socket.socket) -> list[str]:
     return notes
 
 
+# Legacy tunnel-script Hotspot bypasses that opened free internet for every
+# RFC1918 client. Must be stripped whenever Hotspot is pushed.
+_HOTSPOT_LAN_WIDE_BYPASS_ADDRESSES = frozenset(
+    {
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+    }
+)
+
+
+def _remove_lan_wide_hotspot_bypasses(sock: socket.socket) -> list[str]:
+    """
+    Delete Hotspot ip-bindings that bypass whole private ranges.
+
+    Older WireGuard install scripts added type=bypassed for 10/8, 172.16/12 and
+    192.168/16 so the billing PC could reach API 8728. That also skipped captive
+    portal for every unpaid Wi‑Fi client. Remove them by comment and by address.
+    """
+    notes: list[str] = []
+    removed = 0
+    try:
+        rows = _print(
+            sock,
+            "/ip/hotspot/ip-binding",
+            props=".id,address,type,comment",
+        )
+    except Exception:  # noqa: BLE001
+        return notes
+    for row in rows:
+        comment = (row.get("comment") or "").strip()
+        address = (row.get("address") or "").strip()
+        binding_type = (row.get("type") or "").strip().lower()
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        legacy_comment = "ispcentric-hotspot-bypass" in comment
+        wide_address = (
+            binding_type == "bypassed"
+            and address in _HOTSPOT_LAN_WIDE_BYPASS_ADDRESSES
+        )
+        if not (legacy_comment or wide_address):
+            continue
+        _remove(sock, "/ip/hotspot/ip-binding", item_id)
+        removed += 1
+    if removed:
+        notes.append(
+            f"removed {removed} LAN-wide Hotspot bypass binding(s) "
+            "(paid access is per-MAC only)"
+        )
+    return notes
+
+
 def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[str]:
     """
     Exempt the ISPCentric server itself from Hotspot authentication.
@@ -9700,8 +9753,11 @@ def _ensure_hotspot_server_bypass(sock: socket.socket, portal_url: str) -> list[
 
     Also allow Safaricom hosts in the walled garden so STK remains reachable if
     the bypass binding is missing temporarily.
+
+    Never bypass whole LAN ranges here — only this one billing-server address.
     """
     notes: list[str] = []
+    notes.extend(_remove_lan_wide_hotspot_bypasses(sock))
     server_ip = _routable_ipv4_from_url(portal_url)
     if not server_ip:
         return notes
@@ -10064,6 +10120,8 @@ def _apply_hotspot_customer_on_socket(
     host_rows: list[dict[str, str]] | None = None,
 ) -> bool:
     """Create/update one Hotspot MAC user and expire its stale sessions."""
+    # Heal routers that still have the old tunnel-script LAN-wide bypasses.
+    _remove_lan_wide_hotspot_bypasses(sock)
     mac, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
         customer, now=now
     )

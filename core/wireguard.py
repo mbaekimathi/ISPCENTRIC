@@ -239,7 +239,8 @@ def routeros_script(address: str, private_key: str) -> str:
     - force-enables the RouterOS API on port 8728 (compulsory for Connect)
     - clears any /ip service address= restriction that silently blocks API
     - accepts API + ICMP from the tunnel and private LANs in the input filter
-    - bypasses Hotspot for private LAN IPs so captive clients can still reach API
+    - removes any old LAN-wide Hotspot bypasses (those opened free internet for everyone)
+    - bypasses Hotspot only for the billing WireGuard subnet (not customer LAN)
     - verifies the API service is enabled and listening, then prints pass/fail
     - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
     - pings the billing server and prints a clear pass/fail line
@@ -247,6 +248,10 @@ def routeros_script(address: str, private_key: str) -> str:
     API access is locked down by firewall (tunnel + private LAN only), not by the
     /ip service address= list — that property has broken silently on some
     RouterOS builds and left API disabled, which blocks Connect entirely.
+
+    Do not Hotspot-bypass whole RFC1918 ranges. That made every unpaid Wi‑Fi
+    client look authorized. Customer internet stays per-MAC Hotspot users; the
+    billing server LAN IP is bypassed separately when Hotspot is applied.
     """
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
@@ -264,7 +269,12 @@ def routeros_script(address: str, private_key: str) -> str:
             "# Remove the complete previous ISPCENTRIC tunnel before applying this version.",
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
-            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-"] } on-error={}',
+            # Drop only tunnel/legacy Hotspot bypass rows — never wipe the single-IP
+            # billing-server bypass that Hotspot apply installs (comment ispcentric-hotspot).
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
+            "on-error={}",
+            ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-vpn-hotspot-bypass"] } '
+            "on-error={}",
             "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
             "/ip address remove [find where interface=ispcentric-vpn]",
             "/interface wireguard remove [find where name=ispcentric-vpn]",
@@ -284,14 +294,10 @@ def routeros_script(address: str, private_key: str) -> str:
             ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
             ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
             ":do { /ip service enable [find where name=api] } on-error={}",
-            "# Hotspot refuses API/Winbox/SSH for unpaid clients even when the service is on.",
-            "# Bypass private LAN ranges so the billing PC can reach 8728 without logging in.",
-            ":do { /ip hotspot ip-binding add type=bypassed address=10.0.0.0/8 "
-            'comment="ispcentric-hotspot-bypass-10" } on-error={}',
-            ":do { /ip hotspot ip-binding add type=bypassed address=172.16.0.0/12 "
-            'comment="ispcentric-hotspot-bypass-172" } on-error={}',
-            ":do { /ip hotspot ip-binding add type=bypassed address=192.168.0.0/16 "
-            'comment="ispcentric-hotspot-bypass-192" } on-error={}',
+            "# Hotspot may still sit on the LAN; only the billing tunnel subnet may bypass.",
+            "# Never bypass 10/8, 172.16/12, or 192.168/16 — that opens free internet for all clients.",
+            f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
+            'comment="ispcentric-vpn-hotspot-bypass" } on-error={}',
             "# Allow API + ICMP from the billing tunnel (not the public WAN).",
             "/ip firewall filter",
             "add chain=input action=accept protocol=tcp dst-port=8728 "
@@ -302,7 +308,7 @@ def routeros_script(address: str, private_key: str) -> str:
             f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-icmp"',
             "add chain=input action=accept protocol=icmp "
             f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp-net"',
-            "# Local / office LAN: permit API before Hotspot/drop rules.",
+            "# Local / office LAN: permit API to the router only (not free WAN internet).",
             "add chain=input action=accept protocol=tcp dst-port=8728 "
             'src-address=10.0.0.0/8 place-before=0 comment="ispcentric-vpn-api-lan-10"',
             "add chain=input action=accept protocol=tcp dst-port=8728 "

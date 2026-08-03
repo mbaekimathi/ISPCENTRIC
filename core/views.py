@@ -37,6 +37,7 @@ from accounts.routing import (
     is_viewing_as_client,
 )
 from billing.forms import (
+    CustomerDetailsEditForm,
     CustomerPackagePeriodForm,
     PppoeClientRegisterForm,
 )
@@ -3175,6 +3176,7 @@ def client_detail(request, customer_id: int):
     wifi_ssid_display = (customer.cpe_wifi_ssid or "").strip()
     wifi_password_display = customer.cpe_wifi_password or ""
     package_form = CustomerPackagePeriodForm(instance=customer, organization=org)
+    details_form = CustomerDetailsEditForm(instance=customer, organization=org)
     open_client_modal = ""
 
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
@@ -3196,6 +3198,23 @@ def client_detail(request, customer_id: int):
                 connection.close()
 
         threading.Thread(target=_bg_sync, daemon=True).start()
+
+    def _enqueue_pppoe_provision(customer_pk: int) -> None:
+        def _bg_provision():
+            from django.db import connection
+
+            try:
+                _cust = Customer.objects.select_related(
+                    "plan", "router", "organization"
+                ).get(pk=customer_pk)
+                if _cust.pppoe_username and _cust.router_id:
+                    provision_customer_pppoe(_cust, ensure_stack=False)
+            except Exception:
+                pass
+            finally:
+                connection.close()
+
+        threading.Thread(target=_bg_provision, daemon=True).start()
 
     def _package_json_response(customer, *, message: str, provision: bool) -> JsonResponse:
         from django.utils import timezone as dj_tz
@@ -3251,6 +3270,52 @@ def client_detail(request, customer_id: int):
                 return JsonResponse({"ok": True, "message": "Router password saved."})
             messages.success(request, "Router password saved.")
             return redirect("core:client_detail", customer_id=customer.pk)
+
+        if action == "update_client_details":
+            details_form = CustomerDetailsEditForm(
+                request.POST, instance=customer, organization=org
+            )
+            if details_form.is_valid():
+                old_username = (customer.pppoe_username or "").strip()
+                old_password = customer.pppoe_password or ""
+                customer = details_form.save()
+                creds_changed = (
+                    customer.service_type == Customer.ServiceType.PPPOE
+                    and customer.router_id
+                    and (
+                        (customer.pppoe_username or "").strip() != old_username
+                        or (customer.pppoe_password or "") != old_password
+                    )
+                )
+                if creds_changed:
+                    _enqueue_pppoe_provision(customer.pk)
+
+                if is_ajax:
+                    return JsonResponse(
+                        {
+                            "ok": True,
+                            "message": (
+                                "Client details saved."
+                                + (
+                                    " Syncing PPPoE login to MikroTik…"
+                                    if creds_changed
+                                    else ""
+                                )
+                            ),
+                            "full_name": customer.full_name,
+                            "pppoe_username": customer.pppoe_username or "",
+                            "pppoe_password": customer.pppoe_password or "",
+                            "initial": (customer.full_name[:1].upper() if customer.full_name else "C"),
+                            "syncing": creds_changed,
+                        }
+                    )
+                messages.success(request, "Client details saved.")
+                return redirect("core:client_detail", customer_id=customer.pk)
+
+            if is_ajax:
+                errors = json.loads(details_form.errors.as_json())
+                return JsonResponse({"ok": False, "errors": errors}, status=400)
+            open_client_modal = "client-details-modal"
 
         if action in ("update_package", "update_package_period", "update_package_and_period"):
             package_form = CustomerPackagePeriodForm(
@@ -3361,6 +3426,7 @@ def client_detail(request, customer_id: int):
         wifi_ssid_display=wifi_ssid_display,
         wifi_password_display=wifi_password_display,
         package_form=package_form,
+        details_form=details_form,
         package_duration=getattr(customer.plan, "duration", "") or "",
         package_duration_label=(
             customer.plan.get_duration_display() if customer.plan_id else ""

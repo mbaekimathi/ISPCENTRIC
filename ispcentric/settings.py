@@ -87,9 +87,12 @@ CSRF_TRUSTED_ORIGINS = [
 # On hosted, middleware adds https://<current-host> per request
 AUTO_CSRF_ORIGINS = HOSTED or env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
 
-# Public base URL for captive renew pages pushed to client CPE routers.
-# Example: https://billing.example.com  (no trailing slash)
+# Public base URL for captive Hotspot / renew pages pushed to MikroTik.
+# Use a concrete URL on hosted (e.g. http://isp.richcom.co.ke), or "auto"/empty
+# locally so the LAN IPv4 is picked at runtime (see core.hotspot_portal).
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+if PUBLIC_BASE_URL.lower() in {"auto", "detect", "lan", "local"}:
+    PUBLIC_BASE_URL = ""
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -107,6 +110,22 @@ INSTALLED_APPS = [
 WIREGUARD_ENDPOINT = (os.getenv("WIREGUARD_ENDPOINT") or "").strip()
 WIREGUARD_SERVER_PUBLIC_KEY = (os.getenv("WIREGUARD_SERVER_PUBLIC_KEY") or "").strip()
 WIREGUARD_SUBNET = (os.getenv("WIREGUARD_SUBNET") or "10.9.0.0/24").strip()
+
+# Local auto portal URLs use this machine's current LAN IPs — accept them as Hosts
+# so DisallowedHost does not block Hotspot clients after the IP changes.
+# Runs after WIREGUARD_SUBNET so preferred_lan_ipv4 can exclude the tunnel net.
+if not HOSTED:
+    try:
+        from core.hotspot_portal import local_ipv4_addresses, preferred_lan_ipv4
+
+        for _ip in sorted(local_ipv4_addresses()):
+            if _ip and _ip not in ALLOWED_HOSTS:
+                ALLOWED_HOSTS.append(_ip)
+        _lan = preferred_lan_ipv4()
+        if _lan and _lan not in ALLOWED_HOSTS:
+            ALLOWED_HOSTS.append(_lan)
+    except Exception:
+        pass
 
 # Reverse proxies whose X-Forwarded-For may be trusted (nginx on the same box).
 TRUSTED_PROXY_IPS = [

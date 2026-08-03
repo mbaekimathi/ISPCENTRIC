@@ -110,7 +110,14 @@ class CaptiveHostRewriteMiddleware:
         if rewrite:
             from django.conf import settings
 
-            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+            try:
+                from core.hotspot_portal import public_base_url
+
+                base = public_base_url(request) or (
+                    getattr(settings, "PUBLIC_BASE_URL", "") or ""
+                ).strip()
+            except Exception:
+                base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
             parsed = urlparse(base)
             if parsed.hostname:
                 port = f":{parsed.port}" if parsed.port else ""
@@ -242,7 +249,12 @@ class HotspotCaptiveProbeMiddleware:
             pay_path = reverse(
                 "core:hotspot_pay", kwargs={"join_code": org.join_code}
             )
-        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+        try:
+            from core.hotspot_portal import public_base_url
+
+            base = (public_base_url(request) or "").rstrip("/")
+        except Exception:
+            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").rstrip("/")
         if not base:
             base = request.build_absolute_uri("/").rstrip("/")
         target = f"{base}{pay_path}"

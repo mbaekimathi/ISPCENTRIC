@@ -252,6 +252,96 @@ class PppoeClientRegisterForm(forms.ModelForm):
         return customer
 
 
+class CustomerDetailsEditForm(forms.ModelForm):
+    """Edit subscriber name and PPPoE login from the client detail page."""
+
+    class Meta:
+        model = Customer
+        fields = ["full_name", "pppoe_username", "pppoe_password"]
+        widgets = {
+            "full_name": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "Full name",
+                    "autocomplete": "name",
+                    "id": "id_edit_full_name",
+                }
+            ),
+            "pppoe_username": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "PPPoE username",
+                    "autocomplete": "off",
+                    "id": "id_edit_pppoe_username",
+                }
+            ),
+            "pppoe_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "PPPoE password",
+                    "autocomplete": "new-password",
+                    "id": "id_edit_pppoe_password",
+                },
+                render_value=True,
+            ),
+        }
+        labels = {
+            "full_name": "Client name",
+            "pppoe_username": "PPPoE username",
+            "pppoe_password": "PPPoE password",
+        }
+
+    def __init__(self, *args, organization=None, **kwargs):
+        self.organization = organization
+        super().__init__(*args, **kwargs)
+        is_pppoe = (
+            getattr(self.instance, "service_type", "") == Customer.ServiceType.PPPOE
+        )
+        if not is_pppoe:
+            self.fields.pop("pppoe_username", None)
+            self.fields.pop("pppoe_password", None)
+
+    def clean_full_name(self):
+        name = (self.cleaned_data.get("full_name") or "").strip().upper()
+        if not name:
+            raise forms.ValidationError("Enter the client’s full name.")
+        return name
+
+    def clean_pppoe_username(self):
+        return (self.cleaned_data.get("pppoe_username") or "").strip().upper()
+
+    def clean_pppoe_password(self):
+        password = self.cleaned_data.get("pppoe_password") or ""
+        if not password:
+            raise forms.ValidationError("Enter the PPPoE password.")
+        if len(password) < 4:
+            raise forms.ValidationError("PPPoE password must be at least 4 characters.")
+        return password
+
+    def clean(self):
+        cleaned = super().clean()
+        if "pppoe_username" not in self.fields:
+            return cleaned
+        username = (cleaned.get("pppoe_username") or "").strip().upper()
+        cleaned["pppoe_username"] = username
+        if not username:
+            self.add_error("pppoe_username", "Enter the PPPoE username.")
+        elif self.organization:
+            qs = Customer.objects.filter(
+                organization=self.organization,
+                service_type=Customer.ServiceType.PPPOE,
+                pppoe_username__iexact=username,
+            )
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                self.add_error(
+                    "pppoe_username",
+                    "That PPPoE username is already registered.",
+                )
+        return cleaned
+
+
 class SalesClientRegisterForm(forms.ModelForm):
     """Sales registration of a personal client (contact + map location)."""
 

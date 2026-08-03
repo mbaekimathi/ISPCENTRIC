@@ -642,11 +642,21 @@ class PaymentGateway(models.Model):
 
     @classmethod
     def sandbox_base_url(cls) -> str:
-        from django.conf import settings
+        base = ""
+        try:
+            from core.hotspot_portal import is_loopback_url, public_base_url
 
-        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-        if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
-            return base
+            base = (public_base_url() or "").strip().rstrip("/")
+            if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
+                return base
+            if is_loopback_url(base):
+                return base
+        except Exception:
+            from django.conf import settings
+
+            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+            if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
+                return base
         return cls.SANDBOX_BASE_URL
 
     @classmethod
@@ -654,9 +664,14 @@ class PaymentGateway(models.Model):
         env = (environment or "").strip().lower()
         if env == cls.Environment.SANDBOX or not env:
             return f"{cls.sandbox_base_url()}{cls.STK_CALLBACK_PATH}"
-        from django.conf import settings
+        try:
+            from core.hotspot_portal import public_base_url
 
-        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+            base = (public_base_url() or "").strip().rstrip("/")
+        except Exception:
+            from django.conf import settings
+
+            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
         if base:
             return f"{base}{cls.STK_CALLBACK_PATH}"
         return ""

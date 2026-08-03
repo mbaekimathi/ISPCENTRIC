@@ -81,9 +81,14 @@ def resolve_stk_callback_url(
     # Production Daraja requires a public HTTPS callback (not localhost).
     # Local confirmation still works via STK Query polling.
     if env == PaymentGateway.Environment.PRODUCTION and _is_local_http_callback(url):
-        from django.conf import settings
+        try:
+            from core.hotspot_portal import public_base_url
 
-        public = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+            public = (public_base_url() or "").strip().rstrip("/")
+        except Exception:
+            from django.conf import settings
+
+            public = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
         if public.startswith("https://"):
             return f"{public}{PaymentGateway.STK_CALLBACK_PATH}"
         return f"https://ispcentric.local{PaymentGateway.STK_CALLBACK_PATH}"
