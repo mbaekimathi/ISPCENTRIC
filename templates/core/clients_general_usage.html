@@ -1,0 +1,399 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}General usage — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="client-detail-page client-usage-analysis-page clients-general-usage-page">
+
+<nav class="client-cat-nav" aria-label="Usage ranges">
+  <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?hours=6">6 hours</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">24 hours</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?hours=72">3 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?hours=168">7 days</a>
+</nav>
+
+<section class="panel client-hero" id="usage-overview" data-cat="live">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-live">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
+        General usage
+      </p>
+      <h2>All clients</h2>
+      <p class="panel-sub" data-usage-summary-copy>
+        Organization-wide trends for the last {{ trend_hours }} hour{{ trend_hours|pluralize }}.
+        Samples collect while client usage pages or live sessions are open.
+      </p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <span class="mikrotik-live-stamp" data-usage-stamp>—</span>
+      <button type="button" class="btn btn-ghost" data-usage-refresh>Refresh</button>
+    </div>
+  </div>
+
+  <dl class="client-kv-row client-usage-stats" id="usage-summary">
+    <div class="client-kv client-usage-stat" data-ico="clients">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients tracked</dt>
+      <dd><strong data-sum="clients">—</strong><span>With samples in this window</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="uptime">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</dt>
+      <dd><strong data-sum="online">—</strong><span>Share of samples online</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="down">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
+      <dd><strong data-sum="peak-down">—</strong><span>Highest measured rate</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="data">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
+      <dd><strong data-sum="data">—</strong><span>Transferred in this window</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="top">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Highest user</dt>
+      <dd><strong data-sum="top-user">—</strong><span data-sum="top-user-data">Most data transferred</span></dd>
+    </div>
+  </dl>
+</section>
+
+<section
+  class="panel"
+  id="usage-charts"
+  data-cat="live"
+  data-trends-url="{{ trends_url }}"
+  data-hours="{{ trend_hours }}"
+>
+  <div class="client-usage-chart-grid">
+    <article class="client-usage-chart-card">
+      <header>
+        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
+        <h3>Online clients</h3>
+        <p>How many clients had an active session in each interval.</p>
+      </header>
+      <div class="client-usage-chart-wrap">
+        <canvas id="chart-online" height="220"></canvas>
+      </div>
+    </article>
+
+    <article class="client-usage-chart-card">
+      <header>
+        <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
+        <h3>Aggregate download &amp; upload</h3>
+        <p>Combined live speed samples across all clients (kbps).</p>
+      </header>
+      <div class="client-usage-chart-wrap">
+        <canvas id="chart-throughput" height="220"></canvas>
+      </div>
+    </article>
+
+    <article class="client-usage-chart-card">
+      <header>
+        <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Traffic</p>
+        <h3>Data transferred</h3>
+        <p>Total data moved between samples (MB).</p>
+      </header>
+      <div class="client-usage-chart-wrap">
+        <canvas id="chart-data" height="220"></canvas>
+      </div>
+    </article>
+
+    <article class="client-usage-chart-card">
+      <header>
+        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Top users</p>
+        <h3>Highest data users</h3>
+        <p>Top 10 clients by data transferred in this window.</p>
+      </header>
+      <div class="client-usage-chart-wrap">
+        <canvas id="chart-top" height="220"></canvas>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="panel staff-panel staff-panel-solid clients-general-usage-table-panel">
+  <div class="panel-head-row">
+    <div>
+      <h2>Highest users</h2>
+      <p class="panel-sub">Ranked by data transferred in the selected window.</p>
+    </div>
+    <div class="panel-head-actions">
+      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
+    </div>
+  </div>
+
+  {% if top_users %}
+    <div class="org-table-shell">
+      <table class="org-table clients-general-usage-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Client</th>
+            <th>Service</th>
+            <th>Package</th>
+            <th>Data used</th>
+            <th>Peak down</th>
+            <th>Online</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody data-top-users-body>
+          {% for user in top_users %}
+            <tr>
+              <td class="clients-general-usage-rank">{{ user.rank }}</td>
+              <td>
+                <a class="billing-dash-client" href="{% url 'core:client_detail' user.customer_id %}">
+                  <strong>{{ user.full_name }}</strong>
+                  <small>{{ user.account_number }}</small>
+                </a>
+              </td>
+              <td>{{ user.service_type_label }}</td>
+              <td>{% if user.plan_name %}<span class="billing-dash-plan">{{ user.plan_name }}</span>{% else %}<span class="billing-dash-muted">—</span>{% endif %}</td>
+              <td data-bytes="{{ user.data_used_bytes }}">—</td>
+              <td data-bps="{{ user.peak_download_bps }}">—</td>
+              <td>{{ user.online_ratio }}%</td>
+              <td>
+                <a class="btn btn-ghost" href="{% url 'core:client_usage_analysis' user.customer_id %}">Usage</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="client-live-empty-text">
+      No usage samples yet for this window. Open a client usage page or live session to start collecting data.
+    </p>
+  {% endif %}
+</section>
+
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+<script>
+(function () {
+  var root = document.getElementById("usage-charts");
+  if (!root) return;
+  var trendsUrl = root.getAttribute("data-trends-url");
+  var hours = root.getAttribute("data-hours") || "24";
+  var stamp = document.querySelector("[data-usage-stamp]");
+  var refreshBtn = document.querySelector("[data-usage-refresh]");
+  var initial = {{ trends_json|safe }};
+  var charts = {};
+  var inFlight = false;
+
+  function fmtBps(bps) {
+    var n = Number(bps) || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + " Mbps";
+    if (n >= 1000) return (n / 1000).toFixed(1) + " Kbps";
+    return Math.round(n) + " bps";
+  }
+
+  function fmtBytes(bytes) {
+    var n = Number(bytes) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
+    if (n >= 1048576) return (n / 1048576).toFixed(2) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    return Math.round(n) + " B";
+  }
+
+  function setSum(key, value) {
+    var el = document.querySelector('[data-sum="' + key + '"]');
+    if (el) el.textContent = value;
+  }
+
+  function formatTableCells() {
+    document.querySelectorAll("[data-bytes]").forEach(function (el) {
+      el.textContent = fmtBytes(el.getAttribute("data-bytes"));
+    });
+    document.querySelectorAll("[data-bps]").forEach(function (el) {
+      el.textContent = fmtBps(el.getAttribute("data-bps"));
+    });
+  }
+
+  function applySummary(data) {
+    var summary = (data && data.summary) || {};
+    setSum("clients", summary.clients_tracked != null ? summary.clients_tracked : "0");
+    setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
+    setSum("peak-down", fmtBps(summary.peak_download_bps));
+    setSum("data", fmtBytes(summary.data_used_bytes));
+    setSum("top-user", summary.top_user_name || "—");
+    setSum("top-user-data", summary.top_user_name
+      ? fmtBytes(summary.top_user_bytes) + " transferred"
+      : "Most data transferred");
+    if (stamp) {
+      stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
+        hour: "2-digit", minute: "2-digit", second: "2-digit"
+      });
+    }
+  }
+
+  function chartDefaults() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: { color: dark ? "#c8d4db" : "#4a6573", boxWidth: 12, font: { weight: "600" } }
+        },
+        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+      },
+      scales: {
+        x: {
+          ticks: { color: dark ? "#8aa0ab" : "#64748b", maxRotation: 0, autoSkipPadding: 12 },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: dark ? "#8aa0ab" : "#64748b" },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        }
+      }
+    };
+  }
+
+  function ensureCharts() {
+    if (!window.Chart || charts.online) return;
+    var empty = { labels: [], datasets: [] };
+    charts.online = new Chart(document.getElementById("chart-online"), {
+      type: "line",
+      data: empty,
+      options: Object.assign({}, chartDefaults(), {
+        plugins: Object.assign({}, chartDefaults().plugins, {
+          legend: { display: false }
+        })
+      })
+    });
+    charts.throughput = new Chart(document.getElementById("chart-throughput"), {
+      type: "line",
+      data: empty,
+      options: chartDefaults()
+    });
+    charts.data = new Chart(document.getElementById("chart-data"), {
+      type: "bar",
+      data: empty,
+      options: Object.assign({}, chartDefaults(), {
+        plugins: Object.assign({}, chartDefaults().plugins, {
+          legend: { display: false }
+        })
+      })
+    });
+    charts.top = new Chart(document.getElementById("chart-top"), {
+      type: "bar",
+      data: empty,
+      options: Object.assign({}, chartDefaults(), {
+        indexAxis: "y",
+        plugins: Object.assign({}, chartDefaults().plugins, {
+          legend: { display: false }
+        })
+      })
+    });
+  }
+
+  function paint(data) {
+    ensureCharts();
+    if (!charts.online) return;
+    var labels = (data && data.labels) || [];
+    var series = (data && data.series) || {};
+    var topChart = (data && data.top_chart) || {};
+    charts.online.data = {
+      labels: labels,
+      datasets: [{
+        label: "Online clients",
+        data: series.online_clients || [],
+        borderColor: "#2ecc71",
+        backgroundColor: "rgba(46,204,113,0.18)",
+        fill: true,
+        tension: 0.3,
+        pointRadius: labels.length > 40 ? 0 : 2
+      }]
+    };
+    charts.throughput.data = {
+      labels: labels,
+      datasets: [
+        {
+          label: "Download (kbps)",
+          data: series.download_kbps || [],
+          borderColor: "#4f8cff",
+          backgroundColor: "rgba(79,140,255,0.12)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: labels.length > 40 ? 0 : 2
+        },
+        {
+          label: "Upload (kbps)",
+          data: series.upload_kbps || [],
+          borderColor: "#e8a317",
+          backgroundColor: "rgba(232,163,23,0.12)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: labels.length > 40 ? 0 : 2
+        }
+      ]
+    };
+    charts.data.data = {
+      labels: labels,
+      datasets: [{
+        label: "Data used (MB)",
+        data: series.data_used_mb || [],
+        backgroundColor: "rgba(232,163,23,0.55)",
+        borderRadius: 4
+      }]
+    };
+    charts.top.data = {
+      labels: topChart.labels || [],
+      datasets: [{
+        label: "Data used (MB)",
+        data: topChart.data_used_mb || [],
+        backgroundColor: "rgba(79,140,255,0.65)",
+        borderRadius: 4
+      }]
+    };
+    charts.online.update("none");
+    charts.throughput.update("none");
+    charts.data.update("none");
+    charts.top.update("none");
+    applySummary(data);
+  }
+
+  function loadTrends() {
+    if (!trendsUrl || inFlight) return Promise.resolve();
+    inFlight = true;
+    return fetch(trendsUrl + "?hours=" + encodeURIComponent(hours), {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (res) { return res.json(); })
+      .then(paint)
+      .catch(function () {})
+      .finally(function () { inFlight = false; });
+  }
+
+  function boot() {
+    ensureCharts();
+    paint(initial);
+    formatTableCells();
+  }
+
+  if (window.Chart) boot();
+  else {
+    var wait = setInterval(function () {
+      if (!window.Chart) return;
+      clearInterval(wait);
+      boot();
+    }, 50);
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () { loadTrends(); });
+  }
+  setInterval(loadTrends, 60000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) loadTrends();
+  });
+})();
+</script>
+{% endblock %}

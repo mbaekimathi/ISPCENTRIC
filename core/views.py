@@ -164,13 +164,18 @@ CLIENT_SIDEBARS = {
     "clients": {
         "label": "My clients",
         "items": [
-            {"key": "clients", "label": "All clients", "url_name": "core:my_clients"},
             {
                 "key": "register_pppoe",
                 "label": "Register PPPoE client",
                 "action": "open_modal",
                 "modal": "pppoe-register-modal",
             },
+            {
+                "key": "general_usage",
+                "label": "General usage",
+                "url_name": "core:clients_general_usage",
+            },
+            {"key": "clients", "label": "All clients", "url_name": "core:my_clients"},
         ],
     },
     "client_detail": {
@@ -3199,36 +3204,37 @@ def my_clients(request):
     static_customers = page_customers if tab == "static" else []
     hotspot_customers = page_customers if tab == "hotspot" else []
 
-    return render(
+    ctx = client_page_context(
         request,
-        "core/my_clients.html",
-        client_page_context(
-            request,
-            active_nav="clients",
-            page_title="My clients",
-            page_kicker="Subscribers",
-            page_subtitle="Browse subscribers by connection type and open a client for details.",
-            active_tab=tab,
-            pppoe_customers=pppoe_customers,
-            static_customers=static_customers,
-            hotspot_customers=hotspot_customers,
-            pppoe_count=pppoe_count,
-            static_count=static_count,
-            hotspot_count=hotspot_count,
-            clients_page=page_obj,
-            clients_query=clients_query,
-            clients_match_count=paginator.count,
-            client_routers=client_routers,
-            clients_router_param=clients_router_param,
-            clients_router_id=clients_router_id,
-            pppoe_form=pppoe_form,
-            open_client_modal=open_modal,
-            billing_plans_exist=bool(
-                org
-                and BillingPlan.objects.filter(organization=org, is_active=True).exists()
-            ),
+        active_nav="clients",
+        page_title="My clients",
+        page_kicker="Subscribers",
+        page_subtitle="Browse subscribers by connection type and open a client for details.",
+        active_tab=tab,
+        pppoe_customers=pppoe_customers,
+        static_customers=static_customers,
+        hotspot_customers=hotspot_customers,
+        pppoe_count=pppoe_count,
+        static_count=static_count,
+        hotspot_count=hotspot_count,
+        clients_page=page_obj,
+        clients_query=clients_query,
+        clients_match_count=paginator.count,
+        client_routers=client_routers,
+        clients_router_param=clients_router_param,
+        clients_router_id=clients_router_id,
+        pppoe_form=pppoe_form,
+        open_client_modal=open_modal,
+        billing_plans_exist=bool(
+            org
+            and BillingPlan.objects.filter(organization=org, is_active=True).exists()
         ),
     )
+    # Already on All clients — hide the redundant sidebar link on this page only.
+    ctx["client_nav_main"] = [
+        item for item in ctx["client_nav_main"] if item.get("key") != "clients"
+    ]
+    return render(request, "core/my_clients.html", ctx)
 
 
 @client_workspace_required
@@ -3299,7 +3305,7 @@ def client_detail(request, customer_id: int):
         expired = customer_subscription_expired(customer)
         is_hourly = bool(
             customer.plan_id
-            and getattr(customer.plan, "duration", "") == "hourly"
+            and getattr(customer.plan, "duration", "") in ("hourly", "six_hours")
         )
 
         def _fmt(value):
@@ -3461,7 +3467,15 @@ def client_detail(request, customer_id: int):
         plan_durations_json=json.dumps(
             {
                 str(p.pk): p.duration
-                for p in (plans_for_router(org, customer.router) if org else [])
+                for p in (
+                    plans_for_router(
+                        org,
+                        customer.router,
+                        service_type=getattr(customer, "service_type", None) or None,
+                    )
+                    if org
+                    else []
+                )
             }
         ),
         subscription_active=customer_receives_internet(customer),
@@ -4370,7 +4384,7 @@ def client_subscription(request, customer_id: int):
     allowed = customer_receives_internet(customer)
     expired = customer_subscription_expired(customer)
     duration = getattr(customer.plan, "duration", "") or ""
-    is_hourly = duration == "hourly"
+    is_hourly = duration in ("hourly", "six_hours")
     now = dj_tz.localtime()
 
     def _fmt(value):
@@ -4584,6 +4598,70 @@ def client_usage(request, customer_id: int):
     # Short cache so live speeds stay useful without hammering the API.
     cache.set(cache_key, payload, 8 if payload.get("session_active") else 4)
     return JsonResponse(payload)
+
+
+@client_workspace_required
+def clients_general_usage(request):
+    """Organization-wide usage analytics and highest-users ranking."""
+    org = resolve_organization(request.user, request)
+    hours = 24
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+
+    from billing.usage_samples import org_usage_payload
+
+    trends = org_usage_payload(org, hours=hours) if org else {
+        "ok": False,
+        "hours": hours,
+        "sample_count": 0,
+        "labels": [],
+        "series": {
+            "online_clients": [],
+            "download_kbps": [],
+            "upload_kbps": [],
+            "data_used_mb": [],
+        },
+        "summary": {},
+        "top_users": [],
+        "top_chart": {"labels": [], "data_used_mb": []},
+        "error": "No organization is linked to this workspace.",
+    }
+
+    return render(
+        request,
+        "core/clients_general_usage.html",
+        client_page_context(
+            request,
+            active_nav="clients",
+            sidebar_active="general_usage",
+            page_title="General usage",
+            page_kicker="Subscribers",
+            page_subtitle="Organization-wide usage trends and highest data users.",
+            trend_hours=hours,
+            trends=trends,
+            trends_json=json.dumps(trends),
+            top_users=trends.get("top_users") or [],
+            trends_url=reverse("core:clients_general_usage_trends"),
+        ),
+    )
+
+
+@client_workspace_required
+@require_GET
+def clients_general_usage_trends(request):
+    """JSON chart series for the general usage page."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
+    from billing.usage_samples import org_usage_payload
+
+    return JsonResponse(org_usage_payload(org, hours=hours))
 
 
 @client_workspace_required
@@ -5385,7 +5463,18 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     portal_router = None
     if hotspot_mac:
         portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
-    plans = list(plans_for_router(org, portal_router)[:8])
+    hotspot_plans = list(
+        plans_for_router(
+            org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT
+        )[:8]
+    )
+    pppoe_plans = list(
+        plans_for_router(
+            org, None, service_type=BillingPlan.ServiceType.PPPOE
+        )[:8]
+    )
+    plans = hotspot_plans
+    has_payable_plans = bool(hotspot_plans or pppoe_plans)
 
     pppoe_option_available = bool(getattr(org, "pppoe_compulsory", False))
     pppoe_pay_url = ""
@@ -5417,9 +5506,12 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "mpesa_number": org.mpesa_number,
         "mpesa_account": org.mpesa_account,
         "plans": plans,
+        "hotspot_plans": hotspot_plans,
+        "pppoe_plans": pppoe_plans,
+        "has_payable_plans": has_payable_plans,
         "portal_mode": "hotspot",
         "show_payment_form": bool(hotspot_mac) or (
-            pppoe_option_available and stk_ready and bool(plans)
+            pppoe_option_available and stk_ready and bool(pppoe_plans)
         ),
         "mikrotik_login": mikrotik_login,
         "link_login": link_login,
@@ -5559,6 +5651,7 @@ def hotspot_payment_start(request, join_code: str):
         pk=request.POST.get("plan_id"),
         organization=org,
         is_active=True,
+        service_type=BillingPlan.ServiceType.HOTSPOT,
     )
     phone = (request.POST.get("phone") or "").strip()
     active_routers = MikroTikRouter.objects.filter(
@@ -5825,9 +5918,13 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     from billing.services import plans_for_router
 
     customer_router = getattr(customer, "router", None) if customer else None
-    plans = list(plans_for_router(org, customer_router)[:8])
+    pppoe_plans = list(
+        plans_for_router(
+            org, customer_router, service_type=BillingPlan.ServiceType.PPPOE
+        )[:8]
+    )
     current_plan_id = getattr(customer, "plan_id", None) if customer else None
-    if current_plan_id and not any(p.pk == current_plan_id for p in plans):
+    if current_plan_id and not any(p.pk == current_plan_id for p in pppoe_plans):
         current_plan = (
             BillingPlan.objects.filter(
                 pk=current_plan_id,
@@ -5838,7 +5935,14 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         )
         # Always keep the customer's current package selectable for renew.
         if current_plan is not None:
-            plans.insert(0, current_plan)
+            pppoe_plans.insert(0, current_plan)
+    hotspot_plans = list(
+        plans_for_router(
+            org, None, service_type=BillingPlan.ServiceType.HOTSPOT
+        )[:8]
+    )
+    plans = pppoe_plans
+    has_payable_plans = bool(pppoe_plans or hotspot_plans)
     has_mpesa = bool(org.mpesa_payment_type and org.mpesa_number)
     stk_ready = bool(org.effective_daraja_credentials().get("ready"))
     customer_token = ""
@@ -5862,7 +5966,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     if request is not None:
         hotspot_mac = _resolve_request_hotspot_mac(org, request)
     hotspot_mac_value = hotspot_mac or "$(mac)"
-    show_payment_form = bool(stk_ready and plans)
+    show_payment_form = bool(stk_ready and pppoe_plans)
     pppoe_start = public_absolute_url(
         reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
         request,
@@ -5885,6 +5989,9 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "mpesa_number": org.mpesa_number,
         "mpesa_account": org.mpesa_account,
         "plans": plans,
+        "hotspot_plans": hotspot_plans,
+        "pppoe_plans": pppoe_plans,
+        "has_payable_plans": has_payable_plans,
         "portal_mode": "pppoe",
         "show_payment_form": show_payment_form,
         "require_account_lookup": customer is None,
@@ -6093,6 +6200,7 @@ def pppoe_payment_start(request, join_code: str):
         pk=request.POST.get("plan_id"),
         organization=org,
         is_active=True,
+        service_type=BillingPlan.ServiceType.PPPOE,
     )
     if customer.router_id and not plan.is_available_on_router(customer.router):
         return JsonResponse(
@@ -6509,10 +6617,14 @@ def my_account_payments(request):
             stk_count=Count("stk_push_requests"),
         )
         .prefetch_related("routers")
-        .order_by("price", "name")
+        .order_by("service_type", "price", "name")
         if org
         else BillingPlan.objects.none()
     )
+    pppoe_packages = [p for p in package_list if p.service_type == BillingPlan.ServiceType.PPPOE]
+    hotspot_packages = [
+        p for p in package_list if p.service_type == BillingPlan.ServiceType.HOTSPOT
+    ]
 
     return render(
         request,
@@ -6525,7 +6637,11 @@ def my_account_payments(request):
             page_kicker="My account",
             page_subtitle="Manage internet packages for this organization.",
             packages=package_list,
+            pppoe_packages=pppoe_packages,
+            hotspot_packages=hotspot_packages,
             package_count=len(package_list),
+            pppoe_package_count=len(pppoe_packages),
+            hotspot_package_count=len(hotspot_packages),
             package_form=package_form,
             package_edit_form=edit_form,
             open_billing_modal=open_modal,

@@ -66,14 +66,19 @@
           <h3 class="pppoe-section-title">Pricing &amp; speeds</h3>
           <div class="pppoe-grid">
             <div class="field">
-              <label for="{{ package_edit_form.price.id_for_label }}">{{ package_edit_form.price.label }}</label>
-              {{ package_edit_form.price }}
-              {% if package_edit_form.price.errors %}<div class="field-error">{{ package_edit_form.price.errors|striptags }}</div>{% endif %}
+              <label for="{{ package_edit_form.service_type.id_for_label }}">{{ package_edit_form.service_type.label }}</label>
+              <div class="pppoe-select">{{ package_edit_form.service_type }}</div>
+              {% if package_edit_form.service_type.errors %}<div class="field-error">{{ package_edit_form.service_type.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
               <label for="{{ package_edit_form.duration.id_for_label }}">{{ package_edit_form.duration.label }}</label>
               <div class="pppoe-select">{{ package_edit_form.duration }}</div>
               {% if package_edit_form.duration.errors %}<div class="field-error">{{ package_edit_form.duration.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ package_edit_form.price.id_for_label }}">{{ package_edit_form.price.label }}</label>
+              {{ package_edit_form.price }}
+              {% if package_edit_form.price.errors %}<div class="field-error">{{ package_edit_form.price.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
               <label for="{{ package_edit_form.download_speed_mbps.id_for_label }}">{{ package_edit_form.download_speed_mbps.label }}</label>

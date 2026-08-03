@@ -56,12 +56,13 @@ class PackageEditTests(TestCase):
                     "download_speed_mbps": "20",
                     "upload_speed_mbps": "10",
                     "duration": BillingPlan.Duration.MONTHLY,
+                    "service_type": BillingPlan.ServiceType.PPPOE,
                     "is_active": "on",
                 },
             )
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "Home 20")
+        self.assertEqual(self.plan.name, "HOME 20")
         self.assertEqual(self.plan.price, Decimal("2500.00"))
         self.assertEqual(self.plan.download_speed_mbps, 20)
         self.assertEqual(self.plan.upload_speed_mbps, 10)
@@ -85,12 +86,13 @@ class PackageEditTests(TestCase):
                     "download_speed_mbps": "10",
                     "upload_speed_mbps": "5",
                     "duration": BillingPlan.Duration.MONTHLY,
+                    "service_type": BillingPlan.ServiceType.PPPOE,
                     "is_active": "on",
                 },
             )
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
-        self.assertEqual(self.plan.name, "Home Renamed")
+        self.assertEqual(self.plan.name, "HOME RENAMED")
         reprovision.assert_not_called()
 
     def test_edit_package_can_deactivate(self):
@@ -105,6 +107,7 @@ class PackageEditTests(TestCase):
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
                 "duration": BillingPlan.Duration.MONTHLY,
+                "service_type": BillingPlan.ServiceType.PPPOE,
             },
         )
         self.assertEqual(res.status_code, 302)
@@ -131,11 +134,12 @@ class PackageEditTests(TestCase):
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
                 "duration": BillingPlan.Duration.MONTHLY,
+                "service_type": BillingPlan.ServiceType.PPPOE,
                 "is_active": "on",
             },
         )
         self.assertEqual(res.status_code, 200)
-        self.assertContains(res, "A package with that name already exists.")
+        self.assertContains(res, "already exists for this service type")
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.name, "Home 10")
 

@@ -11667,6 +11667,23 @@ body.staff-nav-lock {
   word-break: break-word;
 }
 
+.account-package-groups {
+  display: grid;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+.account-package-group-head {
+  margin-bottom: 0.75rem;
+}
+.account-package-group-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1.05rem;
+}
+.account-package-group-head p {
+  margin: 0;
+  color: var(--muted, #6b7280);
+  font-size: 0.9rem;
+}
 .account-packages-panel .panel-head-row {
   margin-bottom: 1rem;
   padding-bottom: 0.95rem;
@@ -13110,6 +13127,16 @@ body.staff-nav-lock {
   .client-usage-chart-card-wide {
     grid-column: auto;
   }
+}
+
+.clients-general-usage-page .clients-general-usage-table-panel {
+  margin-top: 0.85rem;
+}
+
+.clients-general-usage-page .clients-general-usage-rank {
+  font-weight: 700;
+  width: 2.5rem;
+  color: var(--text-muted, #64748b);
 }
 
 /* Client Wi?Fi settings -------------------------------------------------- */

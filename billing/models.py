@@ -10,10 +10,20 @@ from accounts.image_utils import maybe_optimize_image_field
 class BillingPlan(models.Model):
     class Duration(models.TextChoices):
         HOURLY = "hourly", "Per hour"
+        SIX_HOURS = "six_hours", "Per 6 hours"
         DAILY = "daily", "Daily"
         WEEKLY = "weekly", "Weekly"
         MONTHLY = "monthly", "Monthly"
+        QUARTERLY = "quarterly", "Quarterly"
+        SEMI_ANNUAL = "semi_annual", "Semi-annual"
         YEARLY = "yearly", "Yearly"
+
+    class ServiceType(models.TextChoices):
+        PPPOE = "pppoe", "PPPoE"
+        HOTSPOT = "hotspot", "Hotspot"
+
+    # Durations that use clock time (start/end times) instead of calendar days.
+    CLOCK_TIME_DURATIONS = frozenset({Duration.HOURLY, Duration.SIX_HOURS})
 
     organization = models.ForeignKey(
         "accounts.Organization",
@@ -31,6 +41,13 @@ class BillingPlan(models.Model):
         help_text="Derived from download/upload speeds for summaries and legacy displays.",
     )
     duration = models.CharField(max_length=20, choices=Duration.choices, default=Duration.MONTHLY)
+    service_type = models.CharField(
+        max_length=20,
+        choices=ServiceType.choices,
+        default=ServiceType.PPPOE,
+        db_index=True,
+        help_text="Whether this package is for Hotspot or PPPoE customers.",
+    )
     image = models.ImageField(
         "Package image",
         upload_to="billing/packages/%Y/%m/",
@@ -54,6 +71,11 @@ class BillingPlan(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.price})"
+
+    @property
+    def uses_clock_time(self) -> bool:
+        """True when package windows are measured in hours (not calendar days)."""
+        return self.duration in self.CLOCK_TIME_DURATIONS
 
     @property
     def speed_label(self) -> str:

@@ -17,8 +17,14 @@ from billing.models import BillingPlan, Customer
 RENEW_TOKEN_SALT = "ispcentric-subscription-renew"
 
 
-def plans_for_router(organization, router=None, *, active_only=True):
-    """Plans for an org, optionally limited to a MikroTik.
+def plans_for_router(
+    organization,
+    router=None,
+    *,
+    active_only=True,
+    service_type: str | None = None,
+):
+    """Plans for an org, optionally limited to a MikroTik and/or service type.
 
     Empty plan.routers means the package is available on every router.
     """
@@ -27,6 +33,8 @@ def plans_for_router(organization, router=None, *, active_only=True):
     qs = BillingPlan.objects.filter(organization=organization)
     if active_only:
         qs = qs.filter(is_active=True)
+    if service_type:
+        qs = qs.filter(service_type=service_type)
     if router is None:
         return qs.order_by("price", "name")
     router_id = getattr(router, "pk", router)
@@ -38,6 +46,14 @@ def plans_for_router(organization, router=None, *, active_only=True):
         .distinct()
         .order_by("price", "name")
     )
+
+
+def plan_uses_clock_time(plan_or_duration) -> bool:
+    """True for hourly / 6-hour packages (time-of-day windows)."""
+    if plan_or_duration is None:
+        return False
+    duration = getattr(plan_or_duration, "duration", plan_or_duration) or ""
+    return str(duration).strip().lower() in BillingPlan.CLOCK_TIME_DURATIONS
 
 
 def generate_customer_account_number(organization, *, prefix: str = "CLT") -> str:
@@ -102,8 +118,9 @@ def _as_local_datetime(value) -> datetime | None:
 
 
 def _plan_is_hourly(customer) -> bool:
+    """Legacy name — true for any clock-time duration (hourly / 6 hours)."""
     plan = getattr(customer, "plan", None)
-    return bool(plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY)
+    return plan_uses_clock_time(plan)
 
 
 def subscription_period_allows(customer, *, today: date | None = None) -> bool:
@@ -590,11 +607,14 @@ def compute_package_end(
     """
     Derive package end from a start moment and billing plan duration.
 
-    hourly  → start + 1 hour
-    daily   → start + 1 day
-    weekly  → start + 7 days
-    monthly → start + 1 calendar month
-    yearly  → start + 1 calendar year
+    hourly       → start + 1 hour
+    six_hours    → start + 6 hours
+    daily        → start + 1 day
+    weekly       → start + 7 days
+    monthly      → start + 1 calendar month
+    quarterly    → start + 3 calendar months
+    semi_annual  → start + 6 calendar months
+    yearly       → start + 1 calendar year
     """
     if start is None:
         return None
@@ -606,12 +626,26 @@ def compute_package_end(
         return None
     if duration_key == BillingPlan.Duration.HOURLY:
         return start_dt + timedelta(hours=1)
+    if duration_key == BillingPlan.Duration.SIX_HOURS:
+        return start_dt + timedelta(hours=6)
     if duration_key == BillingPlan.Duration.DAILY:
         return start_dt + timedelta(days=1)
     if duration_key == BillingPlan.Duration.WEEKLY:
         return start_dt + timedelta(days=7)
     if duration_key == BillingPlan.Duration.MONTHLY:
         end_day = _add_months(timezone.localtime(start_dt).date(), 1)
+        return timezone.make_aware(
+            datetime.combine(end_day, timezone.localtime(start_dt).time()),
+            timezone.get_current_timezone(),
+        )
+    if duration_key == BillingPlan.Duration.QUARTERLY:
+        end_day = _add_months(timezone.localtime(start_dt).date(), 3)
+        return timezone.make_aware(
+            datetime.combine(end_day, timezone.localtime(start_dt).time()),
+            timezone.get_current_timezone(),
+        )
+    if duration_key == BillingPlan.Duration.SEMI_ANNUAL:
+        end_day = _add_months(timezone.localtime(start_dt).date(), 6)
         return timezone.make_aware(
             datetime.combine(end_day, timezone.localtime(start_dt).time()),
             timezone.get_current_timezone(),

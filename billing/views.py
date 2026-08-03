@@ -419,10 +419,16 @@ def packages(request):
             stk_count=Count("stk_push_requests"),
         )
         .prefetch_related("routers")
-        .order_by("price", "name")
+        .order_by("service_type", "price", "name")
         if org
         else BillingPlan.objects.none()
     )
+    pppoe_packages = [
+        p for p in package_list if p.service_type == BillingPlan.ServiceType.PPPOE
+    ]
+    hotspot_packages = [
+        p for p in package_list if p.service_type == BillingPlan.ServiceType.HOTSPOT
+    ]
 
     return render(
         request,
@@ -435,7 +441,11 @@ def packages(request):
             page_kicker="Billing",
             page_subtitle="Manage internet packages for this organization.",
             packages=package_list,
+            pppoe_packages=pppoe_packages,
+            hotspot_packages=hotspot_packages,
             package_count=len(package_list),
+            pppoe_package_count=len(pppoe_packages),
+            hotspot_package_count=len(hotspot_packages),
             package_form=package_form,
             package_edit_form=edit_form,
             open_billing_modal=open_modal,

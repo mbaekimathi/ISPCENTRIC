@@ -6,7 +6,7 @@ from django.utils import timezone
 from accounts.countries import DEFAULT_COUNTRY, country_choices, get_country_options, option_for_value
 from accounts.forms import national_phone_length, validate_and_normalize_phone
 from billing.models import BillingPlan, Customer
-from billing.services import compute_package_end
+from billing.services import compute_package_end, plan_uses_clock_time
 from core.models import MikroTikRouter
 
 
@@ -145,7 +145,11 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 router = self.initial.get("router")
             elif getattr(self.instance, "router_id", None):
                 router = self.instance.router
-            self.fields["plan"].queryset = plans_for_router(organization, router)
+            self.fields["plan"].queryset = plans_for_router(
+                organization,
+                router,
+                service_type=Customer.ServiceType.PPPOE,
+            )
             self.fields["router"].queryset = MikroTikRouter.objects.filter(
                 organization=organization,
             ).order_by("name")
@@ -212,6 +216,8 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 self.add_error("pppoe_username", "That PPPoE username is already registered.")
         plan = cleaned.get("plan")
         router = cleaned.get("router")
+        if plan and plan.service_type != BillingPlan.ServiceType.PPPOE:
+            self.add_error("plan", "Choose a PPPoE package for this client.")
         if plan and router and not plan.is_available_on_router(router):
             self.add_error(
                 "plan",
@@ -597,7 +603,11 @@ class CustomerPackageForm(forms.ModelForm):
             from billing.services import plans_for_router
 
             router = getattr(self.instance, "router", None)
-            self.fields["plan"].queryset = plans_for_router(self.organization, router)
+            self.fields["plan"].queryset = plans_for_router(
+                self.organization,
+                router,
+                service_type=getattr(self.instance, "service_type", None) or None,
+            )
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
 
@@ -605,6 +615,11 @@ class CustomerPackageForm(forms.ModelForm):
         plan = self.cleaned_data.get("plan")
         if not plan:
             raise forms.ValidationError("Select a billing plan.")
+        customer_service = getattr(self.instance, "service_type", None) or ""
+        if customer_service and plan.service_type != customer_service:
+            raise forms.ValidationError(
+                f"Choose a {self.instance.get_service_type_display()} package for this client."
+            )
         router = getattr(self.instance, "router", None)
         if plan and router and not plan.is_available_on_router(router):
             raise forms.ValidationError(
@@ -639,9 +654,7 @@ class CustomerPeriodForm(forms.ModelForm):
         self.organization = organization
         super().__init__(*args, **kwargs)
         plan = getattr(self.instance, "plan", None)
-        self.is_hourly = bool(
-            plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY
-        )
+        self.is_hourly = plan_uses_clock_time(plan)
 
         self.fields["package_start"].required = True
         self.fields["package_end"].required = False
@@ -923,14 +936,17 @@ class CustomerPackagePeriodForm(forms.ModelForm):
             from billing.services import plans_for_router
 
             router = getattr(self.instance, "router", None)
-            self.fields["plan"].queryset = plans_for_router(self.organization, router)
+            customer_service = getattr(self.instance, "service_type", None) or None
+            self.fields["plan"].queryset = plans_for_router(
+                self.organization,
+                router,
+                service_type=customer_service,
+            )
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
 
         plan = self._resolve_plan()
-        self.is_hourly = bool(
-            plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY
-        )
+        self.is_hourly = plan_uses_clock_time(plan)
 
         start = getattr(self.instance, "package_start", None)
         end = getattr(self.instance, "package_end", None)
@@ -951,9 +967,9 @@ class CustomerPackagePeriodForm(forms.ModelForm):
                 second=0, microsecond=0
             )
 
-        if plan and plan.duration == BillingPlan.Duration.HOURLY:
+        if plan_uses_clock_time(plan):
             self.fields["service_day"].help_text = (
-                "Defaults to today. Pick another day if this hourly package should run then."
+                "Defaults to today. Pick another day if this timed package should run then."
             )
         elif plan and plan.duration:
             self.fields["end_date"].help_text = (
@@ -1015,6 +1031,11 @@ class CustomerPackagePeriodForm(forms.ModelForm):
         plan = self.cleaned_data.get("plan")
         if not plan:
             raise forms.ValidationError("Select a billing plan.")
+        customer_service = getattr(self.instance, "service_type", None) or ""
+        if customer_service and plan.service_type != customer_service:
+            raise forms.ValidationError(
+                f"Choose a {self.instance.get_service_type_display()} package for this client."
+            )
         router = getattr(self.instance, "router", None)
         if plan and router and not plan.is_available_on_router(router):
             raise forms.ValidationError(
@@ -1025,9 +1046,7 @@ class CustomerPackagePeriodForm(forms.ModelForm):
     def clean(self):
         cleaned = super().clean()
         plan = cleaned.get("plan")
-        is_hourly = bool(
-            plan and getattr(plan, "duration", "") == BillingPlan.Duration.HOURLY
-        )
+        is_hourly = plan_uses_clock_time(plan)
         self.is_hourly = is_hourly
 
         if is_hourly:
@@ -1103,6 +1122,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         fields = [
             "name",
             "description",
+            "service_type",
             "price",
             "download_speed_mbps",
             "upload_speed_mbps",
@@ -1126,6 +1146,12 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "placeholder": "OPTIONAL PACKAGE DETAILS",
                     "rows": 3,
                     "id": "id_package_description",
+                }
+            ),
+            "service_type": forms.Select(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_package_service_type",
                 }
             ),
             "price": forms.NumberInput(
@@ -1175,6 +1201,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         labels = {
             "name": "Package name",
             "description": "Description",
+            "service_type": "Service type",
             "price": "Price",
             "download_speed_mbps": "Download speed (Mbps)",
             "upload_speed_mbps": "Upload speed (Mbps)",
@@ -1192,9 +1219,12 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["image"].required = False
         self.fields["is_active"].required = False
         self.fields["routers"].required = False
+        self.fields["service_type"].required = True
+        self.fields["duration"].choices = BillingPlan.Duration.choices
         # Default Active only for new packages — keep the saved value when editing.
         if not self.is_bound and not getattr(self.instance, "pk", None):
             self.fields["is_active"].initial = True
+            self.fields["service_type"].initial = BillingPlan.ServiceType.PPPOE
         if self.organization is not None:
             self.fields["routers"].queryset = MikroTikRouter.objects.filter(
                 organization=self.organization,
@@ -1204,6 +1234,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         id_map = {
             "name": f"id_{self.id_prefix}_name",
             "description": f"id_{self.id_prefix}_description",
+            "service_type": f"id_{self.id_prefix}_service_type",
             "price": f"id_{self.id_prefix}_price",
             "download_speed_mbps": f"id_{self.id_prefix}_download_speed",
             "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
@@ -1222,15 +1253,27 @@ class BillingPackageRegisterForm(forms.ModelForm):
         name = (self.cleaned_data.get("name") or "").strip().upper()
         if not name:
             raise forms.ValidationError("Enter a package name.")
-        qs = BillingPlan.objects.filter(
-            organization=self.organization,
-            name__iexact=name,
-        )
-        if self.instance and self.instance.pk:
-            qs = qs.exclude(pk=self.instance.pk)
-        if self.organization and qs.exists():
-            raise forms.ValidationError("A package with that name already exists.")
         return name
+
+    def clean(self):
+        cleaned = super().clean()
+        name = cleaned.get("name")
+        service_type = cleaned.get("service_type")
+        if name and self.organization:
+            qs = BillingPlan.objects.filter(
+                organization=self.organization,
+                name__iexact=name,
+            )
+            if service_type:
+                qs = qs.filter(service_type=service_type)
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                self.add_error(
+                    "name",
+                    "A package with that name already exists for this service type.",
+                )
+        return cleaned
 
     def clean_description(self):
         return (self.cleaned_data.get("description") or "").strip().upper()

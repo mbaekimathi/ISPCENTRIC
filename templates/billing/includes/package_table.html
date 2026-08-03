@@ -4,6 +4,9 @@
       <thead>
         <tr>
           <th>Package</th>
+          {% if not hide_service_type %}
+            <th>Type</th>
+          {% endif %}
           <th>Download</th>
           <th>Upload</th>
           <th>General</th>
@@ -29,6 +32,13 @@
                 <strong>{{ plan.name }}</strong>
               </div>
             </td>
+            {% if not hide_service_type %}
+              <td>
+                <span class="badge{% if plan.service_type == 'hotspot' %} badge-info{% else %} badge-muted{% endif %}">
+                  {{ plan.get_service_type_display }}
+                </span>
+              </td>
+            {% endif %}
             <td>{{ plan.download_speed_mbps }} Mbps</td>
             <td>{{ plan.upload_speed_mbps }} Mbps</td>
             <td>{{ plan.speed_label }}</td>
@@ -54,6 +64,7 @@
                     data-package-id="{{ plan.id }}"
                     data-package-name="{{ plan.name }}"
                     data-package-description="{{ plan.description }}"
+                    data-package-service-type="{{ plan.service_type }}"
                     data-package-price="{{ plan.price }}"
                     data-package-duration="{{ plan.duration }}"
                     data-package-download="{{ plan.download_speed_mbps }}"

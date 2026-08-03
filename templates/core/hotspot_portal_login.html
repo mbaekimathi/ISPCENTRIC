@@ -797,8 +797,8 @@
           <p class="error">{{ error }}</p>
         {% endif %}
 
-        {% if stk_ready and plans %}
-          {% if portal_mode == "hotspot" or hotspot_option_available %}
+        {% if stk_ready and has_payable_plans %}
+          {% if hotspot_plans and portal_mode == "hotspot" or hotspot_plans and hotspot_option_available %}
           <section
             class="pay-panel"
             id="panel-hotspot"
@@ -824,7 +824,7 @@
               <div class="field">
                 <label for="hotspot-plan-id">Package</label>
                 <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
-                  {% for plan in plans %}
+                  {% for plan in hotspot_plans %}
                     <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if forloop.first %} selected{% endif %}>
                       {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}
                     </option>
@@ -845,7 +845,7 @@
           </section>
           {% endif %}
 
-          {% if portal_mode == "pppoe" or pppoe_option_available %}
+          {% if pppoe_plans and portal_mode == "pppoe" or pppoe_plans and pppoe_option_available %}
           <section
             class="pay-panel"
             id="panel-pppoe"
@@ -905,7 +905,7 @@
                 <label for="pppoe-plan-id">Package</label>
                 <select id="pppoe-plan-id" name="plan_id" data-plan-select required>
                   {% with sel=pppoe_selected_plan_id|default:selected_plan_id %}
-                  {% for plan in plans %}
+                  {% for plan in pppoe_plans %}
                     <option
                       value="{{ plan.pk }}"
                       data-price="{{ plan.price }}"
@@ -944,6 +944,8 @@
               {% if identify_error %}{{ identify_error }}{% else %}
                 Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
               {% endif %}
+            {% elif not has_payable_plans %}
+              No {{ portal_mode|default:"payment" }} packages are available yet. Contact {{ org_name }}.
             {% else %}
               Rejoin this Wi‑Fi to open the passwordless payment page for your device.
             {% endif %}
@@ -955,7 +957,7 @@
     </main>
   </div>
 
-  {% if stk_ready and plans %}
+  {% if stk_ready and has_payable_plans %}
   <div
     class="pay-overlay"
     data-payment-waiting
@@ -1009,7 +1011,7 @@
     })();
   </script>
 
-  {% if stk_ready and plans %}
+  {% if stk_ready and has_payable_plans %}
   <script>
     (function () {
       var welcomeUrl = "{{ welcome_url|escapejs }}" || "http://neverssl.com/";

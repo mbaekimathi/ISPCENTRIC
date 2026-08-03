@@ -5,7 +5,7 @@
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
-<section class="panel staff-panel">
+<section class="panel staff-panel account-packages-panel">
   <div class="panel-head-row">
     <div>
       <h2>Packages{% if package_count %} ({{ package_count }}){% endif %}</h2>
@@ -18,7 +18,23 @@
     </div>
   </div>
 
-  {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package to add one." show_package_actions=1 %}
+  <div class="account-package-groups">
+    <section class="account-package-group">
+      <header class="account-package-group-head">
+        <h3>PPPoE packages{% if pppoe_package_count %} ({{ pppoe_package_count }}){% endif %}</h3>
+        <p>Assigned to home/office PPPoE clients.</p>
+      </header>
+      {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." show_package_actions=1 hide_service_type=1 %}
+    </section>
+
+    <section class="account-package-group">
+      <header class="account-package-group-head">
+        <h3>Hotspot packages{% if hotspot_package_count %} ({{ hotspot_package_count }}){% endif %}</h3>
+        <p>Shown on captive Hotspot payment portals.</p>
+      </header>
+      {% include "billing/includes/package_table.html" with packages=hotspot_packages empty_text="No Hotspot packages yet." show_package_actions=1 hide_service_type=1 %}
+    </section>
+  </div>
 </section>
 
 {% include "billing/includes/package_register_modal.html" %}

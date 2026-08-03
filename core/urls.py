@@ -70,6 +70,16 @@ urlpatterns = [
     path("app/mikrotik/places/details/", views.mikrotik_place_details, name="mikrotik_place_details"),
     path("app/clients/", views.my_clients, name="my_clients"),
     path("app/clients/surfing/", views.clients_surfing_status, name="clients_surfing"),
+    path(
+        "app/clients/usage/",
+        views.clients_general_usage,
+        name="clients_general_usage",
+    ),
+    path(
+        "app/clients/usage-trends/",
+        views.clients_general_usage_trends,
+        name="clients_general_usage_trends",
+    ),
     path("app/clients/<int:customer_id>/", views.client_detail, name="client_detail"),
     path("app/clients/<int:customer_id>/usage/", views.client_usage, name="client_usage"),
     path(
