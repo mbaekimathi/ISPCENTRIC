@@ -1,0 +1,84 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Billing — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="client-detail-page client-billing-page">
+
+<a class="client-back-link" href="{{ back_url }}">
+  <span aria-hidden="true">&larr;</span> Back to {{ customer.full_name }}
+</a>
+
+<section class="panel client-simple-panel" id="client-billing">
+  <header class="client-simple-head">
+    <div>
+      <h2 class="client-simple-section-title">Successful payments</h2>
+      <p class="client-simple-meta">M-Pesa and other collections recorded for this subscriber.</p>
+    </div>
+    <div class="client-simple-badges">
+      <span class="org-status org-status-active">{{ payments|length }} listed</span>
+      <span class="org-status">KES {{ amount_paid }} collected</span>
+    </div>
+  </header>
+
+  <ul class="client-simple-status client-billing-stats" aria-label="Billing summary">
+    <li>
+      <span>Collected</span>
+      <strong>KES {{ amount_paid }}</strong>
+      <em>All successful payments</em>
+    </li>
+    <li>
+      <span>Paid invoices</span>
+      <strong>{{ invoice_paid }}</strong>
+      <em>of {{ invoice_total }} total</em>
+    </li>
+    <li>
+      <span>Pending</span>
+      <strong>{{ invoice_pending }}</strong>
+      <em>Awaiting payment</em>
+    </li>
+    <li>
+      <span>Overdue</span>
+      <strong>{{ invoice_overdue }}</strong>
+      <em>Past due</em>
+    </li>
+  </ul>
+
+  {% if payments %}
+    <div class="org-table-shell client-detail-table-shell">
+      <table class="org-table org-table-client-billing">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Amount</th>
+            <th>Method</th>
+            <th>M-Pesa / Ref</th>
+            <th>Invoice</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pay in payments %}
+            <tr>
+              <td>{{ pay.received_at|date:"M j, Y g:i A" }}</td>
+              <td><strong>KES {{ pay.amount }}</strong></td>
+              <td>{{ pay.get_method_display }}</td>
+              <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
+              <td>
+                {% if pay.invoice %}
+                  <span class="org-code">{{ pay.invoice.invoice_number }}</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty client-simple-note">No successful payments recorded for this client yet.</p>
+  {% endif %}
+</section>
+
+</div>
+{% endblock %}

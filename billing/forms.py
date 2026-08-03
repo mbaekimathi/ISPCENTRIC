@@ -1114,16 +1114,16 @@ class BillingPackageRegisterForm(forms.ModelForm):
         widgets = {
             "name": forms.TextInput(
                 attrs={
-                    "class": "form-control",
-                    "placeholder": 'e.g. "Home 10 Mbps"',
+                    "class": "form-control text-upper",
+                    "placeholder": 'e.g. "HOME 10 MBPS"',
                     "autocomplete": "off",
                     "id": "id_package_name",
                 }
             ),
             "description": forms.Textarea(
                 attrs={
-                    "class": "form-control",
-                    "placeholder": "Optional package details",
+                    "class": "form-control text-upper",
+                    "placeholder": "OPTIONAL PACKAGE DETAILS",
                     "rows": 3,
                     "id": "id_package_description",
                 }
@@ -1219,7 +1219,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["routers"].widget.attrs["class"] = "package-router-checks"
 
     def clean_name(self):
-        name = (self.cleaned_data.get("name") or "").strip()
+        name = (self.cleaned_data.get("name") or "").strip().upper()
         if not name:
             raise forms.ValidationError("Enter a package name.")
         qs = BillingPlan.objects.filter(
@@ -1233,7 +1233,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         return name
 
     def clean_description(self):
-        return (self.cleaned_data.get("description") or "").strip()
+        return (self.cleaned_data.get("description") or "").strip().upper()
 
     def clean_image(self):
         image = self.cleaned_data.get("image")

@@ -78,7 +78,7 @@
             </div>
             {{ form.password1.errors }}
             <ul class="password-rules" id="password-rules" aria-live="polite">
-              <li data-rule="length">At least 8 characters</li>
+              <li data-rule="length">At least 12 characters</li>
               <li data-rule="not-numeric">Not entirely numeric</li>
               <li data-rule="not-common">Not a commonly used password</li>
               <li data-rule="not-similar">Not too similar to your username, email, or company</li>
@@ -274,7 +274,7 @@
 
       rules.classList.toggle("is-active", hasInput || confirm.length > 0);
 
-      var lengthOk = password.length >= 8;
+      var lengthOk = password.length >= 12;
       var notNumeric = password.length > 0 && !/^\d+$/.test(password);
       var notCommon = password.length > 0 && !COMMON[password.toLowerCase()];
       var notSimilar =

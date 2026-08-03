@@ -54,6 +54,9 @@
       </form>
 
       <p class="auth-footer staff-footer">
+        <a href="{% url 'accounts:password_reset' %}">Forgot password?</a>
+      </p>
+      <p class="auth-footer staff-footer">
         New to the team?
         <a href="{% url 'accounts:employee_register' %}">Register employee</a>
       </p>

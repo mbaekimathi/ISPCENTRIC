@@ -759,22 +759,17 @@ def manager_network_equipment(request):
                 pk=request.POST.get("equipment_id"),
             )
             enable = request.POST.get("track_serials") == "1"
-            employee = getattr(request.user, "employee_profile", None)
             if not enable:
-                code = "".join(
-                    ch
-                    for ch in (request.POST.get("verification_code") or "")
-                    if ch.isdigit()
+                password = (
+                    request.POST.get("verification_password")
+                    or request.POST.get("verification_code")
+                    or ""
                 )
-                if (
-                    employee is None
-                    or not employee.login_code
-                    or code != str(employee.login_code)
-                ):
+                if not password or not request.user.check_password(password):
                     return JsonResponse(
                         {
                             "ok": False,
-                            "error": "Incorrect verification code.",
+                            "error": "Incorrect password.",
                             "track_serials": equipment.track_serials,
                         },
                         status=400,
@@ -1790,7 +1785,7 @@ def sales_customer_registration(request):
         organizations=organizations,
         prefix="client",
     )
-    isp_form = RegisterForm(prefix="isp")
+    isp_form = RegisterForm(prefix="isp", require_invite=False)
 
     if request.method == "POST":
         selected_type = (request.POST.get("registration_type") or "").strip()
@@ -1819,7 +1814,9 @@ def sales_customer_registration(request):
                 )
                 return redirect("roles:sales_customer_registration")
         elif selected_type == "isp":
-            isp_form = RegisterForm(request.POST, request.FILES, prefix="isp")
+            isp_form = RegisterForm(
+                request.POST, request.FILES, prefix="isp", require_invite=False
+            )
             if isp_form.is_valid():
                 with transaction.atomic():
                     user = isp_form.save(commit=False)

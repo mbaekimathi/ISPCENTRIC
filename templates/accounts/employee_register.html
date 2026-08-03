@@ -10,12 +10,12 @@
       <a class="staff-logo" href="{% url 'core:landing' %}">ISP<span>CENTRIC</span></a>
       <h2 class="staff-rail-title">Create your staff login.</h2>
       <p class="staff-rail-copy">
-        Choose a unique 6-digit code — that code plus your password is how you sign in. No company link required.
+        Choose a unique 6-digit login code and a strong password. You need your company join code from an admin.
       </p>
       <ul class="staff-points">
+        <li>Enter company join code</li>
         <li>Pick an available login code</li>
         <li>Await approval &amp; role</li>
-        <li>Optional profile photo</li>
       </ul>
     </div>
   </aside>
@@ -24,7 +24,7 @@
     <div class="staff-card staff-card-wide">
       <div class="staff-badge">Employee</div>
       <h1>Register employee</h1>
-      <p class="lede">Create your account with a 6-digit login code.</p>
+      <p class="lede">Join with your company code, then create a login code and strong password.</p>
 
       <form method="post" enctype="multipart/form-data" novalidate id="register-form">
         {% csrf_token %}
@@ -64,11 +64,18 @@
               {{ form.country_code.errors }}
               {{ form.phone.errors }}
             </div>
+          {% elif field.name == 'company_join_code' %}
+            <div class="form-group">
+              <label for="{{ field.id_for_label }}">Company join code</label>
+              {{ field }}
+              <p class="field-hint">Ask your company admin for this 6-digit code (shown in company settings).</p>
+              {{ field.errors }}
+            </div>
           {% elif field.name == 'login_code' %}
             <div class="form-group">
               <label for="{{ field.id_for_label }}">6-digit login code</label>
               {{ field }}
-              <p class="field-hint">This code is what you will use to log in (with your password).</p>
+              <p class="field-hint">This code is your staff username (not your password).</p>
               <p class="code-status" id="login-code-status" aria-live="polite">Choose a unique 6-digit code</p>
               {{ field.errors }}
             </div>
@@ -83,6 +90,11 @@
                 </button>
               </div>
               {{ form.password1.errors }}
+              <ul class="password-rules" id="password-rules" aria-live="polite">
+                <li data-rule="length">At least 12 characters</li>
+                <li data-rule="not-numeric">Not entirely numeric</li>
+                <li data-rule="match">Passwords match</li>
+              </ul>
             </div>
           {% elif field.name == 'password2' %}
             <div class="form-group">
@@ -245,6 +257,29 @@
         var eyeOff = btn.querySelector(".icon-eye-off");
         if (eye && eyeOff) { eye.hidden = show; eyeOff.hidden = !show; }
       });
+    });
+
+    var p1 = document.getElementById("id_password1");
+    var p2 = document.getElementById("id_password2");
+    var rules = document.getElementById("password-rules");
+    function setRule(name, ok) {
+      if (!rules) return;
+      var item = rules.querySelector('[data-rule="' + name + '"]');
+      if (!item) return;
+      item.classList.toggle("is-ok", ok);
+      item.classList.toggle("is-bad", !ok);
+    }
+    function checkPasswords() {
+      if (!p1 || !rules) return;
+      var password = p1.value || "";
+      var confirm = p2 ? p2.value || "" : "";
+      rules.classList.toggle("is-active", password.length > 0 || confirm.length > 0);
+      setRule("length", password.length >= 12);
+      setRule("not-numeric", password.length > 0 && !/^\d+$/.test(password));
+      setRule("match", password.length > 0 && confirm.length > 0 && password === confirm);
+    }
+    [p1, p2].forEach(function (el) {
+      if (el) el.addEventListener("input", checkPasswords);
     });
   })();
 </script>

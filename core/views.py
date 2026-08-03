@@ -87,9 +87,11 @@ from core.mikrotik_connect import (
     fetch_active_pppoe_usernames,
     fetch_customer_cpe_web_data,
     fetch_customer_cpe_live_usage,
+    fetch_customer_hotspot_usage,
     fetch_customer_pppoe_usage,
     fetch_hotspot_client_macs,
     fetch_mikrotik_live_snapshot,
+    find_hotspot_router_for_mac,
     find_pppoe_customer_for_ip,
     list_mikrotik_ports,
     cpe_firewall_unlock_script,
@@ -183,7 +185,7 @@ CLIENT_SIDEBARS = {
                 "action": "open_modal",
                 "modal": "client-package-modal",
             },
-            {"key": "billing", "label": "Billing analysis", "anchor": "client-billing"},
+            {"key": "billing", "label": "Payments", "anchor": "client-billing"},
         ],
     },
     "billing": {
@@ -207,7 +209,21 @@ CLIENT_SIDEBARS = {
     "account": {
         "label": "My account",
         "items": [
-            {"key": "account", "label": "Account details", "url_name": "core:my_account"},
+            {
+                "key": "account_profile",
+                "label": "Company profile",
+                "url_name": "core:my_account",
+            },
+            {
+                "key": "account_payments",
+                "label": "Packages",
+                "url_name": "core:my_account_payments",
+            },
+            {
+                "key": "account_daraja",
+                "label": "Daraja STK Push",
+                "url_name": "core:my_account_daraja",
+            },
         ],
     },
     "leads": {
@@ -372,28 +388,70 @@ def get_org_router(request, router_id: int):
     return org, router
 
 
+def customer_supports_live_usage(customer) -> bool:
+    """Whether this client can show live NAS usage (PPPoE session or Hotspot MAC)."""
+    if customer.service_type == Customer.ServiceType.PPPOE:
+        return bool(customer.router_id and customer.pppoe_username)
+    if customer.service_type == Customer.ServiceType.HOTSPOT:
+        return bool((customer.hotspot_mac or "").strip())
+    return False
+
+
+def resolve_client_usage_router(customer, org=None):
+    """MikroTik to query for this client's live usage."""
+    router = getattr(customer, "router", None)
+    if router is not None and router.account_status != MikroTikRouter.AccountStatus.SUSPENDED:
+        return router
+    if customer.service_type != Customer.ServiceType.HOTSPOT:
+        return None
+    mac = (customer.hotspot_mac or "").strip()
+    if not mac:
+        return None
+    organization = org or getattr(customer, "organization", None)
+    found = find_hotspot_router_for_mac(organization, mac)
+    if found is not None and found.account_status != MikroTikRouter.AccountStatus.SUSPENDED:
+        return found
+    return (
+        MikroTikRouter.objects.filter(
+            organization=organization,
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        )
+        .order_by("id")
+        .first()
+    )
+
+
 def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[dict]:
     """Sidebar items for a single client (sections + update package)."""
-    base = reverse("core:client_detail", kwargs={"customer_id": customer.pk})
     nav: list[dict] = [
-        {"key": "clients", "label": "All clients", "url_name": "core:my_clients"},
-        {"key": "overview", "label": "Client details", "href": f"{base}#client-overview"},
+        {
+            "key": "package",
+            "label": "Update package",
+            "action": "open_modal",
+            "modal": "client-package-modal",
+        },
     ]
-    if (
-        customer.service_type == Customer.ServiceType.PPPOE
-        and customer.router_id
-        and customer.pppoe_username
-    ):
+    if customer_supports_live_usage(customer):
         nav.append(
             {
                 "key": "usage",
-                "label": "Usage analysis",
+                "label": "Client usage",
                 "href": reverse(
                     "core:client_usage_analysis",
                     kwargs={"customer_id": customer.pk},
                 ),
             }
         )
+    nav.append(
+        {
+            "key": "billing",
+            "label": "Client billing",
+            "href": reverse(
+                "core:client_billing",
+                kwargs={"customer_id": customer.pk},
+            ),
+        }
+    )
     if can_access_wifi:
         nav.append(
             {
@@ -405,17 +463,6 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
                 ),
             }
         )
-    nav.extend(
-        [
-            {
-                "key": "package",
-                "label": "Update package",
-                "action": "open_modal",
-                "modal": "client-package-modal",
-            },
-            {"key": "billing", "label": "Billing analysis", "href": f"{base}#client-billing"},
-        ]
-    )
     return nav
 
 
@@ -3106,11 +3153,37 @@ def my_clients(request):
     }[tab]
 
     clients_query = (request.GET.get("q") or "").strip()
+    router_raw = (request.GET.get("router") or "").strip()
+    clients_router_param = ""
+    clients_router_id = None
+    if router_raw.lower() in {"none", "unassigned", "0"}:
+        clients_router_param = "none"
+    elif router_raw.isdigit():
+        clients_router_id = int(router_raw)
+        clients_router_param = str(clients_router_id)
+
+    client_routers = []
+    if org:
+        client_routers = list(
+            MikroTikRouter.objects.filter(organization=org)
+            .order_by("name", "host")
+            .only("id", "name", "host")
+        )
+        if clients_router_id and not any(
+            r.pk == clients_router_id for r in client_routers
+        ):
+            clients_router_id = None
+            clients_router_param = ""
+
     tab_qs = (
         base_qs.filter(service_type=service_type)
         .select_related("plan", "router")
         .order_by("-created_at")
     )
+    if clients_router_param == "none":
+        tab_qs = tab_qs.filter(router__isnull=True)
+    elif clients_router_id:
+        tab_qs = tab_qs.filter(router_id=clients_router_id)
     if clients_query:
         tab_qs = tab_qs.filter(
             Q(full_name__icontains=clients_query)
@@ -3145,6 +3218,9 @@ def my_clients(request):
             clients_page=page_obj,
             clients_query=clients_query,
             clients_match_count=paginator.count,
+            client_routers=client_routers,
+            clients_router_param=clients_router_param,
+            clients_router_id=clients_router_id,
             pppoe_form=pppoe_form,
             open_client_modal=open_modal,
             billing_plans_exist=bool(
@@ -3360,43 +3436,6 @@ def client_detail(request, customer_id: int):
             open_client_modal = "client-package-modal"
 
 
-    invoices = (
-        list(
-            Invoice.objects.filter(customer=customer, organization=org)
-            .prefetch_related("payments")
-            .order_by("-issued_at")[:8]
-        )
-        if org
-        else []
-    )
-    payments = (
-        list(
-            Payment.objects.filter(invoice__customer=customer, organization=org)
-            .select_related("invoice")
-            .order_by("-received_at")[:8]
-        )
-        if org
-        else []
-    )
-    invoice_stats = (
-        Invoice.objects.filter(customer=customer, organization=org).aggregate(
-            total=Count("id"),
-            pending=Count("id", filter=Q(status=Invoice.Status.PENDING)),
-            paid=Count("id", filter=Q(status=Invoice.Status.PAID)),
-            overdue=Count("id", filter=Q(status=Invoice.Status.OVERDUE)),
-            billed=Sum("amount"),
-        )
-        if org
-        else {}
-    )
-    paid_total = (
-        Payment.objects.filter(invoice__customer=customer, organization=org).aggregate(
-            total=Sum("amount")
-        )["total"]
-        if org
-        else None
-    ) or 0
-
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -3409,19 +3448,7 @@ def client_detail(request, customer_id: int):
         ),
         customer=customer,
         back_url=f"{reverse('core:my_clients')}?tab={customer.service_type}",
-        invoices=invoices,
-        payments=payments,
-        invoice_total=invoice_stats.get("total") or 0,
-        invoice_pending=invoice_stats.get("pending") or 0,
-        invoice_paid=invoice_stats.get("paid") or 0,
-        invoice_overdue=invoice_stats.get("overdue") or 0,
-        amount_billed=invoice_stats.get("billed") or 0,
-        amount_paid=paid_total,
-        can_live_usage=bool(
-            customer.router_id
-            and customer.pppoe_username
-            and customer.service_type == Customer.ServiceType.PPPOE
-        ),
+        can_live_usage=customer_supports_live_usage(customer),
         can_access_wifi=can_access_wifi,
         wifi_ssid_display=wifi_ssid_display,
         wifi_password_display=wifi_password_display,
@@ -4405,23 +4432,50 @@ def client_subscription(request, customer_id: int):
 @client_workspace_required
 @require_GET
 def client_usage(request, customer_id: int):
-    """JSON live PPPoE session / traffic usage for one client."""
+    """JSON live PPPoE / Hotspot session traffic usage for one client."""
     org = resolve_organization(request.user, request)
     if not org:
         return JsonResponse({"ok": False, "error": "No organization."}, status=400)
 
     customer = get_object_or_404(
-        Customer.objects.select_related("router"),
+        Customer.objects.select_related("router", "organization"),
         pk=customer_id,
         organization=org,
     )
-    router = customer.router
+    is_hotspot = customer.service_type == Customer.ServiceType.HOTSPOT
+    is_pppoe = customer.service_type == Customer.ServiceType.PPPOE
+    if not is_hotspot and not is_pppoe:
+        return JsonResponse(
+            {
+                "ok": False,
+                "session_active": False,
+                "error": "Live usage is available for PPPoE and Hotspot clients.",
+            }
+        )
+    if is_pppoe and not customer.pppoe_username:
+        return JsonResponse(
+            {
+                "ok": False,
+                "session_active": False,
+                "error": "This client has no PPPoE username.",
+            }
+        )
+    if is_hotspot and not (customer.hotspot_mac or "").strip():
+        return JsonResponse(
+            {
+                "ok": False,
+                "session_active": False,
+                "error": "This client has no Hotspot device MAC.",
+            }
+        )
+
+    router = resolve_client_usage_router(customer, org)
     if not router:
         return JsonResponse(
             {
                 "ok": False,
                 "session_active": False,
-                "error": "No MikroTik router is assigned to this client.",
+                "error": "No MikroTik router is available for this client.",
             }
         )
     if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
@@ -4433,14 +4487,6 @@ def client_usage(request, customer_id: int):
                 "error": "The assigned MikroTik account is suspended.",
             }
         )
-    if not customer.pppoe_username:
-        return JsonResponse(
-            {
-                "ok": False,
-                "session_active": False,
-                "error": "This client has no PPPoE username.",
-            }
-        )
 
     cache_key = f"client_usage:{org.pk}:{customer.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
@@ -4449,69 +4495,84 @@ def client_usage(request, customer_id: int):
         if cached is not None:
             return JsonResponse(cached)
 
-    payload = fetch_customer_pppoe_usage(
-        router.host,
-        router.username,
-        router.password or "",
-        pppoe_username=customer.pppoe_username,
-    )
+    if is_hotspot:
+        payload = fetch_customer_hotspot_usage(
+            router.host,
+            router.username,
+            router.password or "",
+            hotspot_mac=customer.hotspot_mac,
+        )
+        payload["devices_connected"] = 1 if payload.get("session_active") else 0
+        payload["devices_label"] = "1 gadget" if payload.get("session_active") else "0"
+        payload["devices_hint"] = "Hotspot gadget session"
+        payload["speed_source"] = "nas"
+        payload["cpe_host"] = (payload.get("address") or "").strip()
+        payload["cpe_auth_ok"] = False
+    else:
+        payload = fetch_customer_pppoe_usage(
+            router.host,
+            router.username,
+            router.password or "",
+            pppoe_username=customer.pppoe_username,
+        )
+        payload["speed_source"] = "nas"
+        payload["cpe_host"] = (payload.get("address") or "").strip()
+        payload["cpe_auth_ok"] = False
+        payload["devices_connected"] = None
+        payload["devices_label"] = "—"
+        payload["devices_hint"] = "Device count loads from CPE when reachable"
+
+        # Optional short CPE enrichment — never block the account page / live session.
+        want_cpe = (request.GET.get("cpe") or "").strip() in {"1", "true", "yes"}
+        if want_cpe and payload.get("session_active") and (customer.cpe_password or customer.pppoe_password):
+            try:
+                cpe = fetch_customer_cpe_live_usage(
+                    router.host,
+                    router.username,
+                    router.password or "",
+                    pppoe_username=customer.pppoe_username,
+                    cpe_username=customer.cpe_username or "admin",
+                    cpe_password=customer.cpe_password or "",
+                    pppoe_password=customer.pppoe_password or "",
+                    timeout=6.0,
+                )
+                if cpe.get("cpe_auth_ok"):
+                    for key in (
+                        "download_bps",
+                        "upload_bps",
+                        "download_label",
+                        "upload_label",
+                        "bytes_in",
+                        "bytes_out",
+                        "bytes_in_label",
+                        "bytes_out_label",
+                        "interface",
+                        "devices_connected",
+                        "devices_label",
+                        "devices_hint",
+                        "dhcp_leases",
+                        "wifi_clients",
+                        "speed_source",
+                        "cpe_host",
+                        "cpe_auth_ok",
+                        "prep_steps",
+                    ):
+                        if key in cpe:
+                            payload[key] = cpe.get(key)
+                    working_user = (cpe.get("cpe_username") or "").strip()
+                    if working_user and working_user != (customer.cpe_username or ""):
+                        customer.cpe_username = working_user
+                        customer.save(update_fields=["cpe_username"])
+                elif cpe.get("devices_hint"):
+                    payload["devices_hint"] = cpe.get("devices_hint")
+                if cpe.get("cpe_error"):
+                    payload["cpe_error"] = cpe.get("cpe_error")
+            except Exception:
+                payload["devices_hint"] = "CPE metrics unavailable — session still live from NAS"
+
     payload["customer_id"] = customer.pk
     payload["router_id"] = router.pk
     payload["router_name"] = router.name
-    payload["speed_source"] = "nas"
-    payload["cpe_host"] = (payload.get("address") or "").strip()
-    payload["cpe_auth_ok"] = False
-    payload["devices_connected"] = None
-    payload["devices_label"] = "—"
-    payload["devices_hint"] = "Device count loads from CPE when reachable"
-
-    # Optional short CPE enrichment — never block the account page / live session.
-    want_cpe = (request.GET.get("cpe") or "").strip() in {"1", "true", "yes"}
-    if want_cpe and payload.get("session_active") and (customer.cpe_password or customer.pppoe_password):
-        try:
-            cpe = fetch_customer_cpe_live_usage(
-                router.host,
-                router.username,
-                router.password or "",
-                pppoe_username=customer.pppoe_username,
-                cpe_username=customer.cpe_username or "admin",
-                cpe_password=customer.cpe_password or "",
-                pppoe_password=customer.pppoe_password or "",
-                timeout=6.0,
-            )
-            if cpe.get("cpe_auth_ok"):
-                for key in (
-                    "download_bps",
-                    "upload_bps",
-                    "download_label",
-                    "upload_label",
-                    "bytes_in",
-                    "bytes_out",
-                    "bytes_in_label",
-                    "bytes_out_label",
-                    "interface",
-                    "devices_connected",
-                    "devices_label",
-                    "devices_hint",
-                    "dhcp_leases",
-                    "wifi_clients",
-                    "speed_source",
-                    "cpe_host",
-                    "cpe_auth_ok",
-                    "prep_steps",
-                ):
-                    if key in cpe:
-                        payload[key] = cpe.get(key)
-                working_user = (cpe.get("cpe_username") or "").strip()
-                if working_user and working_user != (customer.cpe_username or ""):
-                    customer.cpe_username = working_user
-                    customer.save(update_fields=["cpe_username"])
-            elif cpe.get("devices_hint"):
-                payload["devices_hint"] = cpe.get("devices_hint")
-            if cpe.get("cpe_error"):
-                payload["cpe_error"] = cpe.get("cpe_error")
-        except Exception:
-            payload["devices_hint"] = "CPE metrics unavailable — session still live from NAS"
 
     try:
         from billing.usage_samples import record_customer_usage_sample
@@ -4534,11 +4595,11 @@ def client_usage_analysis(request, customer_id: int):
         pk=customer_id,
         organization=org,
     )
+    usage_router = resolve_client_usage_router(customer, org)
     can_live = bool(
-        customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and customer.router_id
-        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
+        customer_supports_live_usage(customer)
+        and usage_router is not None
+        and usage_router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
     )
     can_access_wifi = bool(
         org
@@ -4555,20 +4616,31 @@ def client_usage_analysis(request, customer_id: int):
 
     from billing.usage_samples import usage_trend_payload
 
-    trends = usage_trend_payload(customer, hours=hours) if can_live else {
-        "ok": False,
-        "hours": hours,
-        "sample_count": 0,
-        "labels": [],
-        "series": {
-            "uptime_minutes": [],
-            "download_kbps": [],
-            "upload_kbps": [],
-            "data_used_mb": [],
-        },
-        "summary": {},
-        "error": "Live usage trends are available for PPPoE clients with an assigned router.",
-    }
+    if can_live:
+        trends = usage_trend_payload(customer, hours=hours)
+    else:
+        if customer.service_type == Customer.ServiceType.HOTSPOT:
+            error = (
+                "No active MikroTik is available to collect Hotspot gadget usage."
+                if not (customer.hotspot_mac or "").strip()
+                else "No MikroTik router is available for this Hotspot gadget."
+            )
+        else:
+            error = "Live usage trends are available for PPPoE clients with an assigned router."
+        trends = {
+            "ok": False,
+            "hours": hours,
+            "sample_count": 0,
+            "labels": [],
+            "series": {
+                "uptime_minutes": [],
+                "download_kbps": [],
+                "upload_kbps": [],
+                "data_used_mb": [],
+            },
+            "summary": {},
+            "error": error,
+        }
 
     ctx = client_page_context(
         request,
@@ -4596,6 +4668,72 @@ def client_usage_analysis(request, customer_id: int):
 
 
 @client_workspace_required
+def client_billing(request, customer_id: int):
+    """Dedicated page listing successful payments for one client."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    can_access_wifi = bool(
+        org
+        and customer.service_type == Customer.ServiceType.PPPOE
+        and customer.pppoe_username
+        and customer.router_id
+        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
+    )
+    payments = (
+        list(
+            Payment.objects.filter(invoice__customer=customer, organization=org)
+            .select_related("invoice")
+            .order_by("-received_at")[:100]
+        )
+        if org
+        else []
+    )
+    invoice_stats = (
+        Invoice.objects.filter(customer=customer, organization=org).aggregate(
+            total=Count("id"),
+            pending=Count("id", filter=Q(status=Invoice.Status.PENDING)),
+            paid=Count("id", filter=Q(status=Invoice.Status.PAID)),
+            overdue=Count("id", filter=Q(status=Invoice.Status.OVERDUE)),
+        )
+        if org
+        else {}
+    )
+    amount_paid = (
+        Payment.objects.filter(invoice__customer=customer, organization=org).aggregate(
+            total=Sum("amount")
+        )["total"]
+        if org
+        else None
+    ) or 0
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="billing",
+        page_title=f"Billing · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=can_access_wifi,
+        payments=payments,
+        invoice_total=invoice_stats.get("total") or 0,
+        invoice_pending=invoice_stats.get("pending") or 0,
+        invoice_paid=invoice_stats.get("paid") or 0,
+        invoice_overdue=invoice_stats.get("overdue") or 0,
+        amount_paid=amount_paid,
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    return render(request, "core/client_billing.html", ctx)
+
+
+@client_workspace_required
 @require_GET
 def client_usage_trends(request, customer_id: int):
     """JSON chart series for the usage analysis page."""
@@ -4607,13 +4745,14 @@ def client_usage_trends(request, customer_id: int):
         pk=customer_id,
         organization=org,
     )
-    if (
-        customer.service_type != Customer.ServiceType.PPPOE
-        or not customer.pppoe_username
-        or not customer.router_id
-    ):
+    if not customer_supports_live_usage(customer):
         return JsonResponse(
             {"ok": False, "error": "Usage trends are unavailable for this client."},
+            status=400,
+        )
+    if resolve_client_usage_router(customer, org) is None:
+        return JsonResponse(
+            {"ok": False, "error": "No MikroTik router is available for this client."},
             status=400,
         )
     try:
@@ -6153,13 +6292,15 @@ def save_owner_profile(request):
         client_page_context(
             request,
             active_nav="account",
-            page_title="My account",
-            page_kicker="Company",
-            page_subtitle=(
-                "Update your login profile, company details, Paybill or Till, "
-                "and Daraja STK Push for subscription payments."
-            ),
-            form=OrganizationEditForm(instance=org) if org else None,
+            sidebar_active="account_profile",
+            page_title="Company profile",
+            page_kicker="My account",
+            page_subtitle="Update your login profile and company details.",
+            form=OrganizationEditForm(
+                instance=org, section=OrganizationEditForm.SECTION_PROFILE
+            )
+            if org
+            else None,
             can_edit=bool(org and (org.owner_id == request.user.id or viewing_client)),
             can_edit_profile=True,
             owner_profile_form=form,
@@ -6172,9 +6313,23 @@ def save_owner_profile(request):
     )
 
 
-@client_workspace_required
-def my_account(request):
-    org = resolve_organization(request.user, request)
+def _owner_profile_form(user, data=None, *, id_prefix="owner"):
+    kwargs = {
+        "user": user,
+        "id_prefix": id_prefix,
+        "initial": {
+            "username": user.username,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "email": user.email,
+        },
+    }
+    if data is not None:
+        return OwnerProfileForm(data, **kwargs)
+    return OwnerProfileForm(**kwargs)
+
+
+def _account_org_context(request, org):
     employee = getattr(request.user, "employee_profile", None)
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
@@ -6186,30 +6341,111 @@ def my_account(request):
         )
     )
     platform_gateway = PaymentGateway.get_solo() if org else None
-    form = OrganizationEditForm(instance=org) if org and can_edit else None
+    return {
+        "can_edit": can_edit,
+        "can_edit_profile": can_edit_profile,
+        "platform_gateway": platform_gateway,
+        "platform_gateway_ready": bool(
+            platform_gateway and platform_gateway.is_stk_ready()
+        ),
+        "daraja_status": org.effective_daraja_credentials() if org else None,
+        "receive_type": (org.mpesa_payment_type if org else "") or "",
+        "open_owner_profile_modal": (request.GET.get("edit") or "").strip().lower()
+        in {"1", "profile", "true"},
+    }
 
-    if request.method == "POST" and can_edit and org:
-        form = OrganizationEditForm(request.POST, request.FILES, instance=org)
-        if form.is_valid():
-            org = form.save()
-            creds = org.effective_daraja_credentials()
-            if org.daraja_enabled and creds.get("ready"):
-                messages.success(
-                    request,
-                    "Account saved. Daraja STK Push is ready "
-                    f"({creds.get('source_label')}).",
-                )
-            elif org.daraja_enabled:
-                messages.success(
-                    request,
-                    "Account saved. Daraja is enabled but not fully ready yet — "
-                    f"{creds.get('message')}",
-                )
-            else:
-                messages.success(request, "Account details updated.")
-            return redirect("core:my_account")
 
-    daraja_status = org.effective_daraja_credentials() if org else None
+def _save_account_section(request, org, *, section, success_url_name, success_messages=None):
+    """Validate and save one OrganizationEditForm section. Returns (form, redirect_or_none)."""
+    form = OrganizationEditForm(
+        request.POST, request.FILES, instance=org, section=section
+    )
+    if not form.is_valid():
+        return form, None
+    org = form.save()
+    if success_messages:
+        for message in success_messages(org):
+            messages.success(request, message)
+    else:
+        messages.success(request, "Account details updated.")
+    return form, redirect(success_url_name)
+
+
+@client_workspace_required
+def my_account(request):
+    """Company profile page — login + company details in one form."""
+    org = resolve_organization(request.user, request)
+    extra = _account_org_context(request, org)
+    can_edit = extra["can_edit"]
+    can_edit_profile = extra["can_edit_profile"]
+    form = (
+        OrganizationEditForm(instance=org, section=OrganizationEditForm.SECTION_PROFILE)
+        if org and can_edit
+        else None
+    )
+    account_profile_form = (
+        _owner_profile_form(request.user, id_prefix="account")
+        if can_edit_profile
+        else None
+    )
+    account_editing = False
+
+    if request.method == "POST" and org and (can_edit or can_edit_profile):
+        action = (request.POST.get("action") or "").strip()
+        if action == "save_account":
+            account_editing = True
+            org_ok = True
+            profile_ok = True
+            if can_edit:
+                form = OrganizationEditForm(
+                    request.POST,
+                    request.FILES,
+                    instance=org,
+                    section=OrganizationEditForm.SECTION_PROFILE,
+                )
+                org_ok = form.is_valid()
+            if can_edit_profile:
+                account_profile_form = _owner_profile_form(
+                    request.user, request.POST, id_prefix="account"
+                )
+                profile_ok = account_profile_form.is_valid()
+
+            if org_ok and profile_ok:
+                saved_profile = False
+                saved_password = False
+                saved_company = False
+                if can_edit and form is not None:
+                    form.save()
+                    saved_company = True
+                if can_edit_profile and account_profile_form is not None:
+                    account_profile_form.save()
+                    saved_profile = True
+                    if account_profile_form.cleaned_data.get("password1"):
+                        update_session_auth_hash(request, request.user)
+                        saved_password = True
+                if saved_profile and saved_company and saved_password:
+                    messages.success(
+                        request, "Profile, password, and company details saved."
+                    )
+                elif saved_profile and saved_company:
+                    messages.success(request, "Profile and company details saved.")
+                elif saved_profile and saved_password:
+                    messages.success(request, "Profile and password updated.")
+                elif saved_profile:
+                    messages.success(request, "Profile details updated.")
+                else:
+                    messages.success(request, "Company profile updated.")
+                return redirect("core:my_account")
+    elif (request.GET.get("edit") or "").strip().lower() in {
+        "1",
+        "profile",
+        "true",
+        "edit",
+    }:
+        account_editing = bool(can_edit or can_edit_profile)
+
+    # Page uses inline edit mode; keep the topbar modal closed here.
+    extra["open_owner_profile_modal"] = False
 
     return render(
         request,
@@ -6217,23 +6453,138 @@ def my_account(request):
         client_page_context(
             request,
             active_nav="account",
-            page_title="My account",
-            page_kicker="Company",
+            sidebar_active="account_profile",
+            page_title="Company profile",
+            page_kicker="My account",
+            page_subtitle="Update your login profile and company details shown across your workspace.",
+            form=form,
+            account_profile_form=account_profile_form,
+            account_editing=account_editing,
+            **extra,
+        ),
+    )
+
+
+@client_workspace_required
+def my_account_payments(request):
+    """Packages and payment status overview."""
+    # Lazy import avoids circular dependency with billing.views.
+    from billing.views import (
+        _handle_delete_package,
+        _handle_edit_package,
+        _handle_register_package,
+        _handle_suspend_package,
+    )
+
+    org = resolve_organization(request.user, request)
+    extra = _account_org_context(request, org)
+    success_url = "core:my_account_payments"
+
+    package_form, open_modal, early = _handle_register_package(
+        request, org, success_url_name=success_url
+    )
+    if early:
+        return early
+
+    edit_form, edit_modal, early = _handle_edit_package(
+        request, org, success_url_name=success_url
+    )
+    if early:
+        return early
+    if edit_modal:
+        open_modal = edit_modal
+
+    early = _handle_suspend_package(request, org, success_url_name=success_url)
+    if early:
+        return early
+
+    early = _handle_delete_package(request, org, success_url_name=success_url)
+    if early:
+        return early
+
+    package_list = list(
+        BillingPlan.objects.filter(organization=org)
+        .annotate(
+            customer_count=Count("customers"),
+            stk_count=Count("stk_push_requests"),
+        )
+        .prefetch_related("routers")
+        .order_by("price", "name")
+        if org
+        else BillingPlan.objects.none()
+    )
+
+    return render(
+        request,
+        "core/my_account_payments.html",
+        client_page_context(
+            request,
+            active_nav="account",
+            sidebar_active="account_payments",
+            page_title="Packages",
+            page_kicker="My account",
+            page_subtitle="Manage internet packages for this organization.",
+            packages=package_list,
+            package_count=len(package_list),
+            package_form=package_form,
+            package_edit_form=edit_form,
+            open_billing_modal=open_modal,
+            **extra,
+        ),
+    )
+
+
+@client_workspace_required
+def my_account_daraja(request):
+    """Receive subscription money + Daraja STK Push settings."""
+    org = resolve_organization(request.user, request)
+    extra = _account_org_context(request, org)
+    can_edit = extra["can_edit"]
+    form = (
+        OrganizationEditForm(instance=org, section=OrganizationEditForm.SECTION_DARAJA)
+        if org and can_edit
+        else None
+    )
+
+    if request.method == "POST" and can_edit and org:
+        def _daraja_messages(saved_org):
+            creds = saved_org.effective_daraja_credentials()
+            if saved_org.daraja_enabled and creds.get("ready"):
+                return [
+                    "Payment settings saved. Daraja STK Push is ready "
+                    f"({creds.get('source_label')}).",
+                ]
+            if saved_org.daraja_enabled:
+                return [
+                    "Payment settings saved. Daraja is enabled but not fully ready yet — "
+                    f"{creds.get('message')}"
+                ]
+            return ["Receive money and Daraja settings updated."]
+
+        form, early = _save_account_section(
+            request,
+            org,
+            section=OrganizationEditForm.SECTION_DARAJA,
+            success_url_name="core:my_account_daraja",
+            success_messages=_daraja_messages,
+        )
+        if early:
+            return early
+
+    return render(
+        request,
+        "core/my_account_daraja.html",
+        client_page_context(
+            request,
+            active_nav="account",
+            sidebar_active="account_daraja",
+            page_title="Daraja STK Push",
+            page_kicker="My account",
             page_subtitle=(
-                "Update your login profile, company details, Paybill or Till, "
-                "and Daraja STK Push for subscription payments."
+                "Set Paybill or Till for subscription collections, then configure Daraja STK Push."
             ),
             form=form,
-            can_edit=can_edit,
-            can_edit_profile=can_edit_profile,
-            platform_gateway=platform_gateway,
-            platform_gateway_ready=bool(
-                platform_gateway and platform_gateway.is_stk_ready()
-            ),
-            daraja_status=daraja_status,
-            receive_type=(org.mpesa_payment_type if org else "") or "",
-            open_owner_profile_modal=(request.GET.get("edit") or "").strip().lower()
-            in {"1", "profile", "true"},
+            **extra,
         ),
     )
 

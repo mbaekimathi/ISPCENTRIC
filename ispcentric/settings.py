@@ -54,10 +54,35 @@ if os.getenv("DJANGO_DEBUG") is not None:
 else:
     DEBUG = not HOSTED
 
+from urllib.parse import urlparse
+
 _hosts_raw = (os.getenv("DJANGO_ALLOWED_HOSTS") or "").strip()
+
+
+def _hosts_from_public_base() -> list[str]:
+    url = (os.getenv("PUBLIC_BASE_URL") or "").strip()
+    if not url or url.lower() in {"auto", "detect", "lan", "local"}:
+        return []
+    try:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+    except Exception:
+        return []
+    host = (parsed.hostname or "").strip().lower()
+    return [host] if host else []
+
+
 if HOSTED:
-    # Always accept the cPanel domain/subdomain (ignore leftover localhost .env values)
-    ALLOWED_HOSTS = ["*"]
+    if _hosts_raw and _hosts_raw.lower() not in ("auto",):
+        if _hosts_raw.strip() == "*":
+            # Explicit opt-in only — prefer a comma-separated host list.
+            ALLOWED_HOSTS = ["*"]
+        else:
+            ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
+    else:
+        ALLOWED_HOSTS = _hosts_from_public_base()
+        if not ALLOWED_HOSTS:
+            # Legacy hosted installs without DJANGO_ALLOWED_HOSTS — pin hosts ASAP.
+            ALLOWED_HOSTS = ["*"]
 elif _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
     ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
 else:
@@ -221,10 +246,20 @@ else:
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 12},
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
+
+# Owner self-signup: open in DEBUG by default; closed when hosted unless invite key set.
+OWNER_REGISTER_INVITE_KEY = (os.getenv("DJANGO_OWNER_REGISTER_INVITE_KEY") or "").strip()
+ALLOW_PUBLIC_OWNER_REGISTRATION = env_flag(
+    "DJANGO_ALLOW_PUBLIC_OWNER_REGISTRATION",
+    "true" if DEBUG else "false",
+)
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Africa/Nairobi"
@@ -260,12 +295,47 @@ LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "core:workspace"
 LOGOUT_REDIRECT_URL = "core:landing"
 
+# Session / cookie defaults (explicit hardening)
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_AGE = int(os.getenv("DJANGO_SESSION_COOKIE_AGE") or str(60 * 60 * 12))
+SESSION_SAVE_EVERY_REQUEST = env_flag("DJANGO_SESSION_SAVE_EVERY_REQUEST", "true")
+
+# Email (password reset). Console backend in DEBUG when unset.
+EMAIL_BACKEND = (
+    os.getenv("DJANGO_EMAIL_BACKEND")
+    or (
+        "django.core.mail.backends.console.EmailBackend"
+        if DEBUG
+        else "django.core.mail.backends.smtp.EmailBackend"
+    )
+)
+EMAIL_HOST = (os.getenv("DJANGO_EMAIL_HOST") or "").strip()
+EMAIL_PORT = int(os.getenv("DJANGO_EMAIL_PORT") or "587")
+EMAIL_HOST_USER = (os.getenv("DJANGO_EMAIL_HOST_USER") or "").strip()
+EMAIL_HOST_PASSWORD = (os.getenv("DJANGO_EMAIL_HOST_PASSWORD") or "").strip()
+EMAIL_USE_TLS = env_flag("DJANGO_EMAIL_USE_TLS", "true")
+DEFAULT_FROM_EMAIL = (
+    os.getenv("DJANGO_DEFAULT_FROM_EMAIL") or "noreply@ispcentric.local"
+).strip()
+
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SESSION_COOKIE_SECURE = env_flag("DJANGO_SESSION_COOKIE_SECURE", "true")
     CSRF_COOKIE_SECURE = env_flag("DJANGO_CSRF_COOKIE_SECURE", "true")
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = "DENY"
+    SECURE_SSL_REDIRECT = env_flag("DJANGO_SECURE_SSL_REDIRECT", "false")
+    SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS") or ("31536000" if HOSTED else "0"))
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = env_flag(
+        "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS",
+        "true" if SECURE_HSTS_SECONDS else "false",
+    )
+    SECURE_HSTS_PRELOAD = env_flag(
+        "DJANGO_SECURE_HSTS_PRELOAD",
+        "true" if SECURE_HSTS_SECONDS else "false",
+    )
 
 # Hosted / production: write errors to logs/django.log (check this on 500s).
 _LOG_DIR = BASE_DIR / "logs"

@@ -336,12 +336,18 @@
       </dl>
     </div>
   </details>
-  {% elif not customer.router or customer.service_type != "pppoe" or not customer.pppoe_username %}
+  {% elif not can_live_usage %}
   <p class="client-simple-note">
-    {% if not customer.router %}
+    {% if customer.service_type == "hotspot" %}
+      {% if not customer.hotspot_mac %}
+        Add a device MAC to enable Hotspot gadget usage.
+      {% else %}
+        Live Hotspot usage will appear once a MikroTik is reachable for this gadget.
+      {% endif %}
+    {% elif not customer.router %}
       Assign a router to see live usage.
     {% elif customer.service_type != "pppoe" %}
-      Live usage is available for PPPoE clients.
+      Live usage is available for PPPoE and Hotspot clients.
     {% else %}
       Add a PPPoE username to enable live usage.
     {% endif %}

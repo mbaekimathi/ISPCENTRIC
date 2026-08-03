@@ -106,10 +106,16 @@
 {% else %}
 <section class="panel" data-cat="live">
   <p class="client-live-empty-text">
-    {% if not customer.router %}
+    {% if customer.service_type == "hotspot" %}
+      {% if not customer.hotspot_mac %}
+        Add a device MAC to collect Hotspot gadget usage.
+      {% else %}
+        No MikroTik router is available to collect usage for this Hotspot gadget.
+      {% endif %}
+    {% elif not customer.router %}
       Assign a MikroTik router to this client to collect usage trends.
     {% elif customer.service_type != "pppoe" %}
-      Usage trends are available for PPPoE clients.
+      Usage trends are available for PPPoE and Hotspot clients.
     {% else %}
       Add a PPPoE username to enable usage analysis.
     {% endif %}

@@ -4673,6 +4673,134 @@ def fetch_customer_pppoe_usage(
         }
 
 
+def fetch_customer_hotspot_usage(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    hotspot_mac: str,
+    port: int = 8728,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Live Hotspot session usage for one gadget MAC on a MikroTik."""
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    mac_compact = _mac_compact(hotspot_mac)
+    mac_display = (
+        ":".join(mac_compact[i : i + 2] for i in range(0, 12, 2))
+        if len(mac_compact) == 12
+        else (hotspot_mac or "").strip().upper()
+    )
+    empty = {
+        "ok": False,
+        "online": False,
+        "session_active": False,
+        "hotspot_mac": mac_display,
+        "pppoe_username": "",
+        "address": "",
+        "caller_id": mac_display,
+        "service": "hotspot",
+        "uptime": "—",
+        "uptime_raw": "",
+        "bytes_in": 0,
+        "bytes_out": 0,
+        "bytes_in_label": "—",
+        "bytes_out_label": "—",
+        "download_bps": None,
+        "upload_bps": None,
+        "download_label": "—",
+        "upload_label": "—",
+        "interface": "",
+        "error": "",
+    }
+    if not host:
+        empty["error"] = "No router host configured."
+        return empty
+    if len(mac_compact) != 12:
+        empty["error"] = "This client has no Hotspot device MAC."
+        return empty
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            active_rows = _print(
+                sock,
+                "/ip/hotspot/active",
+                props=(
+                    "mac-address,user,address,uptime,bytes-in,bytes-out,"
+                    "login-by,server"
+                ),
+                query={"mac-address": mac_display},
+            )
+            if not active_rows:
+                active_rows = _print(
+                    sock,
+                    "/ip/hotspot/active",
+                    props=(
+                        "mac-address,user,address,uptime,bytes-in,bytes-out,"
+                        "login-by,server"
+                    ),
+                )
+
+            session = None
+            for row in active_rows:
+                row_mac = _mac_compact(
+                    row.get("mac-address") or row.get("user") or ""
+                )
+                if row_mac == mac_compact:
+                    session = row
+                    break
+
+            if not session:
+                return {
+                    **empty,
+                    "ok": True,
+                    "online": True,
+                    "session_active": False,
+                    "error": "",
+                    "hint": "This gadget is not in an active Hotspot session right now.",
+                }
+
+            bytes_in = _parse_int(session.get("bytes-in"))
+            bytes_out = _parse_int(session.get("bytes-out"))
+            uptime_raw = (session.get("uptime") or "").strip()
+            return {
+                "ok": True,
+                "online": True,
+                "session_active": True,
+                "hotspot_mac": mac_display,
+                "pppoe_username": (session.get("user") or "").strip(),
+                "address": (session.get("address") or "").strip(),
+                "caller_id": mac_display,
+                "service": "hotspot",
+                "uptime": _human_uptime(uptime_raw),
+                "uptime_raw": uptime_raw,
+                "bytes_in": bytes_in,
+                "bytes_out": bytes_out,
+                "bytes_in_label": _bytes_label(bytes_in),
+                "bytes_out_label": _bytes_label(bytes_out),
+                "download_bps": None,
+                "upload_bps": None,
+                "download_label": "—",
+                "upload_label": "—",
+                "interface": (session.get("server") or "").strip(),
+                "error": "",
+            }
+    except TimeoutError:
+        return {**empty, "error": "Connection timed out reaching the router."}
+    except OSError as exc:
+        return {
+            **empty,
+            "error": f"Could not reach {host}:8728.",
+            "detail": str(exc),
+        }
+    except Exception as exc:
+        return {
+            **empty,
+            "error": str(exc) or "Could not read Hotspot usage from the router.",
+        }
+
+
 def _find_cpe_wan_interface(sock: socket.socket) -> str:
     """Prefer a running PPPoE client interface, else the detected internet uplink port."""
     try:

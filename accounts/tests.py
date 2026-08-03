@@ -1,26 +1,37 @@
 from django import forms
 from django.contrib.auth.models import User
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from accounts.forms import OrganizationEditForm, OwnerProfileForm, RegisterForm, validate_flexible_password
+from accounts.forms import (
+    EmployeeLoginForm,
+    EmployeeRegisterForm,
+    OrganizationEditForm,
+    OwnerProfileForm,
+    RegisterForm,
+    validate_account_password,
+)
 from accounts.models import Employee, Organization
 from billing.models import Customer
 
 
-class FlexiblePasswordTests(TestCase):
-    def test_accepts_six_digit_code(self):
-        self.assertEqual(validate_flexible_password("123456", "123456", required=True), "123456")
+STRONG_PASSWORD = "CorrectHorseBattery9!"
 
-    def test_accepts_longer_password(self):
-        self.assertEqual(
-            validate_flexible_password("secret1", "secret1", required=True),
-            "secret1",
-        )
 
-    def test_rejects_short_non_code(self):
+class AccountPasswordTests(TestCase):
+    def test_rejects_six_digit_code(self):
         with self.assertRaises(forms.ValidationError):
-            validate_flexible_password("12345", "12345", required=True)
+            validate_account_password("123456", "123456", required=True)
+
+    def test_rejects_short_password(self):
+        with self.assertRaises(forms.ValidationError):
+            validate_account_password("secret1", "secret1", required=True)
+
+    def test_accepts_strong_password(self):
+        self.assertEqual(
+            validate_account_password(STRONG_PASSWORD, STRONG_PASSWORD, required=True),
+            STRONG_PASSWORD,
+        )
 
 
 class OwnerProfileFormTests(TestCase):
@@ -28,11 +39,11 @@ class OwnerProfileFormTests(TestCase):
         self.user = User.objects.create_user(
             username="OWNER1",
             email="owner@example.com",
-            password="oldpass1",
+            password="oldpass1-long!",
         )
         Organization.objects.create(name="Test ISP", owner=self.user, join_code="998877")
 
-    def test_can_set_six_digit_username_and_password(self):
+    def test_rejects_six_digit_password(self):
         form = OwnerProfileForm(
             {
                 "username": "654321",
@@ -44,11 +55,26 @@ class OwnerProfileFormTests(TestCase):
             },
             user=self.user,
         )
+        self.assertFalse(form.is_valid())
+        self.assertIn("password1", form.errors)
+
+    def test_can_set_strong_password(self):
+        form = OwnerProfileForm(
+            {
+                "username": "654321",
+                "first_name": "Ann",
+                "last_name": "Owner",
+                "email": "owner@example.com",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            },
+            user=self.user,
+        )
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
         self.user.refresh_from_db()
         self.assertEqual(self.user.username, "654321")
-        self.assertTrue(self.user.check_password("112233"))
+        self.assertTrue(self.user.check_password(STRONG_PASSWORD))
 
     def test_leave_password_blank_keeps_current(self):
         form = OwnerProfileForm(
@@ -65,11 +91,11 @@ class OwnerProfileFormTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
         self.user.refresh_from_db()
-        self.assertTrue(self.user.check_password("oldpass1"))
+        self.assertTrue(self.user.check_password("oldpass1-long!"))
 
 
-class RegisterFormSixDigitTests(TestCase):
-    def test_register_with_six_digit_username_and_password(self):
+class RegisterFormPasswordTests(TestCase):
+    def test_rejects_six_digit_password(self):
         form = RegisterForm(
             {
                 "username": "777888",
@@ -81,7 +107,99 @@ class RegisterFormSixDigitTests(TestCase):
                 "password2": "445566",
             }
         )
+        self.assertFalse(form.is_valid())
+
+    def test_register_with_strong_password(self):
+        form = RegisterForm(
+            {
+                "username": "NEWISP",
+                "email": "new@isp.com",
+                "company_name": "NEW ISP",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            }
+        )
         self.assertTrue(form.is_valid(), form.errors)
+
+
+class EmployeeRegisterJoinCodeTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("join-owner", password=STRONG_PASSWORD)
+        self.org = Organization.objects.create(
+            name="Join ISP", owner=owner, join_code="112233"
+        )
+
+    def test_requires_valid_company_join_code(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF1",
+                "first_name": "Sam",
+                "last_name": "Tech",
+                "email": "sam@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "company_join_code": "000000",
+                "login_code": "556677",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("company_join_code", form.errors)
+
+    def test_registers_against_organization(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF1",
+                "first_name": "Sam",
+                "last_name": "Tech",
+                "email": "sam@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "company_join_code": "112233",
+                "login_code": "556677",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["organization"], self.org)
+
+
+class EmployeeLoginEnumerationTests(TestCase):
+    def test_unknown_code_does_not_say_invalid_login_code(self):
+        form = EmployeeLoginForm(
+            data={"username": "999991", "password": "wrong-password-xx"}
+        )
+        self.assertFalse(form.is_valid())
+        errors = " ".join(str(e) for e in form.errors.get("__all__", []))
+        self.assertEqual(errors, "Invalid login code or password.")
+        field_errors = " ".join(
+            str(e) for errs in form.errors.values() for e in errs
+        )
+        self.assertNotIn("Invalid login code.", field_errors)
+
+
+@override_settings(ALLOW_PUBLIC_OWNER_REGISTRATION=False, OWNER_REGISTER_INVITE_KEY="")
+class OwnerRegisterGateTests(TestCase):
+    def test_public_register_closed(self):
+        response = self.client.get(reverse("accounts:register"))
+        self.assertEqual(response.status_code, 403)
+
+
+class AuthRateLimitTests(TestCase):
+    def test_login_lockout_after_failures(self):
+        User.objects.create_user("rateuser", password=STRONG_PASSWORD)
+        url = reverse("accounts:login")
+        for _ in range(8):
+            self.client.post(url, {"username": "RATEUSER", "password": "nope-not-it!!"})
+        # Per-user counter should now be at/over limit messaging on next fail
+        response = self.client.post(
+            url, {"username": "RATEUSER", "password": "nope-not-it!!"}
+        )
+        self.assertEqual(response.status_code, 200)
 
 
 class OrganizationMpesaAccountModeTests(TestCase):
@@ -289,8 +407,8 @@ class SalesCustomerRegistrationTests(TestCase):
                 "isp-company_name": "NEW FIBER",
                 "isp-country_code": "254|Kenya",
                 "isp-phone": "712345678",
-                "isp-password1": "445566",
-                "isp-password2": "445566",
+                "isp-password1": STRONG_PASSWORD,
+                "isp-password2": STRONG_PASSWORD,
             },
         )
         self.assertEqual(response.status_code, 302)

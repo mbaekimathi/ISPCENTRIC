@@ -265,17 +265,18 @@ def dashboard(request):
             Payment.objects.filter(organization=org).aggregate(total=Sum("amount"))["total"]
             or 0
         )
+        payment_count = Payment.objects.filter(organization=org).count()
         stats = {
             "customers": customer_stats["customers"] or 0,
             "active_customers": customer_stats["active_customers"] or 0,
             "pending_invoices": invoice_stats["pending_invoices"] or 0,
             "revenue": revenue,
+            "payment_count": payment_count,
         }
-        recent_invoices = (
-            Invoice.objects.filter(organization=org)
-            .select_related("customer")
-            .prefetch_related("payments")
-            .order_by("-issued_at")[:8]
+        payments = list(
+            Payment.objects.filter(organization=org)
+            .select_related("invoice", "invoice__customer")
+            .order_by("-received_at")
         )
         attention_customers = customers_needing_renewal_attention(org)
         stats["attention_customers"] = len(attention_customers)
@@ -285,9 +286,10 @@ def dashboard(request):
             "active_customers": 0,
             "pending_invoices": 0,
             "revenue": 0,
+            "payment_count": 0,
             "attention_customers": 0,
         }
-        recent_invoices = Invoice.objects.none()
+        payments = []
         attention_customers = []
 
     return render(
@@ -299,7 +301,7 @@ def dashboard(request):
             sidebar_active="billing",
             page_title="Billings",
             stats=stats,
-            recent_invoices=recent_invoices,
+            payments=payments,
             attention_customers=attention_customers,
         ),
     )

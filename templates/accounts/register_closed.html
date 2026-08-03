@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Registration closed — ISPCENTRIC{% endblock %}
+
+{% block body %}
+<div class="auth-shell">
+  <div class="auth-panel">
+    <div class="auth-role">Company owner</div>
+    <div class="auth-brand">ISP<span>CENTRIC</span></div>
+    <h1>Registration is invite-only</h1>
+    <p class="lede">
+      Public owner signup is disabled. Ask your ISPCENTRIC administrator for an invite key,
+      or have sales create your company account.
+    </p>
+    <p class="auth-footer">
+      Already registered?
+      <a href="{% url 'accounts:login' %}">Owner login</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

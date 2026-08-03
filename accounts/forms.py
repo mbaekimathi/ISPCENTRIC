@@ -15,6 +15,11 @@ from .models import (
     PaymentGateway,
     RoleCommission,
 )
+from .security import (
+    owner_invite_required,
+    validate_account_password,
+    validate_flexible_password,
+)
 
 
 def normalize_phone(country_choice: str, phone: str) -> str:
@@ -122,28 +127,6 @@ def is_six_digit_code(value: str) -> bool:
     return len(digits) == 6 and digits == str(value or "")
 
 
-def validate_flexible_password(password1: str, password2: str, *, required: bool = False) -> str:
-    """
-    Accept a 6-digit login code or any password of at least 6 characters.
-
-    Blank passwords are allowed when required=False (leave unchanged on profile edit).
-    """
-    password1 = password1 or ""
-    password2 = password2 or ""
-    if not password1 and not password2:
-        if required:
-            raise forms.ValidationError("Enter a password.")
-        return ""
-    if password1 != password2:
-        raise forms.ValidationError("Passwords do not match.")
-    if is_six_digit_code(password1):
-        return password1
-    if len(password1) < 6:
-        raise forms.ValidationError("Use a 6-digit code or at least 6 characters.")
-    return password1
-
-
-
 class RegisterForm(UserCreationForm):
     company_name = forms.CharField(
         max_length=150,
@@ -195,6 +178,18 @@ class RegisterForm(UserCreationForm):
             }
         ),
     )
+    invite_key = forms.CharField(
+        required=False,
+        label="Registration invite key",
+        help_text="Required when public owner signup is invite-only.",
+        widget=forms.TextInput(
+            attrs={
+                "placeholder": "Invite key",
+                "autocomplete": "off",
+                "class": "form-control",
+            }
+        ),
+    )
 
     class Meta:
         model = User
@@ -218,9 +213,16 @@ class RegisterForm(UserCreationForm):
             ),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, require_invite: bool | None = None, **kwargs):
+        self.require_invite = (
+            owner_invite_required() if require_invite is None else bool(require_invite)
+        )
         super().__init__(*args, **kwargs)
-        self.fields["username"].help_text = "Letters, or a 6-digit login code."
+        if not self.require_invite:
+            self.fields.pop("invite_key", None)
+        else:
+            self.fields["invite_key"].required = True
+        self.fields["username"].help_text = "Letters, numbers, or a 6-digit login code (identifier only)."
         self.fields["username"].widget.attrs.update(
             {
                 "placeholder": "USERNAME OR 6-DIGIT CODE",
@@ -228,10 +230,12 @@ class RegisterForm(UserCreationForm):
                 "class": "form-control text-upper",
             }
         )
-        self.fields["password1"].help_text = "Use a 6-digit code or at least 6 characters."
+        self.fields["password1"].help_text = (
+            "At least 12 characters, not entirely numeric, and not a common password."
+        )
         self.fields["password1"].widget.attrs.update(
             {
-                "placeholder": "6-digit code or password",
+                "placeholder": "Create a strong password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
             }
@@ -253,10 +257,6 @@ class RegisterForm(UserCreationForm):
             self.fields["phone"].widget.attrs["id"] = f"id_{self.prefix}_phone"
         self.phone_national_length = national_phone_length(selected or DEFAULT_COUNTRY)
 
-    def _post_clean(self):
-        # Skip Django's default strength validators so 6-digit codes are allowed.
-        forms.ModelForm._post_clean(self)
-
     def clean_username(self):
         username = self.cleaned_data["username"].strip().upper()
         if is_six_digit_code(username):
@@ -265,13 +265,16 @@ class RegisterForm(UserCreationForm):
             raise forms.ValidationError("Enter a username or 6-digit login code.")
         return username
 
-    def clean_password2(self):
-        password1 = self.cleaned_data.get("password1") or ""
-        password2 = self.cleaned_data.get("password2") or ""
-        try:
-            return validate_flexible_password(password1, password2, required=True)
-        except forms.ValidationError as exc:
-            raise forms.ValidationError(exc.messages) from exc
+    def clean_invite_key(self):
+        if not self.require_invite:
+            return ""
+        from django.conf import settings
+
+        expected = (getattr(settings, "OWNER_REGISTER_INVITE_KEY", "") or "").strip()
+        provided = (self.cleaned_data.get("invite_key") or "").strip()
+        if not expected or provided != expected:
+            raise forms.ValidationError("Invalid registration invite key.")
+        return provided
 
     def clean_email(self):
         return self.cleaned_data["email"].strip().lower()
@@ -306,9 +309,12 @@ class LoginForm(AuthenticationForm):
         self.fields["password"].widget.attrs.update(
             {
                 "class": "form-control password-input",
-                "placeholder": "Password or 6-digit code",
+                "placeholder": "Password",
                 "autocomplete": "current-password",
             }
+        )
+        self.error_messages["invalid_login"] = (
+            "Invalid username or password."
         )
 
     def clean_username(self):
@@ -372,7 +378,7 @@ class EmployeeRegisterForm(UserCreationForm):
         min_length=6,
         max_length=6,
         label="6-digit login code",
-        help_text="Choose a unique code you will use to sign in.",
+        help_text="Choose a unique code you will use to sign in (this is your username, not your password).",
         widget=forms.TextInput(
             attrs={
                 "placeholder": "000000",
@@ -382,6 +388,23 @@ class EmployeeRegisterForm(UserCreationForm):
                 "autocomplete": "off",
                 "class": "form-control join-code-input",
                 "id": "id_login_code",
+            }
+        ),
+    )
+    company_join_code = forms.CharField(
+        min_length=6,
+        max_length=6,
+        label="Company join code",
+        help_text="Ask your company admin for the 6-digit company join code.",
+        widget=forms.TextInput(
+            attrs={
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "autocomplete": "off",
+                "class": "form-control join-code-input",
+                "id": "id_company_join_code",
             }
         ),
     )
@@ -405,6 +428,7 @@ class EmployeeRegisterForm(UserCreationForm):
             "email",
             "country_code",
             "phone",
+            "company_join_code",
             "login_code",
             "password1",
             "password2",
@@ -428,45 +452,28 @@ class EmployeeRegisterForm(UserCreationForm):
         self.fields["username"].label = "Username"
         self.fields["password1"].label = "Password"
         self.fields["password2"].label = "Confirm password"
-        self.fields["password1"].help_text = ""
+        self.fields["password1"].help_text = (
+            "At least 12 characters, not entirely numeric, and not a common password."
+        )
         self.fields["password2"].help_text = ""
         self.fields["password1"].widget.attrs.update(
             {
-                "placeholder": "6-digit password",
+                "placeholder": "Create a strong password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
             }
         )
         self.fields["password2"].widget.attrs.update(
             {
-                "placeholder": "Confirm 6-digit password",
+                "placeholder": "Confirm password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
             }
         )
         self.country_options = get_country_options()
         selected = self.data.get("country_code") if self.is_bound else self.fields["country_code"].initial
         self.selected_country = option_for_value(selected or DEFAULT_COUNTRY)
-
-    def _post_clean(self):
-        # Skip BaseUserCreationForm strength validators (8+ chars / common / numeric).
-        forms.ModelForm._post_clean(self)
-
-    def clean_password2(self):
-        password1 = self.cleaned_data.get("password1") or ""
-        password2 = self.cleaned_data.get("password2") or ""
-        if password1 != password2:
-            raise forms.ValidationError("Passwords do not match.")
-        digits = "".join(ch for ch in password1 if ch.isdigit())
-        if len(digits) != 6 or digits != password1:
-            raise forms.ValidationError("Enter a 6-digit password.")
-        return password2
+        self._organization = None
 
     def clean_username(self):
         return self.cleaned_data["username"].strip().upper()
@@ -485,7 +492,21 @@ class EmployeeRegisterForm(UserCreationForm):
         if len(code) != 6:
             raise forms.ValidationError("Enter a 6-digit login code.")
         if Employee.objects.filter(login_code=code).exists():
-            raise forms.ValidationError("This code is not available. Choose another 6-digit code.")
+            raise forms.ValidationError("This login code is not available. Choose another.")
+        return code
+
+    def clean_company_join_code(self):
+        code = "".join(
+            ch for ch in (self.cleaned_data.get("company_join_code") or "") if ch.isdigit()
+        )
+        if len(code) != 6:
+            raise forms.ValidationError("Enter your company's 6-digit join code.")
+        organization = Organization.objects.filter(join_code=code).first()
+        if organization is None:
+            raise forms.ValidationError("Invalid company join code.")
+        if organization.status == Organization.Status.SUSPENDED:
+            raise forms.ValidationError("This company account is suspended.")
+        self._organization = organization
         return code
 
     def clean(self):
@@ -495,6 +516,8 @@ class EmployeeRegisterForm(UserCreationForm):
         cleaned["phone"] = normalize_phone(country, phone)
         if not cleaned.get("phone"):
             self.add_error("phone", "Enter a valid phone number.")
+        if self._organization is not None:
+            cleaned["organization"] = self._organization
         return cleaned
 
 
@@ -519,24 +542,29 @@ class EmployeeLoginForm(AuthenticationForm):
                 "autocomplete": "current-password",
             }
         )
+        self.error_messages["invalid_login"] = (
+            "Invalid login code or password."
+        )
 
     def clean_username(self):
         code = "".join(ch for ch in (self.cleaned_data.get("username") or "") if ch.isdigit())
         if len(code) != 6:
             raise forms.ValidationError("Enter your 6-digit login code.")
         employee = Employee.objects.filter(login_code=code).select_related("user").first()
-        if not employee:
-            raise forms.ValidationError("Invalid login code.")
         self._employee = employee
-        return employee.user.get_username()
+        # Do not reveal whether the login code exists — let auth fail generically.
+        if employee:
+            return employee.user.get_username()
+        return f"__missing_login_code_{code}__"
 
     def confirm_login_allowed(self, user):
         super().confirm_login_allowed(user)
         employee = Employee.objects.filter(user=user).select_related("organization").first()
         if not employee:
             raise forms.ValidationError(
-                "This account is not registered as an employee. Use employee registration first.",
-                code="not_employee",
+                self.error_messages["invalid_login"],
+                code="invalid_login",
+                params={"username": self.username_field.verbose_name},
             )
         if employee.status == Employee.Status.SUSPENDED:
             raise forms.ValidationError(
@@ -611,10 +639,10 @@ class EmployeeProfileForm(forms.Form):
     password1 = forms.CharField(
         required=False,
         label="New password",
-        help_text="Leave blank to keep your current password. Use a 6-digit code or at least 6 characters.",
+        help_text="Leave blank to keep your current password. At least 12 characters; not entirely numeric.",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "6-digit code or new password",
+                "placeholder": "New strong password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
             }
@@ -667,7 +695,9 @@ class EmployeeProfileForm(forms.Form):
         p2 = cleaned.get("password2") or ""
         if p1 or p2:
             try:
-                cleaned["password1"] = validate_flexible_password(p1, p2)
+                cleaned["password1"] = validate_account_password(
+                    p1, p2, user=self.user
+                )
             except forms.ValidationError as exc:
                 self.add_error("password1", exc)
         return cleaned
@@ -746,10 +776,10 @@ class OwnerProfileForm(forms.Form):
     password1 = forms.CharField(
         required=False,
         label="New password",
-        help_text="Leave blank to keep your current password. Use a 6-digit code or at least 6 characters.",
+        help_text="Leave blank to keep your current password. At least 12 characters; not entirely numeric.",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "6-digit code or new password",
+                "placeholder": "New strong password",
                 "autocomplete": "new-password",
                 "class": "form-control password-input",
                 "id": "id_owner_password1",
@@ -769,9 +799,12 @@ class OwnerProfileForm(forms.Form):
         ),
     )
 
-    def __init__(self, *args, user=None, **kwargs):
+    def __init__(self, *args, user=None, id_prefix="owner", **kwargs):
         self.user = user
+        self.id_prefix = (id_prefix or "owner").strip() or "owner"
         super().__init__(*args, **kwargs)
+        for name, field in self.fields.items():
+            field.widget.attrs["id"] = f"id_{self.id_prefix}_{name}"
 
     def clean_username(self):
         username = (self.cleaned_data.get("username") or "").strip().upper()
@@ -809,7 +842,9 @@ class OwnerProfileForm(forms.Form):
         p2 = cleaned.get("password2") or ""
         if p1 or p2:
             try:
-                cleaned["password1"] = validate_flexible_password(p1, p2)
+                cleaned["password1"] = validate_account_password(
+                    p1, p2, user=self.user
+                )
             except forms.ValidationError as exc:
                 self.add_error("password1", exc)
         return cleaned
@@ -828,6 +863,21 @@ class OwnerProfileForm(forms.Form):
 
 class OrganizationEditForm(forms.ModelForm):
     """Company profile + M-Pesa receive method + Daraja STK Push settings."""
+
+    SECTION_PROFILE = "profile"
+    SECTION_PAYMENTS = "payments"
+    SECTION_DARAJA = "daraja"
+    SECTION_ALL = "all"
+
+    PROFILE_FIELDS = ("name", "phone", "status", "profile_photo")
+    PAYMENTS_FIELDS = ("mpesa_payment_type", "mpesa_number", "mpesa_account", "mpesa_account_mode")
+    DARAJA_FIELDS = (
+        "daraja_enabled",
+        "daraja_environment",
+        "daraja_consumer_key",
+        "daraja_consumer_secret",
+        "daraja_passkey",
+    )
 
     class MpesaAccountMode(models.TextChoices):
         CLIENT = "client", "Client account number"
@@ -967,8 +1017,21 @@ class OrganizationEditForm(forms.ModelForm):
             "daraja_passkey": "Required in Production mode only.",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, section=SECTION_ALL, **kwargs):
+        self.section = (section or self.SECTION_ALL).strip().lower()
         super().__init__(*args, **kwargs)
+        keep = None
+        if self.section == self.SECTION_PROFILE:
+            keep = set(self.PROFILE_FIELDS)
+        elif self.section == self.SECTION_PAYMENTS:
+            keep = set(self.PAYMENTS_FIELDS)
+        elif self.section == self.SECTION_DARAJA:
+            # Receive money + Daraja live on the same account page.
+            keep = set(self.PAYMENTS_FIELDS) | set(self.DARAJA_FIELDS)
+        if keep is not None:
+            for name in list(self.fields):
+                if name not in keep:
+                    self.fields.pop(name)
         for name in (
             "status",
             "profile_photo",
@@ -980,12 +1043,15 @@ class OrganizationEditForm(forms.ModelForm):
             "daraja_consumer_secret",
             "daraja_passkey",
         ):
-            self.fields[name].required = False
-        if not (self.instance.daraja_environment or "").strip():
+            if name in self.fields:
+                self.fields[name].required = False
+        if "daraja_environment" in self.fields and not (
+            self.instance.daraja_environment or ""
+        ).strip():
             self.initial.setdefault(
                 "daraja_environment", Organization.DarajaEnvironment.SANDBOX
             )
-        if not self.data:
+        if "mpesa_account_mode" in self.fields and not self.data:
             has_custom = bool((getattr(self.instance, "mpesa_account", None) or "").strip())
             self.initial["mpesa_account_mode"] = (
                 self.MpesaAccountMode.CUSTOM
@@ -1066,7 +1132,7 @@ class OrganizationEditForm(forms.ModelForm):
         if not payment_type or not number:
             self.add_error(
                 "daraja_enabled",
-                "Select Paybill or Till and enter the number in step 2, then enable Daraja again.",
+                "Select Paybill or Till and enter the number above, then enable Daraja.",
             )
             return
 
@@ -1091,6 +1157,23 @@ class OrganizationEditForm(forms.ModelForm):
 
     def clean(self):
         cleaned = super().clean()
+        if self.section == self.SECTION_PROFILE:
+            return cleaned
+
+        if self.section == self.SECTION_PAYMENTS:
+            payment_type, number = self._validate_receive_method(cleaned)
+            if self.instance.daraja_enabled and (not payment_type or not number):
+                self.add_error(
+                    "mpesa_payment_type",
+                    "Daraja STK Push is enabled — keep Paybill/Till set, or turn Daraja off first.",
+                )
+            return cleaned
+
+        if self.section == self.SECTION_DARAJA:
+            payment_type, number = self._validate_receive_method(cleaned)
+            self._validate_daraja(cleaned, payment_type, number)
+            return cleaned
+
         payment_type, number = self._validate_receive_method(cleaned)
         self._validate_daraja(cleaned, payment_type, number)
         return cleaned

@@ -88,6 +88,11 @@ urlpatterns = [
         name="client_wifi_settings",
     ),
     path(
+        "app/clients/<int:customer_id>/billing/",
+        views.client_billing,
+        name="client_billing",
+    ),
+    path(
         "app/clients/<int:customer_id>/router-login/",
         views.client_router_login,
         name="client_router_login",
@@ -180,6 +185,16 @@ urlpatterns = [
         name="hotspot_alogin_page",
     ),
     path("app/account/", views.my_account, name="my_account"),
+    path(
+        "app/account/payments/",
+        views.my_account_payments,
+        name="my_account_payments",
+    ),
+    path(
+        "app/account/daraja/",
+        views.my_account_daraja,
+        name="my_account_daraja",
+    ),
     path("app/account/profile/", views.save_owner_profile, name="save_owner_profile"),
     path("app/leads/", views.leads, name="leads"),
     path(

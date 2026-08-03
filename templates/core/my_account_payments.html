@@ -1,0 +1,94 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Packages — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="account-page-shell account-page-shell--wide">
+  <header class="account-page-intro">
+    <p class="account-page-kicker">My account</p>
+    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  </header>
+
+  {% if not organization %}
+    <section class="panel staff-panel account-card">
+      <p class="empty">No organization is linked to this account yet.</p>
+    </section>
+  {% else %}
+    <div class="account-page" id="account-page">
+
+      {% if daraja_status %}
+        <section class="panel account-card account-status-card" data-account-status
+                 data-ready="{{ daraja_status.ready|yesno:'1,0' }}"
+                 data-enabled="{{ daraja_status.enabled|yesno:'1,0' }}">
+          <header class="account-card-head">
+            <div class="account-card-head-main">
+              <div>
+                <h3>Payment status</h3>
+                <p>{{ daraja_status.message }}</p>
+              </div>
+            </div>
+            {% if daraja_status.ready %}
+              <span class="mikrotik-wifi-pill is-on">Ready</span>
+            {% elif daraja_status.enabled %}
+              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+            {% else %}
+              <span class="mikrotik-wifi-pill is-off">Manual only</span>
+            {% endif %}
+          </header>
+          <div class="account-summary-grid">
+            <div class="account-summary-item">
+              <span>Receives via</span>
+              <strong>{{ organization.receives_via_label }}</strong>
+            </div>
+            <div class="account-summary-item">
+              <span>Account reference</span>
+              <strong>Client account number</strong>
+            </div>
+            <div class="account-summary-item">
+              <span>Daraja</span>
+              <strong>
+                {% if daraja_status.enabled %}
+                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
+                {% else %}
+                  Off
+                {% endif %}
+              </strong>
+            </div>
+            <div class="account-summary-item">
+              <span>STK Push</span>
+              <strong>{% if daraja_status.ready %}Ready{% else %}Not ready{% endif %}</strong>
+            </div>
+          </div>
+          <p class="account-status-link">
+            Configure Paybill/Till and STK Push under
+            <a href="{% url 'core:my_account_daraja' %}">Daraja STK Push</a>.
+          </p>
+        </section>
+      {% endif %}
+
+      <section class="panel staff-panel account-card account-packages-panel">
+        <div class="panel-head-row">
+          <div>
+            <h2>Packages{% if package_count %} ({{ package_count }}){% endif %}</h2>
+            <p class="panel-sub">Internet packages available for customers in this organization.</p>
+          </div>
+          <div class="panel-head-actions">
+            <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
+              Register package
+            </button>
+          </div>
+        </div>
+        {% include "billing/includes/package_table.html" with packages=packages empty_text="No packages yet. Use Register package to add one." show_package_actions=1 %}
+      </section>
+    </div>
+
+    {% include "billing/includes/package_register_modal.html" %}
+    {% include "billing/includes/package_edit_modal.html" %}
+    {% include "billing/includes/package_status_modals.html" %}
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+{% include "billing/includes/package_register_scripts.html" %}
+{% endblock %}

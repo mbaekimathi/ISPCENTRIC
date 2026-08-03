@@ -1,6 +1,13 @@
 from django.contrib import messages
 from django.contrib.auth import login, update_session_auth_hash
-from django.contrib.auth.views import LoginView, LogoutView
+from django.contrib.auth.views import (
+    LoginView,
+    LogoutView,
+    PasswordResetCompleteView,
+    PasswordResetConfirmView,
+    PasswordResetDoneView,
+    PasswordResetView,
+)
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse_lazy
@@ -18,6 +25,14 @@ from .forms import (
 )
 from .models import Employee, Organization
 from .routing import home_url_for_user
+from .security import (
+    AuthRateLimitExceeded,
+    assert_auth_allowed,
+    clear_auth_failures,
+    owner_invite_required,
+    owner_registration_open,
+    record_auth_failure,
+)
 
 
 def _user_session_name(user):
@@ -51,16 +66,56 @@ def _logout_farewell(name):
     return f"Good night, {name}. Rest well."
 
 
+def _rate_limited_response(request, template_name, form):
+    messages.error(
+        request,
+        "Too many attempts from this network. Please wait about 15 minutes and try again.",
+    )
+    return render(request, template_name, {"form": form}, status=429)
+
+
 class RegisterView(View):
     template_name = "accounts/register.html"
 
     def get(self, request):
         if request.user.is_authenticated:
             return redirect(home_url_for_user(request.user))
-        return render(request, self.template_name, {"form": RegisterForm()})
+        if not owner_registration_open():
+            return render(
+                request,
+                "accounts/register_closed.html",
+                status=403,
+            )
+        try:
+            assert_auth_allowed("register", request, limit=10, window=3600)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, RegisterForm(require_invite=owner_invite_required())
+            )
+        return render(
+            request,
+            self.template_name,
+            {"form": RegisterForm(require_invite=owner_invite_required())},
+        )
 
     def post(self, request):
-        form = RegisterForm(request.POST, request.FILES)
+        if not owner_registration_open():
+            return render(
+                request,
+                "accounts/register_closed.html",
+                status=403,
+            )
+        try:
+            assert_auth_allowed("register", request, limit=10, window=3600)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, RegisterForm(require_invite=owner_invite_required())
+            )
+        form = RegisterForm(
+            request.POST,
+            request.FILES,
+            require_invite=owner_invite_required(),
+        )
         if form.is_valid():
             user = form.save(commit=False)
             user.email = form.cleaned_data["email"]
@@ -72,8 +127,10 @@ class RegisterView(View):
                 profile_photo=form.cleaned_data.get("profile_photo"),
                 status=Organization.Status.REGISTERED,
             )
+            clear_auth_failures("register", request)
             login(request, user)
             return redirect(home_url_for_user(user))
+        record_auth_failure("register", request, limit=10, window=3600)
         return render(request, self.template_name, {"form": form})
 
 
@@ -82,11 +139,37 @@ class UserLoginView(LoginView):
     authentication_form = LoginForm
     redirect_authenticated_user = True
 
+    def dispatch(self, request, *args, **kwargs):
+        try:
+            assert_auth_allowed("login", request, limit=20, window=900)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, self.get_form_class()()
+            )
+        return super().dispatch(request, *args, **kwargs)
+
     def form_valid(self, form):
+        username = (form.cleaned_data.get("username") or "").strip().upper()
+        clear_auth_failures("login", self.request)
+        clear_auth_failures("login_user", self.request, username)
         response = super().form_valid(form)
         name = _user_session_name(self.request.user)
         messages.success(self.request, _login_greeting(name))
         return response
+
+    def form_invalid(self, form):
+        username = (self.request.POST.get("username") or "").strip().upper()
+        record_auth_failure("login", self.request, limit=20, window=900)
+        if username:
+            record_auth_failure("login_user", self.request, username, limit=8, window=900)
+            from .security import is_auth_rate_limited
+
+            if is_auth_rate_limited("login_user", self.request, username, limit=8):
+                messages.error(
+                    self.request,
+                    "Too many failed attempts for this account. Try again in about 15 minutes.",
+                )
+        return super().form_invalid(form)
 
     def get_success_url(self):
         return home_url_for_user(self.request.user)
@@ -111,9 +194,21 @@ class EmployeeRegisterView(View):
     def get(self, request):
         if request.user.is_authenticated and hasattr(request.user, "employee_profile"):
             return redirect(home_url_for_user(request.user))
+        try:
+            assert_auth_allowed("employee_register", request, limit=10, window=3600)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, EmployeeRegisterForm()
+            )
         return render(request, self.template_name, {"form": EmployeeRegisterForm()})
 
     def post(self, request):
+        try:
+            assert_auth_allowed("employee_register", request, limit=10, window=3600)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, EmployeeRegisterForm()
+            )
         form = EmployeeRegisterForm(request.POST, request.FILES)
         if form.is_valid():
             user = form.save(commit=False)
@@ -121,22 +216,25 @@ class EmployeeRegisterView(View):
             user.first_name = form.cleaned_data["first_name"]
             user.last_name = form.cleaned_data["last_name"]
             user.save()
+            organization = form.cleaned_data.get("organization")
             Employee.objects.create(
                 user=user,
-                organization=None,
+                organization=organization,
                 phone=form.cleaned_data.get("phone", ""),
                 login_code=form.cleaned_data["login_code"],
                 profile_photo=form.cleaned_data.get("profile_photo") or None,
                 status=Employee.Status.PENDING_APPROVAL,
                 role=Employee.Role.PENDING,
             )
-            login(request, user)
-            messages.info(
+            clear_auth_failures("employee_register", request)
+            # Do not auto-login — account must be approved first.
+            messages.success(
                 request,
-                f"Registration received. Your login code is {form.cleaned_data['login_code']}. "
-                "Your account is pending approval and role allocation.",
+                f"Registration received for login code {form.cleaned_data['login_code']}. "
+                "Sign in after your company admin approves your account and assigns a role.",
             )
-            return redirect("accounts:employee_pending")
+            return redirect("accounts:employee_login")
+        record_auth_failure("employee_register", request, limit=10, window=3600)
         return render(request, self.template_name, {"form": form})
 
 
@@ -145,11 +243,46 @@ class EmployeeLoginView(LoginView):
     authentication_form = EmployeeLoginForm
     redirect_authenticated_user = True
 
+    def dispatch(self, request, *args, **kwargs):
+        try:
+            assert_auth_allowed("employee_login", request, limit=20, window=900)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, self.template_name, self.get_form_class()()
+            )
+        return super().dispatch(request, *args, **kwargs)
+
     def form_valid(self, form):
+        code = "".join(
+            ch for ch in (self.request.POST.get("username") or "") if ch.isdigit()
+        )
+        clear_auth_failures("employee_login", self.request)
+        if code:
+            clear_auth_failures("employee_login_code", self.request, code)
         response = super().form_valid(form)
         name = _user_session_name(self.request.user)
         messages.success(self.request, _login_greeting(name))
         return response
+
+    def form_invalid(self, form):
+        code = "".join(
+            ch for ch in (self.request.POST.get("username") or "") if ch.isdigit()
+        )
+        record_auth_failure("employee_login", self.request, limit=20, window=900)
+        if code:
+            record_auth_failure(
+                "employee_login_code", self.request, code, limit=8, window=900
+            )
+            from .security import is_auth_rate_limited
+
+            if is_auth_rate_limited(
+                "employee_login_code", self.request, code, limit=8
+            ):
+                messages.error(
+                    self.request,
+                    "Too many failed attempts for this login code. Try again in about 15 minutes.",
+                )
+        return super().form_invalid(form)
 
     def get_success_url(self):
         return home_url_for_user(self.request.user, self.request)
@@ -177,9 +310,21 @@ class EmployeePendingView(View):
 
 
 class CheckLoginCodeView(View):
-    """Live check whether a 6-digit employee login code is available."""
+    """Live check whether a 6-digit employee login code is available (rate-limited)."""
 
     def get(self, request):
+        try:
+            assert_auth_allowed("check_login_code", request, limit=30, window=900)
+        except AuthRateLimitExceeded:
+            return JsonResponse(
+                {
+                    "valid": False,
+                    "available": False,
+                    "message": "Too many checks. Try again later.",
+                },
+                status=429,
+            )
+        record_auth_failure("check_login_code", request, limit=30, window=900)
         raw = (request.GET.get("code") or "").strip()
         code = "".join(ch for ch in raw if ch.isdigit())
         if len(code) != 6:
@@ -196,14 +341,14 @@ class CheckLoginCodeView(View):
                 {
                     "valid": False,
                     "available": False,
-                    "message": "Code not available - already in use",
+                    "message": "Choose a different code",
                 }
             )
         return JsonResponse(
             {
                 "valid": True,
                 "available": True,
-                "message": "Code available - you can use this to log in",
+                "message": "Code available",
             }
         )
 
@@ -269,6 +414,46 @@ class EmployeeProfileView(View):
         )
 
 
+class OwnerPasswordResetView(PasswordResetView):
+    template_name = "accounts/password_reset_form.html"
+    email_template_name = "accounts/password_reset_email.txt"
+    subject_template_name = "accounts/password_reset_subject.txt"
+    success_url = reverse_lazy("accounts:password_reset_done")
+
+    def dispatch(self, request, *args, **kwargs):
+        try:
+            assert_auth_allowed("password_reset", request, limit=5, window=3600)
+        except AuthRateLimitExceeded:
+            messages.error(
+                request,
+                "Too many password reset attempts. Please wait and try again later.",
+            )
+            return render(
+                request,
+                self.template_name,
+                {"form": self.get_form_class()()},
+                status=429,
+            )
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        record_auth_failure("password_reset", self.request, limit=5, window=3600)
+        return super().form_valid(form)
+
+
+class OwnerPasswordResetDoneView(PasswordResetDoneView):
+    template_name = "accounts/password_reset_done.html"
+
+
+class OwnerPasswordResetConfirmView(PasswordResetConfirmView):
+    template_name = "accounts/password_reset_confirm.html"
+    success_url = reverse_lazy("accounts:password_reset_complete")
+
+
+class OwnerPasswordResetCompleteView(PasswordResetCompleteView):
+    template_name = "accounts/password_reset_complete.html"
+
+
 @csrf_exempt
 @require_POST
 def mpesa_stk_callback(request):
@@ -295,4 +480,3 @@ def mpesa_stk_callback(request):
     except Exception:  # noqa: BLE001 — never fail the HTTP ack to Safaricom
         logger.exception("Failed processing M-Pesa STK callback")
     return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
-

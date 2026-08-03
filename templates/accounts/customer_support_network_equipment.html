@@ -318,23 +318,20 @@
           </label>
 
           <div class="equipment-stock-track-verify" id="equipment-stock-track-verify" hidden>
-            <p class="equipment-stock-track-verify-title">Enter your 6-digit verification code to turn off serial tracking.</p>
+            <p class="equipment-stock-track-verify-title">Enter your account password to turn off serial tracking.</p>
             <div class="equipment-stock-track-verify-row">
               <input
                 type="password"
-                inputmode="numeric"
-                pattern="[0-9]{6}"
-                maxlength="6"
-                autocomplete="one-time-code"
+                autocomplete="current-password"
                 class="form-control"
                 id="stock-track-verify-code"
-                placeholder="6-digit code"
-                aria-label="6-digit verification code"
+                placeholder="Account password"
+                aria-label="Account password"
               >
               <button type="button" class="btn btn-primary" id="stock-track-verify-confirm">Confirm</button>
               <button type="button" class="btn btn-ghost" id="stock-track-verify-cancel">Cancel</button>
             </div>
-            <p class="equipment-stock-track-verify-error" id="stock-track-verify-error" hidden>Incorrect verification code.</p>
+            <p class="equipment-stock-track-verify-error" id="stock-track-verify-error" hidden>Incorrect password.</p>
           </div>
         </div>
 
@@ -736,7 +733,7 @@
     body.set("action", "set_track_serials");
     body.set("equipment_id", id);
     if (enable) body.set("track_serials", "1");
-    if (verificationCode) body.set("verification_code", verificationCode);
+    if (verificationCode) body.set("verification_password", verificationCode);
     return fetch(window.location.pathname, {
       method: "POST",
       headers: {
@@ -760,7 +757,7 @@
     var entered = (trackVerifyCode && trackVerifyCode.value ? trackVerifyCode.value : "").replace(/\D/g, "");
     if (entered.length !== 6) {
       if (trackVerifyError) {
-        trackVerifyError.textContent = "Enter your 6-digit verification code.";
+        trackVerifyError.textContent = "Enter your account password.";
         trackVerifyError.hidden = false;
       }
       if (trackVerifyCode) trackVerifyCode.focus();
@@ -776,7 +773,7 @@
       })
       .catch(function (err) {
         if (trackVerifyError) {
-          trackVerifyError.textContent = (err && err.message) || "Incorrect verification code.";
+          trackVerifyError.textContent = (err && err.message) || "Incorrect password.";
           trackVerifyError.hidden = false;
         }
         if (trackVerifyCode) {
@@ -1905,7 +1902,7 @@
           });
         return;
       }
-      // Keep tracking on until the 6-digit code is confirmed and saved.
+      // Keep tracking on until the account password is confirmed and saved.
       trackSerials.checked = true;
       showTrackVerify();
     });

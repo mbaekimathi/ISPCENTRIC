@@ -8,7 +8,7 @@
     <div class="billing-dash-hero-copy">
       <p class="billing-dash-kicker">Overview</p>
       <p class="billing-dash-lead">
-        Track renewals, collect M-Pesa payments, and review recent invoices.
+        Track renewals, collect M-Pesa payments, and review every successful collection.
       </p>
     </div>
     <div class="billing-dash-hero-actions">
@@ -152,29 +152,43 @@
   <section class="panel staff-panel staff-panel-solid billing-dash-panel">
     <div class="panel-head-row">
       <div>
-        <h2>Recent invoices</h2>
-        <p class="panel-sub">Latest billing activity for this organization.</p>
+        <h2>All payments</h2>
+        <p class="panel-sub">Every successful collection for this organization.</p>
+      </div>
+      <div class="panel-head-actions">
+        <span class="org-status org-status-active">{{ stats.payment_count }} recorded</span>
       </div>
     </div>
 
-    {% if recent_invoices %}
+    {% if payments %}
       <div class="org-table-shell billing-dash-table-shell">
         <table class="org-table billing-dash-table">
           <thead>
             <tr>
-              <th>Invoice</th>
+              <th>Date</th>
               <th>Customer</th>
-              <th>M-Pesa Ref</th>
               <th>Amount</th>
+              <th>Method</th>
+              <th>M-Pesa / Ref</th>
             </tr>
           </thead>
           <tbody>
-            {% for inv in recent_invoices %}
+            {% for pay in payments %}
               <tr>
-                <td><span class="org-code">{{ inv.invoice_number }}</span></td>
-                <td><strong>{{ inv.customer.full_name }}</strong></td>
-                <td>{% with pay=inv.payments.all|first %}<span class="billing-dash-muted">{{ pay.reference|default:"—" }}</span>{% endwith %}</td>
-                <td><strong>KES {{ inv.amount }}</strong></td>
+                <td>{{ pay.received_at|date:"M j, Y g:i A" }}</td>
+                <td>
+                  {% if pay.invoice and pay.invoice.customer %}
+                    <a class="billing-dash-client" href="{% url 'core:client_detail' pay.invoice.customer.pk %}">
+                      <strong>{{ pay.invoice.customer.full_name }}</strong>
+                      <small>{{ pay.invoice.customer.account_number }}</small>
+                    </a>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td><strong>KES {{ pay.amount }}</strong></td>
+                <td>{{ pay.get_method_display }}</td>
+                <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
               </tr>
             {% endfor %}
           </tbody>
@@ -182,8 +196,8 @@
       </div>
     {% else %}
       <div class="billing-dash-empty">
-        <p class="billing-dash-empty-title">No invoices yet</p>
-        <p class="billing-dash-empty-copy">They will appear here once billing starts.</p>
+        <p class="billing-dash-empty-title">No payments yet</p>
+        <p class="billing-dash-empty-copy">Successful M-Pesa and other collections will appear here.</p>
       </div>
     {% endif %}
   </section>

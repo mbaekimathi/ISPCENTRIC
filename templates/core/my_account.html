@@ -1,433 +1,201 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}My account — ISPCENTRIC{% endblock %}
+{% block title %}Company profile — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
 <div class="account-page-shell">
-  <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  <header class="account-page-intro">
+    <p class="account-page-kicker">My account</p>
+    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  </header>
 
   {% if not organization %}
-    <section class="panel staff-panel">
+    <section class="panel staff-panel account-card">
       <p class="empty">No organization is linked to this account yet.</p>
     </section>
   {% else %}
-    <div class="account-page" id="account-page"
-         data-platform-ready="{{ platform_gateway_ready|yesno:'1,0' }}">
+    <div class="account-page" id="account-page"{% if account_editing %} data-editing="1"{% endif %}>
 
-      {% if owner_profile_form %}
+      <section class="panel account-card account-hero">
+        <div class="account-hero-main">
+          {% if organization.profile_photo %}
+            <img class="account-hero-avatar" src="{{ organization.profile_photo.url }}" alt="" width="84" height="84" loading="lazy" decoding="async">
+          {% else %}
+            <span class="account-hero-avatar-fallback" aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
+          {% endif %}
+          <div class="account-hero-copy">
+            <p class="account-page-kicker">Company</p>
+            <h2>{{ organization.name }}</h2>
+            <div class="account-hero-meta">
+              <span class="account-chip account-chip--sea">{{ organization.get_status_display }}</span>
+              {% if organization.phone %}
+                <span class="account-chip">{{ organization.phone }}</span>
+              {% endif %}
+              <span class="account-chip">Code {{ organization.join_code }}</span>
+            </div>
+          </div>
+        </div>
+        <aside class="account-hero-aside">
+          <p class="account-hero-aside-label">Owner</p>
+          <strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong>
+        </aside>
+      </section>
+
+      {% if account_editing and form or account_editing and account_profile_form %}
+        <form method="post" enctype="multipart/form-data" class="account-page-form" id="org-account-form" novalidate>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="save_account">
+
+          {% if form and form.non_field_errors %}
+            <div class="notice notice-error">{{ form.non_field_errors }}</div>
+          {% endif %}
+          {% if account_profile_form and account_profile_form.non_field_errors %}
+            <div class="notice notice-error">{{ account_profile_form.non_field_errors }}</div>
+          {% endif %}
+
+          {% if account_profile_form %}
+            <section class="panel account-card" id="login-profile">
+              <header class="account-card-head">
+                <div class="account-card-head-main">
+                  <span class="account-step" aria-hidden="true">1</span>
+                  <div>
+                    <h3>Your login profile</h3>
+                    <p>Username or 6-digit code, email, and password used to sign in.</p>
+                  </div>
+                </div>
+              </header>
+              <div class="account-card-grid">
+                <div class="field">
+                  <label for="{{ account_profile_form.username.id_for_label }}">{{ account_profile_form.username.label }}</label>
+                  {{ account_profile_form.username }}
+                  {% if account_profile_form.username.help_text %}<p class="field-hint">{{ account_profile_form.username.help_text }}</p>{% endif %}
+                  {% if account_profile_form.username.errors %}<div class="field-error">{{ account_profile_form.username.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ account_profile_form.email.id_for_label }}">{{ account_profile_form.email.label }}</label>
+                  {{ account_profile_form.email }}
+                  {% if account_profile_form.email.errors %}<div class="field-error">{{ account_profile_form.email.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ account_profile_form.first_name.id_for_label }}">{{ account_profile_form.first_name.label }}</label>
+                  {{ account_profile_form.first_name }}
+                  {% if account_profile_form.first_name.errors %}<div class="field-error">{{ account_profile_form.first_name.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ account_profile_form.last_name.id_for_label }}">{{ account_profile_form.last_name.label }}</label>
+                  {{ account_profile_form.last_name }}
+                  {% if account_profile_form.last_name.errors %}<div class="field-error">{{ account_profile_form.last_name.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ account_profile_form.password1.id_for_label }}">{{ account_profile_form.password1.label }}</label>
+                  {{ account_profile_form.password1 }}
+                  {% if account_profile_form.password1.help_text %}<p class="field-hint">{{ account_profile_form.password1.help_text }}</p>{% endif %}
+                  {% if account_profile_form.password1.errors %}<div class="field-error">{{ account_profile_form.password1.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ account_profile_form.password2.id_for_label }}">{{ account_profile_form.password2.label }}</label>
+                  {{ account_profile_form.password2 }}
+                  {% if account_profile_form.password2.errors %}<div class="field-error">{{ account_profile_form.password2.errors|striptags }}</div>{% endif %}
+                </div>
+              </div>
+            </section>
+          {% endif %}
+
+          {% if form %}
+            <section class="panel account-card">
+              <header class="account-card-head">
+                <div class="account-card-head-main">
+                  {% if account_profile_form %}
+                    <span class="account-step" aria-hidden="true">2</span>
+                  {% endif %}
+                  <div>
+                    <h3>Company details</h3>
+                    <p>Name, contact details, and logo shown across your workspace.</p>
+                  </div>
+                </div>
+              </header>
+              <div class="account-card-grid">
+                <div class="field">
+                  <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+                  {{ form.name }}
+                  {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
+                  {{ form.phone }}
+                  {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
+                  {{ form.status }}
+                  {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field account-photo-field">
+                  <span class="org-edit-file-label">Profile photo</span>
+                  <div class="account-photo-row">
+                    {% if organization.profile_photo %}
+                      <img class="org-edit-photo-preview" data-photo-preview src="{{ organization.profile_photo.url }}" alt="Current photo" width="72" height="72" loading="lazy" decoding="async">
+                    {% else %}
+                      <span class="org-edit-photo-preview org-edit-avatar-fallback" data-photo-fallback aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
+                      <img class="org-edit-photo-preview" data-photo-preview hidden alt="" width="72" height="72">
+                    {% endif %}
+                    <div class="account-photo-picker">
+                      <label class="btn btn-ghost account-photo-btn" for="{{ form.profile_photo.id_for_label }}">Choose photo</label>
+                      <p class="account-photo-hint">Square image works best. PNG or JPG.</p>
+                      {{ form.profile_photo }}
+                    </div>
+                  </div>
+                  {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
+                </div>
+              </div>
+            </section>
+          {% endif %}
+
+          <div class="account-page-actions account-page-actions--sticky">
+            <a class="btn btn-ghost" href="{% url 'core:my_account' %}">Cancel</a>
+            <button type="submit" class="btn btn-primary">Save profile</button>
+          </div>
+        </form>
+      {% else %}
         <section class="panel account-card" id="login-profile">
           <header class="account-card-head">
-            <div>
-              <h3>Your login profile</h3>
-              <p>Username or 6-digit code, email, and password used to sign in.</p>
+            <div class="account-card-head-main">
+              <div>
+                <h3>Profile details</h3>
+                <p>Your sign-in identity and company information.</p>
+              </div>
             </div>
-            <a class="btn btn-ghost" href="#edit-profile" data-open-owner-profile>Edit</a>
+            {% if can_edit or can_edit_profile %}
+              <a class="btn btn-primary" href="{% url 'core:my_account' %}?edit=1">Edit</a>
+            {% endif %}
           </header>
           <dl class="account-session-rows">
             <div class="account-session-row"><span>Username / code</span><strong>{{ user.username }}</strong></div>
             <div class="account-session-row"><span>Name</span><strong>{{ user.get_full_name|default:"—" }}</strong></div>
             <div class="account-session-row"><span>Email</span><strong>{{ user.email|default:"—" }}</strong></div>
             <div class="account-session-row"><span>Password</span><strong>••••••</strong></div>
-          </dl>
-          <div class="account-page-actions" style="margin-top:1rem;">
-            <a class="btn btn-primary" href="#edit-profile" data-open-owner-profile>Edit my profile</a>
-          </div>
-        </section>
-      {% endif %}
-
-      {% if daraja_status %}
-        <section class="panel account-card account-status-card" data-account-status
-                 data-ready="{{ daraja_status.ready|yesno:'1,0' }}"
-                 data-enabled="{{ daraja_status.enabled|yesno:'1,0' }}">
-          <header class="account-card-head">
-            <div>
-              <h3>Payment status</h3>
-              <p>{{ daraja_status.message }}</p>
-            </div>
-            {% if daraja_status.ready %}
-              <span class="mikrotik-wifi-pill is-on">Ready</span>
-            {% elif daraja_status.enabled %}
-              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
-            {% else %}
-              <span class="mikrotik-wifi-pill is-off">Manual only</span>
-            {% endif %}
-          </header>
-          <div class="account-summary-grid">
-            <div class="account-summary-item">
-              <span>Receives via</span>
-              <strong>{{ organization.receives_via_label }}</strong>
-            </div>
-            <div class="account-summary-item">
-              <span>Account reference</span>
-              <strong>Client account number</strong>
-            </div>
-            <div class="account-summary-item">
-              <span>Daraja</span>
-              <strong>
-                {% if daraja_status.enabled %}
-                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
-                {% else %}
-                  Off
-                {% endif %}
-              </strong>
-            </div>
-            <div class="account-summary-item">
-              <span>STK Push</span>
-              <strong>{% if daraja_status.ready %}Ready{% else %}Not ready{% endif %}</strong>
-            </div>
-          </div>
-        </section>
-      {% endif %}
-
-      {% if form and can_edit %}
-        <form method="post" enctype="multipart/form-data" class="account-page-form" id="org-account-form" novalidate>
-          {% csrf_token %}
-          <input type="hidden" name="action" value="save_org">
-
-          {% if form.non_field_errors %}
-            <div class="notice notice-error">{{ form.non_field_errors }}</div>
-          {% endif %}
-
-          <section class="panel account-card">
-            <header class="account-card-head">
-              <div>
-                <h3>1. Company profile</h3>
-                <p>Name, contact details, and logo shown across your workspace.</p>
-              </div>
-            </header>
-            <div class="account-card-grid">
-              <div class="field">
-                <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
-                {{ form.name }}
-                {% if form.name.errors %}<div class="field-error">{{ form.name.errors|striptags }}</div>{% endif %}
-              </div>
-              <div class="field">
-                <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
-                {{ form.phone }}
-                {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
-              </div>
-              <div class="field">
-                <label for="{{ form.status.id_for_label }}">{{ form.status.label }}</label>
-                {{ form.status }}
-                {% if form.status.errors %}<div class="field-error">{{ form.status.errors|striptags }}</div>{% endif %}
-              </div>
-              <div class="field account-photo-field">
-                <span class="org-edit-file-label">Profile photo</span>
-                <div class="account-photo-row">
-                  {% if organization.profile_photo %}
-                    <img class="org-edit-photo-preview" data-photo-preview src="{{ organization.profile_photo.url }}" alt="Current photo" width="64" height="64" loading="lazy" decoding="async">
-                  {% else %}
-                    <span class="org-edit-photo-preview org-edit-avatar-fallback" data-photo-fallback aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
-                    <img class="org-edit-photo-preview" data-photo-preview hidden alt="" width="64" height="64">
-                  {% endif %}
-                  <div class="account-photo-picker">
-                    <label class="btn btn-ghost account-photo-btn" for="{{ form.profile_photo.id_for_label }}">Choose photo</label>
-                    {{ form.profile_photo }}
-                  </div>
-                </div>
-                {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
-              </div>
-            </div>
-          </section>
-
-          <section class="panel account-card">
-            <header class="account-card-head">
-              <div>
-                <h3>2. Receive subscription money</h3>
-                <p>Choose Paybill or Buy Goods Till, then enter the number that receives client payments.</p>
-              </div>
-            </header>
-
-            <div class="field account-receive-field">
-              <span class="account-receive-label">{{ form.mpesa_payment_type.label }}</span>
-              <div class="account-receive-options" role="radiogroup" aria-label="Receive via">
-                <button type="button" class="account-receive-option" data-receive-value="paybill" aria-pressed="false">
-                  <span class="account-receive-option-title">Paybill</span>
-                  <span class="account-receive-option-copy">M-Pesa Paybill shortcode for subscription collections.</span>
-                </button>
-                <button type="button" class="account-receive-option" data-receive-value="till" aria-pressed="false">
-                  <span class="account-receive-option-title">Buy Goods Till</span>
-                  <span class="account-receive-option-copy">Buy Goods Till number for subscription collections.</span>
-                </button>
-              </div>
-              <div class="visually-hidden">{{ form.mpesa_payment_type }}</div>
-              {% if form.mpesa_payment_type.errors %}<div class="field-error">{{ form.mpesa_payment_type.errors|striptags }}</div>{% endif %}
-            </div>
-
-            <div class="account-card-grid" data-receive-details hidden>
-              <div class="field">
-                <label for="{{ form.mpesa_number.id_for_label }}" data-mpesa-number-label>{{ form.mpesa_number.label }}</label>
-                {{ form.mpesa_number }}
-                {% if form.mpesa_number.help_text %}<p class="field-hint">{{ form.mpesa_number.help_text }}</p>{% endif %}
-                {% if form.mpesa_number.errors %}<div class="field-error">{{ form.mpesa_number.errors|striptags }}</div>{% endif %}
-              </div>
-              <div class="field" data-mpesa-account-field hidden style="grid-column: 1 / -1;">
-                <span class="account-receive-label">{{ form.mpesa_account_mode.label }}</span>
-                <div class="account-receive-options" role="radiogroup" aria-label="Manual Paybill account">
-                  <button type="button" class="account-receive-option" data-account-mode="client" aria-pressed="false">
-                    <span class="account-receive-option-title">Client account number</span>
-                    <span class="account-receive-option-copy">Each subscriber uses their own account number for manual Paybill.</span>
-                  </button>
-                  <button type="button" class="account-receive-option" data-account-mode="custom" aria-pressed="false">
-                    <span class="account-receive-option-title">Custom account</span>
-                    <span class="account-receive-option-copy">Use your name, business name, or any fixed Account value.</span>
-                  </button>
-                </div>
-                <div class="visually-hidden">{{ form.mpesa_account_mode }}</div>
-                {% if form.mpesa_account_mode.help_text %}<p class="field-hint">{{ form.mpesa_account_mode.help_text }}</p>{% endif %}
-                {% if form.mpesa_account_mode.errors %}<div class="field-error">{{ form.mpesa_account_mode.errors|striptags }}</div>{% endif %}
-
-                <div class="field" data-mpesa-account-custom hidden style="margin-top:0.85rem;">
-                  <label for="{{ form.mpesa_account.id_for_label }}">{{ form.mpesa_account.label }}</label>
-                  {{ form.mpesa_account }}
-                  {% if form.mpesa_account.help_text %}<p class="field-hint">{{ form.mpesa_account.help_text }}</p>{% endif %}
-                  {% if form.mpesa_account.errors %}<div class="field-error">{{ form.mpesa_account.errors|striptags }}</div>{% endif %}
-                </div>
-              </div>
-              <div class="field">
-                <label>STK account reference</label>
-                <p class="account-readonly">Client account number</p>
-                <p class="field-hint">Every subscriber pays with their own account number as the M-Pesa reference.</p>
-              </div>
-            </div>
-          </section>
-
-          <section class="panel account-card account-daraja-card" data-daraja-card>
-            <header class="account-card-head account-daraja-head">
-              <div>
-                <h3>3. Daraja STK Push</h3>
-                <p>Prompt phones to pay your Paybill or Till automatically after package renewals.</p>
-              </div>
-              <span class="mikrotik-wifi-pill is-off" data-daraja-pill>Off</span>
-            </header>
-
-            <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.daraja_enabled.id_for_label }}">
-              {{ form.daraja_enabled }}
-              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
-              <span class="mikrotik-wifi-switch-text" data-daraja-switch-label>Daraja disabled</span>
-            </label>
-            {% if form.daraja_enabled.help_text %}<p class="settings-policy-hint">{{ form.daraja_enabled.help_text }}</p>{% endif %}
-            {% if form.daraja_enabled.errors %}<div class="field-error">{{ form.daraja_enabled.errors|striptags }}</div>{% endif %}
-            <p class="field-hint" data-daraja-blocked-hint hidden></p>
-
-            <div class="account-daraja-body" data-daraja-body hidden>
-              <div class="account-subsection">
-                <h4>Mode</h4>
-                <div class="account-card-grid">
-                  <div class="field">
-                    <label for="{{ form.daraja_environment.id_for_label }}">{{ form.daraja_environment.label }}</label>
-                    {{ form.daraja_environment }}
-                    {% if form.daraja_environment.help_text %}<p class="field-hint">{{ form.daraja_environment.help_text }}</p>{% endif %}
-                    {% if form.daraja_environment.errors %}<div class="field-error">{{ form.daraja_environment.errors|striptags }}</div>{% endif %}
-                  </div>
-                </div>
-              </div>
-
-              <div class="account-subsection" data-sandbox-creds>
-                <h4>Sandbox / testing</h4>
-                <div class="settings-policy-banner" style="margin:0;">
-                  {% if platform_gateway_ready %}
-                    Uses credentials from <strong>IT Support → Payment Gateway</strong>
-                    ({{ platform_gateway.get_environment_display }} · shortcode {{ platform_gateway.shortcode|default:"—" }}).
-                    Your Paybill/Till above is still used as the collection number shown to clients.
-                  {% else %}
-                    IT Support Payment Gateway is not ready yet.
-                    Ask IT Support to activate STK Push and save Daraja credentials before testing.
-                  {% endif %}
-                </div>
-              </div>
-
-              <div class="account-subsection" data-production-creds hidden>
-                <h4>Production credentials</h4>
-                <p>Your own Safaricom Daraja app credentials for live collections.</p>
-                <div class="account-card-grid">
-                  <div class="field">
-                    <label for="{{ form.daraja_consumer_key.id_for_label }}">{{ form.daraja_consumer_key.label }}</label>
-                    {{ form.daraja_consumer_key }}
-                    {% if form.daraja_consumer_key.errors %}<div class="field-error">{{ form.daraja_consumer_key.errors|striptags }}</div>{% endif %}
-                  </div>
-                  <div class="field">
-                    <label for="{{ form.daraja_consumer_secret.id_for_label }}">{{ form.daraja_consumer_secret.label }}</label>
-                    {{ form.daraja_consumer_secret }}
-                    {% if form.daraja_consumer_secret.errors %}<div class="field-error">{{ form.daraja_consumer_secret.errors|striptags }}</div>{% endif %}
-                  </div>
-                  <div class="field">
-                    <label for="{{ form.daraja_passkey.id_for_label }}">{{ form.daraja_passkey.label }}</label>
-                    {{ form.daraja_passkey }}
-                    {% if form.daraja_passkey.errors %}<div class="field-error">{{ form.daraja_passkey.errors|striptags }}</div>{% endif %}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <div class="account-page-actions">
-            <button type="submit" class="btn btn-primary">Save account</button>
-          </div>
-        </form>
-      {% else %}
-        <section class="panel account-card">
-          <header class="account-card-head">
-            <div>
-              <h3>Company profile</h3>
-              <p>Read-only organization details.</p>
-            </div>
-          </header>
-          <dl class="account-session-rows">
-            <div class="account-session-row"><span>Phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Organization</span><strong>{{ organization.name }}</strong></div>
+            <div class="account-session-row"><span>Contact phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Status</span><strong>{{ organization.get_status_display }}</strong></div>
             <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
-            <div class="account-session-row"><span>Email</span><strong>{{ organization.owner.email|default:"—" }}</strong></div>
-            <div class="account-session-row"><span>Receives via</span><strong>{{ organization.receives_via_label }}</strong></div>
-            <div class="account-session-row">
-              <span>Daraja</span>
-              <strong>
-                {% if daraja_status.enabled %}
-                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
-                {% else %}
-                  Off
-                {% endif %}
-              </strong>
-            </div>
           </dl>
+          {% if can_edit or can_edit_profile %}
+            <div class="account-page-actions" style="margin-top:1rem;">
+              <a class="btn btn-primary" href="{% url 'core:my_account' %}?edit=1">Edit profile</a>
+            </div>
+          {% endif %}
         </section>
       {% endif %}
     </div>
 
-    {% if form and can_edit %}
+    {% if account_editing and form %}
     <script>
     (function () {
       var form = document.getElementById("org-account-form");
       if (!form) return;
-
-      var enabled = document.getElementById("id_daraja_enabled");
-      var envSelect = document.getElementById("id_daraja_environment");
-      var typeSelect = document.getElementById("id_mpesa_payment_type");
-      var numberInput = document.getElementById("id_mpesa_number");
-      var accountInput = document.getElementById("id_mpesa_account");
-      var accountModeSelect = document.getElementById("id_mpesa_account_mode");
       var photoInput = document.getElementById("id_profile_photo");
       var photoPreview = form.querySelector("[data-photo-preview]");
       var photoFallback = form.querySelector("[data-photo-fallback]");
-      var card = form.querySelector("[data-daraja-card]");
-      var body = form.querySelector("[data-daraja-body]");
-      var pill = form.querySelector("[data-daraja-pill]");
-      var switchLabel = form.querySelector("[data-daraja-switch-label]");
-      var blockedHint = form.querySelector("[data-daraja-blocked-hint]");
-      var sandboxCreds = form.querySelector("[data-sandbox-creds]");
-      var productionCreds = form.querySelector("[data-production-creds]");
-      var receiveDetails = form.querySelector("[data-receive-details]");
-      var accountField = form.querySelector("[data-mpesa-account-field]");
-      var accountCustom = form.querySelector("[data-mpesa-account-custom]");
-      var numberLabel = form.querySelector("[data-mpesa-number-label]");
-      var receiveOptions = form.querySelectorAll("[data-receive-value]");
-      var accountModeOptions = form.querySelectorAll("[data-account-mode]");
-
-      function receiveReady() {
-        var type = (typeSelect && typeSelect.value || "").trim();
-        var number = (numberInput && numberInput.value || "").trim();
-        return !!(type && number);
-      }
-
-      function syncAccountMode() {
-        var mode = (accountModeSelect && accountModeSelect.value || "client").toLowerCase();
-        accountModeOptions.forEach(function (btn) {
-          var selected = btn.getAttribute("data-account-mode") === mode;
-          btn.classList.toggle("is-selected", selected);
-          btn.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
-        if (accountCustom) accountCustom.hidden = mode !== "custom";
-      }
-
-      function syncReceive() {
-        var type = (typeSelect && typeSelect.value || "").toLowerCase();
-        receiveOptions.forEach(function (btn) {
-          var selected = btn.getAttribute("data-receive-value") === type;
-          btn.classList.toggle("is-selected", selected);
-          btn.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
-        if (receiveDetails) receiveDetails.hidden = !type;
-        if (numberLabel) {
-          numberLabel.textContent = type === "till"
-            ? "Buy Goods Till number"
-            : type === "paybill"
-              ? "Paybill number"
-              : "Paybill / Till number";
-        }
-        if (accountField) {
-          accountField.hidden = type !== "paybill";
-          if (type !== "paybill" && accountModeSelect) {
-            accountModeSelect.value = "client";
-          }
-        }
-        syncAccountMode();
-        syncDaraja();
-      }
-
-      function syncEnvironment() {
-        var production = !!(envSelect && envSelect.value === "production");
-        if (sandboxCreds) sandboxCreds.hidden = production;
-        if (productionCreds) productionCreds.hidden = !production;
-      }
-
-      function syncDaraja() {
-        var on = !!(enabled && enabled.checked);
-        var ready = receiveReady();
-        if (blockedHint) {
-          blockedHint.hidden = !on || ready;
-          blockedHint.textContent = ready
-            ? ""
-            : "Also complete step 2: select Paybill or Till and enter the number, then save.";
-        }
-        if (body) body.hidden = !on;
-        if (card) card.classList.toggle("is-daraja-on", on);
-        if (pill) {
-          pill.textContent = on ? "On" : "Off";
-          pill.classList.toggle("is-on", on);
-          pill.classList.toggle("is-off", !on);
-        }
-        if (switchLabel) switchLabel.textContent = on ? "Daraja enabled" : "Daraja disabled";
-        syncEnvironment();
-      }
-
-      receiveOptions.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!typeSelect) return;
-          typeSelect.value = btn.getAttribute("data-receive-value") || "";
-          typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-          if (receiveDetails) {
-            receiveDetails.hidden = false;
-            if (numberInput) numberInput.focus();
-          }
-        });
-      });
-
-      accountModeOptions.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!accountModeSelect) return;
-          accountModeSelect.value = btn.getAttribute("data-account-mode") || "client";
-          accountModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-          if (accountModeSelect.value === "custom" && accountInput) {
-            accountInput.focus();
-          }
-        });
-      });
-
-      if (typeSelect) typeSelect.addEventListener("change", syncReceive);
-      if (accountModeSelect) accountModeSelect.addEventListener("change", syncAccountMode);
-      if (numberInput) {
-        numberInput.addEventListener("input", syncDaraja);
-        numberInput.addEventListener("change", syncDaraja);
-      }
-      if (enabled) {
-        enabled.addEventListener("change", function () {
-          syncDaraja();
-          if (enabled.checked && !receiveReady() && receiveDetails) {
-            receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
-          }
-        });
-      }
-      if (envSelect) envSelect.addEventListener("change", syncEnvironment);
-
       if (photoInput && photoPreview) {
         photoInput.addEventListener("change", function () {
           var file = photoInput.files && photoInput.files[0];
@@ -438,8 +206,8 @@
           if (photoFallback) photoFallback.hidden = true;
         });
       }
-
-      syncReceive();
+      var first = form.querySelector("input:not([type='hidden']):not([type='file']), select, textarea");
+      if (first) first.focus();
     })();
     </script>
     {% endif %}
