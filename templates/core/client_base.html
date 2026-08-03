@@ -388,7 +388,7 @@
     var subEl = loader.querySelector(".mikrotik-page-loader-sub");
     var hideTimer = null;
 
-    function showLoader(title, sub) {
+    function showLoader(title, sub, timeoutMs) {
       if (titleEl) titleEl.textContent = title || "Loading…";
       if (subEl) subEl.textContent = sub || "Please wait";
       loader.hidden = false;
@@ -400,7 +400,7 @@
         loader.hidden = true;
         loader.setAttribute("aria-hidden", "true");
         document.body.classList.remove("mikrotik-page-loading");
-      }, 45000);
+      }, timeoutMs || 45000);
     }
 
     function isMikrotikHref(href) {
@@ -412,6 +412,15 @@
       } catch (e) {
         return false;
       }
+    }
+
+    function isPackagesPath(pathname) {
+      return /\/billing\/packages\/?$/.test(pathname || "");
+    }
+
+    function formActionName(form) {
+      var actionInput = form.querySelector('input[name="action"]');
+      return (actionInput && actionInput.value) || "";
     }
 
     document.addEventListener("click", function (e) {
@@ -439,15 +448,38 @@
       if (e.defaultPrevented) return;
       if (form.getAttribute("data-no-page-loader") === "1") return;
       if (form.id === "mikrotik-password-form") return;
+
       var action = form.getAttribute("action") || window.location.href;
-      var onMikrotikPage = /\/app\/mikrotik(\/|$)/.test(window.location.pathname);
-      if (!onMikrotikPage && !isMikrotikHref(action)) return;
+      var pathname = window.location.pathname || "";
+      var onMikrotikPage = /\/app\/mikrotik(\/|$)/.test(pathname);
+      var onPackagesPage = isPackagesPath(pathname);
+      var formAction = formActionName(form);
+      var mikrotikSyncForm = form.getAttribute("data-mikrotik-sync") === "1"
+        || formAction === "edit_package"
+        || formAction === "register_package";
+
+      if (!onMikrotikPage && !isMikrotikHref(action) && !(onPackagesPage && mikrotikSyncForm)) {
+        return;
+      }
+
       var submitter = e.submitter;
       var label = (submitter && (submitter.getAttribute("data-loading-label") || submitter.textContent || "")).trim();
+      var sub = "Talking to the MikroTik — this can take a moment";
+      var timeoutMs = 45000;
+      if (formAction === "edit_package" || form.id === "billing-package-edit-form") {
+        label = label || "Updating package…";
+        sub = "Saving the package. MikroTik speed sync continues in the background.";
+        timeoutMs = 60000;
+      } else if (formAction === "register_package" || form.id === "billing-package-register-form") {
+        label = label || "Saving package…";
+        sub = "Creating the package and linking selected MikroTik routers.";
+        timeoutMs = 60000;
+      }
+
       // Defer so AJAX forms can preventDefault without flashing the overlay.
       setTimeout(function () {
         if (e.defaultPrevented) return;
-        showLoader(label || "Applying changes…", "Talking to the MikroTik — this can take a moment");
+        showLoader(label || "Applying changes…", sub, timeoutMs);
         if (submitter && !submitter.disabled) {
           submitter.classList.add("is-busy");
           var existing = submitter.querySelector(".mikrotik-btn-spinner");

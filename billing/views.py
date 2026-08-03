@@ -1,5 +1,6 @@
 from calendar import monthrange
 from datetime import date, datetime, time, timedelta
+import threading
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -176,14 +177,47 @@ def _handle_edit_package(request, org, *, success_url_name: str):
             or int(plan.upload_speed_mbps or 0) != previous_upload
         )
         if speeds_changed:
-            _reprovision_customers_for_plan_speeds(plan)
-        messages.success(
-            request,
-            f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
-        )
+            # Sync MikroTik in the background so nginx does not 504 while
+            # every assigned client is reprovisioned on the router.
+            _schedule_reprovision_customers_for_plan_speeds(plan.pk)
+            assigned = Customer.objects.filter(plan_id=plan.pk).count()
+            if assigned:
+                messages.success(
+                    request,
+                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}). "
+                    f"Pushing new speeds to {assigned} client(s) on MikroTik in the background.",
+                )
+            else:
+                messages.success(
+                    request,
+                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
+                )
+        else:
+            messages.success(
+                request,
+                f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
+            )
         return form, open_modal, redirect(success_url_name)
 
     return form, "billing-package-edit-modal", None
+
+
+def _schedule_reprovision_customers_for_plan_speeds(plan_id: int) -> None:
+    """Queue MikroTik speed sync off the request thread (avoids nginx 504)."""
+
+    def _bg(pk: int = int(plan_id)) -> None:
+        from django.db import connection
+
+        try:
+            plan = BillingPlan.objects.filter(pk=pk).first()
+            if plan is not None:
+                _reprovision_customers_for_plan_speeds(plan)
+        except Exception:
+            pass
+        finally:
+            connection.close()
+
+    threading.Thread(target=_bg, daemon=True).start()
 
 
 def _reprovision_customers_for_plan_speeds(plan) -> int:
@@ -191,25 +225,45 @@ def _reprovision_customers_for_plan_speeds(plan) -> int:
     if plan is None:
         return 0
     try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from django.db import close_old_connections
+
         from core.mikrotik_connect import sync_customer_subscription_access
     except Exception:
         return 0
 
-    updated = 0
-    customers = (
-        Customer.objects.filter(plan_id=plan.pk)
-        .select_related("organization", "router", "plan")
-        .iterator()
+    customers = list(
+        Customer.objects.filter(plan_id=plan.pk).select_related(
+            "organization", "router", "plan"
+        )
     )
-    for customer in customers:
+    if not customers:
+        return 0
+
+    def _sync_one(customer) -> int:
+        close_old_connections()
         try:
             result = sync_customer_subscription_access(
                 customer, provision=True, reauthenticate=True
             )
             if isinstance(result, dict) and result.get("ok"):
-                updated += 1
+                return 1
         except Exception:
-            continue
+            return 0
+        finally:
+            close_old_connections()
+        return 0
+
+    updated = 0
+    workers = min(8, max(1, len(customers)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_sync_one, customer) for customer in customers]
+        for future in as_completed(futures):
+            try:
+                updated += int(future.result() or 0)
+            except Exception:
+                continue
     return updated
 
 

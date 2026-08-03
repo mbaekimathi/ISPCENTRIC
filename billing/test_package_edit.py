@@ -42,9 +42,8 @@ class PackageEditTests(TestCase):
 
     def test_edit_package_updates_fields(self):
         with patch(
-            "billing.views._reprovision_customers_for_plan_speeds",
-            return_value=0,
-        ) as reprovision:
+            "billing.views._schedule_reprovision_customers_for_plan_speeds",
+        ) as schedule:
             res = self.client.post(
                 reverse("billing:packages"),
                 {
@@ -68,13 +67,12 @@ class PackageEditTests(TestCase):
         self.assertEqual(self.plan.upload_speed_mbps, 10)
         self.assertEqual(self.plan.speed_mbps, 20)
         self.assertTrue(self.plan.is_active)
-        reprovision.assert_called_once()
+        schedule.assert_called_once_with(self.plan.id)
 
     def test_edit_package_skips_reprovision_when_speeds_unchanged(self):
         with patch(
-            "billing.views._reprovision_customers_for_plan_speeds",
-            return_value=0,
-        ) as reprovision:
+            "billing.views._schedule_reprovision_customers_for_plan_speeds",
+        ) as schedule:
             res = self.client.post(
                 reverse("billing:packages"),
                 {
@@ -93,7 +91,7 @@ class PackageEditTests(TestCase):
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.name, "HOME RENAMED")
-        reprovision.assert_not_called()
+        schedule.assert_not_called()
 
     def test_edit_package_can_deactivate(self):
         res = self.client.post(
