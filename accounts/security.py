@@ -110,11 +110,21 @@ def validate_flexible_password(
     )
 
 
-def owner_registration_open() -> bool:
+def owner_registration_open(*, referral_code: str = "") -> bool:
     """Public owner self-signup allowed when True (or when an invite key is set)."""
     if getattr(settings, "OWNER_REGISTER_INVITE_KEY", ""):
         return True
-    return bool(getattr(settings, "ALLOW_PUBLIC_OWNER_REGISTRATION", False))
+    if not bool(getattr(settings, "ALLOW_PUBLIC_OWNER_REGISTRATION", False)):
+        return False
+    from accounts.models import ClientSettings
+
+    client = ClientSettings.get_solo()
+    if client.landing_register_enabled:
+        return True
+    # Referral invite links can still open register when the public Register link is hidden.
+    if client.referral_enabled and (referral_code or "").strip():
+        return True
+    return False
 
 
 def owner_invite_required() -> bool:

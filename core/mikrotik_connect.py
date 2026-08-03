@@ -12023,11 +12023,13 @@ def _ensure_failover_pppoe_client(
     physical_port: str,
     *,
     distance: int,
+    add_default_route: bool = True,
 ) -> dict[str, str] | None:
     """
     If a PPPoE client sits on physical_port, set its default-route-distance.
 
-    Returns the set/add terminal dict, or None when no PPPoE client exists.
+    Returns the set/add terminal dict (with optional `_pppoe` name), or None
+    when no PPPoE client exists.
     """
     physical_port = (physical_port or "").strip()
     if not physical_port:
@@ -12046,30 +12048,38 @@ def _ensure_failover_pppoe_client(
         if _flag_yes(row.get("disabled")):
             continue
         item_id = (row.get(".id") or "").strip()
+        pppoe_name = (row.get("name") or "").strip()
         if not item_id:
-            return {"_reply": "!done"}
+            out = {"_reply": "!done"}
+            if pppoe_name:
+                out["_pppoe"] = pppoe_name
+            return out
+        route_flag = "yes" if add_default_route else "no"
         # RouterOS 6/7: default-route-distance on pppoe-client.
         attempts = [
             {
                 "disabled": "no",
-                "add-default-route": "yes",
+                "add-default-route": route_flag,
                 "default-route-distance": str(distance),
                 "use-peer-dns": "no",
             },
             {
                 "disabled": "no",
-                "add-default-route": "yes",
+                "add-default-route": route_flag,
                 "default-route-distance": str(distance),
             },
             {
                 "disabled": "no",
-                "add-default-route": "yes",
+                "add-default-route": route_flag,
             },
         ]
         last = {"_reply": "!trap", "message": "Could not update PPPoE client."}
         for props in attempts:
             last = _set(sock, "/interface/pppoe-client", item_id, **props)
             if last.get("_reply") not in {"!trap", "!fatal"}:
+                if pppoe_name:
+                    last = dict(last)
+                    last["_pppoe"] = pppoe_name
                 return last
             # Strip unknown parameters and retry once more via message sniff.
             unknown = _unknown_parameter_name(last.get("message") or "")
@@ -12077,6 +12087,9 @@ def _ensure_failover_pppoe_client(
                 props = {k: v for k, v in props.items() if k != unknown}
                 last = _set(sock, "/interface/pppoe-client", item_id, **props)
                 if last.get("_reply") not in {"!trap", "!fatal"}:
+                    if pppoe_name:
+                        last = dict(last)
+                        last["_pppoe"] = pppoe_name
                     return last
         return last
     return None
@@ -12090,11 +12103,196 @@ def _ensure_failover_uplink(
 ) -> dict[str, str]:
     """Configure failover uplink via PPPoE when present, otherwise DHCP."""
     pppoe_result = _ensure_failover_pppoe_client(
-        sock, interface, distance=distance
+        sock, interface, distance=distance, add_default_route=True
     )
     if pppoe_result is not None:
-        return pppoe_result
-    return _ensure_failover_dhcp_client(sock, interface, distance=distance)
+        out = dict(pppoe_result)
+        out["_kind"] = "pppoe"
+        out["_interface"] = interface
+        out["_distance"] = str(distance)
+        return out
+    dhcp_result = _ensure_failover_dhcp_client(sock, interface, distance=distance)
+    out = dict(dhcp_result)
+    out["_kind"] = "dhcp"
+    out["_interface"] = interface
+    out["_distance"] = str(distance)
+    return out
+
+
+def _default_route_gateway_for_interface(sock: socket.socket, interface: str) -> str:
+    """Best-effort next-hop for a WAN interface from live default routes."""
+    interface = (interface or "").strip()
+    if not interface:
+        return ""
+    marker = f"%{interface}"
+    for row in _print(
+        sock,
+        "/ip/route",
+        props="dst-address,gateway,immediate-gw,active,disabled",
+    ):
+        dst = (row.get("dst-address") or "").strip()
+        if dst not in {"0.0.0.0/0", "::/0"}:
+            continue
+        if _flag_yes(row.get("disabled")):
+            continue
+        gateway = (row.get("gateway") or "").strip()
+        immediate = (row.get("immediate-gw") or "").strip()
+        if gateway == interface or immediate == interface:
+            return interface
+        if gateway.endswith(marker):
+            return gateway.split("%", 1)[0].strip() or interface
+        if immediate.endswith(marker):
+            return immediate.split("%", 1)[0].strip() or interface
+        if gateway.lower().startswith("pppoe") and interface.lower().startswith("pppoe"):
+            if gateway == interface:
+                return gateway
+    return ""
+
+
+def _ensure_failover_checked_route(
+    sock: socket.socket,
+    *,
+    gateway: str,
+    distance: int,
+) -> dict[str, str]:
+    """Install a tagged default route with check-gateway=ping for real failover."""
+    gateway = (gateway or "").strip()
+    if not gateway:
+        return {"_reply": "!trap", "message": "Missing failover gateway."}
+    distance_s = str(distance)
+    for row in _print(
+        sock,
+        "/ip/route",
+        props=".id,dst-address,gateway,distance,comment",
+    ):
+        if UPLINK_TAG not in (row.get("comment") or ""):
+            continue
+        if (row.get("dst-address") or "").strip() not in {"0.0.0.0/0", "::/0"}:
+            continue
+        if (row.get("gateway") or "").strip() != gateway:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        return _set(
+            sock,
+            "/ip/route",
+            item_id,
+            distance=distance_s,
+            comment=UPLINK_TAG,
+            **{"check-gateway": "ping"},
+        )
+    attempts = [
+        {
+            "dst-address": "0.0.0.0/0",
+            "gateway": gateway,
+            "distance": distance_s,
+            "comment": UPLINK_TAG,
+            "check-gateway": "ping",
+        },
+        {
+            "dst-address": "0.0.0.0/0",
+            "gateway": gateway,
+            "distance": distance_s,
+            "comment": UPLINK_TAG,
+        },
+    ]
+    last = {"_reply": "!trap", "message": "Could not add failover route."}
+    for props in attempts:
+        last = _add(sock, "/ip/route", **props)
+        if last.get("_reply") not in {"!trap", "!fatal"}:
+            return last
+        unknown = _unknown_parameter_name(last.get("message") or "")
+        if unknown and unknown in props:
+            props = {k: v for k, v in props.items() if k != unknown}
+            last = _add(sock, "/ip/route", **props)
+            if last.get("_reply") not in {"!trap", "!fatal"}:
+                return last
+    return last
+
+
+def _disable_client_default_route(
+    sock: socket.socket,
+    *,
+    kind: str,
+    interface: str,
+    pppoe_name: str = "",
+) -> None:
+    """Stop DHCP/PPPoE from installing competing dynamic defaults."""
+    if kind == "pppoe":
+        target = (pppoe_name or "").strip()
+        for row in _print(
+            sock,
+            "/interface/pppoe-client",
+            props=".id,name,interface",
+        ):
+            name = (row.get("name") or "").strip()
+            parent = (row.get("interface") or "").strip()
+            if target and name != target and parent != interface:
+                continue
+            if not target and parent != interface:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _set(sock, "/interface/pppoe-client", item_id, **{"add-default-route": "no"})
+            return
+        return
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface"):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _set(sock, "/ip/dhcp-client", item_id, **{"add-default-route": "no"})
+        return
+
+
+def _install_failover_gateway_checks(
+    sock: socket.socket,
+    uplink_results: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """
+    Prefer ping-checked static defaults so failover works when the link stays
+    up but the ISP path dies (not only on carrier loss).
+    """
+    installed: list[dict[str, str]] = []
+    for item in uplink_results:
+        interface = (item.get("_interface") or "").strip()
+        kind = (item.get("_kind") or "").strip()
+        try:
+            distance = int(item.get("_distance") or "1")
+        except ValueError:
+            distance = 1
+        gateway = ""
+        pppoe_name = (item.get("_pppoe") or "").strip()
+        if kind == "pppoe":
+            gateway = pppoe_name or _find_pppoe_client_for_wan(sock, interface)
+        else:
+            gateways = _detect_dhcp_gateways(sock, interface)
+            gateway = gateways[0] if gateways else ""
+            if not gateway:
+                gateway = _default_route_gateway_for_interface(sock, interface)
+        if not gateway:
+            continue
+        terminal = _ensure_failover_checked_route(
+            sock, gateway=gateway, distance=distance
+        )
+        if terminal.get("_reply") in {"!trap", "!fatal"}:
+            continue
+        _disable_client_default_route(
+            sock,
+            kind=kind or "dhcp",
+            interface=interface,
+            pppoe_name=pppoe_name or gateway,
+        )
+        installed.append(
+            {
+                "interface": interface,
+                "gateway": gateway,
+                "distance": str(distance),
+                "kind": kind or "dhcp",
+            }
+        )
+    return installed
 
 
 def _disable_member_dhcp_clients(sock: socket.socket, members: list[str]) -> list[str]:
@@ -12114,6 +12312,137 @@ def _disable_member_dhcp_clients(sock: socket.socket, members: list[str]) -> lis
         if terminal.get("_reply") not in {"!trap", "!fatal"}:
             notes.append(iface)
     return notes
+
+
+def _move_member_pppoe_to_bond(
+    sock: socket.socket,
+    members: list[str],
+    bond_name: str,
+) -> list[str]:
+    """
+    Reattach the first member PPPoE client onto the bond interface.
+
+    Same-provider bonding must dial on the bond, not on a slave port.
+    Extra member PPPoE clients are disabled so they cannot fight the bond.
+    """
+    wanted = {m.strip() for m in members if (m or "").strip()}
+    moved: list[str] = []
+    try:
+        rows = _print(
+            sock,
+            "/interface/pppoe-client",
+            props=".id,name,interface,disabled",
+        )
+    except Exception:
+        return moved
+    for row in rows:
+        parent = (row.get("interface") or "").strip()
+        if parent not in wanted:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        name = (row.get("name") or "").strip()
+        if not item_id:
+            continue
+        if not moved:
+            terminal = _set(
+                sock,
+                "/interface/pppoe-client",
+                item_id,
+                interface=bond_name,
+                disabled="no",
+                **{
+                    "add-default-route": "yes",
+                    "default-route-distance": "1",
+                    "use-peer-dns": "no",
+                },
+            )
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                # Older RouterOS may reject distance / peer-dns — retry minimal move.
+                terminal = _set(
+                    sock,
+                    "/interface/pppoe-client",
+                    item_id,
+                    interface=bond_name,
+                    disabled="no",
+                    **{"add-default-route": "yes"},
+                )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                moved.append(name or parent)
+            continue
+        if not _flag_yes(row.get("disabled")):
+            _set(sock, "/interface/pppoe-client", item_id, disabled="yes")
+    return moved
+
+
+def _create_bonding_interface(
+    sock: socket.socket,
+    *,
+    bond_name: str,
+    bond_mode: str,
+    members: list[str],
+) -> tuple[dict[str, str], str]:
+    """Create bonding with link-monitoring; fall back when RouterOS rejects options."""
+    slaves = ",".join(members)
+    primary = members[0] if members else ""
+    attempts: list[dict[str, str]] = []
+    base = {
+        "name": bond_name,
+        "mode": bond_mode,
+        "slaves": slaves,
+        "comment": UPLINK_TAG,
+    }
+    monitored = {
+        **base,
+        "link-monitoring": "mii",
+        "miimon": "100",
+        "down-delay": "200ms",
+        "up-delay": "200ms",
+    }
+    if bond_mode == "active-backup" and primary:
+        attempts.append({**monitored, "primary": primary})
+        attempts.append({**base, "primary": primary, "link-monitoring": "mii", "miimon": "100"})
+        attempts.append({**base, "primary": primary})
+    attempts.extend(
+        [
+            monitored,
+            {**base, "link-monitoring": "mii", "miimon": "100"},
+            dict(base),
+        ]
+    )
+    # Deduplicate while preserving order.
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    unique_attempts: list[dict[str, str]] = []
+    for props in attempts:
+        key = tuple(sorted(props.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_attempts.append(props)
+
+    last = {"_reply": "!trap", "message": f"Could not create bonding interface {bond_name}."}
+    used_mode = bond_mode
+    for props in unique_attempts:
+        last = _add(sock, "/interface/bonding", **props)
+        if last.get("_reply") not in {"!trap", "!fatal"}:
+            return last, used_mode
+        unknown = _unknown_parameter_name(last.get("message") or "")
+        if unknown:
+            trimmed = {k: v for k, v in props.items() if k != unknown}
+            last = _add(sock, "/interface/bonding", **trimmed)
+            if last.get("_reply") not in {"!trap", "!fatal"}:
+                return last, used_mode
+
+    # LACP often fails without switch support — fall back to balance-xor.
+    if bond_mode == "802.3ad":
+        used_mode = "balance-xor"
+        fallback_last, fallback_mode = _create_bonding_interface(
+            sock,
+            bond_name=bond_name,
+            bond_mode=used_mode,
+            members=members,
+        )
+        return fallback_last, fallback_mode
+    return last, used_mode
 
 
 def _ensure_failover_dhcp_client(
@@ -12202,8 +12531,9 @@ def apply_mikrotik_uplink_bond(
     """
     Bond two or more ports for the same provider.
 
-    Creates /interface/bonding, slaves the selected ports, DHCP on the bond,
-    and adds the bond to the WAN interface list.
+    Creates /interface/bonding with link monitoring, slaves the selected ports,
+    moves PPPoE onto the bond when present (else DHCP on the bond), and adds the
+    bond to the WAN interface list.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -12251,53 +12581,44 @@ def apply_mikrotik_uplink_bond(
                     }
 
             unbridged = _unbridge_interfaces(sock, members)
-            slaves = ",".join(members)
-            terminal = _add(
+            terminal, bond_mode = _create_bonding_interface(
                 sock,
-                "/interface/bonding",
-                name=bond_name,
-                mode=bond_mode,
-                slaves=slaves,
-                comment=UPLINK_TAG,
+                bond_name=bond_name,
+                bond_mode=bond_mode,
+                members=members,
             )
             if terminal.get("_reply") in {"!trap", "!fatal"}:
-                # LACP often fails without switch support — fall back to balance-xor.
-                if bond_mode == "802.3ad":
-                    bond_mode = "balance-xor"
-                    terminal = _add(
-                        sock,
-                        "/interface/bonding",
-                        name=bond_name,
-                        mode=bond_mode,
-                        slaves=slaves,
-                        comment=UPLINK_TAG,
-                    )
-                if terminal.get("_reply") in {"!trap", "!fatal"}:
-                    if unbridged:
-                        _restore_bridged_interfaces(sock, unbridged)
-                    return {
-                        "ok": False,
-                        "error": _trap_message(
-                            terminal,
-                            f"Could not create bonding interface {bond_name}.",
-                        ),
-                    }
-
-            disabled_dhcp = _disable_member_dhcp_clients(sock, members)
-            dhcp = _ensure_bond_dhcp_client(sock, bond_name)
-            if dhcp.get("_reply") in {"!trap", "!fatal"}:
+                if unbridged:
+                    _restore_bridged_interfaces(sock, unbridged)
                 return {
                     "ok": False,
                     "error": _trap_message(
-                        dhcp,
-                        f"Bond created, but DHCP client failed on {bond_name}.",
+                        terminal,
+                        f"Could not create bonding interface {bond_name}.",
                     ),
-                    "bond_name": bond_name,
-                    "members": members,
-                    "unbridged": unbridged,
                 }
 
+            disabled_dhcp = _disable_member_dhcp_clients(sock, members)
+            moved_pppoe = _move_member_pppoe_to_bond(sock, members, bond_name)
+            uplink_kind = "pppoe" if moved_pppoe else "dhcp"
+            if not moved_pppoe:
+                dhcp = _ensure_bond_dhcp_client(sock, bond_name)
+                if dhcp.get("_reply") in {"!trap", "!fatal"}:
+                    return {
+                        "ok": False,
+                        "error": _trap_message(
+                            dhcp,
+                            f"Bond created, but DHCP client failed on {bond_name}.",
+                        ),
+                        "bond_name": bond_name,
+                        "members": members,
+                        "unbridged": unbridged,
+                    }
+
             _ensure_uplink_list_member(sock, bond_name)
+            for pppoe_name in moved_pppoe:
+                if pppoe_name and pppoe_name != bond_name:
+                    _ensure_uplink_list_member(sock, pppoe_name)
 
             return {
                 "ok": True,
@@ -12308,9 +12629,16 @@ def apply_mikrotik_uplink_bond(
                 "wan_interface": bond_name,
                 "unbridged": unbridged,
                 "disabled_member_dhcp": disabled_dhcp,
+                "moved_pppoe": moved_pppoe,
+                "uplink_kind": uplink_kind,
                 "message": (
                     f"Bonded {', '.join(members)} as {bond_name} "
-                    f"({bond_mode}) for the same provider."
+                    f"({bond_mode}) for the same provider"
+                    + (
+                        f"; PPPoE moved to {bond_name}."
+                        if moved_pppoe
+                        else "."
+                    )
                 ),
             }
     except TimeoutError:
@@ -12343,8 +12671,9 @@ def apply_mikrotik_uplink_failover(
     """
     Configure primary + backup WAN ports for different providers.
 
-    Uses DHCP default-route-distance so traffic prefers the primary and fails
-    over when that link drops.
+    Prefers PPPoE when present, otherwise DHCP, with rising default-route
+    distances. When gateways are known, installs ping-checked static defaults so
+    failover also triggers if the ISP path dies while the cable stays up.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -12375,6 +12704,7 @@ def apply_mikrotik_uplink_failover(
             _clear_tagged_uplink(sock)
             unbridged = _unbridge_interfaces(sock, ordered)
 
+            uplink_results: list[dict[str, str]] = []
             for index, iface in enumerate(ordered):
                 distance = 1 + (index * 10)
                 terminal = _ensure_failover_uplink(
@@ -12390,14 +12720,18 @@ def apply_mikrotik_uplink_failover(
                             f"Could not configure failover uplink on {iface}.",
                         ),
                     }
+                uplink_results.append(terminal)
                 # Put physical + PPPoE (if any) into WAN list.
                 _ensure_uplink_list_member(sock, iface)
-                pppoe_name = _find_pppoe_client_for_wan(sock, iface)
+                pppoe_name = (terminal.get("_pppoe") or "").strip() or _find_pppoe_client_for_wan(
+                    sock, iface
+                )
                 if pppoe_name and pppoe_name != iface:
                     _ensure_uplink_list_member(sock, pppoe_name)
 
-            # Best-effort: ping-check any default routes we just tagged via DHCP comment.
-            # RouterOS often creates dynamic DHCP routes; set check-gateway where possible.
+            checked_routes = _install_failover_gateway_checks(sock, uplink_results)
+
+            # Best-effort: also ping-check any remaining static defaults.
             for row in _print(
                 sock,
                 "/ip/route",
@@ -12407,11 +12741,16 @@ def apply_mikrotik_uplink_failover(
                 if dst not in {"0.0.0.0/0", "::/0"}:
                     continue
                 item_id = (row.get(".id") or "").strip()
-                if not item_id:
-                    continue
-                if _flag_yes(row.get("dynamic")):
+                if not item_id or _flag_yes(row.get("dynamic")):
                     continue
                 _set(sock, "/ip/route", item_id, **{"check-gateway": "ping"})
+
+            checked_label = ""
+            if checked_routes:
+                checked_label = (
+                    f" Ping-check enabled on {len(checked_routes)} "
+                    f"gateway{'s' if len(checked_routes) != 1 else ''}."
+                )
 
             return {
                 "ok": True,
@@ -12421,9 +12760,11 @@ def apply_mikrotik_uplink_failover(
                 "ports": ordered,
                 "wan_interface": primary_port,
                 "unbridged": unbridged,
+                "checked_routes": checked_routes,
                 "message": (
                     f"Failover ready: primary {primary_port}, "
                     f"backup {', '.join(backups)}."
+                    f"{checked_label}"
                 ),
             }
     except TimeoutError:
@@ -12506,7 +12847,7 @@ def read_mikrotik_uplink_multi(
             for row in _print(
                 sock,
                 "/interface/bonding",
-                props=".id,name,mode,slaves,running,disabled,comment",
+                props=".id,name,mode,slaves,running,disabled,comment,link-monitoring,primary",
             ):
                 if UPLINK_TAG not in (row.get("comment") or ""):
                     continue
@@ -12518,6 +12859,8 @@ def read_mikrotik_uplink_multi(
                         "slaves": [s.strip() for s in slaves_raw.split(",") if s.strip()],
                         "running": _flag_yes(row.get("running")),
                         "disabled": _flag_yes(row.get("disabled")),
+                        "link_monitoring": (row.get("link-monitoring") or "").strip(),
+                        "primary": (row.get("primary") or "").strip(),
                     }
                 )
 
@@ -12525,33 +12868,109 @@ def read_mikrotik_uplink_multi(
             for row in _print(
                 sock,
                 "/ip/dhcp-client",
-                props=".id,interface,status,default-route-distance,disabled,comment",
+                props=".id,interface,status,default-route-distance,disabled,comment,add-default-route",
             ):
-                if UPLINK_TAG not in (row.get("comment") or ""):
+                comment = row.get("comment") or ""
+                distance = (row.get("default-route-distance") or "").strip() or "1"
+                # Include tagged clients, or any client with a non-default distance
+                # (failover often reuses the original untagged WAN DHCP client).
+                if UPLINK_TAG not in comment and distance in {"", "0", "1"}:
                     continue
                 failover_clients.append(
                     {
                         "interface": (row.get("interface") or "").strip(),
                         "status": (row.get("status") or "").strip(),
-                        "distance": (row.get("default-route-distance") or "").strip() or "1",
+                        "distance": distance,
+                        "disabled": _flag_yes(row.get("disabled")),
+                        "kind": "dhcp",
+                        "add_default_route": not (
+                            (row.get("add-default-route") or "").strip().lower()
+                            in {"no", "false"}
+                        ),
+                    }
+                )
+
+            try:
+                pppoe_rows = _print(
+                    sock,
+                    "/interface/pppoe-client",
+                    props=".id,name,interface,disabled,default-route-distance,add-default-route,running",
+                )
+            except Exception:
+                pppoe_rows = []
+            for row in pppoe_rows:
+                if _flag_yes(row.get("disabled")):
+                    continue
+                distance = (row.get("default-route-distance") or "").strip() or "1"
+                failover_clients.append(
+                    {
+                        "interface": (row.get("interface") or "").strip(),
+                        "pppoe": (row.get("name") or "").strip(),
+                        "status": "running" if _flag_yes(row.get("running")) else "down",
+                        "distance": distance,
+                        "disabled": False,
+                        "kind": "pppoe",
+                        "add_default_route": not (
+                            (row.get("add-default-route") or "").strip().lower()
+                            in {"no", "false"}
+                        ),
+                    }
+                )
+
+            failover_clients.sort(
+                key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
+            )
+
+            checked_routes: list[dict[str, Any]] = []
+            for row in _print(
+                sock,
+                "/ip/route",
+                props="dst-address,gateway,distance,check-gateway,active,disabled,comment",
+            ):
+                if UPLINK_TAG not in (row.get("comment") or ""):
+                    continue
+                if (row.get("dst-address") or "").strip() not in {"0.0.0.0/0", "::/0"}:
+                    continue
+                checked_routes.append(
+                    {
+                        "gateway": (row.get("gateway") or "").strip(),
+                        "distance": (row.get("distance") or "").strip() or "1",
+                        "check_gateway": (row.get("check-gateway") or "").strip(),
+                        "active": _flag_yes(row.get("active")),
                         "disabled": _flag_yes(row.get("disabled")),
                     }
                 )
-            failover_clients.sort(
+            checked_routes.sort(
                 key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
             )
 
             mode = "single"
             if bonds:
                 mode = "bond"
-            elif len(failover_clients) >= 2:
-                mode = "failover"
+            else:
+                distances = {
+                    str(c.get("distance") or "1")
+                    for c in failover_clients
+                    if not c.get("disabled")
+                }
+                if len(checked_routes) >= 2 or len(distances) >= 2:
+                    mode = "failover"
+
+            healthy = False
+            if mode == "bond":
+                healthy = any(b.get("running") and not b.get("disabled") for b in bonds)
+            elif mode == "failover":
+                healthy = any(r.get("active") and not r.get("disabled") for r in checked_routes) or any(
+                    not c.get("disabled") for c in failover_clients
+                )
 
             return {
                 "ok": True,
                 "mode": mode,
                 "bonds": bonds,
                 "failover_clients": failover_clients,
+                "checked_routes": checked_routes,
+                "healthy": healthy,
             }
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Could not read uplink state."}

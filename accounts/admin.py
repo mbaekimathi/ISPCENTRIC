@@ -2,6 +2,7 @@ from django import forms
 from django.contrib import admin
 
 from .models import (
+    ClientSettings,
     CompanyProfile,
     Employee,
     Lead,
@@ -27,11 +28,11 @@ class OrganizationAdmin(admin.ModelAdmin):
         "mpesa_number",
         "created_at",
     )
-    list_filter = ("status", "daraja_enabled", "mpesa_payment_type", "daraja_environment")
-    search_fields = ("name", "join_code", "owner__username", "phone", "mpesa_number")
+    list_filter = ("status", "referral_status", "daraja_enabled", "mpesa_payment_type", "daraja_environment")
+    search_fields = ("name", "join_code", "referral_code", "owner__username", "phone", "mpesa_number")
     list_editable = ("status",)
-    readonly_fields = ("join_code", "created_at")
-
+    readonly_fields = ("join_code", "referral_code", "created_at")
+    raw_id_fields = ("referred_by",)
 
 @admin.register(PaymentGateway)
 class PaymentGatewayAdmin(admin.ModelAdmin):
@@ -65,6 +66,31 @@ class CompanyProfileAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return not CompanyProfile.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ClientSettings)
+class ClientSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "landing_register_enabled",
+        "onboarding_fee_enabled",
+        "onboarding_fee_amount",
+        "referral_enabled",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at",)
+    fields = (
+        "landing_register_enabled",
+        "onboarding_fee_enabled",
+        "onboarding_fee_amount",
+        "referral_enabled",
+        "updated_at",
+    )
+
+    def has_add_permission(self, request):
+        return not ClientSettings.objects.exists()
 
     def has_delete_permission(self, request, obj=None):
         return False

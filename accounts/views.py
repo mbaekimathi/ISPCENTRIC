@@ -23,7 +23,7 @@ from .forms import (
     LoginForm,
     RegisterForm,
 )
-from .models import Employee, Organization
+from .models import ClientSettings, Employee, Organization
 from .routing import home_url_for_user
 from .security import (
     AuthRateLimitExceeded,
@@ -33,6 +33,42 @@ from .security import (
     owner_registration_open,
     record_auth_failure,
 )
+
+REFERRAL_SESSION_KEY = "referral_code"
+
+
+def _capture_referral_code(request):
+    """Persist ?ref=… into the session when referrals are enabled."""
+    ref = (request.GET.get("ref") or "").strip()
+    if not ref:
+        return
+    if ClientSettings.get_solo().referral_enabled:
+        request.session[REFERRAL_SESSION_KEY] = ref[:64]
+
+
+def _session_referral_code(request) -> str:
+    return (request.session.get(REFERRAL_SESSION_KEY) or "").strip()
+
+
+def _resolve_referrer(request, code: str | None = None):
+    """Return the referring Organization from an explicit code or session."""
+    if not ClientSettings.get_solo().referral_enabled:
+        return None
+    raw = (code or "").strip() or _session_referral_code(request)
+    if not raw:
+        return None
+    return Organization.lookup_by_referral_code(raw)
+
+
+def _register_form(request, data=None, files=None):
+    initial_ref = _session_referral_code(request)
+    kwargs = {
+        "require_invite": owner_invite_required(),
+        "initial_referral": initial_ref,
+    }
+    if data is not None:
+        return RegisterForm(data, files, **kwargs)
+    return RegisterForm(**kwargs)
 
 
 def _user_session_name(user):
@@ -77,10 +113,19 @@ def _rate_limited_response(request, template_name, form):
 class RegisterView(View):
     template_name = "accounts/register.html"
 
+    def _referral_hint(self, request):
+        _capture_referral_code(request)
+        return (
+            (request.GET.get("ref") or "").strip()
+            or _session_referral_code(request)
+            or (request.POST.get("referral_code") or "").strip()
+        )
+
     def get(self, request):
         if request.user.is_authenticated:
             return redirect(home_url_for_user(request.user))
-        if not owner_registration_open():
+        ref_hint = self._referral_hint(request)
+        if not owner_registration_open(referral_code=ref_hint):
             return render(
                 request,
                 "accounts/register_closed.html",
@@ -90,16 +135,22 @@ class RegisterView(View):
             assert_auth_allowed("register", request, limit=10, window=3600)
         except AuthRateLimitExceeded:
             return _rate_limited_response(
-                request, self.template_name, RegisterForm(require_invite=owner_invite_required())
+                request, self.template_name, _register_form(request)
             )
+        form = _register_form(request)
+        referrer = _resolve_referrer(request, form.initial.get("referral_code"))
         return render(
             request,
             self.template_name,
-            {"form": RegisterForm(require_invite=owner_invite_required())},
+            {
+                "form": form,
+                "referrer_organization": referrer,
+            },
         )
 
     def post(self, request):
-        if not owner_registration_open():
+        ref_hint = self._referral_hint(request)
+        if not owner_registration_open(referral_code=ref_hint):
             return render(
                 request,
                 "accounts/register_closed.html",
@@ -109,35 +160,58 @@ class RegisterView(View):
             assert_auth_allowed("register", request, limit=10, window=3600)
         except AuthRateLimitExceeded:
             return _rate_limited_response(
-                request, self.template_name, RegisterForm(require_invite=owner_invite_required())
+                request, self.template_name, _register_form(request)
             )
-        form = RegisterForm(
-            request.POST,
-            request.FILES,
-            require_invite=owner_invite_required(),
-        )
+        form = _register_form(request, request.POST, request.FILES)
         if form.is_valid():
             user = form.save(commit=False)
             user.email = form.cleaned_data["email"]
             user.save()
-            Organization.objects.create(
-                name=form.cleaned_data["company_name"],
-                owner=user,
-                phone=form.cleaned_data.get("phone", ""),
-                profile_photo=form.cleaned_data.get("profile_photo"),
-                status=Organization.Status.REGISTERED,
-            )
+            referrer = getattr(form, "resolved_referrer", None)
+            if referrer is None:
+                referrer = _resolve_referrer(
+                    request, form.cleaned_data.get("referral_code")
+                )
+            org_kwargs = {
+                "name": form.cleaned_data["company_name"],
+                "owner": user,
+                "phone": form.cleaned_data.get("phone", ""),
+                "profile_photo": form.cleaned_data.get("profile_photo"),
+                "status": Organization.Status.REGISTERED,
+            }
+            if referrer is not None:
+                org_kwargs["referred_by"] = referrer
+                org_kwargs["referral_status"] = Organization.ReferralStatus.PENDING
+            Organization.objects.create(**org_kwargs)
+            request.session.pop(REFERRAL_SESSION_KEY, None)
             clear_auth_failures("register", request)
             login(request, user)
             return redirect(home_url_for_user(user))
         record_auth_failure("register", request, limit=10, window=3600)
-        return render(request, self.template_name, {"form": form})
+        referrer = getattr(form, "resolved_referrer", None) or _resolve_referrer(
+            request, form.data.get("referral_code")
+        )
+        return render(
+            request,
+            self.template_name,
+            {
+                "form": form,
+                "referrer_organization": referrer,
+            },
+        )
 
 
 class UserLoginView(LoginView):
     template_name = "accounts/login.html"
     authentication_form = LoginForm
     redirect_authenticated_user = True
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context["landing_register_enabled"] = bool(
+            ClientSettings.get_solo().landing_register_enabled
+        )
+        return context
 
     def dispatch(self, request, *args, **kwargs):
         try:

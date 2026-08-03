@@ -190,6 +190,39 @@ class Organization(models.Model):
         blank=True,
         help_text="Sales staff (or other user) who registered this ISP / business.",
     )
+    class ReferralStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        ACTIVE = "active", "Active"
+
+    referral_code = models.CharField(
+        "Referral code",
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Shareable code — the organization's phone digits.",
+    )
+    referred_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="referrals",
+        null=True,
+        blank=True,
+        help_text="ISP that referred this organization via a referral link.",
+    )
+    referral_status = models.CharField(
+        "Referral status",
+        max_length=16,
+        choices=ReferralStatus.choices,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=(
+            "When this org was referred: pending until the first MikroTik "
+            "is onboarded, then active."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -202,9 +235,92 @@ class Organization(models.Model):
             if not Organization.objects.filter(join_code=code).exists():
                 return code
 
+    @staticmethod
+    def normalize_referral_phone(phone: str = "") -> str:
+        """Strip to national phone digits used as the referral code."""
+        import re
+
+        digits = re.sub(r"\D", "", phone or "")
+        if digits.startswith("254") and len(digits) >= 12:
+            digits = digits[3:]
+        elif digits.startswith("0") and len(digits) >= 10:
+            digits = digits.lstrip("0")
+        return digits
+
+    @staticmethod
+    def generate_referral_code(phone: str = "", *, exclude_pk=None) -> str:
+        """Build a unique referral code from phone digits only."""
+        base = Organization.normalize_referral_phone(phone)
+        if not base:
+            base = f"{secrets.randbelow(1_000_000_000):09d}"
+        code = base
+        n = 1
+        qs = Organization.objects.filter(referral_code=code)
+        if exclude_pk:
+            qs = qs.exclude(pk=exclude_pk)
+        while qs.exists():
+            n += 1
+            code = f"{base}{n}"
+            qs = Organization.objects.filter(referral_code=code)
+            if exclude_pk:
+                qs = qs.exclude(pk=exclude_pk)
+        return code
+
+    @classmethod
+    def lookup_by_referral_code(cls, raw: str):
+        """Resolve a referrer from a typed/pasted phone code."""
+        code = (raw or "").strip()
+        if not code:
+            return None
+        org = cls.objects.filter(referral_code__iexact=code).first()
+        if org:
+            return org
+        digits = cls.normalize_referral_phone(code)
+        if not digits or digits == code:
+            return None
+        return cls.objects.filter(referral_code=digits).first()
+
+    def ensure_referral_code(self) -> str:
+        """Return a phone-based referral code, upgrading older formats."""
+        import re
+
+        phone_code = Organization.generate_referral_code(
+            self.phone, exclude_pk=self.pk
+        )
+        current = (self.referral_code or "").strip()
+        # Keep an existing pure phone code when it already matches.
+        if current and re.fullmatch(r"\d+", current):
+            if not self.phone or current == Organization.normalize_referral_phone(self.phone) or current == phone_code:
+                return current
+        self.referral_code = phone_code
+        if self.pk:
+            type(self).objects.filter(pk=self.pk).update(referral_code=self.referral_code)
+        return self.referral_code
+
+    def mark_referral_active(self) -> bool:
+        """Flip referred org from pending → active. Returns True if changed."""
+        if not self.referred_by_id:
+            return False
+        if self.referral_status == self.ReferralStatus.ACTIVE:
+            return False
+        type(self).objects.filter(pk=self.pk).update(
+            referral_status=self.ReferralStatus.ACTIVE
+        )
+        self.referral_status = self.ReferralStatus.ACTIVE
+        return True
+
     def save(self, *args, **kwargs):
         if not self.join_code:
             self.join_code = Organization.generate_join_code()
+        if self.phone and (
+            not self.referral_code
+            or not str(self.referral_code).isdigit()
+        ):
+            self.referral_code = Organization.generate_referral_code(
+                self.phone, exclude_pk=self.pk
+            )
+        if self.referred_by_id and not self.referral_status:
+            self.referral_status = self.ReferralStatus.PENDING
         self.profile_photo = maybe_optimize_image_field(self.profile_photo)
         super().save(*args, **kwargs)
         from accounts.routing import invalidate_switchable_clients_cache
@@ -752,6 +868,68 @@ class CompanyProfile(models.Model):
 
     def __str__(self):
         return self.app_name or "Company profile"
+
+
+class ClientSettings(models.Model):
+    """Platform client-facing switches (singleton, managed by IT Support)."""
+
+    landing_register_enabled = models.BooleanField(
+        "Show Register on landing page",
+        default=False,
+        help_text="When enabled, the public landing page shows Register / Get started links.",
+    )
+    onboarding_fee_enabled = models.BooleanField(
+        "Charge MikroTik onboarding fee",
+        default=False,
+        help_text=(
+            "When enabled, clients must pay via STK Push before a MikroTik "
+            "tunnel onboarding script can be generated."
+        ),
+    )
+    onboarding_fee_amount = models.DecimalField(
+        "Onboarding fee amount (KES)",
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Amount prompted on the phone when onboarding fee is enabled.",
+    )
+    referral_enabled = models.BooleanField(
+        "Enable referrals",
+        default=False,
+        help_text="When enabled, client referral features are available on the platform.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_client_settings"
+        verbose_name = "Client settings"
+        verbose_name_plural = "Client settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        if not self.onboarding_fee_enabled:
+            # Keep amount stored for when the toggle is turned back on.
+            pass
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    @property
+    def onboarding_fee_ready(self) -> bool:
+        return bool(
+            self.onboarding_fee_enabled
+            and self.onboarding_fee_amount is not None
+            and self.onboarding_fee_amount > 0
+        )
+
+    def __str__(self):
+        return "Client settings"
 
 
 class RoleCommission(models.Model):

@@ -71,6 +71,7 @@
             WAN {{ router.wan_interface }}
           {% endif %}
         </span>
+        <span class="mk-uplink-health" data-uplink-health hidden></span>
       </div>
       <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
         {% csrf_token %}
@@ -114,7 +115,7 @@
           {% csrf_token %}
           <input type="hidden" name="action" value="apply_bond">
           <h2>Same provider — bond</h2>
-          <p class="mk-help-note">Set two or more ports to <strong>Bonded internet</strong>, then apply.</p>
+          <p class="mk-help-note">Set two or more ports to <strong>Bonded internet</strong>, then apply. Uses link monitoring; PPPoE is moved onto the bond when present.</p>
 
           <div class="mk-role-block">
             <span class="mk-stat-label">Bond members</span>
@@ -144,7 +145,7 @@
           {% csrf_token %}
           <input type="hidden" name="action" value="apply_failover">
           <h2>Different providers — failover</h2>
-          <p class="mk-help-note">One <strong>Internet</strong> port + one or more <strong>Backup internet</strong> ports.</p>
+          <p class="mk-help-note">One <strong>Internet</strong> port + one or more <strong>Backup internet</strong> ports. Applies distance-based routes with ping checks when gateways are known.</p>
 
           <div class="mk-role-block">
             <span class="mk-stat-label">Primary</span>
@@ -370,6 +371,51 @@
       }
     }
     setHidden(root.querySelector("[data-clear-uplink-form]"), mode === "single" || suspended);
+
+    var healthEl = root.querySelector("[data-uplink-health]");
+    if (healthEl) {
+      var live = data.uplink_live || {};
+      if (mode === "single" || !live.ok) {
+        setHidden(healthEl, true);
+        healthEl.textContent = "";
+        healthEl.className = "mk-uplink-health";
+      } else if (mode === "bond") {
+        var bondLive = (live.bonds || [])[0];
+        if (bondLive && bondLive.running) {
+          healthEl.textContent = "Bond up · " + (bondLive.slaves || []).join(", ");
+          healthEl.className = "mk-uplink-health is-ok";
+        } else {
+          healthEl.textContent = "Bond not running on router yet";
+          healthEl.className = "mk-uplink-health is-warn";
+        }
+        setHidden(healthEl, false);
+      } else if (mode === "failover") {
+        var checked = live.checked_routes || [];
+        var clients = live.failover_clients || [];
+        if (checked.length) {
+          var active = checked.filter(function (r) { return r.active; })[0];
+          healthEl.textContent = active
+            ? "Active via " + (active.gateway || "gateway") + " (ping-checked)"
+            : "Failover routes installed · waiting for gateway";
+          healthEl.className = "mk-uplink-health " + (active ? "is-ok" : "is-warn");
+        } else if (clients.length >= 2) {
+          healthEl.textContent =
+            "Distance failover on " +
+            clients
+              .map(function (c) {
+                return (c.interface || "?") + "@" + (c.distance || "?");
+              })
+              .join(", ");
+          healthEl.className = "mk-uplink-health is-ok";
+        } else {
+          healthEl.textContent = "Apply failover to push routes to the MikroTik";
+          healthEl.className = "mk-uplink-health is-warn";
+        }
+        setHidden(healthEl, false);
+      } else {
+        setHidden(healthEl, true);
+      }
+    }
 
     var ports = data.ports || [];
     var grid = root.querySelector("[data-ports-grid]");

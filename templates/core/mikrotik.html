@@ -315,6 +315,10 @@
   <div class="role-modal-panel mikrotik-onboard-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-onboard-title">
     <header class="role-modal-head mikrotik-onboard-head">
       <div class="mikrotik-onboard-title-block">
+        <div class="mikrotik-onboard-progress" aria-hidden="true">
+          <span class="mikrotik-onboard-progress-seg is-active" data-progress-seg="1"></span>
+          <span class="mikrotik-onboard-progress-seg" data-progress-seg="2"></span>
+        </div>
         <p class="role-modal-kicker" id="mikrotik-step-kicker">Step 1 of 2</p>
         <h2 id="mikrotik-onboard-title">Connect to a New MikroTik</h2>
         <p class="mikrotik-onboard-sub" id="mikrotik-onboard-sub">Select or enter the router IP, then sign in with its username and password.</p>
@@ -339,13 +343,16 @@
             id="mikrotik-tunnel-card"
             data-wireguard-ready="{% if wireguard_ready %}1{% else %}0{% endif %}"
             data-hosted="{% if hosted_server %}1{% else %}0{% endif %}"
+            data-onboarding-fee="{% if onboarding_fee_enabled %}1{% else %}0{% endif %}"
+            data-onboarding-fee-amount="{{ onboarding_fee_amount|default:'0' }}"
+            data-onboarding-stk-url="{% url 'core:mikrotik_onboarding_stk' %}"
           >
             <div class="mikrotik-tunnel-head">
               <div>
                 <p class="mikrotik-section-label">Billing tunnel · Winbox script</p>
                 <p class="mikrotik-tunnel-lead">
                   {% if wireguard_ready %}
-                    Follow the steps below. ISPCENTRIC checks the tunnel and RouterOS API live before letting you continue.
+                    Four short steps. ISPCENTRIC checks the tunnel and RouterOS API live before you continue.
                   {% elif hosted_server %}
                     This server is remote — routers need a tunnel before Connect can reach them.
                   {% else %}
@@ -358,8 +365,12 @@
             {% if wireguard_ready %}
               <ol class="mikrotik-tunnel-steps" aria-label="Tunnel setup steps">
                 <li class="mikrotik-tunnel-step is-active" data-tunnel-step="1">
-                  <span class="mikrotik-tunnel-step-num">1</span>
+                  <span class="mikrotik-tunnel-step-num" aria-hidden="true">1</span>
                   <div class="mikrotik-tunnel-step-body">
+                    <div class="mikrotik-tunnel-step-head">
+                      <h3 class="mikrotik-tunnel-step-title">Name the site</h3>
+                      <p class="mikrotik-tunnel-step-desc">Give this router a label{% if onboarding_fee_enabled %}, pay the onboarding fee,{% endif %} then generate the Winbox script.</p>
+                    </div>
                     <label for="mikrotik-tunnel-label">Site name</label>
                     <div class="mikrotik-tunnel-actions">
                       <input
@@ -370,42 +381,105 @@
                         placeholder="e.g. Kariobangi"
                         autocomplete="off"
                       >
-                      <button type="button" class="btn btn-primary" id="mikrotik-tunnel-generate">Generate script</button>
+                      <button type="button" class="btn btn-primary" id="mikrotik-tunnel-generate">
+                        <span class="mikrotik-tunnel-btn-label">
+                          {% if onboarding_fee_enabled %}Pay &amp; generate{% else %}Generate script{% endif %}
+                        </span>
+                        <span class="mikrotik-tunnel-btn-spinner" aria-hidden="true" hidden></span>
+                      </button>
+                    </div>
+                    {% if onboarding_fee_enabled %}
+                      <label class="mikrotik-tunnel-phone-label" for="mikrotik-tunnel-phone">
+                        M-Pesa phone (KES {{ onboarding_fee_amount }})
+                      </label>
+                      <input
+                        type="tel"
+                        class="form-control"
+                        id="mikrotik-tunnel-phone"
+                        maxlength="20"
+                        placeholder="07xxxxxxxx"
+                        autocomplete="tel"
+                        inputmode="tel"
+                      >
+                      <p class="mikrotik-tunnel-fee-note" id="mikrotik-tunnel-fee-note">
+                        Onboarding fee is required. Confirm the STK Push on your phone, then the script unlocks.
+                      </p>
+                    {% else %}
+                      <input type="hidden" id="mikrotik-tunnel-phone" value="">
+                    {% endif %}
+                    <div class="mikrotik-tunnel-paywait" id="mikrotik-tunnel-paywait" hidden role="status" aria-live="polite">
+                      <span class="mikrotik-tunnel-paywait-spinner" aria-hidden="true"></span>
+                      <div class="mikrotik-tunnel-paywait-copy">
+                        <strong id="mikrotik-tunnel-paywait-title">Waiting for M-Pesa…</strong>
+                        <p id="mikrotik-tunnel-paywait-detail">Confirm the STK Push on your phone. The Winbox script unlocks after payment succeeds.</p>
+                      </div>
+                    </div>
+                    <div class="mikrotik-tunnel-tip is-ok" id="mikrotik-tunnel-status-early" role="status">
+                      <div class="mikrotik-tunnel-tip-head">
+                        <span class="mikrotik-tunnel-tip-icon" aria-hidden="true"></span>
+                        <strong class="mikrotik-tunnel-tip-title">Get started</strong>
+                      </div>
+                      <p class="mikrotik-tunnel-tip-lead">Enter a site name, then generate the Winbox script.</p>
                     </div>
                   </div>
                 </li>
                 <li class="mikrotik-tunnel-step" data-tunnel-step="2" id="mikrotik-tunnel-step-script" hidden>
-                  <span class="mikrotik-tunnel-step-num">2</span>
+                  <span class="mikrotik-tunnel-step-num" aria-hidden="true">2</span>
                   <div class="mikrotik-tunnel-step-body">
+                    <div class="mikrotik-tunnel-step-head">
+                      <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
+                      <p class="mikrotik-tunnel-step-desc">Copy the script, open Winbox → New Terminal, paste it, and wait for “ispcentric OK”.</p>
+                    </div>
                     <div class="mikrotik-tunnel-script-bar">
-                      <span>Copy, then paste into Winbox → New Terminal</span>
+                      <span>RouterOS script ready</span>
                       <button type="button" class="btn btn-ghost mikrotik-tunnel-copy" id="mikrotik-tunnel-copy">Copy script</button>
                     </div>
                     <pre class="mikrotik-tunnel-script" id="mikrotik-tunnel-script" aria-label="RouterOS tunnel script"></pre>
                   </div>
                 </li>
                 <li class="mikrotik-tunnel-step" data-tunnel-step="3" id="mikrotik-tunnel-step-check" hidden>
-                  <span class="mikrotik-tunnel-step-num">3</span>
+                  <span class="mikrotik-tunnel-step-num" aria-hidden="true">3</span>
                   <div class="mikrotik-tunnel-step-body">
-                    <div class="mikrotik-tunnel-check-row">
-                      <span class="mikrotik-tunnel-check is-waiting" id="mikrotik-tunnel-check">
-                        <span class="mikrotik-tunnel-check-dot" aria-hidden="true"></span>
-                        <span id="mikrotik-tunnel-check-label">Waiting for the script to be pasted…</span>
-                      </span>
-                      <button type="button" class="btn btn-ghost mikrotik-tunnel-check-now" id="mikrotik-tunnel-check-now">Check now</button>
+                    <div class="mikrotik-tunnel-step-head">
+                      <h3 class="mikrotik-tunnel-step-title">Verify connection</h3>
+                      <p class="mikrotik-tunnel-step-desc">We watch the tunnel and RouterOS API. Fix anything below, then check again.</p>
                     </div>
-                    <p class="mikrotik-tunnel-check-detail" id="mikrotik-tunnel-check-detail">Tunnel: waiting · API 8728: waiting</p>
+                    <div class="mikrotik-tunnel-check-panel">
+                      <div class="mikrotik-tunnel-check-row">
+                        <span class="mikrotik-tunnel-check is-waiting" id="mikrotik-tunnel-check">
+                          <span class="mikrotik-tunnel-check-dot" aria-hidden="true"></span>
+                          <span id="mikrotik-tunnel-check-label">Waiting for the script to be pasted…</span>
+                        </span>
+                        <button type="button" class="btn btn-primary mikrotik-tunnel-check-now" id="mikrotik-tunnel-check-now">Check now</button>
+                      </div>
+                      <div class="mikrotik-tunnel-meters" id="mikrotik-tunnel-check-detail" aria-live="polite">
+                        <div class="mikrotik-tunnel-meter is-waiting" data-meter="tunnel">
+                          <span class="mikrotik-tunnel-meter-label">Tunnel</span>
+                          <span class="mikrotik-tunnel-meter-value" data-meter-value="tunnel">Waiting</span>
+                        </div>
+                        <div class="mikrotik-tunnel-meter is-waiting" data-meter="api">
+                          <span class="mikrotik-tunnel-meter-label">API 8728</span>
+                          <span class="mikrotik-tunnel-meter-value" data-meter-value="api">Waiting</span>
+                        </div>
+                      </div>
+                      <div class="mikrotik-tunnel-tip" id="mikrotik-tunnel-status" hidden role="status"></div>
+                    </div>
                   </div>
                 </li>
                 <li class="mikrotik-tunnel-step" data-tunnel-step="4" id="mikrotik-tunnel-step-ip" hidden>
-                  <span class="mikrotik-tunnel-step-num">4</span>
+                  <span class="mikrotik-tunnel-step-num" aria-hidden="true">4</span>
                   <div class="mikrotik-tunnel-step-body">
-                    <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
-                    <button type="button" class="btn btn-primary" id="mikrotik-tunnel-use-ip" disabled>Use this IP to Connect</button>
+                    <div class="mikrotik-tunnel-step-head">
+                      <h3 class="mikrotik-tunnel-step-title">Use the tunnel IP</h3>
+                      <p class="mikrotik-tunnel-step-desc">When the checks pass, fill the MikroTik IP below and continue to Connect.</p>
+                    </div>
+                    <div class="mikrotik-tunnel-ip-row">
+                      <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
+                      <button type="button" class="btn btn-primary" id="mikrotik-tunnel-use-ip" disabled>Use this IP to Connect</button>
+                    </div>
                   </div>
                 </li>
               </ol>
-              <p class="mikrotik-tunnel-status" id="mikrotik-tunnel-status">Enter a site name, then generate the Winbox script.</p>
             {% else %}
               <input type="hidden" id="mikrotik-tunnel-label" value="">
               <button type="button" id="mikrotik-tunnel-generate" hidden tabindex="-1" aria-hidden="true"></button>
@@ -612,8 +686,10 @@
   var discoverUrl = "{% url 'core:mikrotik_discover' %}";
   var connectUrl = "{% url 'core:mikrotik_connect' %}";
   var tunnelScriptUrl = "{% url 'core:mikrotik_tunnel_script' %}";
-    var tunnelStatusUrl = "{% url 'core:mikrotik_tunnel_status' %}";
+  var tunnelStatusUrl = "{% url 'core:mikrotik_tunnel_status' %}";
   var wireguardReady = {% if wireguard_ready %}true{% else %}false{% endif %};
+  var onboardingFeeEnabled = {% if onboarding_fee_enabled %}true{% else %}false{% endif %};
+  var onboardingFeeAmount = "{{ onboarding_fee_amount|default:'0' }}";
   var statusEl = document.getElementById("mikrotik-discover-status");
   var hostPicker = document.getElementById("mikrotik-host-picker");
   var hostToggle = document.getElementById("mikrotik-host-toggle");
@@ -625,8 +701,22 @@
   var tunnelCopy = document.getElementById("mikrotik-tunnel-copy");
   var tunnelUseIp = document.getElementById("mikrotik-tunnel-use-ip");
   var tunnelStatus = document.getElementById("mikrotik-tunnel-status");
+  var tunnelStatusEarly = document.getElementById("mikrotik-tunnel-status-early");
   var tunnelScript = document.getElementById("mikrotik-tunnel-script");
   var tunnelAddress = document.getElementById("mikrotik-tunnel-address");
+  var tunnelPhone = document.getElementById("mikrotik-tunnel-phone");
+  var onboardingStkUrl = tunnelCard ? (tunnelCard.getAttribute("data-onboarding-stk-url") || "") : "";
+  var paidStkId = null;
+  var onboardingPollTimer = null;
+  var tunnelPaywait = document.getElementById("mikrotik-tunnel-paywait");
+  var tunnelPaywaitTitle = document.getElementById("mikrotik-tunnel-paywait-title");
+  var tunnelPaywaitDetail = document.getElementById("mikrotik-tunnel-paywait-detail");
+  var tunnelGenerateLabel = tunnelGenerate
+    ? tunnelGenerate.querySelector(".mikrotik-tunnel-btn-label")
+    : null;
+  var tunnelGenerateSpinner = tunnelGenerate
+    ? tunnelGenerate.querySelector(".mikrotik-tunnel-btn-spinner")
+    : null;
   var tunnelStepScript = document.getElementById("mikrotik-tunnel-step-script");
   var tunnelStepCheck = document.getElementById("mikrotik-tunnel-step-check");
   var tunnelStepIp = document.getElementById("mikrotik-tunnel-step-ip");
@@ -653,6 +743,25 @@
   var connected = false;
   var ONBOARD_DRAFT_KEY = "ispcentric.mikrotik.onboard.draft";
   var draftSaveTimer = null;
+
+  function draftStorage() {
+    try {
+      return window.localStorage || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function isPageReload() {
+    try {
+      var entries = performance.getEntriesByType && performance.getEntriesByType("navigation");
+      var nav = entries && entries[0];
+      if (nav && nav.type) return nav.type === "reload";
+      // Legacy PerformanceNavigation (TYPE_RELOAD === 1).
+      if (performance.navigation) return performance.navigation.type === 1;
+    } catch (err) {}
+    return false;
+  }
 
   var nameInput = document.getElementById("{{ onboard_form.name.id_for_label }}");
   var modelInput = document.getElementById("id_mikrotik_model");
@@ -704,10 +813,177 @@
   function setTunnelStatus(text, isError) {
     tunnelStatusMessage = text || "";
     tunnelStatusIsError = !!isError;
-    if (!tunnelStatus) return;
-    tunnelStatus.textContent = tunnelStatusMessage;
-    tunnelStatus.classList.toggle("is-error", tunnelStatusIsError);
-    tunnelStatus.classList.toggle("is-ok", !!tunnelStatusMessage && !tunnelStatusIsError);
+    var inCheckPhase = !!tunnelScriptText;
+    var tip = buildTunnelTip(tunnelStatusMessage, tunnelStatusIsError);
+    [tunnelStatus, tunnelStatusEarly].forEach(function (el) {
+      if (!el) return;
+      renderTunnelTip(el, tip);
+    });
+    if (tunnelStatusEarly) tunnelStatusEarly.hidden = inCheckPhase || !tunnelStatusMessage;
+    if (tunnelStatus) tunnelStatus.hidden = !inCheckPhase || !tunnelStatusMessage;
+  }
+
+  function buildTunnelTip(text, isError) {
+    var raw = String(text || "").trim();
+    if (!raw) return null;
+
+    if (/Local mode is active, but no MikroTik/i.test(raw)) {
+      return {
+        tone: "warn",
+        title: "No MikroTik on this LAN yet",
+        lead: "Local mode is active. Follow these steps, then check again.",
+        steps: [
+          "Connect this computer to the MikroTik network",
+          "Paste the latest script in Winbox → New Terminal",
+          "Click Check now"
+        ]
+      };
+    }
+    if (/Found the MikroTik locally/i.test(raw) && /8728/i.test(raw)) {
+      return {
+        tone: "warn",
+        title: "Router found — API still closed",
+        lead: "The MikroTik is on the LAN, but port 8728 is not ready yet.",
+        steps: [
+          "Paste the latest script in Winbox → New Terminal",
+          "Wait until it finishes",
+          "Click Check now"
+        ]
+      };
+    }
+    if (/Several local MikroTik routers were found/i.test(raw)) {
+      return {
+        tone: "warn",
+        title: "Pick the right LAN IP",
+        lead: "More than one MikroTik was found on this network.",
+        steps: [
+          "Choose the correct IP in the MikroTik IP field",
+          "Click Check now"
+        ]
+      };
+    }
+    if (/Local mode ready/i.test(raw)) {
+      return {
+        tone: "ok",
+        title: "Local MikroTik ready",
+        lead: raw,
+        steps: [
+          "Enter the router username and password",
+          "Press Connect"
+        ]
+      };
+    }
+    if (/Script ready|Copied\. Paste|Waiting for MikroTik/i.test(raw)) {
+      return {
+        tone: "ok",
+        title: "Paste the script",
+        lead: raw,
+        steps: [
+          "Open Winbox → New Terminal",
+          "Paste the script and wait for “ispcentric OK”",
+          "Click Check now"
+        ]
+      };
+    }
+    if (/Success — tunnel is online|Tunnel connected|Tunnel IP filled/i.test(raw)) {
+      return {
+        tone: "ok",
+        title: "Ready to connect",
+        lead: raw,
+        steps: null
+      };
+    }
+    if (/Enter a site name/i.test(raw)) {
+      return {
+        tone: "ok",
+        title: "Get started",
+        lead: raw,
+        steps: null
+      };
+    }
+
+    return {
+      tone: isError ? "error" : "ok",
+      title: isError ? "Action needed" : "Status",
+      lead: raw,
+      steps: null
+    };
+  }
+
+  function renderTunnelTip(el, tip) {
+    el.classList.remove("is-error", "is-ok", "is-warn", "mikrotik-tunnel-status");
+    el.classList.add("mikrotik-tunnel-tip");
+    if (!tip) {
+      el.innerHTML = "";
+      return;
+    }
+    el.classList.add("is-" + (tip.tone || "ok"));
+    var html = '<div class="mikrotik-tunnel-tip-head">' +
+      '<span class="mikrotik-tunnel-tip-icon" aria-hidden="true"></span>' +
+      '<strong class="mikrotik-tunnel-tip-title">' + escapeHtml(tip.title || "Status") + "</strong>" +
+      "</div>";
+    if (tip.lead) {
+      html += '<p class="mikrotik-tunnel-tip-lead">' + escapeHtml(tip.lead) + "</p>";
+    }
+    if (tip.steps && tip.steps.length) {
+      html += '<ol class="mikrotik-tunnel-tip-steps">';
+      tip.steps.forEach(function (step) {
+        html += "<li>" + escapeHtml(step) + "</li>";
+      });
+      html += "</ol>";
+    }
+    el.innerHTML = html;
+  }
+
+  function setTunnelMeters(tunnelLabel, apiLabel, tunnelState, apiState) {
+    if (!tunnelCheckDetail) return;
+    var tunnelMeter = tunnelCheckDetail.querySelector('[data-meter="tunnel"]');
+    var apiMeter = tunnelCheckDetail.querySelector('[data-meter="api"]');
+    var tunnelValue = tunnelCheckDetail.querySelector('[data-meter-value="tunnel"]');
+    var apiValue = tunnelCheckDetail.querySelector('[data-meter-value="api"]');
+    if (tunnelMeter) {
+      tunnelMeter.classList.remove("is-waiting", "is-checking", "is-ready", "is-error");
+      tunnelMeter.classList.add("is-" + (tunnelState || "waiting"));
+    }
+    if (apiMeter) {
+      apiMeter.classList.remove("is-waiting", "is-checking", "is-ready", "is-error");
+      apiMeter.classList.add("is-" + (apiState || "waiting"));
+    }
+    if (tunnelValue) tunnelValue.textContent = tunnelLabel || "Waiting";
+    if (apiValue) apiValue.textContent = apiLabel || "Waiting";
+  }
+
+  function setGenerateBusy(busy, labelText) {
+    if (tunnelGenerate) {
+      tunnelGenerate.disabled = !!busy;
+      tunnelGenerate.classList.toggle("is-busy", !!busy);
+    }
+    if (tunnelGenerateSpinner) tunnelGenerateSpinner.hidden = !busy;
+    if (tunnelGenerateLabel && labelText) tunnelGenerateLabel.textContent = labelText;
+  }
+
+  function showPaymentWait(title, detail) {
+    if (!tunnelPaywait) return;
+    tunnelPaywait.hidden = false;
+    tunnelPaywait.classList.add("is-visible");
+    if (tunnelPaywaitTitle) tunnelPaywaitTitle.textContent = title || "Waiting for M-Pesa…";
+    if (tunnelPaywaitDetail) {
+      tunnelPaywaitDetail.textContent =
+        detail || "Confirm the STK Push on your phone. The Winbox script unlocks after payment succeeds.";
+    }
+    if (tunnelCard) tunnelCard.classList.add("is-awaiting-payment");
+  }
+
+  function hidePaymentWait() {
+    if (tunnelPaywait) {
+      tunnelPaywait.hidden = true;
+      tunnelPaywait.classList.remove("is-visible");
+    }
+    if (tunnelCard) tunnelCard.classList.remove("is-awaiting-payment");
+  }
+
+  function defaultGenerateLabel() {
+    return onboardingFeeEnabled ? "Pay & generate" : "Generate script";
   }
 
   function currentOnboardStep() {
@@ -750,8 +1026,9 @@
 
   function saveOnboardDraft() {
     try {
-      if (!window.sessionStorage) return;
-      window.sessionStorage.setItem(ONBOARD_DRAFT_KEY, JSON.stringify(collectOnboardDraft()));
+      var store = draftStorage();
+      if (!store) return;
+      store.setItem(ONBOARD_DRAFT_KEY, JSON.stringify(collectOnboardDraft()));
     } catch (err) {}
   }
 
@@ -762,21 +1039,34 @@
 
   function clearOnboardDraft() {
     try {
-      if (!window.sessionStorage) return;
-      window.sessionStorage.removeItem(ONBOARD_DRAFT_KEY);
+      var store = draftStorage();
+      if (store) store.removeItem(ONBOARD_DRAFT_KEY);
+    } catch (err) {}
+    try {
+      // Drop legacy session drafts so a refresh cannot revive them.
+      if (window.sessionStorage) window.sessionStorage.removeItem(ONBOARD_DRAFT_KEY);
     } catch (err) {}
   }
 
   function readOnboardDraft() {
     try {
-      if (!window.sessionStorage) return null;
-      var raw = window.sessionStorage.getItem(ONBOARD_DRAFT_KEY);
+      var store = draftStorage();
+      if (!store) return null;
+      var raw = store.getItem(ONBOARD_DRAFT_KEY);
       if (!raw) return null;
       var data = JSON.parse(raw);
       return data && typeof data === "object" ? data : null;
     } catch (err) {
       return null;
     }
+  }
+
+  // Refresh forgets progress; closing the tab/window keeps it in localStorage.
+  if (isPageReload()) clearOnboardDraft();
+  else {
+    try {
+      if (window.sessionStorage) window.sessionStorage.removeItem(ONBOARD_DRAFT_KEY);
+    } catch (err) {}
   }
 
   function restoreOnboardDraft() {
@@ -883,7 +1173,11 @@
       if (data && data.hint) setTunnelStatus(data.hint, false);
       else if (tunnelReadyAddress) {
         setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
+      } else {
+        setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
       }
+    } else {
+      setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
     }
     if (!options.skipSave) saveOnboardDraft();
   }
@@ -905,6 +1199,10 @@
     markTunnelStep(3, "");
     markTunnelStep(4, "");
     setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
+    setTunnelStatus(
+      "Enter a site name, then generate the Winbox script.",
+      false
+    );
     saveOnboardDraft();
   }
 
@@ -918,11 +1216,24 @@
       tunnelCheck.classList.add("is-" + tunnelCheckState);
     }
     if (tunnelCheckLabel) tunnelCheckLabel.textContent = tunnelCheckLabelText;
-    if (tunnelCheckDetail) {
-      tunnelCheckDetail.textContent =
-        "Tunnel: " + (tunnelCheckOnline ? "online" : "waiting") +
-        " · API 8728: " + (tunnelCheckApi ? "enabled" : (tunnelCheckOnline ? "not detected" : "waiting"));
-    }
+    var tunnelState = tunnelCheckApi || tunnelCheckOnline
+      ? "ready"
+      : (tunnelCheckState === "checking" ? "checking" : (tunnelCheckState === "error" ? "error" : "waiting"));
+    var apiState = tunnelCheckApi
+      ? "ready"
+      : (tunnelCheckOnline
+        ? (tunnelCheckState === "checking" ? "checking" : "error")
+        : (tunnelCheckState === "checking" ? "checking" : "waiting"));
+    setTunnelMeters(
+      tunnelCheckOnline ? "Online" : (tunnelCheckState === "checking" ? "Checking…" : "Waiting"),
+      tunnelCheckApi
+        ? "Enabled"
+        : (tunnelCheckOnline
+          ? (tunnelCheckState === "checking" ? "Checking…" : "Not detected")
+          : (tunnelCheckState === "checking" ? "Checking…" : "Waiting")),
+      tunnelState,
+      apiState
+    );
     scheduleSaveOnboardDraft();
   }
 
@@ -935,6 +1246,8 @@
     if (!tunnelStatusToken || tunnelStatusInFlight || tunnelApiReady) return;
     tunnelStatusInFlight = true;
     if (tunnelCheckNow) tunnelCheckNow.disabled = true;
+    markTunnelStep(2, "done");
+    markTunnelStep(3, "active");
     setTunnelCheckState("checking", "Checking tunnel and RouterOS API…", false, false);
     var statusCheckUrl = tunnelStatusUrl + "?token=" + encodeURIComponent(tunnelStatusToken);
     if (hostInput && hostInput.value.trim()) {
@@ -960,10 +1273,12 @@
             tunnelApiReady = true;
             stopTunnelStatusPolling();
             setTunnelCheckState("ready", "Local MikroTik connected · API enabled", true, true);
-            if (tunnelCheckDetail) {
-              tunnelCheckDetail.textContent =
-                "Local API: " + data.lan_address + ":8728 · Ready to Connect";
-            }
+            setTunnelMeters(
+              data.lan_address ? data.lan_address : "Online",
+              "Enabled · Ready",
+              "ready",
+              "ready"
+            );
             setHostHint("Local MikroTik selected at " + data.lan_address + ". Enter its login and press Connect.");
             setTunnelStatus(data.message, false);
             markTunnelStep(2, "done");
@@ -980,11 +1295,12 @@
               !!data.lan_address,
               false
             );
-            if (tunnelCheckDetail) {
-              tunnelCheckDetail.textContent = data.lan_address
-                ? "Local IP: " + data.lan_address + " · API 8728: waiting"
-                : "Local discovery: waiting · API 8728: waiting";
-            }
+            setTunnelMeters(
+              data.lan_address ? data.lan_address : "Searching…",
+              "Waiting",
+              data.lan_address ? "ready" : "checking",
+              "waiting"
+            );
             setTunnelStatus(data.message, false);
             setHostHint(
               data.lan_address
@@ -1009,10 +1325,7 @@
           // Polling cannot succeed from a server that is not on the tunnel.
           stopTunnelStatusPolling();
           setTunnelCheckState("error", "This server is not on the tunnel", false, false);
-          if (tunnelCheckDetail) {
-            tunnelCheckDetail.textContent =
-              "Tunnel: unreachable from this server · Use the router’s LAN IP below";
-          }
+          setTunnelMeters("Unreachable here", "Use LAN IP", "error", "waiting");
           setTunnelStatus(data.message, true);
           setHostHint("Type the router’s LAN IP (for example 192.168.88.1) — the tunnel IP only works from the VPS.");
           return;
@@ -1040,6 +1353,171 @@
     tunnelStatusTimer = setInterval(checkTunnelStatus, 3000);
   }
 
+  function stopOnboardingPoll() {
+    if (onboardingPollTimer) {
+      clearInterval(onboardingPollTimer);
+      onboardingPollTimer = null;
+    }
+  }
+
+  function requestTunnelScript(stkId) {
+    var label = tunnelLabel ? tunnelLabel.value.trim() : "";
+    var body = new FormData();
+    body.append("label", label);
+    body.append("csrfmiddlewaretoken", csrfToken());
+    if (stkId) body.append("stk_id", String(stkId));
+    return fetch(tunnelScriptUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        return { ok: res.ok, status: res.status, data: data };
+      });
+    });
+  }
+
+  function pollOnboardingPayment(stkId) {
+    stopOnboardingPoll();
+    var statusUrl = "{% url 'core:mikrotik_onboarding_stk_status' stk_id=0 %}".replace("/0/", "/" + stkId + "/");
+    var attempts = 0;
+    showPaymentWait(
+      "Checking M-Pesa payment…",
+      "Confirm the STK Push on your phone. We will unlock the script when payment succeeds."
+    );
+    setGenerateBusy(true, "Waiting for payment…");
+    onboardingPollTimer = setInterval(function () {
+      attempts += 1;
+      if (tunnelPaywaitTitle) {
+        tunnelPaywaitTitle.textContent = "Checking M-Pesa payment…";
+      }
+      if (tunnelPaywaitDetail) {
+        tunnelPaywaitDetail.textContent =
+          "Still waiting for confirmation (" + attempts + "). Keep your phone unlocked.";
+      }
+      fetch(statusUrl, {
+        headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (!data || !data.ok) return;
+          if (data.success || data.onboarding_paid || data.status === "success") {
+            stopOnboardingPoll();
+            paidStkId = stkId;
+            showPaymentWait(
+              "Payment confirmed",
+              "Generating your Winbox script…"
+            );
+            setGenerateBusy(true, "Generating…");
+            setTunnelStatus("Payment confirmed. Generating Winbox script…", false);
+            requestTunnelScript(stkId)
+              .then(function (result) {
+                if (!result.ok || !result.data || !result.data.ok) {
+                  clearTunnelScript();
+                  hidePaymentWait();
+                  setGenerateBusy(false, defaultGenerateLabel());
+                  setTunnelStatus(
+                    (result.data && result.data.error) || "Could not generate tunnel script.",
+                    true
+                  );
+                  return;
+                }
+                hidePaymentWait();
+                setGenerateBusy(false, defaultGenerateLabel());
+                showTunnelScript(result.data);
+              })
+              .catch(function () {
+                clearTunnelScript();
+                hidePaymentWait();
+                setGenerateBusy(false, defaultGenerateLabel());
+                setTunnelStatus("Could not generate tunnel script. Try again.", true);
+              });
+            return;
+          }
+          if (data.cancelled || data.status === "cancelled" || data.status === "failed") {
+            stopOnboardingPoll();
+            hidePaymentWait();
+            setGenerateBusy(false, defaultGenerateLabel());
+            setTunnelStatus(data.result_desc || "Payment was not completed. Try again.", true);
+            return;
+          }
+          if (attempts >= 40) {
+            stopOnboardingPoll();
+            hidePaymentWait();
+            setGenerateBusy(false, defaultGenerateLabel());
+            setTunnelStatus("Still waiting for M-Pesa. Confirm the prompt, then try again.", true);
+          }
+        })
+        .catch(function () {});
+    }, 3000);
+  }
+
+  function startOnboardingPayment(label) {
+    if (!onboardingStkUrl) {
+      setTunnelStatus("Onboarding payment is not available right now.", true);
+      return;
+    }
+    var phone = tunnelPhone ? tunnelPhone.value.trim() : "";
+    if (!phone) {
+      setTunnelStatus("Enter the M-Pesa phone number for the onboarding fee.", true);
+      if (tunnelPhone) tunnelPhone.focus();
+      return;
+    }
+    // Script unlocks only after successful payment — hide any previous script.
+    clearTunnelScript();
+    paidStkId = null;
+    setGenerateBusy(true, "Sending STK…");
+    showPaymentWait(
+      "Sending STK Push…",
+      "KES " + onboardingFeeAmount + " — confirm on your phone. Script stays locked until payment succeeds."
+    );
+    setTunnelStatus(
+      "Sending STK Push for KES " + onboardingFeeAmount + "… Confirm on your phone.",
+      false
+    );
+    var body = new FormData();
+    body.append("label", label);
+    body.append("phone", phone);
+    body.append("csrfmiddlewaretoken", csrfToken());
+    fetch(onboardingStkUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { ok: res.ok, data: data };
+        });
+      })
+      .then(function (result) {
+        if (!result.ok || !result.data || !result.data.ok) {
+          hidePaymentWait();
+          setGenerateBusy(false, defaultGenerateLabel());
+          setTunnelStatus(
+            (result.data && result.data.error) || "Could not start STK Push.",
+            true
+          );
+          return;
+        }
+        paidStkId = result.data.stk_id || null;
+        setTunnelStatus(result.data.message || "Check your phone and enter the M-Pesa PIN.", false);
+        if (paidStkId) {
+          pollOnboardingPayment(paidStkId);
+        } else {
+          hidePaymentWait();
+          setGenerateBusy(false, defaultGenerateLabel());
+        }
+      })
+      .catch(function () {
+        hidePaymentWait();
+        setGenerateBusy(false, defaultGenerateLabel());
+        setTunnelStatus("Could not start STK Push. Try again.", true);
+      });
+  }
+
   function generateTunnelScript() {
     if (!wireguardReady) {
       setTunnelStatus(
@@ -1054,32 +1532,32 @@
       if (tunnelLabel) tunnelLabel.focus();
       return;
     }
-    if (tunnelGenerate) tunnelGenerate.disabled = true;
+    if (onboardingFeeEnabled && !paidStkId) {
+      startOnboardingPayment(label);
+      return;
+    }
+    setGenerateBusy(true, "Generating…");
     setTunnelStatus("Generating Winbox script…", false);
-    var body = new FormData();
-    body.append("label", label);
-    body.append("csrfmiddlewaretoken", csrfToken());
-    fetch(tunnelScriptUrl, {
-      method: "POST",
-      body: body,
-      credentials: "same-origin",
-      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
-    })
-      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+    requestTunnelScript(paidStkId)
       .then(function (result) {
+        if (result.data && result.data.payment_required) {
+          paidStkId = null;
+          startOnboardingPayment(label);
+          return;
+        }
         if (!result.ok || !result.data || !result.data.ok) {
           clearTunnelScript();
+          setGenerateBusy(false, defaultGenerateLabel());
           setTunnelStatus((result.data && result.data.error) || "Could not generate tunnel script.", true);
           return;
         }
+        setGenerateBusy(false, defaultGenerateLabel());
         showTunnelScript(result.data);
       })
       .catch(function () {
         clearTunnelScript();
+        setGenerateBusy(false, defaultGenerateLabel());
         setTunnelStatus("Could not generate tunnel script. Try again.", true);
-      })
-      .finally(function () {
-        if (tunnelGenerate) tunnelGenerate.disabled = false;
       });
   }
 
@@ -1138,6 +1616,11 @@
           ? "Generate the Winbox script if this server is remote, then sign in to the router."
           : "Enter the router IP and login. Tunnel setup is optional on a local network.");
     }
+    Array.prototype.forEach.call(modal.querySelectorAll("[data-progress-seg]"), function (seg) {
+      var n = seg.getAttribute("data-progress-seg");
+      seg.classList.toggle("is-active", n === "1" || (onboard && n === "2"));
+      seg.classList.toggle("is-done", onboard && n === "1");
+    });
     scheduleSaveOnboardDraft();
   }
 

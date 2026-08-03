@@ -15,6 +15,7 @@ from accounts.forms import (
     NATIONAL_PHONE_LENGTHS,
     NetworkEquipmentRegisterForm,
     OrganizationEditForm,
+    ClientSettingsForm,
     CompanyProfileForm,
     PaymentGatewayForm,
     RegisterForm,
@@ -22,6 +23,7 @@ from accounts.forms import (
     SalesCommissionForm,
 )
 from accounts.models import (
+    ClientSettings,
     CompanyProfile,
     Employee,
     Lead,
@@ -1592,8 +1594,39 @@ def it_support_system_settings(request):
         current_page="system_settings",
         page_title="System settings",
         page_kicker="Settings",
-        page_subtitle="Platform-wide preferences, notifications, and integrations.",
-        empty_text="Additional system preferences are coming soon.",
+        page_subtitle="Platform-wide preferences. Open Client settings for landing and onboarding controls.",
+        empty_text="Use Client settings in the sidebar to manage landing Register, MikroTik onboarding fees, and referrals.",
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_client_settings(request):
+    _prepare_it_support_view(request)
+    settings_obj = ClientSettings.get_solo()
+
+    if request.method == "POST":
+        form = ClientSettingsForm(request.POST, instance=settings_obj)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Client settings saved.")
+            return redirect("roles:it_support_client_settings")
+    else:
+        form = ClientSettingsForm(instance=settings_obj)
+
+    return render(
+        request,
+        "accounts/it_support_client_settings.html",
+        {
+            "page_title": "Client settings",
+            "page_kicker": "Settings",
+            "page_subtitle": (
+                "Control landing-page Register, MikroTik onboarding fees, and referrals."
+            ),
+            "current_page": "client_settings",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "client_settings": settings_obj,
+        },
     )
 
 

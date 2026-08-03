@@ -30,10 +30,12 @@
     <p class="auth-footer">
       <a href="{% url 'accounts:password_reset' %}">Forgot password?</a>
     </p>
+    {% if landing_register_enabled %}
     <p class="auth-footer">
       New company?
       <a href="{% url 'accounts:register' %}">Register owner account</a>
     </p>
+    {% endif %}
     <p class="auth-footer">
       Staff member?
       <a href="{% url 'accounts:employee_login' %}">Employee login</a>

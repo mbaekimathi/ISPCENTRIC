@@ -10,7 +10,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from accounts.models import PaymentGateway
+from accounts.models import ClientSettings, PaymentGateway
 from accounts.mpesa_daraja import initiate_stk_push, query_stk_push
 from billing.models import Customer, Invoice, StkPushRequest
 from billing.services import (
@@ -412,6 +412,266 @@ def start_lead_allocation_stk_payment(
     }
 
 
+def _platform_daraja_credentials() -> dict:
+    """IT Support Payment Gateway credentials for platform fees."""
+    gateway = PaymentGateway.get_solo()
+    shortcode = (gateway.shortcode or "").strip()
+    environment = (
+        gateway.environment or PaymentGateway.Environment.SANDBOX
+    ).strip().lower()
+    if shortcode and shortcode != "174379":
+        environment = PaymentGateway.Environment.PRODUCTION
+    ready = gateway.is_stk_ready()
+    return {
+        "enabled": bool(gateway.enabled),
+        "ready": ready,
+        "environment": environment,
+        "payment_type": (gateway.payment_type or "").strip(),
+        "shortcode": shortcode,
+        "consumer_key": (gateway.consumer_key or "").strip(),
+        "consumer_secret": (gateway.consumer_secret or "").strip(),
+        "passkey": (gateway.passkey or "").strip(),
+        "callback_url": gateway.resolved_callback_url(),
+        "message": (
+            f"Using IT Support Daraja credentials ({environment})."
+            if ready
+            else "Activate and complete IT Support Payment Gateway first."
+        ),
+    }
+
+
+def start_mikrotik_onboarding_stk_payment(
+    *,
+    organization,
+    phone: str,
+    label: str = "",
+    user=None,
+    request=None,
+) -> dict:
+    """Initiate STK Push for the platform MikroTik onboarding fee."""
+    settings_obj = ClientSettings.get_solo()
+    if not settings_obj.onboarding_fee_ready:
+        return {
+            "ok": False,
+            "error": "MikroTik onboarding fee is not enabled or amount is not set.",
+            "payment_required": False,
+        }
+
+    amount = Decimal(settings_obj.onboarding_fee_amount)
+    creds = _platform_daraja_credentials()
+    if not creds.get("enabled"):
+        return {
+            "ok": False,
+            "error": "Activate STK Push under IT Support → Payment Gateway first.",
+        }
+    if not creds.get("ready"):
+        return {
+            "ok": False,
+            "error": creds.get("message") or "Payment Gateway is not ready yet.",
+        }
+
+    org_phone = getattr(organization, "phone", "") or ""
+    user_phone = ""
+    if user is not None:
+        user_phone = getattr(user, "phone", "") or ""
+    msisdn = normalize_kenya_msisdn(phone or org_phone or user_phone)
+    if not (msisdn.startswith("254") and len(msisdn) == 12):
+        return {
+            "ok": False,
+            "error": "Enter a valid Kenyan mobile number (e.g. 07xxxxxxxx).",
+            "payment_required": True,
+            "amount": str(amount),
+        }
+
+    site_label = (label or "").strip() or "MikroTik"
+    account_ref = f"MK-{organization.pk}-{msisdn[-4:]}"[:64]
+    environment = (
+        creds.get("environment") or PaymentGateway.Environment.SANDBOX
+    ).strip().lower()
+
+    stk = StkPushRequest.objects.create(
+        organization=organization,
+        customer=None,
+        plan=None,
+        purpose=StkPushRequest.Purpose.MIKROTIK_ONBOARDING,
+        amount=amount,
+        phone=msisdn,
+        account_reference=account_ref,
+        initiated_by=user if getattr(user, "is_authenticated", False) else None,
+        status=StkPushRequest.Status.PENDING,
+        raw_callback={
+            "mikrotik_onboarding": {
+                "label": site_label,
+                "user_id": getattr(user, "pk", None),
+                "script_used": False,
+            }
+        },
+    )
+
+    def _send(env: str) -> dict:
+        return initiate_stk_push(
+            consumer_key=creds["consumer_key"],
+            consumer_secret=creds["consumer_secret"],
+            passkey=creds["passkey"],
+            shortcode=creds["shortcode"],
+            payment_type=creds.get("payment_type") or "",
+            amount=amount,
+            phone=msisdn,
+            account_reference=account_ref,
+            callback_url=resolve_stk_callback_url(
+                creds, request=request, environment=env
+            ),
+            environment=env,
+            description="MikroTik onboarding",
+        )
+
+    result = _send(environment)
+    used_env = environment
+    if (
+        not result.get("ok")
+        and environment == PaymentGateway.Environment.SANDBOX
+        and _is_invalid_access_token_error(result)
+    ):
+        retry = _send(PaymentGateway.Environment.PRODUCTION)
+        if retry.get("ok"):
+            result = retry
+            used_env = PaymentGateway.Environment.PRODUCTION
+            logger.info(
+                "Onboarding STK sandbox rejected credentials; production OK org=%s stk=%s",
+                organization.pk,
+                stk.pk,
+            )
+
+    if not result.get("ok"):
+        error = result.get("error") or "Could not start STK Push."
+        stk.status = StkPushRequest.Status.FAILED
+        stk.result_desc = error[:255]
+        stk.completed_at = timezone.now()
+        stk.raw_callback = {
+            "initiate_error": result,
+            "environment": used_env,
+            "mikrotik_onboarding": {
+                "label": site_label,
+                "user_id": getattr(user, "pk", None),
+                "script_used": False,
+            },
+        }
+        stk.save(
+            update_fields=["status", "result_desc", "completed_at", "raw_callback"]
+        )
+        return {"ok": False, "error": error, "stk_id": stk.pk}
+
+    stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
+    stk.checkout_request_id = (result.get("checkout_request_id") or "")[:64]
+    stk.result_desc = (result.get("customer_message") or "STK Push sent.")[:255]
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    stk.raw_callback = {
+        **raw,
+        "initiate": result.get("data") or {},
+        "environment": used_env,
+    }
+    stk.save(
+        update_fields=[
+            "merchant_request_id",
+            "checkout_request_id",
+            "result_desc",
+            "raw_callback",
+        ]
+    )
+    return {
+        "ok": True,
+        "stk_id": stk.pk,
+        "checkout_request_id": stk.checkout_request_id,
+        "payment_required": True,
+        "message": (
+            result.get("customer_message")
+            or f"STK Push sent to {msisdn}. Enter the M-Pesa PIN to unlock the script."
+        ),
+        "amount": str(amount),
+        "phone": msisdn,
+        "purpose": StkPushRequest.Purpose.MIKROTIK_ONBOARDING,
+        "environment": used_env,
+        "shortcode": creds.get("shortcode") or "",
+    }
+
+
+def _fulfill_mikrotik_onboarding_stk(stk: StkPushRequest) -> dict:
+    """Mark onboarding fee paid so the tunnel script can be generated."""
+    stk.status = StkPushRequest.Status.SUCCESS
+    stk.subscription_applied = True
+    stk.completed_at = timezone.now()
+    stk.save(
+        update_fields=[
+            "status",
+            "result_code",
+            "result_desc",
+            "mpesa_receipt",
+            "raw_callback",
+            "subscription_applied",
+            "completed_at",
+        ]
+    )
+    return {
+        "ok": True,
+        "stk_id": stk.pk,
+        "purpose": StkPushRequest.Purpose.MIKROTIK_ONBOARDING,
+        "onboarding_paid": True,
+        "mpesa_receipt": stk.mpesa_receipt,
+        "amount": str(stk.amount),
+    }
+
+
+def consume_mikrotik_onboarding_payment(
+    *,
+    organization,
+    user,
+    stk_id: int,
+    label: str = "",
+    mark_used: bool = True,
+) -> dict:
+    """Validate a paid onboarding STK and optionally mark it used for script generation."""
+    try:
+        stk = StkPushRequest.objects.get(pk=stk_id)
+    except StkPushRequest.DoesNotExist:
+        return {"ok": False, "error": "Payment was not found. Pay again to continue."}
+
+    if stk.organization_id != getattr(organization, "pk", None):
+        return {"ok": False, "error": "This payment does not belong to your organization."}
+    if stk.purpose != StkPushRequest.Purpose.MIKROTIK_ONBOARDING:
+        return {"ok": False, "error": "This payment is not an onboarding fee."}
+    if stk.status != StkPushRequest.Status.SUCCESS or not stk.subscription_applied:
+        return {
+            "ok": False,
+            "error": "Complete the M-Pesa prompt before generating the script.",
+            "stk_id": stk.pk,
+            "status": stk.status,
+        }
+
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    meta = raw.get("mikrotik_onboarding") if isinstance(raw.get("mikrotik_onboarding"), dict) else {}
+    if meta.get("script_used"):
+        return {
+            "ok": False,
+            "error": "This payment was already used to generate a script. Pay again for another site.",
+            "stk_id": stk.pk,
+        }
+    paid_user_id = meta.get("user_id")
+    if paid_user_id and getattr(user, "pk", None) and paid_user_id != user.pk:
+        return {"ok": False, "error": "This onboarding payment belongs to another user."}
+
+    if mark_used:
+        meta = {
+            **meta,
+            "script_used": True,
+            "script_label": (label or meta.get("label") or "").strip(),
+            "script_used_at": timezone.now().isoformat(),
+        }
+        raw = {**raw, "mikrotik_onboarding": meta}
+        stk.raw_callback = raw
+        stk.save(update_fields=["raw_callback"])
+    return {"ok": True, "stk_id": stk.pk, "amount": str(stk.amount)}
+
+
 def _persist_stk_receipt_fields(
     stk: StkPushRequest,
     *,
@@ -442,11 +702,11 @@ def _persist_stk_receipt_fields(
         "ok": True,
         "already_applied": True,
         "stk_id": stk.pk,
-        "package_start": stk.customer.package_start,
-        "package_end": stk.customer.package_end,
+        "package_start": getattr(stk.customer, "package_start", None) if stk.customer_id else None,
+        "package_end": getattr(stk.customer, "package_end", None) if stk.customer_id else None,
         "mpesa_receipt": stk.mpesa_receipt,
         "purpose": stk.purpose,
-        "customer_status": stk.customer.status,
+        "customer_status": getattr(stk.customer, "status", None) if stk.customer_id else None,
     }
 
 
@@ -697,7 +957,25 @@ def fulfill_successful_stk(
     if stk.purpose == StkPushRequest.Purpose.LEAD_ALLOCATION:
         return _fulfill_lead_allocation_stk(stk)
 
+    if stk.purpose == StkPushRequest.Purpose.MIKROTIK_ONBOARDING:
+        return _fulfill_mikrotik_onboarding_stk(stk)
+
     customer = stk.customer
+    if customer is None:
+        stk.status = StkPushRequest.Status.FAILED
+        stk.result_desc = "Missing customer for subscription STK."[:255]
+        stk.completed_at = timezone.now()
+        stk.save(
+            update_fields=[
+                "status",
+                "result_code",
+                "result_desc",
+                "mpesa_receipt",
+                "raw_callback",
+                "completed_at",
+            ]
+        )
+        return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
     paid_plan = stk.plan or customer.plan
     if paid_plan is not None and customer.plan_id != paid_plan.pk:
         customer.plan = paid_plan
@@ -982,11 +1260,25 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
         "mpesa_receipt": stk.mpesa_receipt,
         "amount": str(stk.amount),
         "phone": stk.phone,
-        "customer_name": customer.full_name,
-        "account_number": customer.account_number,
-        "package_start": customer.package_start.isoformat() if customer.package_start else "",
-        "package_end": customer.package_end.isoformat() if customer.package_end else "",
+        "customer_name": customer.full_name if customer is not None else "",
+        "account_number": customer.account_number if customer is not None else "",
+        "package_start": (
+            customer.package_start.isoformat()
+            if customer is not None and customer.package_start
+            else ""
+        ),
+        "package_end": (
+            customer.package_end.isoformat()
+            if customer is not None and customer.package_end
+            else ""
+        ),
         "subscription_applied": stk.subscription_applied,
+        "purpose": stk.purpose,
+        "onboarding_paid": bool(
+            stk.purpose == StkPushRequest.Purpose.MIKROTIK_ONBOARDING
+            and stk.status == StkPushRequest.Status.SUCCESS
+            and stk.subscription_applied
+        ),
     }
     if stk.status != StkPushRequest.Status.PENDING:
         base["pending"] = False

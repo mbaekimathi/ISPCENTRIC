@@ -1,0 +1,182 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="client-settings-page" data-client-settings-root>
+  <div class="cs-shell">
+    <header class="cs-hero">
+      <p class="cs-kicker">Client experience</p>
+      <h2 class="cs-title">Client settings</h2>
+      <p class="cs-lead">{{ page_subtitle }}</p>
+      <div class="cs-hero-meta">
+        {% if client_settings.landing_register_enabled or client_settings.onboarding_fee_enabled or client_settings.referral_enabled %}
+          <span class="cs-chip is-live">Customized</span>
+        {% else %}
+          <span class="cs-chip is-muted">Using defaults</span>
+        {% endif %}
+        {% if client_settings.updated_at %}
+          <span class="cs-chip is-soft">Updated {{ client_settings.updated_at|date:"d M Y · H:i" }}</span>
+        {% endif %}
+      </div>
+    </header>
+
+    <form method="post" class="cs-form" id="client-settings-form" novalidate>
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <div class="notice notice-error">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="cs-grid" role="list">
+        <article class="cs-card{% if form.landing_register_enabled.value %} is-on{% endif %}" role="listitem" data-client-toggle-panel data-toggle-input="id_landing_register_enabled">
+          <div class="cs-card-glow" aria-hidden="true"></div>
+          <div class="cs-card-head">
+            <span class="cs-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M12 12a3.2 3.2 0 1 0-3.2-3.2A3.2 3.2 0 0 0 12 12Z"/>
+                <path d="M5.5 19.2c.8-2.7 2.9-4.2 6.5-4.2s5.7 1.5 6.5 4.2" stroke-linecap="round"/>
+                <path d="M17.2 5.8v4.2M15.1 7.9h4.2" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <label class="cs-switch cs-switch--solo" for="{{ form.landing_register_enabled.id_for_label }}" title="Toggle Register link">
+              {{ form.landing_register_enabled }}
+              <span class="cs-switch-track" aria-hidden="true"></span>
+              <span class="visually-hidden" data-toggle-label>
+                {% if form.landing_register_enabled.value %}Register shown{% else %}Register hidden{% endif %}
+              </span>
+            </label>
+          </div>
+          <div class="cs-card-body">
+            <span class="cs-state" data-toggle-pill>{% if form.landing_register_enabled.value %}On{% else %}Off{% endif %}</span>
+            <h3 class="cs-card-title">Register link</h3>
+            <p class="cs-card-copy">Show Register and Get started on the public landing page. When off, only Login stays visible.</p>
+          </div>
+          {% if form.landing_register_enabled.errors %}
+            <div class="field-error">{{ form.landing_register_enabled.errors|striptags }}</div>
+          {% endif %}
+        </article>
+
+        <article class="cs-card{% if form.onboarding_fee_enabled.value %} is-on{% endif %}" role="listitem" data-client-toggle-panel data-toggle-input="id_onboarding_fee_enabled">
+          <div class="cs-card-glow" aria-hidden="true"></div>
+          <div class="cs-card-head">
+            <span class="cs-icon is-fee" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
+                <rect x="3.2" y="6.2" width="17.6" height="11.6" rx="2.4"/>
+                <path d="M3.2 10.2h17.6M8 14.2h4" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <label class="cs-switch cs-switch--solo" for="{{ form.onboarding_fee_enabled.id_for_label }}" title="Toggle onboarding fee">
+              {{ form.onboarding_fee_enabled }}
+              <span class="cs-switch-track" aria-hidden="true"></span>
+              <span class="visually-hidden" data-toggle-label>
+                {% if form.onboarding_fee_enabled.value %}Fee required{% else %}Free onboarding script{% endif %}
+              </span>
+            </label>
+          </div>
+          <div class="cs-card-body">
+            <span class="cs-state" data-toggle-pill>{% if form.onboarding_fee_enabled.value %}On{% else %}Off{% endif %}</span>
+            <h3 class="cs-card-title">Onboarding fee</h3>
+            <p class="cs-card-copy">Require STK Push payment before a MikroTik tunnel script can be generated.</p>
+          </div>
+          {% if form.onboarding_fee_enabled.errors %}
+            <div class="field-error">{{ form.onboarding_fee_enabled.errors|striptags }}</div>
+          {% endif %}
+
+          <div class="cs-fee-panel" data-fee-amount-wrap {% if not form.onboarding_fee_enabled.value %}hidden{% endif %}>
+            <label class="cs-fee-label" for="{{ form.onboarding_fee_amount.id_for_label }}">
+              Amount charged
+            </label>
+            <div class="cs-fee-row">
+              <span class="cs-fee-currency" aria-hidden="true">KES</span>
+              {{ form.onboarding_fee_amount }}
+            </div>
+            {% if form.onboarding_fee_amount.errors %}
+              <div class="field-error">{{ form.onboarding_fee_amount.errors|striptags }}</div>
+            {% endif %}
+          </div>
+        </article>
+
+        <article class="cs-card{% if form.referral_enabled.value %} is-on{% endif %}" role="listitem" data-client-toggle-panel data-toggle-input="id_referral_enabled">
+          <div class="cs-card-glow" aria-hidden="true"></div>
+          <div class="cs-card-head">
+            <span class="cs-icon is-referral" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
+                <circle cx="8" cy="8" r="2.4"/>
+                <circle cx="16" cy="8" r="2.4"/>
+                <circle cx="12" cy="16.4" r="2.4"/>
+                <path d="M10.1 9.6l-1.1 4.6M13.9 9.6l1.1 4.6" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <label class="cs-switch cs-switch--solo" for="{{ form.referral_enabled.id_for_label }}" title="Toggle referrals">
+              {{ form.referral_enabled }}
+              <span class="cs-switch-track" aria-hidden="true"></span>
+              <span class="visually-hidden" data-toggle-label>
+                {% if form.referral_enabled.value %}Referrals on{% else %}Referrals off{% endif %}
+              </span>
+            </label>
+          </div>
+          <div class="cs-card-body">
+            <span class="cs-state" data-toggle-pill>{% if form.referral_enabled.value %}On{% else %}Off{% endif %}</span>
+            <h3 class="cs-card-title">Referrals</h3>
+            <p class="cs-card-copy">Let ISPs invite others and track referral activity across the platform.</p>
+          </div>
+          {% if form.referral_enabled.errors %}
+            <div class="field-error">{{ form.referral_enabled.errors|striptags }}</div>
+          {% endif %}
+        </article>
+      </div>
+
+      <footer class="cs-actions">
+        <button type="submit" class="btn btn-primary cs-save">Save settings</button>
+        <a class="btn btn-ghost" href="{% url 'roles:it_support_system_settings' %}">Back</a>
+      </footer>
+    </form>
+  </div>
+</section>
+
+<script>
+(function () {
+  function syncPanel(panel) {
+    var inputId = panel.getAttribute("data-toggle-input");
+    var input = inputId ? document.getElementById(inputId) : null;
+    if (!input) return;
+    var on = !!input.checked;
+    panel.classList.toggle("is-on", on);
+    var pill = panel.querySelector("[data-toggle-pill]");
+    if (pill) pill.textContent = on ? "On" : "Off";
+    var label = panel.querySelector("[data-toggle-label]");
+    if (label && inputId === "id_landing_register_enabled") {
+      label.textContent = on ? "Register shown" : "Register hidden";
+    }
+    if (label && inputId === "id_onboarding_fee_enabled") {
+      label.textContent = on ? "Fee required" : "Free onboarding script";
+    }
+    if (label && inputId === "id_referral_enabled") {
+      label.textContent = on ? "Referrals on" : "Referrals off";
+    }
+    var feeWrap = panel.querySelector("[data-fee-amount-wrap]");
+    if (feeWrap) {
+      if (on) feeWrap.removeAttribute("hidden");
+      else feeWrap.setAttribute("hidden", "");
+    }
+  }
+
+  document.querySelectorAll("[data-client-toggle-panel]").forEach(function (panel) {
+    syncPanel(panel);
+    var inputId = panel.getAttribute("data-toggle-input");
+    var input = inputId ? document.getElementById(inputId) : null;
+    if (input) input.addEventListener("change", function () { syncPanel(panel); });
+  });
+})();
+</script>
+{% endblock %}

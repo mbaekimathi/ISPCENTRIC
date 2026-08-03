@@ -19,6 +19,7 @@ from core.mikrotik_connect import (
 )
 from core.models import MikroTikRouter
 from core.views import (
+    _failover_ports_from_roles,
     _pick_auto_wan,
     suggest_port_roles,
 )
@@ -279,6 +280,7 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
 
     def test_failover_accepts_pppoe_primary(self):
         names = {"ether1", "ether2", "pppoe-out1", "bridgeLocal"}
+        added_routes: list[dict] = []
 
         def fake_print(sock, path, **kwargs):
             if path == "/interface":
@@ -301,8 +303,22 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
             if path == "/ip/route":
                 return []
             if path == "/ip/dhcp-client":
-                return []
+                return [
+                    {
+                        ".id": "*d2",
+                        "interface": "ether2",
+                        "disabled": "false",
+                        "gateway": "10.0.0.1",
+                        "status": "bound",
+                        "comment": "",
+                    }
+                ]
             return []
+
+        def fake_add(sock, path, **props):
+            if path == "/ip/route":
+                added_routes.append(dict(props))
+            return {"_reply": "!done"}
 
         with (
             patch("core.mikrotik_connect._api_session", self._session()),
@@ -313,7 +329,7 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
             ),
             patch(
                 "core.mikrotik_connect._add",
-                return_value={"_reply": "!done"},
+                side_effect=fake_add,
             ),
             patch(
                 "core.mikrotik_connect._remove",
@@ -335,10 +351,16 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["primary"], "ether1")
         self.assertEqual(result["backups"], ["ether2"])
+        self.assertGreaterEqual(len(result.get("checked_routes") or []), 1)
+        self.assertTrue(
+            any(r.get("check-gateway") == "ping" for r in added_routes),
+            added_routes,
+        )
 
     def test_bond_disables_member_dhcp(self):
         names = {"ether1", "ether2", "bridgeLocal"}
         disabled: list[str] = []
+        bond_creates: list[dict] = []
 
         def fake_print(sock, path, **kwargs):
             if path == "/interface":
@@ -359,11 +381,80 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
                 return [{"name": "WAN"}]
             if path == "/interface/list/member":
                 return []
+            if path == "/interface/pppoe-client":
+                return []
             return []
 
         def fake_set(sock, path, item_id, **props):
             if path == "/ip/dhcp-client" and props.get("disabled") == "yes":
                 disabled.append(item_id)
+            return {"_reply": "!done"}
+
+        def fake_add(sock, path, **props):
+            if path == "/interface/bonding":
+                bond_creates.append(dict(props))
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._api_session", self._session()),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch(
+                "core.mikrotik_connect._add",
+                side_effect=fake_add,
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                return_value={"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect._remove_comment_tagged",
+                return_value=0,
+            ),
+        ):
+            result = apply_mikrotik_uplink_bond(
+                "10.9.0.3",
+                "admin",
+                "x",
+                member_ports=["ether1", "ether2"],
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(sorted(result.get("disabled_member_dhcp") or []), ["ether1", "ether2"])
+        self.assertEqual(sorted(disabled), ["*d1", "*d2"])
+        self.assertTrue(bond_creates)
+        self.assertEqual(bond_creates[0].get("link-monitoring"), "mii")
+
+    def test_bond_moves_pppoe_to_bond(self):
+        names = {"ether1", "ether2", "pppoe-out1", "bridgeLocal"}
+        sets: list[tuple[str, dict]] = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/interface":
+                return [{"name": n} for n in names]
+            if path == "/interface/bonding":
+                return []
+            if path == "/interface/bridge/port":
+                return []
+            if path == "/ip/dhcp-client":
+                return []
+            if path == "/interface/list":
+                return [{"name": "WAN"}]
+            if path == "/interface/list/member":
+                return []
+            if path == "/interface/pppoe-client":
+                return [
+                    {
+                        ".id": "*p",
+                        "name": "pppoe-out1",
+                        "interface": "ether1",
+                        "disabled": "false",
+                    }
+                ]
+            return []
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append((path, props))
             return {"_reply": "!done"}
 
         with (
@@ -391,8 +482,31 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
             )
 
         self.assertTrue(result["ok"], result)
-        self.assertEqual(sorted(result.get("disabled_member_dhcp") or []), ["ether1", "ether2"])
-        self.assertEqual(sorted(disabled), ["*d1", "*d2"])
+        self.assertEqual(result.get("moved_pppoe"), ["pppoe-out1"])
+        self.assertEqual(result.get("uplink_kind"), "pppoe")
+        self.assertTrue(
+            any(
+                path == "/interface/pppoe-client"
+                and props.get("interface") == "bond-wan"
+                for path, props in sets
+            ),
+            sets,
+        )
+
+
+class FailoverRoleOrderTests(SimpleTestCase):
+    def test_failover_ports_preserve_role_insertion_order(self):
+        router = MikroTikRouter(
+            port_roles={
+                "ether5": "lan",
+                "ether3": "wan_backup",
+                "ether1": "wan",
+                "ether2": "wan_backup",
+            }
+        )
+        primary, backups = _failover_ports_from_roles(router)
+        self.assertEqual(primary, "ether1")
+        self.assertEqual(backups, ["ether3", "ether2"])
 
 
 class SingleWanSyncTests(SimpleTestCase):

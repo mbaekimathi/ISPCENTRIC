@@ -7,7 +7,9 @@
   <a class="brand" href="/accounts/employee/login/">ISP<span>CENTRIC</span></a>
   <div class="nav-actions">
     <a class="btn btn-ghost" href="{% url 'accounts:login' %}">Login</a>
-    <a class="btn btn-primary" href="{% url 'accounts:register' %}">Register</a>
+    {% if landing_register_enabled %}
+      <a class="btn btn-primary" href="{% url 'accounts:register' %}">Register</a>
+    {% endif %}
   </div>
 </header>
 
@@ -29,7 +31,9 @@
       responsive on phone, tablet, and desktop.
     </p>
     <div class="hero-ctas">
-      <a class="btn btn-signal" href="{% url 'accounts:register' %}">Get started</a>
+      {% if landing_register_enabled %}
+        <a class="btn btn-signal" href="{% url 'accounts:register' %}">Get started</a>
+      {% endif %}
       <a class="btn btn-ghost" href="{% url 'accounts:login' %}">Owner login</a>
     </div>
   </div>

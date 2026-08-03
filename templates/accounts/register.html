@@ -9,6 +9,14 @@
     <div class="auth-brand">ISP<span>CENTRIC</span></div>
     <h1>Create your company account</h1>
     <p class="lede">Register your ISP and open the operations workspace in under a minute.</p>
+    {% if referrer_organization %}
+      <p class="lede referral-invite-note">
+        Referred by <strong>{{ referrer_organization.name }}</strong>
+        {% if referrer_organization.referral_code %}
+          <span class="referral-invite-code">(code {{ referrer_organization.referral_code }})</span>
+        {% endif %}
+      </p>
+    {% endif %}
 
     <form method="post" enctype="multipart/form-data" novalidate id="register-form">
       {% csrf_token %}
@@ -19,6 +27,19 @@
       {% for field in form %}
         {% if field.name == 'country_code' %}
           {# rendered with phone #}
+        {% elif field.name == 'referral_code' %}
+          <div class="form-group referral-code-group{% if referrer_organization %} has-referrer{% endif %}">
+            <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {{ field }}
+            {% if referrer_organization %}
+              <p class="field-hint referral-resolved-name">
+                Company: <strong>{{ referrer_organization.name }}</strong>
+              </p>
+            {% elif field.help_text %}
+              <p class="field-hint">{{ field.help_text }}</p>
+            {% endif %}
+            {{ field.errors }}
+          </div>
         {% elif field.name == 'phone' %}
           <div class="form-group">
             <label for="{{ form.phone.id_for_label }}">Phone number</label>

@@ -210,6 +210,11 @@ urlpatterns = [
         role_dashboards.it_support_system_settings,
         name="it_support_system_settings",
     ),
+    path(
+        "it-support/client-settings/",
+        role_dashboards.it_support_client_settings,
+        name="it_support_client_settings",
+    ),
     path("it-support/switch-role/", role_dashboards.switch_role_view, name="switch_role"),
     path("sales/dashboard/", role_dashboards.sales_dashboard, name="sales"),
     path(

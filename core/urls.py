@@ -66,6 +66,16 @@ urlpatterns = [
         name="mikrotik_tunnel_script",
     ),
     path(
+        "app/mikrotik/onboarding-stk/",
+        views.mikrotik_onboarding_stk,
+        name="mikrotik_onboarding_stk",
+    ),
+    path(
+        "app/mikrotik/onboarding-stk/<int:stk_id>/status/",
+        views.mikrotik_onboarding_stk_status,
+        name="mikrotik_onboarding_stk_status",
+    ),
+    path(
         "app/mikrotik/tunnel-status/",
         views.mikrotik_tunnel_status,
         name="mikrotik_tunnel_status",
@@ -233,5 +243,7 @@ urlpatterns = [
         name="lead_not_interested",
     ),
     path("app/technicians/", views.technicians, name="technicians"),
+    path("app/shop/", views.shop, name="shop"),
+    path("app/referrals/", views.referrals, name="referrals"),
     path("app/settings/", views.system_settings, name="system_settings"),
 ]

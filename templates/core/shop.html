@@ -1,0 +1,17 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Shop — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+<section class="panel staff-panel stack-gap">
+  <div class="panel-head-row">
+    <div>
+      <h2>{{ empty_title }}</h2>
+      <p class="panel-sub">{{ empty_text }}</p>
+    </div>
+  </div>
+  <p class="empty">{{ empty_text }}</p>
+</section>
+{% endblock %}

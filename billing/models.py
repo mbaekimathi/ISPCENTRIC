@@ -451,6 +451,7 @@ class StkPushRequest(models.Model):
     class Purpose(models.TextChoices):
         SUBSCRIPTION = "subscription", "Subscription renewal"
         LEAD_ALLOCATION = "lead_allocation", "Lead allocation"
+        MIKROTIK_ONBOARDING = "mikrotik_onboarding", "MikroTik onboarding"
 
     organization = models.ForeignKey(
         "accounts.Organization",
@@ -461,6 +462,9 @@ class StkPushRequest(models.Model):
         Customer,
         on_delete=models.CASCADE,
         related_name="stk_push_requests",
+        null=True,
+        blank=True,
+        help_text="Optional for platform fees such as MikroTik onboarding.",
     )
     plan = models.ForeignKey(
         BillingPlan,

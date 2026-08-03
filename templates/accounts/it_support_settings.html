@@ -7,6 +7,10 @@
   <h1 class="staff-topbar-heading">{{ page_title }}</h1>
 {% endblock %}
 
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
+{% endblock %}
+
 {% block staff_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
 
@@ -19,6 +23,7 @@
   </div>
   <p class="empty">{{ empty_text }}</p>
   <div class="form-actions stack-gap">
+    <a class="btn btn-primary" href="{% url 'roles:it_support_client_settings' %}">Open client settings</a>
     <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Back to dashboard</a>
   </div>
 </section>

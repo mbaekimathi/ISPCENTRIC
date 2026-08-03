@@ -28,7 +28,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from accounts.forms import HotspotSettingsForm, OrganizationEditForm, OwnerProfileForm, PppoeSettingsForm
-from accounts.models import Employee, Organization, PaymentGateway
+from accounts.models import ClientSettings, Employee, Organization, PaymentGateway
 from accounts.routing import (
     can_access_client_portal,
     can_switch_roles,
@@ -51,9 +51,11 @@ from billing.services import (
     resolve_lead_allocation_fee,
 )
 from billing.stk import (
+    consume_mikrotik_onboarding_payment,
     refresh_stk_status,
     reverse_lead_allocation,
     start_lead_allocation_stk_payment,
+    start_mikrotik_onboarding_stk_payment,
 )
 from core import wireguard
 from core.forms import (
@@ -132,6 +134,8 @@ CLIENT_SIDEBARS = {
             {"key": "account", "label": "My account", "url_name": "core:my_account"},
             {"key": "leads", "label": "Leads", "url_name": "core:leads"},
             {"key": "technicians", "label": "Technicians", "url_name": "core:technicians"},
+            {"key": "shop", "label": "Shop", "url_name": "core:shop"},
+            {"key": "referral", "label": "Referrals", "url_name": "core:referrals"},
         ],
     },
     "mikrotik": {
@@ -249,6 +253,18 @@ CLIENT_SIDEBARS = {
             {"key": "technicians", "label": "Technician team", "url_name": "core:technicians"},
         ],
     },
+    "shop": {
+        "label": "Shop",
+        "items": [
+            {"key": "shop", "label": "Shop", "url_name": "core:shop"},
+        ],
+    },
+    "referral": {
+        "label": "Referrals",
+        "items": [
+            {"key": "referral", "label": "My referral link", "url_name": "core:referrals"},
+        ],
+    },
     "settings": {
         "label": "My system settings",
         "items": [],
@@ -296,13 +312,15 @@ def client_workspace_required(view_func):
     return _wrapped
 
 
-def build_client_nav(active_nav: str) -> dict:
+def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict:
     """Dashboard at top, page links in the middle, settings + logout at the bottom."""
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
     reserved = {"workspace", "settings", "logout"}
     page_items = []
     for item in sidebar.get("items", []):
         if item.get("key") in reserved:
+            continue
+        if item.get("key") == "referral" and not referral_enabled:
             continue
         row = dict(item)
         if row.get("url_name") and row.get("anchor") and not row.get("href"):
@@ -759,9 +777,13 @@ def _sync_roles_for_uplink(
 
 
 def _ports_by_role(roles: dict, role: str) -> list[str]:
-    return sorted(
-        name for name, value in roles.items() if (value or "").strip().lower() == role
-    )
+    # Preserve role-map insertion order (operator click order) — important for
+    # bond primary slave and failover distance ranking.
+    return [
+        name
+        for name, value in roles.items()
+        if (value or "").strip().lower() == role
+    ]
 
 
 def _bond_ports_from_roles(router: MikroTikRouter) -> list[str]:
@@ -773,7 +795,7 @@ def _failover_ports_from_roles(router: MikroTikRouter) -> tuple[str, list[str]]:
     roles = router.port_roles if isinstance(router.port_roles, dict) else {}
     primary = ""
     backups: list[str] = []
-    for name, value in sorted(roles.items()):
+    for name, value in roles.items():
         role = (value or "").strip().lower()
         if _is_primary_wan_role(role) and not primary:
             primary = name
@@ -792,7 +814,8 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
     # Anyone in the client workspace can edit their own login via the popup.
     can_edit_owner_profile = True
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
-    nav = build_client_nav(active_nav)
+    referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
+    nav = build_client_nav(active_nav, referral_enabled=referral_enabled)
 
     owner_profile_form = extra.pop("owner_profile_form", None)
     open_owner_profile_modal = bool(extra.pop("open_owner_profile_modal", False))
@@ -815,6 +838,7 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
         "sidebar_active": sidebar_active or active_nav,
         "client_nav_main": nav["main"],
         "client_nav_end": nav["end"],
+        "referral_enabled": referral_enabled,
         "is_viewing_as_client": viewing_client,
         "can_switch_roles": can_switch_roles(employee) if employee else False,
         "can_access_client_portal": (
@@ -845,6 +869,19 @@ def workspace(request):
             "datasets": [],
             "routers": [],
         }
+    referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
+    referral_count = 0
+    referral_active_count = 0
+    referral_pending_count = 0
+    if referral_enabled and org:
+        referred_qs = Organization.objects.filter(referred_by=org)
+        referral_count = referred_qs.count()
+        referral_active_count = referred_qs.filter(
+            referral_status=Organization.ReferralStatus.ACTIVE
+        ).count()
+        referral_pending_count = referred_qs.filter(
+            referral_status=Organization.ReferralStatus.PENDING
+        ).count()
     return render(
         request,
         "core/workspace.html",
@@ -858,6 +895,9 @@ def workspace(request):
             analytics_json=json.dumps(snapshot),
             analytics_url=reverse("core:workspace_analytics"),
             mikrotik_status_url=reverse("core:mikrotik_status"),
+            referral_count=referral_count,
+            referral_active_count=referral_active_count,
+            referral_pending_count=referral_pending_count,
         ),
     )
 
@@ -1273,6 +1313,7 @@ def _render_mikrotik_list(
     open_edit=False,
     editing_router_id=None,
 ):
+    client_settings = ClientSettings.get_solo()
     return render(
         request,
         "core/mikrotik.html",
@@ -1290,6 +1331,8 @@ def _render_mikrotik_list(
             editing_router_id=editing_router_id,
             wireguard_ready=wireguard.configured(),
             hosted_server=bool(getattr(settings, "HOSTED", False)),
+            onboarding_fee_enabled=client_settings.onboarding_fee_ready,
+            onboarding_fee_amount=str(client_settings.onboarding_fee_amount or "0"),
         ),
     )
 
@@ -1437,6 +1480,19 @@ def mikrotik(request):
             router.save()
             # If Connect used a reserved tunnel address, attach that WireGuard peer.
             wireguard.adopt_reservation_for_router(router)
+            # First MikroTik for a referred ISP → active referral.
+            if org and org.referred_by_id:
+                was_first = (
+                    MikroTikRouter.objects.filter(organization=org)
+                    .exclude(pk=router.pk)
+                    .count()
+                    == 0
+                )
+                if was_first and org.mark_referral_active():
+                    messages.info(
+                        request,
+                        "Referral marked active — your first MikroTik is onboarded.",
+                    )
             if org and getattr(org, "pppoe_compulsory", False):
                 enforce = apply_pppoe_enforcement_on_router(router, compulsory=True)
                 if enforce.get("ok"):
@@ -1981,11 +2037,11 @@ def mikrotik_ports(request, router_id: int):
                 )
                 if has_backups:
                     router.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
-                    backup_ports = sorted(
+                    backup_ports = [
                         key
                         for key, value in roles.items()
                         if (value or "").strip().lower() == MikroTikRouter.PortRole.WAN_BACKUP
-                    )
+                    ]
                     router.uplink_ports = [port_name, *backup_ports]
                 else:
                     router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
@@ -2017,11 +2073,11 @@ def mikrotik_ports(request, router_id: int):
                 if primary:
                     router.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
                     router.wan_interface = primary
-                    backup_ports = sorted(
+                    backup_ports = [
                         name
                         for name, existing in roles.items()
                         if (existing or "").strip().lower() == MikroTikRouter.PortRole.WAN_BACKUP
-                    )
+                    ]
                     router.uplink_ports = [primary, *backup_ports]
                     update_fields.extend(["uplink_mode", "wan_interface", "uplink_ports"])
             elif role == MikroTikRouter.PortRole.BOND:
@@ -2957,6 +3013,10 @@ def mikrotik_discover(request):
 @require_POST
 def mikrotik_tunnel_script(request):
     """Reserve a WireGuard peer and return the RouterOS paste script for Connect."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+
     if not wireguard.configured():
         return JsonResponse(
             {
@@ -2972,6 +3032,49 @@ def mikrotik_tunnel_script(request):
         )
 
     label = (request.POST.get("label") or "").strip() or "New MikroTik"
+    client_settings = ClientSettings.get_solo()
+    paid_stk_id = 0
+    if client_settings.onboarding_fee_ready:
+        raw_stk = (request.POST.get("stk_id") or "").strip()
+        try:
+            paid_stk_id = int(raw_stk)
+        except (TypeError, ValueError):
+            paid_stk_id = 0
+        if not paid_stk_id:
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "configured": True,
+                    "payment_required": True,
+                    "amount": str(client_settings.onboarding_fee_amount),
+                    "error": (
+                        f"Pay KES {client_settings.onboarding_fee_amount} via STK Push "
+                        "to generate the onboarding script."
+                    ),
+                },
+                status=402,
+            )
+        paid = consume_mikrotik_onboarding_payment(
+            organization=org,
+            user=request.user,
+            stk_id=paid_stk_id,
+            label=label,
+            mark_used=False,
+        )
+        if not paid.get("ok"):
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "configured": True,
+                    "payment_required": True,
+                    "amount": str(client_settings.onboarding_fee_amount),
+                    "error": paid.get("error") or "Complete payment before generating the script.",
+                    "stk_id": paid_stk_id,
+                    "status": paid.get("status") or "",
+                },
+                status=402,
+            )
+
     try:
         reservation = wireguard.reserve_peer(label)
         payload = wireguard.peer_payload(
@@ -2986,6 +3089,15 @@ def mikrotik_tunnel_script(request):
         return JsonResponse(
             {"ok": False, "configured": True, "error": f"Could not reserve tunnel peer: {exc}"},
             status=500,
+        )
+
+    if paid_stk_id:
+        consume_mikrotik_onboarding_payment(
+            organization=org,
+            user=request.user,
+            stk_id=paid_stk_id,
+            label=label,
+            mark_used=True,
         )
 
     return JsonResponse(
@@ -3008,6 +3120,44 @@ def mikrotik_tunnel_script(request):
             ),
         }
     )
+
+
+@client_workspace_required
+@require_POST
+def mikrotik_onboarding_stk(request):
+    """Start STK Push for the platform MikroTik onboarding fee."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+
+    result = start_mikrotik_onboarding_stk_payment(
+        organization=org,
+        phone=(request.POST.get("phone") or "").strip(),
+        label=(request.POST.get("label") or "").strip(),
+        user=request.user,
+        request=request,
+    )
+    status = 200 if result.get("ok") else 400
+    return JsonResponse(result, status=status)
+
+
+@client_workspace_required
+@require_GET
+def mikrotik_onboarding_stk_status(request, stk_id: int):
+    """Poll STK status for MikroTik onboarding fee payment."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+
+    stk = get_object_or_404(
+        StkPushRequest,
+        pk=stk_id,
+        organization=org,
+        purpose=StkPushRequest.Purpose.MIKROTIK_ONBOARDING,
+    )
+    if stk.initiated_by_id and stk.initiated_by_id != request.user.pk:
+        return JsonResponse({"ok": False, "error": "This payment belongs to another user."}, status=403)
+    return JsonResponse(refresh_stk_status(stk))
 
 
 @client_workspace_required
@@ -7307,6 +7457,92 @@ def technicians(request):
             page_subtitle="Field technicians and installers for this organization.",
             members=members,
             empty_text="No technicians are assigned to this company yet.",
+        ),
+    )
+
+
+@client_workspace_required
+def shop(request):
+    return render(
+        request,
+        "core/shop.html",
+        client_page_context(
+            request,
+            active_nav="shop",
+            page_title="Shop",
+            page_kicker="Shop",
+            page_subtitle="Browse and purchase products for your network.",
+            empty_title="Shop",
+            empty_text="No products available yet.",
+        ),
+    )
+
+
+@client_workspace_required
+def referrals(request):
+    if not ClientSettings.get_solo().referral_enabled:
+        messages.info(request, "Referrals are not enabled on this platform.")
+        return redirect("core:workspace")
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:workspace")
+
+    referral_code = org.ensure_referral_code()
+    referral_path = reverse("accounts:register")
+    referral_url = request.build_absolute_uri(f"{referral_path}?ref={referral_code}")
+    org_label = org.name or "an ISPCENTRIC partner"
+    share_text = (
+        f"Join ISPCENTRIC — referred by {org_label}. "
+        f"Open this link to register (referral code is their phone {referral_code}):"
+    )
+    from urllib.parse import quote
+
+    whatsapp_share_url = (
+        "https://wa.me/?text=" + quote(f"{share_text}\n{referral_url}")
+    )
+    sms_share_url = "sms:?body=" + quote(f"{share_text} {referral_url}")
+    email_share_url = (
+        "mailto:?subject="
+        + quote(f"Join ISPCENTRIC — referral from {org_label}")
+        + "&body="
+        + quote(f"{share_text}\n\n{referral_url}")
+    )
+    referred = (
+        Organization.objects.filter(referred_by=org)
+        .select_related("owner")
+        .order_by("-created_at")
+    )
+    pending_count = referred.filter(
+        referral_status=Organization.ReferralStatus.PENDING
+    ).count()
+    active_count = referred.filter(
+        referral_status=Organization.ReferralStatus.ACTIVE
+    ).count()
+    return render(
+        request,
+        "core/referrals.html",
+        client_page_context(
+            request,
+            active_nav="referral",
+            page_title="Referrals",
+            page_kicker="Grow",
+            page_subtitle=(
+                f"Share {org_label}'s referral link. New signups stay pending "
+                "until they onboard their first MikroTik."
+            ),
+            referral_code=referral_code,
+            referral_company_name=org_label,
+            referral_url=referral_url,
+            share_text=share_text,
+            whatsapp_share_url=whatsapp_share_url,
+            sms_share_url=sms_share_url,
+            email_share_url=email_share_url,
+            referral_count=referred.count(),
+            referral_pending_count=pending_count,
+            referral_active_count=active_count,
+            referred_organizations=referred,
         ),
     )
 

@@ -7,6 +7,7 @@ from django.db import models
 
 from .countries import DEFAULT_COUNTRY, country_choices, dial_from_choice, get_country_options, option_for_value
 from .models import (
+    ClientSettings,
     CompanyProfile,
     Employee,
     Lead,
@@ -190,6 +191,20 @@ class RegisterForm(UserCreationForm):
             }
         ),
     )
+    referral_code = forms.CharField(
+        required=False,
+        label="Referral code",
+        help_text="Auto-filled from your invite link. This is the referrer's phone number.",
+        widget=forms.TextInput(
+            attrs={
+                "placeholder": "Referrer phone number",
+                "autocomplete": "off",
+                "inputmode": "tel",
+                "class": "form-control",
+                "id": "id_referral_code",
+            }
+        ),
+    )
 
     class Meta:
         model = User
@@ -213,15 +228,36 @@ class RegisterForm(UserCreationForm):
             ),
         }
 
-    def __init__(self, *args, require_invite: bool | None = None, **kwargs):
+    field_order = [
+        "referral_code",
+        "company_name",
+        "username",
+        "email",
+        "country_code",
+        "phone",
+        "password1",
+        "password2",
+        "profile_photo",
+        "invite_key",
+    ]
+
+    def __init__(self, *args, require_invite: bool | None = None, initial_referral: str = "", **kwargs):
         self.require_invite = (
             owner_invite_required() if require_invite is None else bool(require_invite)
         )
+        initial = kwargs.setdefault("initial", {})
+        if initial_referral and "referral_code" not in initial:
+            initial["referral_code"] = initial_referral
         super().__init__(*args, **kwargs)
         if not self.require_invite:
             self.fields.pop("invite_key", None)
         else:
             self.fields["invite_key"].required = True
+        # Hide referral field when platform referrals are off.
+        from accounts.models import ClientSettings
+
+        if not ClientSettings.get_solo().referral_enabled:
+            self.fields.pop("referral_code", None)
         self.fields["username"].help_text = "Letters, numbers, or a 6-digit login code (identifier only)."
         self.fields["username"].widget.attrs.update(
             {
@@ -281,6 +317,22 @@ class RegisterForm(UserCreationForm):
 
     def clean_company_name(self):
         return self.cleaned_data["company_name"].strip().upper()
+
+    def clean_referral_code(self):
+        if "referral_code" not in self.fields:
+            return ""
+        raw = (self.cleaned_data.get("referral_code") or "").strip()
+        if not raw:
+            return ""
+        from accounts.models import Organization
+
+        referrer = Organization.lookup_by_referral_code(raw)
+        if referrer is None:
+            raise forms.ValidationError(
+                "No company found for that referral code. Check the phone number or leave it blank."
+            )
+        self.resolved_referrer = referrer
+        return referrer.referral_code or Organization.normalize_referral_phone(referrer.phone)
 
     def clean(self):
         cleaned = super().clean()
@@ -1503,6 +1555,70 @@ class CompanyProfileForm(forms.ModelForm):
         if commit:
             profile.save()
         return profile
+
+
+class ClientSettingsForm(forms.ModelForm):
+    """Client-facing platform switches (IT Support)."""
+
+    class Meta:
+        model = ClientSettings
+        fields = [
+            "landing_register_enabled",
+            "onboarding_fee_enabled",
+            "onboarding_fee_amount",
+            "referral_enabled",
+        ]
+        labels = {
+            "landing_register_enabled": "Register on landing page",
+            "onboarding_fee_enabled": "Charge onboarding fee",
+            "onboarding_fee_amount": "Onboarding fee (KES)",
+            "referral_enabled": "Referrals",
+        }
+        help_texts = {
+            "landing_register_enabled": (
+                "Show Register and Get started links on the public landing page."
+            ),
+            "onboarding_fee_enabled": (
+                "Require STK Push payment before a MikroTik tunnel script can be generated."
+            ),
+            "onboarding_fee_amount": (
+                "Amount sent to the phone when a client onboards a MikroTik."
+            ),
+            "referral_enabled": (
+                "Turn on client referral features across the platform."
+            ),
+        }
+        widgets = {
+            "landing_register_enabled": forms.CheckboxInput(
+                attrs={"id": "id_landing_register_enabled"}
+            ),
+            "onboarding_fee_enabled": forms.CheckboxInput(
+                attrs={"id": "id_onboarding_fee_enabled"}
+            ),
+            "onboarding_fee_amount": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_onboarding_fee_amount",
+                    "step": "1",
+                    "min": "0",
+                    "inputmode": "decimal",
+                }
+            ),
+            "referral_enabled": forms.CheckboxInput(
+                attrs={"id": "id_referral_enabled"}
+            ),
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        fee_on = bool(cleaned.get("onboarding_fee_enabled"))
+        amount = cleaned.get("onboarding_fee_amount")
+        if fee_on and (amount is None or amount <= 0):
+            self.add_error(
+                "onboarding_fee_amount",
+                "Enter an amount greater than zero when onboarding fee is enabled.",
+            )
+        return cleaned
 
 
 class RoleCommissionForm(forms.ModelForm):
