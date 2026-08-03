@@ -45,6 +45,7 @@ from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushReque
 from billing.services import (
     customer_receives_internet,
     customer_subscription_expired,
+    customers_needing_renewal_attention,
     make_renew_token,
     plans_for_router,
     resolve_lead_allocation_fee,
@@ -830,45 +831,357 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
 
 @client_workspace_required
 def workspace(request):
-    """Main ISPCENTRIC workspace home — modules hub."""
+    """Main ISPCENTRIC workspace home — live day analytics."""
     org = resolve_organization(request.user, request)
-    if org:
-        stats = {
-            "employees": Employee.objects.filter(organization=org).aggregate(
-                total=Count("id")
-            )["total"]
-            or 0,
-            "customers": Customer.objects.filter(organization=org).aggregate(
-                total=Count("id")
-            )["total"]
-            or 0,
-            "revenue": Payment.objects.filter(organization=org).aggregate(
-                total=Sum("amount")
-            )["total"]
-            or 0,
-            "pending_invoices": Invoice.objects.filter(organization=org).aggregate(
-                pending=Count("id", filter=Q(status="pending"))
-            )["pending"]
-            or 0,
-        }
-    else:
-        stats = {
-            "employees": 0,
-            "customers": 0,
-            "revenue": 0,
-            "pending_invoices": 0,
-        }
+    snapshot = _workspace_day_snapshot(org)
+    try:
+        from core.mikrotik_status_samples import mikrotik_performance_trend
 
+        snapshot["mikrotik_trend"] = mikrotik_performance_trend(org, hours=24)
+    except Exception:
+        snapshot["mikrotik_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+        }
     return render(
         request,
         "core/workspace.html",
         client_page_context(
             request,
             active_nav="workspace",
-            page_title="Workspace",
-            stats=stats,
+            page_title="Dashboard",
+            page_kicker="Live today",
+            page_subtitle="Collections, renewals, and network health for today.",
+            analytics=snapshot,
+            analytics_json=json.dumps(snapshot),
+            analytics_url=reverse("core:workspace_analytics"),
+            mikrotik_status_url=reverse("core:mikrotik_status"),
         ),
     )
+
+
+def _local_day_bounds():
+    """Return (day_start, day_end, today_date) in the active timezone."""
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_tz
+
+    now = dj_tz.localtime()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day_start, day_start + timedelta(days=1), now.date()
+
+
+def _workspace_day_snapshot(org) -> dict:
+    """Fast DB-backed analytics for the workspace dashboard (no MikroTik probes)."""
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_tz
+
+    day_start, day_end, today = _local_day_bounds()
+    empty = {
+        "ok": True,
+        "day": today.isoformat(),
+        "day_label": day_start.strftime("%A, %d %b %Y"),
+        "customers": 0,
+        "active_customers": 0,
+        "pending_invoices": 0,
+        "collected_today": 0,
+        "payments_today": 0,
+        "revenue_all_time": 0,
+        "expired_count": 0,
+        "expiring_count": 0,
+        "attention_count": 0,
+        "routers_total": 0,
+        "routers_suspended": 0,
+        "stk_pending": 0,
+        "stk_failed_today": 0,
+        "expired": [],
+        "expiring": [],
+        "recent_payments": [],
+        "outages": [],
+        "mikrotik": {
+            "connected": 0,
+            "total": 0,
+            "score": None,
+            "label": "Checking…",
+            "online_ratio": None,
+        },
+    }
+    if not org:
+        empty["ok"] = False
+        return empty
+
+    customer_stats = Customer.objects.filter(organization=org).aggregate(
+        customers=Count("id"),
+        active_customers=Count(
+            "id", filter=Q(status=Customer.Status.ACTIVE)
+        ),
+    )
+    invoice_pending = (
+        Invoice.objects.filter(
+            organization=org, status=Invoice.Status.PENDING
+        ).count()
+    )
+    revenue_all = (
+        Payment.objects.filter(organization=org).aggregate(total=Sum("amount"))[
+            "total"
+        ]
+        or 0
+    )
+    today_pay = Payment.objects.filter(
+        organization=org,
+        received_at__gte=day_start,
+        received_at__lt=day_end,
+    ).aggregate(total=Sum("amount"), count=Count("id"))
+    recent_payments = list(
+        Payment.objects.filter(
+            organization=org,
+            received_at__gte=day_start,
+            received_at__lt=day_end,
+        )
+        .select_related("invoice", "invoice__customer")
+        .order_by("-received_at")[:8]
+    )
+    attention = customers_needing_renewal_attention(org)
+    expired_rows = [row for row in attention if row["attention"] == "expired"]
+    expiring_rows = [
+        row for row in attention if row["attention"] == "three_quarters"
+    ]
+    # Also treat packages ending within 2 calendar days as expiring if not already listed.
+    soon = dj_tz.localtime() + timedelta(days=2)
+    soon_ids = {row["customer"].pk for row in expiring_rows}
+    for customer in (
+        Customer.objects.filter(
+            organization=org,
+            package_end__isnull=False,
+            package_end__lte=soon,
+            package_end__gte=dj_tz.localtime(),
+        )
+        .select_related("plan")
+        .order_by("package_end")[:40]
+    ):
+        if customer.pk in soon_ids:
+            continue
+        if customer_subscription_expired(customer):
+            continue
+        if any(row["customer"].pk == customer.pk for row in expired_rows):
+            continue
+        from billing.services import subscription_period_progress
+
+        expiring_rows.append(
+            {
+                "customer": customer,
+                "progress": subscription_period_progress(customer),
+                "attention": "three_quarters",
+            }
+        )
+        soon_ids.add(customer.pk)
+
+    routers_total = MikroTikRouter.objects.filter(organization=org).count()
+    routers_suspended = MikroTikRouter.objects.filter(
+        organization=org,
+        account_status=MikroTikRouter.AccountStatus.SUSPENDED,
+    ).count()
+    stk_pending = StkPushRequest.objects.filter(
+        organization=org, status=StkPushRequest.Status.PENDING
+    ).count()
+    stk_failed_today = StkPushRequest.objects.filter(
+        organization=org,
+        status=StkPushRequest.Status.FAILED,
+        created_at__gte=day_start,
+        created_at__lt=day_end,
+    ).count()
+
+    def _attention_payload(rows, limit=8):
+        out = []
+        for row in rows[:limit]:
+            customer = row["customer"]
+            progress = row.get("progress") or {}
+            out.append(
+                {
+                    "id": customer.pk,
+                    "full_name": customer.full_name,
+                    "account_number": customer.account_number,
+                    "phone": customer.phone,
+                    "plan_name": customer.plan.name if customer.plan_id else "",
+                    "plan_price": str(customer.plan.price)
+                    if customer.plan_id and customer.plan.price is not None
+                    else "",
+                    "package_end": (
+                        dj_tz.localtime(customer.package_end).strftime("%d %b %Y %H:%M")
+                        if customer.package_end
+                        else ""
+                    ),
+                    "percent": progress.get("percent"),
+                    "attention": row.get("attention") or "",
+                    "url": reverse(
+                        "core:client_detail", kwargs={"customer_id": customer.pk}
+                    ),
+                }
+            )
+        return out
+
+    return {
+        "ok": True,
+        "day": today.isoformat(),
+        "day_label": day_start.strftime("%A, %d %b %Y"),
+        "customers": customer_stats["customers"] or 0,
+        "active_customers": customer_stats["active_customers"] or 0,
+        "pending_invoices": invoice_pending,
+        "collected_today": float(today_pay["total"] or 0),
+        "payments_today": today_pay["count"] or 0,
+        "revenue_all_time": float(revenue_all or 0),
+        "expired_count": len(expired_rows),
+        "expiring_count": len(expiring_rows),
+        "attention_count": len(expired_rows) + len(expiring_rows),
+        "routers_total": routers_total,
+        "routers_suspended": routers_suspended,
+        "stk_pending": stk_pending,
+        "stk_failed_today": stk_failed_today,
+        "expired": _attention_payload(expired_rows),
+        "expiring": _attention_payload(expiring_rows),
+        "recent_payments": [
+            {
+                "id": pay.pk,
+                "amount": float(pay.amount or 0),
+                "method": pay.get_method_display(),
+                "reference": pay.reference or "",
+                "received_at": dj_tz.localtime(pay.received_at).strftime("%H:%M"),
+                "customer_name": (
+                    pay.invoice.customer.full_name
+                    if pay.invoice_id and pay.invoice.customer_id
+                    else "—"
+                ),
+                "customer_url": (
+                    reverse(
+                        "core:client_detail",
+                        kwargs={"customer_id": pay.invoice.customer_id},
+                    )
+                    if pay.invoice_id and pay.invoice.customer_id
+                    else ""
+                ),
+            }
+            for pay in recent_payments
+        ],
+        "outages": [],
+        "mikrotik": {
+            "connected": 0,
+            "total": routers_total,
+            "score": None,
+            "label": "Checking…",
+            "online_ratio": None,
+        },
+    }
+
+
+def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
+    """Derive outage list + average performance score from mikrotik_status rows."""
+    if not routers:
+        return {
+            "connected": 0,
+            "total": 0,
+            "score": None,
+            "label": "No routers",
+            "online_ratio": None,
+            "outages": [],
+        }
+
+    score_map = {
+        "connected": 100,
+        "reachable": 70,
+        "limited": 55,
+        "auth_failed": 25,
+        "wrong_host": 10,
+        "disconnected": 0,
+    }
+    scores = []
+    connected = 0
+    outages = []
+    for row in routers:
+        status = (row.get("status") or "disconnected").strip().lower()
+        scores.append(score_map.get(status, 0))
+        if status == "connected":
+            connected += 1
+        if status in {"disconnected", "auth_failed", "wrong_host", "limited"}:
+            outages.append(
+                {
+                    "id": row.get("id"),
+                    "name": row.get("name") or "MikroTik",
+                    "host": row.get("host") or "",
+                    "status": status,
+                    "error": row.get("error") or "",
+                    "url": reverse(
+                        "core:mikrotik_detail", kwargs={"router_id": row["id"]}
+                    )
+                    if row.get("id")
+                    else reverse("core:mikrotik"),
+                }
+            )
+
+    avg = round(sum(scores) / len(scores), 1) if scores else None
+    if avg is None:
+        label = "No routers"
+    elif avg >= 85:
+        label = "Excellent"
+    elif avg >= 70:
+        label = "Good"
+    elif avg >= 45:
+        label = "Fair"
+    else:
+        label = "Poor"
+
+    return {
+        "connected": connected,
+        "total": len(routers),
+        "score": avg,
+        "label": label,
+        "online_ratio": round((connected / len(routers)) * 100, 1) if routers else 0,
+        "outages": outages,
+    }
+
+
+@client_workspace_required
+@require_GET
+def workspace_analytics(request):
+    """Live dashboard payload for day money/renewals + MikroTik performance trend."""
+    org = resolve_organization(request.user, request)
+    snapshot = _workspace_day_snapshot(org)
+    if not org:
+        return JsonResponse(snapshot, status=400)
+
+    routers = cache.get(f"mikrotik_status:{org.pk}")
+    if routers is not None:
+        perf = _mikrotik_performance_from_status(routers)
+        snapshot["mikrotik"] = {
+            "connected": perf["connected"],
+            "total": perf["total"],
+            "score": perf["score"],
+            "label": perf["label"],
+            "online_ratio": perf["online_ratio"],
+        }
+        snapshot["outages"] = perf["outages"]
+    try:
+        from core.mikrotik_status_samples import mikrotik_performance_trend
+
+        hours = 24
+        try:
+            hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+        except (TypeError, ValueError):
+            hours = 24
+        snapshot["mikrotik_trend"] = mikrotik_performance_trend(
+            org, hours=hours, live_routers=routers or []
+        )
+    except Exception:
+        snapshot["mikrotik_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+        }
+
+    return JsonResponse(snapshot)
 
 
 def _mikrotik_list_routers(org):
@@ -2940,6 +3253,12 @@ def mikrotik_status(request):
     if not force_refresh:
         cached = cache.get(cache_key)
         if cached is not None:
+            try:
+                from core.mikrotik_status_samples import record_mikrotik_status_samples
+
+                record_mikrotik_status_samples(org, cached)
+            except Exception:
+                pass
             return JsonResponse({"ok": True, "routers": cached})
 
     results = {}
@@ -3080,6 +3399,12 @@ def mikrotik_status(request):
     # Cache online results longer; offline only briefly so recoveries show quickly.
     any_online = any(item.get("online") for item in payload)
     cache.set(cache_key, payload, 15 if any_online else 3)
+    try:
+        from core.mikrotik_status_samples import record_mikrotik_status_samples
+
+        record_mikrotik_status_samples(org, payload)
+    except Exception:
+        pass
     return JsonResponse({"ok": True, "routers": payload})
 
 
@@ -4604,31 +4929,45 @@ def client_usage(request, customer_id: int):
 def clients_general_usage(request):
     """Organization-wide usage analytics and highest-users ranking."""
     org = resolve_organization(request.user, request)
-    hours = 24
-    try:
-        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-    except (TypeError, ValueError):
-        hours = 24
+    from billing.usage_samples import (
+        clamp_usage_hours,
+        org_usage_payload,
+        sample_organization_usage,
+        usage_range_label,
+    )
 
-    from billing.usage_samples import org_usage_payload
+    hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
 
-    trends = org_usage_payload(org, hours=hours) if org else {
-        "ok": False,
-        "hours": hours,
-        "sample_count": 0,
-        "labels": [],
-        "series": {
-            "online_clients": [],
-            "download_kbps": [],
-            "upload_kbps": [],
-            "data_used_mb": [],
-        },
-        "summary": {},
-        "top_users": [],
-        "top_chart": {"labels": [], "data_used_mb": []},
-        "error": "No organization is linked to this workspace.",
-    }
+    if org:
+        try:
+            sample_organization_usage(org, force=False)
+        except Exception:
+            pass
+        trends = org_usage_payload(org, hours=hours, auto_widen=True)
+    else:
+        trends = {
+            "ok": False,
+            "hours": hours,
+            "requested_hours": hours,
+            "auto_widened": False,
+            "sample_count": 0,
+            "labels": [],
+            "series": {
+                "online_clients": [],
+                "download_kbps": [],
+                "upload_kbps": [],
+                "data_used_mb": [],
+            },
+            "summary": {},
+            "top_users": [],
+            "top_chart": {"labels": [], "data_used_mb": []},
+            "error": "No organization is linked to this workspace.",
+            "range_label": usage_range_label(hours),
+            "requested_range_label": usage_range_label(hours),
+        }
 
+    effective_hours = trends.get("hours") or hours
+    requested = trends.get("requested_hours") or hours
     return render(
         request,
         "core/clients_general_usage.html",
@@ -4639,7 +4978,12 @@ def clients_general_usage(request):
             page_title="General usage",
             page_kicker="Subscribers",
             page_subtitle="Organization-wide usage trends and highest data users.",
-            trend_hours=hours,
+            trend_hours=effective_hours,
+            requested_hours=requested,
+            auto_widened=bool(trends.get("auto_widened")),
+            range_label=trends.get("range_label") or usage_range_label(effective_hours),
+            requested_range_label=trends.get("requested_range_label")
+            or usage_range_label(requested),
             trends=trends,
             trends_json=json.dumps(trends),
             top_users=trends.get("top_users") or [],
@@ -4655,13 +4999,22 @@ def clients_general_usage_trends(request):
     org = resolve_organization(request.user, request)
     if not org:
         return JsonResponse({"ok": False, "error": "No organization."}, status=400)
-    try:
-        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-    except (TypeError, ValueError):
-        hours = 24
-    from billing.usage_samples import org_usage_payload
+    from billing.usage_samples import (
+        clamp_usage_hours,
+        org_usage_payload,
+        sample_organization_usage,
+    )
 
-    return JsonResponse(org_usage_payload(org, hours=hours))
+    hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+
+    try:
+        sample_organization_usage(org, force=force)
+    except Exception:
+        pass
+    return JsonResponse(
+        org_usage_payload(org, hours=hours, auto_widen=True, use_cache=not force)
+    )
 
 
 @client_workspace_required

@@ -1,55 +1,550 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}Workspace — ISPCENTRIC{% endblock %}
+{% block title %}Dashboard — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">
-  {% if organization %}
-    {{ organization.name }} — use the sidebar to open a module.
-  {% else %}
-    Welcome, {{ user.username }}.
-  {% endif %}
-</p>
-
-<div class="stat-grid">
-  <div class="stat">
-    <div class="label">Staff</div>
-    <div class="value">{{ stats.employees }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Customers</div>
-    <div class="value">{{ stats.customers }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Pending invoices</div>
-    <div class="value">{{ stats.pending_invoices }}</div>
-  </div>
-  <div class="stat">
-    <div class="label">Revenue</div>
-    <div class="value">{{ stats.revenue }}</div>
-  </div>
-</div>
-
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>Quick start</h2>
-      <p class="panel-sub">Jump into the modules you use most.</p>
+<div
+  class="workspace-dash"
+  data-workspace-dash
+  data-analytics-url="{{ analytics_url }}"
+  data-mikrotik-status-url="{{ mikrotik_status_url }}"
+>
+  <header class="workspace-dash-hero">
+    <div class="workspace-dash-hero-copy">
+      <div class="workspace-dash-live-row">
+        <span class="workspace-dash-live-dot" aria-hidden="true"></span>
+        <p class="workspace-dash-kicker">Live today</p>
+      </div>
+      <h2 class="workspace-dash-title">{% if organization %}{{ organization.name }}{% else %}Workspace{% endif %}</h2>
+      <p class="workspace-dash-lead" data-day-label>{{ analytics.day_label }}</p>
     </div>
+    <div class="workspace-dash-hero-actions">
+      <span class="workspace-dash-stamp" data-live-stamp>Updating…</span>
+      <button type="button" class="btn btn-ghost workspace-dash-btn" data-live-refresh>
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 6V3L8 7l4 4V8a4 4 0 1 1-4 4H6a6 6 0 1 0 6-6Z"/></svg>
+        Refresh
+      </button>
+      <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billings</a>
+      <a class="btn btn-primary workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
+    </div>
+  </header>
+
+  <div class="workspace-dash-stats" aria-label="Today's key metrics">
+    <article class="workspace-dash-stat tone-money" style="--i:0">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 15h-2v-2h2Zm0-4h-2V7h2Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">Collected today</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="collected">KES {{ analytics.collected_today|floatformat:0 }}</p>
+      <p class="workspace-dash-stat-meta"><span data-stat="payments-today">{{ analytics.payments_today }}</span> payments</p>
+    </article>
+
+    <article class="workspace-dash-stat tone-danger{% if analytics.expired_count %} is-hot{% endif %}" style="--i:1">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 1 21h22Zm0 4.5L18.2 19H5.8ZM11 10h2v5h-2Zm0 6h2v2h-2Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">Expired</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="expired">{{ analytics.expired_count }}</p>
+      <p class="workspace-dash-stat-meta">Packages past end date</p>
+    </article>
+
+    <article class="workspace-dash-stat tone-net" data-mikrotik-card style="--i:2">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">MikroTik health</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="mt-score">—</p>
+      <p class="workspace-dash-stat-meta"><span data-stat="mt-label">Checking…</span> · <span data-stat="mt-connected">0</span>/<span data-stat="mt-total">{{ analytics.routers_total }}</span></p>
+    </article>
+
+    <article class="workspace-dash-stat tone-warn{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:3">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">Outages</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="outages">{{ analytics.outages|length }}</p>
+      <p class="workspace-dash-stat-meta">Routers needing attention</p>
+    </article>
+
+    <article class="workspace-dash-stat tone-clients" style="--i:4">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">Active clients</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="active">{{ analytics.active_customers }}</p>
+      <p class="workspace-dash-stat-meta"><span data-stat="customers">{{ analytics.customers }}</span> total · <span data-stat="pending">{{ analytics.pending_invoices }}</span> pending</p>
+    </article>
   </div>
-  <div class="role-highlight-grid">
-    <a class="role-highlight-card" href="{% url 'core:my_clients' %}">
-      <span class="role-highlight-index">01</span>
-      <p>Manage subscribers, renewals, and live access.</p>
-    </a>
-    <a class="role-highlight-card" href="{% url 'billing:dashboard' %}">
-      <span class="role-highlight-index">02</span>
-      <p>Track billing attention, packages, and invoices.</p>
-    </a>
-    <a class="role-highlight-card" href="{% url 'core:mikrotik' %}">
-      <span class="role-highlight-index">03</span>
-      <p>Connect routers and monitor network equipment.</p>
-    </a>
+
+  <section class="workspace-dash-panel workspace-dash-panel-chart">
+    <div class="workspace-dash-panel-head">
+      <div>
+        <p class="workspace-dash-panel-kicker">Network</p>
+        <h2>MikroTik performance trend</h2>
+        <p class="panel-sub">Health score for every router over the last 24 hours. Dashed line is the fleet average.</p>
+      </div>
+      <div class="workspace-dash-perf-summary">
+        <span class="workspace-dash-chip"><strong data-stat="mt-score-lg">—</strong> <span data-stat="mt-label-lg">Checking…</span></span>
+        <span class="workspace-dash-chip"><span data-stat="mt-connected-lg">0</span>/<span data-stat="mt-total-lg">{{ analytics.routers_total }}</span> connected</span>
+        <span class="workspace-dash-chip">Online <strong data-stat="mt-ratio">—</strong></span>
+      </div>
+    </div>
+    <div class="workspace-dash-chart-wrap">
+      <canvas id="chart-mikrotik-trend" height="280"></canvas>
+    </div>
+    <div class="workspace-dash-router-perf" data-router-perf-body>
+      <div class="workspace-dash-empty is-loading">
+        <p class="workspace-dash-empty-title">Loading per-router scores…</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="workspace-dash-grid">
+    <section class="workspace-dash-panel">
+      <div class="workspace-dash-panel-head">
+        <div>
+          <p class="workspace-dash-panel-kicker">Alerts</p>
+          <h2>Network outages</h2>
+          <p class="panel-sub">Live reachability and login health.</p>
+        </div>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:mikrotik' %}">All routers</a>
+      </div>
+      <div data-outages-body>
+        <div class="workspace-dash-empty is-loading">
+          <p class="workspace-dash-empty-title">Checking routers…</p>
+          <p class="workspace-dash-empty-copy">Live status loads without slowing the page.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace-dash-panel">
+      <div class="workspace-dash-panel-head">
+        <div>
+          <p class="workspace-dash-panel-kicker">Revenue</p>
+          <h2>Collected today</h2>
+          <p class="panel-sub">
+            Since midnight · STK pending <strong data-stat="stk-pending">{{ analytics.stk_pending }}</strong>
+            {% if analytics.stk_failed_today %} · failed <strong data-stat="stk-failed">{{ analytics.stk_failed_today }}</strong>{% endif %}
+          </p>
+        </div>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">All payments</a>
+      </div>
+      {% if analytics.recent_payments %}
+        <div class="workspace-dash-scroll">
+          <table class="workspace-dash-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Client</th>
+                <th>Method</th>
+                <th>Amount</th>
+                <th>Reference</th>
+              </tr>
+            </thead>
+            <tbody data-payments-body>
+              {% for pay in analytics.recent_payments %}
+                <tr>
+                  <td><span class="workspace-dash-time">{{ pay.received_at }}</span></td>
+                  <td>
+                    {% if pay.customer_url %}
+                      <a class="workspace-dash-client" href="{{ pay.customer_url }}"><strong>{{ pay.customer_name }}</strong></a>
+                    {% else %}
+                      {{ pay.customer_name }}
+                    {% endif %}
+                  </td>
+                  <td>{{ pay.method }}</td>
+                  <td><strong class="workspace-dash-amount">KES {{ pay.amount }}</strong></td>
+                  <td class="workspace-dash-muted">{{ pay.reference|default:"—" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="workspace-dash-empty" data-payments-empty>
+          <p class="workspace-dash-empty-title">No collections yet today</p>
+          <p class="workspace-dash-empty-copy">Successful M-Pesa and other payments will appear here.</p>
+        </div>
+      {% endif %}
+    </section>
   </div>
-</section>
+
+  <section class="workspace-dash-panel">
+    <div class="workspace-dash-panel-head">
+      <div>
+        <p class="workspace-dash-panel-kicker">Renewals</p>
+        <h2>Expired clients</h2>
+        <p class="panel-sub">Packages past their end date.</p>
+      </div>
+      <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billing</a>
+    </div>
+    {% if analytics.expired %}
+      <div class="workspace-dash-scroll">
+        <table class="workspace-dash-table">
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Package</th>
+              <th>Ended</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody data-expired-body>
+            {% for row in analytics.expired %}
+              <tr>
+                <td>
+                  <a class="workspace-dash-client" href="{{ row.url }}">
+                    <strong>{{ row.full_name }}</strong>
+                    <small>{{ row.account_number }}</small>
+                  </a>
+                </td>
+                <td>{% if row.plan_name %}<span class="workspace-dash-plan">{{ row.plan_name }}</span>{% else %}—{% endif %}</td>
+                <td>{{ row.package_end|default:"—" }}</td>
+                <td><a class="btn btn-ghost workspace-dash-btn-sm" href="{{ row.url }}">Open</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="workspace-dash-empty" data-expired-empty>
+        <p class="workspace-dash-empty-title">No expired packages</p>
+        <p class="workspace-dash-empty-copy">All tracked package periods are still current.</p>
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+<script>
+(function () {
+  var root = document.querySelector("[data-workspace-dash]");
+  if (!root) return;
+  var analyticsUrl = root.getAttribute("data-analytics-url");
+  var mikrotikUrl = root.getAttribute("data-mikrotik-status-url");
+  var stamp = root.querySelector("[data-live-stamp]");
+  var refreshBtn = root.querySelector("[data-live-refresh]");
+  var inFlight = false;
+  var initial = {{ analytics_json|safe }};
+  var trendChart = null;
+
+  function money(n) {
+    var v = Number(n) || 0;
+    try {
+      return "KES " + v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    } catch (e) {
+      return "KES " + v;
+    }
+  }
+
+  function setText(sel, value) {
+    root.querySelectorAll(sel).forEach(function (el) {
+      el.textContent = value;
+    });
+  }
+
+  function statusLabel(status) {
+    var map = {
+      connected: "Connected",
+      reachable: "Reachable",
+      limited: "Limited",
+      auth_failed: "Auth failed",
+      wrong_host: "Wrong host",
+      disconnected: "Offline"
+    };
+    return map[status] || status || "Unknown";
+  }
+
+  function scoreLabel(score) {
+    if (score == null) return "Unknown";
+    if (score >= 85) return "Excellent";
+    if (score >= 70) return "Good";
+    if (score >= 45) return "Fair";
+    return "Poor";
+  }
+
+  function chartDefaults() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          position: "bottom",
+          labels: {
+            color: dark ? "#c8d4db" : "#4a6573",
+            boxWidth: 12,
+            font: { weight: "600" },
+            padding: 16
+          }
+        },
+        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+      },
+      scales: {
+        x: {
+          ticks: { color: dark ? "#8aa0ab" : "#64748b", maxRotation: 0, autoSkipPadding: 10 },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        },
+        y: {
+          min: 0,
+          max: 100,
+          ticks: {
+            color: dark ? "#8aa0ab" : "#64748b",
+            callback: function (v) { return v + "%"; }
+          },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        }
+      }
+    };
+  }
+
+  function paintTrend(trend) {
+    var canvas = document.getElementById("chart-mikrotik-trend");
+    if (!canvas || !window.Chart) return;
+    var labels = (trend && trend.labels) || [];
+    var datasets = ((trend && trend.datasets) || []).map(function (ds) {
+      return Object.assign({}, ds, {
+        fill: false,
+        spanGaps: true
+      });
+    });
+    if (!trendChart) {
+      trendChart = new Chart(canvas, {
+        type: "line",
+        data: { labels: labels, datasets: datasets },
+        options: chartDefaults()
+      });
+    } else {
+      trendChart.data.labels = labels;
+      trendChart.data.datasets = datasets;
+      trendChart.update("none");
+    }
+  }
+
+  function performance(routers) {
+    if (!routers || !routers.length) {
+      return {
+        connected: 0,
+        total: 0,
+        score: null,
+        label: "No routers",
+        online_ratio: null,
+        outages: [],
+        routers: []
+      };
+    }
+    var scoreMap = {
+      connected: 100,
+      reachable: 70,
+      limited: 55,
+      auth_failed: 25,
+      wrong_host: 10,
+      disconnected: 0
+    };
+    var scores = [];
+    var connected = 0;
+    var outages = [];
+    var perRouter = [];
+    routers.forEach(function (row) {
+      var status = (row.status || "disconnected").toLowerCase();
+      var score = scoreMap[status] != null ? scoreMap[status] : 0;
+      scores.push(score);
+      if (status === "connected") connected += 1;
+      if (["disconnected", "auth_failed", "wrong_host", "limited"].indexOf(status) >= 0) {
+        outages.push(row);
+      }
+      perRouter.push({
+        id: row.id,
+        name: row.name || "MikroTik",
+        host: row.host || "",
+        status: status,
+        error: row.error || "",
+        score: score,
+        label: scoreLabel(score)
+      });
+    });
+    perRouter.sort(function (a, b) {
+      if (a.score !== b.score) return a.score - b.score;
+      return String(a.name).localeCompare(String(b.name));
+    });
+    var avg = scores.length ? Math.round((scores.reduce(function (a, b) { return a + b; }, 0) / scores.length) * 10) / 10 : null;
+    return {
+      connected: connected,
+      total: routers.length,
+      score: avg,
+      label: scoreLabel(avg),
+      online_ratio: Math.round((connected / routers.length) * 1000) / 10,
+      outages: outages,
+      routers: perRouter
+    };
+  }
+
+  function renderOutages(outages) {
+    var body = root.querySelector("[data-outages-body]");
+    if (!body) return;
+    if (!outages || !outages.length) {
+      body.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">No outages</p>' +
+        '<p class="workspace-dash-empty-copy">All checked routers look healthy right now.</p>' +
+        "</div>";
+      return;
+    }
+    var html = '<div class="workspace-dash-scroll"><table class="workspace-dash-table"><thead><tr><th>Router</th><th>Status</th><th>Detail</th><th></th></tr></thead><tbody>';
+    outages.forEach(function (row) {
+      var url = row.id ? ("/app/mikrotik/" + row.id + "/") : "{% url 'core:mikrotik' %}";
+      html +=
+        "<tr class=\"is-outage\">" +
+        "<td><a class=\"workspace-dash-client\" href=\"" + url + "\"><strong>" + (row.name || "MikroTik") + "</strong><small>" + (row.host || "") + "</small></a></td>" +
+        '<td><span class="workspace-dash-badge is-warn">' + statusLabel(row.status) + "</span></td>" +
+        "<td class=\"workspace-dash-muted\">" + (row.error || "—") + "</td>" +
+        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    body.innerHTML = html;
+  }
+
+  function renderRouterPerf(routers) {
+    var body = root.querySelector("[data-router-perf-body]");
+    if (!body) return;
+    if (!routers || !routers.length) {
+      body.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">No routers onboarded</p>' +
+        '<p class="workspace-dash-empty-copy">Connect a MikroTik to see per-router performance.</p>' +
+        "</div>";
+      return;
+    }
+    var html = '<div class="workspace-dash-scroll"><table class="workspace-dash-table"><thead><tr><th>Router</th><th>Status</th><th>Score</th><th>Health</th><th></th></tr></thead><tbody>';
+    routers.forEach(function (row) {
+      var url = row.id ? ("/app/mikrotik/" + row.id + "/") : "{% url 'core:mikrotik' %}";
+      var tone = row.score >= 85 ? "is-good" : (row.score >= 45 ? "is-fair" : "is-poor");
+      html +=
+        "<tr class=\"" + tone + "\">" +
+        "<td><a class=\"workspace-dash-client\" href=\"" + url + "\"><strong>" + row.name + "</strong><small>" + row.host + "</small></a></td>" +
+        "<td>" + statusLabel(row.status) + "</td>" +
+        "<td><strong>" + row.score + "%</strong></td>" +
+        "<td><span class=\"workspace-dash-health " + tone + "\">" + row.label + "</span>" +
+        '<div class="workspace-dash-scorebar" aria-hidden="true"><span style="width:' + row.score + '%"></span></div></td>' +
+        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    body.innerHTML = html;
+  }
+
+  function applyAnalytics(data) {
+    if (!data) return;
+    if (data.day_label) setText("[data-day-label]", data.day_label);
+    setText('[data-stat="collected"]', money(data.collected_today));
+    setText('[data-stat="payments-today"]', data.payments_today != null ? data.payments_today : "0");
+    setText('[data-stat="expired"]', data.expired_count != null ? data.expired_count : "0");
+    setText('[data-stat="active"]', data.active_customers != null ? data.active_customers : "0");
+    setText('[data-stat="customers"]', data.customers != null ? data.customers : "0");
+    setText('[data-stat="pending"]', data.pending_invoices != null ? data.pending_invoices : "0");
+    setText('[data-stat="stk-pending"]', data.stk_pending != null ? data.stk_pending : "0");
+    if (data.stk_failed_today != null) setText('[data-stat="stk-failed"]', data.stk_failed_today);
+    if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
+  }
+
+  function applyMikrotik(perf) {
+    var scoreText = perf.score != null ? perf.score + "%" : "—";
+    setText('[data-stat="mt-score"]', scoreText);
+    setText('[data-stat="mt-score-lg"]', scoreText);
+    setText('[data-stat="mt-label"]', perf.label || "—");
+    setText('[data-stat="mt-label-lg"]', perf.label || "—");
+    setText('[data-stat="mt-connected"]', perf.connected != null ? perf.connected : "0");
+    setText('[data-stat="mt-connected-lg"]', perf.connected != null ? perf.connected : "0");
+    setText('[data-stat="mt-total"]', perf.total != null ? perf.total : "0");
+    setText('[data-stat="mt-total-lg"]', perf.total != null ? perf.total : "0");
+    setText('[data-stat="mt-ratio"]', perf.online_ratio != null ? perf.online_ratio + "%" : "—");
+    setText('[data-stat="outages"]', (perf.outages || []).length);
+    var outageCard = root.querySelector("[data-outage-card]");
+    if (outageCard) outageCard.classList.toggle("is-hot", (perf.outages || []).length > 0);
+    var netCard = root.querySelector("[data-mikrotik-card]");
+    if (netCard) {
+      netCard.classList.toggle("is-good", (perf.score || 0) >= 70);
+      netCard.classList.toggle("is-hot", perf.score != null && perf.score < 45);
+    }
+    renderOutages(perf.outages || []);
+    renderRouterPerf(perf.routers || []);
+  }
+
+  function markStamp() {
+    if (!stamp) return;
+    stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
+      hour: "2-digit", minute: "2-digit", second: "2-digit"
+    });
+  }
+
+  function loadLive(force) {
+    if (inFlight) return Promise.resolve();
+    inFlight = true;
+    root.classList.add("is-refreshing");
+    var analyticsReq = analyticsUrl
+      ? fetch(analyticsUrl + (force ? "?refresh=1" : ""), {
+          headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          cache: "no-store"
+        }).then(function (r) { return r.json(); })
+      : Promise.resolve(null);
+    var mikrotikReq = mikrotikUrl
+      ? fetch(mikrotikUrl + (force ? "?refresh=1" : ""), {
+          headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          cache: "no-store"
+        }).then(function (r) { return r.json(); })
+      : Promise.resolve(null);
+
+    return Promise.all([analyticsReq, mikrotikReq])
+      .then(function (parts) {
+        var analytics = parts[0];
+        var mikrotik = parts[1];
+        if (analytics && analytics.ok !== false) applyAnalytics(analytics);
+        var routers = (mikrotik && mikrotik.routers) || [];
+        applyMikrotik(performance(routers));
+        markStamp();
+      })
+      .catch(function () {})
+      .finally(function () {
+        inFlight = false;
+        root.classList.remove("is-refreshing");
+      });
+  }
+
+  function boot() {
+    applyAnalytics(initial);
+    loadLive(false);
+  }
+
+  if (window.Chart) boot();
+  else {
+    var wait = setInterval(function () {
+      if (!window.Chart) return;
+      clearInterval(wait);
+      boot();
+    }, 40);
+  }
+  if (refreshBtn) refreshBtn.addEventListener("click", function () { loadLive(true); });
+  setInterval(function () { loadLive(false); }, 45000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) loadLive(false);
+  });
+})();
+</script>
 {% endblock %}

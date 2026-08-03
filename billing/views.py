@@ -1,8 +1,12 @@
+from calendar import monthrange
+from datetime import date, datetime, time, timedelta
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q, Sum
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone as dj_tz
 from django.views.decorators.http import require_GET, require_POST
 
 from accounts.routing import home_url_for_user, is_viewing_as_client
@@ -13,6 +17,8 @@ from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from .services import customers_needing_renewal_attention
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
+_REVENUE_RANGE_CHOICES = ("day", "period", "month", "year")
+
 
 def _require_client_workspace(request):
     employee = getattr(request.user, "employee_profile", None)
@@ -20,6 +26,90 @@ def _require_client_workspace(request):
     if employee is not None and not viewing_client:
         return redirect(home_url_for_user(request.user, request))
     return None
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _aware_day_start(day: date):
+    return dj_tz.make_aware(datetime.combine(day, time.min))
+
+
+def _parse_revenue_filter(request) -> dict:
+    """Build revenue date-range filter from GET calendar params."""
+    today = dj_tz.localdate()
+    range_mode = (request.GET.get("range") or "").strip().lower()
+    if range_mode not in _REVENUE_RANGE_CHOICES:
+        range_mode = ""
+
+    day_value = _parse_iso_date(request.GET.get("day")) or today
+    start_value = _parse_iso_date(request.GET.get("start")) or today.replace(day=1)
+    end_value = _parse_iso_date(request.GET.get("end")) or today
+    month_raw = (request.GET.get("month") or "").strip()
+    year_raw = (request.GET.get("year") or "").strip()
+
+    month_date = today.replace(day=1)
+    if month_raw:
+        try:
+            month_date = datetime.strptime(month_raw, "%Y-%m").date().replace(day=1)
+        except ValueError:
+            pass
+    month_value = month_date.strftime("%Y-%m")
+
+    year_int = today.year
+    if year_raw.isdigit():
+        parsed_year = int(year_raw)
+        if 2000 <= parsed_year <= 2100:
+            year_int = parsed_year
+    year_value = str(year_int)
+
+    start_dt = None
+    end_dt = None
+    label = "All time"
+
+    if range_mode == "day":
+        start_dt = _aware_day_start(day_value)
+        end_dt = start_dt + timedelta(days=1)
+        label = day_value.strftime("%d %b %Y")
+    elif range_mode == "period":
+        if start_value > end_value:
+            start_value, end_value = end_value, start_value
+        start_dt = _aware_day_start(start_value)
+        end_dt = _aware_day_start(end_value) + timedelta(days=1)
+        if start_value == end_value:
+            label = start_value.strftime("%d %b %Y")
+        else:
+            label = f"{start_value.strftime('%d %b %Y')} → {end_value.strftime('%d %b %Y')}"
+    elif range_mode == "month":
+        last_day = monthrange(month_date.year, month_date.month)[1]
+        start_dt = _aware_day_start(month_date)
+        end_dt = _aware_day_start(month_date.replace(day=last_day)) + timedelta(days=1)
+        label = month_date.strftime("%B %Y")
+    elif range_mode == "year":
+        start_dt = _aware_day_start(date(year_int, 1, 1))
+        end_dt = _aware_day_start(date(year_int + 1, 1, 1))
+        label = str(year_int)
+
+    return {
+        "range": range_mode,
+        "day": day_value.isoformat(),
+        "start": start_value.isoformat(),
+        "end": end_value.isoformat(),
+        "month": month_value,
+        "year": year_value,
+        "start_dt": start_dt,
+        "end_dt": end_dt,
+        "label": label,
+        "active": bool(range_mode and start_dt and end_dt),
+        "ui_range": range_mode or "month",
+    }
 
 
 def _handle_register_package(request, org, *, success_url_name: str):
@@ -252,6 +342,7 @@ def dashboard(request):
         return blocked
 
     org = resolve_organization(request.user, request)
+    revenue_filter = _parse_revenue_filter(request)
 
     if org:
         customer_stats = Customer.objects.filter(organization=org).aggregate(
@@ -261,22 +352,37 @@ def dashboard(request):
         invoice_stats = Invoice.objects.filter(organization=org).aggregate(
             pending_invoices=Count("id", filter=Q(status="pending")),
         )
-        revenue = (
-            Payment.objects.filter(organization=org).aggregate(total=Sum("amount"))["total"]
-            or 0
+        payments_qs = Payment.objects.filter(organization=org)
+        if revenue_filter["active"]:
+            payments_qs = payments_qs.filter(
+                received_at__gte=revenue_filter["start_dt"],
+                received_at__lt=revenue_filter["end_dt"],
+            )
+        revenue_stats = payments_qs.aggregate(
+            total=Sum("amount"),
+            pppoe=Sum(
+                "amount",
+                filter=Q(invoice__customer__service_type=Customer.ServiceType.PPPOE),
+            ),
+            hotspot=Sum(
+                "amount",
+                filter=Q(invoice__customer__service_type=Customer.ServiceType.HOTSPOT),
+            ),
+            count=Count("id"),
         )
-        payment_count = Payment.objects.filter(organization=org).count()
         stats = {
             "customers": customer_stats["customers"] or 0,
             "active_customers": customer_stats["active_customers"] or 0,
             "pending_invoices": invoice_stats["pending_invoices"] or 0,
-            "revenue": revenue,
-            "payment_count": payment_count,
+            "revenue": revenue_stats["total"] or 0,
+            "revenue_pppoe": revenue_stats["pppoe"] or 0,
+            "revenue_hotspot": revenue_stats["hotspot"] or 0,
+            "payment_count": revenue_stats["count"] or 0,
         }
         payments = list(
-            Payment.objects.filter(organization=org)
-            .select_related("invoice", "invoice__customer")
-            .order_by("-received_at")
+            payments_qs.select_related("invoice", "invoice__customer").order_by(
+                "-received_at"
+            )
         )
         attention_customers = customers_needing_renewal_attention(org)
         stats["attention_customers"] = len(attention_customers)
@@ -286,6 +392,8 @@ def dashboard(request):
             "active_customers": 0,
             "pending_invoices": 0,
             "revenue": 0,
+            "revenue_pppoe": 0,
+            "revenue_hotspot": 0,
             "payment_count": 0,
             "attention_customers": 0,
         }
@@ -303,6 +411,7 @@ def dashboard(request):
             stats=stats,
             payments=payments,
             attention_customers=attention_customers,
+            revenue_filter=revenue_filter,
         ),
     )
 

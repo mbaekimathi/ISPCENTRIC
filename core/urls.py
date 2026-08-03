@@ -8,6 +8,11 @@ app_name = "core"
 urlpatterns = [
     path("", LandingView.as_view(), name="landing"),
     path("app/", views.workspace, name="workspace"),
+    path(
+        "app/analytics/",
+        views.workspace_analytics,
+        name="workspace_analytics",
+    ),
     path("app/mikrotik/", views.mikrotik, name="mikrotik"),
     path(
         "app/mikrotik/<int:router_id>/edit/",

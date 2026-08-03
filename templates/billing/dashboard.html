@@ -34,11 +34,92 @@
       <p class="billing-dash-stat-label">Pending invoices</p>
       <p class="billing-dash-stat-value">{{ stats.pending_invoices }}</p>
     </article>
-    <article class="billing-dash-stat is-accent billing-dash-stat-wide">
-      <p class="billing-dash-stat-label">Revenue</p>
-      <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue }}</p>
-    </article>
   </div>
+
+  <section class="panel staff-panel staff-panel-solid billing-dash-panel billing-dash-revenue">
+    <div class="panel-head-row">
+      <div>
+        <h2>Revenue</h2>
+        <p class="panel-sub">
+          {% if revenue_filter.active %}
+            Collections for {{ revenue_filter.label }}.
+          {% else %}
+            All-time collections. Choose a calendar range to filter.
+          {% endif %}
+        </p>
+      </div>
+      {% if revenue_filter.active %}
+        <div class="panel-head-actions">
+          <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Clear filter</a>
+        </div>
+      {% endif %}
+    </div>
+
+    <form class="billing-revenue-filter" method="get" action="{% url 'billing:dashboard' %}" id="billing-revenue-filter">
+      <div class="billing-revenue-modes" role="group" aria-label="Revenue period">
+        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'day' %} is-active{% endif %}">
+          <input type="radio" name="range" value="day"{% if revenue_filter.ui_range == 'day' %} checked{% endif %}>
+          <span>Single day</span>
+        </label>
+        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'period' %} is-active{% endif %}">
+          <input type="radio" name="range" value="period"{% if revenue_filter.ui_range == 'period' %} checked{% endif %}>
+          <span>Period</span>
+        </label>
+        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'month' %} is-active{% endif %}">
+          <input type="radio" name="range" value="month"{% if revenue_filter.ui_range == 'month' %} checked{% endif %}>
+          <span>Month</span>
+        </label>
+        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'year' %} is-active{% endif %}">
+          <input type="radio" name="range" value="year"{% if revenue_filter.ui_range == 'year' %} checked{% endif %}>
+          <span>Year</span>
+        </label>
+      </div>
+
+      <div class="billing-revenue-calendars">
+        <div class="billing-revenue-field" data-range-field="day" hidden>
+          <label for="billing-revenue-day">Day</label>
+          <input id="billing-revenue-day" type="date" name="day" value="{{ revenue_filter.day }}">
+        </div>
+        <div class="billing-revenue-field" data-range-field="period" hidden>
+          <label for="billing-revenue-start">From</label>
+          <input id="billing-revenue-start" type="date" name="start" value="{{ revenue_filter.start }}">
+        </div>
+        <div class="billing-revenue-field" data-range-field="period" hidden>
+          <label for="billing-revenue-end">To</label>
+          <input id="billing-revenue-end" type="date" name="end" value="{{ revenue_filter.end }}">
+        </div>
+        <div class="billing-revenue-field" data-range-field="month" hidden>
+          <label for="billing-revenue-month">Month</label>
+          <input id="billing-revenue-month" type="month" name="month" value="{{ revenue_filter.month }}">
+        </div>
+        <div class="billing-revenue-field" data-range-field="year" hidden>
+          <label for="billing-revenue-year">Year</label>
+          <input id="billing-revenue-year" type="number" name="year" min="2000" max="2100" step="1" placeholder="YYYY" value="{{ revenue_filter.year }}">
+        </div>
+        <div class="billing-revenue-actions">
+          <button type="submit" class="btn btn-primary">Apply</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="billing-revenue-cards">
+      <article class="billing-revenue-card is-total">
+        <p class="billing-dash-stat-label">Total revenue</p>
+        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue }}</p>
+        <p class="billing-revenue-meta">{{ stats.payment_count }} payment{{ stats.payment_count|pluralize }}</p>
+      </article>
+      <article class="billing-revenue-card is-pppoe">
+        <p class="billing-dash-stat-label">PPPoE revenue</p>
+        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_pppoe }}</p>
+        <p class="billing-revenue-meta">From PPPoE clients</p>
+      </article>
+      <article class="billing-revenue-card is-hotspot">
+        <p class="billing-dash-stat-label">Hotspot revenue</p>
+        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_hotspot }}</p>
+        <p class="billing-revenue-meta">From Hotspot clients</p>
+      </article>
+    </div>
+  </section>
 
   <section class="panel staff-panel staff-panel-solid billing-dash-panel">
     <div class="panel-head-row">
@@ -152,8 +233,14 @@
   <section class="panel staff-panel staff-panel-solid billing-dash-panel">
     <div class="panel-head-row">
       <div>
-        <h2>All payments</h2>
-        <p class="panel-sub">Every successful collection for this organization.</p>
+        <h2>Payments</h2>
+        <p class="panel-sub">
+          {% if revenue_filter.active %}
+            Successful collections for {{ revenue_filter.label }}.
+          {% else %}
+            Every successful collection for this organization.
+          {% endif %}
+        </p>
       </div>
       <div class="panel-head-actions">
         <span class="org-status org-status-active">{{ stats.payment_count }} recorded</span>
@@ -167,6 +254,7 @@
             <tr>
               <th>Date</th>
               <th>Customer</th>
+              <th>Service</th>
               <th>Amount</th>
               <th>Method</th>
               <th>M-Pesa / Ref</th>
@@ -186,6 +274,15 @@
                     —
                   {% endif %}
                 </td>
+                <td>
+                  {% if pay.invoice and pay.invoice.customer %}
+                    <span class="billing-service-pill billing-service-{{ pay.invoice.customer.service_type }}">
+                      {{ pay.invoice.customer.get_service_type_display }}
+                    </span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
                 <td><strong>KES {{ pay.amount }}</strong></td>
                 <td>{{ pay.get_method_display }}</td>
                 <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
@@ -197,7 +294,13 @@
     {% else %}
       <div class="billing-dash-empty">
         <p class="billing-dash-empty-title">No payments yet</p>
-        <p class="billing-dash-empty-copy">Successful M-Pesa and other collections will appear here.</p>
+        <p class="billing-dash-empty-copy">
+          {% if revenue_filter.active %}
+            No collections in this calendar range.
+          {% else %}
+            Successful M-Pesa and other collections will appear here.
+          {% endif %}
+        </p>
       </div>
     {% endif %}
   </section>
@@ -288,6 +391,40 @@
 
 {% block client_extra_js %}
 <script>
+(function () {
+  var form = document.getElementById("billing-revenue-filter");
+  if (!form) return;
+
+  var modes = form.querySelectorAll('input[name="range"]');
+  var fields = form.querySelectorAll("[data-range-field]");
+  var modeLabels = form.querySelectorAll(".billing-revenue-mode");
+
+  function selectedRange() {
+    var checked = form.querySelector('input[name="range"]:checked');
+    return checked ? checked.value : "month";
+  }
+
+  function syncFields() {
+    var range = selectedRange();
+    modeLabels.forEach(function (label) {
+      var input = label.querySelector('input[name="range"]');
+      label.classList.toggle("is-active", !!(input && input.checked));
+    });
+    fields.forEach(function (field) {
+      var match = field.getAttribute("data-range-field") === range;
+      field.hidden = !match;
+      field.querySelectorAll("input").forEach(function (input) {
+        input.disabled = !match;
+      });
+    });
+  }
+
+  modes.forEach(function (input) {
+    input.addEventListener("change", syncFields);
+  });
+  syncFields();
+})();
+
 (function () {
   var modal = document.getElementById("billing-stk-pay-modal");
   var form = document.getElementById("billing-stk-pay-form");

@@ -10,7 +10,15 @@
   <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">24 hours</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?hours=72">3 days</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?hours=168">7 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?hours=720">30 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?hours=8760">1 year</a>
 </nav>
+
+{% if auto_widened %}
+<p class="panel-sub clients-general-usage-widen-note">
+  Little or no traffic in the last {{ requested_range_label|default:requested_hours }}; showing the last {{ range_label|default:trend_hours }} instead.
+</p>
+{% endif %}
 
 <section class="panel client-hero" id="usage-overview" data-cat="live">
   <div class="mikrotik-detail-toolbar">
@@ -21,8 +29,8 @@
       </p>
       <h2>All clients</h2>
       <p class="panel-sub" data-usage-summary-copy>
-        Organization-wide trends for the last {{ trend_hours }} hour{{ trend_hours|pluralize }}.
-        Samples collect while client usage pages or live sessions are open.
+        Organization-wide trends for the last {{ range_label|default:trend_hours }}.
+        Live sessions are sampled from each MikroTik in one pass (cached so refreshes stay light).
       </p>
     </div>
     <div class="mikrotik-detail-actions">
@@ -37,12 +45,12 @@
       <dd><strong data-sum="clients">—</strong><span>With samples in this window</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="uptime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</dt>
-      <dd><strong data-sum="online">—</strong><span>Share of samples online</span></dd>
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online now</dt>
+      <dd><strong data-sum="online-now">—</strong><span><span data-sum="online">—</span> of meaningful samples online</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="down">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
-      <dd><strong data-sum="peak-down">—</strong><span>Highest measured rate</span></dd>
+      <dd><strong data-sum="peak-down">—</strong><span>Highest measured / estimated rate</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="data">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
@@ -115,9 +123,6 @@
       <h2>Highest users</h2>
       <p class="panel-sub">Ranked by data transferred in the selected window.</p>
     </div>
-    <div class="panel-head-actions">
-      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
-    </div>
   </div>
 
   {% if top_users %}
@@ -147,7 +152,7 @@
               </td>
               <td>{{ user.service_type_label }}</td>
               <td>{% if user.plan_name %}<span class="billing-dash-plan">{{ user.plan_name }}</span>{% else %}<span class="billing-dash-muted">—</span>{% endif %}</td>
-              <td data-bytes="{{ user.data_used_bytes }}">—</td>
+              <td data-bytes="{% if user.data_used_bytes %}{{ user.data_used_bytes }}{% else %}{{ user.peak_session_bytes|default:0 }}{% endif %}">—</td>
               <td data-bps="{{ user.peak_download_bps }}">—</td>
               <td>{{ user.online_ratio }}%</td>
               <td>
@@ -160,7 +165,7 @@
     </div>
   {% else %}
     <p class="client-live-empty-text">
-      No usage samples yet for this window. Open a client usage page or live session to start collecting data.
+      No usage yet for this window. Click Refresh to sample live sessions from your MikroTiks, or open a client usage page.
     </p>
   {% endif %}
 </section>
@@ -214,6 +219,7 @@
   function applySummary(data) {
     var summary = (data && data.summary) || {};
     setSum("clients", summary.clients_tracked != null ? summary.clients_tracked : "0");
+    setSum("online-now", summary.clients_online != null ? summary.clients_online : "0");
     setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
     setSum("peak-down", fmtBps(summary.peak_download_bps));
     setSum("data", fmtBytes(summary.data_used_bytes));
@@ -358,10 +364,12 @@
     applySummary(data);
   }
 
-  function loadTrends() {
+  function loadTrends(forceRefresh) {
     if (!trendsUrl || inFlight) return Promise.resolve();
     inFlight = true;
-    return fetch(trendsUrl + "?hours=" + encodeURIComponent(hours), {
+    var url = trendsUrl + "?hours=" + encodeURIComponent(hours);
+    if (forceRefresh) url += "&refresh=1";
+    return fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",
       cache: "no-store"
@@ -388,11 +396,11 @@
   }
 
   if (refreshBtn) {
-    refreshBtn.addEventListener("click", function () { loadTrends(); });
+    refreshBtn.addEventListener("click", function () { loadTrends(true); });
   }
-  setInterval(loadTrends, 60000);
+  setInterval(function () { loadTrends(false); }, 60000);
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadTrends();
+    if (!document.hidden) loadTrends(false);
   });
 })();
 </script>

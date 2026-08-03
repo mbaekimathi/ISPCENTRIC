@@ -204,6 +204,42 @@ class MikroTikRouter(models.Model):
         return f"{self.name} ({self.host})"
 
 
+class MikroTikStatusSample(models.Model):
+    """Time-series health snapshot for one MikroTik (dashboard performance trend)."""
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="mikrotik_status_samples",
+    )
+    router = models.ForeignKey(
+        MikroTikRouter,
+        on_delete=models.CASCADE,
+        related_name="status_samples",
+    )
+    sampled_at = models.DateTimeField(db_index=True)
+    status = models.CharField(max_length=32, default="disconnected")
+    score = models.PositiveSmallIntegerField(default=0)
+    online = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "core_mikrotik_status_sample"
+        ordering = ["sampled_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "sampled_at"],
+                name="core_mt_status_org_at_idx",
+            ),
+            models.Index(
+                fields=["router", "sampled_at"],
+                name="core_mt_status_router_at_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.router_id} {self.status}@{self.sampled_at}"
+
+
 class WireGuardReservation(models.Model):
     """
     A tunnel peer for a router that has not been onboarded yet.
