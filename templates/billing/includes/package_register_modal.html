@@ -58,9 +58,11 @@
         <section class="pppoe-section">
           <h3 class="pppoe-section-title">Pricing &amp; speeds</h3>
           <div class="pppoe-grid">
-            <div class="field">
-              <label for="{{ package_form.service_type.id_for_label }}">{{ package_form.service_type.label }}</label>
-              <div class="pppoe-select">{{ package_form.service_type }}</div>
+            <div class="field field-span-2">
+              <span class="package-service-type-label" id="package-service-type-label">{{ package_form.service_type.label }}</span>
+              <div class="package-service-type-toggle" role="radiogroup" aria-labelledby="package-service-type-label">
+                {{ package_form.service_type }}
+              </div>
               {% if package_form.service_type.errors %}<div class="field-error">{{ package_form.service_type.errors|striptags }}</div>{% endif %}
               <p class="field-hint">Hotspot packages appear on captive portals; PPPoE packages on home/office clients.</p>
             </div>

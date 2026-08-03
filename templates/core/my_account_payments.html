@@ -85,7 +85,7 @@
               <h3>PPPoE packages{% if pppoe_package_count %} ({{ pppoe_package_count }}){% endif %}</h3>
               <p>Assigned to home/office PPPoE clients.</p>
             </header>
-            {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." show_package_actions=1 hide_service_type=1 %}
+            {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." empty_hint="Register a package to assign speeds and pricing to PPPoE clients." show_package_actions=1 hide_service_type=1 package_tone="pppoe" %}
           </section>
 
           <section class="account-package-group">
@@ -93,7 +93,7 @@
               <h3>Hotspot packages{% if hotspot_package_count %} ({{ hotspot_package_count }}){% endif %}</h3>
               <p>Shown on captive Hotspot payment portals.</p>
             </header>
-            {% include "billing/includes/package_table.html" with packages=hotspot_packages empty_text="No Hotspot packages yet." show_package_actions=1 hide_service_type=1 %}
+            {% include "billing/includes/package_table.html" with packages=hotspot_packages empty_text="No Hotspot packages yet." empty_hint="Register a package to offer plans on your Hotspot portals." show_package_actions=1 hide_service_type=1 package_tone="hotspot" %}
           </section>
         </div>
       </section>

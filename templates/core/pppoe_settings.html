@@ -58,7 +58,7 @@
         {% if pppoe_compulsory %}
           <input type="hidden" name="pppoe_compulsory" value="on">
         {% endif %}
-        <button type="submit" class="btn btn-primary">
+        <button type="submit" class="btn btn-primary" data-loading-label="Pushing PPPoE policy…">
           {% if pppoe_compulsory %}Push block &amp; PPPoE logins to this router{% else %}Push PPPoE server &amp; client logins{% endif %}
         </button>
         <p class="settings-policy-hint">

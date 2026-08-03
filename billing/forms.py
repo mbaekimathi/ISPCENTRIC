@@ -1148,9 +1148,9 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "id": "id_package_description",
                 }
             ),
-            "service_type": forms.Select(
+            "service_type": forms.RadioSelect(
                 attrs={
-                    "class": "form-control",
+                    "class": "package-service-type-radios",
                     "id": "id_package_service_type",
                 }
             ),

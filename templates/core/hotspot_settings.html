@@ -246,16 +246,16 @@
       </section>
 
       <div class="form-actions hotspot-settings-actions">
-        <button type="submit" class="btn btn-primary">Save &amp; push to this router</button>
+        <button type="submit" class="btn btn-primary" data-loading-label="Saving Hotspot settings…">Save &amp; push to this router</button>
       </div>
     </form>
 
     <form method="post" class="settings-policy-form hotspot-push-form">
       {% csrf_token %}
       <input type="hidden" name="action" value="push_hotspot">
-      <button type="submit" class="btn btn-ghost">
-        {% if hotspot_enabled %}Push Hotspot to this router again{% else %}Remove Hotspot from this router{% endif %}
-      </button>
+        <button type="submit" class="btn btn-ghost" data-loading-label="Pushing Hotspot…">
+          {% if hotspot_enabled %}Push Hotspot to this router again{% else %}Remove Hotspot from this router{% endif %}
+        </button>
       <p class="settings-policy-hint">
         {% if hotspot_enabled %}
           Re-installs the Hotspot server on this router’s LAN bridge, syncs Hotspot client logins,

@@ -312,6 +312,22 @@ def client_workspace_required(view_func):
     return _wrapped
 
 
+def _schedule_mikrotik_job(target, *, name: str = "mikrotik-bg") -> None:
+    """Run RouterOS work off the request thread so nginx does not 504."""
+
+    def _runner():
+        from django.db import connection
+
+        try:
+            target()
+        except Exception:
+            pass
+        finally:
+            connection.close()
+
+    threading.Thread(target=_runner, name=name, daemon=True).start()
+
+
 def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict:
     """Dashboard at top, page links in the middle, settings + logout at the bottom."""
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
@@ -1494,26 +1510,23 @@ def mikrotik(request):
                         "Referral marked active — your first MikroTik is onboarded.",
                     )
             if org and getattr(org, "pppoe_compulsory", False):
-                enforce = apply_pppoe_enforcement_on_router(router, compulsory=True)
-                if enforce.get("ok"):
-                    messages.info(
-                        request,
-                        "PPPoE enforcement applied — paid PPPoE clients surf automatically; "
-                        "other devices use the Hotspot payment portal.",
-                    )
-                    hotspot = enforce.get("hotspot") or {}
-                    if hotspot and not hotspot.get("ok") and not hotspot.get("skipped"):
-                        messages.warning(
-                            request,
-                            hotspot.get("error")
-                            or "Hotspot fallback could not be pushed yet.",
+                router_pk = router.pk
+
+                def _bg_enforce(pk: int = router_pk) -> None:
+                    try:
+                        live = MikroTikRouter.objects.select_related("organization").get(
+                            pk=pk
                         )
-                else:
-                    messages.warning(
-                        request,
-                        enforce.get("error")
-                        or "Router onboarded, but PPPoE enforcement could not be applied yet.",
-                    )
+                        apply_pppoe_enforcement_on_router(live, compulsory=True)
+                    except Exception:
+                        pass
+
+                _schedule_mikrotik_job(_bg_enforce, name=f"pppoe-enforce-{router_pk}")
+                messages.info(
+                    request,
+                    "PPPoE enforcement is being applied on this MikroTik in the background — "
+                    "paid PPPoE clients will surf automatically; other devices use Hotspot.",
+                )
             # Drop stale discovery/status caches for this org after onboard.
             if org:
                 cache.delete_many(
@@ -5696,8 +5709,23 @@ def mikrotik_pppoe_settings(request, router_id: int):
         action = (request.POST.get("action") or "save_policy").strip()
         if action == "push_policy":
             enabled = bool(org.pppoe_compulsory)
-            result = apply_pppoe_enforcement_on_router(router, compulsory=enabled)
-            _pppoe_push_messages(request, result, enabled=enabled)
+            router_pk = router.pk
+
+            def _bg_push(pk: int = router_pk, compulsory: bool = enabled) -> None:
+                try:
+                    live = MikroTikRouter.objects.select_related("organization").get(
+                        pk=pk
+                    )
+                    apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
+                except Exception:
+                    pass
+
+            _schedule_mikrotik_job(_bg_push, name=f"pppoe-push-{router_pk}")
+            messages.success(
+                request,
+                f"Pushing PPPoE policy to {router.name} in the background. "
+                "Refresh this page in a minute if clients are still catching up.",
+            )
             return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
 
         form = PppoeSettingsForm(request.POST, instance=org)
@@ -5705,16 +5733,29 @@ def mikrotik_pppoe_settings(request, router_id: int):
             form.save()
             org.refresh_from_db()
             enabled = bool(form.cleaned_data.get("pppoe_compulsory"))
-            result = apply_pppoe_enforcement_on_router(router, compulsory=enabled)
+            router_pk = router.pk
+
+            def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled) -> None:
+                try:
+                    live = MikroTikRouter.objects.select_related("organization").get(
+                        pk=pk
+                    )
+                    apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
+                except Exception:
+                    pass
+
+            _schedule_mikrotik_job(_bg_save_push, name=f"pppoe-save-{router_pk}")
             if enabled:
                 messages.success(
                     request,
-                    "PPPoE enforcement enabled. Paid PPPoE clients surf automatically; "
-                    "other devices are sent to the Hotspot payment portal.",
+                    "PPPoE enforcement enabled. Pushing to this MikroTik in the background — "
+                    "paid PPPoE clients will surf automatically; other devices use Hotspot.",
                 )
             else:
-                messages.success(request, "PPPoE enforcement disabled.")
-            _pppoe_push_messages(request, result, enabled=enabled, saved=True)
+                messages.success(
+                    request,
+                    "PPPoE enforcement disabled. Updating this MikroTik in the background.",
+                )
             return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
     else:
         form = PppoeSettingsForm(instance=org) if can_edit else None
@@ -5835,18 +5876,49 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 if org.hotspot_redirect_url != redirect_url:
                     org.hotspot_redirect_url = redirect_url
                     org.save(update_fields=["hotspot_redirect_url"])
-            result = apply_hotspot_on_router(
-                router,
-                enabled=enabled,
-                organization=org,
-                redirect_url=redirect_url if enabled else "",
-                login_url=urls["login_url"] if enabled else "",
-                alogin_url=urls["alogin_url"] if enabled else "",
-                pay_url=urls["pay_url"] if enabled else "",
-                welcome_url=urls["welcome_url"] if enabled else "",
+            router_pk = router.pk
+            org_pk = org.pk
+            push_urls = {
+                "redirect_url": redirect_url if enabled else "",
+                "login_url": urls["login_url"] if enabled else "",
+                "alogin_url": urls["alogin_url"] if enabled else "",
+                "pay_url": urls["pay_url"] if enabled else "",
+                "welcome_url": urls["welcome_url"] if enabled else "",
+            }
+
+            def _bg_hotspot_push(
+                r_pk: int = router_pk,
+                o_pk: int = org_pk,
+                on: bool = enabled,
+                portal: dict = push_urls,
+            ) -> None:
+                try:
+                    live_router = MikroTikRouter.objects.select_related(
+                        "organization"
+                    ).get(pk=r_pk)
+                    live_org = Organization.objects.get(pk=o_pk)
+                    apply_hotspot_on_router(
+                        live_router,
+                        enabled=on,
+                        organization=live_org,
+                        redirect_url=portal.get("redirect_url") or "",
+                        login_url=portal.get("login_url") or "",
+                        alogin_url=portal.get("alogin_url") or "",
+                        pay_url=portal.get("pay_url") or "",
+                        welcome_url=portal.get("welcome_url") or "",
+                    )
+                except Exception:
+                    pass
+
+            _schedule_mikrotik_job(_bg_hotspot_push, name=f"hotspot-push-{router_pk}")
+            messages.success(
+                request,
+                (
+                    f"{'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
+                    f"{router.name} in the background."
+                ),
             )
-            _push_one(result, enabled=enabled)
-            if enabled and org.pppoe_compulsory and result.get("ok") and not result.get("skipped"):
+            if enabled and org.pppoe_compulsory:
                 messages.info(
                     request,
                     "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
@@ -5871,18 +5943,49 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 org.hotspot_redirect_url = urls["welcome_url"]
             org.save()
             enabled = bool(org.hotspot_enabled)
-            result = apply_hotspot_on_router(
-                router,
-                enabled=enabled,
-                organization=org,
-                redirect_url=org.hotspot_redirect_url if enabled else "",
-                login_url=urls["login_url"] if enabled else "",
-                alogin_url=urls["alogin_url"] if enabled else "",
-                pay_url=urls["pay_url"] if enabled else "",
-                welcome_url=urls["welcome_url"] if enabled else "",
+            router_pk = router.pk
+            org_pk = org.pk
+            push_urls = {
+                "redirect_url": org.hotspot_redirect_url if enabled else "",
+                "login_url": urls["login_url"] if enabled else "",
+                "alogin_url": urls["alogin_url"] if enabled else "",
+                "pay_url": urls["pay_url"] if enabled else "",
+                "welcome_url": urls["welcome_url"] if enabled else "",
+            }
+
+            def _bg_hotspot_save(
+                r_pk: int = router_pk,
+                o_pk: int = org_pk,
+                on: bool = enabled,
+                portal: dict = push_urls,
+            ) -> None:
+                try:
+                    live_router = MikroTikRouter.objects.select_related(
+                        "organization"
+                    ).get(pk=r_pk)
+                    live_org = Organization.objects.get(pk=o_pk)
+                    apply_hotspot_on_router(
+                        live_router,
+                        enabled=on,
+                        organization=live_org,
+                        redirect_url=portal.get("redirect_url") or "",
+                        login_url=portal.get("login_url") or "",
+                        alogin_url=portal.get("alogin_url") or "",
+                        pay_url=portal.get("pay_url") or "",
+                        welcome_url=portal.get("welcome_url") or "",
+                    )
+                except Exception:
+                    pass
+
+            _schedule_mikrotik_job(_bg_hotspot_save, name=f"hotspot-save-{router_pk}")
+            messages.success(
+                request,
+                (
+                    f"Settings saved. {'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
+                    f"{router.name} in the background."
+                ),
             )
-            _push_one(result, enabled=enabled, saved=True)
-            if enabled and org.pppoe_compulsory and result.get("ok") and not result.get("skipped"):
+            if enabled and org.pppoe_compulsory:
                 messages.info(
                     request,
                     "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
@@ -6403,19 +6506,31 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
         status=StkPushRequest.Status.SUCCESS,
         subscription_applied=True,
     )
-    provision = sync_customer_subscription_access(
-        stk.customer,
-        provision=True,
-        reauthenticate=True,
-    )
-    authorized = bool(provision.get("ok") and provision.get("allowed"))
+    customer_pk = stk.customer_id
+
+    def _bg_activate(pk: int = customer_pk) -> None:
+        try:
+            cust = Customer.objects.select_related(
+                "plan", "router", "organization"
+            ).get(pk=pk)
+            sync_customer_subscription_access(
+                cust,
+                provision=True,
+                reauthenticate=True,
+            )
+        except Exception:
+            pass
+
+    # Welcome page is already shown; reauth can reset the client's network.
+    _schedule_mikrotik_job(_bg_activate, name=f"hotspot-activate-{customer_pk}")
     return JsonResponse(
         {
-            "ok": authorized,
-            "authorized": authorized,
-            "can_retry_authorize": not authorized,
-            "offline": bool(provision.get("offline")),
-            "message": provision.get("message") or "",
+            "ok": True,
+            "authorized": True,
+            "queued": True,
+            "can_retry_authorize": False,
+            "offline": False,
+            "message": "Reauthenticating on MikroTik in the background.",
         }
     )
 

@@ -40,6 +40,37 @@ class PackageEditTests(TestCase):
         self.assertIn("billing-package-delete-modal", html)
         self.assertIn(f'data-package-id="{self.plan.id}"', html)
 
+    def test_edit_package_can_change_service_type(self):
+        self.assertEqual(self.plan.service_type, BillingPlan.ServiceType.PPPOE)
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(self.plan.id),
+                "name": "Home 10",
+                "description": "",
+                "price": "1500.00",
+                "download_speed_mbps": "10",
+                "upload_speed_mbps": "5",
+                "duration": BillingPlan.Duration.MONTHLY,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.service_type, BillingPlan.ServiceType.HOTSPOT)
+
+    def test_packages_edit_modal_exposes_service_type_choices(self):
+        res = self.client.get(reverse("billing:packages"))
+        self.assertEqual(res.status_code, 200)
+        html = res.content.decode()
+        self.assertIn('name="service_type"', html)
+        self.assertIn('value="pppoe"', html)
+        self.assertIn('value="hotspot"', html)
+        self.assertIn("package-service-type-toggle", html)
+        self.assertIn('data-package-service-type="pppoe"', html)
+
     def test_edit_package_updates_fields(self):
         with patch(
             "billing.views._schedule_reprovision_customers_for_plan_speeds",

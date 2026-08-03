@@ -3,39 +3,94 @@
 {% block title %}Packages — Billing — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel account-packages-panel">
-  <div class="panel-head-row">
-    <div>
-      <h2>Packages{% if package_count %} ({{ package_count }}){% endif %}</h2>
-      <p class="panel-sub">Internet packages available for customers in this organization.</p>
+<div class="packages-page">
+  <header class="packages-hero">
+    <div class="packages-hero-main">
+      <span class="packages-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Zm8 1.1L7.2 6.1 12 3.4l4.8 2.7L12 8.6Zm-6.2-.7v7.6L11 18.9v-7.6L5.8 7.9Zm12.4 0L13 11.3v7.6l5.2-3.4V7.9Z"/></svg>
+      </span>
+      <div class="packages-hero-copy">
+        <p class="packages-kicker">Billing</p>
+        <h2 class="packages-title">Packages</h2>
+        <p class="packages-lead">
+          {{ page_subtitle|default:"Manage internet packages for this organization." }}
+        </p>
+      </div>
     </div>
-    <div class="panel-head-actions">
-      <button type="button" class="btn btn-primary" data-open-modal="billing-package-modal">
+    <div class="packages-hero-actions">
+      <a class="btn btn-ghost packages-hero-btn" href="{% url 'billing:dashboard' %}">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
+        Billing overview
+      </a>
+      <button type="button" class="btn btn-primary packages-hero-btn" data-open-modal="billing-package-modal">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
         Register package
       </button>
     </div>
+  </header>
+
+  <div class="packages-stats" aria-label="Package counts">
+    <div class="packages-stat tone-total" style="--i:0">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Zm8 1.1L7.2 6.1 12 3.4l4.8 2.7L12 8.6Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Total</p>
+        <p class="packages-stat-value">{{ package_count|default:0 }}</p>
+      </div>
+    </div>
+    <a class="packages-stat tone-pppoe" href="#packages-pppoe" style="--i:1">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">PPPoE</p>
+        <p class="packages-stat-value">{{ pppoe_package_count|default:0 }}</p>
+      </div>
+    </a>
+    <a class="packages-stat tone-hotspot" href="#packages-hotspot" style="--i:2">
+      <span class="packages-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+      </span>
+      <div class="packages-stat-text">
+        <p class="packages-stat-label">Hotspot</p>
+        <p class="packages-stat-value">{{ hotspot_package_count|default:0 }}</p>
+      </div>
+    </a>
   </div>
 
-  <div class="account-package-groups">
-    <section class="account-package-group">
-      <header class="account-package-group-head">
-        <h3>PPPoE packages{% if pppoe_package_count %} ({{ pppoe_package_count }}){% endif %}</h3>
-        <p>Assigned to home/office PPPoE clients.</p>
+  <div class="packages-groups">
+    <section class="panel staff-panel staff-panel-solid packages-group tone-pppoe" id="packages-pppoe">
+      <header class="packages-group-head">
+        <div class="packages-group-title-row">
+          <span class="packages-group-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+          </span>
+          <div>
+            <h2>PPPoE packages{% if pppoe_package_count %} <span class="packages-group-count">{{ pppoe_package_count }}</span>{% endif %}</h2>
+            <p class="panel-sub">Assigned to home and office PPPoE clients.</p>
+          </div>
+        </div>
       </header>
-      {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." show_package_actions=1 hide_service_type=1 %}
+      {% include "billing/includes/package_table.html" with packages=pppoe_packages empty_text="No PPPoE packages yet." empty_hint="Register a package to assign speeds and pricing to PPPoE clients." show_package_actions=1 hide_service_type=1 package_tone="pppoe" %}
     </section>
 
-    <section class="account-package-group">
-      <header class="account-package-group-head">
-        <h3>Hotspot packages{% if hotspot_package_count %} ({{ hotspot_package_count }}){% endif %}</h3>
-        <p>Shown on captive Hotspot payment portals.</p>
+    <section class="panel staff-panel staff-panel-solid packages-group tone-hotspot" id="packages-hotspot">
+      <header class="packages-group-head">
+        <div class="packages-group-title-row">
+          <span class="packages-group-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+          </span>
+          <div>
+            <h2>Hotspot packages{% if hotspot_package_count %} <span class="packages-group-count">{{ hotspot_package_count }}</span>{% endif %}</h2>
+            <p class="panel-sub">Shown on captive Hotspot payment portals.</p>
+          </div>
+        </div>
       </header>
-      {% include "billing/includes/package_table.html" with packages=hotspot_packages empty_text="No Hotspot packages yet." show_package_actions=1 hide_service_type=1 %}
+      {% include "billing/includes/package_table.html" with packages=hotspot_packages empty_text="No Hotspot packages yet." empty_hint="Register a package to offer plans on your Hotspot portals." show_package_actions=1 hide_service_type=1 package_tone="hotspot" %}
     </section>
   </div>
-</section>
+</div>
 
 {% include "billing/includes/package_register_modal.html" %}
 {% include "billing/includes/package_edit_modal.html" %}

@@ -418,6 +418,10 @@
       return /\/billing\/packages\/?$/.test(pathname || "");
     }
 
+    function isClientsPath(pathname) {
+      return /\/app\/clients(\/|$)/.test(pathname || "");
+    }
+
     function formActionName(form) {
       var actionInput = form.querySelector('input[name="action"]');
       return (actionInput && actionInput.value) || "";
@@ -432,14 +436,21 @@
       if (link.hasAttribute("download")) return;
       var href = link.getAttribute("href") || "";
       if (!href || href.charAt(0) === "#" || href.indexOf("javascript:") === 0) return;
-      if (!isMikrotikHref(href)) return;
+      var isMikrotik = isMikrotikHref(href);
+      var isClientNav = false;
+      try {
+        var navUrl = new URL(href, window.location.origin);
+        isClientNav = navUrl.origin === window.location.origin
+          && (/\/app\/clients(\/|$)/.test(navUrl.pathname) || /\/billing\/packages\/?$/.test(navUrl.pathname));
+      } catch (err) {}
+      if (!isMikrotik && !isClientNav) return;
       var samePath = false;
       try {
         samePath = new URL(href, window.location.origin).pathname === window.location.pathname
           && new URL(href, window.location.origin).search === window.location.search;
-      } catch (err) {}
+      } catch (err2) {}
       if (samePath) return;
-      showLoader("Opening MikroTik…", "Loading page");
+      showLoader(isMikrotik ? "Opening MikroTik…" : "Loading…", "Please wait");
     }, true);
 
     document.addEventListener("submit", function (e) {
@@ -453,12 +464,18 @@
       var pathname = window.location.pathname || "";
       var onMikrotikPage = /\/app\/mikrotik(\/|$)/.test(pathname);
       var onPackagesPage = isPackagesPath(pathname);
+      var onClientsPage = isClientsPath(pathname);
       var formAction = formActionName(form);
       var mikrotikSyncForm = form.getAttribute("data-mikrotik-sync") === "1"
         || formAction === "edit_package"
         || formAction === "register_package";
 
-      if (!onMikrotikPage && !isMikrotikHref(action) && !(onPackagesPage && mikrotikSyncForm)) {
+      if (
+        !onMikrotikPage
+        && !isMikrotikHref(action)
+        && !(onPackagesPage && mikrotikSyncForm)
+        && !onClientsPage
+      ) {
         return;
       }
 
@@ -474,6 +491,18 @@
         label = label || "Saving package…";
         sub = "Creating the package and linking selected MikroTik routers.";
         timeoutMs = 60000;
+      } else if (formAction === "push_policy" || formAction === "save_policy") {
+        label = label || "Updating PPPoE policy…";
+        sub = "Saving settings. Router push continues in the background.";
+        timeoutMs = 60000;
+      } else if (formAction === "push_hotspot" || formAction === "save_settings") {
+        label = label || "Updating Hotspot…";
+        sub = "Saving settings. Router push continues in the background.";
+        timeoutMs = 60000;
+      } else if (onClientsPage) {
+        label = label || "Saving…";
+        sub = "Updating the client. MikroTik changes may continue in the background.";
+        timeoutMs = 90000;
       }
 
       // Defer so AJAX forms can preventDefault without flashing the overlay.
