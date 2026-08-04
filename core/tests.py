@@ -2271,6 +2271,8 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertTrue(data["clients"][0]["surfing"])
         self.assertTrue(data["clients"][0]["internet_allowed"])
         self.assertEqual(data["clients"][0]["reason"], "Online — internet OK")
+        self.assertEqual(data["clients"][0]["full_name"], "Unassigned Online Client")
+        self.assertTrue(data["clients"][0]["url"])
         fetch_active.assert_called_once_with(
             self.router.host,
             self.router.username,

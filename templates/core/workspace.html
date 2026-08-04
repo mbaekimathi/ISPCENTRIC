@@ -8,6 +8,7 @@
   data-workspace-dash
   data-analytics-url="{{ analytics_url }}"
   data-mikrotik-status-url="{{ mikrotik_status_url }}"
+  data-surfing-url="{% url 'core:clients_surfing' %}"
 >
   <header class="workspace-dash-hero">
     <div class="workspace-dash-hero-copy">
@@ -63,7 +64,18 @@
       <p class="workspace-dash-stat-meta"><span data-stat="mt-label">Checking…</span> · <span data-stat="mt-connected">0</span>/<span data-stat="mt-total">{{ analytics.routers_total }}</span></p>
     </article>
 
-    <article class="workspace-dash-stat tone-warn{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:3">
+    <article class="workspace-dash-stat tone-warn" data-offline-surf-card style="--i:3">
+      <div class="workspace-dash-stat-top">
+        <span class="workspace-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Zm0 4c-3.2 0-6 1.3-7.9 3.4l1.8 1.8A7.4 7.4 0 0 1 12 9a7.4 7.4 0 0 1 6.1 3.2l1.8-1.8A9.9 9.9 0 0 0 12 7Z"/></svg>
+        </span>
+        <p class="workspace-dash-stat-label">Not surfing</p>
+      </div>
+      <p class="workspace-dash-stat-value" data-stat="not-surfing">—</p>
+      <p class="workspace-dash-stat-meta">Paid period · router OK</p>
+    </article>
+
+    <article class="workspace-dash-stat tone-warn{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:4">
       <div class="workspace-dash-stat-top">
         <span class="workspace-dash-stat-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg>
@@ -74,7 +86,7 @@
       <p class="workspace-dash-stat-meta">Routers needing attention</p>
     </article>
 
-    <article class="workspace-dash-stat tone-clients" style="--i:4">
+    <article class="workspace-dash-stat tone-clients" style="--i:5">
       <div class="workspace-dash-stat-top">
         <span class="workspace-dash-stat-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg>
@@ -86,7 +98,7 @@
     </article>
 
     {% if referral_enabled %}
-    <article class="workspace-dash-stat tone-referral" style="--i:5">
+    <article class="workspace-dash-stat tone-referral" style="--i:6">
       <div class="workspace-dash-stat-top">
         <span class="workspace-dash-stat-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
@@ -145,6 +157,25 @@
     <section class="workspace-dash-panel">
       <div class="workspace-dash-panel-head">
         <div>
+          <p class="workspace-dash-panel-kicker">Alerts</p>
+          <h2>Not surfing</h2>
+          <p class="panel-sub">In subscription period, router connected, but no live internet session.</p>
+        </div>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
+      </div>
+      <div data-not-surfing-body>
+        <div class="workspace-dash-empty is-loading">
+          <p class="workspace-dash-empty-title">Checking clients…</p>
+          <p class="workspace-dash-empty-copy">Live PPPoE and Hotspot sessions load in the background.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="workspace-dash-grid">
+    <section class="workspace-dash-panel">
+      <div class="workspace-dash-panel-head">
+        <div>
           <p class="workspace-dash-panel-kicker">Revenue</p>
           <h2>Collected today</h2>
           <p class="panel-sub">
@@ -192,52 +223,52 @@
         </div>
       {% endif %}
     </section>
-  </div>
 
-  <section class="workspace-dash-panel">
-    <div class="workspace-dash-panel-head">
-      <div>
-        <p class="workspace-dash-panel-kicker">Renewals</p>
-        <h2>Expired clients</h2>
-        <p class="panel-sub">Packages past their end date.</p>
+    <section class="workspace-dash-panel">
+      <div class="workspace-dash-panel-head">
+        <div>
+          <p class="workspace-dash-panel-kicker">Renewals</p>
+          <h2>Expired clients</h2>
+          <p class="panel-sub">Packages past their end date.</p>
+        </div>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billing</a>
       </div>
-      <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billing</a>
-    </div>
-    {% if analytics.expired %}
-      <div class="workspace-dash-scroll">
-        <table class="workspace-dash-table">
-          <thead>
-            <tr>
-              <th>Client</th>
-              <th>Package</th>
-              <th>Ended</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody data-expired-body>
-            {% for row in analytics.expired %}
+      {% if analytics.expired %}
+        <div class="workspace-dash-scroll">
+          <table class="workspace-dash-table">
+            <thead>
               <tr>
-                <td>
-                  <a class="workspace-dash-client" href="{{ row.url }}">
-                    <strong>{{ row.full_name }}</strong>
-                    <small>{{ row.account_number }}</small>
-                  </a>
-                </td>
-                <td>{% if row.plan_name %}<span class="workspace-dash-plan">{{ row.plan_name }}</span>{% else %}—{% endif %}</td>
-                <td>{{ row.package_end|default:"—" }}</td>
-                <td><a class="btn btn-ghost workspace-dash-btn-sm" href="{{ row.url }}">Open</a></td>
+                <th>Client</th>
+                <th>Package</th>
+                <th>Ended</th>
+                <th></th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="workspace-dash-empty" data-expired-empty>
-        <p class="workspace-dash-empty-title">No expired packages</p>
-        <p class="workspace-dash-empty-copy">All tracked package periods are still current.</p>
-      </div>
-    {% endif %}
-  </section>
+            </thead>
+            <tbody data-expired-body>
+              {% for row in analytics.expired %}
+                <tr>
+                  <td>
+                    <a class="workspace-dash-client" href="{{ row.url }}">
+                      <strong>{{ row.full_name }}</strong>
+                      <small>{{ row.account_number }}</small>
+                    </a>
+                  </td>
+                  <td>{% if row.plan_name %}<span class="workspace-dash-plan">{{ row.plan_name }}</span>{% else %}—{% endif %}</td>
+                  <td>{{ row.package_end|default:"—" }}</td>
+                  <td><a class="btn btn-ghost workspace-dash-btn-sm" href="{{ row.url }}">Open</a></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="workspace-dash-empty" data-expired-empty>
+          <p class="workspace-dash-empty-title">No expired packages</p>
+          <p class="workspace-dash-empty-copy">All tracked package periods are still current.</p>
+        </div>
+      {% endif %}
+    </section>
+  </div>
 
 </div>
 {% endblock %}
@@ -250,6 +281,7 @@
   if (!root) return;
   var analyticsUrl = root.getAttribute("data-analytics-url");
   var mikrotikUrl = root.getAttribute("data-mikrotik-status-url");
+  var surfingUrl = root.getAttribute("data-surfing-url");
   var stamp = root.querySelector("[data-live-stamp]");
   var refreshBtn = root.querySelector("[data-live-refresh]");
   var inFlight = false;
@@ -483,6 +515,109 @@
     body.innerHTML = html;
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderNotSurfing(rows) {
+    var body = root.querySelector("[data-not-surfing-body]");
+    var card = root.querySelector("[data-offline-surf-card]");
+    var count = rows ? rows.length : 0;
+    setText('[data-stat="not-surfing"]', String(count));
+    if (card) card.classList.toggle("is-hot", count > 0);
+    if (!body) return;
+    if (!rows || !rows.length) {
+      body.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">All paid clients are surfing</p>' +
+        '<p class="workspace-dash-empty-copy">No in-period clients are offline while their MikroTik is connected.</p>' +
+        "</div>";
+      return;
+    }
+    var html =
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table">' +
+      "<thead><tr><th>Client</th><th>Package</th><th>Status</th><th></th></tr></thead><tbody>";
+    rows.slice(0, 12).forEach(function (row) {
+      var url = row.url || ("/app/clients/" + row.id + "/");
+      var service = (row.service_type || "").toLowerCase() === "hotspot" ? "Hotspot" : "PPPoE";
+      html +=
+        "<tr>" +
+        '<td><a class="workspace-dash-client" href="' + escapeHtml(url) + '"><strong>' +
+        escapeHtml(row.full_name || "Client") +
+        "</strong><small>" +
+        escapeHtml(row.account_number || service) +
+        "</small></a></td>" +
+        "<td>" +
+        (row.plan_name
+          ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
+          : "—") +
+        "</td>" +
+        '<td><span class="workspace-dash-badge is-warn" title="' +
+        escapeHtml(row.reason || "") +
+        '">' +
+        escapeHtml(row.label || "Disconnected") +
+        "</span></td>" +
+        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
+        escapeHtml(url) +
+        '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    if (count > 12) {
+      html +=
+        '<p class="workspace-dash-muted" style="margin:0.75rem 0 0;">Showing 12 of ' +
+        count +
+        ' · <a href="{% url 'core:my_clients' %}">View all clients</a></p>';
+    }
+    body.innerHTML = html;
+  }
+
+  function filterNotSurfing(clients) {
+    return (clients || []).filter(function (row) {
+      return !!row.internet_allowed && !row.surfing && !!row.router_reachable;
+    });
+  }
+
+  function loadNotSurfing(force) {
+    if (!surfingUrl) {
+      renderNotSurfing([]);
+      return Promise.resolve([]);
+    }
+    var suffix = force ? "&refresh=1" : "";
+    var pppoeReq = fetch(surfingUrl + "?service=pppoe" + suffix, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    }).then(function (r) { return r.json(); });
+    var hotspotReq = fetch(surfingUrl + "?service=hotspot" + suffix, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    }).then(function (r) { return r.json(); });
+    return Promise.all([pppoeReq, hotspotReq])
+      .then(function (parts) {
+        var rows = [];
+        parts.forEach(function (data) {
+          if (data && data.ok !== false && Array.isArray(data.clients)) {
+            rows = rows.concat(filterNotSurfing(data.clients));
+          }
+        });
+        rows.sort(function (a, b) {
+          return String(a.full_name || "").localeCompare(String(b.full_name || ""));
+        });
+        renderNotSurfing(rows);
+        return rows;
+      })
+      .catch(function () {
+        renderNotSurfing([]);
+        return [];
+      });
+  }
+
   function renderRouterPerf(routers) {
     var body = root.querySelector("[data-router-perf-body]");
     if (!body) return;
@@ -575,7 +710,7 @@
         }).then(function (r) { return r.json(); })
       : Promise.resolve(null);
 
-    return Promise.all([analyticsReq, mikrotikReq])
+    return Promise.all([analyticsReq, mikrotikReq, loadNotSurfing(force)])
       .then(function (parts) {
         var analytics = parts[0];
         var mikrotik = parts[1];

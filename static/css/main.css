@@ -19902,12 +19902,12 @@ h1, h2, h3, h4,
 
 .workspace-dash-stats {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 0.8rem;
 }
 
 .workspace-dash-stats.has-referral {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .workspace-dash-stat {

@@ -5406,7 +5406,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v2"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -5660,6 +5660,13 @@ def clients_surfing_status(request):
         clients_payload.append(
             {
                 "id": customer.pk,
+                "full_name": customer.full_name or "",
+                "account_number": customer.account_number or "",
+                "plan_name": customer.plan.name if customer.plan_id else "",
+                "service_type": customer.service_type,
+                "url": reverse(
+                    "core:client_detail", kwargs={"customer_id": customer.pk}
+                ),
                 "surfing": surfing,
                 "state": state,
                 "label": label,
