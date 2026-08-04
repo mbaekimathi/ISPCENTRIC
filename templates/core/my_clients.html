@@ -767,19 +767,22 @@
   var timer = null;
   var inFlight = false;
 
-  function applySurfBadge(el, surfing, reason, state) {
+  function applySurfBadge(el, surfing, reason, state, label) {
     if (!el) return;
-    el.classList.remove("is-checking", "is-surfing", "is-not-surfing", "is-disconnected");
-    var kind = state || (surfing ? "surfing" : "not_surfing");
+    el.classList.remove("is-checking", "is-surfing", "is-not-surfing", "is-disconnected", "is-expired");
+    var kind = state || (surfing ? "surfing" : "disconnected");
     if (kind === "surfing") {
       el.classList.add("is-surfing");
-      el.textContent = "Surfing";
+      el.textContent = label || "Surfing";
+    } else if (kind === "expired") {
+      el.classList.add("is-expired");
+      el.textContent = label || "Expired";
     } else if (kind === "disconnected") {
       el.classList.add("is-disconnected");
-      el.textContent = "Disconnected";
+      el.textContent = label || "Disconnected";
     } else {
       el.classList.add("is-not-surfing");
-      el.textContent = "Not surfing";
+      el.textContent = label || "Not surfing";
     }
     el.title = reason || el.textContent;
   }
@@ -824,7 +827,7 @@
             applySurfBadge(el, false, "No live data", "disconnected");
             return;
           }
-          applySurfBadge(el, !!item.surfing, item.reason || item.label || "", item.state || "");
+          applySurfBadge(el, !!item.surfing, item.reason || item.label || "", item.state || "", item.label || "");
         });
         connectionBadges.forEach(function (el) {
           var item = byId[String(el.getAttribute("data-hotspot-connected"))];

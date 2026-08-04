@@ -5616,14 +5616,37 @@ def clients_surfing_status(request):
                     else:
                         reason = "Package active — router not dialed"
 
+        subscription_expired = False
+        try:
+            subscription_expired = customer_subscription_expired(customer)
+        except Exception:
+            subscription_expired = False
+
         if surfing:
             state = "surfing"
             label = "Surfing"
             surfing_count += 1
-        elif router_unreachable and not session_online:
+        elif subscription_expired:
+            # Package ended — Internet column shows Expired (even if still dialed).
+            state = "expired"
+            label = "Expired"
+            if not reason or "subscription" not in reason.lower():
+                reason = _period_blocked_reason(customer)
+        elif not session_online:
+            # No live PPPoE/Hotspot session — show Disconnected in the Internet column.
             state = "disconnected"
             label = "Disconnected"
+            if not reason:
+                reason = (
+                    router_error
+                    or (
+                        "Router not dialed — no active PPPoE session"
+                        if service == "pppoe"
+                        else "No active Hotspot session"
+                    )
+                )
         else:
+            # Dialed/connected on the NAS but not getting internet (blocked, outside period, …).
             state = "not_surfing"
             label = "Not surfing"
 
@@ -6127,6 +6150,52 @@ def mikrotik_hotspot_settings(request, router_id: int):
     )
 
 
+def _payment_phone_autofill(phone: str) -> str:
+    """Format a stored phone for the M-Pesa input (prefer 07xxxxxxxx)."""
+    from billing.services import normalize_kenya_msisdn
+
+    raw = (phone or "").strip()
+    msisdn = normalize_kenya_msisdn(raw)
+    if msisdn.startswith("254") and len(msisdn) == 12:
+        return f"0{msisdn[3:]}"
+    return raw
+
+
+def _find_hotspot_customer_for_mac(org, mac: str):
+    mac = _normalize_hotspot_mac(mac)
+    if not mac:
+        return None
+    return (
+        Customer.objects.filter(
+            organization=org,
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=mac,
+            status=Customer.Status.ACTIVE,
+        )
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+        .first()
+    )
+
+
+def _ensure_customer_plan_in_list(org, plans, customer):
+    """Keep the customer's current package selectable even if filtered out."""
+    plans = list(plans or [])
+    current_plan_id = getattr(customer, "plan_id", None) if customer else None
+    if not current_plan_id or any(p.pk == current_plan_id for p in plans):
+        return plans
+    current_plan = (
+        BillingPlan.objects.filter(
+            pk=current_plan_id,
+            organization=org,
+            is_active=True,
+        ).first()
+    )
+    if current_plan is not None:
+        plans.insert(0, current_plan)
+    return plans
+
+
 def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
 
@@ -6142,6 +6211,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     link_orig = ""
     hotspot_mac = ""
     error = ""
+    pppoe_customer = None
     if request is not None:
         link_login = (request.GET.get("link-login-only") or request.GET.get("link_login_only") or "").strip()
         link_orig = (request.GET.get("dst") or request.GET.get("link-orig") or "").strip()
@@ -6149,6 +6219,23 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         error = (request.GET.get("error") or "").strip()
         if link_login:
             mikrotik_login = True
+        # Returning PPPoE renewers may land on the Hotspot URL with a cookie/token.
+        pppoe_customer = _find_pppoe_customer_from_token(
+            org, request.GET.get("t") or ""
+        )
+        if pppoe_customer is None:
+            pppoe_customer = _find_pppoe_customer_from_token(
+                org, request.COOKIES.get("pppoe_pay") or ""
+            )
+        if pppoe_customer is None:
+            account_q = (request.GET.get("account") or "").strip()
+            phone_q = (request.GET.get("phone") or "").strip()
+            if account_q or phone_q:
+                pppoe_customer = _find_pppoe_customer_for_pay(
+                    org,
+                    account_number=account_q,
+                    phone=phone_q,
+                )
 
     from billing.services import plans_for_router
     from core.mikrotik_connect import find_hotspot_router_for_mac
@@ -6156,16 +6243,19 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     portal_router = None
     if hotspot_mac:
         portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
+    hotspot_customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
     hotspot_plans = list(
         plans_for_router(
             org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT
         )[:8]
     )
+    hotspot_plans = _ensure_customer_plan_in_list(org, hotspot_plans, hotspot_customer)
     pppoe_plans = list(
         plans_for_router(
             org, None, service_type=BillingPlan.ServiceType.PPPOE
         )[:8]
     )
+    pppoe_plans = _ensure_customer_plan_in_list(org, pppoe_plans, pppoe_customer)
     plans = hotspot_plans
     has_payable_plans = bool(hotspot_plans or pppoe_plans)
 
@@ -6188,6 +6278,17 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
         request,
     )
+    # Prefer PPPoE tab when this visitor is a known PPPoE client; otherwise Hotspot.
+    portal_mode = "pppoe" if pppoe_customer is not None else "hotspot"
+    pppoe_token = (
+        _make_pppoe_customer_token(org, pppoe_customer) if pppoe_customer else ""
+    )
+    hotspot_phone = _payment_phone_autofill(
+        getattr(hotspot_customer, "phone", "") if hotspot_customer else ""
+    )
+    pppoe_phone = _payment_phone_autofill(
+        getattr(pppoe_customer, "phone", "") if pppoe_customer else ""
+    )
     return {
         "organization": org,
         "org_name": org.name,
@@ -6202,7 +6303,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "hotspot_plans": hotspot_plans,
         "pppoe_plans": pppoe_plans,
         "has_payable_plans": has_payable_plans,
-        "portal_mode": "hotspot",
+        "portal_mode": portal_mode,
         "show_payment_form": bool(hotspot_mac) or (
             pppoe_option_available and stk_ready and bool(pppoe_plans)
         ),
@@ -6217,30 +6318,62 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "pppoe_option_available": pppoe_option_available,
         "pppoe_pay_url": pppoe_pay_url,
         "pppoe_payment_start_url": pppoe_payment_start_url,
-        "pppoe_require_account_lookup": True,
-        "pppoe_account_locked": False,
-        "pppoe_customer_token": "",
-        "pppoe_customer_name": "",
-        "pppoe_account_number": "",
-        "pppoe_phone_value": "",
-        "pppoe_selected_plan_id": None,
-        "pppoe_package_end": None,
+        "pppoe_require_account_lookup": pppoe_customer is None,
+        "pppoe_account_locked": pppoe_customer is not None,
+        "pppoe_customer_token": pppoe_token,
+        "pppoe_customer_name": getattr(pppoe_customer, "full_name", "")
+        if pppoe_customer
+        else "",
+        "pppoe_account_number": getattr(pppoe_customer, "account_number", "")
+        if pppoe_customer
+        else "",
+        "pppoe_phone_value": pppoe_phone,
+        "pppoe_selected_plan_id": getattr(pppoe_customer, "plan_id", None)
+        if pppoe_customer
+        else None,
+        "pppoe_package_end": getattr(pppoe_customer, "package_end", None)
+        if pppoe_customer
+        else None,
         "pppoe_identify_error": (
-            "Enter the PPPoE account number or phone number for the router you want to renew."
-            if pppoe_option_available
-            else ""
+            ""
+            if pppoe_customer is not None
+            else (
+                "Enter the PPPoE account number or phone number for the router you want to renew."
+                if pppoe_option_available
+                else ""
+            )
         ),
         "hotspot_option_available": True,
         "hotspot_ssids": [],
         "require_account_lookup": False,
-        "customer_token": "",
-        "customer_name": "",
-        "account_number": "",
-        "phone_value": "",
-        "selected_plan_id": None,
-        "package_end": None,
+        "customer_token": pppoe_token,
+        "customer_name": getattr(pppoe_customer, "full_name", "")
+        if pppoe_customer
+        else (getattr(hotspot_customer, "full_name", "") if hotspot_customer else ""),
+        "account_number": getattr(pppoe_customer, "account_number", "")
+        if pppoe_customer
+        else (getattr(hotspot_customer, "account_number", "") if hotspot_customer else ""),
+        "phone_value": pppoe_phone or hotspot_phone,
+        "selected_plan_id": (
+            getattr(pppoe_customer, "plan_id", None)
+            if pppoe_customer
+            else getattr(hotspot_customer, "plan_id", None)
+            if hotspot_customer
+            else None
+        ),
+        "package_end": (
+            getattr(pppoe_customer, "package_end", None)
+            if pppoe_customer
+            else getattr(hotspot_customer, "package_end", None)
+            if hotspot_customer
+            else None
+        ),
         "identify_error": "",
         "dual_access_tabs": bool(pppoe_option_available),
+        "hotspot_phone_value": hotspot_phone,
+        "hotspot_selected_plan_id": getattr(hotspot_customer, "plan_id", None)
+        if hotspot_customer
+        else None,
     }
 
 
@@ -6628,23 +6761,20 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             org, customer_router, service_type=BillingPlan.ServiceType.PPPOE
         )[:8]
     )
-    current_plan_id = getattr(customer, "plan_id", None) if customer else None
-    if current_plan_id and not any(p.pk == current_plan_id for p in pppoe_plans):
-        current_plan = (
-            BillingPlan.objects.filter(
-                pk=current_plan_id,
-                organization=org,
-                is_active=True,
-            )
-            .first()
-        )
-        # Always keep the customer's current package selectable for renew.
-        if current_plan is not None:
-            pppoe_plans.insert(0, current_plan)
+    pppoe_plans = _ensure_customer_plan_in_list(org, pppoe_plans, customer)
     hotspot_plans = list(
         plans_for_router(
             org, None, service_type=BillingPlan.ServiceType.HOTSPOT
         )[:8]
+    )
+    # Prefer real MAC from the request / NAS IP lookup; otherwise keep MikroTik's
+    # $(mac) so CPE / ISP Hotspot HTML files can substitute it when served by RouterOS.
+    hotspot_mac = ""
+    if request is not None:
+        hotspot_mac = _resolve_request_hotspot_mac(org, request)
+    hotspot_customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
+    hotspot_plans = _ensure_customer_plan_in_list(
+        org, hotspot_plans, hotspot_customer
     )
     plans = pppoe_plans
     has_payable_plans = bool(pppoe_plans or hotspot_plans)
@@ -6665,11 +6795,6 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             .values_list("wifi_ssid", flat=True)
             .distinct()[:8]
         )
-    # Prefer real MAC from the request / NAS IP lookup; otherwise keep MikroTik's
-    # $(mac) so CPE / ISP Hotspot HTML files can substitute it when served by RouterOS.
-    hotspot_mac = ""
-    if request is not None:
-        hotspot_mac = _resolve_request_hotspot_mac(org, request)
     hotspot_mac_value = hotspot_mac or "$(mac)"
     show_payment_form = bool(stk_ready and pppoe_plans)
     pppoe_start = public_absolute_url(
@@ -6679,6 +6804,19 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     hotspot_start = public_absolute_url(
         reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
         request,
+    )
+    # Known PPPoE client → PPPoE tab; otherwise start on Hotspot when available.
+    if customer is not None:
+        portal_mode = "pppoe"
+    elif hotspot_option_available and hotspot_plans:
+        portal_mode = "hotspot"
+    else:
+        portal_mode = "pppoe"
+    phone_value = _payment_phone_autofill(
+        getattr(customer, "phone", "") if customer else ""
+    )
+    hotspot_phone = _payment_phone_autofill(
+        getattr(hotspot_customer, "phone", "") if hotspot_customer else ""
     )
     return {
         "organization": org,
@@ -6697,14 +6835,14 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "hotspot_plans": hotspot_plans,
         "pppoe_plans": pppoe_plans,
         "has_payable_plans": has_payable_plans,
-        "portal_mode": "pppoe",
+        "portal_mode": portal_mode,
         "show_payment_form": show_payment_form,
         "require_account_lookup": customer is None,
         "customer_token": customer_token,
         "customer_name": getattr(customer, "full_name", "") if customer else "",
         "account_number": getattr(customer, "account_number", "") if customer else "",
         "package_end": getattr(customer, "package_end", None) if customer else None,
-        "phone_value": (getattr(customer, "phone", "") or "") if customer else "",
+        "phone_value": phone_value,
         "selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
         "payment_start_url": pppoe_start,
         "pppoe_payment_start_url": pppoe_start,
@@ -6723,11 +6861,15 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "pppoe_customer_token": customer_token,
         "pppoe_customer_name": getattr(customer, "full_name", "") if customer else "",
         "pppoe_account_number": getattr(customer, "account_number", "") if customer else "",
-        "pppoe_phone_value": (getattr(customer, "phone", "") or "") if customer else "",
+        "pppoe_phone_value": phone_value,
         "pppoe_selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
         "pppoe_package_end": getattr(customer, "package_end", None) if customer else None,
         "pppoe_identify_error": identify_error,
         "dual_access_tabs": hotspot_option_available,
+        "hotspot_phone_value": hotspot_phone,
+        "hotspot_selected_plan_id": getattr(hotspot_customer, "plan_id", None)
+        if hotspot_customer
+        else None,
     }
 
 
@@ -6766,6 +6908,8 @@ def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = 
 
     account_number = (account_number or "").strip()
     phone = (phone or "").strip()
+    if not account_number and not phone:
+        return None
     qs = Customer.objects.filter(
         organization=org,
         service_type=Customer.ServiceType.PPPOE,
@@ -6813,6 +6957,13 @@ def pppoe_pay(request, join_code: str):
         # Same browser returning to renew — reuse the last matched account.
         customer = _find_pppoe_customer_from_token(
             org, request.COOKIES.get("pppoe_pay") or ""
+        )
+    if customer is None:
+        # Staff / shared renew links can pass account or phone in the query.
+        customer = _find_pppoe_customer_for_pay(
+            org,
+            account_number=request.GET.get("account") or "",
+            phone=request.GET.get("phone") or "",
         )
     if customer is None:
         identify_error = (

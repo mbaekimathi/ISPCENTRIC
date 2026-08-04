@@ -5627,6 +5627,16 @@ body.staff-nav-lock {
   color: var(--danger, #b42318);
 }
 
+.clients-surf-badge.is-expired {
+  background: color-mix(in srgb, #b45309 18%, transparent);
+  color: #b45309;
+}
+
+[data-theme="light"] .clients-surf-badge.is-expired {
+  background: color-mix(in srgb, #d97706 14%, transparent);
+  color: #b45309;
+}
+
 .clients-status-cell {
   white-space: nowrap;
 }

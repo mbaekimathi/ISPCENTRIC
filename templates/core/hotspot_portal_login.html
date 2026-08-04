@@ -824,16 +824,31 @@
               <div class="field">
                 <label for="hotspot-plan-id">Package</label>
                 <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
+                  {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
                   {% for plan in hotspot_plans %}
-                    <option value="{{ plan.pk }}" data-price="{{ plan.price }}"{% if forloop.first %} selected{% endif %}>
-                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}
+                    <option
+                      value="{{ plan.pk }}"
+                      data-price="{{ plan.price }}"
+                      {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not hsel and forloop.first %}selected{% endif %}
+                    >
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %} (current){% endif %}
                     </option>
                   {% endfor %}
+                  {% endwith %}
                 </select>
               </div>
               <div class="field">
                 <label for="hotspot-phone">M-Pesa phone number</label>
-                <input id="hotspot-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="07xxxxxxxx" required>
+                <input
+                  id="hotspot-phone"
+                  name="phone"
+                  type="tel"
+                  inputmode="tel"
+                  autocomplete="tel"
+                  placeholder="07xxxxxxxx"
+                  value="{{ hotspot_phone_value|default:phone_value|default:'' }}"
+                  required
+                >
                 <p class="field-hint">We’ll send the M-Pesa prompt to this number</p>
               </div>
               <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
@@ -909,9 +924,9 @@
                     <option
                       value="{{ plan.pk }}"
                       data-price="{{ plan.price }}"
-                      {% if sel == plan.pk or not sel and forloop.first %}selected{% endif %}
+                      {% if sel and sel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not sel and forloop.first %}selected{% endif %}
                     >
-                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if sel == plan.pk %} (current){% endif %}
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if sel and sel|stringformat:"s" == plan.pk|stringformat:"s" %} (current){% endif %}
                     </option>
                   {% endfor %}
                   {% endwith %}

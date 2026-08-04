@@ -1083,18 +1083,24 @@ class HotspotPortalContextTests(SimpleTestCase):
                 "mpesa_payment_type": "paybill",
                 "mpesa_number": "123456",
                 "mpesa_account": "",
+                "pppoe_compulsory": False,
                 "effective_daraja_credentials": lambda self: {"ready": True},
                 "pk": 1,
             },
         )()
         request = RequestFactory().get("/hotspot/404040/pay/", {"mac": "AABBCCDDEEFF"})
-        with patch(
-            "billing.models.BillingPlan.objects.filter"
-        ) as plans_filter:
-            plans_filter.return_value.order_by.return_value.__getitem__.return_value = []
+        with (
+            patch("billing.services.plans_for_router", return_value=[]),
+            patch("core.views._find_hotspot_customer_for_mac", return_value=None),
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=None,
+            ),
+        ):
             ctx = _hotspot_portal_context(org, mikrotik_login=False, request=request)
         self.assertTrue(ctx["show_payment_form"])
         self.assertEqual(ctx["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
+        self.assertEqual(ctx["portal_mode"], "hotspot")
 
 
 class PppoeRouterFallbackTests(TestCase):
@@ -2129,6 +2135,8 @@ class ClientsSurfingStatusTests(TestCase):
         data = response.json()
         self.assertEqual(data["surfing_count"], 0)
         self.assertFalse(data["clients"][0]["surfing"])
+        self.assertEqual(data["clients"][0]["state"], "not_surfing")
+        self.assertEqual(data["clients"][0]["label"], "Not surfing")
         self.assertIn("blocked on the router", data["clients"][0]["reason"])
 
     @patch("core.views.fetch_active_pppoe_usernames")
@@ -2159,6 +2167,8 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertFalse(client["surfing"])
         self.assertTrue(client["session_online"])
         self.assertFalse(client["internet_allowed"])
+        self.assertEqual(client["state"], "expired")
+        self.assertEqual(client["label"], "Expired")
         self.assertIn("subscription ended", client["reason"].lower())
 
     @patch("core.views.fetch_active_pppoe_usernames")
@@ -2184,6 +2194,61 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(client["label"], "Disconnected")
         self.assertFalse(client["router_reachable"])
         self.assertIn("timed out", client["reason"].lower())
+
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_undialed_client_shows_disconnected(self, fetch_active):
+        """Router reachable but no PPPoE session → Internet column = Disconnected."""
+        fetch_active.return_value = {
+            "ok": True,
+            "usernames": [],
+            "blocked": [],
+            "error": "",
+        }
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+
+        response = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        )
+
+        data = response.json()
+        client = data["clients"][0]
+        self.assertFalse(client["surfing"])
+        self.assertFalse(client["session_online"])
+        self.assertEqual(client["state"], "disconnected")
+        self.assertEqual(client["label"], "Disconnected")
+        self.assertTrue(client["router_reachable"])
+
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_expired_undialed_client_shows_expired(self, fetch_active):
+        """Ended package with no session still shows Expired (not Disconnected)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        fetch_active.return_value = {
+            "ok": True,
+            "usernames": [],
+            "blocked": [],
+            "error": "",
+        }
+        self.customer.router = self.router
+        self.customer.package_start = timezone.now() - timedelta(days=3)
+        self.customer.package_end = timezone.now() - timedelta(days=1)
+        self.customer.save(update_fields=["router", "package_start", "package_end"])
+
+        response = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        )
+
+        data = response.json()
+        client = data["clients"][0]
+        self.assertFalse(client["surfing"])
+        self.assertFalse(client["session_online"])
+        self.assertEqual(client["state"], "expired")
+        self.assertEqual(client["label"], "Expired")
 
     @patch("core.views.fetch_active_pppoe_usernames")
     def test_unassigned_client_matches_live_session_on_any_org_router(self, fetch_active):
@@ -2235,9 +2300,12 @@ class ClientsSurfingStatusTests(TestCase):
 
         self.assertTrue(context["hotspot_option_available"])
         self.assertTrue(context["dual_access_tabs"])
+        self.assertEqual(context["portal_mode"], "pppoe")
         self.assertEqual(context["hotspot_ssids"], ["Live ISP Hotspot"])
         self.assertTrue(context["hotspot_payment_start_url"])
         self.assertEqual(context["account_number"], self.customer.account_number)
+        self.assertEqual(context["pppoe_phone_value"], "0700000088")
+        self.assertEqual(context["pppoe_selected_plan_id"], self.customer.plan_id)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.service_type, "pppoe")
 
@@ -2259,12 +2327,21 @@ class ClientsSurfingStatusTests(TestCase):
         self.org.daraja_passkey = "pass"
         self.org.daraja_callback_url = "https://example.com/callback"
         self.org.save()
-        BillingPlan.objects.create(
+        hotspot_plan = BillingPlan.objects.create(
             organization=self.org,
             name="Day Pass",
             price="100.00",
             download_speed_mbps=10,
             upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+        )
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="2000.00",
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
         )
         hotspot_customer = Customer.objects.create(
             organization=self.org,
@@ -2274,6 +2351,7 @@ class ClientsSurfingStatusTests(TestCase):
             service_type=Customer.ServiceType.HOTSPOT,
             hotspot_mac="AA:BB:CC:DD:EE:11",
             status=Customer.Status.ACTIVE,
+            plan=hotspot_plan,
         )
         request = RequestFactory().get(
             f"/hotspot/{self.org.join_code}/pay/",
@@ -2285,15 +2363,60 @@ class ClientsSurfingStatusTests(TestCase):
 
         self.assertTrue(context["pppoe_option_available"])
         self.assertTrue(context["dual_access_tabs"])
+        self.assertEqual(context["portal_mode"], "hotspot")
+        self.assertEqual(context["hotspot_phone_value"], "0700000099")
+        self.assertEqual(context["hotspot_selected_plan_id"], hotspot_plan.pk)
         self.assertTrue(context["pppoe_payment_start_url"])
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Renew PPPoE")
-        self.assertContains(response, "Pay for Hotspot")
+        self.assertContains(response, "Home / PPPoE")
+        self.assertContains(response, "Hotspot")
         self.assertContains(response, 'id="panel-hotspot"')
         self.assertContains(response, 'id="panel-pppoe"')
+        self.assertContains(response, 'value="0700000099"')
         self.assertNotContains(response, "Open PPPoE renew page")
         hotspot_customer.refresh_from_db()
         self.assertEqual(hotspot_customer.service_type, "hotspot")
+
+    def test_pppoe_pay_autofills_from_account_query(self):
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.hotspot_enabled = False
+        self.org.save()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="1500.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.customer.plan = plan
+        self.customer.save(update_fields=["plan"])
+
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"account": self.customer.account_number},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["portal_mode"], "pppoe")
+        self.assertEqual(
+            response.context["account_number"], self.customer.account_number
+        )
+        self.assertEqual(response.context["pppoe_phone_value"], "0700000088")
+        self.assertEqual(response.context["pppoe_selected_plan_id"], plan.pk)
+        self.assertFalse(response.context["require_account_lookup"])
+        self.assertContains(response, self.customer.account_number)
+        self.assertContains(response, 'value="0700000088"')
+        self.assertContains(response, "(current)")
 
     def test_pppoe_pay_autofills_account_from_signed_token(self):
         from django.core import signing
@@ -2370,6 +2493,7 @@ class ClientsSurfingStatusTests(TestCase):
             price="50.00",
             download_speed_mbps=10,
             upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
         )
         token = signing.dumps(
             {
@@ -2442,6 +2566,7 @@ class ClientsSurfingStatusTests(TestCase):
             price="50.00",
             download_speed_mbps=10,
             upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
         )
         remember_hotspot_mac_for_ip(self.org, "10.50.50.44", "11:22:33:44:55:66")
         with patch(
@@ -2465,8 +2590,8 @@ class ClientsSurfingStatusTests(TestCase):
         response = self.client.get(f"/hotspot/{self.org.join_code}/pay/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, "Renew PPPoE")
-        self.assertNotContains(response, "Pay for Hotspot")
+        self.assertNotContains(response, "Home / PPPoE")
+        self.assertNotContains(response, 'id="choose-pppoe"')
 
 
 class PackageSpeedLimitTests(SimpleTestCase):
