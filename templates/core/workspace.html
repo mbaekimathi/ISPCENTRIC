@@ -233,40 +233,33 @@
         </div>
         <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billing</a>
       </div>
-      {% if analytics.expired %}
-        <div class="workspace-dash-scroll">
-          <table class="workspace-dash-table">
-            <thead>
-              <tr>
-                <th>Client</th>
-                <th>Package</th>
-                <th>Ended</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody data-expired-body>
-              {% for row in analytics.expired %}
-                <tr>
-                  <td>
-                    <a class="workspace-dash-client" href="{{ row.url }}">
-                      <strong>{{ row.full_name }}</strong>
-                      <small>{{ row.account_number }}</small>
-                    </a>
-                  </td>
-                  <td>{% if row.plan_name %}<span class="workspace-dash-plan">{{ row.plan_name }}</span>{% else %}—{% endif %}</td>
-                  <td>{{ row.package_end|default:"—" }}</td>
-                  <td><a class="btn btn-ghost workspace-dash-btn-sm" href="{{ row.url }}">Open</a></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+      <div class="workspace-dash-tabs" role="tablist" aria-label="Expired client service types" data-expired-tabs>
+        <button
+          type="button"
+          class="workspace-dash-tab is-active"
+          role="tab"
+          aria-selected="true"
+          data-expired-tab="pppoe"
+        >
+          PPPoE
+          <span class="workspace-dash-tab-count" data-expired-count="pppoe">{{ analytics.expired_pppoe_count|default:0 }}</span>
+        </button>
+        <button
+          type="button"
+          class="workspace-dash-tab"
+          role="tab"
+          aria-selected="false"
+          data-expired-tab="hotspot"
+        >
+          Hotspot
+          <span class="workspace-dash-tab-count" data-expired-count="hotspot">{{ analytics.expired_hotspot_count|default:0 }}</span>
+        </button>
+      </div>
+      <div data-expired-host>
+        <div class="workspace-dash-empty is-loading">
+          <p class="workspace-dash-empty-title">Loading expired clients…</p>
         </div>
-      {% else %}
-        <div class="workspace-dash-empty" data-expired-empty>
-          <p class="workspace-dash-empty-title">No expired packages</p>
-          <p class="workspace-dash-empty-copy">All tracked package periods are still current.</p>
-        </div>
-      {% endif %}
+      </div>
     </section>
   </div>
 
@@ -288,6 +281,96 @@
   var initial = {{ analytics_json|safe }};
   var trendChart = null;
   var lastRouters = null;
+  var lastExpired = Array.isArray(initial && initial.expired) ? initial.expired : [];
+  var lastExpiredMeta = {
+    expired_pppoe_count: initial && initial.expired_pppoe_count,
+    expired_hotspot_count: initial && initial.expired_hotspot_count
+  };
+  var expiredTab = "pppoe";
+
+  function filterExpiredByTab(rows, tab) {
+    return (rows || []).filter(function (row) {
+      var service = String(row.service_type || "").toLowerCase();
+      if (tab === "hotspot") return service === "hotspot";
+      return service === "pppoe" || service === "static" || !service;
+    });
+  }
+
+  function renderExpired(rows, tab, meta) {
+    var host = root.querySelector("[data-expired-host]");
+    if (!host) return;
+    var activeTab = tab || expiredTab || "pppoe";
+    var filtered = filterExpiredByTab(rows, activeTab);
+    var pppoeLabel =
+      meta && meta.expired_pppoe_count != null
+        ? meta.expired_pppoe_count
+        : filterExpiredByTab(rows, "pppoe").length;
+    var hotspotLabel =
+      meta && meta.expired_hotspot_count != null
+        ? meta.expired_hotspot_count
+        : filterExpiredByTab(rows, "hotspot").length;
+    setText('[data-expired-count="pppoe"]', String(pppoeLabel));
+    setText('[data-expired-count="hotspot"]', String(hotspotLabel));
+
+    if (!filtered.length) {
+      host.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">No expired ' +
+        (activeTab === "hotspot" ? "Hotspot" : "PPPoE") +
+        " packages</p>" +
+        '<p class="workspace-dash-empty-copy">All tracked ' +
+        (activeTab === "hotspot" ? "Hotspot" : "PPPoE") +
+        " package periods are still current.</p>" +
+        "</div>";
+      return;
+    }
+    var html =
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table">' +
+      "<thead><tr><th>Client</th><th>Package</th><th>Ended</th><th></th></tr></thead><tbody>";
+    filtered.slice(0, 12).forEach(function (row) {
+      html +=
+        "<tr>" +
+        '<td><a class="workspace-dash-client" href="' +
+        escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
+        '"><strong>' +
+        escapeHtml(row.full_name || "Client") +
+        "</strong><small>" +
+        escapeHtml(row.account_number || "") +
+        "</small></a></td>" +
+        "<td>" +
+        (row.plan_name
+          ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
+          : "—") +
+        "</td>" +
+        "<td>" +
+        escapeHtml(row.package_end || "—") +
+        "</td>" +
+        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
+        escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
+        '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    if (filtered.length > 12) {
+      html +=
+        '<p class="workspace-dash-muted" style="margin:0.75rem 0 0;">Showing 12 of ' +
+        filtered.length +
+        ' · <a href="{% url 'core:my_clients' %}?tab=' +
+        encodeURIComponent(activeTab) +
+        '">View all</a></p>';
+    }
+    host.innerHTML = html;
+  }
+
+  function setExpiredTab(tab) {
+    expiredTab = tab === "hotspot" ? "hotspot" : "pppoe";
+    root.querySelectorAll("[data-expired-tab]").forEach(function (btn) {
+      var active = btn.getAttribute("data-expired-tab") === expiredTab;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    renderExpired(lastExpired, expiredTab, lastExpiredMeta);
+  }
 
   function money(n) {
     var v = Number(n) || 0;
@@ -661,6 +744,14 @@
     setText('[data-stat="stk-pending"]', data.stk_pending != null ? data.stk_pending : "0");
     if (data.stk_failed_today != null) setText('[data-stat="stk-failed"]', data.stk_failed_today);
     if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
+    if (Array.isArray(data.expired)) {
+      lastExpired = data.expired;
+      lastExpiredMeta = {
+        expired_pppoe_count: data.expired_pppoe_count,
+        expired_hotspot_count: data.expired_hotspot_count
+      };
+      renderExpired(lastExpired, expiredTab, lastExpiredMeta);
+    }
   }
 
   function applyMikrotik(perf) {
@@ -760,6 +851,11 @@
     }, 40);
   }
   if (refreshBtn) refreshBtn.addEventListener("click", function () { loadLive(true); });
+  root.querySelectorAll("[data-expired-tab]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setExpiredTab(btn.getAttribute("data-expired-tab") || "pppoe");
+    });
+  });
   setInterval(function () { loadLive(false); }, 15000);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) loadLive(true);

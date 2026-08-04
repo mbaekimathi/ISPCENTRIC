@@ -20160,6 +20160,63 @@ h1, h2, h3, h4,
   max-width: 100%;
 }
 
+.workspace-dash-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.85rem;
+  padding: 0.28rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2, var(--surface)) 82%, transparent);
+  max-width: 100%;
+}
+
+.workspace-dash-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--wd-muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  padding: 0.42rem 0.8rem;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.workspace-dash-tab:hover {
+  color: var(--wd-ink);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.workspace-dash-tab.is-active {
+  color: #fff;
+  background: var(--wd-sea);
+}
+
+.workspace-dash-tab-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.workspace-dash-tab.is-active .workspace-dash-tab-count {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+
 .workspace-dash-table {
   width: 100%;
   border-collapse: collapse;

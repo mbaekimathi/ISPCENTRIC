@@ -949,6 +949,8 @@ def _workspace_day_snapshot(org) -> dict:
         "payments_today": 0,
         "revenue_all_time": 0,
         "expired_count": 0,
+        "expired_pppoe_count": 0,
+        "expired_hotspot_count": 0,
         "expiring_count": 0,
         "attention_count": 0,
         "routers_total": 0,
@@ -1052,7 +1054,7 @@ def _workspace_day_snapshot(org) -> dict:
         created_at__lt=day_end,
     ).count()
 
-    def _attention_payload(rows, limit=8):
+    def _attention_payload(rows, limit=48):
         out = []
         for row in rows[:limit]:
             customer = row["customer"]
@@ -1063,6 +1065,7 @@ def _workspace_day_snapshot(org) -> dict:
                     "full_name": customer.full_name,
                     "account_number": customer.account_number,
                     "phone": customer.phone,
+                    "service_type": customer.service_type or "",
                     "plan_name": customer.plan.name if customer.plan_id else "",
                     "plan_price": str(customer.plan.price)
                     if customer.plan_id and customer.plan.price is not None
@@ -1081,6 +1084,20 @@ def _workspace_day_snapshot(org) -> dict:
             )
         return out
 
+    expired_payload = _attention_payload(expired_rows)
+    expired_pppoe_count = sum(
+        1
+        for row in expired_rows
+        if getattr(row["customer"], "service_type", "")
+        in (Customer.ServiceType.PPPOE, Customer.ServiceType.STATIC)
+    )
+    expired_hotspot_count = sum(
+        1
+        for row in expired_rows
+        if getattr(row["customer"], "service_type", "")
+        == Customer.ServiceType.HOTSPOT
+    )
+
     return {
         "ok": True,
         "day": today.isoformat(),
@@ -1092,13 +1109,15 @@ def _workspace_day_snapshot(org) -> dict:
         "payments_today": today_pay["count"] or 0,
         "revenue_all_time": float(revenue_all or 0),
         "expired_count": len(expired_rows),
+        "expired_pppoe_count": expired_pppoe_count,
+        "expired_hotspot_count": expired_hotspot_count,
         "expiring_count": len(expiring_rows),
         "attention_count": len(expired_rows) + len(expiring_rows),
         "routers_total": routers_total,
         "routers_suspended": routers_suspended,
         "stk_pending": stk_pending,
         "stk_failed_today": stk_failed_today,
-        "expired": _attention_payload(expired_rows),
+        "expired": expired_payload,
         "expiring": _attention_payload(expiring_rows),
         "recent_payments": [
             {
