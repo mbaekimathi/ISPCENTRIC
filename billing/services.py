@@ -123,13 +123,32 @@ def _plan_is_hourly(customer) -> bool:
     return plan_uses_clock_time(plan)
 
 
+def subscription_access_deadline(customer) -> datetime | None:
+    """
+    Instant when prepaid access must stop (exclusive).
+
+    Clock-time packages (hourly / 6 hours) end at ``package_end`` exactly.
+    Daily / weekly / monthly (and other calendar packages) keep the end
+    calendar day inclusive and disconnect at local **00:00** the following
+    morning — never at the clock time the package was purchased.
+    """
+    end = _as_local_datetime(getattr(customer, "package_end", None))
+    if end is None:
+        return None
+    if _plan_is_hourly(customer):
+        return end
+    end_day = timezone.localtime(end).date()
+    next_midnight = datetime.combine(end_day + timedelta(days=1), time.min)
+    return timezone.make_aware(next_midnight, timezone.get_current_timezone())
+
+
 def subscription_period_allows(customer, *, today: date | None = None) -> bool:
     """
     Whether now/today falls inside the customer's package_start–package_end window.
 
     Missing dates mean no period is configured yet → allow access (legacy clients).
-    Hourly packages compare against the current time.
-    Other packages compare against the local calendar date (end day inclusive).
+    Hourly / 6-hour packages compare against the current time.
+    Other packages include the end calendar day and cut off at local 00:00 after it.
     """
     start = _as_local_datetime(getattr(customer, "package_start", None))
     end = _as_local_datetime(getattr(customer, "package_end", None))
@@ -140,29 +159,46 @@ def subscription_period_allows(customer, *, today: date | None = None) -> bool:
         now = timezone.localtime()
         if start is not None and now < start:
             return False
-        if end is not None and now > end:
+        if end is not None and now >= end:
             return False
         return True
 
-    today = today or timezone.localdate()
-    start_day = timezone.localtime(start).date() if start else None
-    end_day = timezone.localtime(end).date() if end else None
-    if start_day is not None and today < start_day:
-        return False
-    if end_day is not None and today > end_day:
+    # Date-only callers (reports / admin filters) keep end-day-inclusive semantics.
+    if today is not None:
+        start_day = timezone.localtime(start).date() if start else None
+        end_day = timezone.localtime(end).date() if end else None
+        if start_day is not None and today < start_day:
+            return False
+        if end_day is not None and today > end_day:
+            return False
+        return True
+
+    now = timezone.localtime()
+    if start is not None:
+        start_day = timezone.localtime(start).date()
+        day_start = timezone.make_aware(
+            datetime.combine(start_day, time.min),
+            timezone.get_current_timezone(),
+        )
+        if now < day_start:
+            return False
+    deadline = subscription_access_deadline(customer)
+    if deadline is not None and now >= deadline:
         return False
     return True
 
 
 def customer_subscription_expired(customer, *, today: date | None = None) -> bool:
-    """True when a package end is set and the current moment/day is after it."""
+    """True when a package end is set and access has passed its cut-off."""
     end = _as_local_datetime(getattr(customer, "package_end", None))
     if end is None:
         return False
-    if _plan_is_hourly(customer):
-        return timezone.localtime() > end
-    today = today or timezone.localdate()
-    return today > timezone.localtime(end).date()
+    if today is not None and not _plan_is_hourly(customer):
+        return today > timezone.localtime(end).date()
+    deadline = subscription_access_deadline(customer)
+    if deadline is None:
+        return False
+    return timezone.localtime() >= deadline
 
 
 def subscription_period_progress(customer, *, now: datetime | None = None) -> dict | None:
@@ -171,17 +207,21 @@ def subscription_period_progress(customer, *, now: datetime | None = None) -> di
 
     Returns None when start/end are missing or invalid.
     ``ratio`` is elapsed / total (may exceed 1.0 after expiry).
+    Calendar packages measure against the midnight cut-off, not the purchase clock.
     """
     start = _as_local_datetime(getattr(customer, "package_start", None))
     end = _as_local_datetime(getattr(customer, "package_end", None))
-    if start is None or end is None or end <= start:
+    if start is None or end is None:
+        return None
+    deadline = subscription_access_deadline(customer) or end
+    if deadline <= start:
         return None
     now = now or timezone.localtime()
     if timezone.is_naive(now):
         now = timezone.make_aware(now, timezone.get_current_timezone())
     else:
         now = timezone.localtime(now)
-    total = (end - start).total_seconds()
+    total = (deadline - start).total_seconds()
     if total <= 0:
         return None
     elapsed = (now - start).total_seconds()
@@ -195,6 +235,7 @@ def subscription_period_progress(customer, *, now: datetime | None = None) -> di
         "needs_attention": expired or ratio >= 0.75,
         "package_start": start,
         "package_end": end,
+        "access_deadline": deadline,
     }
 
 
@@ -358,12 +399,15 @@ def apply_subscription_renewal(customer, *, plan=None):
     now = timezone.localtime()
     current_start = _as_local_datetime(getattr(customer, "package_start", None))
     current_end = _as_local_datetime(getattr(customer, "package_end", None))
-    if current_end is not None and current_end > now:
+    # Calendar packages stay active until local midnight after the end day —
+    # do not treat an afternoon package_end clock time as already expired.
+    active_until = subscription_access_deadline(customer) or current_end
+    if active_until is not None and active_until > now:
         # Stack the purchased duration onto the current expiry, but preserve
         # the start of the active access window. Moving package_start to the
         # old expiry makes a customer who pays twice appear ineligible until
         # the first package ends.
-        calculation_start = current_end
+        calculation_start = current_end or active_until
         access_start = current_start if current_start and current_start <= now else now
     else:
         calculation_start = now

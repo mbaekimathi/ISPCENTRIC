@@ -5622,6 +5622,11 @@ body.staff-nav-lock {
   color: var(--chip-signal-fg, var(--signal));
 }
 
+.clients-surf-badge.is-disconnected {
+  background: color-mix(in srgb, var(--danger, #b42318) 16%, transparent);
+  color: var(--danger, #b42318);
+}
+
 .clients-status-cell {
   white-space: nowrap;
 }

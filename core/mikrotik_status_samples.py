@@ -18,7 +18,11 @@ _STATUS_SCORE = {
     "wrong_host": 10,
     "disconnected": 0,
 }
+_OUTAGE_STATUSES = frozenset(
+    {"disconnected", "auth_failed", "wrong_host", "limited"}
+)
 _SAMPLE_GATE_TTL = 55  # seconds between org-wide status sample writes
+_OUTAGE_SAMPLE_GATE_TTL = 12  # allow outage transitions through sooner
 _TREND_CACHE_TTL = 20
 _CHART_COLORS = [
     "#4f8cff",
@@ -47,10 +51,16 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     """
     if not organization or not routers:
         return 0
+    has_outage = any(
+        (row.get("status") or "").strip().lower() in _OUTAGE_STATUSES
+        for row in routers
+    )
     gate = f"mikrotik_status_sample_gate:{organization.pk}"
-    if cache.get(gate):
+    # Healthy polls stay gated; outages bypass so the trend drops immediately
+    # instead of forward-filling the last Connected score for up to ~55s.
+    if cache.get(gate) and not has_outage:
         return 0
-    cache.set(gate, 1, _SAMPLE_GATE_TTL)
+    cache.set(gate, 1, _OUTAGE_SAMPLE_GATE_TTL if has_outage else _SAMPLE_GATE_TTL)
 
     now = timezone.now()
     router_ids = {

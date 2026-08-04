@@ -47,8 +47,10 @@ from billing.services import (
     customer_subscription_expired,
     customers_needing_renewal_attention,
     make_renew_token,
+    plan_uses_clock_time,
     plans_for_router,
     resolve_lead_allocation_fee,
+    subscription_access_deadline,
 )
 from billing.stk import (
     consume_mikrotik_onboarding_payment,
@@ -2885,14 +2887,17 @@ def mikrotik_live(request, router_id: int):
         if cached is not None:
             return JsonResponse(cached)
 
+    # Dial the same address status probes use (tunnel when present).
+    dial = (router.api_host or router.host or "").strip()
     snapshot = fetch_mikrotik_live_snapshot(
-        router.host,
+        dial,
         router.username,
         router.password,
         timeout=5.0,
     )
     snapshot["router_id"] = router.pk
     snapshot["host"] = router.host
+    snapshot["api_host"] = dial
 
     if snapshot.get("ok"):
         hw_fields = _apply_hardware_ids(
@@ -3428,12 +3433,8 @@ def mikrotik_status(request):
     if not force_refresh:
         cached = cache.get(cache_key)
         if cached is not None:
-            try:
-                from core.mikrotik_status_samples import record_mikrotik_status_samples
-
-                record_mikrotik_status_samples(org, cached)
-            except Exception:
-                pass
+            # Never persist cached rows as samples — that froze "Connected" in
+            # analytics after a router had already gone offline.
             return JsonResponse({"ok": True, "routers": cached})
 
     results = {}
@@ -3573,9 +3574,17 @@ def mikrotik_status(request):
             except Exception:
                 pass
         payload.append(item)
-    # Cache online results longer; offline only briefly so recoveries show quickly.
-    any_online = any(item.get("online") for item in payload)
-    cache.set(cache_key, payload, 15 if any_online else 3)
+    # Keep the org-wide cache short. A 15s "any peer online" TTL left powered-off
+    # routers showing Connected for a full dashboard poll cycle.
+    all_connected = bool(payload) and all(
+        (item.get("status") or "") == "connected" for item in payload
+    )
+    cache.set(cache_key, payload, 5 if all_connected else 3)
+    # Drop stale live snapshots so the detail page cannot keep showing Online
+    # after status has already marked the router down.
+    for item in payload:
+        if (item.get("status") or "") != "connected" and item.get("id") is not None:
+            cache.delete(f"mikrotik_live:{org.pk}:{item['id']}")
     try:
         from core.mikrotik_status_samples import record_mikrotik_status_samples
 
@@ -5408,7 +5417,7 @@ def clients_surfing_status(request):
             organization=org,
             service_type=service_type,
         )
-        .select_related("router", "organization")
+        .select_related("router", "organization", "plan")
         .order_by("id")
     )
 
@@ -5489,13 +5498,21 @@ def clients_surfing_status(request):
     nas_blocked_any_router = (
         set().union(*nas_blocked_by_router.values()) if nas_blocked_by_router else set()
     )
+
+    def _period_blocked_reason(customer) -> str:
+        if customer_subscription_expired(customer):
+            if plan_uses_clock_time(getattr(customer, "plan", None)):
+                return "Subscription expired"
+            return "Subscription ended at midnight — no internet"
+        return "Outside package period — no internet"
+
     for customer in customers:
         identity = (customer.pppoe_username or "").strip().lower()
         if service == "hotspot":
             identity = "".join(
                 ch for ch in (customer.hotspot_mac or "") if ch.isalnum()
             ).upper()
-        surfing = False
+        session_online = False
         connected = False
         reason = ""
         connection_reason = ""
@@ -5506,13 +5523,13 @@ def clients_surfing_status(request):
             # Older/imported customers may not be assigned to a router. The
             # live NAS session is still authoritative, so match their unique
             # PPPoE username/MAC across every active organization router.
-            surfing = identity in active_any_router
+            session_online = identity in active_any_router
             connected = (
-                identity in connected_any_router or surfing
+                identity in connected_any_router or session_online
                 if service == "hotspot"
-                else surfing
+                else session_online
             )
-            if not surfing:
+            if not session_online:
                 reason = (
                     next(iter(router_errors.values()), "")
                     or "No active session on any router"
@@ -5522,42 +5539,94 @@ def clients_surfing_status(request):
         else:
             active_identities = active_by_router.get(customer.router_id) or set()
             connected_identities = connected_by_router.get(customer.router_id) or set()
-            surfing = identity in active_identities
+            session_online = identity in active_identities
             connected = (
-                identity in connected_identities or surfing
+                identity in connected_identities or session_online
                 if service == "hotspot"
-                else surfing
+                else session_online
             )
-            if not surfing:
-                reason = router_errors.get(customer.router_id) or "No active session"
+            if not session_online:
+                reason = router_errors.get(customer.router_id) or (
+                    "Router not dialed — no active PPPoE session"
+                    if service == "pppoe"
+                    else "No active Hotspot session"
+                )
             if not connected:
                 connection_reason = (
                     router_errors.get(customer.router_id)
                     or "Device not seen on the Hotspot network"
                 )
-        if customer.status != Customer.Status.ACTIVE:
-            surfing = False
-            reason = customer.get_status_display()
-        elif not customer_receives_internet(customer):
-            surfing = False
-            if customer_subscription_expired(customer):
-                reason = "Subscription expired"
-            else:
-                reason = "Outside package period"
-        elif surfing and service == "pppoe":
-            # A session on the blocked PPP profile is dropped before the WAN, so
-            # reporting it as surfing hides an unsynced NAS from the operator.
-            nas_blocked = (
+
+        internet_allowed = False
+        nas_blocked = (
+            (
                 nas_blocked_by_router.get(customer.router_id)
                 if customer.router_id
                 else nas_blocked_any_router
-            ) or set()
-            if identity in nas_blocked:
+            )
+            or set()
+        )
+        on_blocked_profile = bool(identity) and identity in nas_blocked
+
+        # MikroTik probe failed → treat as disconnected (not "not surfing").
+        if customer.router_id:
+            router_unreachable = bool(router_errors.get(customer.router_id))
+            router_error = router_errors.get(customer.router_id) or ""
+        elif identity:
+            router_unreachable = bool(router_errors) and not active_any_router
+            router_error = next(iter(router_errors.values()), "") if router_unreachable else ""
+        else:
+            router_unreachable = False
+            router_error = ""
+
+        surfing = False
+        if customer.status != Customer.Status.ACTIVE:
+            reason = customer.get_status_display()
+        elif router_unreachable and not session_online:
+            reason = router_error or "Router disconnected"
+        else:
+            internet_allowed = customer_receives_internet(customer)
+            # Surfing = real internet right now: package still valid AND live
+            # session AND (for PPPoE) not parked on the blocked NAS profile.
+            surfing = bool(session_online and internet_allowed)
+            if service == "pppoe" and surfing and on_blocked_profile:
                 surfing = False
+            if not internet_allowed:
+                surfing = False
+                if session_online:
+                    reason = (
+                        "Dialed in, but subscription ended — no internet"
+                        if customer_subscription_expired(customer)
+                        else "Dialed in, but outside package period — no internet"
+                    )
+                else:
+                    reason = _period_blocked_reason(customer)
+            elif on_blocked_profile and service == "pppoe":
                 reason = "Dialed in, but blocked on the router — access not synced"
+            elif surfing:
+                reason = "Online — internet OK"
+            elif internet_allowed and not session_online:
+                # Keep router/error reason already set, or clarify package is OK.
+                if not reason or reason.startswith("No active") or "not dialed" in reason:
+                    deadline = subscription_access_deadline(customer)
+                    if deadline and not plan_uses_clock_time(getattr(customer, "plan", None)):
+                        reason = (
+                            "Package active until midnight — router not dialed"
+                        )
+                    else:
+                        reason = "Package active — router not dialed"
+
         if surfing:
+            state = "surfing"
+            label = "Surfing"
             surfing_count += 1
-            reason = "Online"
+        elif router_unreachable and not session_online:
+            state = "disconnected"
+            label = "Disconnected"
+        else:
+            state = "not_surfing"
+            label = "Not surfing"
+
         if connected:
             connected_count += 1
             connection_reason = (
@@ -5569,8 +5638,12 @@ def clients_surfing_status(request):
             {
                 "id": customer.pk,
                 "surfing": surfing,
-                "label": "Surfing" if surfing else "Not surfing",
+                "state": state,
+                "label": label,
                 "reason": reason,
+                "internet_allowed": internet_allowed,
+                "session_online": session_online,
+                "router_reachable": not router_unreachable,
                 "connected": connected,
                 "connection_label": "Connected" if connected else "Not connected",
                 "connection_reason": connection_reason,

@@ -11,6 +11,7 @@ from billing.services import (
     apply_subscription_renewal,
     customer_pppoe_secret_disabled,
     customer_receives_internet,
+    customer_subscription_expired,
     generate_account_number_from_phone,
     subscription_period_allows,
 )
@@ -131,6 +132,111 @@ class PrepaidAccessPolicyTests(TestCase):
             package_end=now + timedelta(hours=1),
         )
         self.assertTrue(customer_receives_internet(customer))
+
+    def test_daily_package_stays_up_past_package_end_clock_until_midnight(self):
+        """Daily PPPoE must not cut mid-afternoon — only at local 00:00 after end day."""
+        from datetime import datetime, time
+        from unittest.mock import patch
+
+        from billing.services import subscription_access_deadline
+
+        end_day = timezone.localdate()
+        package_end = timezone.make_aware(
+            datetime.combine(end_day, time(15, 0)),
+            timezone.get_current_timezone(),
+        )
+        customer = self._pppoe(
+            package_start=package_end - timedelta(days=1),
+            package_end=package_end,
+        )
+        deadline = subscription_access_deadline(customer)
+        self.assertEqual(deadline.date(), end_day + timedelta(days=1))
+        self.assertEqual(deadline.time(), time(0, 0))
+
+        real_localtime = timezone.localtime
+        afternoon = timezone.make_aware(
+            datetime.combine(end_day, time(18, 30)),
+            timezone.get_current_timezone(),
+        )
+
+        def localtime_at(fixed):
+            def _localtime(value=None):
+                if value is None:
+                    return fixed
+                return real_localtime(value)
+
+            return _localtime
+
+        with (
+            patch("billing.services.timezone.localtime", side_effect=localtime_at(afternoon)),
+            patch("billing.services.timezone.localdate", return_value=end_day),
+        ):
+            self.assertTrue(subscription_period_allows(customer))
+            self.assertTrue(customer_receives_internet(customer))
+            self.assertFalse(customer_subscription_expired(customer))
+
+        after_midnight = timezone.make_aware(
+            datetime.combine(end_day + timedelta(days=1), time(0, 0)),
+            timezone.get_current_timezone(),
+        )
+        with (
+            patch(
+                "billing.services.timezone.localtime",
+                side_effect=localtime_at(after_midnight),
+            ),
+            patch(
+                "billing.services.timezone.localdate",
+                return_value=end_day + timedelta(days=1),
+            ),
+        ):
+            self.assertFalse(subscription_period_allows(customer))
+            self.assertFalse(customer_receives_internet(customer))
+            self.assertTrue(customer_subscription_expired(customer))
+
+    def test_hourly_package_still_ends_at_exact_clock_time(self):
+        from datetime import datetime, time
+        from unittest.mock import patch
+
+        from billing.models import BillingPlan
+
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        end = timezone.make_aware(
+            datetime.combine(timezone.localdate(), time(15, 0)),
+            timezone.get_current_timezone(),
+        )
+        customer = self._pppoe(
+            plan=hourly,
+            package_start=end - timedelta(hours=1),
+            package_end=end,
+        )
+        real_localtime = timezone.localtime
+
+        def localtime_at(fixed):
+            def _localtime(value=None):
+                if value is None:
+                    return fixed
+                return real_localtime(value)
+
+            return _localtime
+
+        before = end - timedelta(minutes=1)
+        with patch(
+            "billing.services.timezone.localtime",
+            side_effect=localtime_at(before),
+        ):
+            self.assertTrue(subscription_period_allows(customer))
+        with patch(
+            "billing.services.timezone.localtime",
+            side_effect=localtime_at(end),
+        ):
+            self.assertFalse(subscription_period_allows(customer))
 
 
 class HotspotMacUniquenessTests(TestCase):

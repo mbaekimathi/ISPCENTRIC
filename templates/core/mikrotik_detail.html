@@ -684,6 +684,7 @@
   var inFlight = false;
   var lastReason = "";
   var noticeShownFor = "";
+  var wasOnline = null;
 
   function clearLiveLoading() {
     liveRoot.classList.remove("is-loading");
@@ -801,9 +802,14 @@
   function renderLive(data) {
     clearLiveLoading();
     if (!data || !data.ok || !data.online) {
-      showBlocked(friendlyReason(data || {}), true);
+      var reason = friendlyReason(data || {});
+      // After a healthy session, always reopen the notice on the next outage.
+      if (wasOnline === true) noticeShownFor = "";
+      wasOnline = false;
+      showBlocked(reason, true);
       return;
     }
+    wasOnline = true;
     noticeShownFor = "";
     closeNotice();
     showLiveLayout();

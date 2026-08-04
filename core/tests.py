@@ -971,6 +971,56 @@ class HotspotAuthorizeFastPathTests(TestCase):
         self.assertEqual(order[1], ("provision", False))
         self.assertTrue(result.get("portal", {}).get("ok"))
 
+    def test_restore_clears_cpe_renew_portal_before_provision(self):
+        """Paid period restore must remove the CPE WAN-block while PPP is still up."""
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from billing.models import Customer
+        from core.mikrotik_connect import sync_customer_subscription_access
+
+        pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Restored Dialer",
+            phone="0700000003",
+            account_number="PPP-OK-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="restored1",
+            pppoe_password="pass1",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=timezone.now() - timedelta(hours=1),
+            package_end=timezone.now() + timedelta(days=1),
+        )
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url=""):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision", kwargs.get("force_disabled")))
+            return {"ok": True, "profile": "ispcentric-pppoe-5u-10d"}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+        ):
+            result = sync_customer_subscription_access(pppoe, provision=True)
+
+        self.assertTrue(result.get("allowed"))
+        self.assertEqual(order[0], ("portal", False))
+        self.assertEqual(order[1], ("provision", False))
+        self.assertTrue(result.get("portal", {}).get("ok"))
+
 
 class CaptiveGatewayHostTests(TestCase):
     """Opening the router IP must show the portal, not a 400 error page."""
@@ -1663,6 +1713,128 @@ class PortalBaseUrlReachabilityTests(SimpleTestCase):
             self.assertEqual(public_base_url(), "http://192.168.1.135:8000")
 
 
+class PppoePayPortalUrlTests(SimpleTestCase):
+    """PPPoE renew redirects must be absolute — never path-only on 192.168 CPE IPs."""
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        HOSTED=True,
+        DEBUG=False,
+    )
+    def test_pppoe_pay_url_uses_public_base_not_relative_path(self):
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        org = type("Org", (), {"join_code": "121212", "pk": 1})()
+        url = _pppoe_pay_portal_url(org)
+        self.assertTrue(url.startswith("http://isp.richcom.co.ke/pppoe/121212/pay/"))
+        self.assertFalse(url.startswith("/pppoe/"))
+
+    @override_settings(PUBLIC_BASE_URL="auto", HOSTED=False, DEBUG=True)
+    def test_auto_public_base_builds_absolute_lan_pay_url(self):
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        org = type("Org", (), {"join_code": "343434", "pk": 2})()
+        with patch(
+            "core.hotspot_portal.local_ipv4_addresses",
+            return_value={"192.168.1.135", "10.9.0.3"},
+        ), patch(
+            "core.hotspot_portal._default_route_ipv4",
+            return_value="192.168.1.135",
+        ), override_settings(WIREGUARD_SUBNET="10.9.0.0/24"):
+            url = _pppoe_pay_portal_url(org)
+        self.assertTrue(
+            url.startswith("http://192.168.1.135:8000/pppoe/343434/pay/"),
+            msg=url,
+        )
+
+    @override_settings(
+        PUBLIC_BASE_URL="http://192.168.88.254:8000",
+        HOSTED=True,
+        ALLOWED_HOSTS=["isp.richcom.co.ke", "*"],
+        DEBUG=False,
+    )
+    def test_hosted_ignores_stale_private_base_for_pppoe_pay(self):
+        from core.mikrotik_connect import _billing_portal_base_url, _pppoe_pay_portal_url
+
+        self.assertEqual(_billing_portal_base_url(), "http://isp.richcom.co.ke")
+        org = type("Org", (), {"join_code": "565656", "pk": 3})()
+        url = _pppoe_pay_portal_url(org)
+        self.assertTrue(url.startswith("http://isp.richcom.co.ke/pppoe/565656/pay/"))
+        self.assertNotIn("192.168.", url)
+
+    def test_captive_html_location_is_absolute(self):
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        html = _captive_pay_redirect_html(
+            "http://isp.richcom.co.ke/pppoe/121212/pay/?t=token"
+        )
+        self.assertIn(
+            '$(if http-header == "Location")http://isp.richcom.co.ke/pppoe/121212/pay/?t=token&mac=',
+            html,
+        )
+        self.assertNotIn('Location")/pppoe/', html)
+
+    def test_cpe_portal_access_allows_billing_before_wan_drop(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            RENEW_HOTSPOT_TAG,
+            _ensure_cpe_portal_access,
+        )
+
+        sock = MagicMock()
+        added: list[tuple[str, dict]] = []
+
+        def fake_add(s, path, **props):
+            added.append((path, props))
+            return {"_reply": "!done", "ret": f"*{len(added)}"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._remove_tagged_rows", return_value=0),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4",
+                return_value="41.90.1.2",
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://isp.richcom.co.ke",
+            ),
+        ):
+            notes = _ensure_cpe_portal_access(
+                sock, "http://isp.richcom.co.ke/pppoe/121212/pay/"
+            )
+
+        garden = [p for path, p in added if path == "/ip/hotspot/walled-garden"]
+        allow = [
+            p
+            for path, p in added
+            if path == "/ip/firewall/filter" and p.get("action") == "accept"
+        ]
+        self.assertTrue(garden)
+        self.assertEqual(garden[0].get("dst-host"), "isp.richcom.co.ke")
+        self.assertTrue(allow)
+        self.assertEqual(allow[0].get("dst-address"), "41.90.1.2")
+        self.assertEqual(allow[0].get("comment"), f"{RENEW_HOTSPOT_TAG}-allow")
+        self.assertTrue(any("walled garden" in n for n in notes))
+        self.assertTrue(any("forward allow" in n for n in notes))
+
+    def test_fetch_hotspot_pages_refuses_relative_without_base(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _fetch_hotspot_pages
+
+        sock = MagicMock()
+        with (
+            patch("core.mikrotik_connect._billing_portal_base_url", return_value=""),
+            patch("core.mikrotik_connect._write_hotspot_html_file") as write_html,
+        ):
+            notes = _fetch_hotspot_pages(sock, "/pppoe/121212/pay/")
+        write_html.assert_not_called()
+        self.assertTrue(any("relative" in n.lower() or "192.168" in n for n in notes))
+
+
 class CompulsoryHotspotFallbackTests(SimpleTestCase):
     def test_pppoe_enforcement_pushes_hotspot_fallback_when_compulsory(self):
         from core.mikrotik_connect import apply_pppoe_enforcement_on_router
@@ -1960,6 +2132,60 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertIn("blocked on the router", data["clients"][0]["reason"])
 
     @patch("core.views.fetch_active_pppoe_usernames")
+    def test_dialed_but_expired_package_is_not_surfing(self, fetch_active):
+        """Past midnight cut-off: dialed session must not count as surfing."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        fetch_active.return_value = {
+            "ok": True,
+            "usernames": ["liveuser"],
+            "blocked": [],
+            "error": "",
+        }
+        self.customer.package_start = timezone.now() - timedelta(days=3)
+        self.customer.package_end = timezone.now() - timedelta(days=1)
+        self.customer.save(update_fields=["package_start", "package_end"])
+
+        response = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        )
+
+        data = response.json()
+        self.assertEqual(data["surfing_count"], 0)
+        client = data["clients"][0]
+        self.assertFalse(client["surfing"])
+        self.assertTrue(client["session_online"])
+        self.assertFalse(client["internet_allowed"])
+        self.assertIn("subscription ended", client["reason"].lower())
+
+    @patch("core.views.fetch_active_pppoe_usernames")
+    def test_unreachable_router_shows_disconnected(self, fetch_active):
+        fetch_active.return_value = {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": "Connection timed out.",
+        }
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+
+        response = self.client.get(
+            "/app/clients/surfing/",
+            {"service": "pppoe", "refresh": "1"},
+        )
+
+        data = response.json()
+        client = data["clients"][0]
+        self.assertFalse(client["surfing"])
+        self.assertEqual(client["state"], "disconnected")
+        self.assertEqual(client["label"], "Disconnected")
+        self.assertFalse(client["router_reachable"])
+        self.assertIn("timed out", client["reason"].lower())
+
+    @patch("core.views.fetch_active_pppoe_usernames")
     def test_unassigned_client_matches_live_session_on_any_org_router(self, fetch_active):
         fetch_active.return_value = {
             "ok": True,
@@ -1978,7 +2204,8 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertTrue(data["ok"])
         self.assertEqual(data["surfing_count"], 1)
         self.assertTrue(data["clients"][0]["surfing"])
-        self.assertEqual(data["clients"][0]["reason"], "Online")
+        self.assertTrue(data["clients"][0]["internet_allowed"])
+        self.assertEqual(data["clients"][0]["reason"], "Online — internet OK")
         fetch_active.assert_called_once_with(
             self.router.host,
             self.router.username,
@@ -2590,6 +2817,68 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 
         self.assertEqual(disconnects, [])
 
+    def test_masked_password_print_does_not_kick_stable_secret(self):
+        """Masked **** password prints must not tear down dial on every sweep."""
+        from core.mikrotik_connect import (
+            PPPOE_PROFILE_NAME,
+            _ensure_ppp_secret,
+            _pppoe_password_is_readable,
+        )
+
+        self.assertFalse(_pppoe_password_is_readable("****"))
+        self.assertFalse(_pppoe_password_is_readable(""))
+        self.assertTrue(_pppoe_password_is_readable("secret"))
+
+        state = {
+            "/ppp/secret": [
+                {
+                    ".id": "*1",
+                    "name": "alice",
+                    "profile": PPPOE_PROFILE_NAME,
+                    "disabled": "false",
+                    "password": "****",
+                    "service": "any",
+                    "comment": "ispcentric-pppoe",
+                }
+            ],
+            "/ppp/profile": [],
+            "/ppp/active": [],
+            "/queue/simple": [],
+        }
+        disconnects = []
+
+        def fake_set(sock, path, item_id, **props):
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    # Keep password masked like RouterOS that hides secrets.
+                    if "password" in props:
+                        row["password"] = "****"
+                    else:
+                        row.update(props)
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions",
+                side_effect=lambda sock, username: disconnects.append(username) or 0,
+            ),
+        ):
+            _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+                profile=PPPOE_PROFILE_NAME,
+                rate_limit="",
+            )
+
+        self.assertEqual(disconnects, [])
+
     def test_profile_flip_to_blocked_kicks(self):
         from core.mikrotik_connect import (
             PPPOE_BLOCKED_PROFILE_NAME,
@@ -2643,3 +2932,120 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             )
 
         self.assertEqual(disconnects, ["alice"])
+
+
+class MikroTikStatusOfflineTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from django.core.cache import cache
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("status-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Status ISP",
+            owner=self.owner,
+            join_code="778899",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Edge",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.1",
+            username="admin",
+            password="secret",
+        )
+        cache.clear()
+        self.client.force_login(self.owner)
+
+    def test_cached_status_is_not_written_as_health_samples(self):
+        from django.core.cache import cache
+
+        from core.models import MikroTikStatusSample
+
+        cache.set(
+            f"mikrotik_status:{self.org.pk}",
+            [
+                {
+                    "id": self.router.pk,
+                    "host": self.router.host,
+                    "name": self.router.name,
+                    "online": True,
+                    "status": "connected",
+                    "error": "",
+                }
+            ],
+            60,
+        )
+        with patch("core.views.check_mikrotik_reachable") as probe:
+            response = self.client.get("/app/mikrotik/status/")
+        probe.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["routers"][0]["status"], "connected")
+        self.assertEqual(MikroTikStatusSample.objects.count(), 0)
+
+    def test_offline_probe_records_sample_and_clears_live_cache(self):
+        from django.core.cache import cache
+
+        from core.models import MikroTikStatusSample
+
+        live_key = f"mikrotik_live:{self.org.pk}:{self.router.pk}"
+        cache.set(
+            live_key,
+            {"ok": True, "online": True, "identity": "stale"},
+            60,
+        )
+        with (
+            patch(
+                "core.views.check_mikrotik_reachable",
+                return_value={"online": False, "via": "", "error": "timed out"},
+            ),
+            patch("core.views.test_mikrotik_api_login") as login,
+        ):
+            response = self.client.get("/app/mikrotik/status/?refresh=1")
+        login.assert_not_called()
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["routers"][0]["status"], "disconnected")
+        self.assertFalse(data["routers"][0]["online"])
+        self.assertIsNone(cache.get(live_key))
+        sample = MikroTikStatusSample.objects.get(router=self.router)
+        self.assertEqual(sample.status, "disconnected")
+        self.assertEqual(sample.score, 0)
+
+    def test_live_endpoint_dials_api_host_not_lan_only(self):
+        self.router.vpn_address = "10.9.0.12"
+        self.router.save(update_fields=["vpn_address", "updated_at"])
+        with patch(
+            "core.views.fetch_mikrotik_live_snapshot",
+            return_value={"ok": False, "online": False, "error": "down"},
+        ) as snap:
+            response = self.client.get(
+                f"/app/mikrotik/{self.router.pk}/live/?refresh=1"
+            )
+        snap.assert_called_once()
+        self.assertEqual(snap.call_args.args[0], "10.9.0.12")
+        body = response.json()
+        self.assertEqual(body["api_host"], "10.9.0.12")
+        self.assertEqual(body["host"], "192.168.88.1")
+        self.assertFalse(body["online"])
+
+    def test_outage_sample_bypasses_healthy_gate(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import record_mikrotik_status_samples
+        from core.models import MikroTikStatusSample
+
+        cache.set(f"mikrotik_status_sample_gate:{self.org.pk}", 1, 55)
+        written = record_mikrotik_status_samples(
+            self.org,
+            [
+                {
+                    "id": self.router.pk,
+                    "status": "disconnected",
+                    "online": False,
+                }
+            ],
+        )
+        self.assertEqual(written, 1)
+        self.assertEqual(MikroTikStatusSample.objects.count(), 1)

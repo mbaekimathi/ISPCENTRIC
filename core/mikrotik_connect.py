@@ -5479,8 +5479,7 @@ def fetch_active_pppoe_usernames(
                 if not name:
                     continue
                 profile = (row.get("profile") or "").strip()
-                disabled = (row.get("disabled") or "").strip().lower() == "true"
-                if profile == PPPOE_BLOCKED_PROFILE_NAME or disabled:
+                if profile == PPPOE_BLOCKED_PROFILE_NAME or _is_disabled(row):
                     blocked.append(name.lower())
             return {"ok": True, "usernames": names, "blocked": blocked, "error": ""}
     except TimeoutError:
@@ -6135,6 +6134,23 @@ def _is_disabled(row: dict[str, str]) -> bool:
     return (row.get("disabled") or "").strip().lower() in {"true", "yes"}
 
 
+def _pppoe_password_is_readable(stored: str | None) -> bool:
+    """
+    Whether a /ppp/secret password print can be trusted for comparisons.
+
+    Some RouterOS builds omit the password or mask it as ****. Treating those
+    as a mismatch kicks the CPE on every subscription sweep, so the client
+    router stuck in a dial-fail loop ("cannot dial-up") while Wi‑Fi devices
+    briefly keep surfing on residual sessions.
+    """
+    value = (stored or "").strip()
+    if not value:
+        return False
+    if set(value) <= {"*"}:
+        return False
+    return True
+
+
 def _first_forward_drop_id(sock: socket.socket) -> str:
     """First forward-chain drop rule — insert allows before it when possible."""
     for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action"):
@@ -6625,6 +6641,51 @@ def _ensure_pppoe_stack(
     return PPPOE_PROFILE_NAME, notes
 
 
+def _billing_portal_base_url(explicit: str = "") -> str:
+    """
+    Absolute origin for pay redirects / NAT pushed to MikroTik and CPEs.
+
+    Prefer a usable explicit URL, otherwise the same hosted-aware
+    ``public_base_url()`` Hotspot already uses. Raw ``settings.PUBLIC_BASE_URL``
+    alone is unsafe: empty/``auto`` yields relative CPE redirects that stick
+    phones on ``http://192.168.…/pppoe/…/pay/``, and stale LAN leftovers on a
+    VPS are unreachable from subscriber sites.
+    """
+    candidate = (explicit or "").strip().rstrip("/")
+    if candidate:
+        try:
+            from core.hotspot_portal import (
+                _configured_base_is_usable,
+                _normalize_configured_base,
+            )
+
+            normalized = _normalize_configured_base(candidate) or candidate
+            # Full pay URLs (…/pppoe/…/pay) are fine for NAT / walled garden —
+            # usability is about the host, not the path.
+            if _configured_base_is_usable(normalized):
+                return normalized.rstrip("/")
+            parsed = urlparse(normalized)
+            if (
+                parsed.scheme
+                and parsed.hostname
+                and parsed.path
+                and parsed.path not in {"", "/"}
+                and _configured_base_is_usable(
+                    f"{parsed.scheme}://{parsed.hostname}"
+                    + (f":{parsed.port}" if parsed.port else "")
+                )
+            ):
+                return normalized.rstrip("/")
+        except Exception:
+            pass
+
+    try:
+        from core.hotspot_portal import public_base_url
+
+        return (public_base_url() or "").strip().rstrip("/")
+    except Exception:
+        return (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+
 def _portal_target_ipv4(portal_url: str) -> str:
     """
     IPv4 the portal is reachable at, resolving a hostname when needed.
@@ -6754,9 +6815,8 @@ def _ensure_pppoe_expired_access(
     when ensure_stack=False.
     """
     notes: list[str] = []
-    from django.conf import settings
 
-    portal = (portal_url or getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+    portal = _billing_portal_base_url(portal_url)
     billing_ip = _portal_target_ipv4(portal) if portal else ""
     if not billing_ip:
         notes.append("warning: no billing IP — expired pay redirect not installed")
@@ -7221,23 +7281,25 @@ def _ensure_ppp_secret(
     secret_id = ""
     previous_profile = ""
     previous_disabled = ""
+    previous_password = ""
     rows = _print(
         sock,
         "/ppp/secret",
-        props=".id,name,profile,service,disabled,comment",
+        props=".id,name,profile,service,disabled,comment,password",
         query={"name": username},
     )
     if not rows:
         rows = _print(
             sock,
             "/ppp/secret",
-            props=".id,name,profile,service,disabled,comment",
+            props=".id,name,profile,service,disabled,comment,password",
         )
     for row in rows:
         if (row.get("name") or "").strip().lower() == username.lower():
             secret_id = (row.get(".id") or "").strip()
             previous_profile = (row.get("profile") or "").strip()
             previous_disabled = (row.get("disabled") or "").strip().lower()
+            previous_password = row.get("password") or ""
             break
 
     # service=any: accept dial-in regardless of CPE service-name quirks.
@@ -7319,24 +7381,34 @@ def _ensure_ppp_secret(
             f"PPPoE secret “{username}” missing after install — dial-in would fail."
         )
     stored_password = verified.get("password")
-    password_mismatch = (
-        stored_password is not None
-        and stored_password != ""
+    if (
+        _pppoe_password_is_readable(stored_password)
         and stored_password != password
-    )
-    if password_mismatch:
+    ):
+        # Rare: write did not stick. Retry once, then fail hard.
         _set(sock, "/ppp/secret", secret_id, password=password)
         again = None
         for row in _print(sock, "/ppp/secret"):
             if (row.get("name") or "").strip().lower() == username.lower():
                 again = row
                 break
-        if again is not None and again.get("password") not in (None, "", password):
-            raise ConnectionError(
-                f"MikroTik stored a different password for “{username}”. "
-                "Re-push PPPoE logins from settings."
-            )
-        password_mismatch = True
+        if again is not None and _pppoe_password_is_readable(again.get("password")):
+            if again.get("password") != password:
+                raise ConnectionError(
+                    f"MikroTik stored a different password for “{username}”. "
+                    "Re-push PPPoE logins from settings."
+                )
+
+    # Kick only when the password actually changed. Masked/empty prints must not
+    # count as a change — that used to disconnect every sweep and left CPEs in a
+    # "cannot dial-up" loop while LAN devices kept residual surfing.
+    password_changed = bool(
+        created
+        or (
+            _pppoe_password_is_readable(previous_password)
+            and previous_password != password
+        )
+    )
 
     prev_disabled_yes = previous_disabled in {"true", "yes", "y"}
     profile_changed = (not created) and previous_profile != profile
@@ -7345,7 +7417,7 @@ def _ensure_ppp_secret(
     # every two minutes was tearing down the redialed session that powers the
     # pay page / STK status polls.
     should_kick = bool(
-        created or profile_changed or disabled_changed or password_mismatch
+        created or profile_changed or disabled_changed or password_changed
     )
 
     if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME and not disabled:
@@ -7669,9 +7741,7 @@ def provision_customer_pppoe(
         try:
             with _api_session(candidate, api_user, api_password, timeout=attempt_timeout) as sock:
                 if ensure_stack:
-                    from django.conf import settings
-
-                    portal_url = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                    portal_url = _billing_portal_base_url()
                     _, stack_notes = _ensure_pppoe_stack(
                         sock,
                         lan_interface=lan_interface,
@@ -7689,9 +7759,7 @@ def provision_customer_pppoe(
                 # When blocking, install pay-page redirect/allow before the kick
                 # so the CPE's first redial already has captive NAT in place.
                 if profile == PPPOE_BLOCKED_PROFILE_NAME:
-                    from django.conf import settings
-
-                    block_portal = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                    block_portal = _billing_portal_base_url()
                     notes.extend(
                         _ensure_pppoe_expired_access(sock, portal_url=block_portal)
                     )
@@ -8111,17 +8179,25 @@ def _ensure_hotspot_owns_http_port(
     if not gateway:
         return notes
 
-    portal_ip = _routable_ipv4_from_url(portal_url) or ""
+    portal_ip = _portal_target_ipv4(portal_url) or _routable_ipv4_from_url(portal_url) or ""
     try:
         from urllib.parse import urlparse
 
-        portal_port = str(urlparse((portal_url or "").strip()).port or 8000)
+        parsed = urlparse((portal_url or "").strip())
+        scheme = (parsed.scheme or "").lower()
+        if scheme == "https":
+            portal_port = "80"
+        elif parsed.port:
+            portal_port = str(parsed.port)
+        else:
+            portal_port = "80"
     except Exception:
-        portal_port = "8000"
+        portal_port = "80"
     if not portal_ip:
         notes.append(
             "warning: cannot bind captive HTTP to billing server — "
-            "PUBLIC_BASE_URL must be an http://LAN-IP:port URL"
+            "set PUBLIC_BASE_URL to a reachable http://host (LAN IP locally, "
+            "public hostname when hosted)"
         )
         return notes
 
@@ -8318,9 +8394,28 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
     Prefer a thin RouterOS redirect (API write) over fetching the full Django
     page: the phone must land on the billing host for CSRF/cookies, and the
     redirect carries ``?t=`` (account) plus ``mac=$(mac-esc)`` for Hotspot pay.
+
+    Refuses path-only URLs — those become ``http://192.168.…/pppoe/…`` on the
+    CPE Hotspot and trap both payment and admin WebFig.
     """
     notes: list[str] = []
+    portal_url = (portal_url or "").strip()
+    if portal_url and not urlparse(portal_url).scheme:
+        base = _billing_portal_base_url()
+        if base:
+            portal_url = (
+                f"{base}{portal_url if portal_url.startswith('/') else '/' + portal_url}"
+            )
+        else:
+            notes.append(
+                "warning: refused relative Hotspot redirect (no PUBLIC_BASE_URL) — "
+                "would stick clients on http://192.168.…"
+            )
+            return notes
     if not portal_url:
+        return notes
+    if not urlparse(portal_url).scheme:
+        notes.append("warning: pay URL is not absolute — Hotspot pages not installed")
         return notes
 
     for dst in _STALE_PROBE_FILES:
@@ -8370,13 +8465,155 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
     return notes
 
 
+def _ensure_cpe_portal_access(sock: socket.socket, portal_url: str) -> list[str]:
+    """
+    Let renew-Hotspot clients reach the billing pay page through the CPE.
+
+    Without this, login.html 302s to the pay URL but either:
+      * Hotspot re-intercepts the request (no walled garden) and phones stay on
+        ``http://192.168.…`` (CPE gateway / 192.168.189.1), or
+      * the WAN forward-drop blocks the billing host so payment never loads
+        (admin WebFig and client pay both look "broken").
+    """
+    notes: list[str] = []
+    portal = _billing_portal_base_url(portal_url)
+    if not portal:
+        notes.append("warning: no portal URL — CPE cannot open the pay page")
+        return notes
+
+    try:
+        parsed = urlparse(portal)
+        host = (parsed.hostname or "").strip()
+    except Exception:
+        host = ""
+    if not host:
+        notes.append("warning: portal URL has no host — CPE pay redirect skipped")
+        return notes
+
+    # Walled garden: unauthenticated Hotspot clients may fetch the pay page.
+    _remove_tagged_rows(sock, "/ip/hotspot/walled-garden", RENEW_HOTSPOT_TAG)
+    try:
+        _remove_tagged_rows(sock, "/ip/hotspot/walled-garden/ip", RENEW_HOTSPOT_TAG)
+    except Exception:
+        pass
+
+    terminal = _add(
+        sock,
+        "/ip/hotspot/walled-garden",
+        **{
+            "dst-host": host,
+            "action": "allow",
+            "comment": RENEW_HOTSPOT_TAG,
+        },
+    )
+    if terminal.get("_reply") == "!trap":
+        notes.append(f"warning: could not walled-garden {host}")
+    else:
+        notes.append(f"walled garden {host}")
+
+    billing_ip = _portal_target_ipv4(portal)
+    if billing_ip:
+        terminal = _add(
+            sock,
+            "/ip/hotspot/walled-garden/ip",
+            **{
+                "dst-address": billing_ip,
+                "action": "accept",
+                "comment": RENEW_HOTSPOT_TAG,
+            },
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"walled garden ip {billing_ip}")
+
+        # Accept billing traffic above the renew WAN drop.
+        _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-allow")
+        place_before = ""
+        for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action,comment"):
+            comment = row.get("comment") or ""
+            if f"{RENEW_HOTSPOT_TAG}-block" in comment and (
+                row.get("chain") or ""
+            ).strip() == "forward":
+                place_before = (row.get(".id") or "").strip()
+                break
+        allow_props = {
+            "chain": "forward",
+            "action": "accept",
+            "dst-address": billing_ip,
+            "comment": f"{RENEW_HOTSPOT_TAG}-allow",
+        }
+        if place_before:
+            terminal = _add_filter_rule(sock, allow_props, place_before=place_before)
+        else:
+            terminal = _add(sock, "/ip/firewall/filter", **allow_props)
+        if terminal.get("_reply") == "!trap":
+            notes.append(f"warning: could not allow CPE forward to billing {billing_ip}")
+        else:
+            notes.append(f"CPE forward allow to billing {billing_ip}")
+    else:
+        notes.append(
+            f"warning: could not resolve billing IP for {host} — "
+            "pay page may be blocked by the renew WAN drop"
+        )
+    return notes
+
+
+def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
+    """
+    Block client devices from surfing through the CPE while keeping the CPE online.
+
+    Phones still reach the local Hotspot (input) and get the renew popup.
+    Billing allow rules (``{RENEW_HOTSPOT_TAG}-allow``) must stay above this drop.
+    """
+    notes: list[str] = []
+    _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-block")
+    # Drop all forwarded traffic (LAN → internet). Local CPE services stay reachable.
+    # Insert after any billing allow so payment still works.
+    place_before = ""
+    for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action"):
+        if (row.get("chain") or "").strip() != "forward":
+            continue
+        if (row.get("action") or "").strip() == "drop":
+            place_before = (row.get(".id") or "").strip()
+            break
+    props = {
+        "chain": "forward",
+        "action": "drop",
+        "comment": f"{RENEW_HOTSPOT_TAG}-block",
+    }
+    if place_before:
+        terminal = _add_filter_rule(sock, props, place_before=place_before)
+    else:
+        terminal = _add(sock, "/ip/firewall/filter", **props)
+    if terminal.get("_reply") == "!trap":
+        notes.append("WAN block filter skipped")
+    else:
+        notes.append("client internet blocked on CPE (renew popup only)")
+    return notes
+
+
 def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> list[str]:
     """
     Turn on a local Hotspot + DNS/HTTP redirects on the CPE.
 
     Phones/PCs joining Wi‑Fi are redirected to the renew popup on the device.
+    ``portal_url`` must be an absolute billing pay URL — relative Locations keep
+    clients on the CPE's 192.168 address and break both payment and admin HTTP.
     """
     notes: list[str] = []
+    portal_url = (portal_url or "").strip()
+    if portal_url and not urlparse(portal_url).scheme:
+        # Path-only → resolve against the public/LAN billing base.
+        base = _billing_portal_base_url()
+        if base:
+            portal_url = f"{base}{portal_url if portal_url.startswith('/') else '/' + portal_url}"
+        else:
+            notes.append(
+                "warning: relative pay URL with no PUBLIC_BASE_URL — "
+                "phones would stick on http://192.168.…"
+            )
+    elif not portal_url:
+        portal_url = _billing_portal_base_url()
+
     lan = _cpe_lan_bridge_name(sock)
     gateway_ip = _cpe_lan_gateway_ip(sock, lan)
     hotspot_address = gateway_ip or RENEW_HOTSPOT_ADDRESS
@@ -8494,6 +8731,8 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     if _clear_https_capture_redirect(sock, comment=RENEW_HOTSPOT_TAG):
         notes.append("removed HTTPS-to-HTTP capture rule")
     notes.append("Hotspot intercepts captive HTTP probes")
+    # Allow pay page BEFORE the blanket WAN drop.
+    notes.extend(_ensure_cpe_portal_access(sock, portal_url))
     notes.extend(_ensure_cpe_wan_block(sock))
     notes.extend(_fetch_hotspot_pages(sock, portal_url))
     notes.extend(_bounce_cpe_wifi_clients(sock))
@@ -8504,31 +8743,6 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     except Exception:
         pass
 
-    return notes
-
-
-def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
-    """
-    Block client devices from surfing through the CPE while keeping the CPE online.
-
-    Phones still reach the local Hotspot (input) and get the renew popup.
-    """
-    notes: list[str] = []
-    _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-block")
-    # Drop all forwarded traffic (LAN → internet). Local CPE services stay reachable.
-    terminal = _add(
-        sock,
-        "/ip/firewall/filter",
-        **{
-            "chain": "forward",
-            "action": "drop",
-            "comment": f"{RENEW_HOTSPOT_TAG}-block",
-        },
-    )
-    if terminal.get("_reply") == "!trap":
-        notes.append("WAN block filter skipped")
-    else:
-        notes.append("client internet blocked on CPE (renew popup only)")
     return notes
 
 
@@ -8569,7 +8783,13 @@ def _disable_cpe_renew_hotspot(sock: socket.socket) -> list[str]:
     removed += _remove_tagged_rows(sock, "/ip/dns/static", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/firewall/nat", RENEW_HOTSPOT_TAG)
     removed += _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-block")
+    removed += _remove_tagged_rows(sock, "/ip/firewall/filter", f"{RENEW_HOTSPOT_TAG}-allow")
     removed += _remove_tagged_rows(sock, "/ip/firewall/filter", RENEW_HOTSPOT_TAG)
+    removed += _remove_tagged_rows(sock, "/ip/hotspot/walled-garden", RENEW_HOTSPOT_TAG)
+    try:
+        removed += _remove_tagged_rows(sock, "/ip/hotspot/walled-garden/ip", RENEW_HOTSPOT_TAG)
+    except Exception:
+        pass
     if removed:
         notes.append("renew hotspot / redirects removed from CPE")
     try:
@@ -9126,24 +9346,33 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> 
 
     When ``customer`` is provided, append a signed token so the renew page can
     auto-fill that account even when the phone is on CPE Wi‑Fi (not 10.20.0.x).
+
+    Always returns an absolute http(s) URL when a portal base is known — a
+    path-only Location on the CPE Hotspot keeps phones on
+    ``http://192.168.…/pppoe/…/pay/`` (unreachable Django), which also traps
+    anyone opening the CPE/NAS web UI during renew.
     """
     from urllib.parse import urlencode
 
-    from django.conf import settings
     from django.core import signing
     from django.urls import reverse
 
     join_code = (getattr(organization, "join_code", None) or "").strip()
     if not join_code:
-        return (portal_url or "").strip()
+        return _billing_portal_base_url(portal_url)
     path = reverse("core:pppoe_pay", kwargs={"join_code": join_code})
-    base = (portal_url or getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-    if not base:
-        url = path
-    elif "/pppoe/" in base and base.rstrip("/").endswith("/pay"):
-        url = base
+    explicit = (portal_url or "").strip().rstrip("/")
+    # Caller may already pass the full pay URL (with or without ?t=).
+    if explicit and "/pppoe/" in explicit and explicit.rstrip("/").endswith("/pay"):
+        url = explicit
     else:
-        url = f"{base}{path}"
+        base = _billing_portal_base_url(explicit)
+        if not base:
+            # Last resort: still absolute-ish via public_base_url empty → path.
+            # Prefer refusing a relative Location over shipping one.
+            url = path
+        else:
+            url = f"{base}{path}"
 
     if customer is not None and getattr(customer, "pk", None) and getattr(organization, "pk", None):
         token = signing.dumps(
@@ -9175,6 +9404,8 @@ def sync_customer_subscription_access(
          online so phones get the captive portal without a manual reconnect
       2. Move /ppp/secret to the blocked profile + kick the session so surfing
          stops at the ISP MikroTik
+      Calendar packages (daily/weekly/monthly/…) only enter this path at local
+      00:00 after the package end date — never at the purchase clock time.
     Account inactive / suspended:
       Disable the PPPoE secret entirely
     Inside the period:
@@ -9315,11 +9546,11 @@ def sync_customer_subscription_access(
                 )
     else:
         if provision:
-            provision_result = provision_customer_pppoe(
-                customer,
-                ensure_stack=False,
-                force_disabled=False,
-            )
+            # Clear the CPE renew Hotspot / WAN-block FIRST while the PPP
+            # session is still up (even on the blocked profile). Provisioning
+            # kicks the session so a post-kick clear often fails with "CPE
+            # offline", leaving phones trapped behind the renew popup and the
+            # CPE stuck redialing.
             try:
                 portal_result = apply_cpe_renew_portal(
                     customer, enabled=False, portal_url=pay_url
@@ -9330,6 +9561,22 @@ def sync_customer_subscription_access(
                     "skipped": False,
                     "error": str(exc) or "Could not clear CPE renew portal.",
                 }
+            provision_result = provision_customer_pppoe(
+                customer,
+                ensure_stack=False,
+                force_disabled=False,
+            )
+            # If the CPE was briefly offline before the kick, try once more
+            # after the speed profile is restored (redial may already be up).
+            if not portal_result.get("ok"):
+                try:
+                    retry = apply_cpe_renew_portal(
+                        customer, enabled=False, portal_url=pay_url
+                    )
+                    if retry.get("ok") or not portal_result.get("ok"):
+                        portal_result = retry
+                except Exception:
+                    pass
 
     nas_blocked = bool(
         not allowed
@@ -9444,9 +9691,7 @@ def apply_pppoe_enforcement_on_router(
             with _api_session(
                 candidate, username, password, timeout=attempt_timeout
             ) as sock:
-                from django.conf import settings
-
-                portal_url = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip()
+                portal_url = _billing_portal_base_url()
                 lan_interface = _resolve_lan_interface(
                     sock, lan_interface, exclude=wan_interface
                 )
@@ -9553,11 +9798,8 @@ def apply_pppoe_enforcement_on_router(
     portal_base_is_loopback = False
     try:
         from core.hotspot_portal import is_loopback_url
-        from django.conf import settings as dj_settings
 
-        portal_base_is_loopback = is_loopback_url(
-            (getattr(dj_settings, "PUBLIC_BASE_URL", "") or "").strip()
-        )
+        portal_base_is_loopback = is_loopback_url(_billing_portal_base_url())
     except Exception:
         portal_base_is_loopback = False
 
@@ -10348,7 +10590,10 @@ def _hotspot_customer_access_fields(customer, *, organization=None, now=None):
     """Return (mac, disabled, limit_uptime, comment) for a Hotspot customer."""
     from django.utils import timezone
 
-    from billing.services import customer_receives_internet
+    from billing.services import (
+        customer_receives_internet,
+        subscription_access_deadline,
+    )
 
     mac = (getattr(customer, "hotspot_mac", None) or "").strip().upper()
     if not mac:
@@ -10356,10 +10601,15 @@ def _hotspot_customer_access_fields(customer, *, organization=None, now=None):
     org = organization or getattr(customer, "organization", None)
     disabled = not customer_receives_internet(customer, org)
     limit_uptime = ""
-    end = getattr(customer, "package_end", None)
-    if not disabled and end is not None:
-        stamp = now or timezone.now()
-        remaining = int((end - stamp).total_seconds())
+    # Cap online time until the real access deadline (midnight for calendar
+    # packages). Using raw package_end would cut Wi‑Fi mid-afternoon while
+    # PPPoE still had the rest of the day.
+    deadline = subscription_access_deadline(customer)
+    if not disabled and deadline is not None:
+        stamp = timezone.localtime(now or timezone.now())
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        remaining = int((deadline - stamp).total_seconds())
         limit_uptime = f"{max(remaining, 1)}s"
     comment = f"{ISP_HOTSPOT_TAG} {getattr(customer, 'account_number', '')}".strip()
     return mac, disabled, limit_uptime, comment
@@ -11317,10 +11567,8 @@ def apply_hotspot_on_router(
                         # expired-client billing allow / HTTP redirect survive —
                         # a bare re-push used to wipe them and leave only the
                         # silent WAN drop (slow captive popup).
-                        from django.conf import settings as dj_settings
-
-                        portal_url = (
-                            (getattr(dj_settings, "PUBLIC_BASE_URL", "") or "").strip()
+                        portal_url = _billing_portal_base_url(
+                            pay_url or redirect_url or login_url or welcome_url or ""
                         )
                         _, fw_notes = _ensure_pppoe_stack(
                             sock,

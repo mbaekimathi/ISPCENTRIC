@@ -255,6 +255,7 @@
   var inFlight = false;
   var initial = {{ analytics_json|safe }};
   var trendChart = null;
+  var lastRouters = null;
 
   function money(n) {
     var v = Number(n) || 0;
@@ -348,6 +349,54 @@
       trendChart.data.datasets = datasets;
       trendChart.update("none");
     }
+  }
+
+  function patchTrendWithRouters(trend, routers) {
+    if (!trend || !trend.datasets || !routers || !routers.length) return trend;
+    var scoreMap = {
+      connected: 100,
+      reachable: 70,
+      limited: 55,
+      auth_failed: 25,
+      wrong_host: 10,
+      disconnected: 0
+    };
+    var byId = {};
+    routers.forEach(function (row) {
+      if (row.id == null) return;
+      var status = (row.status || "disconnected").toLowerCase();
+      byId[row.id] = scoreMap[status] != null ? scoreMap[status] : 0;
+    });
+    var datasets = trend.datasets.map(function (ds) {
+      var data = (ds.data || []).slice();
+      if (!data.length) return Object.assign({}, ds, { data: data });
+      if (ds.router_id != null && byId[ds.router_id] != null) {
+        data[data.length - 1] = byId[ds.router_id];
+      }
+      return Object.assign({}, ds, { data: data });
+    });
+    var avgDs = null;
+    var routerDatasets = [];
+    datasets.forEach(function (ds) {
+      if (ds.router_id == null && (ds.label || "") === "Average") avgDs = ds;
+      else if (ds.router_id != null) routerDatasets.push(ds);
+    });
+    if (avgDs && routerDatasets.length) {
+      var avgData = avgDs.data.map(function (_, idx) {
+        var vals = [];
+        routerDatasets.forEach(function (ds) {
+          if (ds.data[idx] != null) vals.push(ds.data[idx]);
+        });
+        return vals.length ? Math.round((vals.reduce(function (a, b) { return a + b; }, 0) / vals.length) * 10) / 10 : null;
+      });
+      datasets = datasets.map(function (ds) {
+        if (ds === avgDs || (ds.router_id == null && (ds.label || "") === "Average")) {
+          return Object.assign({}, ds, { data: avgData });
+        }
+        return ds;
+      });
+    }
+    return Object.assign({}, trend, { datasets: datasets });
   }
 
   function performance(routers) {
@@ -530,9 +579,27 @@
       .then(function (parts) {
         var analytics = parts[0];
         var mikrotik = parts[1];
-        if (analytics && analytics.ok !== false) applyAnalytics(analytics);
-        var routers = (mikrotik && mikrotik.routers) || [];
-        applyMikrotik(performance(routers));
+        var routers = null;
+        if (mikrotik && mikrotik.ok !== false && Array.isArray(mikrotik.routers)) {
+          routers = mikrotik.routers;
+          lastRouters = routers;
+        } else if (lastRouters) {
+          routers = lastRouters;
+        } else {
+          routers = [];
+        }
+        if (analytics && analytics.ok !== false) {
+          if (analytics.mikrotik_trend && routers.length) {
+            analytics.mikrotik_trend = patchTrendWithRouters(
+              analytics.mikrotik_trend,
+              routers
+            );
+          }
+          applyAnalytics(analytics);
+        }
+        if (mikrotik && mikrotik.ok !== false && Array.isArray(mikrotik.routers)) {
+          applyMikrotik(performance(routers));
+        }
         markStamp();
       })
       .catch(function () {})
@@ -544,7 +611,7 @@
 
   function boot() {
     applyAnalytics(initial);
-    loadLive(false);
+    loadLive(true);
   }
 
   if (window.Chart) boot();
@@ -556,9 +623,9 @@
     }, 40);
   }
   if (refreshBtn) refreshBtn.addEventListener("click", function () { loadLive(true); });
-  setInterval(function () { loadLive(false); }, 45000);
+  setInterval(function () { loadLive(false); }, 15000);
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadLive(false);
+    if (!document.hidden) loadLive(true);
   });
 })();
 </script>
