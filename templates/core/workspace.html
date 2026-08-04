@@ -326,25 +326,34 @@
 
   function chartDefaults() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    var narrow = window.matchMedia("(max-width: 720px)").matches;
     return {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
+      layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
       plugins: {
         legend: {
+          display: !narrow,
           position: "bottom",
           labels: {
             color: dark ? "#c8d4db" : "#4a6573",
             boxWidth: 12,
-            font: { weight: "600" },
-            padding: 16
+            font: { weight: "600", size: narrow ? 10 : 12 },
+            padding: narrow ? 10 : 16
           }
         },
         tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
       },
       scales: {
         x: {
-          ticks: { color: dark ? "#8aa0ab" : "#64748b", maxRotation: 0, autoSkipPadding: 10 },
+          ticks: {
+            color: dark ? "#8aa0ab" : "#64748b",
+            maxRotation: narrow ? 45 : 0,
+            autoSkip: true,
+            autoSkipPadding: narrow ? 6 : 10,
+            maxTicksLimit: narrow ? 6 : 12
+          },
           grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
         },
         y: {
