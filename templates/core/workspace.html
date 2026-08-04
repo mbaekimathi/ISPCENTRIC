@@ -72,7 +72,7 @@
         <p class="workspace-dash-stat-label">Not surfing</p>
       </div>
       <p class="workspace-dash-stat-value" data-stat="not-surfing">—</p>
-      <p class="workspace-dash-stat-meta">Paid period · router OK</p>
+      <p class="workspace-dash-stat-meta">PPPoE · paid period · router OK</p>
     </article>
 
     <article class="workspace-dash-stat tone-warn{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:4">
@@ -159,7 +159,7 @@
         <div>
           <p class="workspace-dash-panel-kicker">Alerts</p>
           <h2>Not surfing</h2>
-          <p class="panel-sub">In subscription period, router connected, but no live internet session.</p>
+          <p class="panel-sub">PPPoE clients in subscription period, router connected, but no live session.</p>
         </div>
         <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
       </div>
@@ -542,8 +542,8 @@
     if (!rows || !rows.length) {
       body.innerHTML =
         '<div class="workspace-dash-empty">' +
-        '<p class="workspace-dash-empty-title">All paid clients are surfing</p>' +
-        '<p class="workspace-dash-empty-copy">No in-period clients are offline while their MikroTik is connected.</p>' +
+        '<p class="workspace-dash-empty-title">All paid PPPoE clients are surfing</p>' +
+        '<p class="workspace-dash-empty-copy">No in-period PPPoE clients are offline while their MikroTik is connected.</p>' +
         "</div>";
       return;
     }
@@ -597,24 +597,17 @@
       return Promise.resolve([]);
     }
     var suffix = force ? "&refresh=1" : "";
-    var pppoeReq = fetch(surfingUrl + "?service=pppoe" + suffix, {
+    return fetch(surfingUrl + "?service=pppoe" + suffix, {
       headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",
       cache: "no-store"
-    }).then(function (r) { return r.json(); });
-    var hotspotReq = fetch(surfingUrl + "?service=hotspot" + suffix, {
-      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin",
-      cache: "no-store"
-    }).then(function (r) { return r.json(); });
-    return Promise.all([pppoeReq, hotspotReq])
-      .then(function (parts) {
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
         var rows = [];
-        parts.forEach(function (data) {
-          if (data && data.ok !== false && Array.isArray(data.clients)) {
-            rows = rows.concat(filterNotSurfing(data.clients));
-          }
-        });
+        if (data && data.ok !== false && Array.isArray(data.clients)) {
+          rows = filterNotSurfing(data.clients);
+        }
         rows.sort(function (a, b) {
           return String(a.full_name || "").localeCompare(String(b.full_name || ""));
         });
