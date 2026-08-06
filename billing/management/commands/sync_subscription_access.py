@@ -5,7 +5,7 @@ from django.db.models import Q
 
 from billing.models import Customer
 from core.mikrotik_connect import (
-    apply_hotspot_on_router,
+    repair_hotspot_captive_portal,
     repair_router_expired_captive_redirect,
     sync_customer_subscription_access,
 )
@@ -123,12 +123,13 @@ class Command(BaseCommand):
                 router_id = getattr(customer, "router_id", None)
                 if router_id:
                     repair_router_ids.add(router_id)
-                # Re-push CPE renew popup when surfing is blocked but login.html
-                # never landed (or CPE was offline at cut-off).
+                # Re-push CPE renew only when the earlier attempt actually failed
+                # (not when the CPE was offline / skipped — that just wastes API).
                 portal = result.get("portal") or {}
                 if (
                     customer.service_type == Customer.ServiceType.PPPOE
                     and not portal.get("ok")
+                    and not portal.get("skipped")
                     and not dry_run
                 ):
                     try:
@@ -175,9 +176,17 @@ class Command(BaseCommand):
                 self.stdout.write(f"{customer.account_number}: {state}")
 
         for router in self._hotspot_routers(hotspot_org_ids):
-            result = apply_hotspot_on_router(router, enabled=True)
-            if result.get("ok"):
-                self.stdout.write(f"hotspot {router.host}: synced")
+            # Correction loop: lost login.html / option 114 must not leave unpaid
+            # Wi‑Fi clients on "connected, no internet" until the next cron.
+            result = repair_hotspot_captive_portal(router)
+            if result.get("ok") or result.get("skipped"):
+                note = "synced"
+                if any(
+                    "repaired on attempt" in str(n)
+                    for n in (result.get("notes") or [])
+                ):
+                    note = "captive repaired"
+                self.stdout.write(f"hotspot {router.host}: {note}")
             else:
                 errors += 1
                 self.stderr.write(

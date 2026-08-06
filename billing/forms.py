@@ -1,4 +1,5 @@
 from datetime import date, datetime, time, timedelta
+from decimal import Decimal, InvalidOperation
 
 from django import forms
 from django.db.models import Q
@@ -11,6 +12,7 @@ from billing.services import (
     clear_customer_package_pause,
     compute_package_end,
     plan_uses_clock_time,
+    plans_for_router,
 )
 from core.models import MikroTikRouter
 
@@ -1356,4 +1358,109 @@ class BillingPackageRegisterForm(forms.ModelForm):
         if commit:
             plan.save()
             self.save_m2m()
+        return plan
+
+
+class CustomerCashRechargeForm(forms.Form):
+    """Staff cash recharge: pick a plan, record cash, extend the package."""
+
+    plan = forms.ModelChoiceField(
+        label="Package / plan",
+        queryset=BillingPlan.objects.none(),
+        empty_label="Select a plan",
+        widget=forms.Select(
+            attrs={
+                "class": "form-control",
+                "id": "id_recharge_plan",
+            },
+        ),
+    )
+    amount = forms.DecimalField(
+        label="Amount (KES)",
+        min_value=Decimal("0.01"),
+        max_digits=12,
+        decimal_places=2,
+        widget=forms.NumberInput(
+            attrs={
+                "class": "form-control",
+                "id": "id_recharge_amount",
+                "step": "0.01",
+                "min": "0.01",
+                "inputmode": "decimal",
+            },
+        ),
+        help_text="Defaults to the selected plan price. Adjust only if the cash received differs.",
+    )
+    reference = forms.CharField(
+        label="Reference",
+        required=False,
+        max_length=100,
+        widget=forms.TextInput(
+            attrs={
+                "class": "form-control",
+                "id": "id_recharge_reference",
+                "placeholder": "Optional receipt / note",
+                "autocomplete": "off",
+            },
+        ),
+        help_text="Optional cash receipt number or note.",
+    )
+
+    def __init__(self, *args, organization=None, customer=None, **kwargs):
+        self.organization = organization
+        self.customer = customer
+        super().__init__(*args, **kwargs)
+
+        qs = BillingPlan.objects.none()
+        if self.organization and self.customer is not None:
+            router = getattr(self.customer, "router", None)
+            customer_service = getattr(self.customer, "service_type", None) or None
+            qs = plans_for_router(
+                self.organization,
+                router,
+                service_type=customer_service,
+            )
+            current_plan_id = getattr(self.customer, "plan_id", None)
+            if current_plan_id and not qs.filter(pk=current_plan_id).exists():
+                qs = (
+                    BillingPlan.objects.filter(organization=self.organization)
+                    .filter(Q(pk=current_plan_id) | Q(pk__in=qs.values("pk")))
+                    .distinct()
+                    .order_by("price", "name")
+                )
+        elif self.organization:
+            qs = BillingPlan.objects.filter(
+                organization=self.organization,
+                is_active=True,
+            ).order_by("price", "name")
+
+        self.fields["plan"].queryset = qs
+        current_plan = getattr(self.customer, "plan", None) if self.customer else None
+        if current_plan and qs.filter(pk=current_plan.pk).exists():
+            self.fields["plan"].initial = current_plan.pk
+            if "amount" not in self.data:
+                self.fields["amount"].initial = current_plan.price
+        elif qs.exists() and "amount" not in self.data:
+            first = qs.first()
+            self.fields["plan"].initial = first.pk
+            self.fields["amount"].initial = first.price
+
+    def clean_amount(self):
+        amount = self.cleaned_data.get("amount")
+        if amount is None:
+            raise forms.ValidationError("Enter the cash amount received.")
+        try:
+            amount = Decimal(amount)
+        except (InvalidOperation, TypeError):
+            raise forms.ValidationError("Enter a valid amount.")
+        if amount <= 0:
+            raise forms.ValidationError("Amount must be greater than zero.")
+        return amount
+
+    def clean_plan(self):
+        plan = self.cleaned_data.get("plan")
+        if plan is None:
+            raise forms.ValidationError("Select a package to recharge.")
+        if self.organization and plan.organization_id != self.organization.pk:
+            raise forms.ValidationError("Choose a plan from this organization.")
         return plan

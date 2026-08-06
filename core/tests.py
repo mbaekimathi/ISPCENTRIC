@@ -4257,6 +4257,433 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertIn("absolute pay URL", result["error"])
 
 
+class AccessFlowCorrectionLoopTests(TestCase):
+    """
+    End-to-end correction loops for PPPoE expire/restore and ISP Hotspot captive.
+
+    These encode the invariants that keep phones off "connected, no internet"
+    and on the correct pay page.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.contrib.auth.models import User
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        cache.clear()
+        self.owner = User.objects.create_user("loop-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Loop ISP",
+            owner=self.owner,
+            join_code="606061",
+            hotspot_enabled=True,
+            pppoe_compulsory=True,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Loop NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.0.0.1",
+            username="admin",
+            password="secret",
+        )
+        self.pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Loop Dialer",
+            phone="0711111111",
+            account_number="LOOP-PPP-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="loop1",
+            pppoe_password="pass",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=timezone.now() - timedelta(days=5),
+            package_end=timezone.now() - timedelta(days=1),
+        )
+        self.hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Loop Hotspot",
+            phone="0722222222",
+            account_number="LOOP-HS-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:11",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=timezone.now() - timedelta(hours=3),
+            package_end=timezone.now() - timedelta(hours=1),
+        )
+
+    def test_pppoe_expiry_retries_portal_until_ok_then_blocks(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            sync_customer_subscription_access,
+        )
+
+        portal_calls = []
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url=""):
+            portal_calls.append(enabled)
+            order.append("portal")
+            # Fail once, then succeed — correction loop must keep trying.
+            if len(portal_calls) == 1:
+                return {"ok": False, "skipped": False, "error": "login.html missing"}
+            return {"ok": True, "enabled": enabled, "notes": ["login ready"]}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append("provision")
+            return {"ok": True, "profile": PPPOE_BLOCKED_PROFILE_NAME}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/606061/pay/?t=x",
+            ),
+        ):
+            result = sync_customer_subscription_access(self.pppoe, provision=True)
+
+        self.assertFalse(result["allowed"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["portal"]["ok"])
+        self.assertGreaterEqual(len(portal_calls), 2)
+        self.assertEqual(order[0], "portal")
+        self.assertIn("provision", order)
+        self.assertLess(order.index("portal"), order.index("provision"))
+
+    def test_pppoe_restore_clears_renew_before_provision(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import sync_customer_subscription_access
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url=""):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision",))
+            return {"ok": True, "profile": "ispcentric"}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+        ):
+            result = sync_customer_subscription_access(self.pppoe, provision=True)
+
+        self.assertTrue(result["allowed"])
+        self.assertEqual(order[0], ("portal", False))
+        self.assertEqual(order[1], ("provision",))
+
+    def test_cpe_renew_pool_ip_resolves_remembered_customer(self):
+        from core.mikrotik_connect import (
+            find_pppoe_customer_for_ip,
+            remember_pppoe_customer_session_ip,
+        )
+
+        remember_pppoe_customer_session_ip(self.pppoe, "192.168.189.40")
+        found = find_pppoe_customer_for_ip(self.org, "192.168.189.40")
+        self.assertEqual(found.pk, self.pppoe.pk)
+
+        # Unknown renew-pool IP must not guess via an org-wide marker
+        # (that would conflict across customers).
+        self.assertIsNone(find_pppoe_customer_for_ip(self.org, "192.168.189.55"))
+
+    def test_sync_skips_cpe_retry_when_portal_was_offline(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with (
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_customer_subscription_access",
+                return_value={
+                    "ok": True,
+                    "allowed": False,
+                    "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
+                    "provision": {"ok": True, "profile": "ispcentric-blocked"},
+                },
+            ),
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+            ) as cpe_retry,
+            patch(
+                "billing.management.commands.sync_subscription_access.repair_hotspot_captive_portal",
+                return_value={"ok": True, "notes": []},
+            ),
+            patch(
+                "billing.management.commands.sync_subscription_access.repair_router_expired_captive_redirect",
+                return_value={"ok": True, "message": "ok"},
+            ),
+        ):
+            call_command("sync_subscription_access", stdout=StringIO())
+
+        cpe_retry.assert_not_called()
+
+    def test_middleware_renew_pool_probe_includes_signed_token(self):
+        from django.core.cache import cache
+        from django.test import RequestFactory, override_settings
+
+        from core.mikrotik_connect import remember_pppoe_customer_session_ip
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        remember_pppoe_customer_session_ip(self.pppoe, "192.168.189.77")
+        cache.delete("captive:redirect:v2:192.168.189.77:")
+
+        factory = RequestFactory()
+        request = factory.get(
+            "/hotspot-detect.html",
+            HTTP_HOST="captive.apple.com",
+            REMOTE_ADDR="192.168.189.77",
+        )
+
+        def boom(req):
+            self.fail("probe must redirect, not fall through")
+
+        with (
+            override_settings(PUBLIC_BASE_URL="http://billing.example"),
+            patch(
+                "core.mikrotik_connect.resolve_captive_organization",
+                return_value=self.org,
+            ),
+            patch(
+                "core.hotspot_portal.public_base_url",
+                return_value="http://billing.example",
+            ),
+        ):
+            response = HotspotCaptiveProbeMiddleware(boom)(request)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertIn("t=", response.url)
+
+    def test_nas_expired_access_repair_loop_adds_dns_and_redirect(self):
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            PPPOE_BLOCKED_ADDRESS_LIST,
+            _ensure_pppoe_expired_access,
+        )
+
+        nat_rows = []
+        filter_rows = [
+            {".id": "*drop", "chain": "forward", "action": "drop"},
+            {".id": "*idrop", "chain": "input", "action": "drop"},
+        ]
+        adds = []
+        attempt = {"n": 0}
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/firewall/nat":
+                return list(nat_rows)
+            if path == "/ip/firewall/filter":
+                return list(filter_rows)
+            return []
+
+        def fake_add(sock, path, **props):
+            adds.append((path, props))
+            if path == "/ip/firewall/nat" and "expired redirect" in props.get(
+                "comment", ""
+            ):
+                # Appear only after first failed check (simulate flaky write).
+                attempt["n"] += 1
+                if attempt["n"] >= 1:
+                    nat_rows.append(
+                        {
+                            ".id": f"*r{attempt['n']}",
+                            "chain": "dstnat",
+                            "action": "dst-nat",
+                            "to-addresses": "203.0.113.10",
+                            "dst-port": "80",
+                            "comment": f"{PPP_SECRET_TAG} expired redirect",
+                        }
+                    )
+            if path == "/ip/firewall/filter":
+                filter_rows.append({".id": f"*f{len(filter_rows)}", **props})
+            return {"_reply": "!done", "ret": "*1"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=lambda sock, rule, place_before="": fake_add(
+                    sock, "/ip/firewall/filter", **rule
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example:8000",
+            ),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4",
+                return_value="203.0.113.10",
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value="*drop"),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_fast_captive_reject",
+                return_value=["reject https fast"],
+            ),
+        ):
+            notes = _ensure_pppoe_expired_access(object())
+
+        self.assertTrue(any("expired PPPoE HTTP" in n for n in notes))
+        self.assertTrue(any("client DNS accept" in n for n in notes))
+        self.assertTrue(
+            any(
+                path == "/ip/firewall/nat"
+                and props.get("src-address-list") == PPPOE_BLOCKED_ADDRESS_LIST
+                and props.get("dst-port") == "80"
+                for path, props in adds
+            )
+        )
+
+    def test_isp_hotspot_bounce_clears_cookies_keeps_authorized(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _bounce_isp_hotspot_clients
+
+        removed = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/hotspot/cookie":
+                return [{".id": "*c1"}]
+            if path == "/ip/hotspot/active":
+                return [
+                    {".id": "*a1", "authorized": "true"},
+                    {".id": "*a2", "authorized": "false"},
+                ]
+            if path == "/ip/hotspot/host":
+                return [{".id": "*h1", "authorized": "no"}]
+            return []
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removed.append((path, item_id)) or {"_reply": "!done"}
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_wifi_clients",
+                return_value=["bounced 1"],
+            ),
+        ):
+            notes = _bounce_isp_hotspot_clients(MagicMock())
+
+        self.assertIn(("/ip/hotspot/cookie", "*c1"), removed)
+        self.assertIn(("/ip/hotspot/active", "*a2"), removed)
+        self.assertIn(("/ip/hotspot/host", "*h1"), removed)
+        self.assertNotIn(("/ip/hotspot/active", "*a1"), removed)
+        self.assertTrue(any("cookie" in n for n in notes))
+
+    def test_repair_hotspot_captive_retries_until_ok(self):
+        from core.mikrotik_connect import repair_hotspot_captive_portal
+
+        calls = {"n": 0}
+
+        def fake_apply(router, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return {"ok": False, "error": "login.html missing"}
+            return {"ok": True, "notes": ["installed hotspot/login.html"]}
+
+        with patch(
+            "core.mikrotik_connect.apply_hotspot_on_router",
+            side_effect=fake_apply,
+        ):
+            result = repair_hotspot_captive_portal(self.router, attempts=3)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["n"], 2)
+        self.assertTrue(
+            any("repaired on attempt" in n for n in (result.get("notes") or []))
+        )
+
+    def test_sync_command_repairs_hotspot_and_expired_redirect(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with (
+            patch(
+                "billing.management.commands.sync_subscription_access.sync_customer_subscription_access",
+                return_value={
+                    "ok": False,
+                    "allowed": False,
+                    "portal": {
+                        "ok": False,
+                        "skipped": False,
+                        "error": "login.html missing",
+                    },
+                    "provision": {"ok": True, "profile": "ispcentric-blocked"},
+                },
+            ),
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                return_value={"ok": True, "enabled": True},
+            ),
+            patch(
+                "billing.management.commands.sync_subscription_access.repair_hotspot_captive_portal",
+                return_value={
+                    "ok": True,
+                    "notes": ["Hotspot captive repaired on attempt 2"],
+                },
+            ) as hs_repair,
+            patch(
+                "billing.management.commands.sync_subscription_access.repair_router_expired_captive_redirect",
+                return_value={"ok": True, "message": "expired captive redirect ok"},
+            ) as nas_repair,
+        ):
+            out = StringIO()
+            call_command("sync_subscription_access", stdout=out)
+            text = out.getvalue()
+
+        self.assertTrue(hs_repair.called)
+        self.assertTrue(nas_repair.called)
+        self.assertIn("captive repaired", text)
+        self.assertIn("expired-redirect", text)
+
+    def test_captive_html_invariants_for_both_pay_modes(self):
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        for url in (
+            "http://billing.example/pppoe/606061/pay/?t=tok",
+            "http://billing.example/hotspot/606061/pay/",
+        ):
+            html = _captive_pay_redirect_html(url)
+            self.assertIn("$(if http-status == 302)", html)
+            self.assertIn("mac=$(mac)", html)
+            self.assertIn("window.location.replace", html)
+            # Absolute pay target present (trailing slash may be stripped before ?mac=).
+            self.assertIn(url.rstrip("/").split("?")[0], html)
+
+
 class MikroTikStatusOfflineTests(TestCase):
     def setUp(self):
         from django.contrib.auth.models import User

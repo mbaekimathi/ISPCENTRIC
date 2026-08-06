@@ -525,10 +525,12 @@ def create_renewal_invoice_and_payment(
     recorded_by=None,
     notes: str = "M-Pesa STK Push subscription renewal",
     invoice_prefix: str = "REN",
+    method: str | None = None,
 ):
-    """Create a paid invoice + M-Pesa payment row for a successful STK payment."""
+    """Create a paid invoice + payment row for a successful renewal payment."""
     from billing.models import Invoice, Payment
 
+    payment_method = method or Payment.Method.MPESA
     now = timezone.localtime()
     stamp = now.strftime("%Y%m%d%H%M%S")
     invoice_number = f"{invoice_prefix}-{organization.pk}-{stamp}-{secrets.token_hex(2).upper()}"
@@ -549,12 +551,75 @@ def create_renewal_invoice_and_payment(
         organization=organization,
         invoice=invoice,
         amount=amount,
-        method=Payment.Method.MPESA,
+        method=payment_method,
         reference=(reference or "")[:100],
         received_at=now,
         recorded_by=recorded_by,
     )
     return invoice, payment
+
+
+def recharge_customer_cash(
+    *,
+    customer,
+    organization,
+    plan,
+    amount,
+    reference: str = "",
+    recorded_by=None,
+    notes: str = "Cash subscription recharge",
+):
+    """
+    Record a cash payment and immediately extend the customer's prepaid package.
+
+    Unlike M-Pesa STK (which issues a voucher), staff cash recharges activate
+    access right away and sync to the router afterward.
+    """
+    from django.db import transaction
+
+    from billing.models import Payment
+
+    if plan is None:
+        raise ValueError("Select a package to recharge.")
+    try:
+        amount = Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except Exception as exc:  # noqa: BLE001 — invalid Decimal input
+        raise ValueError("Enter a valid recharge amount.") from exc
+    if amount <= 0:
+        raise ValueError("Recharge amount must be greater than zero.")
+
+    with transaction.atomic():
+        update_fields: list[str] = []
+        if customer.plan_id != plan.pk:
+            customer.plan = plan
+            update_fields.append("plan")
+        if customer.status in {
+            Customer.Status.SUSPENDED,
+            Customer.Status.INACTIVE,
+        }:
+            customer.status = Customer.Status.ACTIVE
+            update_fields.append("status")
+        if update_fields:
+            customer.save(update_fields=update_fields)
+
+        invoice, payment = create_renewal_invoice_and_payment(
+            customer=customer,
+            organization=organization,
+            amount=amount,
+            reference=reference,
+            recorded_by=recorded_by,
+            notes=notes or "Cash subscription recharge",
+            invoice_prefix="CASH",
+            method=Payment.Method.CASH,
+        )
+        apply_subscription_renewal(customer, plan=plan)
+        customer.refresh_from_db()
+
+    return {
+        "customer": customer,
+        "invoice": invoice,
+        "payment": payment,
+    }
 
 
 def resolve_lead_allocation_plan(organization, customer=None):

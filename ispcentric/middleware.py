@@ -275,16 +275,16 @@ class HotspotCaptiveProbeMiddleware:
 
         # CPE renew Wi‑Fi (192.168.189.x) is for expired PPPoE homes — never treat
         # those phones as ISP Hotspot clients or they land on /hotspot/…/pay/.
-        pppoe_pool = is_pppoe_pool_ip(remote) or is_cpe_renew_pool_ip(remote)
+        renew_or_pppoe_pool = is_pppoe_pool_ip(remote) or is_cpe_renew_pool_ip(remote)
         hotspot_client = is_hotspot_pool_ip(remote)
         probe_host = host in self.CAPTIVE_HOSTS or current_host in self.CAPTIVE_HOSTS
         # Root "/" alone is too broad for normal browsing — only treat it as a
         # probe when the Host (original or current) is a known captive hostname
         # or the client is already in a captive pool.
         path_is_probe = path in self.CAPTIVE_PATHS and (
-            path != "/" or probe_host or pppoe_pool or hotspot_client
+            path != "/" or probe_host or renew_or_pppoe_pool or hotspot_client
         )
-        if not (pppoe_pool or hotspot_client or probe_host or path_is_probe):
+        if not (renew_or_pppoe_pool or hotspot_client or probe_host or path_is_probe):
             return self.get_response(request)
 
         from django.conf import settings
@@ -313,7 +313,7 @@ class HotspotCaptiveProbeMiddleware:
             pppoe_customer = None
         # Registered PPPoE sessions always renew on /pppoe/…/pay/ (token locked),
         # even when the phone IP is not in the classic 10.20.0.0/24 pool.
-        prefer_pppoe = bool(pppoe_pool or pppoe_customer is not None)
+        prefer_pppoe = bool(renew_or_pppoe_pool or pppoe_customer is not None)
 
         if prefer_pppoe:
             pay_path = reverse(

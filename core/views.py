@@ -43,8 +43,8 @@ from accounts.routing import (
     is_viewing_as_client,
 )
 from billing.forms import (
+    CustomerCashRechargeForm,
     CustomerDetailsEditForm,
-    CustomerPackagePeriodForm,
     PppoeClientRegisterForm,
 )
 from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
@@ -57,6 +57,7 @@ from billing.services import (
     pause_customer_package,
     plan_uses_clock_time,
     plans_for_router,
+    recharge_customer_cash,
     resolve_lead_allocation_fee,
     resume_customer_package,
     subscription_access_deadline,
@@ -204,9 +205,9 @@ CLIENT_SIDEBARS = {
             {"key": "wifi", "label": "Wi‑Fi settings", "anchor": "client-wifi"},
             {
                 "key": "package",
-                "label": "Update package",
+                "label": "Recharge account",
                 "action": "open_modal",
-                "modal": "client-package-modal",
+                "modal": "client-recharge-modal",
             },
             {"key": "billing", "label": "Payments", "anchor": "client-billing"},
         ],
@@ -491,13 +492,13 @@ def resolve_client_usage_router(customer, org=None):
 
 
 def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[dict]:
-    """Sidebar items for a single client (sections + update package)."""
+    """Sidebar items for a single client (sections + cash recharge)."""
     nav: list[dict] = [
         {
             "key": "package",
-            "label": "Update package",
+            "label": "Recharge account",
             "action": "open_modal",
-            "modal": "client-package-modal",
+            "modal": "client-recharge-modal",
         },
     ]
     if customer_supports_live_usage(customer):
@@ -3973,7 +3974,7 @@ def client_detail(request, customer_id: int):
 
     wifi_ssid_display = (customer.cpe_wifi_ssid or "").strip()
     wifi_password_display = customer.cpe_wifi_password or ""
-    package_form = CustomerPackagePeriodForm(instance=customer, organization=org)
+    recharge_form = CustomerCashRechargeForm(organization=org, customer=customer)
     details_form = CustomerDetailsEditForm(instance=customer, organization=org)
     open_client_modal = ""
 
@@ -4146,47 +4147,56 @@ def client_detail(request, customer_id: int):
                 return JsonResponse({"ok": False, "errors": errors}, status=400)
             open_client_modal = "client-details-modal"
 
-        if action in ("update_package", "update_package_period", "update_package_and_period"):
-            package_form = CustomerPackagePeriodForm(
-                request.POST, instance=customer, organization=org
+        if action == "recharge_account":
+            recharge_form = CustomerCashRechargeForm(
+                request.POST,
+                organization=org,
+                customer=customer,
             )
-            if package_form.is_valid():
-                customer = package_form.save()
+            if recharge_form.is_valid():
+                try:
+                    result = recharge_customer_cash(
+                        customer=customer,
+                        organization=org,
+                        plan=recharge_form.cleaned_data["plan"],
+                        amount=recharge_form.cleaned_data["amount"],
+                        reference=recharge_form.cleaned_data.get("reference") or "",
+                        recorded_by=request.user,
+                    )
+                except ValueError as exc:
+                    if is_ajax:
+                        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+                    messages.error(request, str(exc))
+                    return redirect("core:client_detail", customer_id=customer.pk)
+
+                customer = result["customer"]
+                invoice = result["invoice"]
                 provision = bool(customer.pppoe_username and customer.router_id)
                 _enqueue_subscription_sync(customer.pk, provision)
 
+                amount_label = f"{recharge_form.cleaned_data['amount']:.2f}"
+                end_label = (
+                    customer.package_end.isoformat()
+                    if customer.package_end
+                    else "—"
+                )
+                msg = (
+                    f"Cash recharge of KES {amount_label} recorded "
+                    f"({invoice.invoice_number}). Package active until {end_label}."
+                )
                 if is_ajax:
-                    if customer.plan_id and customer.package_start and customer.package_end:
-                        msg = (
-                            f"Package set to {customer.plan.name} "
-                            f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()})."
-                        )
-                    elif customer.plan_id:
-                        msg = f"Package set to {customer.plan.name}."
-                    else:
-                        msg = "Package updated."
                     return _package_json_response(
                         customer,
                         message=msg,
                         provision=provision,
                     )
-
-                if customer.plan_id and customer.package_start and customer.package_end:
-                    messages.success(
-                        request,
-                        f"Package set to {customer.plan.name} "
-                        f"({customer.package_start.isoformat()} → {customer.package_end.isoformat()}).",
-                    )
-                elif customer.plan_id:
-                    messages.success(request, f"Package set to {customer.plan.name}.")
-                else:
-                    messages.success(request, "Package updated.")
+                messages.success(request, msg)
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             if is_ajax:
-                errors = json.loads(package_form.errors.as_json())
+                errors = json.loads(recharge_form.errors.as_json())
                 return JsonResponse({"ok": False, "errors": errors}, status=400)
-            open_client_modal = "client-package-modal"
+            open_client_modal = "client-recharge-modal"
 
         if action in ("pause_package", "resume_package"):
             try:
@@ -4221,6 +4231,8 @@ def client_detail(request, customer_id: int):
             return redirect("core:client_detail", customer_id=customer.pk)
 
 
+    client_plans = list(recharge_form.fields["plan"].queryset)
+
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -4237,25 +4249,17 @@ def client_detail(request, customer_id: int):
         can_access_wifi=can_access_wifi,
         wifi_ssid_display=wifi_ssid_display,
         wifi_password_display=wifi_password_display,
-        package_form=package_form,
+        recharge_form=recharge_form,
         details_form=details_form,
         package_duration=getattr(customer.plan, "duration", "") or "",
         package_duration_label=(
             customer.plan.get_duration_display() if customer.plan_id else ""
         ),
         plan_durations_json=json.dumps(
-            {
-                str(p.pk): p.duration
-                for p in (
-                    plans_for_router(
-                        org,
-                        customer.router,
-                        service_type=getattr(customer, "service_type", None) or None,
-                    )
-                    if org
-                    else []
-                )
-            }
+            {str(p.pk): p.duration for p in client_plans}
+        ),
+        plan_prices_json=json.dumps(
+            {str(p.pk): str(p.price) for p in client_plans}
         ),
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),

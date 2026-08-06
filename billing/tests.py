@@ -16,6 +16,7 @@ from billing.services import (
     generate_account_number_from_phone,
     package_remaining_seconds,
     pause_customer_package,
+    recharge_customer_cash,
     resume_customer_package,
     subscription_period_allows,
 )
@@ -778,3 +779,59 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(row["share"]["can_share"])
         self.assertIn(voucher.code[:4], row["share"]["share_text"])
         self.assertIn("wa.me/254700000777", row["share"]["whatsapp_client_url"])
+
+
+class CashRechargeTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-cash", password="x")
+        self.org = Organization.objects.create(
+            name="Cash ISP",
+            owner=self.owner,
+            join_code="111222",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        now = timezone.localtime()
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Cash Client",
+            phone="254700000050",
+            account_number="CASH-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="cash1",
+            pppoe_password="secret",
+            status=Customer.Status.SUSPENDED,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=30),
+            package_end=now + timedelta(minutes=30),
+        )
+
+    def test_cash_recharge_records_payment_and_extends_package(self):
+        from billing.models import Invoice, Payment
+
+        original_end = self.customer.package_end
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.plan,
+            amount="50.00",
+            reference="RCP-1",
+            recorded_by=self.owner,
+        )
+        self.customer.refresh_from_db()
+        payment = result["payment"]
+        invoice = result["invoice"]
+
+        self.assertEqual(self.customer.status, Customer.Status.ACTIVE)
+        self.assertEqual(self.customer.package_end, original_end + timedelta(hours=1))
+        self.assertEqual(payment.method, Payment.Method.CASH)
+        self.assertEqual(payment.reference, "RCP-1")
+        self.assertEqual(invoice.status, Invoice.Status.PAID)
+        self.assertTrue(invoice.invoice_number.startswith("CASH-"))
+        self.assertTrue(customer_receives_internet(self.customer))
