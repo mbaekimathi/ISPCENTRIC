@@ -843,6 +843,19 @@
         ]
       };
     }
+    if (/different subnet/i.test(raw) && /8728/i.test(raw)) {
+      return {
+        tone: "error",
+        title: "PC and MikroTik are on different subnets",
+        lead: raw,
+        steps: [
+          "Set this PC to an IP on the MikroTik LAN (same first three octets)",
+          "Or change the MikroTik LAN IP to match this PC’s subnet",
+          "Winbox Neighbors can work over MAC even when Connect cannot — that is normal",
+          "Click Check now, then Connect"
+        ]
+      };
+    }
     if (/Found the MikroTik locally/i.test(raw) && /8728/i.test(raw)) {
       return {
         tone: "warn",
@@ -939,12 +952,16 @@
     el.innerHTML = html;
   }
 
-  function setTunnelMeters(tunnelLabel, apiLabel, tunnelState, apiState) {
+  function setTunnelMeters(tunnelLabel, apiLabel, tunnelState, apiState, options) {
     if (!tunnelCheckDetail) return;
+    var opts = options || {};
     var tunnelMeter = tunnelCheckDetail.querySelector('[data-meter="tunnel"]');
     var apiMeter = tunnelCheckDetail.querySelector('[data-meter="api"]');
     var tunnelValue = tunnelCheckDetail.querySelector('[data-meter-value="tunnel"]');
     var apiValue = tunnelCheckDetail.querySelector('[data-meter-value="api"]');
+    var tunnelName = tunnelMeter && tunnelMeter.querySelector(".mikrotik-tunnel-meter-label");
+    if (tunnelName && opts.lanMode) tunnelName.textContent = "LAN";
+    else if (tunnelName && opts.lanMode === false) tunnelName.textContent = "Tunnel";
     if (tunnelMeter) {
       tunnelMeter.classList.remove("is-waiting", "is-checking", "is-ready", "is-error");
       tunnelMeter.classList.add("is-" + (tunnelState || "waiting"));
@@ -1281,7 +1298,8 @@
               data.lan_address ? data.lan_address : "Online",
               "Enabled · Ready",
               "ready",
-              "ready"
+              "ready",
+              { lanMode: true }
             );
             setHostHint("Local MikroTik selected at " + data.lan_address + ". Enter its login and press Connect.");
             setTunnelStatus(data.message, false);
@@ -1292,10 +1310,30 @@
               tunnelUseIp.disabled = true;
               tunnelUseIp.textContent = "LAN IP selected";
             }
+          } else if (data.subnet_mismatch) {
+            setTunnelCheckState(
+              "error",
+              "Different subnet — API cannot open from this PC",
+              true,
+              false
+            );
+            setTunnelMeters(
+              data.lan_address ? data.lan_address : "Found",
+              "Unreachable",
+              "ready",
+              "error",
+              { lanMode: true }
+            );
+            setTunnelStatus(data.message, true);
+            setHostHint(
+              "This PC must use an IP on the same LAN as " +
+                (data.lan_address || "the MikroTik") +
+                " before Connect can save the router."
+            );
           } else {
             setTunnelCheckState(
               "checking",
-              data.lan_address ? "Local MikroTik found · enabling API…" : "Searching for local MikroTik…",
+              data.lan_address ? "Local MikroTik found · waiting for API 8728…" : "Searching for local MikroTik…",
               !!data.lan_address,
               false
             );
@@ -1303,7 +1341,8 @@
               data.lan_address ? data.lan_address : "Searching…",
               "Waiting",
               data.lan_address ? "ready" : "checking",
-              "waiting"
+              "waiting",
+              { lanMode: true }
             );
             setTunnelStatus(data.message, false);
             setHostHint(

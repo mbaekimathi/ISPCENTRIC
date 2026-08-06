@@ -3,15 +3,310 @@
 {% block title %}Shop — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="shop-page" data-shop-page>
+  <header class="shop-hero">
+    <div class="shop-hero-copy">
+      <p class="shop-kicker">Network store</p>
+      <h2 class="shop-title">Equipment for your ISP</h2>
+      <p class="shop-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="shop-hero-stats" aria-label="Shop summary">
+      <article class="shop-stat">
+        <p class="shop-stat-label">Products</p>
+        <p class="shop-stat-value">{{ total_active }}</p>
+      </article>
+      <article class="shop-stat">
+        <p class="shop-stat-label">In stock</p>
+        <p class="shop-stat-value">{{ in_stock_count }}</p>
+      </article>
+      <article class="shop-stat">
+        <p class="shop-stat-label">On sale</p>
+        <p class="shop-stat-value">{{ on_sale_count }}</p>
+      </article>
+    </div>
+  </header>
 
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>{{ empty_title }}</h2>
-      <p class="panel-sub">{{ empty_text }}</p>
+  <div class="shop-filters" data-shop-filters>
+    <form class="shop-toolbar" method="get" action="{% url 'core:shop' %}" role="search">
+      <label class="shop-search" for="shop-search-input">
+        <span class="shop-search-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>
+        </span>
+        <input
+          type="search"
+          id="shop-search-input"
+          class="shop-search-input"
+          name="q"
+          value="{{ shop_query|default:'' }}"
+          placeholder="Search routers, ONUs, cables…"
+          autocomplete="off"
+          spellcheck="false"
+        >
+      </label>
+      {% if active_category and active_category != 'all' %}
+        <input type="hidden" name="type" value="{{ active_category }}">
+      {% endif %}
+      <button type="submit" class="btn btn-primary shop-search-btn">Search</button>
+    </form>
+
+    <div class="shop-categories" role="navigation" aria-label="Jump to equipment categories">
+      <a
+        class="shop-category{% if active_category == 'all' %} is-active{% endif %}"
+        href="{% url 'core:shop' %}{% if shop_query %}?q={{ shop_query|urlencode }}{% endif %}"
+      >
+        All
+        <span class="shop-category-count">{{ total_active }}</span>
+      </a>
+      {% for cat in categories %}
+        <a
+          class="shop-category{% if active_category == cat.key %} is-active{% endif %}"
+          href="{% url 'core:shop' %}?type={{ cat.key|urlencode }}{% if shop_query %}&amp;q={{ shop_query|urlencode }}{% endif %}#shop-row-{{ cat.key }}"
+        >
+          {{ cat.label }}
+          <span class="shop-category-count">{{ cat.count }}</span>
+        </a>
+      {% endfor %}
     </div>
   </div>
-  <p class="empty">{{ empty_text }}</p>
-</section>
+
+  {% if category_rows %}
+    <p class="shop-results-meta">
+      Showing <strong>{{ equipment_count }}</strong> products
+      {% if shop_query %}matching “{{ shop_query }}”{% endif %}
+      across <strong>{{ category_rows|length }}</strong> categor{{ category_rows|length|pluralize:"y,ies" }}
+    </p>
+
+    <div class="shop-rows">
+      {% for row in category_rows %}
+        <section class="shop-row" id="shop-row-{{ row.key }}" data-shop-row style="--shop-row-i: {{ forloop.counter0 }}">
+          <div class="shop-row-head">
+            <div class="shop-row-heading">
+              <span class="shop-row-accent" aria-hidden="true"></span>
+              <div>
+                <h3 class="shop-row-title">{{ row.label }}</h3>
+                <p class="shop-row-sub">{{ row.count }} item{{ row.count|pluralize }}</p>
+              </div>
+            </div>
+            <div class="shop-row-controls">
+              <button type="button" class="shop-row-nav" data-shop-scroll="prev" aria-label="Scroll {{ row.label }} left">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M15.4 7.4 10.8 12l4.6 4.6L14 18l-6-6 6-6z"/></svg>
+              </button>
+              <button type="button" class="shop-row-nav" data-shop-scroll="next" aria-label="Scroll {{ row.label }} right">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="m8.6 7.4 4.6 4.6-4.6 4.6L10 18l6-6-6-6z"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="shop-row-viewport">
+            <div class="shop-row-scroller" data-shop-scroller tabindex="0">
+              <div class="shop-row-track">
+              {% for item in row.items %}
+                <article
+                  class="shop-card{% if item.quantity < 1 %} is-out{% endif %}{% if item.discount_enabled and item.calculated_discount %} is-sale{% endif %}"
+                  data-shop-card
+                >
+                  <div class="shop-card-media">
+                    {% if item.discount_enabled and item.calculated_discount %}
+                      <span class="shop-card-badge shop-card-badge-sale">Sale</span>
+                    {% endif %}
+                    {% if item.quantity < 1 %}
+                      <span class="shop-card-badge shop-card-badge-out">Out of stock</span>
+                    {% elif item.quantity <= 5 %}
+                      <span class="shop-card-badge shop-card-badge-low">Low stock</span>
+                    {% endif %}
+                    {% if item.image %}
+                      <img
+                        class="shop-card-image"
+                        src="{{ item.image.url }}"
+                        alt="{{ item.name }}"
+                        loading="lazy"
+                        decoding="async"
+                      >
+                    {% else %}
+                      <div class="shop-card-placeholder" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M4 6h16v3H4Zm0 4.5h10V14H4Zm0 4.5h16v3H4Z"/></svg>
+                      </div>
+                    {% endif %}
+                  </div>
+                  <div class="shop-card-body">
+                    <p class="shop-card-type">{{ item.get_equipment_type_display }}</p>
+                    <h3 class="shop-card-title">{{ item.name }}</h3>
+                    <div class="shop-card-price-row">
+                      {% if item.discount_enabled and item.calculated_discount %}
+                        <p class="shop-card-price">
+                          <strong>KES {{ item.effective_price|floatformat:0 }}</strong>
+                          <span class="shop-card-price-was">KES {{ item.selling_price|floatformat:0 }}</span>
+                        </p>
+                        <p class="shop-card-save">Save KES {{ item.calculated_discount|floatformat:0 }}</p>
+                      {% else %}
+                        <p class="shop-card-price">
+                          <strong>KES {{ item.selling_price|floatformat:0 }}</strong>
+                        </p>
+                      {% endif %}
+                    </div>
+                    <p class="shop-card-stock{% if item.quantity < 1 %} is-out{% elif item.quantity <= 5 %} is-low{% endif %}">
+                      {% if item.quantity < 1 %}
+                        Currently unavailable
+                      {% else %}
+                        {{ item.quantity }} in stock
+                      {% endif %}
+                    </p>
+                  </div>
+                  <div class="shop-card-foot">
+                    {% if item.quantity > 0 %}
+                      <button
+                        type="button"
+                        class="btn btn-primary shop-card-btn"
+                        data-shop-inquire
+                        data-equipment-id="{{ item.pk }}"
+                        data-equipment-name="{{ item.name }}"
+                        data-equipment-price="{{ item.effective_price }}"
+                      >
+                        Order
+                      </button>
+                    {% else %}
+                      <button type="button" class="btn btn-ghost shop-card-btn" disabled>Unavailable</button>
+                    {% endif %}
+                  </div>
+                </article>
+              {% endfor %}
+              </div>
+            </div>
+          </div>
+        </section>
+      {% endfor %}
+    </div>
+  {% else %}
+    <section class="shop-empty">
+      <p class="shop-empty-title">
+        {% if shop_query or active_category != 'all' %}
+          No equipment matches your filters
+        {% else %}
+          No equipment listed yet
+        {% endif %}
+      </p>
+      <p class="shop-empty-copy">
+        {% if shop_query or active_category != 'all' %}
+          Try another search or category.
+        {% else %}
+          Active network equipment registered by support will appear here.
+        {% endif %}
+      </p>
+      {% if shop_query or active_category != 'all' %}
+        <a class="btn btn-ghost" href="{% url 'core:shop' %}">Clear filters</a>
+      {% endif %}
+    </section>
+  {% endif %}
+</div>
+
+<div class="role-modal client-action-modal pppoe-modal" id="shop-order-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-shop-modal></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="shop-order-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Order</p>
+        <h2 id="shop-order-title">Request equipment</h2>
+        <p class="role-modal-sub pppoe-sub">We’ll note this item for your workspace. Support can confirm stock and delivery.</p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-shop-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="pppoe-body">
+      <div class="shop-order-summary">
+        <p class="shop-order-label">Item</p>
+        <p class="shop-order-name" data-shop-order-name>—</p>
+        <p class="shop-order-label">Price</p>
+        <p class="shop-order-price" data-shop-order-price>—</p>
+      </div>
+      <p class="shop-order-note">
+        Ordering is informational for now. Contact your account manager or customer support to complete the purchase.
+      </p>
+    </div>
+    <footer class="pppoe-foot">
+      <button type="button" class="btn btn-ghost" data-close-shop-modal>Close</button>
+      <a class="btn btn-primary" href="mailto:support@ispcentric.com" data-shop-mailto>Contact support</a>
+    </footer>
+  </div>
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  var modal = document.getElementById("shop-order-modal");
+  var nameEl = document.querySelector("[data-shop-order-name]");
+  var priceEl = document.querySelector("[data-shop-order-price]");
+  var mailBtn = document.querySelector("[data-shop-mailto]");
+
+  function openModal(name, price) {
+    if (!modal) return;
+    if (nameEl) nameEl.textContent = name || "—";
+    if (priceEl) {
+      var n = Number(price) || 0;
+      try {
+        priceEl.textContent = "KES " + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+      } catch (e) {
+        priceEl.textContent = "KES " + n;
+      }
+    }
+    if (mailBtn) {
+      var subject = encodeURIComponent("Equipment order: " + (name || "item"));
+      var body = encodeURIComponent(
+        "Hello,\n\nI would like to order:\n- Item: " +
+          (name || "—") +
+          "\n- Price: KES " +
+          (price || "0") +
+          "\n\nThank you."
+      );
+      mailBtn.setAttribute("href", "mailto:support@ispcentric.com?subject=" + subject + "&body=" + body);
+    }
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+  }
+
+  document.querySelectorAll("[data-shop-inquire]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal(
+        btn.getAttribute("data-equipment-name"),
+        btn.getAttribute("data-equipment-price")
+      );
+    });
+  });
+  document.querySelectorAll("[data-close-shop-modal]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal && !modal.hidden) closeModal();
+  });
+
+  document.querySelectorAll("[data-shop-row]").forEach(function (row) {
+    var scroller = row.querySelector("[data-shop-scroller]");
+    if (!scroller) return;
+    function syncEdges() {
+      var max = scroller.scrollWidth - scroller.clientWidth;
+      row.classList.toggle("has-left", scroller.scrollLeft > 8);
+      row.classList.toggle("has-right", scroller.scrollLeft < max - 8);
+    }
+    row.querySelectorAll("[data-shop-scroll]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var dir = btn.getAttribute("data-shop-scroll") === "prev" ? -1 : 1;
+        var amount = Math.max(260, Math.floor(scroller.clientWidth * 0.82));
+        scroller.scrollBy({ left: dir * amount, behavior: "smooth" });
+      });
+    });
+    scroller.addEventListener("scroll", syncEdges, { passive: true });
+    window.addEventListener("resize", syncEdges);
+    syncEdges();
+  });
+})();
+</script>
 {% endblock %}

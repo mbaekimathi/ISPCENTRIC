@@ -20,17 +20,30 @@ _SCHEMA_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# OS / OEM captive probes. Keep in sync with core.mikrotik_connect.CAPTIVE_PROBE_HOSTS
+# and ALLOWED_HOSTS — phones only pop the sign-in page when these resolve to us.
 CAPTIVE_PROBE_HOSTS = {
     "www.msftconnecttest.com",
     "msftconnecttest.com",
     "dns.msftncsi.com",
     "connectivitycheck.gstatic.com",
+    "connectivitycheck.android.com",
     "clients3.google.com",
     "captive.apple.com",
     "www.apple.com",
+    "www.appleiphonecell.com",
+    "www.itools.info",
+    "www.ibook.info",
+    "www.airport.us",
+    "www.thinkdifferent.us",
     "detectportal.firefox.com",
+    "network-test.debian.org",
     "neverssl.com",
     "example.com",
+    "connectivitycheck.platform.hicloud.com",
+    "connectivitycheck.platform.hihonorcloud.com",
+    "www.msftncsi.com",
+    "ipv6.msftconnecttest.com",
 }
 
 
@@ -86,20 +99,25 @@ class CaptiveHostRewriteMiddleware:
     Expired PPPoE clients are dst-nat'd to Django with Host: www.msftconnect…
     which would otherwise 400 DisallowedHost before any view runs. Replace the
     Host with PUBLIC_BASE_URL so CommonMiddleware accepts the request.
+
+    The original Host is kept on the request so HotspotCaptiveProbeMiddleware
+    can still recognize the probe after rewrite (otherwise Android/iOS probes
+    look like normal billing traffic and never 302 to /pay).
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        host = (request.META.get("HTTP_HOST") or "").split(":")[0].strip().lower()
+        raw_host = (request.META.get("HTTP_HOST") or "").strip()
+        host = raw_host.split(":")[0].strip().lower()
         remote = (request.META.get("REMOTE_ADDR") or "").strip()
         rewrite = host in CAPTIVE_PROBE_HOSTS
         if not rewrite:
             try:
-                from core.mikrotik_connect import is_pppoe_pool_ip
+                from core.mikrotik_connect import is_hotspot_pool_ip, is_pppoe_pool_ip
 
-                rewrite = is_pppoe_pool_ip(remote)
+                rewrite = is_pppoe_pool_ip(remote) or is_hotspot_pool_ip(remote)
             except Exception:
                 rewrite = False
         if not rewrite:
@@ -108,6 +126,9 @@ class CaptiveHostRewriteMiddleware:
             # error page instead of the payment page.
             rewrite = _is_unlisted_private_host(host)
         if rewrite:
+            # Preserve before mutating — probe middleware runs after this.
+            request.captive_original_host = host
+            request.META["HTTP_X_CAPTIVE_ORIGINAL_HOST"] = host
             from django.conf import settings
 
             try:
@@ -184,6 +205,9 @@ class HotspotCaptiveProbeMiddleware:
 
     Expired PPPoE sessions are dst-nat'd the same way; their REMOTE_ADDR sits in
     the PPPoE pool, so they land on the PPPoE renew page instead of Hotspot.
+
+    CaptiveHostRewriteMiddleware may have already replaced the Host header —
+    always also check ``request.captive_original_host``.
     """
 
     CAPTIVE_HOSTS = CAPTIVE_PROBE_HOSTS
@@ -196,10 +220,23 @@ class HotspotCaptiveProbeMiddleware:
         "/hotspot-detect.html",
         "/library/test/success.html",
         "/success.txt",
+        "/kindle-wifi/wifistub.html",
+        "/success.html",
+        # Some Android builds probe the site root after DNS hijack.
+        "/",
     }
 
     def __init__(self, get_response):
         self.get_response = get_response
+
+    @staticmethod
+    def _original_probe_host(request) -> str:
+        original = getattr(request, "captive_original_host", None) or (
+            request.META.get("HTTP_X_CAPTIVE_ORIGINAL_HOST") or ""
+        )
+        if original:
+            return str(original).split(":")[0].strip().lower()
+        return (request.get_host() or "").split(":")[0].strip().lower()
 
     def __call__(self, request):
         path = request.path or "/"
@@ -210,15 +247,28 @@ class HotspotCaptiveProbeMiddleware:
             or path.startswith("/billing/")
             or path.startswith("/static/")
             or path.startswith("/api/")
+            or path.startswith("/accounts/")
+            or path.startswith("/admin/")
         ):
             return self.get_response(request)
 
-        host = (request.get_host() or "").split(":")[0].strip().lower()
+        host = self._original_probe_host(request)
+        current_host = (
+            (request.META.get("HTTP_HOST") or "").split(":")[0].strip().lower()
+        )
         remote = (request.META.get("REMOTE_ADDR") or "").strip()
-        from core.mikrotik_connect import is_pppoe_pool_ip
+        from core.mikrotik_connect import is_hotspot_pool_ip, is_pppoe_pool_ip
 
         pppoe_client = is_pppoe_pool_ip(remote)
-        if not (pppoe_client or host in self.CAPTIVE_HOSTS or path in self.CAPTIVE_PATHS):
+        hotspot_client = is_hotspot_pool_ip(remote)
+        probe_host = host in self.CAPTIVE_HOSTS or current_host in self.CAPTIVE_HOSTS
+        # Root "/" alone is too broad for normal browsing — only treat it as a
+        # probe when the Host (original or current) is a known captive hostname
+        # or the client is already in a captive pool.
+        path_is_probe = path in self.CAPTIVE_PATHS and (
+            path != "/" or probe_host or pppoe_client or hotspot_client
+        )
+        if not (pppoe_client or hotspot_client or probe_host or path_is_probe):
             return self.get_response(request)
 
         from django.conf import settings
@@ -281,8 +331,12 @@ class HotspotCaptiveProbeMiddleware:
                         salt="pppoe-payment",
                         compress=True,
                     )
+                    params = {"t": token}
+                    account = (getattr(customer, "account_number", None) or "").strip()
+                    if account:
+                        params["account"] = account
                     sep = "&" if "?" in target else "?"
-                    target = f"{target}{sep}{urlencode({'t': token})}"
+                    target = f"{target}{sep}{urlencode(params)}"
             except Exception:
                 pass
         else:
@@ -311,8 +365,9 @@ class HotspotCaptiveProbeMiddleware:
             except Exception:
                 pass
         try:
-            # Match OS captive probe bursts so the popup stays immediate.
-            cache.set(cache_key, target, 20)
+            # Short TTL: OS probe bursts stay instant, but a renew that just
+            # restored access is not stuck on a stale pay URL for 20s.
+            cache.set(cache_key, target, 8)
         except Exception:
             pass
         return redirect(target)

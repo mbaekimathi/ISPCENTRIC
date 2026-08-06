@@ -1,12 +1,17 @@
 from datetime import date, datetime, time, timedelta
 
 from django import forms
+from django.db.models import Q
 from django.utils import timezone
 
 from accounts.countries import DEFAULT_COUNTRY, country_choices, get_country_options, option_for_value
 from accounts.forms import national_phone_length, validate_and_normalize_phone
 from billing.models import BillingPlan, Customer
-from billing.services import compute_package_end, plan_uses_clock_time
+from billing.services import (
+    clear_customer_package_pause,
+    compute_package_end,
+    plan_uses_clock_time,
+)
 from core.models import MikroTikRouter
 
 
@@ -937,16 +942,32 @@ class CustomerPackagePeriodForm(forms.ModelForm):
 
             router = getattr(self.instance, "router", None)
             customer_service = getattr(self.instance, "service_type", None) or None
-            self.fields["plan"].queryset = plans_for_router(
+            qs = plans_for_router(
                 self.organization,
                 router,
                 service_type=customer_service,
             )
+            # Keep the client's current plan selectable even if it was later
+            # deactivated or unlinked from this router / service type.
+            current_plan_id = getattr(self.instance, "plan_id", None)
+            if current_plan_id and not qs.filter(pk=current_plan_id).exists():
+                qs = (
+                    BillingPlan.objects.filter(organization=self.organization)
+                    .filter(Q(pk=current_plan_id) | Q(pk__in=qs.values("pk")))
+                    .distinct()
+                    .order_by("price", "name")
+                )
+            self.fields["plan"].queryset = qs
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
 
         plan = self._resolve_plan()
         self.is_hourly = plan_uses_clock_time(plan)
+        if plan:
+            # ModelChoiceField only selects the instance value when it is in
+            # the queryset; re-assert after the queryset is finalized.
+            self.initial.setdefault("plan", plan.pk)
+            self.fields["plan"].initial = plan.pk
 
         start = getattr(self.instance, "package_start", None)
         end = getattr(self.instance, "package_end", None)
@@ -1101,6 +1122,8 @@ class CustomerPackagePeriodForm(forms.ModelForm):
                 customer.package_start,
                 customer.plan,
             )
+        # A freshly assigned period replaces any frozen pause state.
+        clear_customer_package_pause(customer, save=False)
         if commit:
             customer.save()
         return customer

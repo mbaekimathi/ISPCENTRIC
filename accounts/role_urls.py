@@ -211,6 +211,16 @@ urlpatterns = [
         name="it_support_system_settings",
     ),
     path(
+        "it-support/system-settings/communications/",
+        role_dashboards.it_support_settings_communications,
+        name="it_support_settings_communications",
+    ),
+    path(
+        "it-support/system-settings/payments/",
+        role_dashboards.it_support_settings_payments,
+        name="it_support_settings_payments",
+    ),
+    path(
         "it-support/client-settings/",
         role_dashboards.it_support_client_settings,
         name="it_support_client_settings",

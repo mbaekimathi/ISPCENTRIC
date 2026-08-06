@@ -3987,6 +3987,235 @@ def _monitor_interface_speed(sock: socket.socket, interface: str) -> dict[str, A
         sock.settimeout(previous)
 
 
+def _pct_shares_from_weights(weights: list[int]) -> list[int]:
+    """Split 100 across weights (last entry absorbs rounding)."""
+    if not weights:
+        return []
+    grand = sum(max(0, int(w or 0)) for w in weights)
+    remaining = 100
+    out: list[int] = []
+    for index, weight in enumerate(weights):
+        if grand <= 0:
+            pct = 0
+        elif index == len(weights) - 1:
+            pct = max(0, remaining)
+        else:
+            pct = int(round(100.0 * float(max(0, int(weight or 0))) / float(grand)))
+            remaining -= pct
+        out.append(max(0, min(100, pct)))
+    return out
+
+
+def build_wan_traffic_share(
+    samples: list[dict[str, Any]],
+    *,
+    previous: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """
+    Build WAN share % from per-interface byte counters.
+
+    When ``previous`` holds a recent snapshot ``{t, bytes:{name:int}}``, use the
+    byte delta as a live rate. Otherwise fall back to cumulative bytes so the UI
+    still shows a useful split without a second RouterOS session.
+    """
+    import time as _time
+
+    now_ts = float(now if now is not None else _time.time())
+    cleaned: list[dict[str, Any]] = []
+    bytes_map: dict[str, int] = {}
+    for row in samples or []:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        rx = max(0, _parse_int(row.get("rx_byte")))
+        tx = max(0, _parse_int(row.get("tx_byte")))
+        total = rx + tx
+        bytes_map[name] = total
+        cleaned.append(
+            {
+                "name": name,
+                "monitor": str(row.get("monitor") or name).strip() or name,
+                "rx_byte": rx,
+                "tx_byte": tx,
+                "bytes": total,
+            }
+        )
+
+    cache_state = {"t": now_ts, "bytes": bytes_map}
+    empty = {"ok": False, "shares": [], "total_bps": 0, "source": ""}
+    if len(cleaned) < 1:
+        return empty, cache_state
+
+    prev_bytes = (previous or {}).get("bytes") if isinstance(previous, dict) else None
+    prev_t = (previous or {}).get("t") if isinstance(previous, dict) else None
+    use_rate = False
+    dt = 0.0
+    if isinstance(prev_bytes, dict) and prev_t is not None:
+        try:
+            dt = max(0.0, now_ts - float(prev_t))
+        except (TypeError, ValueError):
+            dt = 0.0
+        if 0.4 <= dt <= 120.0:
+            use_rate = True
+
+    weights: list[int] = []
+    rates: list[int] = []
+    for row in cleaned:
+        name = row["name"]
+        if use_rate:
+            prev = _parse_int(prev_bytes.get(name)) if isinstance(prev_bytes, dict) else 0
+            delta = max(0, int(row["bytes"]) - prev)
+            # bytes/sec → bits/sec
+            bps = int(round((float(delta) * 8.0) / dt)) if dt > 0 else 0
+            rates.append(bps)
+            weights.append(bps)
+        else:
+            rates.append(0)
+            weights.append(int(row["bytes"]))
+
+    # If the delta window was idle on every link, fall back to cumulative bytes
+    # so the bar still reflects historical use instead of "— / —".
+    source = "rate" if use_rate and sum(weights) > 0 else "bytes"
+    if source == "bytes":
+        weights = [int(row["bytes"]) for row in cleaned]
+        rates = [0 for _ in cleaned]
+
+    pcts = _pct_shares_from_weights(weights)
+    grand = sum(weights)
+    shares: list[dict[str, Any]] = []
+    for index, row in enumerate(cleaned):
+        bps = rates[index] if index < len(rates) else 0
+        shares.append(
+            {
+                "name": row["name"],
+                "monitor": row["monitor"],
+                "bps": bps if source == "rate" else 0,
+                "download_bps": None,
+                "upload_bps": None,
+                "rate_label": _bits_per_sec_label(bps) if source == "rate" else "—",
+                "download_label": "—",
+                "upload_label": "—",
+                "bytes": row["bytes"],
+                "bytes_label": _bytes_label(row["bytes"]),
+                "pct": pcts[index] if index < len(pcts) else 0,
+            }
+        )
+    return (
+        {
+            "ok": True,
+            "shares": shares,
+            "total_bps": grand if source == "rate" else 0,
+            "source": source,
+        },
+        cache_state,
+    )
+
+
+def read_wan_traffic_share(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    interfaces: list[str],
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """
+    Live traffic share across WAN interfaces (percent of combined rx+tx bit rate).
+
+    Prefers ``monitor-traffic`` rates; falls back to ``rx-byte``/``tx-byte`` when
+    monitor is empty or unavailable. ``interfaces`` may be physical or PPPoE names.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    names = [str(n).strip() for n in (interfaces or []) if str(n).strip()]
+    names = list(dict.fromkeys(names))
+    empty = {"ok": False, "shares": [], "total_bps": 0}
+    if not host or not username or len(names) < 1:
+        return empty
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            byte_map: dict[str, tuple[int, int]] = {}
+            try:
+                for row in _print(sock, "/interface", props="name,rx-byte,tx-byte"):
+                    iname = (row.get("name") or "").strip()
+                    if iname:
+                        byte_map[iname] = (
+                            max(0, _parse_int(row.get("rx-byte"))),
+                            max(0, _parse_int(row.get("tx-byte"))),
+                        )
+            except (TimeoutError, OSError, ConnectionError):
+                byte_map = {}
+
+            samples: list[dict[str, Any]] = []
+            live_ok = False
+            for name in names:
+                speed = _monitor_interface_speed(sock, name)
+                rx = speed.get("wan_download_bps")
+                tx = speed.get("wan_upload_bps")
+                if rx is not None or tx is not None:
+                    live_ok = True
+                rx_i = max(0, int(rx or 0))
+                tx_i = max(0, int(tx or 0))
+                total = rx_i + tx_i
+                brx, btx = byte_map.get(name, (0, 0))
+                samples.append(
+                    {
+                        "name": name,
+                        "bps": total,
+                        "download_bps": rx_i if rx is not None else None,
+                        "upload_bps": tx_i if tx is not None else None,
+                        "rate_label": _bits_per_sec_label(total) if live_ok else "—",
+                        "download_label": speed.get("wan_download_label") or "—",
+                        "upload_label": speed.get("wan_upload_label") or "—",
+                        "rx_byte": brx,
+                        "tx_byte": btx,
+                        "bytes": brx + btx,
+                    }
+                )
+
+            grand_live = sum(int(s["bps"] or 0) for s in samples)
+            if live_ok and grand_live > 0:
+                pcts = _pct_shares_from_weights([int(s["bps"] or 0) for s in samples])
+                shares = [
+                    {**sample, "pct": pcts[i] if i < len(pcts) else 0}
+                    for i, sample in enumerate(samples)
+                ]
+                return {
+                    "ok": True,
+                    "shares": shares,
+                    "total_bps": grand_live,
+                    "source": "monitor",
+                }
+
+            # Idle monitor or trap — share from cumulative interface bytes.
+            built, _ = build_wan_traffic_share(
+                [
+                    {
+                        "name": s["name"],
+                        "monitor": s["name"],
+                        "rx_byte": s.get("rx_byte") or 0,
+                        "tx_byte": s.get("tx_byte") or 0,
+                    }
+                    for s in samples
+                ]
+            )
+            if built.get("ok"):
+                return built
+            return {**empty, "error": "No traffic counters for those interfaces."}
+    except TimeoutError:
+        return {**empty, "error": "Timed out reading WAN traffic share."}
+    except ConnectionError as exc:
+        return {**empty, "error": str(exc) or "Login failed."}
+    except OSError as exc:
+        return {**empty, "error": f"Could not reach {host}:8728. ({exc})"}
+    except Exception as exc:
+        return {**empty, "error": str(exc) or "Could not read WAN traffic share."}
+
+
 def _is_ros_true(value: Any) -> bool:
     return str(value or "").strip().lower() in {"true", "yes", "1"}
 
@@ -6329,6 +6558,8 @@ def _ensure_pppoe_stack(
             break
 
     # use-encryption=no: many CPE routers fail PPPoE when MPPE is required.
+    # only-one=yes: local secrets reject a second dial while the first session
+    # is still up (credential sharing / multi-device use is blocked).
     profile_props = {
         "name": PPPOE_PROFILE_NAME,
         "local-address": PPPOE_LOCAL_ADDRESS,
@@ -6336,7 +6567,7 @@ def _ensure_pppoe_stack(
         "dns-server": "8.8.8.8,1.1.1.1",
         "change-tcp-mss": "yes",
         "use-encryption": "no",
-        "only-one": "default",
+        "only-one": "yes",
         "comment": PPP_SECRET_TAG,
     }
     if profile_id:
@@ -6348,6 +6579,7 @@ def _ensure_pppoe_stack(
                 "remote-address": PPPOE_POOL_NAME,
                 "dns-server": "8.8.8.8,1.1.1.1",
                 "use-encryption": "no",
+                "only-one": "yes",
                 "comment": PPP_SECRET_TAG,
             }
             terminal = _set(sock, "/ppp/profile", profile_id, **soft)
@@ -6365,6 +6597,7 @@ def _ensure_pppoe_stack(
                 "remote-address": PPPOE_POOL_NAME,
                 "dns-server": "8.8.8.8,1.1.1.1",
                 "use-encryption": "no",
+                "only-one": "yes",
                 "comment": PPP_SECRET_TAG,
             }
             terminal = _add(sock, "/ppp/profile", **soft)
@@ -6382,9 +6615,10 @@ def _ensure_pppoe_stack(
             "/ppp/aaa/set",
             "=use-radius=no",
             "=accounting=no",
+            "=use-one-session=yes",
         ],
     )
-    notes.append("PPP AAA set to local secrets")
+    notes.append("PPP AAA set to local secrets (one session per account)")
 
     server_id = ""
     for row in _print(
@@ -6803,6 +7037,84 @@ def _ensure_pppoe_expired_redirect(
     return notes
 
 
+def _pppoe_expired_http_redirect_ok(sock: socket.socket, billing_ip: str = "") -> bool:
+    """True when the NAS still has the expired-client HTTP dst-nat rule."""
+    billing_ip = (billing_ip or "").strip()
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,comment,chain,action,to-addresses,dst-port",
+    ):
+        comment = row.get("comment") or ""
+        if PPP_SECRET_TAG not in comment or "expired redirect" not in comment:
+            continue
+        if (row.get("chain") or "").strip() != "dstnat":
+            continue
+        if (row.get("action") or "").strip() not in {"dst-nat", "netmap"}:
+            continue
+        if billing_ip and (row.get("to-addresses") or "").strip() not in {
+            billing_ip,
+            f"{billing_ip}/32",
+        }:
+            continue
+        return True
+    return False
+
+
+def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
+    """
+    RST blocked HTTPS probes so phones fall back to HTTP in milliseconds.
+
+    Without this, Android/iOS wait on a silent DROP (often 20–30s) before the
+    captive popup appears — users report "expired but no redirect".
+    """
+    notes: list[str] = []
+    has_reject = False
+    has_drop = False
+    for row in _print(sock, "/ip/firewall/filter", props=".id,comment,action"):
+        comment = row.get("comment") or ""
+        if PPP_SECRET_TAG not in comment:
+            continue
+        if "reject https fast" in comment:
+            has_reject = True
+        if "block expired" in comment:
+            has_drop = True
+    place_before = _first_forward_drop_id(sock)
+    if not has_reject:
+        terminal = _add_filter_rule(
+            sock,
+            {
+                "chain": "forward",
+                "action": "reject",
+                "reject-with": "tcp-reset",
+                "protocol": "tcp",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} reject https fast",
+            },
+            place_before=place_before,
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append("fast HTTPS reject for expired clients")
+        else:
+            notes.append("warning: could not install fast HTTPS reject")
+    if not has_drop:
+        terminal = _add_filter_rule(
+            sock,
+            {
+                "chain": "forward",
+                "action": "drop",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "out-interface-list": "WAN",
+                "comment": f"{PPP_SECRET_TAG} block expired",
+            },
+            place_before=place_before,
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append("WAN drop for expired clients")
+    return notes
+
+
 def _ensure_pppoe_expired_access(
     sock: socket.socket,
     *,
@@ -6812,7 +7124,8 @@ def _ensure_pppoe_expired_access(
     Ensure blocked PPPoE clients can reach the pay page (billing allow + HTTP redirect).
 
     Lightweight companion to full stack push — used on expiry so renew works even
-    when ensure_stack=False.
+    when ensure_stack=False. Retries a few times so a flaky API write cannot leave
+    expired clients with "no internet" and no captive popup.
     """
     notes: list[str] = []
 
@@ -6822,31 +7135,85 @@ def _ensure_pppoe_expired_access(
         notes.append("warning: no billing IP — expired pay redirect not installed")
         return notes
 
-    notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal))
+    for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+        attempt_notes: list[str] = []
+        attempt_notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal))
+        attempt_notes.extend(_ensure_pppoe_fast_captive_reject(sock))
 
-    has_billing_allow = any(
-        PPP_SECRET_TAG in (row.get("comment") or "")
-        and "blocked to billing" in (row.get("comment") or "")
-        for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
-    )
-    if not has_billing_allow:
-        place_before = _first_forward_drop_id(sock)
-        terminal = _add_filter_rule(
-            sock,
-            {
-                "chain": "forward",
-                "action": "accept",
-                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
-                "dst-address": billing_ip,
-                "comment": f"{PPP_SECRET_TAG} blocked to billing",
-            },
-            place_before=place_before,
+        has_billing_allow = any(
+            PPP_SECRET_TAG in (row.get("comment") or "")
+            and "blocked to billing" in (row.get("comment") or "")
+            for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
         )
-        if terminal.get("_reply") != "!trap":
-            notes.append(f"blocked clients allowed to billing {billing_ip}")
-        else:
-            notes.append("warning: could not allow blocked clients to billing host")
+        if not has_billing_allow:
+            place_before = _first_forward_drop_id(sock)
+            terminal = _add_filter_rule(
+                sock,
+                {
+                    "chain": "forward",
+                    "action": "accept",
+                    "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                    "dst-address": billing_ip,
+                    "comment": f"{PPP_SECRET_TAG} blocked to billing",
+                },
+                place_before=place_before,
+            )
+            if terminal.get("_reply") != "!trap":
+                attempt_notes.append(f"blocked clients allowed to billing {billing_ip}")
+            else:
+                attempt_notes.append(
+                    "warning: could not allow blocked clients to billing host"
+                )
+
+        notes.extend(attempt_notes)
+        if _pppoe_expired_http_redirect_ok(sock, billing_ip):
+            if attempt > 1:
+                notes.append(f"expired redirect repaired on attempt {attempt}")
+            return notes
+        notes.append(
+            f"expired HTTP redirect missing after attempt {attempt}; correcting…"
+        )
+
+    notes.append(
+        "warning: expired HTTP redirect still missing after "
+        f"{_CAPTIVE_REPAIR_ATTEMPTS} attempts"
+    )
     return notes
+
+
+def repair_router_expired_captive_redirect(
+    router,
+    *,
+    portal_url: str = "",
+) -> dict[str, Any]:
+    """
+    Re-install NAS expired-client redirect rules for one MikroTik.
+
+    Used by the subscription sweep so every router that still has blocked
+    clients keeps an instant pay popup even if rules were deleted on-box.
+    """
+    host = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    if not host or not username:
+        return {"ok": False, "skipped": True, "error": "Router host or API user missing."}
+    portal = _billing_portal_base_url(portal_url)
+    try:
+        with _api_session(host, username, password, timeout=8.0) as sock:
+            notes = _ensure_pppoe_expired_access(sock, portal_url=portal)
+            notes.extend(_ensure_pppoe_blocked_profile(sock))
+        return {
+            "ok": True,
+            "skipped": False,
+            "notes": notes,
+            "message": "; ".join(notes) if notes else "expired captive redirect ok",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": str(exc) or "Could not repair expired redirect.",
+        }
 
 
 def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
@@ -6877,7 +7244,7 @@ def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
         "dns-server": PPPOE_LOCAL_ADDRESS,
         "change-tcp-mss": "yes",
         "use-encryption": "no",
-        "only-one": "default",
+        "only-one": "yes",
         "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
         "comment": f"{PPP_SECRET_TAG} no-internet",
     }
@@ -6887,6 +7254,7 @@ def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
         "remote-address": PPPOE_POOL_NAME,
         "dns-server": PPPOE_LOCAL_ADDRESS,
         "use-encryption": "no",
+        "only-one": "yes",
         "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
         "comment": f"{PPP_SECRET_TAG} no-internet",
     }
@@ -7006,7 +7374,7 @@ def _ensure_pppoe_rate_profile(
         "dns-server": "8.8.8.8,1.1.1.1",
         "change-tcp-mss": "yes",
         "use-encryption": "no",
-        "only-one": "default",
+        "only-one": "yes",
         "rate-limit": rate_limit,
         "comment": f"{PPP_SECRET_TAG} {rate_limit}",
     }
@@ -7016,6 +7384,7 @@ def _ensure_pppoe_rate_profile(
         "remote-address": PPPOE_POOL_NAME,
         "dns-server": "8.8.8.8,1.1.1.1",
         "use-encryption": "no",
+        "only-one": "yes",
         "rate-limit": rate_limit,
         "comment": f"{PPP_SECRET_TAG} {rate_limit}",
     }
@@ -7027,6 +7396,7 @@ def _ensure_pppoe_rate_profile(
         "remote-address": PPPOE_POOL_NAME,
         "dns-server": "8.8.8.8,1.1.1.1",
         "use-encryption": "no",
+        "only-one": "yes",
         "comment": f"{PPP_SECRET_TAG} {rate_limit}",
     }
 
@@ -7303,7 +7673,19 @@ def _ensure_ppp_secret(
             break
 
     # service=any: accept dial-in regardless of CPE service-name quirks.
+    # only-one=yes: per-secret guard so a second device cannot dial while the
+    # first session is still connected (profile-level only-one is the primary).
     base_props = {
+        "name": username,
+        "service": "any",
+        "profile": profile,
+        "disabled": disabled_value,
+        "comment": comment,
+        "only-one": "yes",
+    }
+    # Older RouterOS builds may not accept only-one on /ppp/secret — profile
+    # only-one still enforces single-session.
+    core_props = {
         "name": username,
         "service": "any",
         "profile": profile,
@@ -7316,6 +7698,8 @@ def _ensure_ppp_secret(
     if secret_id:
         terminal = _set(sock, "/ppp/secret", secret_id, **base_props)
         if terminal.get("_reply") == "!trap":
+            terminal = _set(sock, "/ppp/secret", secret_id, **core_props)
+        if terminal.get("_reply") == "!trap":
             raise ConnectionError(
                 _trap_message(
                     terminal,
@@ -7324,6 +7708,8 @@ def _ensure_ppp_secret(
             )
     else:
         terminal = _add(sock, "/ppp/secret", **base_props)
+        if terminal.get("_reply") == "!trap":
+            terminal = _add(sock, "/ppp/secret", **core_props)
         if terminal.get("_reply") == "!trap":
             raise ConnectionError(
                 _trap_message(
@@ -7924,17 +8310,33 @@ def _ensure_tagged_ip_address(
             pass
 
 
+# Keep in sync with ispcentric.middleware.CAPTIVE_PROBE_HOSTS / ALLOWED_HOSTS.
 CAPTIVE_PROBE_HOSTS = (
     "captive.apple.com",
     "www.apple.com",
+    "www.appleiphonecell.com",
+    "www.itools.info",
+    "www.ibook.info",
+    "www.airport.us",
+    "www.thinkdifferent.us",
     "connectivitycheck.gstatic.com",
+    "connectivitycheck.android.com",
     "clients3.google.com",
     "www.msftconnecttest.com",
+    "msftconnecttest.com",
+    "www.msftncsi.com",
     "dns.msftncsi.com",
+    "ipv6.msftconnecttest.com",
     "detectportal.firefox.com",
+    "network-test.debian.org",
     "neverssl.com",
     "example.com",
+    "connectivitycheck.platform.hicloud.com",
+    "connectivitycheck.platform.hihonorcloud.com",
 )
+
+# How many times to re-install expired redirect / CPE portal when a push fails.
+_CAPTIVE_REPAIR_ATTEMPTS = 3
 
 
 def _ensure_captive_dns(sock: socket.socket, gateway_ip: str, comment: str) -> int:
@@ -8735,6 +9137,14 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     notes.extend(_ensure_cpe_portal_access(sock, portal_url))
     notes.extend(_ensure_cpe_wan_block(sock))
     notes.extend(_fetch_hotspot_pages(sock, portal_url))
+    # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
+    # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
+    if portal_url and urlparse(portal_url).scheme:
+        notes.extend(
+            _ensure_captive_portal_dhcp_option(
+                sock, portal_url, comment=RENEW_HOTSPOT_TAG
+            )
+        )
     notes.extend(_bounce_cpe_wifi_clients(sock))
 
     try:
@@ -8788,6 +9198,10 @@ def _disable_cpe_renew_hotspot(sock: socket.socket) -> list[str]:
     removed += _remove_tagged_rows(sock, "/ip/hotspot/walled-garden", RENEW_HOTSPOT_TAG)
     try:
         removed += _remove_tagged_rows(sock, "/ip/hotspot/walled-garden/ip", RENEW_HOTSPOT_TAG)
+    except Exception:
+        pass
+    try:
+        removed += _clear_captive_portal_dhcp_option(sock)
     except Exception:
         pass
     if removed:
@@ -9122,14 +9536,20 @@ def _fallback_captive_organization():
 
 
 def _captive_org_candidates():
-    """Organizations that own captive Hotspot / compulsory PPPoE access."""
+    """Organizations that own captive Hotspot / PPPoE access."""
     from accounts.models import Organization
     from django.db.models import Q
 
+    # Include every org that can own a captive client: Hotspot, compulsory
+    # PPPoE, or any router (pure PPPoE ISPs still need pay redirects).
     return list(
         Organization.objects.filter(
-            Q(hotspot_enabled=True) | Q(pppoe_compulsory=True)
-        ).order_by("id")[:2]
+            Q(hotspot_enabled=True)
+            | Q(pppoe_compulsory=True)
+            | Q(mikrotik_routers__isnull=False)
+        )
+        .distinct()
+        .order_by("id")[:5]
     )
 
 
@@ -9384,8 +9804,12 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> 
             salt="pppoe-payment",
             compress=True,
         )
+        params = {"t": token}
+        account = (getattr(customer, "account_number", None) or "").strip()
+        if account:
+            params["account"] = account
         sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}{urlencode({'t': token})}"
+        url = f"{url}{sep}{urlencode(params)}"
     return url
 
 
@@ -9512,32 +9936,41 @@ def sync_customer_subscription_access(
             if status_active:
                 # Enable CPE renew popup FIRST while WAN still works (HTML fetch).
                 # Then block+kick on the NAS so surfing stops and phones re-probe.
-                try:
-                    portal_result = apply_cpe_renew_portal(
-                        customer, enabled=True, portal_url=pay_url
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    portal_result = {
-                        "ok": False,
-                        "skipped": False,
-                        "error": str(exc) or "CPE renew portal failed.",
-                    }
+                # Loop corrections: CPE API / file writes often flake once on busy
+                # routers; without retries phones stay on "no internet" with no popup.
+                portal_result = {"ok": False, "skipped": True}
+                for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+                    try:
+                        portal_result = apply_cpe_renew_portal(
+                            customer, enabled=True, portal_url=pay_url
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        portal_result = {
+                            "ok": False,
+                            "skipped": False,
+                            "error": str(exc) or "CPE renew portal failed.",
+                            "attempt": attempt,
+                        }
+                    if portal_result.get("ok") or portal_result.get("skipped"):
+                        break
                 provision_result = provision_customer_pppoe(
                     customer,
                     ensure_stack=False,
                     force_disabled=False,
                 )
-                # If CPE was briefly offline during the first attempt, retry after
-                # the blocked redial so the popup still appears.
-                if not portal_result.get("ok"):
-                    try:
-                        retry = apply_cpe_renew_portal(
-                            customer, enabled=True, portal_url=pay_url
-                        )
-                        if retry.get("ok") or not portal_result.get("ok"):
+                # If CPE was offline during the first attempts, retry after the
+                # blocked redial so the popup still appears for Wi‑Fi clients.
+                if not portal_result.get("ok") and not portal_result.get("skipped"):
+                    for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+                        try:
+                            retry = apply_cpe_renew_portal(
+                                customer, enabled=True, portal_url=pay_url
+                            )
                             portal_result = retry
-                    except Exception:
-                        pass
+                            if retry.get("ok") or retry.get("skipped"):
+                                break
+                        except Exception:
+                            pass
             else:
                 provision_result = provision_customer_pppoe(
                     customer,
@@ -9551,16 +9984,21 @@ def sync_customer_subscription_access(
             # kicks the session so a post-kick clear often fails with "CPE
             # offline", leaving phones trapped behind the renew popup and the
             # CPE stuck redialing.
-            try:
-                portal_result = apply_cpe_renew_portal(
-                    customer, enabled=False, portal_url=pay_url
-                )
-            except Exception as exc:  # noqa: BLE001
-                portal_result = {
-                    "ok": False,
-                    "skipped": False,
-                    "error": str(exc) or "Could not clear CPE renew portal.",
-                }
+            portal_result = {"ok": False, "skipped": True}
+            for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+                try:
+                    portal_result = apply_cpe_renew_portal(
+                        customer, enabled=False, portal_url=pay_url
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    portal_result = {
+                        "ok": False,
+                        "skipped": False,
+                        "error": str(exc) or "Could not clear CPE renew portal.",
+                        "attempt": attempt,
+                    }
+                if portal_result.get("ok") or portal_result.get("skipped"):
+                    break
             provision_result = provision_customer_pppoe(
                 customer,
                 ensure_stack=False,
@@ -9568,15 +10006,17 @@ def sync_customer_subscription_access(
             )
             # If the CPE was briefly offline before the kick, try once more
             # after the speed profile is restored (redial may already be up).
-            if not portal_result.get("ok"):
-                try:
-                    retry = apply_cpe_renew_portal(
-                        customer, enabled=False, portal_url=pay_url
-                    )
-                    if retry.get("ok") or not portal_result.get("ok"):
+            if not portal_result.get("ok") and not portal_result.get("skipped"):
+                for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+                    try:
+                        retry = apply_cpe_renew_portal(
+                            customer, enabled=False, portal_url=pay_url
+                        )
                         portal_result = retry
-                except Exception:
-                    pass
+                        if retry.get("ok") or retry.get("skipped"):
+                            break
+                    except Exception:
+                        pass
 
     nas_blocked = bool(
         not allowed
@@ -10955,10 +11395,12 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         f"&link-login-only=$(link-login-only-esc)"
         f"&error=$(error-esc)"
     )
-    # RouterOS interprets these special template directives as response metadata.
+    # RouterOS macros ($(mac), …) must stay literal in Location/meta/JS — do not
+    # HTML-entity-encode '&' or substitution breaks on the CPE.
     # A real 302 is required for non-browser captive clients such as Windows NCSI;
     # they do not execute the JavaScript/meta-refresh in a 200 HTML response.
-    # Keep the HTML as a fallback for captive browsers with unusual redirect handling.
+    # Keep the HTML as a fallback for captive browsers with unusual redirect handling
+    # (older Android WebView, some Huawei/Samsung captive sheets).
     return (
         "$(if http-status == 302)Payment required$(endif)\n"
         f'$(if http-header == "Location"){target}$(endif)\n'
@@ -10966,14 +11408,25 @@ def _captive_pay_redirect_html(pay_url: str) -> str:
         "<html>\n"
         "<head>\n"
         '<meta charset="utf-8">\n'
-        f'<meta http-equiv="refresh" content="0; url={target}">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f'<meta http-equiv="refresh" content="0;url={target}">\n'
         '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
+        '<meta http-equiv="Pragma" content="no-cache">\n'
+        '<meta http-equiv="Expires" content="0">\n'
         "<title>Pay to connect</title>\n"
-        f'<script>window.location.replace("{target}");</script>\n'
+        "<script>\n"
+        "(function(){\n"
+        f"var u={target!r};\n"
+        "try{window.top.location.replace(u);}catch(e){}\n"
+        "try{window.location.replace(u);}catch(e){}\n"
+        "setTimeout(function(){window.location.href=u;},50);\n"
+        "})();\n"
+        "</script>\n"
         "</head>\n"
         "<body>\n"
         "<p>Opening payment page…</p>\n"
         f'<p><a href="{target}">Continue to payment</a></p>\n'
+        f'<noscript><meta http-equiv="refresh" content="0;url={target}"></noscript>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -11966,8 +12419,16 @@ def list_mikrotik_ports(
             rows = _print(
                 sock,
                 "/interface",
-                props=".id,name,type,running,disabled,comment",
+                props=".id,name,type,running,disabled,comment,rx-byte,tx-byte",
             )
+            bytes_by_name: dict[str, tuple[int, int]] = {}
+            for row in rows:
+                iname = (row.get("name") or "").strip()
+                if iname:
+                    bytes_by_name[iname] = (
+                        max(0, _parse_int(row.get("rx-byte"))),
+                        max(0, _parse_int(row.get("tx-byte"))),
+                    )
             bridge_of: dict[str, str] = {}
             try:
                 for brow in _print(
@@ -11992,6 +12453,10 @@ def list_mikrotik_ports(
                 running = _flag_yes(row.get("running"))
                 bridge = bridge_of.get(name, "")
                 hint = uplink_hints.get(name) or {}
+                traffic_iface = (hint.get("uplink") or "").strip() or name
+                rx_byte, tx_byte = bytes_by_name.get(traffic_iface) or bytes_by_name.get(
+                    name, (0, 0)
+                )
                 ports.append(
                     {
                         "id": (row.get(".id") or "").strip(),
@@ -12007,6 +12472,9 @@ def list_mikrotik_ports(
                         or name.lower().startswith(("wlan", "wifi")),
                         "uplink_kind": hint.get("kind") or "",
                         "uplink_iface": hint.get("uplink") or "",
+                        "traffic_iface": traffic_iface,
+                        "rx_byte": rx_byte,
+                        "tx_byte": tx_byte,
                     }
                 )
 
@@ -12246,12 +12714,31 @@ def _restore_bridged_interfaces(
 
 
 def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
-    """Remove ispcentric-uplink bond / DHCP / route / list-member leftovers."""
+    """Remove ispcentric-uplink bond / DHCP / route / mangle / list leftovers."""
+    routing_tables = 0
+    try:
+        for row in _print(sock, "/routing/table", props=".id,name,comment"):
+            comment = row.get("comment") or ""
+            name = (row.get("name") or "").strip()
+            if UPLINK_TAG not in comment and not name.startswith("ispcentric-w"):
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            if _remove(sock, "/routing/table", item_id).get("_reply") not in {
+                "!trap",
+                "!fatal",
+            }:
+                routing_tables += 1
+    except Exception:
+        pass
     return {
         "bonding": _remove_comment_tagged(sock, "/interface/bonding", UPLINK_TAG),
         "dhcp_client": _remove_comment_tagged(sock, "/ip/dhcp-client", UPLINK_TAG),
         "routes": _remove_comment_tagged(sock, "/ip/route", UPLINK_TAG),
         "list_members": _remove_comment_tagged(sock, "/interface/list/member", UPLINK_TAG),
+        "mangle": _remove_comment_tagged(sock, "/ip/firewall/mangle", UPLINK_TAG),
+        "routing_tables": routing_tables,
     }
 
 
@@ -12358,10 +12845,14 @@ def _ensure_failover_uplink(
     interface: str,
     *,
     distance: int,
+    add_default_route: bool = True,
 ) -> dict[str, str]:
     """Configure failover uplink via PPPoE when present, otherwise DHCP."""
     pppoe_result = _ensure_failover_pppoe_client(
-        sock, interface, distance=distance, add_default_route=True
+        sock,
+        interface,
+        distance=distance,
+        add_default_route=add_default_route,
     )
     if pppoe_result is not None:
         out = dict(pppoe_result)
@@ -12369,7 +12860,12 @@ def _ensure_failover_uplink(
         out["_interface"] = interface
         out["_distance"] = str(distance)
         return out
-    dhcp_result = _ensure_failover_dhcp_client(sock, interface, distance=distance)
+    dhcp_result = _ensure_failover_dhcp_client(
+        sock,
+        interface,
+        distance=distance,
+        add_default_route=add_default_route,
+    )
     out = dict(dhcp_result)
     out["_kind"] = "dhcp"
     out["_interface"] = interface
@@ -12708,13 +13204,15 @@ def _ensure_failover_dhcp_client(
     interface: str,
     *,
     distance: int,
+    add_default_route: bool = True,
 ) -> dict[str, str]:
-    """Ensure a DHCP client that installs a default route at the given distance.
+    """Ensure a DHCP client on the WAN interface (optionally with a default route).
 
     Existing (non-ISPCENTRIC) clients are reused and distance is updated without
     retagging them — so Clear will not delete the original WAN DHCP client.
     Only newly created clients are tagged with UPLINK_TAG.
     """
+    route_flag = "yes" if add_default_route else "no"
     for row in _print(
         sock,
         "/ip/dhcp-client",
@@ -12727,7 +13225,7 @@ def _ensure_failover_dhcp_client(
             return {"_reply": "!done"}
         props: dict[str, str] = {
             "disabled": "no",
-            "add-default-route": "yes",
+            "add-default-route": route_flag,
             "use-peer-dns": "no",
             "default-route-distance": str(distance),
         }
@@ -12742,7 +13240,7 @@ def _ensure_failover_dhcp_client(
         disabled="no",
         comment=UPLINK_TAG,
         **{
-            "add-default-route": "yes",
+            "add-default-route": route_flag,
             "use-peer-dns": "no",
             "default-route-distance": str(distance),
         },
@@ -12916,6 +13414,511 @@ def apply_mikrotik_uplink_bond(
         }
 
 
+def _balance_table_name(index: int) -> str:
+    return f"ispcentric-w{index}"
+
+
+def _ensure_balance_routing_table(sock: socket.socket, table_name: str) -> dict[str, str]:
+    """Create a ROS7 FIB routing table used by PCC marks (best-effort on ROS6)."""
+    table_name = (table_name or "").strip()
+    if not table_name:
+        return {"_reply": "!trap", "message": "Missing routing table name."}
+    try:
+        for row in _print(sock, "/routing/table", props=".id,name,comment"):
+            if (row.get("name") or "").strip() == table_name:
+                return {"_reply": "!done", "name": table_name}
+    except Exception as exc:
+        return {"_reply": "!trap", "message": str(exc) or "Routing tables unavailable."}
+    terminal = _add(
+        sock,
+        "/routing/table",
+        name=table_name,
+        fib="yes",
+        comment=UPLINK_TAG,
+    )
+    if terminal.get("_reply") in {"!trap", "!fatal"}:
+        terminal = _add(
+            sock,
+            "/routing/table",
+            name=table_name,
+            comment=UPLINK_TAG,
+        )
+    return terminal
+
+
+def _add_balance_default_route(
+    sock: socket.socket,
+    *,
+    gateway: str,
+    distance: int,
+    routing_table: str = "",
+) -> dict[str, str]:
+    """Install a ping-checked default route, optionally in a named routing table."""
+    gateway = (gateway or "").strip()
+    if not gateway:
+        return {"_reply": "!trap", "message": "Missing balance gateway."}
+    distance_s = str(max(1, int(distance)))
+    attempts: list[dict[str, str]] = []
+    if routing_table:
+        attempts.append(
+            {
+                "dst-address": "0.0.0.0/0",
+                "gateway": gateway,
+                "distance": distance_s,
+                "check-gateway": "ping",
+                "routing-table": routing_table,
+                "comment": UPLINK_TAG,
+            }
+        )
+        attempts.append(
+            {
+                "dst-address": "0.0.0.0/0",
+                "gateway": gateway,
+                "distance": distance_s,
+                "check-gateway": "ping",
+                "routing-mark": routing_table,
+                "comment": UPLINK_TAG,
+            }
+        )
+    attempts.append(
+        {
+            "dst-address": "0.0.0.0/0",
+            "gateway": gateway,
+            "distance": distance_s,
+            "check-gateway": "ping",
+            "comment": UPLINK_TAG,
+        }
+    )
+    attempts.append(
+        {
+            "dst-address": "0.0.0.0/0",
+            "gateway": gateway,
+            "distance": distance_s,
+            "comment": UPLINK_TAG,
+        }
+    )
+    last = {"_reply": "!trap", "message": "Could not add balance route."}
+    for props in attempts:
+        last = _add(sock, "/ip/route", **props)
+        if last.get("_reply") not in {"!trap", "!fatal"}:
+            return last
+        unknown = _unknown_parameter_name(last.get("message") or "")
+        if unknown and unknown in props:
+            trimmed = {k: v for k, v in props.items() if k != unknown}
+            last = _add(sock, "/ip/route", **trimmed)
+            if last.get("_reply") not in {"!trap", "!fatal"}:
+                return last
+    return last
+
+
+def _pcc_slot_counts(mbps_list: list[int], *, max_slots: int = 24) -> list[int]:
+    """
+    Convert Mbps (or relative weights) into PCC slot counts.
+
+    Example: [100, 20] → [5, 1] so ~83% of new connections use the first WAN.
+    """
+    from functools import reduce
+    from math import gcd
+
+    vals = [max(1, min(10000, int(m or 1))) for m in (mbps_list or [])]
+    if not vals:
+        return []
+    g = reduce(gcd, vals)
+    vals = [v // g for v in vals]
+    total = sum(vals)
+    if total <= max_slots:
+        return vals
+
+    scaled = [max(1, int(round(v * max_slots / float(total)))) for v in vals]
+    while sum(scaled) > max_slots:
+        i = max(range(len(scaled)), key=lambda j: scaled[j])
+        if scaled[i] <= 1:
+            break
+        scaled[i] -= 1
+    while sum(scaled) < max_slots:
+        i = max(
+            range(len(scaled)),
+            key=lambda j: (vals[j] / float(scaled[j])) if scaled[j] else vals[j],
+        )
+        scaled[i] += 1
+    g2 = reduce(gcd, scaled) if scaled else 1
+    return [v // g2 for v in scaled]
+
+
+def _install_balance_pcc(
+    sock: socket.socket,
+    members: list[dict[str, str]],
+) -> dict[str, Any]:
+    """
+    Weighted PCC multi-WAN for different providers.
+
+    - Per-WAN FIB / routing-mark table with ping-checked default
+    - Main table: fastest WAN at distance 1, others 2/3/… (no ECMP fight with PCC)
+    - PCC uses both-addresses-and-ports so busy CDNs still spread
+    - Dead WANs drop via check-gateway=ping; unmarked traffic fails over to next
+    """
+    count = len(members)
+    if count < 2:
+        return {"ok": False, "error": "Need at least two WAN members for balance."}
+
+    # Fastest first so distance-1 main route and index 0 prefer the strong ISP.
+    ordered = sorted(
+        members,
+        key=lambda m: (-int(m.get("weight") or 1), str(m.get("interface") or "")),
+    )
+    for index, item in enumerate(ordered):
+        item["index"] = str(index)
+
+    slot_counts = _pcc_slot_counts([int(m.get("weight") or 1) for m in ordered])
+    total_slots = sum(slot_counts)
+    if total_slots < 2:
+        return {"ok": False, "error": "Invalid balance weights."}
+
+    tables_ok = 0
+    routes_ok = 0
+    for rank, item in enumerate(ordered):
+        index = int(item.get("index") or 0)
+        table = _balance_table_name(index)
+        gateway = (item.get("gateway") or "").strip()
+        if not gateway:
+            continue
+        table_term = _ensure_balance_routing_table(sock, table)
+        if table_term.get("_reply") not in {"!trap", "!fatal"}:
+            tables_ok += 1
+        # Own table always distance 1.
+        marked = _add_balance_default_route(
+            sock, gateway=gateway, distance=1, routing_table=table
+        )
+        if marked.get("_reply") not in {"!trap", "!fatal"}:
+            routes_ok += 1
+        # Main FIB: strongest preferred; weaker are standby if marks miss / WAN dies.
+        main = _add_balance_default_route(
+            sock, gateway=gateway, distance=rank + 1, routing_table=""
+        )
+        if main.get("_reply") not in {"!trap", "!fatal"}:
+            routes_ok += 1
+
+    # Prefer both-addresses-and-ports; fall back to both-addresses on older ROS.
+    pcc_classifier = "both-addresses-and-ports"
+    slot_index = 0
+    for item_index, item in enumerate(ordered):
+        index = int(item.get("index") or 0)
+        wan_iface = (item.get("wan_iface") or item.get("interface") or "").strip()
+        table = _balance_table_name(index)
+        conn_mark = f"ispcentric-c{index}"
+        if not wan_iface:
+            continue
+        _add(
+            sock,
+            "/ip/firewall/mangle",
+            chain="input",
+            **{
+                "in-interface": wan_iface,
+                "action": "mark-connection",
+                "new-connection-mark": conn_mark,
+                "passthrough": "yes",
+                "comment": UPLINK_TAG,
+            },
+        )
+        _add(
+            sock,
+            "/ip/firewall/mangle",
+            chain="output",
+            **{
+                "connection-mark": conn_mark,
+                "action": "mark-routing",
+                "new-routing-mark": table,
+                "passthrough": "yes",
+                "comment": UPLINK_TAG,
+            },
+        )
+        member_slots = slot_counts[item_index] if item_index < len(slot_counts) else 1
+        for _ in range(max(1, member_slots)):
+            props = {
+                "dst-address-type": "!local",
+                "in-interface-list": "!WAN",
+                "connection-mark": "no-mark",
+                "connection-state": "new",
+                "per-connection-classifier": f"{pcc_classifier}:{total_slots}/{slot_index}",
+                "action": "mark-connection",
+                "new-connection-mark": conn_mark,
+                "passthrough": "yes",
+                "comment": UPLINK_TAG,
+            }
+            terminal = _add(sock, "/ip/firewall/mangle", chain="prerouting", **props)
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                # Older RouterOS: drop connection-state and/or ports classifier.
+                for fallback in (
+                    {
+                        **props,
+                        "per-connection-classifier": (
+                            f"both-addresses:{total_slots}/{slot_index}"
+                        ),
+                    },
+                    {
+                        k: v
+                        for k, v in {
+                            **props,
+                            "per-connection-classifier": (
+                                f"both-addresses:{total_slots}/{slot_index}"
+                            ),
+                        }.items()
+                        if k != "connection-state"
+                    },
+                ):
+                    terminal = _add(
+                        sock, "/ip/firewall/mangle", chain="prerouting", **fallback
+                    )
+                    if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                        break
+            slot_index += 1
+        _add(
+            sock,
+            "/ip/firewall/mangle",
+            chain="prerouting",
+            **{
+                "in-interface-list": "!WAN",
+                "connection-mark": conn_mark,
+                "action": "mark-routing",
+                "new-routing-mark": table,
+                "passthrough": "yes",
+                "comment": UPLINK_TAG,
+            },
+        )
+
+    mangle_rows = _rows_with_comment_tag(sock, "/ip/firewall/mangle", UPLINK_TAG)
+    return {
+        "ok": True,
+        "tables": tables_ok,
+        "routes": routes_ok,
+        "mangle_rules": len(mangle_rows),
+        "members": [m.get("interface") for m in ordered],
+        "slot_counts": slot_counts,
+        "total_slots": total_slots,
+        "preferred": (ordered[0].get("interface") if ordered else ""),
+    }
+
+
+def _resolve_balance_member_gateway(
+    sock: socket.socket,
+    *,
+    interface: str,
+    kind: str,
+    pppoe_name: str = "",
+) -> tuple[str, str]:
+    """Return (wan_iface_for_mangle, gateway) for one balance member."""
+    interface = (interface or "").strip()
+    pppoe_name = (pppoe_name or "").strip()
+    if kind == "pppoe":
+        wan_iface = pppoe_name or _find_pppoe_client_for_wan(sock, interface) or interface
+        return wan_iface, wan_iface
+    gateways = _detect_dhcp_gateways(sock, interface)
+    gateway = gateways[0] if gateways else ""
+    if not gateway:
+        gateway = _default_route_gateway_for_interface(sock, interface)
+    return interface, gateway or ""
+
+
+def apply_mikrotik_uplink_balance(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    member_ports: list[str],
+    member_weights: dict[str, int] | None = None,
+    port: int = 8728,
+    timeout: float = 14.0,
+) -> dict[str, Any]:
+    """
+    PCC load-balance across different ISP uplinks.
+
+    Uses the same port roles as failover (Internet + Backup internet). When
+    ``member_weights`` maps port → Mbps, connections are split in that ratio
+    (e.g. 100/20 → ~5:1). Otherwise each member gets an equal share.
+    """
+    import time as _time
+
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    members = [p.strip() for p in (member_ports or []) if (p or "").strip()]
+    members = list(dict.fromkeys(members))
+    weights_in = member_weights if isinstance(member_weights, dict) else {}
+
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if len(members) < 2:
+        return {
+            "ok": False,
+            "error": "Select at least two ports (Internet + Backup internet) to balance.",
+        }
+
+    def _weight_for(name: str) -> int:
+        raw = weights_in.get(name, weights_in.get(name.lower(), 100))
+        try:
+            return max(1, min(10000, int(raw)))
+        except (TypeError, ValueError):
+            return 100
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            names = _iface_names(sock)
+            missing = [p for p in members if p not in names]
+            if missing:
+                return {
+                    "ok": False,
+                    "error": f"Port(s) not found on router: {', '.join(missing)}.",
+                }
+
+            _clear_tagged_uplink(sock)
+            unbridged = _unbridge_interfaces(sock, members)
+
+            uplink_results: list[dict[str, str]] = []
+            for index, iface in enumerate(members):
+                # Do not let DHCP/PPPoE install competing ECMP defaults — we
+                # own ping-checked static routes for balance.
+                terminal = _ensure_failover_uplink(
+                    sock, iface, distance=1, add_default_route=False
+                )
+                if terminal.get("_reply") in {"!trap", "!fatal"}:
+                    if unbridged:
+                        _restore_bridged_interfaces(sock, unbridged)
+                    return {
+                        "ok": False,
+                        "error": _trap_message(
+                            terminal,
+                            f"Could not configure balance uplink on {iface}.",
+                        ),
+                    }
+                terminal = dict(terminal)
+                terminal["_index"] = str(index)
+                uplink_results.append(terminal)
+                _ensure_uplink_list_member(sock, iface)
+                pppoe_name = (terminal.get("_pppoe") or "").strip() or _find_pppoe_client_for_wan(
+                    sock, iface
+                )
+                if pppoe_name and pppoe_name != iface:
+                    _ensure_uplink_list_member(sock, pppoe_name)
+
+            _time.sleep(1.2)
+
+            balance_members: list[dict[str, str]] = []
+            missing_gw: list[str] = []
+            for item in uplink_results:
+                iface = (item.get("_interface") or "").strip()
+                kind = (item.get("_kind") or "dhcp").strip()
+                pppoe_name = (item.get("_pppoe") or "").strip()
+                index = int(item.get("_index") or "0")
+                wan_iface, gateway = _resolve_balance_member_gateway(
+                    sock,
+                    interface=iface,
+                    kind=kind,
+                    pppoe_name=pppoe_name,
+                )
+                if not gateway:
+                    missing_gw.append(iface)
+                    continue
+                _disable_client_default_route(
+                    sock,
+                    kind=kind,
+                    interface=iface,
+                    pppoe_name=pppoe_name or gateway,
+                )
+                balance_members.append(
+                    {
+                        "interface": iface,
+                        "wan_iface": wan_iface,
+                        "gateway": gateway,
+                        "index": str(index),
+                        "kind": kind,
+                        "weight": str(_weight_for(iface)),
+                    }
+                )
+
+            if len(balance_members) < 2:
+                return {
+                    "ok": False,
+                    "error": (
+                        "Could not learn gateways on enough WAN ports for balance. "
+                        "Confirm both links have internet (DHCP or PPPoE), then retry."
+                        + (
+                            f" Missing gateway on: {', '.join(missing_gw)}."
+                            if missing_gw
+                            else ""
+                        )
+                    ),
+                    "unbridged": unbridged,
+                }
+
+            pcc = _install_balance_pcc(sock, balance_members)
+            if not pcc.get("ok"):
+                return {
+                    "ok": False,
+                    "error": pcc.get("error") or "Could not install PCC balance rules.",
+                    "unbridged": unbridged,
+                }
+
+            labels = list(pcc.get("members") or [m["interface"] for m in balance_members])
+            weights_out = {
+                m["interface"]: int(m.get("weight") or 100) for m in balance_members
+            }
+            # Reorder weights_out keys to match preferred order for UI.
+            weights_ordered = {name: weights_out.get(name, 100) for name in labels}
+            for name, val in weights_out.items():
+                weights_ordered.setdefault(name, val)
+            slots = pcc.get("slot_counts") or []
+            preferred = (pcc.get("preferred") or (labels[0] if labels else "")).strip()
+            equal = len(set(slots)) <= 1 if slots else True
+            if equal:
+                share_text = "equal connections via PCC; fastest link preferred if one dies"
+            else:
+                ratio = ":".join(str(s) for s in slots)
+                mbps_bits = ", ".join(
+                    f"{name} {weights_ordered.get(name, 100)} Mbps" for name in labels
+                )
+                share_text = (
+                    f"weighted {ratio} toward {preferred or 'fastest'} "
+                    f"({mbps_bits}); ping-checks drop a dead ISP"
+                )
+
+            return {
+                "ok": True,
+                "mode": "balance",
+                "ports": labels,
+                "wan_interface": preferred or (labels[0] if labels else ""),
+                "unbridged": unbridged,
+                "gateways": {m["interface"]: m["gateway"] for m in balance_members},
+                "weights": weights_ordered,
+                "slot_counts": slots,
+                "preferred": preferred,
+                "mangle_rules": pcc.get("mangle_rules") or 0,
+                "message": (
+                    f"Load balance ready across {', '.join(labels)} "
+                    f"({share_text})."
+                    + (
+                        f" Waiting on gateway for: {', '.join(missing_gw)}."
+                        if missing_gw
+                        else ""
+                    )
+                ),
+            }
+    except TimeoutError:
+        return {
+            "ok": False,
+            "error": "Connection timed out while configuring load balance.",
+        }
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not reach {host}:8728. ({exc})",
+        }
+
+
 def apply_mikrotik_uplink_failover(
     host: str,
     username: str,
@@ -13071,7 +14074,7 @@ def clear_mikrotik_uplink_multi(
                 "ok": True,
                 "removed": removed,
                 "restored_bridge_ports": restored,
-                "message": "Bonded / failover uplink settings cleared on the MikroTik.",
+                "message": "Bonded / failover / balance uplink settings cleared on the MikroTik.",
             }
     except TimeoutError:
         return {"ok": False, "error": "Connection timed out while clearing uplink settings."}

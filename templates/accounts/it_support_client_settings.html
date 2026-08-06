@@ -59,7 +59,7 @@
           <div class="cs-card-body">
             <span class="cs-state" data-toggle-pill>{% if form.landing_register_enabled.value %}On{% else %}Off{% endif %}</span>
             <h3 class="cs-card-title">Register link</h3>
-            <p class="cs-card-copy">Show Register and Get started on the public landing page. When off, only Login stays visible.</p>
+            <p class="cs-card-copy">Show Register and Get started on the public landing page and allow visitors to create a company account. When off, only Login stays visible and the register form is closed.</p>
           </div>
           {% if form.landing_register_enabled.errors %}
             <div class="field-error">{{ form.landing_register_enabled.errors|striptags }}</div>

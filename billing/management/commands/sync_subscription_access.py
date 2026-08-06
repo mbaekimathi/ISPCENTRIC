@@ -6,6 +6,7 @@ from django.db.models import Q
 from billing.models import Customer
 from core.mikrotik_connect import (
     apply_hotspot_on_router,
+    repair_router_expired_captive_redirect,
     sync_customer_subscription_access,
 )
 
@@ -13,7 +14,8 @@ from core.mikrotik_connect import (
 class Command(BaseCommand):
     help = (
         "Disable internet for PPPoE and Hotspot clients outside their package "
-        "period, and re-enable it for those inside it."
+        "period, and re-enable it for those inside it. Also re-installs expired "
+        "pay redirects on NAS routers so phones get an instant captive popup."
     )
 
     def add_arguments(self, parser):
@@ -45,6 +47,21 @@ class Command(BaseCommand):
             .order_by("id")
         )
 
+    @staticmethod
+    def _routers_for_ids(router_ids):
+        from core.models import MikroTikRouter
+
+        if not router_ids:
+            return []
+        return list(
+            MikroTikRouter.objects.filter(
+                pk__in=router_ids,
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            )
+            .exclude(host="")
+            .order_by("id")
+        )
+
     def handle(self, *args, **options):
         from billing.services import customer_receives_internet
 
@@ -66,6 +83,9 @@ class Command(BaseCommand):
         dry_run = bool(options.get("dry_run"))
         blocked = allowed = errors = 0
         hotspot_org_ids: set[int] = set()
+        # NAS routers that blocked at least one PPPoE client — repair captive
+        # redirect rules so any device that dials/connects still pops pay instantly.
+        repair_router_ids: set[int] = set()
 
         for customer in qs:
             receives = customer_receives_internet(customer)
@@ -100,6 +120,9 @@ class Command(BaseCommand):
                 allowed += 1
             else:
                 blocked += 1
+                router_id = getattr(customer, "router_id", None)
+                if router_id:
+                    repair_router_ids.add(router_id)
             if not result.get("ok"):
                 errors += 1
                 err = (result.get("provision") or {}).get("error") or result.get("message")
@@ -116,6 +139,21 @@ class Command(BaseCommand):
                 errors += 1
                 self.stderr.write(
                     self.style.WARNING(f"hotspot {router.host}: {result.get('error')}")
+                )
+
+        for router in self._routers_for_ids(repair_router_ids):
+            repair = repair_router_expired_captive_redirect(router)
+            if repair.get("ok"):
+                self.stdout.write(
+                    f"expired-redirect {router.host}: "
+                    f"{repair.get('message') or 'ok'}"
+                )
+            elif not repair.get("skipped"):
+                errors += 1
+                self.stderr.write(
+                    self.style.WARNING(
+                        f"expired-redirect {router.host}: {repair.get('error')}"
+                    )
                 )
 
         self.stdout.write(

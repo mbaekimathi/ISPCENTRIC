@@ -1,0 +1,27 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Payments links — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  <section class="panel staff-panel stack-gap">
+    <div class="panel-head-row">
+      <div>
+        <h2>Payments links</h2>
+        <p class="panel-sub">Shareable payment and collection links for your clients.</p>
+      </div>
+    </div>
+    <p class="empty">Payments links settings are coming soon.</p>
+    <div class="form-actions stack-gap">
+      <a class="btn btn-ghost" href="{% url 'core:my_account_daraja' %}">Daraja STK Push</a>
+      <a class="btn btn-ghost" href="{% url 'core:my_account_payments' %}">Packages</a>
+    </div>
+  </section>
+{% else %}
+  <section class="panel staff-panel">
+    <p class="empty">No organization settings available.</p>
+  </section>
+{% endif %}
+{% endblock %}

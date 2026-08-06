@@ -1576,7 +1576,8 @@ class ClientSettingsForm(forms.ModelForm):
         }
         help_texts = {
             "landing_register_enabled": (
-                "Show Register and Get started links on the public landing page."
+                "Show Register and Get started on the landing page and allow "
+                "visitors to create a company account."
             ),
             "onboarding_fee_enabled": (
                 "Require STK Push payment before a MikroTik tunnel script can be generated."
@@ -2420,12 +2421,16 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
         fields = [
             "name",
             "equipment_type",
+            "selling_price",
+            "discount_enabled",
+            "discount_price",
+            "image",
         ]
         widgets = {
             "name": forms.TextInput(
                 attrs={
-                    "class": "form-control",
-                    "placeholder": "e.g. MikroTik hAP ax3",
+                    "class": "form-control text-upper",
+                    "placeholder": "e.g. MIKROTIK HAP AX3",
                     "autocomplete": "off",
                     "id": "id_equipment_name",
                 }
@@ -2433,22 +2438,147 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
             "equipment_type": forms.Select(
                 attrs={"class": "form-control", "id": "id_equipment_type"}
             ),
+            "selling_price": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0.00",
+                    "min": "0",
+                    "step": "0.01",
+                    "inputmode": "decimal",
+                    "id": "id_equipment_selling_price",
+                    "data-equipment-price-input": "selling",
+                }
+            ),
+            "discount_enabled": forms.CheckboxInput(
+                attrs={"id": "id_equipment_discount_enabled"}
+            ),
+            "discount_price": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "0.00",
+                    "min": "0",
+                    "step": "0.01",
+                    "inputmode": "decimal",
+                    "id": "id_equipment_discount_price",
+                    "data-equipment-price-input": "discount",
+                }
+            ),
+            "image": forms.FileInput(
+                attrs={
+                    "class": "org-edit-file-input",
+                    "accept": "image/*",
+                    "id": "id_equipment_image",
+                }
+            ),
         }
         labels = {
             "name": "Equipment name",
             "equipment_type": "Type",
+            "selling_price": "Selling price (KES)",
+            "discount_enabled": "Enable discount",
+            "discount_price": "Discount price to sell (KES)",
+            "image": "Equipment image",
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.instance and self.instance.pk:
+        self.fields["image"].required = False
+        self.fields["selling_price"].required = True
+        self.fields["discount_enabled"].required = False
+        self.fields["discount_price"].required = False
+        if self.prefix == "edit" or (self.instance and self.instance.pk):
             self.fields["name"].widget.attrs["id"] = "id_equipment_edit_name"
             self.fields["equipment_type"].widget.attrs["id"] = "id_equipment_edit_type"
+            self.fields["selling_price"].widget.attrs["id"] = (
+                "id_equipment_edit_selling_price"
+            )
+            self.fields["discount_enabled"].widget.attrs["id"] = (
+                "id_equipment_edit_discount_enabled"
+            )
+            self.fields["discount_price"].widget.attrs["id"] = (
+                "id_equipment_edit_discount_price"
+            )
+            self.fields["image"].widget.attrs["id"] = "id_equipment_edit_image"
+
+    def clean_name(self):
+        name = (self.cleaned_data.get("name") or "").strip().upper()
+        if not name:
+            raise forms.ValidationError("Enter an equipment name.")
+        return name
+
+    def clean_selling_price(self):
+        price = self.cleaned_data.get("selling_price")
+        if price is None:
+            raise forms.ValidationError("Enter the selling price.")
+        if price < 0:
+            raise forms.ValidationError("Selling price cannot be negative.")
+        return price
+
+    def clean_discount_price(self):
+        from decimal import Decimal
+
+        amount = self.cleaned_data.get("discount_price")
+        if amount in (None, ""):
+            return Decimal("0")
+        if amount < 0:
+            raise forms.ValidationError("Discount price cannot be negative.")
+        return amount
+
+    def clean(self):
+        from decimal import Decimal
+
+        cleaned = super().clean()
+        enabled = bool(cleaned.get("discount_enabled"))
+        selling = cleaned.get("selling_price")
+        discount_price = cleaned.get("discount_price")
+        if discount_price is None:
+            discount_price = Decimal("0")
+            cleaned["discount_price"] = discount_price
+        if not enabled:
+            cleaned["discount_price"] = Decimal("0")
+            cleaned["discount_amount"] = Decimal("0")
+        elif selling is not None:
+            if discount_price <= 0:
+                self.add_error(
+                    "discount_price",
+                    "Enter the price to sell at after discount.",
+                )
+            elif discount_price > selling:
+                self.add_error(
+                    "discount_price",
+                    "Discount price cannot be higher than the selling price.",
+                )
+            else:
+                cleaned["discount_amount"] = selling - discount_price
+        return cleaned
+
+    def clean_image(self):
+        image = self.cleaned_data.get("image")
+        # Empty upload on edit should keep the current image (FileInput clears otherwise).
+        if image in (None, False):
+            if self.instance and getattr(self.instance, "pk", None) and self.instance.image:
+                return self.instance.image
+            return None
+        content_type = getattr(image, "content_type", "") or ""
+        if content_type and not content_type.startswith("image/"):
+            raise forms.ValidationError("Upload an image file (PNG, JPG, or WebP).")
+        if getattr(image, "size", 0) > 5 * 1024 * 1024:
+            raise forms.ValidationError("Image must be 5 MB or smaller.")
+        return image
 
     def save(self, commit=True, *, created_by=None):
+        from decimal import Decimal
+
         equipment = super().save(commit=False)
         if created_by is not None and not equipment.pk:
             equipment.created_by = created_by
+        if equipment.discount_enabled:
+            selling = equipment.selling_price or Decimal("0")
+            discounted = equipment.discount_price or Decimal("0")
+            equipment.discount_amount = max(selling - discounted, Decimal("0"))
+        else:
+            equipment.discount_price = Decimal("0")
+            equipment.discount_amount = Decimal("0")
         if commit:
             equipment.save()
             self.save_m2m()

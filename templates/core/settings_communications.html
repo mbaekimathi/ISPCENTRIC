@@ -1,0 +1,23 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Communications link — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+
+{% if organization %}
+  <section class="panel staff-panel stack-gap">
+    <div class="panel-head-row">
+      <div>
+        <h2>Communications link</h2>
+        <p class="panel-sub">Phone, WhatsApp, SMS, and other channels clients use to reach you.</p>
+      </div>
+    </div>
+    <p class="empty">Communications link settings are coming soon.</p>
+  </section>
+{% else %}
+  <section class="panel staff-panel">
+    <p class="empty">No organization settings available.</p>
+  </section>
+{% endif %}
+{% endblock %}

@@ -1,3 +1,5 @@
 <a class="{% if current_page == 'dashboard' %}active{% endif %}" href="{% url 'roles:it_support' %}">Dashboard</a>
-<a class="{% if current_page == 'system_settings' %}active{% endif %}" href="{% url 'roles:it_support_system_settings' %}">System settings</a>
+<a class="{% if current_page == 'system_settings' %}active{% endif %}" href="{% url 'roles:it_support_system_settings' %}">Company settings</a>
+<a class="{% if current_page == 'communications' %}active{% endif %}" href="{% url 'roles:it_support_settings_communications' %}">Communications link</a>
+<a class="{% if current_page == 'payments_links' %}active{% endif %}" href="{% url 'roles:it_support_settings_payments' %}">Payments links</a>
 <a class="{% if current_page == 'client_settings' %}active{% endif %}" href="{% url 'roles:it_support_client_settings' %}">Client settings</a>

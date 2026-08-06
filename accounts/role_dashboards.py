@@ -953,6 +953,7 @@ def manager_network_equipment(request):
             )
             edit_form = NetworkEquipmentRegisterForm(
                 request.POST,
+                request.FILES,
                 instance=equipment,
                 prefix="edit",
             )
@@ -995,7 +996,7 @@ def manager_network_equipment(request):
             messages.success(request, f"Deleted “{name}”.")
             return _redirect_equipment()
         else:
-            form = NetworkEquipmentRegisterForm(request.POST)
+            form = NetworkEquipmentRegisterForm(request.POST, request.FILES)
             if form.is_valid():
                 equipment = form.save(created_by=request.user)
                 messages.success(
@@ -1592,10 +1593,34 @@ def it_support_system_settings(request):
     return _it_support_settings_page(
         request,
         current_page="system_settings",
-        page_title="System settings",
+        page_title="Company settings",
         page_kicker="Settings",
-        page_subtitle="Platform-wide preferences. Open Client settings for landing and onboarding controls.",
-        empty_text="Use Client settings in the sidebar to manage landing Register, MikroTik onboarding fees, and referrals.",
+        page_subtitle="Organization and workspace preferences for the platform.",
+        empty_text="Additional company preferences are coming soon. Use Client settings for landing and onboarding controls.",
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_settings_communications(request):
+    return _it_support_settings_page(
+        request,
+        current_page="communications",
+        page_title="Communications link",
+        page_kicker="Settings",
+        page_subtitle="Share and manage the links clients use to reach support channels.",
+        empty_text="Communications link settings are coming soon.",
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_settings_payments(request):
+    return _it_support_settings_page(
+        request,
+        current_page="payments_links",
+        page_title="Payments links",
+        page_kicker="Settings",
+        page_subtitle="Payment portal and collection links for clients.",
+        empty_text="Payments links settings are coming soon.",
     )
 
 

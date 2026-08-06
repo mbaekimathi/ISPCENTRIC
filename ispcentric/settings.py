@@ -88,19 +88,31 @@ elif _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
 else:
     ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
-# Windows/Android/iOS captive-portal probes are DNS-hijacked to the MikroTik
-# gateway, then dst-nat'd to this app. Accept those Host headers.
+# Windows/Android/iOS/OEM captive-portal probes are DNS-hijacked to the MikroTik
+# gateway, then dst-nat'd to this app. Accept those Host headers (keep in sync
+# with ispcentric.middleware.CAPTIVE_PROBE_HOSTS).
 ALLOWED_HOSTS += [
     "www.msftconnecttest.com",
     "msftconnecttest.com",
+    "www.msftncsi.com",
     "dns.msftncsi.com",
+    "ipv6.msftconnecttest.com",
     "connectivitycheck.gstatic.com",
+    "connectivitycheck.android.com",
     "clients3.google.com",
     "captive.apple.com",
     "www.apple.com",
+    "www.appleiphonecell.com",
+    "www.itools.info",
+    "www.ibook.info",
+    "www.airport.us",
+    "www.thinkdifferent.us",
     "detectportal.firefox.com",
+    "network-test.debian.org",
     "neverssl.com",
     "example.com",
+    "connectivitycheck.platform.hicloud.com",
+    "connectivitycheck.platform.hihonorcloud.com",
     "10.10.0.1",
 ]
 

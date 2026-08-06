@@ -1052,6 +1052,39 @@ class NetworkEquipment(models.Model):
         default=EquipmentType.ROUTER,
         db_index=True,
     )
+    image = models.ImageField(
+        "Equipment image",
+        upload_to="equipment/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Optional photo of the equipment item.",
+    )
+    selling_price = models.DecimalField(
+        "Selling price",
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Unit selling price in KES.",
+    )
+    discount_enabled = models.BooleanField(
+        "Enable discount",
+        default=False,
+        help_text="When enabled, the item sells at discount_price instead of selling_price.",
+    )
+    discount_amount = models.DecimalField(
+        "Discount amount",
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Calculated savings in KES (selling price minus discount price).",
+    )
+    discount_price = models.DecimalField(
+        "Discount price",
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Price to sell at when a discount is enabled.",
+    )
     quantity = models.PositiveIntegerField(
         "Stock quantity",
         default=0,
@@ -1090,6 +1123,31 @@ class NetworkEquipment(models.Model):
     @property
     def is_suspended(self) -> bool:
         return self.status == self.Status.SUSPENDED
+
+    @property
+    def effective_price(self):
+        from decimal import Decimal
+
+        if self.discount_enabled:
+            price = self.discount_price or Decimal("0")
+        else:
+            price = self.selling_price or Decimal("0")
+        if price < 0:
+            return Decimal("0")
+        return price
+
+    @property
+    def calculated_discount(self):
+        from decimal import Decimal
+
+        if not self.discount_enabled:
+            return Decimal("0")
+        selling = self.selling_price or Decimal("0")
+        discounted = self.discount_price or Decimal("0")
+        savings = selling - discounted
+        if savings < 0:
+            return Decimal("0")
+        return savings
 
 
 class NetworkEquipmentSerial(models.Model):

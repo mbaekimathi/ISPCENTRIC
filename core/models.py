@@ -122,13 +122,17 @@ class MikroTikRouter(models.Model):
         SINGLE = "single", "Single WAN"
         BOND = "bond", "Bonded uplinks (same provider)"
         FAILOVER = "failover", "Failover (different providers)"
+        BALANCE = "balance", "Load balance (different providers)"
 
     uplink_mode = models.CharField(
         "Uplink mode",
         max_length=16,
         choices=UplinkMode.choices,
         default=UplinkMode.SINGLE,
-        help_text="Single WAN, bond multiple ports to one provider, or failover across providers.",
+        help_text=(
+            "Single WAN, bond multiple ports to one provider, failover across "
+            "providers, or PCC load-balance (equal or weighted by Mbps) across providers."
+        ),
     )
     bond_interface = models.CharField(
         "Bond interface",
@@ -148,6 +152,14 @@ class MikroTikRouter(models.Model):
         default=list,
         blank=True,
         help_text="Ordered port names used for bond (all members) or failover (primary first, then backups).",
+    )
+    uplink_weights = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-port uplink capacity in Mbps for weighted PCC load balance "
+            "(e.g. {\"ether1\": 100, \"ether4\": 20}). Empty means equal share."
+        ),
     )
     uplink_unbridged = models.JSONField(
         default=list,

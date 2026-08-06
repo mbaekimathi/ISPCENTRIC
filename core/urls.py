@@ -246,4 +246,14 @@ urlpatterns = [
     path("app/shop/", views.shop, name="shop"),
     path("app/referrals/", views.referrals, name="referrals"),
     path("app/settings/", views.system_settings, name="system_settings"),
+    path(
+        "app/settings/communications/",
+        views.settings_communications,
+        name="settings_communications",
+    ),
+    path(
+        "app/settings/payments/",
+        views.settings_payments,
+        name="settings_payments",
+    ),
 ]

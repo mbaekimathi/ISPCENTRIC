@@ -9,10 +9,14 @@ from accounts.models import Organization
 from billing.models import BillingPlan, Customer
 from billing.services import (
     apply_subscription_renewal,
+    customer_package_is_paused,
     customer_pppoe_secret_disabled,
     customer_receives_internet,
     customer_subscription_expired,
     generate_account_number_from_phone,
+    package_remaining_seconds,
+    pause_customer_package,
+    resume_customer_package,
     subscription_period_allows,
 )
 
@@ -237,6 +241,95 @@ class PrepaidAccessPolicyTests(TestCase):
             side_effect=localtime_at(end),
         ):
             self.assertFalse(subscription_period_allows(customer))
+
+
+class PackagePauseResumeTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-pause", password="x")
+        self.org = Organization.objects.create(
+            name="Pause ISP",
+            owner=self.owner,
+            join_code="998877",
+            pppoe_compulsory=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Pause",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+
+    def test_pause_blocks_internet_and_freezes_remaining(self):
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Pause Client",
+            phone="254700000030",
+            account_number="PPP-PAUSE",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="pause1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=10),
+            package_end=now + timedelta(minutes=50),
+        )
+        remaining_before = package_remaining_seconds(customer, now=now)
+        pause_customer_package(customer, now=now)
+        customer.refresh_from_db()
+
+        self.assertTrue(customer_package_is_paused(customer))
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertFalse(customer_pppoe_secret_disabled(customer))
+        later = now + timedelta(minutes=20)
+        remaining_while_paused = package_remaining_seconds(customer, now=later)
+        self.assertEqual(remaining_while_paused, remaining_before)
+
+    def test_resume_extends_end_by_pause_duration(self):
+        now = timezone.localtime()
+        original_end = now + timedelta(minutes=40)
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Resume Client",
+            phone="254700000031",
+            account_number="PPP-RESUME",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="resume1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=20),
+            package_end=original_end,
+        )
+        pause_at = now
+        pause_customer_package(customer, now=pause_at)
+        resume_at = pause_at + timedelta(minutes=15)
+        resume_customer_package(customer, now=resume_at)
+        customer.refresh_from_db()
+
+        self.assertFalse(customer_package_is_paused(customer))
+        self.assertEqual(customer.package_end, original_end + timedelta(minutes=15))
+        self.assertTrue(customer_receives_internet(customer))
+
+    def test_cannot_pause_expired_package(self):
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Expired Pause",
+            phone="254700000032",
+            account_number="PPP-EXPIRED-PAUSE",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="expired1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(hours=2),
+            package_end=now - timedelta(minutes=5),
+        )
+        with self.assertRaises(ValueError):
+            pause_customer_package(customer, now=now)
 
 
 class HotspotMacUniquenessTests(TestCase):

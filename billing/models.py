@@ -237,6 +237,15 @@ class Customer(models.Model):
         blank=True,
         help_text="When this client's current package period ends (from plan duration or manual override).",
     )
+    package_paused_at = models.DateTimeField(
+        "Package paused at",
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, the package clock is frozen: surfing is blocked and the "
+            "remaining period is preserved until resume."
+        ),
+    )
     router = models.ForeignKey(
         "core.MikroTikRouter",
         on_delete=models.SET_NULL,

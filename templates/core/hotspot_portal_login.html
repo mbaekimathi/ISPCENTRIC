@@ -748,12 +748,33 @@
       <div class="body">
         {% if dual_access_tabs or portal_mode == "pppoe" and hotspot_option_available or portal_mode == "hotspot" and pppoe_option_available %}
           <div class="access-choice" role="tablist" aria-label="Choose how to reconnect">
+            {% if portal_mode == "pppoe" %}
+            <button
+              type="button"
+              id="choose-pppoe"
+              role="tab"
+              class="is-active"
+              aria-selected="true"
+              aria-controls="panel-pppoe"
+            >
+              Home / PPPoE
+            </button>
             <button
               type="button"
               id="choose-hotspot"
               role="tab"
-              class="{% if portal_mode == 'hotspot' %}is-active{% endif %}"
-              aria-selected="{% if portal_mode == 'hotspot' %}true{% else %}false{% endif %}"
+              aria-selected="false"
+              aria-controls="panel-hotspot"
+            >
+              Hotspot
+            </button>
+            {% else %}
+            <button
+              type="button"
+              id="choose-hotspot"
+              role="tab"
+              class="is-active"
+              aria-selected="true"
               aria-controls="panel-hotspot"
             >
               Hotspot
@@ -762,12 +783,12 @@
               type="button"
               id="choose-pppoe"
               role="tab"
-              class="{% if portal_mode == 'pppoe' %}is-active{% endif %}"
-              aria-selected="{% if portal_mode == 'pppoe' %}true{% else %}false{% endif %}"
+              aria-selected="false"
               aria-controls="panel-pppoe"
             >
               Home / PPPoE
             </button>
+            {% endif %}
           </div>
         {% endif %}
 
@@ -831,11 +852,14 @@
                       data-price="{{ plan.price }}"
                       {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not hsel and forloop.first %}selected{% endif %}
                     >
-                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %} (current){% endif %}
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %} (previous){% endif %}
                     </option>
                   {% endfor %}
                   {% endwith %}
                 </select>
+                {% if hotspot_selected_plan_id %}
+                  <p class="field-hint">Previous package selected — you can choose another</p>
+                {% endif %}
               </div>
               <div class="field">
                 <label for="hotspot-phone">M-Pesa phone number</label>
@@ -907,6 +931,8 @@
                   autocomplete="username"
                   placeholder="Account or 07xxxxxxxx"
                   value="{{ acct }}"
+                  data-pppoe-account
+                  data-join-code="{{ organization.join_code|default:'' }}"
                   {% if pppoe_account_locked and acct %}readonly aria-readonly="true"{% endif %}
                 >
                 {% if pppoe_account_locked and acct %}
@@ -926,11 +952,14 @@
                       data-price="{{ plan.price }}"
                       {% if sel and sel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not sel and forloop.first %}selected{% endif %}
                     >
-                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if sel and sel|stringformat:"s" == plan.pk|stringformat:"s" %} (current){% endif %}
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if sel and sel|stringformat:"s" == plan.pk|stringformat:"s" %} (previous){% endif %}
                     </option>
                   {% endfor %}
                   {% endwith %}
                 </select>
+                {% if pppoe_selected_plan_id|default:selected_plan_id %}
+                  <p class="field-hint">Previous package selected — you can choose another</p>
+                {% endif %}
               </div>
               <div class="field">
                 <label for="pppoe-phone">M-Pesa phone number</label>
@@ -1023,6 +1052,33 @@
 
       hotspotBtn.addEventListener("click", function () { showMode("hotspot"); });
       pppoeBtn.addEventListener("click", function () { showMode("pppoe"); });
+    })();
+  </script>
+
+  <script>
+    (function () {
+      // Remember PPPoE account on this phone so the renew field autofills next time.
+      var input = document.querySelector("[data-pppoe-account]");
+      if (!input || !window.localStorage) return;
+      var join = input.getAttribute("data-join-code") || "";
+      var key = "ispcentric:pppoe_acct:" + join;
+      var locked = input.readOnly || input.getAttribute("aria-readonly") === "true";
+      try {
+        if (!String(input.value || "").trim()) {
+          var saved = localStorage.getItem(key) || "";
+          if (saved) input.value = saved;
+        } else if (!locked) {
+          localStorage.setItem(key, String(input.value).trim());
+        } else {
+          localStorage.setItem(key, String(input.value).trim());
+        }
+      } catch (e) {}
+      input.addEventListener("change", function () {
+        try {
+          var val = String(input.value || "").trim();
+          if (val) localStorage.setItem(key, val);
+        } catch (e) {}
+      });
     })();
   </script>
 

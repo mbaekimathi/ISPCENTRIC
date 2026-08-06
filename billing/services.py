@@ -288,18 +288,110 @@ def customers_needing_renewal_attention(organization):
     return rows
 
 
+def customer_package_is_paused(customer) -> bool:
+    """True when the package clock is frozen and surfing should stay blocked."""
+    return getattr(customer, "package_paused_at", None) is not None
+
+
+def package_remaining_seconds(customer, *, now: datetime | None = None) -> int | None:
+    """
+    Seconds left in the current package window.
+
+    While paused, the clock freezes at ``package_paused_at`` so remaining time
+    does not shrink until the package is resumed.
+    """
+    deadline = subscription_access_deadline(customer)
+    if deadline is None:
+        return None
+    now = now or timezone.localtime()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    else:
+        now = timezone.localtime(now)
+    paused_at = _as_local_datetime(getattr(customer, "package_paused_at", None))
+    reference = paused_at if paused_at is not None else now
+    return int((deadline - reference).total_seconds())
+
+
+def pause_customer_package(customer, *, now: datetime | None = None):
+    """
+    Freeze the package clock and block surfing until resume.
+
+    Remaining time is preserved: on resume, ``package_end`` is extended by the
+    pause duration so the client continues with what they had left.
+    """
+    if customer_package_is_paused(customer):
+        raise ValueError("This package is already paused.")
+    if getattr(customer, "package_end", None) is None:
+        raise ValueError("Set a package period before pausing.")
+    if customer_subscription_expired(customer):
+        raise ValueError("Cannot pause an expired package.")
+    now = now or timezone.localtime()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    else:
+        now = timezone.localtime(now)
+    start = _as_local_datetime(getattr(customer, "package_start", None))
+    if start is not None and now < start:
+        raise ValueError("Cannot pause a package that has not started yet.")
+    customer.package_paused_at = now
+    customer.save(update_fields=["package_paused_at"])
+    return customer
+
+
+def resume_customer_package(customer, *, now: datetime | None = None):
+    """
+    Unfreeze the package clock and restore surfing for the remaining period.
+
+    Extends ``package_end`` by how long the package was paused so the client
+    continues from the time they had left when paused.
+    """
+    paused_at = _as_local_datetime(getattr(customer, "package_paused_at", None))
+    if paused_at is None:
+        raise ValueError("This package is not paused.")
+    now = now or timezone.localtime()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    else:
+        now = timezone.localtime(now)
+    pause_duration = now - paused_at
+    if pause_duration.total_seconds() < 0:
+        pause_duration = timedelta(0)
+    update_fields = ["package_paused_at"]
+    end = _as_local_datetime(getattr(customer, "package_end", None))
+    if end is not None and pause_duration.total_seconds() > 0:
+        customer.package_end = end + pause_duration
+        update_fields.append("package_end")
+    customer.package_paused_at = None
+    customer.save(update_fields=update_fields)
+    return customer
+
+
+def clear_customer_package_pause(customer, *, save: bool = True) -> bool:
+    """Clear a frozen package clock (e.g. after assigning a fresh period)."""
+    if not customer_package_is_paused(customer):
+        return False
+    customer.package_paused_at = None
+    if save:
+        customer.save(update_fields=["package_paused_at"])
+    return True
+
+
 def customer_receives_internet(customer, organization=None, *, today: date | None = None) -> bool:
     """
     Whether this customer is eligible for internet under org + subscription policy.
 
     Blocks when:
     - customer status is not active
+    - package is paused (clock frozen; remaining time preserved)
     - today/now is outside package_start / package_end (when set)
     - Hotspot or PPPoE customer has no purchased period at all
     - PPPoE is compulsory and a non-Hotspot customer is not a registered PPPoE user
     """
     org = organization or getattr(customer, "organization", None)
     if getattr(customer, "status", None) != Customer.Status.ACTIVE:
+        return False
+    if customer_package_is_paused(customer):
         return False
     if customer.service_type in {
         Customer.ServiceType.HOTSPOT,
@@ -417,7 +509,10 @@ def apply_subscription_renewal(customer, *, plan=None):
         raise ValueError("Could not compute the new package end from the plan duration.")
     customer.package_start = access_start
     customer.package_end = end
-    customer.save(update_fields=["package_start", "package_end"])
+    update_fields = ["package_start", "package_end"]
+    if clear_customer_package_pause(customer, save=False):
+        update_fields.append("package_paused_at")
+    customer.save(update_fields=update_fields)
     return customer
 
 

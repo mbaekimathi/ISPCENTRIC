@@ -182,11 +182,35 @@ class EmployeeLoginEnumerationTests(TestCase):
         self.assertNotIn("Invalid login code.", field_errors)
 
 
-@override_settings(ALLOW_PUBLIC_OWNER_REGISTRATION=False, OWNER_REGISTER_INVITE_KEY="")
+@override_settings(OWNER_REGISTER_INVITE_KEY="")
 class OwnerRegisterGateTests(TestCase):
-    def test_public_register_closed(self):
+    def setUp(self):
+        from accounts.models import ClientSettings
+
+        settings_obj = ClientSettings.get_solo()
+        settings_obj.landing_register_enabled = False
+        settings_obj.referral_enabled = False
+        settings_obj.save(
+            update_fields=[
+                "landing_register_enabled",
+                "referral_enabled",
+                "updated_at",
+            ]
+        )
+
+    def test_public_register_closed_when_register_link_off(self):
         response = self.client.get(reverse("accounts:register"))
         self.assertEqual(response.status_code, 403)
+
+    def test_public_register_open_when_register_link_on(self):
+        from accounts.models import ClientSettings
+
+        settings_obj = ClientSettings.get_solo()
+        settings_obj.landing_register_enabled = True
+        settings_obj.save(update_fields=["landing_register_enabled", "updated_at"])
+        response = self.client.get(reverse("accounts:register"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Register company")
 
 
 class AuthRateLimitTests(TestCase):

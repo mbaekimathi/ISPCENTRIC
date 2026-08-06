@@ -28,7 +28,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
 from accounts.forms import HotspotSettingsForm, OrganizationEditForm, OwnerProfileForm, PppoeSettingsForm
-from accounts.models import ClientSettings, Employee, Organization, PaymentGateway
+from accounts.models import (
+    ClientSettings,
+    Employee,
+    NetworkEquipment,
+    Organization,
+    PaymentGateway,
+)
 from accounts.routing import (
     can_access_client_portal,
     can_switch_roles,
@@ -43,13 +49,17 @@ from billing.forms import (
 )
 from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from billing.services import (
+    customer_package_is_paused,
     customer_receives_internet,
     customer_subscription_expired,
     customers_needing_renewal_attention,
     make_renew_token,
+    package_remaining_seconds,
+    pause_customer_package,
     plan_uses_clock_time,
     plans_for_router,
     resolve_lead_allocation_fee,
+    resume_customer_package,
     subscription_access_deadline,
 )
 from billing.stk import (
@@ -78,6 +88,7 @@ from core.mikrotik_connect import (
     apply_mikrotik_access_changes,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
+    apply_mikrotik_uplink_balance,
     apply_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
     apply_hotspot_on_router,
@@ -103,6 +114,7 @@ from core.mikrotik_connect import (
     prepare_customer_cpe_access,
     provision_customer_pppoe,
     read_mikrotik_uplink_multi,
+    build_wan_traffic_share,
     read_mikrotik_wifi,
     recover_mikrotik_connection,
     set_mikrotik_clean_uplink,
@@ -269,7 +281,23 @@ CLIENT_SIDEBARS = {
     },
     "settings": {
         "label": "My system settings",
-        "items": [],
+        "items": [
+            {
+                "key": "company_settings",
+                "label": "Company settings",
+                "url_name": "core:system_settings",
+            },
+            {
+                "key": "communications",
+                "label": "Communications link",
+                "url_name": "core:settings_communications",
+            },
+            {
+                "key": "payments_links",
+                "label": "Payments links",
+                "url_name": "core:settings_payments",
+            },
+        ],
     },
 }
 
@@ -524,7 +552,10 @@ def resolve_port_role(router: MikroTikRouter, port_name: str) -> str:
 
     if mode == MikroTikRouter.UplinkMode.BOND and port_name in uplink_ports:
         return MikroTikRouter.PortRole.BOND
-    if mode == MikroTikRouter.UplinkMode.FAILOVER and uplink_ports:
+    if mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        MikroTikRouter.UplinkMode.BALANCE,
+    } and uplink_ports:
         if port_name == uplink_ports[0]:
             return MikroTikRouter.PortRole.WAN
         if port_name in uplink_ports[1:]:
@@ -561,7 +592,10 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
 
     primary = ""
     secondary = ""
-    if mode == MikroTikRouter.UplinkMode.FAILOVER and uplink_ports:
+    if mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        MikroTikRouter.UplinkMode.BALANCE,
+    } and uplink_ports:
         primary = uplink_ports[0]
         if len(uplink_ports) > 1:
             secondary = uplink_ports[1]
@@ -592,7 +626,11 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
             {
                 "role": "primary",
                 "interface": primary,
-                "label": f"Primary WAN · {primary}",
+                "label": (
+                    f"Balanced WAN · {primary}"
+                    if mode == MikroTikRouter.UplinkMode.BALANCE
+                    else f"Primary WAN · {primary}"
+                ),
             }
         )
     if secondary and secondary != primary:
@@ -600,7 +638,11 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
             {
                 "role": "secondary",
                 "interface": secondary,
-                "label": f"Secondary WAN · {secondary}",
+                "label": (
+                    f"Balanced WAN · {secondary}"
+                    if mode == MikroTikRouter.UplinkMode.BALANCE
+                    else f"Secondary WAN · {secondary}"
+                ),
             }
         )
     return ports
@@ -785,7 +827,10 @@ def _sync_roles_for_uplink(
     if mode == MikroTikRouter.UplinkMode.BOND:
         for name in ports:
             roles[name] = MikroTikRouter.PortRole.BOND
-    elif mode == MikroTikRouter.UplinkMode.FAILOVER and ports:
+    elif mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        MikroTikRouter.UplinkMode.BALANCE,
+    } and ports:
         roles[ports[0]] = MikroTikRouter.PortRole.WAN
         for name in ports[1:]:
             roles[name] = MikroTikRouter.PortRole.WAN_BACKUP
@@ -2251,6 +2296,81 @@ def mikrotik_ports(request, router_id: int):
             messages.success(request, result.get("message") or "Failover uplinks applied.")
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
+        if action == "apply_balance":
+            primary, backups = _failover_ports_from_roles(router)
+            if not primary:
+                messages.error(
+                    request,
+                    "Assign WAN / Internet to one port in the table above.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+            if not backups:
+                messages.error(
+                    request,
+                    "Assign Backup internet to at least one other port for load balance.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            ordered = [primary, *backups]
+            weights: dict[str, int] = {}
+            for name in ordered:
+                raw = (request.POST.get(f"weight_{name}") or "").strip()
+                if not raw:
+                    continue
+                try:
+                    weights[name] = max(1, min(10000, int(raw)))
+                except (TypeError, ValueError):
+                    continue
+            if len(weights) < len(ordered):
+                for name in ordered:
+                    weights.setdefault(name, 100)
+
+            result = apply_mikrotik_uplink_balance(
+                router.host,
+                router.username,
+                router.password or "",
+                member_ports=ordered,
+                member_weights=weights,
+            )
+            cache.delete_many(
+                [
+                    f"mikrotik_live:{org.pk}:{router.pk}",
+                    f"mikrotik_ports_live:{org.pk}:{router.pk}",
+                ]
+            )
+            if not result.get("ok"):
+                messages.error(
+                    request,
+                    result.get("error") or "Could not apply load-balance uplinks.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            ordered = result.get("ports") or ordered
+            router.uplink_mode = MikroTikRouter.UplinkMode.BALANCE
+            router.uplink_ports = ordered
+            router.uplink_weights = result.get("weights") or weights
+            router.wan_interface = result.get("wan_interface") or primary
+            router.uplink_unbridged = result.get("unbridged") or []
+            router.port_roles = _sync_roles_for_uplink(
+                router, mode=MikroTikRouter.UplinkMode.BALANCE, ports=ordered
+            )
+            router.save(
+                update_fields=[
+                    "uplink_mode",
+                    "uplink_ports",
+                    "uplink_weights",
+                    "wan_interface",
+                    "uplink_unbridged",
+                    "port_roles",
+                    "updated_at",
+                ]
+            )
+            messages.success(
+                request,
+                result.get("message") or "Load-balance uplinks applied.",
+            )
+            return redirect("core:mikrotik_ports", router_id=router.pk)
+
         if action == "clear_multi_uplink":
             restore = (
                 list(router.uplink_unbridged)
@@ -2294,6 +2414,7 @@ def mikrotik_ports(request, router_id: int):
                 single_wan = members[0] if members else "ether1"
             router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
             router.uplink_ports = [single_wan] if single_wan else []
+            router.uplink_weights = {}
             router.wan_interface = single_wan or "ether1"
             router.uplink_unbridged = []
             router.port_roles = _sync_roles_for_uplink(
@@ -2305,6 +2426,7 @@ def mikrotik_ports(request, router_id: int):
                 update_fields=[
                     "uplink_mode",
                     "uplink_ports",
+                    "uplink_weights",
                     "wan_interface",
                     "uplink_unbridged",
                     "port_roles",
@@ -2313,7 +2435,7 @@ def mikrotik_ports(request, router_id: int):
             )
             messages.success(
                 request,
-                result.get("message") or "Bonded / failover uplink settings cleared.",
+                result.get("message") or "Bonded / failover / balance uplink settings cleared.",
             )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
@@ -2377,6 +2499,7 @@ def mikrotik_ports(request, router_id: int):
         unassigned_ports=unassigned_ports,
         can_apply_bond=can_apply_bond,
         can_apply_failover=can_apply_failover,
+        can_apply_balance=False,
         uplink_mode=uplink_mode,
         uplink_mode_label=dict(MikroTikRouter.UplinkMode.choices).get(
             uplink_mode, "Single WAN"
@@ -2615,6 +2738,47 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
     ]
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
 
+    # Live % share across multi-WAN ports — from rx/tx counters already on
+    # the ports list (no third API session). Prefer byte-delta rate when a
+    # recent snapshot exists; otherwise cumulative bytes.
+    wan_share: dict = {"ok": False, "shares": [], "total_bps": 0}
+    share_ports = [
+        str(p).strip()
+        for p in (list(primary_wan_ports) + list(backup_wan_ports))
+        if str(p).strip()
+    ]
+    if len(share_ports) >= 2 and uplink_mode in {
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.FAILOVER,
+    }:
+        by_name = {p.get("name"): p for p in physical_ports}
+        samples = []
+        for name in share_ports:
+            row = by_name.get(name) or {}
+            traffic = (
+                (row.get("traffic_iface") or "").strip()
+                or (row.get("uplink_iface") or "").strip()
+                or name
+            )
+            samples.append(
+                {
+                    "name": name,
+                    "monitor": traffic,
+                    "rx_byte": row.get("rx_byte") or 0,
+                    "tx_byte": row.get("tx_byte") or 0,
+                }
+            )
+        try:
+            share_cache_key = f"mikrotik_wan_bytes:{router.pk}"
+            previous = cache.get(share_cache_key)
+            wan_share, next_state = build_wan_traffic_share(
+                samples, previous=previous if isinstance(previous, dict) else None
+            )
+            if next_state:
+                cache.set(share_cache_key, next_state, 90)
+        except Exception:
+            wan_share = {"ok": False, "shares": [], "total_bps": 0}
+
     return {
         "ok": True,
         "ports": ports,
@@ -2627,6 +2791,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
             else ""
         ),
         "uplink_live": uplink_live if uplink_live.get("ok") else {},
+        "wan_share": wan_share if wan_share.get("ok") else {"ok": False, "shares": [], "total_bps": 0},
         "bond_member_ports": bond_member_ports,
         "primary_wan_ports": primary_wan_ports,
         "backup_wan_ports": backup_wan_ports,
@@ -2635,6 +2800,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "unassigned_ports": unassigned_ports,
         "can_apply_bond": len(bond_member_ports) >= 2,
         "can_apply_failover": len(primary_wan_ports) == 1 and len(backup_wan_ports) >= 1,
+        "can_apply_balance": len(primary_wan_ports) == 1 and len(backup_wan_ports) >= 1,
         "uplink_mode": uplink_mode,
         "uplink_mode_label": dict(MikroTikRouter.UplinkMode.choices).get(
             uplink_mode, "Single WAN"
@@ -2643,6 +2809,11 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "bond_interface": router.bond_interface or "",
         "bond_mode": router.bond_mode or "",
         "uplink_ports": list(router.uplink_ports or []),
+        "uplink_weights": (
+            dict(router.uplink_weights)
+            if isinstance(router.uplink_weights, dict)
+            else {}
+        ),
         "failover_backup_label": ", ".join(
             str(p).strip() for p in (router.uplink_ports or [])[1:] if str(p).strip()
         ),
@@ -3282,10 +3453,24 @@ def mikrotik_tunnel_status(request):
         )
         via = probe.get("via") or ""
         api_enabled = bool(probe.get("online") and via == "api")
+        from core.hotspot_portal import local_ipv4_shares_subnet
+
+        same_subnet, local_ip = (
+            local_ipv4_shares_subnet(lan_address) if lan_address else (False, "")
+        )
+        subnet_mismatch = bool(lan_address and local_ip and not same_subnet and not api_enabled)
         if api_enabled:
             message = (
                 f"Local mode ready — MikroTik API is available at {lan_address}:8728. "
                 "Enter the router username and password, then press Connect."
+            )
+        elif subnet_mismatch:
+            message = (
+                f"Found the MikroTik at {lan_address}, but this computer is on "
+                f"{local_ip} (different subnet), so API port 8728 cannot open. "
+                f"Give this PC an address on the same LAN (for example "
+                f"{'.'.join(lan_address.split('.')[:3])}.10), or change the "
+                f"MikroTik LAN IP to match {local_ip.rsplit('.', 1)[0]}.x, then click Check now."
             )
         elif lan_address:
             message = (
@@ -3315,6 +3500,8 @@ def mikrotik_tunnel_status(request):
                 "no_tunnel_route": True,
                 "local_mode": True,
                 "lan_address": lan_address,
+                "local_ip": local_ip,
+                "subnet_mismatch": subnet_mismatch,
                 "local_devices": [
                     {
                         "host": device.get("host") or "",
@@ -3833,6 +4020,7 @@ def client_detail(request, customer_id: int):
 
         allowed = customer_receives_internet(customer)
         expired = customer_subscription_expired(customer)
+        paused = customer_package_is_paused(customer)
         is_hourly = bool(
             customer.plan_id
             and getattr(customer.plan, "duration", "") in ("hourly", "six_hours")
@@ -3843,6 +4031,21 @@ def client_detail(request, customer_id: int):
                 return ""
             local = dj_tz.localtime(value)
             return local.strftime("%H:%M") if is_hourly else local.strftime("%Y-%m-%d")
+
+        remaining_seconds = package_remaining_seconds(customer)
+        remaining_label = ""
+        if remaining_seconds is not None:
+            if remaining_seconds <= 0:
+                remaining_label = "Ended"
+            else:
+                hours, rem = divmod(remaining_seconds, 3600)
+                minutes, seconds = divmod(rem, 60)
+                if hours:
+                    remaining_label = f"{hours}h {minutes}m"
+                elif minutes:
+                    remaining_label = f"{minutes}m {seconds}s"
+                else:
+                    remaining_label = f"{seconds}s"
 
         return JsonResponse({
             "ok": True,
@@ -3855,7 +4058,22 @@ def client_detail(request, customer_id: int):
             "package_duration": getattr(customer.plan, "duration", "") if customer.plan_id else "",
             "subscription_active": allowed,
             "subscription_expired": expired,
+            "subscription_paused": paused,
+            "package_paused_at": (
+                dj_tz.localtime(customer.package_paused_at).isoformat()
+                if customer.package_paused_at
+                else ""
+            ),
+            "remaining_seconds": remaining_seconds,
+            "remaining_label": remaining_label,
             "syncing": provision,
+            "can_pause_package": bool(
+                customer.package_end
+                and not paused
+                and not expired
+                and customer.status == Customer.Status.ACTIVE
+            ),
+            "can_resume_package": paused,
         })
 
     if request.method == "POST":
@@ -3971,6 +4189,38 @@ def client_detail(request, customer_id: int):
                 return JsonResponse({"ok": False, "errors": errors}, status=400)
             open_client_modal = "client-package-modal"
 
+        if action in ("pause_package", "resume_package"):
+            try:
+                if action == "pause_package":
+                    pause_customer_package(customer)
+                    msg = (
+                        "Package paused. Surfing is blocked and the remaining "
+                        "period is frozen until you resume."
+                    )
+                else:
+                    resume_customer_package(customer)
+                    msg = (
+                        "Package resumed. The client continues with the time "
+                        "left when the package was paused."
+                    )
+            except ValueError as exc:
+                if is_ajax:
+                    return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+                messages.error(request, str(exc))
+                return redirect("core:client_detail", customer_id=customer.pk)
+
+            customer.refresh_from_db()
+            provision = bool(customer.pppoe_username and customer.router_id)
+            _enqueue_subscription_sync(customer.pk, provision)
+            if is_ajax:
+                return _package_json_response(
+                    customer,
+                    message=msg,
+                    provision=provision,
+                )
+            messages.success(request, msg)
+            return redirect("core:client_detail", customer_id=customer.pk)
+
 
     ctx = client_page_context(
         request,
@@ -4010,6 +4260,14 @@ def client_detail(request, customer_id: int):
         ),
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),
+        subscription_paused=customer_package_is_paused(customer),
+        can_pause_package=bool(
+            customer.package_end
+            and not customer_package_is_paused(customer)
+            and not customer_subscription_expired(customer)
+            and customer.status == Customer.Status.ACTIVE
+        ),
+        can_resume_package=customer_package_is_paused(customer),
         renew_url=(
             request.build_absolute_uri(
                 reverse("billing:subscription_renew", args=[make_renew_token(customer)])
@@ -4897,8 +5155,10 @@ def client_subscription(request, customer_id: int):
     from django.utils.formats import date_format
 
     from billing.services import (
+        customer_package_is_paused,
         customer_receives_internet,
         customer_subscription_expired,
+        package_remaining_seconds,
     )
 
     org = resolve_organization(request.user, request)
@@ -4913,6 +5173,7 @@ def client_subscription(request, customer_id: int):
 
     allowed = customer_receives_internet(customer)
     expired = customer_subscription_expired(customer)
+    paused = customer_package_is_paused(customer)
     duration = getattr(customer.plan, "duration", "") or ""
     is_hourly = duration in ("hourly", "six_hours")
     now = dj_tz.localtime()
@@ -4926,11 +5187,9 @@ def client_subscription(request, customer_id: int):
     def _iso(value):
         return dj_tz.localtime(value).isoformat() if value else ""
 
-    remaining_seconds = None
+    remaining_seconds = package_remaining_seconds(customer, now=now)
     remaining_label = ""
-    if customer.package_end:
-        end = dj_tz.localtime(customer.package_end)
-        remaining_seconds = int((end - now).total_seconds())
+    if remaining_seconds is not None:
         if remaining_seconds <= 0:
             remaining_label = "Ended"
         else:
@@ -4966,8 +5225,17 @@ def client_subscription(request, customer_id: int):
             "package_duration": duration,
             "subscription_active": allowed,
             "subscription_expired": expired,
+            "subscription_paused": paused,
+            "package_paused_at": _iso(customer.package_paused_at),
             "remaining_seconds": remaining_seconds,
             "remaining_label": remaining_label,
+            "can_pause_package": bool(
+                customer.package_end
+                and not paused
+                and not expired
+                and customer.status == Customer.Status.ACTIVE
+            ),
+            "can_resume_package": paused,
             "sync": sync_result,
         }
     )
@@ -6205,21 +6473,107 @@ def _find_hotspot_customer_for_mac(org, mac: str):
 
 
 def _ensure_customer_plan_in_list(org, plans, customer):
-    """Keep the customer's current package selectable even if filtered out."""
-    plans = list(plans or [])
-    current_plan_id = getattr(customer, "plan_id", None) if customer else None
-    if not current_plan_id or any(p.pk == current_plan_id for p in plans):
-        return plans
-    current_plan = (
-        BillingPlan.objects.filter(
-            pk=current_plan_id,
-            organization=org,
-            is_active=True,
-        ).first()
-    )
-    if current_plan is not None:
-        plans.insert(0, current_plan)
+    """
+    Keep the customer's previous package selectable and first in the list.
+
+    Returns the plan list only (callers that also need the selected id should
+    use ``_plans_with_customer_default``).
+    """
+    plans, _selected = _plans_with_customer_default(org, plans, customer)
     return plans
+
+
+def _plans_with_customer_default(org, plans, customer):
+    """
+    Put the customer's previous package first and report which id to pre-select.
+
+    Inactive previous packages stay available for renew when no active twin
+    exists; otherwise the matching active twin is preferred so payment works.
+    """
+    plans = list(plans or [])
+    if customer is None:
+        return plans, None
+    current_plan_id = getattr(customer, "plan_id", None)
+    if not current_plan_id:
+        return plans, None
+
+    def _move_front(plan_id: int) -> bool:
+        for index, plan in enumerate(plans):
+            if plan.pk == plan_id:
+                if index:
+                    plans.insert(0, plans.pop(index))
+                return True
+        return False
+
+    if _move_front(current_plan_id):
+        return plans, current_plan_id
+
+    current = BillingPlan.objects.filter(
+        pk=current_plan_id, organization=org
+    ).first()
+    if current is None:
+        return plans, None
+
+    chosen = current
+    if not current.is_active:
+        twin = (
+            BillingPlan.objects.filter(
+                organization=org,
+                is_active=True,
+                service_type=current.service_type,
+                name=current.name,
+            )
+            .order_by("id")
+            .first()
+        )
+        if twin is None:
+            twin = (
+                BillingPlan.objects.filter(
+                    organization=org,
+                    is_active=True,
+                    service_type=current.service_type,
+                    price=current.price,
+                    download_speed_mbps=current.download_speed_mbps,
+                    upload_speed_mbps=current.upload_speed_mbps,
+                )
+                .order_by("id")
+                .first()
+            )
+        if twin is not None:
+            chosen = twin
+
+    if _move_front(chosen.pk):
+        return plans, chosen.pk
+    plans.insert(0, chosen)
+    return plans, chosen.pk
+
+
+def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
+    """
+    Load a plan the customer may pay for.
+
+    Active packages are always allowed. The customer's own previous package is
+    also allowed even if staff deactivated it, so renew keeps working.
+    """
+    try:
+        plan_pk = int(plan_id)
+    except (TypeError, ValueError):
+        return None
+    plan = (
+        BillingPlan.objects.filter(
+            pk=plan_pk,
+            organization=org,
+            service_type=service_type,
+        )
+        .first()
+    )
+    if plan is None:
+        return None
+    if plan.is_active:
+        return plan
+    if customer is not None and getattr(customer, "plan_id", None) == plan.pk:
+        return plan
+    return None
 
 
 def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
@@ -6275,13 +6629,17 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
             org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT
         )[:8]
     )
-    hotspot_plans = _ensure_customer_plan_in_list(org, hotspot_plans, hotspot_customer)
+    hotspot_plans, hotspot_selected_plan_id = _plans_with_customer_default(
+        org, hotspot_plans, hotspot_customer
+    )
     pppoe_plans = list(
         plans_for_router(
             org, None, service_type=BillingPlan.ServiceType.PPPOE
         )[:8]
     )
-    pppoe_plans = _ensure_customer_plan_in_list(org, pppoe_plans, pppoe_customer)
+    pppoe_plans, pppoe_selected_plan_id = _plans_with_customer_default(
+        org, pppoe_plans, pppoe_customer
+    )
     plans = hotspot_plans
     has_payable_plans = bool(hotspot_plans or pppoe_plans)
 
@@ -6354,9 +6712,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         if pppoe_customer
         else "",
         "pppoe_phone_value": pppoe_phone,
-        "pppoe_selected_plan_id": getattr(pppoe_customer, "plan_id", None)
-        if pppoe_customer
-        else None,
+        "pppoe_selected_plan_id": pppoe_selected_plan_id,
         "pppoe_package_end": getattr(pppoe_customer, "package_end", None)
         if pppoe_customer
         else None,
@@ -6380,13 +6736,9 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         if pppoe_customer
         else (getattr(hotspot_customer, "account_number", "") if hotspot_customer else ""),
         "phone_value": pppoe_phone or hotspot_phone,
-        "selected_plan_id": (
-            getattr(pppoe_customer, "plan_id", None)
-            if pppoe_customer
-            else getattr(hotspot_customer, "plan_id", None)
-            if hotspot_customer
-            else None
-        ),
+        "selected_plan_id": pppoe_selected_plan_id
+        if pppoe_customer
+        else hotspot_selected_plan_id,
         "package_end": (
             getattr(pppoe_customer, "package_end", None)
             if pppoe_customer
@@ -6397,9 +6749,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "identify_error": "",
         "dual_access_tabs": bool(pppoe_option_available),
         "hotspot_phone_value": hotspot_phone,
-        "hotspot_selected_plan_id": getattr(hotspot_customer, "plan_id", None)
-        if hotspot_customer
-        else None,
+        "hotspot_selected_plan_id": hotspot_selected_plan_id,
     }
 
 
@@ -6475,6 +6825,26 @@ def _set_pppoe_account_cookie(response, token: str):
     return response
 
 
+def _set_pppoe_account_hint_cookie(response, account_number: str):
+    """
+    Remember the account number on this browser for the next renew visit.
+
+    Readable by the page so the field can autofill even when the signed token
+    cookie is missing and the PPP IP could not be matched yet.
+    """
+    account_number = (account_number or "").strip()
+    if not account_number or response is None:
+        return response
+    response.set_cookie(
+        "pppoe_acct",
+        account_number[:64],
+        max_age=60 * 60 * 24 * 30,
+        samesite="Lax",
+        httponly=False,
+    )
+    return response
+
+
 def _make_pppoe_customer_token(org, customer) -> str:
     if customer is None or org is None:
         return ""
@@ -6498,13 +6868,26 @@ def hotspot_payment_start(request, join_code: str):
             status=400,
         )
 
-    plan = get_object_or_404(
-        BillingPlan,
-        pk=request.POST.get("plan_id"),
-        organization=org,
-        is_active=True,
-        service_type=BillingPlan.ServiceType.HOTSPOT,
+    existing_hotspot = (
+        Customer.objects.filter(
+            organization=org,
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac=mac,
+        )
+        .order_by("id")
+        .first()
     )
+    plan = _resolve_payable_plan(
+        org,
+        plan_id=request.POST.get("plan_id"),
+        service_type=BillingPlan.ServiceType.HOTSPOT,
+        customer=existing_hotspot,
+    )
+    if plan is None:
+        return JsonResponse(
+            {"ok": False, "error": "That package is not available."},
+            status=404,
+        )
     phone = (request.POST.get("phone") or "").strip()
     active_routers = MikroTikRouter.objects.filter(
         organization=org,
@@ -6772,7 +7155,16 @@ def hotspot_pay(request, join_code: str):
     org = get_object_or_404(Organization, join_code=join_code)
     context = _hotspot_portal_context(org, mikrotik_login=False, request=request)
     response = render(request, "core/hotspot_portal_login.html", context)
-    return _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
+    response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
+    token = (context.get("pppoe_customer_token") or context.get("customer_token") or "").strip()
+    account = (
+        context.get("pppoe_account_number") or context.get("account_number") or ""
+    ).strip()
+    if token:
+        response = _set_pppoe_account_cookie(response, token)
+    if account and context.get("portal_mode") == "pppoe":
+        response = _set_pppoe_account_hint_cookie(response, account)
+    return response
 
 
 def _pppoe_portal_context(org, request, customer=None, identify_error: str = ""):
@@ -6787,7 +7179,9 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
             org, customer_router, service_type=BillingPlan.ServiceType.PPPOE
         )[:8]
     )
-    pppoe_plans = _ensure_customer_plan_in_list(org, pppoe_plans, customer)
+    pppoe_plans, pppoe_selected_plan_id = _plans_with_customer_default(
+        org, pppoe_plans, customer
+    )
     hotspot_plans = list(
         plans_for_router(
             org, None, service_type=BillingPlan.ServiceType.HOTSPOT
@@ -6799,7 +7193,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     if request is not None:
         hotspot_mac = _resolve_request_hotspot_mac(org, request)
     hotspot_customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
-    hotspot_plans = _ensure_customer_plan_in_list(
+    hotspot_plans, hotspot_selected_plan_id = _plans_with_customer_default(
         org, hotspot_plans, hotspot_customer
     )
     plans = pppoe_plans
@@ -6831,10 +7225,12 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         reverse("core:hotspot_payment_start", kwargs={"join_code": org.join_code}),
         request,
     )
-    # Known PPPoE client → PPPoE tab; otherwise start on Hotspot when available.
-    if customer is not None:
-        portal_mode = "pppoe"
-    elif hotspot_option_available and hotspot_plans:
+    # This page is the PPPoE renew entry — always open on Home / PPPoE first.
+    # Hotspot remains available as the second tab when the ISP enables it.
+    tab_q = ""
+    if request is not None:
+        tab_q = (request.GET.get("tab") or "").strip().lower()
+    if tab_q == "hotspot" and hotspot_option_available and hotspot_plans:
         portal_mode = "hotspot"
     else:
         portal_mode = "pppoe"
@@ -6869,7 +7265,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "account_number": getattr(customer, "account_number", "") if customer else "",
         "package_end": getattr(customer, "package_end", None) if customer else None,
         "phone_value": phone_value,
-        "selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
+        "selected_plan_id": pppoe_selected_plan_id,
         "payment_start_url": pppoe_start,
         "pppoe_payment_start_url": pppoe_start,
         "hotspot_payment_start_url": hotspot_start,
@@ -6880,7 +7276,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "mikrotik_login": False,
         "hotspot_option_available": hotspot_option_available,
         "hotspot_ssids": hotspot_ssids,
-        "pppoe_option_available": False,
+        "pppoe_option_available": True,
         "pppoe_pay_url": "",
         "pppoe_require_account_lookup": customer is None,
         "pppoe_account_locked": customer is not None,
@@ -6888,14 +7284,12 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "pppoe_customer_name": getattr(customer, "full_name", "") if customer else "",
         "pppoe_account_number": getattr(customer, "account_number", "") if customer else "",
         "pppoe_phone_value": phone_value,
-        "pppoe_selected_plan_id": getattr(customer, "plan_id", None) if customer else None,
+        "pppoe_selected_plan_id": pppoe_selected_plan_id,
         "pppoe_package_end": getattr(customer, "package_end", None) if customer else None,
         "pppoe_identify_error": identify_error,
         "dual_access_tabs": hotspot_option_available,
         "hotspot_phone_value": hotspot_phone,
-        "hotspot_selected_plan_id": getattr(hotspot_customer, "plan_id", None)
-        if hotspot_customer
-        else None,
+        "hotspot_selected_plan_id": hotspot_selected_plan_id,
     }
 
 
@@ -6929,7 +7323,7 @@ def _find_pppoe_customer_from_token(org, token: str):
 
 
 def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = ""):
-    """Resolve a PPPoE customer by account number or phone when IP match fails."""
+    """Resolve a PPPoE customer by account number, username, or phone when IP match fails."""
     from billing.services import normalize_kenya_msisdn
 
     account_number = (account_number or "").strip()
@@ -6960,6 +7354,12 @@ def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = 
         match = qs.filter(account_number__iexact=account_number).order_by("id").first()
         if match is not None:
             return match
+        # PPPoE username is often the same as the account / phone on the CPE.
+        match = (
+            qs.filter(pppoe_username__iexact=account_number).order_by("id").first()
+        )
+        if match is not None:
+            return match
         # Allow phone typed into the account field.
         match = match_by_phone(account_number)
         if match is not None:
@@ -6985,6 +7385,12 @@ def pppoe_pay(request, join_code: str):
             org, request.COOKIES.get("pppoe_pay") or ""
         )
     if customer is None:
+        # Soft account hint cookie (set on a previous successful match).
+        customer = _find_pppoe_customer_for_pay(
+            org,
+            account_number=request.COOKIES.get("pppoe_acct") or "",
+        )
+    if customer is None:
         # Staff / shared renew links can pass account or phone in the query.
         customer = _find_pppoe_customer_for_pay(
             org,
@@ -7004,6 +7410,9 @@ def pppoe_pay(request, join_code: str):
     if customer is not None:
         response = _set_pppoe_account_cookie(
             response, context.get("customer_token") or ""
+        )
+        response = _set_pppoe_account_hint_cookie(
+            response, getattr(customer, "account_number", "") or ""
         )
         if remote:
             try:
@@ -7077,13 +7486,17 @@ def pppoe_payment_start(request, join_code: str):
             },
             status=403,
         )
-    plan = get_object_or_404(
-        BillingPlan,
-        pk=request.POST.get("plan_id"),
-        organization=org,
-        is_active=True,
+    plan = _resolve_payable_plan(
+        org,
+        plan_id=request.POST.get("plan_id"),
         service_type=BillingPlan.ServiceType.PPPOE,
+        customer=customer,
     )
+    if plan is None:
+        return JsonResponse(
+            {"ok": False, "error": "That package is not available."},
+            status=404,
+        )
     if customer.router_id and not plan.is_available_on_router(customer.router):
         return JsonResponse(
             {
@@ -7842,6 +8255,70 @@ def technicians(request):
 
 @client_workspace_required
 def shop(request):
+    """Ecommerce-style catalog of active network equipment."""
+    q = (request.GET.get("q") or "").strip()
+    category = (request.GET.get("type") or "all").strip().lower()
+    valid_types = {choice[0] for choice in NetworkEquipment.EquipmentType.choices}
+    if category not in valid_types and category != "all":
+        category = "all"
+
+    equipment_qs = NetworkEquipment.objects.filter(
+        status=NetworkEquipment.Status.ACTIVE,
+    ).order_by("equipment_type", "name", "id")
+    if q:
+        equipment_qs = equipment_qs.filter(
+            Q(name__icontains=q) | Q(equipment_type__icontains=q)
+        )
+
+    equipment_list = list(equipment_qs[:300])
+    grouped = {key: [] for key, _label in NetworkEquipment.EquipmentType.choices}
+    for item in equipment_list:
+        grouped.setdefault(item.equipment_type, []).append(item)
+
+    category_rows = []
+    for key, label in NetworkEquipment.EquipmentType.choices:
+        items = grouped.get(key) or []
+        if not items:
+            continue
+        if category != "all" and key != category:
+            continue
+        category_rows.append(
+            {
+                "key": key,
+                "label": label,
+                "items": items,
+                "count": len(items),
+            }
+        )
+
+    type_counts = {
+        row["equipment_type"]: row["total"]
+        for row in (
+            NetworkEquipment.objects.filter(status=NetworkEquipment.Status.ACTIVE)
+            .values("equipment_type")
+            .annotate(total=Count("id"))
+        )
+    }
+    categories = [
+        {
+            "key": key,
+            "label": label,
+            "count": type_counts.get(key, 0),
+        }
+        for key, label in NetworkEquipment.EquipmentType.choices
+        if type_counts.get(key, 0)
+    ]
+    catalog_stats = NetworkEquipment.objects.filter(
+        status=NetworkEquipment.Status.ACTIVE
+    ).aggregate(
+        total=Count("id"),
+        in_stock=Count("id", filter=Q(quantity__gt=0)),
+        on_sale=Count(
+            "id",
+            filter=Q(discount_enabled=True, discount_price__gt=0),
+        ),
+    )
+
     return render(
         request,
         "core/shop.html",
@@ -7850,9 +8327,15 @@ def shop(request):
             active_nav="shop",
             page_title="Shop",
             page_kicker="Shop",
-            page_subtitle="Browse and purchase products for your network.",
-            empty_title="Shop",
-            empty_text="No products available yet.",
+            page_subtitle="Browse network equipment for installs and upgrades.",
+            category_rows=category_rows,
+            equipment_count=sum(row["count"] for row in category_rows),
+            categories=categories,
+            active_category=category,
+            shop_query=q,
+            in_stock_count=catalog_stats["in_stock"] or 0,
+            on_sale_count=catalog_stats["on_sale"] or 0,
+            total_active=catalog_stats["total"] or 0,
         ),
     )
 
@@ -7934,8 +8417,41 @@ def system_settings(request):
         client_page_context(
             request,
             active_nav="settings",
-            page_title="My system settings",
+            sidebar_active="company_settings",
+            page_title="Company settings",
             page_kicker="Settings",
             page_subtitle="Organization status, join code, and workspace preferences.",
+        ),
+    )
+
+
+@client_workspace_required
+def settings_communications(request):
+    return render(
+        request,
+        "core/settings_communications.html",
+        client_page_context(
+            request,
+            active_nav="settings",
+            sidebar_active="communications",
+            page_title="Communications link",
+            page_kicker="Settings",
+            page_subtitle="Share and manage the links clients use to reach your support channels.",
+        ),
+    )
+
+
+@client_workspace_required
+def settings_payments(request):
+    return render(
+        request,
+        "core/settings_payments.html",
+        client_page_context(
+            request,
+            active_nav="settings",
+            sidebar_active="payments_links",
+            page_title="Payments links",
+            page_kicker="Settings",
+            page_subtitle="Payment portal and collection links for your clients.",
         ),
     )

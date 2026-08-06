@@ -150,6 +150,10 @@ class WireGuardKeyTests(SimpleTestCase):
 
         lines = latest_script.splitlines()
         cleanup_lines = [
+            ':do { /system script remove [find where name~"ispcentric"] } on-error={}',
+            ':do { /system script remove [find where comment~"ispcentric"] } on-error={}',
+            ':do { /system scheduler remove [find where name~"ispcentric"] } on-error={}',
+            ':do { /system scheduler remove [find where comment~"ispcentric"] } on-error={}',
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
             ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
@@ -165,9 +169,13 @@ class WireGuardKeyTests(SimpleTestCase):
             for index, line in enumerate(lines)
             if line.startswith("/interface wireguard add ")
         )
+        previous_index = -1
         for cleanup in cleanup_lines:
             self.assertIn(cleanup, lines)
-            self.assertLess(lines.index(cleanup), add_interface)
+            cleanup_index = lines.index(cleanup)
+            self.assertLess(cleanup_index, add_interface)
+            self.assertGreater(cleanup_index, previous_index)
+            previous_index = cleanup_index
 
         remove_backup = (
             ':do { /file remove [find where name="ispcentric-tunnel.backup"] } '
@@ -765,6 +773,107 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertEqual(second.status_code, 302)
         self.assertEqual(first.url, second.url)
         self.assertEqual(resolve.call_count, 1)
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_host_rewrite_still_redirects_android_probe(self):
+        """
+        CaptiveHostRewrite runs first and replaces Host with PUBLIC_BASE_URL.
+        Probe middleware must still 302 using the preserved original host —
+        otherwise phones never open the pay page after PPPoE expiry.
+        """
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from ispcentric.middleware import (
+            CaptiveHostRewriteMiddleware,
+            HotspotCaptiveProbeMiddleware,
+        )
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        probe = HotspotCaptiveProbeMiddleware(get_response)
+        rewrite = CaptiveHostRewriteMiddleware(probe)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.20.0.88",
+        )
+        response = rewrite(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertEqual(
+            getattr(request, "captive_original_host", ""),
+            "connectivitycheck.gstatic.com",
+        )
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_mobile_oem_probe_hosts_redirect(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        cases = (
+            ("connectivitycheck.android.com", "/generate_204", "10.50.50.40"),
+            ("captive.apple.com", "/hotspot-detect.html", "10.50.50.41"),
+            ("www.appleiphonecell.com", "/library/test/success.html", "10.50.50.42"),
+            ("connectivitycheck.platform.hicloud.com", "/generate_204", "10.50.50.43"),
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ):
+            for host, path, remote in cases:
+                cache.clear()
+                request = RequestFactory().get(
+                    path, HTTP_HOST=host, REMOTE_ADDR=remote
+                )
+                response = middleware(request)
+                self.assertEqual(response.status_code, 302, msg=host)
+                self.assertIn(
+                    f"/hotspot/{self.org.join_code}/pay/",
+                    response.url,
+                    msg=host,
+                )
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_pppoe_pool_any_http_path_redirects_after_host_rewrite(self):
+        """Expired PPPoE dst-nat lands every :80 request on Django — redirect all."""
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from ispcentric.middleware import (
+            CaptiveHostRewriteMiddleware,
+            HotspotCaptiveProbeMiddleware,
+        )
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        stack = CaptiveHostRewriteMiddleware(HotspotCaptiveProbeMiddleware(get_response))
+        request = RequestFactory().get(
+            "/some/random/site",
+            HTTP_HOST="example.com",
+            REMOTE_ADDR="10.20.0.99",
+        )
+        response = stack(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
 
 class HotspotAuthorizeFastPathTests(TestCase):
@@ -1997,6 +2106,37 @@ class TunnelStatusTests(TestCase):
         self.assertTrue(data["api_enabled"])
         self.assertEqual(data["lan_address"], "192.168.88.1")
 
+    def test_local_server_flags_subnet_mismatch_when_api_unreachable(self):
+        device = {
+            "host": "192.168.88.1",
+            "name": "Kariobangi",
+            "identity": "Kariobangi",
+            "onboarded": False,
+        }
+        with (
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+            patch("core.views.discover_mikrotik_devices", return_value=[device]),
+            patch(
+                "core.views.check_mikrotik_reachable",
+                return_value={"online": False, "via": ""},
+            ),
+            patch(
+                "core.hotspot_portal.local_ipv4_addresses",
+                return_value={"192.168.1.66"},
+            ),
+        ):
+            response = self.client.get(
+                "/app/mikrotik/tunnel-status/", {"token": self._token()}
+            )
+
+        data = response.json()
+        self.assertTrue(data["local_mode"])
+        self.assertFalse(data["ready"])
+        self.assertTrue(data["subnet_mismatch"])
+        self.assertEqual(data["local_ip"], "192.168.1.66")
+        self.assertIn("different subnet", data["message"])
+        self.assertIn("192.168.1.66", data["message"])
+
     def test_a_server_on_the_tunnel_reports_api_ready(self):
         with (
             patch("core.wireguard.server_on_tunnel", return_value=True),
@@ -2311,6 +2451,58 @@ class ClientsSurfingStatusTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.service_type, "pppoe")
 
+    def test_pppoe_pay_page_starts_on_pppoe_tab_even_without_customer(self):
+        """Unidentified /pppoe/…/pay visitors must still open Home / PPPoE first."""
+        from django.test import RequestFactory
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+        from core.views import _pppoe_portal_context
+
+        self.org.hotspot_enabled = True
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Hotspot Hour",
+            price="50.00",
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+        )
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="2000.00",
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        request = RequestFactory().get(f"/pppoe/{self.org.join_code}/pay/")
+        context = _pppoe_portal_context(self.org, request, customer=None)
+        self.assertEqual(context["portal_mode"], "pppoe")
+        self.assertTrue(context["pppoe_option_available"])
+        self.assertTrue(context["hotspot_option_available"])
+
+        response = self.client.get(f"/pppoe/{self.org.join_code}/pay/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["portal_mode"], "pppoe")
+        html = response.content.decode()
+        pppoe_pos = html.find('id="choose-pppoe"')
+        hotspot_pos = html.find('id="choose-hotspot"')
+        self.assertGreater(pppoe_pos, 0)
+        self.assertGreater(hotspot_pos, 0)
+        self.assertLess(pppoe_pos, hotspot_pos)
+        self.assertIn('id="choose-pppoe"', html)
+        self.assertIn("is-active", html[pppoe_pos : pppoe_pos + 120])
+
     def test_hotspot_portal_offers_pppoe_handoff_without_converting_customer(self):
         from django.test import RequestFactory
 
@@ -2418,7 +2610,56 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertFalse(response.context["require_account_lookup"])
         self.assertContains(response, self.customer.account_number)
         self.assertContains(response, 'value="0700000088"')
-        self.assertContains(response, "(current)")
+        self.assertContains(response, "(previous)")
+        self.assertContains(response, "Previous package selected")
+
+    def test_pppoe_pay_defaults_to_previous_package_first_in_list(self):
+        """Previous plan is pre-selected and listed first; other plans remain choosable."""
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        cheap = BillingPlan.objects.create(
+            organization=self.org,
+            name="Starter",
+            price="500.00",
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        previous = BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="2500.00",
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.customer.plan = previous
+        self.customer.save(update_fields=["plan"])
+
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"account": self.customer.account_number},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["pppoe_selected_plan_id"], previous.pk)
+        plans = list(response.context["pppoe_plans"])
+        self.assertEqual(plans[0].pk, previous.pk)
+        self.assertTrue(any(p.pk == cheap.pk for p in plans))
+        html = response.content.decode()
+        selected = f'value="{previous.pk}"'
+        pos = html.find(selected)
+        self.assertGreater(pos, 0)
+        self.assertIn("selected", html[pos : pos + 160])
 
     def test_pppoe_pay_autofills_account_from_signed_token(self):
         from django.core import signing
@@ -2543,6 +2784,53 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(response.context["account_number"], self.customer.account_number)
         self.assertFalse(response.context["require_account_lookup"])
 
+    def test_pppoe_pay_autofills_from_account_hint_cookie(self):
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="1500.00",
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.client.cookies["pppoe_acct"] = self.customer.account_number
+        response = self.client.get(f"/pppoe/{self.org.join_code}/pay/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["account_number"], self.customer.account_number)
+        self.assertContains(response, f'value="{self.customer.account_number}"')
+        self.assertContains(response, "Matched to this connection")
+
+    def test_pppoe_pay_autofills_when_username_typed_as_account(self):
+        from core.views import _find_pppoe_customer_for_pay
+
+        self.customer.pppoe_username = "liveuser"
+        self.customer.save(update_fields=["pppoe_username"])
+        matched = _find_pppoe_customer_for_pay(
+            self.org, account_number="liveuser"
+        )
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.pk, self.customer.pk)
+
+    def test_pppoe_pay_portal_url_includes_account_for_autofill(self):
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        with self.settings(PUBLIC_BASE_URL="http://billing.example:8000"):
+            url = _pppoe_pay_portal_url(self.org, customer=self.customer)
+        self.assertIn("t=", url)
+        self.assertIn(f"account={self.customer.account_number}", url)
+
     def test_remembered_hotspot_ip_mac_autofills_pay_page(self):
         from django.core.cache import cache
         from unittest.mock import patch
@@ -2594,6 +2882,171 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Home / PPPoE")
         self.assertNotContains(response, 'id="choose-pppoe"')
+
+
+class PppoeOnlyOneSessionTests(SimpleTestCase):
+    """PPPoE credentials must dial on only one device at a time."""
+
+    def test_default_profile_sets_only_one_yes(self):
+        from core.mikrotik_connect import PPPOE_PROFILE_NAME, _ensure_pppoe_stack
+
+        adds: list[tuple] = []
+        aaa_cmds: list[list] = []
+
+        def fake_print(sock, path, **kwargs):
+            return []
+
+        def fake_add(sock, path, **props):
+            adds.append((path, dict(props)))
+            return {"_reply": "!done", "ret": f"*{len(adds)}"}
+
+        def fake_command(sock, words, **kwargs):
+            if words and words[0] == "/ppp/aaa/set":
+                aaa_cmds.append(list(words))
+            return [], {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._command", side_effect=fake_command),
+            patch("core.mikrotik_connect._add_or_set_attempts", return_value=({"_reply": "!done"}, "*1")),
+            patch("core.mikrotik_connect._ensure_pppoe_nat"),
+            patch("core.mikrotik_connect._ensure_pppoe_expired_redirect", return_value=[]),
+            patch("core.mikrotik_connect._add_filter_rule", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._resolve_lan_interface", return_value="bridge"),
+            patch("core.mikrotik_connect._ensure_interface_list"),
+            patch("core.mikrotik_connect._ensure_list_member"),
+        ):
+            profile, notes = _ensure_pppoe_stack(
+                object(), lan_interface="bridge", wan_interface="ether1"
+            )
+
+        self.assertEqual(profile, PPPOE_PROFILE_NAME)
+        profile_adds = [props for path, props in adds if path == "/ppp/profile"]
+        self.assertTrue(profile_adds)
+        for props in profile_adds:
+            self.assertEqual(
+                props.get("only-one"),
+                "yes",
+                msg=f"profile {props.get('name')} must reject a second simultaneous dial",
+            )
+        self.assertTrue(aaa_cmds)
+        self.assertIn("=use-one-session=yes", aaa_cmds[0])
+        self.assertTrue(any("one session" in n.lower() for n in notes))
+
+    def test_blocked_and_speed_profiles_set_only_one_yes(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            _ensure_pppoe_blocked_profile,
+            _ensure_pppoe_rate_profile,
+            _pppoe_speed_profile_name,
+        )
+
+        adds: list[tuple] = []
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add",
+                side_effect=lambda sock, path, **props: (
+                    adds.append((path, dict(props)))
+                    or {"_reply": "!done", "ret": f"*{len(adds)}"}
+                ),
+            ),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
+        ):
+            _ensure_pppoe_blocked_profile(object())
+            speed_name = _ensure_pppoe_rate_profile(
+                object(), upload_mbps=5, download_mbps=10
+            )
+
+        self.assertEqual(speed_name, _pppoe_speed_profile_name(5, 10))
+        by_name = {
+            props["name"]: props for path, props in adds if path == "/ppp/profile"
+        }
+        self.assertEqual(by_name[PPPOE_BLOCKED_PROFILE_NAME]["only-one"], "yes")
+        self.assertEqual(by_name[speed_name]["only-one"], "yes")
+
+    def test_ppp_secret_writes_only_one_yes(self):
+        from core.mikrotik_connect import _ensure_ppp_secret
+
+        adds: list[tuple] = []
+        state = {
+            "/ppp/profile": [],
+            "/ppp/secret": [],
+            "/ppp/active": [],
+            "/queue/simple": [],
+        }
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_add(sock, path, **props):
+            adds.append((path, dict(props)))
+            item_id = f"*{len(adds)}"
+            state.setdefault(path, []).append({".id": item_id, **props})
+            return {"_reply": "!done", "ret": item_id}
+
+        def fake_set(sock, path, item_id, **props):
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+                    break
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+        ):
+            action = _ensure_ppp_secret(
+                object(),
+                username="alice",
+                password="secret",
+            )
+
+        self.assertEqual(action, "created")
+        secret_adds = [props for path, props in adds if path == "/ppp/secret"]
+        self.assertEqual(len(secret_adds), 1)
+        self.assertEqual(secret_adds[0]["only-one"], "yes")
+
+    def test_ppp_secret_falls_back_when_only_one_unsupported_on_secret(self):
+        """Older RouterOS may reject only-one on /ppp/secret; profile still enforces."""
+        from core.mikrotik_connect import _ensure_ppp_secret
+
+        adds: list[dict] = []
+        state = {"/ppp/secret": [], "/ppp/active": [], "/queue/simple": []}
+
+        def fake_add(sock, path, **props):
+            if path == "/ppp/secret" and "only-one" in props:
+                return {"_reply": "!trap", "message": "unknown parameter"}
+            adds.append(dict(props))
+            item_id = f"*{len(adds)}"
+            state.setdefault(path, []).append({".id": item_id, **props})
+            return {"_reply": "!done", "ret": item_id}
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+        ):
+            action = _ensure_ppp_secret(
+                object(),
+                username="bob",
+                password="secret",
+            )
+
+        self.assertEqual(action, "created")
+        self.assertEqual(len(adds), 1)
+        self.assertNotIn("only-one", adds[0])
+        self.assertEqual(adds[0]["name"], "bob")
 
 
 class PackageSpeedLimitTests(SimpleTestCase):
@@ -2713,9 +3166,11 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertTrue(profile_adds)
         self.assertEqual(profile_adds[0]["name"], profile_name)
         self.assertEqual(profile_adds[0]["rate-limit"], "5M/10M")
+        self.assertEqual(profile_adds[0]["only-one"], "yes")
 
         secret_adds = [props for path, props in adds if path == "/ppp/secret"]
         self.assertEqual(secret_adds[0]["profile"], profile_name)
+        self.assertEqual(secret_adds[0]["only-one"], "yes")
 
         rate_sets = [
             item for item in sets if item.get("path") == "/ppp/secret" and "rate-limit" in item
@@ -2761,6 +3216,7 @@ class PackageSpeedLimitTests(SimpleTestCase):
 
         self.assertEqual(result, name)
         self.assertEqual(sets[0]["rate-limit"], "10M/20M")
+        self.assertEqual(sets[0]["only-one"], "yes")
 
     def test_hotspot_uses_plan_speeds_not_only_org_defaults(self):
         from core.mikrotik_connect import (
@@ -3059,6 +3515,168 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             )
 
         self.assertEqual(disconnects, ["alice"])
+
+    def test_expired_access_repair_loop_reinstalls_missing_redirect(self):
+        """When dst-nat vanishes, correction loop must put it back."""
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_ADDRESS_LIST,
+            PPP_SECRET_TAG,
+            _ensure_pppoe_expired_access,
+        )
+
+        nat_rows: list[dict] = []
+        filter_rows: list[dict] = []
+        adds: list[tuple] = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/firewall/nat":
+                return list(nat_rows)
+            if path == "/ip/firewall/filter":
+                return list(filter_rows)
+            return []
+
+        def fake_add(sock, path, **props):
+            adds.append((path, dict(props)))
+            item = {".id": f"*{len(adds)}", **props}
+            if path == "/ip/firewall/nat":
+                # First HTTP redirect attempt "fails" to stick until attempt 2.
+                if (
+                    props.get("comment", "").endswith("expired redirect")
+                    and len([a for a in adds if "expired redirect" in a[1].get("comment", "")])
+                    == 1
+                ):
+                    return {"_reply": "!done", "ret": item[".id"]}
+                nat_rows.append(item)
+            elif path == "/ip/firewall/filter":
+                filter_rows.append(item)
+            return {"_reply": "!done", "ret": item[".id"]}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=lambda sock, rule, place_before="": fake_add(
+                    sock, "/ip/firewall/filter", **rule
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example:8000",
+            ),
+            patch(
+                "core.mikrotik_connect._portal_target_ipv4",
+                return_value="203.0.113.10",
+            ),
+            patch("core.mikrotik_connect._first_forward_drop_id", return_value=""),
+        ):
+            notes = _ensure_pppoe_expired_access(object())
+
+        redirect_adds = [
+            props
+            for path, props in adds
+            if path == "/ip/firewall/nat"
+            and "expired redirect" in props.get("comment", "")
+        ]
+        self.assertGreaterEqual(len(redirect_adds), 2)
+        self.assertEqual(redirect_adds[0]["to-addresses"], "203.0.113.10")
+        self.assertEqual(
+            redirect_adds[0]["src-address-list"], PPPOE_BLOCKED_ADDRESS_LIST
+        )
+        self.assertTrue(
+            any("repaired on attempt" in n or "expired PPPoE HTTP" in n for n in notes)
+            or any(PPP_SECRET_TAG in n for n in notes)
+        )
+        self.assertTrue(
+            any(
+                row.get("comment", "").endswith("expired redirect")
+                for row in nat_rows
+            )
+        )
+
+    def test_captive_html_is_mobile_ready(self):
+        from core.mikrotik_connect import _captive_pay_redirect_html
+
+        html = _captive_pay_redirect_html(
+            "http://billing.example/pppoe/999999/pay/?t=tok"
+        )
+        self.assertIn('name="viewport"', html)
+        self.assertIn("window.location.replace", html)
+        self.assertIn("window.top.location.replace", html)
+        self.assertIn("$(if http-status == 302)", html)
+        self.assertIn(
+            '$(if http-header == "Location")http://billing.example/pppoe/999999/pay/?t=tok&mac=',
+            html,
+        )
+
+    def test_enable_cpe_renew_publishes_dhcp_option_114(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _enable_cpe_renew_hotspot
+
+        sock = MagicMock()
+        dhcp_calls: list[str] = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._cpe_lan_bridge_name",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._cpe_lan_gateway_ip",
+                return_value="192.168.88.1",
+            ),
+            patch("core.mikrotik_connect._ensure_tagged_ip_address"),
+            patch("core.mikrotik_connect._ensure_tagged_pool"),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add",
+                return_value={"_reply": "!done", "ret": "*1"},
+            ),
+            patch(
+                "core.mikrotik_connect._set",
+                return_value={"_reply": "!done"},
+            ),
+            patch("core.mikrotik_connect._ensure_captive_dns", return_value=1),
+            patch(
+                "core.mikrotik_connect._clear_https_capture_redirect",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_cpe_portal_access",
+                return_value=["walled garden"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_cpe_wan_block",
+                return_value=["wan block"],
+            ),
+            patch(
+                "core.mikrotik_connect._fetch_hotspot_pages",
+                return_value=["installed login"],
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_cpe_wifi_clients",
+                return_value=["bounced 1"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
+                side_effect=lambda sock, url, comment="": (
+                    dhcp_calls.append(url) or [f"option 114 → {url}"]
+                ),
+            ),
+            patch("core.mikrotik_connect._command", return_value=([], {})),
+        ):
+            notes = _enable_cpe_renew_hotspot(
+                sock,
+                portal_url="http://billing.example/pppoe/121212/pay/?t=abc",
+            )
+
+        self.assertEqual(
+            dhcp_calls,
+            ["http://billing.example/pppoe/121212/pay/?t=abc"],
+        )
+        self.assertTrue(any("option 114" in n for n in notes))
 
 
 class MikroTikStatusOfflineTests(TestCase):

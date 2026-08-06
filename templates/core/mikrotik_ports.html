@@ -10,6 +10,7 @@
     data-ports-live-url="{{ ports_live_url }}"
     data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
     data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-router-id="{{ router.id }}"
     data-csrf-token="{{ csrf_token }}"
   >
     <header class="mk-page-hero mk-ports-hero">
@@ -17,8 +18,10 @@
         <p class="mk-page-kicker">Interfaces</p>
         <h1 class="mk-page-title">Ports</h1>
         <p class="mk-page-lead">
-          Tell each cable what it’s for on <strong>{{ router.name }}</strong>
-          <span class="mk-host-chip">{{ router.host }}</span>
+          Watch live traffic on
+          <strong data-router-name>{{ router.name }}</strong>
+          <span class="mk-host-chip">{{ router.host }}</span>,
+          choose how internet should work, then label each cable.
         </p>
       </div>
       <div class="mk-ports-hero-actions">
@@ -58,27 +61,69 @@
       marks other live ports as Customers, and marks quiet ports Unused.
     </p>
 
-    <div class="mk-uplink-strip" data-uplink-banner>
-      <div class="mk-uplink-strip-copy">
-        <span class="mk-stat-label">Current uplink</span>
-        <strong data-uplink-mode-label>{{ uplink_mode_label }}</strong>
-        <span class="mk-uplink-strip-meta" data-uplink-mode-meta>
-          {% if uplink_mode == "bond" and router.uplink_ports %}
-            {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
-          {% elif uplink_mode == "failover" and router.uplink_ports %}
-            Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
-          {% elif router.wan_interface %}
-            WAN {{ router.wan_interface }}
-          {% endif %}
-        </span>
-        <span class="mk-uplink-health" data-uplink-health hidden></span>
+    <section class="mk-ports-map" data-ports-map hidden aria-label="How cables connect on this MikroTik">
+      <div class="mk-ports-map-head">
+        <div class="mk-ports-map-head-copy">
+          <p class="mk-section-step">Step 1</p>
+          <h2 class="mk-ports-map-title">Live connection map</h2>
+          <p class="mk-ports-map-caption">Internet in · customers out · refreshes every 5s</p>
+        </div>
+        <div class="mk-uplink-strip mk-uplink-strip-compact" data-uplink-banner>
+          <div class="mk-uplink-strip-copy">
+            <span class="mk-stat-label">Active setup</span>
+            <strong data-uplink-mode-label>{{ uplink_mode_label }}</strong>
+            <span class="mk-uplink-strip-meta" data-uplink-mode-meta>
+              {% if uplink_mode == "bond" and router.uplink_ports %}
+                {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
+              {% elif uplink_mode == "balance" and router.uplink_ports %}
+                Sharing {{ router.uplink_ports|join:" + " }}
+              {% elif uplink_mode == "failover" and router.uplink_ports %}
+                Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
+              {% elif router.wan_interface %}
+                WAN {{ router.wan_interface }}
+              {% endif %}
+            </span>
+            <span class="mk-uplink-health" data-uplink-health hidden></span>
+          </div>
+          <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="clear_multi_uplink">
+            <button type="submit" class="btn btn-ghost btn-sm">Reset to single WAN</button>
+          </form>
+        </div>
       </div>
-      <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
-        {% csrf_token %}
-        <input type="hidden" name="action" value="clear_multi_uplink">
-        <button type="submit" class="btn btn-ghost btn-sm">Clear bond / failover</button>
-      </form>
-    </div>
+
+      <div class="mk-ports-flow" data-ports-flow aria-live="polite">
+        <div class="mk-flow-stage is-internet" data-flow-stage="internet">
+          <span class="mk-flow-stage-label">Internet</span>
+          <div class="mk-flow-stage-body" data-flow-internet></div>
+        </div>
+        <div class="mk-flow-connector" data-flow-connector="wan" aria-hidden="true">
+          <span class="mk-flow-connector-line"></span>
+          <span class="mk-flow-connector-pulse"></span>
+        </div>
+        <div class="mk-flow-stage is-router" data-flow-stage="router">
+          <span class="mk-flow-stage-label">This MikroTik</span>
+          <div class="mk-flow-stage-body" data-flow-router></div>
+        </div>
+        <div class="mk-flow-connector" data-flow-connector="lan" aria-hidden="true">
+          <span class="mk-flow-connector-line"></span>
+          <span class="mk-flow-connector-pulse"></span>
+        </div>
+        <div class="mk-flow-stage is-customers" data-flow-stage="customers">
+          <span class="mk-flow-stage-label">Customers</span>
+          <div class="mk-flow-stage-body" data-flow-customers></div>
+        </div>
+      </div>
+
+      <div class="mk-ports-face-wrap">
+        <div class="mk-ports-face-label">
+          <span class="mk-stat-label">Front panel</span>
+          <span class="mk-help-note">Tap a jack to jump to its card</span>
+        </div>
+        <div class="mk-ports-face" data-ports-face role="list"></div>
+      </div>
+    </section>
 
     <div class="mk-loading" data-ports-loading-ui {% if not ports_loading %}hidden{% endif %}>
       <div class="mk-loading-pulse" aria-hidden="true"></div>
@@ -95,76 +140,157 @@
       {% endif %}
     </div>
 
-    <div class="mk-ports-grid" data-ports-grid hidden></div>
+    <section class="mk-ports-section mk-uplink-config" data-uplink-config hidden>
+      <header class="mk-uplink-config-head">
+        <p class="mk-section-step">Step 2</p>
+        <h2 class="mk-uplink-config-title">How should internet work?</h2>
+        <p class="mk-help-note">Choose a setup from the list. Only that form appears below.</p>
+      </header>
+
+      <label class="mk-field mk-goal-select-field">
+        <span>Internet setup</span>
+        <select data-uplink-goal-select aria-label="How should internet work?">
+          <option value="single">One internet link — single ISP cable</option>
+          <option value="bond">Combine two cables — same ISP (bonding)</option>
+          <option value="failover">Backup if primary fails — two ISPs</option>
+          <option value="balance">Share by link speed — two ISPs (weighted)</option>
+        </select>
+      </label>
+      <p class="mk-help-note mk-goal-select-hint" data-goal-select-hint></p>
+
+      <div class="mk-goal-panel" data-goal-panel="single" hidden>
+        <div class="mk-goal-panel-body">
+          <ol class="mk-goal-steps">
+            <li>On the port cards below, set your ISP cable to <strong>Internet</strong>.</li>
+            <li>Set customer-facing ports to <strong>Customers</strong>.</li>
+            <li>Leave spare ports as <strong>Unused</strong>.</li>
+          </ol>
+          <p class="mk-help-note">No extra apply step — roles save as soon as you tap them.</p>
+        </div>
+      </div>
+
+      <form method="post" class="mk-goal-panel" data-goal-panel="bond" hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="apply_bond">
+        <div class="mk-goal-panel-body">
+          <ol class="mk-goal-steps">
+            <li>Below, set each same-ISP cable to <strong>Bonded internet</strong>.</li>
+            <li>Check the members listed here, then apply.</li>
+          </ol>
+
+          <div class="mk-role-block">
+            <span class="mk-stat-label">Bond members</span>
+            <ul class="mk-chip-list" data-bond-list></ul>
+            <p class="mk-help-note" data-bond-empty>No bonded ports yet — pick them on the cards below.</p>
+          </div>
+
+          <div class="mk-goal-fields">
+            <label class="mk-field">
+              <span>Bond name</span>
+              <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
+            </label>
+            <label class="mk-field">
+              <span>Bond mode</span>
+              <select name="bond_mode">
+                {% for value, label in bond_mode_choices %}
+                  <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+
+          <div class="mk-goal-actions">
+            <button type="submit" class="btn btn-primary" data-apply-bond disabled>Apply bonding</button>
+            <p class="mk-help-note" data-bond-hint>Need at least 2 bonded ports.</p>
+          </div>
+        </div>
+      </form>
+
+      <form method="post" class="mk-goal-panel" data-goal-panel="failover" hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="apply_failover">
+        <div class="mk-goal-panel-body">
+          <ol class="mk-goal-steps">
+            <li>Set the main ISP to <strong>Internet</strong> (only one).</li>
+            <li>Set the standby ISP to <strong>Backup internet</strong>.</li>
+            <li>Apply when both show below.</li>
+          </ol>
+
+          <div class="mk-goal-role-grid">
+            <div class="mk-role-block">
+              <span class="mk-stat-label">Primary</span>
+              <ul class="mk-chip-list" data-primary-list></ul>
+              <p class="mk-help-note" data-primary-empty>No primary Internet yet.</p>
+              <p class="mk-help-note is-warn" data-primary-warn hidden>Keep only one Internet primary.</p>
+            </div>
+            <div class="mk-role-block">
+              <span class="mk-stat-label">Standby</span>
+              <ul class="mk-chip-list" data-backup-list></ul>
+              <p class="mk-help-note" data-backup-empty>No backup Internet yet.</p>
+            </div>
+          </div>
+
+          <div class="mk-goal-actions">
+            <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
+            <p class="mk-help-note" data-failover-hint>Need 1 Internet + at least 1 Backup internet.</p>
+          </div>
+        </div>
+      </form>
+
+      <form method="post" class="mk-goal-panel" data-goal-panel="balance" hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="apply_balance">
+        <div class="mk-goal-panel-body">
+          <ol class="mk-goal-steps">
+            <li>Set one ISP to <strong>Internet</strong> and the other to <strong>Backup internet</strong>.</li>
+            <li>Enter each link’s speed in Mbps — the stronger link gets more connections.</li>
+            <li>Both should already have DHCP or PPPoE working, then apply.</li>
+          </ol>
+
+          <div class="mk-role-block">
+            <span class="mk-stat-label">Sharing members</span>
+            <ul class="mk-chip-list" data-balance-list></ul>
+            <p class="mk-help-note" data-balance-empty>Assign Internet + Backup internet on the cards below.</p>
+          </div>
+
+          <div class="mk-role-block" data-balance-weights-wrap hidden>
+            <span class="mk-stat-label">Link speed (Mbps)</span>
+            <p class="mk-help-note">
+              Enter real ISP speeds. The fastest link gets most new connections and is preferred if another dies.
+            </p>
+            <div class="mk-balance-presets" data-balance-presets>
+              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="equal">Equal</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="prefer3">Prefer strong 3:1</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="prefer5">Prefer strong 5:1</button>
+            </div>
+            <div class="mk-balance-weights" data-balance-weights></div>
+            <p class="mk-help-note" data-balance-weight-preview></p>
+            <p class="mk-help-note is-ok" data-balance-preferred hidden></p>
+          </div>
+
+          <div class="mk-goal-actions">
+            <button type="submit" class="btn btn-primary" data-apply-balance disabled>Apply load balance</button>
+            <p class="mk-help-note" data-balance-hint>Need 1 Internet + at least 1 Backup internet.</p>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <section class="mk-ports-assign" data-ports-assign hidden>
+      <header class="mk-ports-assign-head">
+        <p class="mk-section-step">Step 3</p>
+        <h2 class="mk-ports-assign-title">Label each cable</h2>
+        <p class="mk-help-note" data-ports-assign-hint>
+          Tap a role on each port. What you need depends on the setup you picked above.
+        </p>
+      </header>
+      <div class="mk-ports-grid" data-ports-grid hidden></div>
+    </section>
 
     <div class="mk-empty" data-ports-empty hidden>
       <p class="mk-loading-title">No ports found</p>
       <p class="mk-help-note">This MikroTik did not report any ethernet or wireless ports.</p>
     </div>
-  </section>
-
-  <section class="mk-surface mk-uplink-config" data-uplink-config hidden>
-    <details class="mk-details" open>
-      <summary>
-        <span class="mk-details-title">Two internet links?</span>
-        <span class="mk-details-sub">Optional bonding or failover after roles are set.</span>
-      </summary>
-
-      <div class="mk-uplink-config-grid">
-        <form method="post" class="mk-uplink-panel">
-          {% csrf_token %}
-          <input type="hidden" name="action" value="apply_bond">
-          <h2>Same provider — bond</h2>
-          <p class="mk-help-note">Set two or more ports to <strong>Bonded internet</strong>, then apply. Uses link monitoring; PPPoE is moved onto the bond when present.</p>
-
-          <div class="mk-role-block">
-            <span class="mk-stat-label">Bond members</span>
-            <ul class="mk-chip-list" data-bond-list></ul>
-            <p class="mk-help-note" data-bond-empty>No bond members yet.</p>
-          </div>
-
-          <label class="mk-field">
-            <span>Bond name</span>
-            <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
-          </label>
-
-          <label class="mk-field">
-            <span>Bond mode</span>
-            <select name="bond_mode">
-              {% for value, label in bond_mode_choices %}
-                <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
-          </label>
-
-          <button type="submit" class="btn btn-primary" data-apply-bond disabled>Apply bonding</button>
-          <p class="mk-help-note" data-bond-hint>Need at least 2 bonded ports.</p>
-        </form>
-
-        <form method="post" class="mk-uplink-panel">
-          {% csrf_token %}
-          <input type="hidden" name="action" value="apply_failover">
-          <h2>Different providers — failover</h2>
-          <p class="mk-help-note">One <strong>Internet</strong> port + one or more <strong>Backup internet</strong> ports. Applies distance-based routes with ping checks when gateways are known.</p>
-
-          <div class="mk-role-block">
-            <span class="mk-stat-label">Primary</span>
-            <ul class="mk-chip-list" data-primary-list></ul>
-            <p class="mk-help-note" data-primary-empty>No primary Internet yet.</p>
-            <p class="mk-help-note is-warn" data-primary-warn hidden>Keep only one Internet primary.</p>
-          </div>
-
-          <div class="mk-role-block">
-            <span class="mk-stat-label">Backups</span>
-            <ul class="mk-chip-list" data-backup-list></ul>
-            <p class="mk-help-note" data-backup-empty>No backup Internet yet.</p>
-          </div>
-
-          <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
-          <p class="mk-help-note" data-failover-hint>Need 1 Internet + at least 1 Backup internet.</p>
-        </form>
-      </div>
-    </details>
   </section>
 </div>
 
@@ -176,18 +302,103 @@
   var csrf = root.getAttribute("data-csrf-token") || "";
   var suspended = root.getAttribute("data-is-suspended") === "1";
   var loading = root.getAttribute("data-ports-loading") === "1";
+  var routerId = root.getAttribute("data-router-id") || "";
+  var goalStorageKey = "mk-ports-goal:" + routerId;
+  var selectedGoal = "";
+  var lastPortsData = null;
   if (!loading || !liveUrl) return;
 
-  var quickRoles = [
-    ["wan", "Internet"],
-    ["lan", "Customers"],
-    ["unused", "Unused"]
-  ];
-  var advancedRoles = [
-    ["wan_backup", "Backup internet"],
-    ["bond", "Bonded internet"],
-    ["none", "Unassigned"]
-  ];
+  var goalHints = {
+    single: "Mark the ISP cable as Internet, customer ports as Customers, and spare ports as Unused.",
+    bond: "Set each same-ISP cable to Bonded internet, then apply bonding in Step 2.",
+    failover: "Set the main ISP to Internet and the standby to Backup internet, then apply failover.",
+    balance: "Set one ISP to Internet and the other to Backup internet, enter Mbps for each, then apply load balance."
+  };
+  var goalSelectHints = {
+    single: "Simplest setup — one ISP cable into this MikroTik.",
+    bond: "Same provider: two cables bonded together for more capacity or redundancy.",
+    failover: "Different providers: use the second link only when the first fails.",
+    balance: "Different providers: both carry traffic, weighted by the Mbps you enter."
+  };
+
+  function rolesForGoal(goal) {
+    if (goal === "bond") {
+      return {
+        main: [
+          ["bond", "Bonded internet"],
+          ["lan", "Customers"],
+          ["unused", "Unused"]
+        ],
+        more: [
+          ["wan", "Internet"],
+          ["wan_backup", "Backup internet"],
+          ["none", "Unassigned"]
+        ]
+      };
+    }
+    if (goal === "failover" || goal === "balance") {
+      return {
+        main: [
+          ["wan", "Internet"],
+          ["wan_backup", "Backup internet"],
+          ["lan", "Customers"],
+          ["unused", "Unused"]
+        ],
+        more: [["bond", "Bonded internet"], ["none", "Unassigned"]]
+      };
+    }
+    return {
+      main: [
+        ["wan", "Internet"],
+        ["lan", "Customers"],
+        ["unused", "Unused"]
+      ],
+      more: [
+        ["wan_backup", "Backup internet"],
+        ["bond", "Bonded internet"],
+        ["none", "Unassigned"]
+      ]
+    };
+  }
+
+  function readStoredGoal() {
+    try {
+      return sessionStorage.getItem(goalStorageKey) || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function storeGoal(goal) {
+    try {
+      if (goal) sessionStorage.setItem(goalStorageKey, goal);
+    } catch (e) {}
+  }
+
+  function setSelectedGoal(goal, options) {
+    var opts = options || {};
+    var next = goal || "single";
+    if (["single", "bond", "failover", "balance"].indexOf(next) < 0) next = "single";
+    selectedGoal = next;
+    storeGoal(next);
+
+    var select = root.querySelector("[data-uplink-goal-select]");
+    if (select && select.value !== next) select.value = next;
+
+    root.querySelectorAll("[data-goal-panel]").forEach(function (panel) {
+      setHidden(panel, panel.getAttribute("data-goal-panel") !== next);
+    });
+
+    var selectHint = root.querySelector("[data-goal-select-hint]");
+    if (selectHint) selectHint.textContent = goalSelectHints[next] || "";
+
+    var hint = root.querySelector("[data-ports-assign-hint]");
+    if (hint) hint.textContent = goalHints[next] || goalHints.single;
+
+    if (!opts.skipRerender && lastPortsData && lastPortsData.ok) {
+      renderPortCards(lastPortsData);
+    }
+  }
 
   function esc(s) {
     return String(s == null ? "" : s)
@@ -203,6 +414,465 @@
     else el.removeAttribute("hidden");
   }
 
+  function portByName(ports, name) {
+    for (var i = 0; i < (ports || []).length; i++) {
+      if (ports[i] && ports[i].name === name) return ports[i];
+    }
+    return null;
+  }
+
+  function portLinkState(port) {
+    if (!port) return "missing";
+    if (port.disabled) return "disabled";
+    if (port.running) return "up";
+    return "down";
+  }
+
+  function flowChip(port, opts) {
+    var options = opts || {};
+    var name = (port && port.name) || options.name || "";
+    var role = (port && port.role) || options.role || "none";
+    var link = portLinkState(port);
+    var extra = options.extra || "";
+    var tone = options.tone || ("role-" + role);
+    var title = options.title || (port && port.role_label) || name;
+    return (
+      '<button type="button" class="mk-flow-chip ' + esc(tone) + " is-" + esc(link) + '"' +
+      ' data-jump-port="' + esc(name) + '"' +
+      ' title="' + esc(title) + '">' +
+      '<span class="mk-flow-chip-led" aria-hidden="true"></span>' +
+      '<span class="mk-flow-chip-name">' + esc(name) + "</span>" +
+      (extra ? '<span class="mk-flow-chip-extra">' + esc(extra) + "</span>" : "") +
+      "</button>"
+    );
+  }
+
+  function emptyStage(text) {
+    return '<p class="mk-flow-empty">' + esc(text) + "</p>";
+  }
+
+  function uplinkKindLabel(port) {
+    if (!port) return "";
+    if (port.uplink_kind === "pppoe") {
+      return port.uplink_iface ? "PPPoE · " + port.uplink_iface : "PPPoE";
+    }
+    if (port.uplink_kind === "dhcp") return "DHCP";
+    return "";
+  }
+
+  function routerName() {
+    var el = root.querySelector("[data-router-name]");
+    return (el && el.textContent.trim()) || "MikroTik";
+  }
+
+  function renderFlow(data) {
+    var map = root.querySelector("[data-ports-map]");
+    var internetEl = root.querySelector("[data-flow-internet]");
+    var routerEl = root.querySelector("[data-flow-router]");
+    var customersEl = root.querySelector("[data-flow-customers]");
+    var wanConn = root.querySelector('[data-flow-connector="wan"]');
+    var lanConn = root.querySelector('[data-flow-connector="lan"]');
+    if (!map || !internetEl || !routerEl || !customersEl) return;
+
+    var ports = data.ports || [];
+    var physical = data.physical_ports || [];
+    if (!physical.length) {
+      setHidden(map, true);
+      return;
+    }
+    setHidden(map, false);
+
+    var mode = data.uplink_mode || "single";
+    var primary = data.primary_wan_ports || [];
+    var bond = data.bond_member_ports || [];
+    var backups = data.backup_wan_ports || [];
+    var lan = data.lan_ports || [];
+    var unused = data.unused_ports || [];
+    var live = data.uplink_live || {};
+
+    var internetHtml = "";
+    var wanLive = false;
+    var failoverOnBackup = false;
+
+    if (mode === "bond" && bond.length) {
+      internetHtml += '<div class="mk-flow-group is-bond">';
+      internetHtml += '<span class="mk-flow-group-label">Bonded uplink</span>';
+      internetHtml += '<div class="mk-flow-chip-row">';
+      bond.forEach(function (name) {
+        var p = portByName(ports, name);
+        if (portLinkState(p) === "up") wanLive = true;
+        internetHtml += flowChip(p, {
+          name: name,
+          role: "bond",
+          tone: "role-bond",
+          extra: uplinkKindLabel(p) || "Bond member",
+          title: "Bonded internet · " + name
+        });
+      });
+      internetHtml += "</div>";
+      if (data.bond_interface) {
+        internetHtml +=
+          '<div class="mk-flow-merge">' +
+          '<span class="mk-flow-merge-line" aria-hidden="true"></span>' +
+          '<span class="mk-flow-merge-label">' +
+          esc(data.bond_interface) +
+          (data.bond_mode ? " · " + esc(data.bond_mode) : "") +
+          "</span></div>";
+      }
+      internetHtml += "</div>";
+    } else if (mode === "balance" && (primary.length || backups.length)) {
+      var balanceMembers = primary.concat(backups);
+      var shareMap = {};
+      ((data.wan_share && data.wan_share.shares) || []).forEach(function (s) {
+        if (s && s.name) shareMap[s.name] = s;
+      });
+      var shareParts = balanceMembers.map(function (name) {
+        var s = shareMap[name];
+        return s && s.pct != null ? String(s.pct) + "%" : "—";
+      });
+      var shareKnown = shareParts.every(function (p) { return p !== "—"; });
+      var shareTotal = balanceMembers.reduce(function (sum, name) {
+        var s = shareMap[name] || {};
+        return sum + (parseInt(s.pct, 10) || 0);
+      }, 0);
+      internetHtml += '<div class="mk-flow-group is-balance">';
+      internetHtml +=
+        '<span class="mk-flow-group-label is-working">Sharing ' +
+        esc(
+          shareKnown
+            ? shareTotal > 0
+              ? shareParts.join(" / ")
+              : "idle · " + shareParts.join(" / ")
+            : shareParts.join(" / ")
+        ) +
+        "</span>";
+      internetHtml += '<div class="mk-flow-share-bars" aria-hidden="true">';
+      balanceMembers.forEach(function (name) {
+        var s = shareMap[name] || {};
+        var pct = Math.max(0, Math.min(100, parseInt(s.pct, 10) || 0));
+        var flex = shareKnown && shareTotal > 0 ? Math.max(pct, 1) : 1;
+        internetHtml +=
+          '<span class="mk-flow-share-seg" style="flex:' +
+          flex +
+          '" title="' +
+          esc(name + ": " + (s.pct != null ? s.pct + "%" : "—")) +
+          '"></span>';
+      });
+      internetHtml += "</div>";
+      internetHtml += '<div class="mk-flow-chip-row is-active-row">';
+      balanceMembers.forEach(function (name) {
+        var p = portByName(ports, name);
+        var s = shareMap[name] || {};
+        var pct = typeof s.pct === "number" ? s.pct : parseInt(s.pct, 10);
+        if (isNaN(pct)) pct = null;
+        if (portLinkState(p) === "up") wanLive = true;
+        var kindLabel = uplinkKindLabel(p);
+        var extra;
+        if (pct != null) {
+          extra = pct + "%";
+          if (s.rate_label && s.rate_label !== "—") {
+            extra += " · " + s.rate_label;
+          } else if (s.bytes_label && s.bytes_label !== "0 B") {
+            extra += " · " + s.bytes_label;
+          }
+        } else {
+          extra = portLinkState(p) === "up" ? "Sharing" : "Down";
+        }
+        if (kindLabel && pct == null) extra = kindLabel + " · " + extra;
+        internetHtml += flowChip(p, {
+          name: name,
+          role: primary.indexOf(name) >= 0 ? "wan" : "wan_backup",
+          tone: portLinkState(p) === "up" ? "is-active-path" : "role-wan is-failed",
+          extra: extra,
+          title:
+            "Load-balanced WAN · " +
+            name +
+            (pct != null ? " · " + pct + "% of traffic" : "")
+        });
+      });
+      internetHtml += "</div></div>";
+    } else if (mode === "failover" && (primary.length || backups.length)) {
+      var primaryUp = primary.filter(function (name) {
+        return portLinkState(portByName(ports, name)) === "up";
+      });
+      var backupUp = backups.filter(function (name) {
+        return portLinkState(portByName(ports, name)) === "up";
+      });
+      // Prefer RouterOS active default route (by distance → client interface),
+      // else fall back to which WAN/backup port has link up.
+      var activeNames = [];
+      var activeRoute = (live.checked_routes || []).filter(function (r) {
+        return r && r.active && !r.disabled;
+      })[0];
+      if (activeRoute) {
+        var dist = String(activeRoute.distance || "1");
+        (live.failover_clients || []).forEach(function (c) {
+          if (!c || c.disabled) return;
+          if (String(c.distance || "1") !== dist) return;
+          var iface = (c.interface || "").trim();
+          if (iface && activeNames.indexOf(iface) < 0) activeNames.push(iface);
+        });
+      }
+      if (!activeNames.length) {
+        if (primaryUp.length) activeNames = primaryUp.slice();
+        else if (backupUp.length) activeNames = backupUp.slice(0, 1);
+      }
+      // Keep only ports that are part of this failover set.
+      activeNames = activeNames.filter(function (n) {
+        return primary.indexOf(n) >= 0 || backups.indexOf(n) >= 0;
+      });
+      if (!activeNames.length) {
+        if (primaryUp.length) activeNames = primaryUp.slice();
+        else if (backupUp.length) activeNames = backupUp.slice(0, 1);
+      }
+      var activeSet = {};
+      activeNames.forEach(function (n) { activeSet[n] = true; });
+      failoverOnBackup = activeNames.some(function (n) {
+        return backups.indexOf(n) >= 0;
+      });
+      wanLive = activeNames.length > 0;
+
+      function renderFailoverChip(name, kind) {
+        var p = portByName(ports, name);
+        var isActive = !!activeSet[name];
+        var kindLabel = uplinkKindLabel(p);
+        if (isActive) {
+          return flowChip(p, {
+            name: name,
+            role: kind === "primary" ? "wan" : "wan_backup",
+            tone: "is-active-path",
+            extra: (kindLabel ? kindLabel + " · " : "") + "Working now",
+            title: (failoverOnBackup && kind === "backup" ? "Backup carrying traffic · " : "Active internet · ") + name
+          });
+        }
+        if (kind === "primary") {
+          return flowChip(p, {
+            name: name,
+            role: "wan",
+            tone: "role-wan is-primary is-failed",
+            extra: (kindLabel ? kindLabel + " · " : "") + "Primary down",
+            title: "Primary offline · " + name
+          });
+        }
+        return flowChip(p, {
+          name: name,
+          role: "wan_backup",
+          tone: "role-wan_backup is-backup is-standby",
+          extra: (kindLabel ? kindLabel + " · " : "") + "Standby",
+          title: "Backup standby · " + name
+        });
+      }
+
+      var standbyPrimary = primary.filter(function (name) { return !activeSet[name]; });
+      var standbyBackup = backups.filter(function (name) { return !activeSet[name]; });
+      var parts = ['<div class="mk-flow-group is-failover' + (failoverOnBackup ? " is-on-backup" : "") + '">'];
+
+      if (wanLive) {
+        parts.push('<span class="mk-flow-group-label is-working">Working now</span>');
+        parts.push('<div class="mk-flow-chip-row is-active-row">');
+        activeNames.forEach(function (name) {
+          var kind = primary.indexOf(name) >= 0 ? "primary" : "backup";
+          parts.push(renderFailoverChip(name, kind));
+        });
+        parts.push("</div>");
+      } else {
+        parts.push('<span class="mk-flow-group-label is-failed">No link up</span>');
+      }
+
+      if (standbyPrimary.length || standbyBackup.length) {
+        parts.push(
+          '<span class="mk-flow-group-label' +
+            (failoverOnBackup || !wanLive ? " is-failed" : " is-backup") +
+            '">' +
+            (failoverOnBackup
+              ? "Primary failed — waiting"
+              : wanLive
+                ? "Backup standby"
+                : "Assigned ports") +
+            "</span>"
+        );
+        parts.push('<div class="mk-flow-chip-row is-dashed">');
+        standbyPrimary.forEach(function (name) {
+          parts.push(renderFailoverChip(name, "primary"));
+        });
+        standbyBackup.forEach(function (name) {
+          parts.push(renderFailoverChip(name, "backup"));
+        });
+        parts.push("</div>");
+      }
+
+      parts.push("</div>");
+      internetHtml = parts.join("");
+    } else if (primary.length) {
+      internetHtml += '<div class="mk-flow-chip-row">';
+      primary.forEach(function (name) {
+        var p = portByName(ports, name);
+        if (portLinkState(p) === "up") wanLive = true;
+        internetHtml += flowChip(p, {
+          name: name,
+          role: "wan",
+          tone: "role-wan",
+          extra: uplinkKindLabel(p) || "WAN",
+          title: "Internet · " + name
+        });
+      });
+      internetHtml += "</div>";
+    } else {
+      internetHtml = emptyStage("Not assigned yet — pick Internet on a port card");
+    }
+    internetEl.innerHTML = internetHtml;
+
+    var modeLabel = data.uplink_mode_label || "Single WAN";
+    var health = "";
+    if (mode === "bond") {
+      var bondLive = (live.bonds || [])[0];
+      if (bondLive && bondLive.running) {
+        health = "Bond up";
+        wanLive = true;
+      } else if (bond.length) {
+        health = "Bond waiting";
+      }
+    } else if (mode === "balance") {
+      var shareBits = ((data.wan_share && data.wan_share.shares) || [])
+        .map(function (s) {
+          return (s.name || "?") + " " + (s.pct != null ? s.pct + "%" : "—");
+        })
+        .join(" · ");
+      health = shareBits
+        ? "Live share · " + shareBits
+        : wanLive
+          ? "Both ISPs sharing traffic (PCC)"
+          : "Balance configured · waiting for links";
+    } else if (mode === "failover") {
+      var checked = live.checked_routes || [];
+      var active = checked.filter(function (r) { return r.active; })[0];
+      if (failoverOnBackup) {
+        health = active
+          ? "Backup carrying traffic via " + (active.gateway || "gateway")
+          : "Backup carrying traffic (primary down)";
+      } else if (active) {
+        health = "Active via " + (active.gateway || "gateway");
+      } else if (checked.length) {
+        health = "Waiting for gateway check";
+      } else if (wanLive) {
+        health = "Primary link up";
+      } else {
+        health = "Failover ready";
+      }
+    } else if (wanLive) {
+      health = "Link up";
+    } else if (primary.length) {
+      health = "No link on WAN";
+    } else {
+      health = "Assign a WAN port";
+    }
+
+    routerEl.innerHTML =
+      '<div class="mk-flow-router-card' + (wanLive ? " is-live" : "") + '">' +
+      '<strong class="mk-flow-router-name">' + esc(routerName()) + "</strong>" +
+      '<span class="mk-flow-router-mode">' + esc(modeLabel) + "</span>" +
+      (health ? '<span class="mk-flow-router-health">' + esc(health) + "</span>" : "") +
+      "</div>";
+
+    var customersHtml = "";
+    if (lan.length) {
+      customersHtml += '<div class="mk-flow-chip-row">';
+      lan.forEach(function (name) {
+        var p = portByName(ports, name);
+        customersHtml += flowChip(p, {
+          name: name,
+          role: "lan",
+          tone: "role-lan",
+          extra: "Customers",
+          title: "Customers · " + name
+        });
+      });
+      customersHtml += "</div>";
+    } else {
+      customersHtml = emptyStage("No customer ports yet");
+    }
+    if (unused.length) {
+      customersHtml += '<div class="mk-flow-parked">';
+      customersHtml += '<span class="mk-flow-group-label">Parked / unused</span>';
+      customersHtml += '<div class="mk-flow-chip-row">';
+      unused.forEach(function (name) {
+        var p = portByName(ports, name);
+        customersHtml += flowChip(p, {
+          name: name,
+          role: "unused",
+          tone: "role-unused",
+          extra: "Unused",
+          title: "Unused · " + name
+        });
+      });
+      customersHtml += "</div></div>";
+    }
+    customersEl.innerHTML = customersHtml;
+
+    if (wanConn) {
+      wanConn.classList.toggle("is-live", wanLive);
+      wanConn.classList.toggle("is-dashed", mode === "failover" && !failoverOnBackup && !wanLive);
+      wanConn.classList.toggle("is-bond", mode === "bond");
+      wanConn.classList.toggle("is-on-backup", failoverOnBackup);
+      wanConn.classList.toggle("is-balance", mode === "balance" && wanLive);
+    }
+    if (lanConn) {
+      lanConn.classList.toggle("is-live", lan.some(function (name) {
+        return portLinkState(portByName(ports, name)) === "up";
+      }));
+    }
+  }
+
+  function renderFace(data) {
+    var face = root.querySelector("[data-ports-face]");
+    var map = root.querySelector("[data-ports-map]");
+    if (!face) return;
+    var physical = data.physical_ports || [];
+    if (!physical.length) {
+      face.innerHTML = "";
+      return;
+    }
+    face.innerHTML = physical.map(function (port) {
+      var role = port.role || "none";
+      var link = portLinkState(port);
+      var label = port.role_label || role;
+      return (
+        '<button type="button" class="mk-port-jack role-' + esc(role) + " is-" + esc(link) + '"' +
+        ' data-jump-port="' + esc(port.name) + '"' +
+        ' role="listitem"' +
+        ' title="' + esc(port.name + " · " + label) + '"' +
+        ' aria-label="' + esc(port.name + ", " + label + ", link " + link) + '">' +
+        '<span class="mk-port-jack-shell" aria-hidden="true">' +
+        '<span class="mk-port-jack-slot"></span>' +
+        '<span class="mk-port-jack-led"></span>' +
+        "</span>" +
+        '<span class="mk-port-jack-name">' + esc(port.name) + "</span>" +
+        '<span class="mk-port-jack-role">' + esc(label) + "</span>" +
+        "</button>"
+      );
+    }).join("");
+    if (map) setHidden(map, false);
+  }
+
+  function jumpToPortCard(portName) {
+    if (!portName) return;
+    var cards = root.querySelectorAll(".mk-port-card[data-port-name]");
+    var card = null;
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute("data-port-name") === portName) {
+        card = cards[i];
+        break;
+      }
+    }
+    if (!card) return;
+    root.querySelectorAll(".mk-port-card.is-focus").forEach(function (el) {
+      el.classList.remove("is-focus");
+    });
+    card.classList.add("is-focus");
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    window.setTimeout(function () { card.classList.remove("is-focus"); }, 1800);
+  }
+
   function chipList(ul, names, chipClass) {
     if (!ul) return;
     ul.innerHTML = "";
@@ -210,6 +880,148 @@
       var li = document.createElement("li");
       li.innerHTML = '<span class="mk-chip' + (chipClass ? " " + chipClass : "") + '">' + esc(name) + "</span>";
       ul.appendChild(li);
+    });
+  }
+
+  function gcdTwo(a, b) {
+    a = Math.abs(a);
+    b = Math.abs(b);
+    while (b) {
+      var t = b;
+      b = a % b;
+      a = t;
+    }
+    return a || 1;
+  }
+
+  function balanceSharePreview(weights) {
+    var vals = (weights || []).map(function (w) {
+      return Math.max(1, parseInt(w, 10) || 1);
+    });
+    if (vals.length < 2) return "";
+    var g = vals.reduce(function (acc, v) { return gcdTwo(acc, v); }, vals[0]);
+    var slots = vals.map(function (v) { return Math.max(1, Math.round(v / g)); });
+    var total = slots.reduce(function (a, b) { return a + b; }, 0);
+    var pcts = slots.map(function (s) {
+      return Math.round((100 * s) / total);
+    });
+    return "Target share ≈ " + pcts.join("% / ") + "% (ratio " + slots.join(":") + ")";
+  }
+
+  function renderBalanceWeights(names, savedWeights) {
+    var wrap = root.querySelector("[data-balance-weights-wrap]");
+    var box = root.querySelector("[data-balance-weights]");
+    var preview = root.querySelector("[data-balance-weight-preview]");
+    var preferredEl = root.querySelector("[data-balance-preferred]");
+    if (!box || !wrap) return;
+    var ports = names || [];
+    var saved = savedWeights && typeof savedWeights === "object" ? savedWeights : {};
+    setHidden(wrap, ports.length < 2);
+    if (ports.length < 2) {
+      box.innerHTML = "";
+      if (preview) preview.textContent = "";
+      if (preferredEl) {
+        preferredEl.textContent = "";
+        setHidden(preferredEl, true);
+      }
+      return;
+    }
+
+    var existing = {};
+    box.querySelectorAll('input[type="number"]').forEach(function (inp) {
+      var key = (inp.getAttribute("name") || "").replace(/^weight_/, "");
+      if (key) existing[key] = inp.value;
+    });
+
+    box.innerHTML = ports
+      .map(function (name, index) {
+        var val = parseInt(existing[name], 10);
+        if (!val || val < 1) val = parseInt(saved[name], 10);
+        if (!val || val < 1) val = index === 0 ? 100 : 100;
+        return (
+          '<label class="mk-balance-weight-row">' +
+          '<span class="mk-balance-weight-port">' +
+          esc(name) +
+          "</span>" +
+          '<input type="number" name="weight_' +
+          esc(name) +
+          '" min="1" max="10000" step="1" value="' +
+          esc(String(val)) +
+          '" inputmode="numeric" required>' +
+          "<span>Mbps</span></label>"
+        );
+      })
+      .join("");
+
+    function readWeights() {
+      var rows = [];
+      box.querySelectorAll('input[type="number"]').forEach(function (inp) {
+        var key = (inp.getAttribute("name") || "").replace(/^weight_/, "");
+        rows.push({
+          name: key,
+          mbps: Math.max(1, parseInt(inp.value, 10) || 1),
+          input: inp
+        });
+      });
+      return rows;
+    }
+
+    function updatePreview() {
+      var rows = readWeights();
+      var vals = rows.map(function (r) { return r.mbps; });
+      if (preview) preview.textContent = balanceSharePreview(vals);
+      if (!preferredEl) return;
+      if (!rows.length) {
+        preferredEl.textContent = "";
+        setHidden(preferredEl, true);
+        return;
+      }
+      var best = rows.slice().sort(function (a, b) {
+        return b.mbps - a.mbps || a.name.localeCompare(b.name);
+      })[0];
+      preferredEl.textContent =
+        "Preferred for clients: " +
+        best.name +
+        " (" +
+        best.mbps +
+        " Mbps) — gets most connections and wins if another ISP dies.";
+      setHidden(preferredEl, false);
+      box.querySelectorAll(".mk-balance-weight-row").forEach(function (row) {
+        row.classList.remove("is-preferred");
+      });
+      if (best.input && best.input.closest) {
+        var row = best.input.closest(".mk-balance-weight-row");
+        if (row) row.classList.add("is-preferred");
+      }
+    }
+
+    box.querySelectorAll('input[type="number"]').forEach(function (inp) {
+      inp.addEventListener("input", updatePreview);
+    });
+    updatePreview();
+  }
+
+  function applyBalancePreset(kind) {
+    var box = root.querySelector("[data-balance-weights]");
+    if (!box) return;
+    var inputs = Array.prototype.slice.call(box.querySelectorAll('input[type="number"]'));
+    if (inputs.length < 2) return;
+    if (kind === "equal") {
+      inputs.forEach(function (inp) { inp.value = "100"; });
+    } else if (kind === "prefer3" || kind === "prefer5") {
+      var bestIdx = 0;
+      for (var i = 1; i < inputs.length; i++) {
+        if ((parseInt(inputs[i].value, 10) || 0) > (parseInt(inputs[bestIdx].value, 10) || 0)) {
+          bestIdx = i;
+        }
+      }
+      var strong = kind === "prefer5" ? "500" : "300";
+      inputs.forEach(function (inp, idx) {
+        inp.value = idx === bestIdx ? strong : "100";
+      });
+    }
+    inputs.forEach(function (inp) {
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
 
@@ -244,19 +1056,22 @@
     if (port.is_bond_iface) {
       body = '<p class="mk-help-note">Bond interface — managed by multi-uplink settings.</p>';
     } else {
-      var advOpen = role === "wan_backup" || role === "bond" || role === "none" ? " open" : "";
+      var roles = rolesForGoal(selectedGoal || "single");
+      var moreValues = roles.more.map(function (pair) { return pair[0]; });
+      var advOpen = moreValues.indexOf(role) >= 0 ? " open" : "";
       body =
         '<div class="mk-role-picks" role="group" aria-label="Role for ' + esc(port.name) + '">' +
-        rolePickForms(port.name, role, quickRoles) +
+        rolePickForms(port.name, role, roles.main) +
         "</div>" +
         '<details class="mk-port-more"' + advOpen + ">" +
         "<summary>More roles</summary>" +
         '<div class="mk-role-picks is-advanced">' +
-        rolePickForms(port.name, role, advancedRoles) +
+        rolePickForms(port.name, role, roles.more) +
         "</div></details>";
     }
     return (
-      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + '">' +
+      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + '"' +
+      ' data-port-name="' + esc(port.name) + '" id="port-card-' + esc(port.name).replace(/[^a-zA-Z0-9_-]/g, "-") + '">' +
       '<header class="mk-port-card-head"><div>' +
       '<strong class="mk-port-name">' + esc(port.name) + "</strong>" +
       '<div class="mk-port-meta">' +
@@ -283,6 +1098,24 @@
     );
   }
 
+  function renderPortCards(data) {
+    var allPorts = data.ports || [];
+    var grid = root.querySelector("[data-ports-grid]");
+    var assign = root.querySelector("[data-ports-assign]");
+    if (!grid) return;
+    if (allPorts.length) {
+      grid.innerHTML = allPorts.map(renderPortCard).join("");
+      setHidden(grid, false);
+      setHidden(assign, false);
+      setHidden(root.querySelector("[data-ports-empty]"), true);
+    } else {
+      setHidden(grid, true);
+      setHidden(assign, true);
+      setHidden(root.querySelector("[data-ports-empty]"), false);
+      setHidden(root.querySelector("[data-ports-map]"), true);
+    }
+  }
+
   function apply(data) {
     setHidden(root.querySelector("[data-ports-loading-ui]"), true);
 
@@ -295,10 +1128,14 @@
       setHidden(root.querySelector("[data-ports-empty]"), true);
       setHidden(root.querySelector("[data-ports-summary]"), true);
       setHidden(root.querySelector("[data-ports-hint]"), true);
-      setHidden(document.querySelector("[data-uplink-config]"), true);
+      setHidden(root.querySelector("[data-ports-map]"), true);
+      setHidden(root.querySelector("[data-uplink-config]"), true);
+      setHidden(root.querySelector("[data-ports-assign]"), true);
       setHidden(root.querySelector("[data-ports-auto-form]"), true);
       return;
     }
+
+    lastPortsData = data;
 
     setHidden(root.querySelector("[data-ports-error]"), true);
     setHidden(root.querySelector("[data-ports-auto-form]"), suspended);
@@ -328,7 +1165,13 @@
     }
     if (sumInternetMeta) {
       sumInternetMeta.textContent =
-        mode === "bond" ? "Bonded uplink" : mode === "failover" ? "Failover uplink" : "Main WAN";
+        mode === "bond"
+          ? "Bonded uplink"
+          : mode === "failover"
+            ? "Failover uplink"
+            : mode === "balance"
+              ? "Load-balanced (~50/50)"
+              : "Main WAN";
     }
     var sumLan = root.querySelector("[data-sum-lan]");
     var sumLanMeta = root.querySelector("[data-sum-lan-meta]");
@@ -359,6 +1202,14 @@
       if (mode === "bond" && ports.length) {
         modeMeta.textContent =
           (data.bond_interface || "") + " · " + (data.bond_mode || "") + " · " + ports.join(", ");
+      } else if (mode === "balance" && ports.length) {
+        var wmap = data.uplink_weights || {};
+        var wbits = ports
+          .map(function (p) {
+            return wmap[p] ? p + " " + wmap[p] + " Mbps" : p;
+          })
+          .join(" + ");
+        modeMeta.textContent = "Sharing " + wbits;
       } else if (mode === "failover" && ports.length) {
         modeMeta.textContent =
           "Primary " +
@@ -375,7 +1226,18 @@
     var healthEl = root.querySelector("[data-uplink-health]");
     if (healthEl) {
       var live = data.uplink_live || {};
-      if (mode === "single" || !live.ok) {
+      if (mode === "balance") {
+        var shareLine = ((data.wan_share && data.wan_share.shares) || [])
+          .map(function (s) {
+            return (s.name || "?") + " " + (s.pct != null ? s.pct + "%" : "—");
+          })
+          .join(" · ");
+        healthEl.textContent = shareLine
+          ? "Live share · " + shareLine
+          : "PCC load balance across " + (data.uplink_ports || []).join(" + ");
+        healthEl.className = "mk-uplink-health is-ok";
+        setHidden(healthEl, false);
+      } else if (mode === "single" || !live.ok) {
         setHidden(healthEl, true);
         healthEl.textContent = "";
         healthEl.className = "mk-uplink-health";
@@ -417,62 +1279,125 @@
       }
     }
 
-    var ports = data.ports || [];
-    var grid = root.querySelector("[data-ports-grid]");
-    if (ports.length) {
-      grid.innerHTML = ports.map(renderPortCard).join("");
-      setHidden(grid, false);
-      setHidden(root.querySelector("[data-ports-empty]"), true);
+    renderFlow(data);
+    renderFace(data);
+
+    var storedGoal = readStoredGoal();
+    var preferredGoal = storedGoal || mode || "single";
+    if (!selectedGoal) {
+      setSelectedGoal(preferredGoal, { skipRerender: true });
     } else {
-      setHidden(grid, true);
-      setHidden(root.querySelector("[data-ports-empty]"), false);
+      setSelectedGoal(selectedGoal, { skipRerender: true });
     }
 
-    var uplinkConfig = document.querySelector("[data-uplink-config]");
+    renderPortCards(data);
+
+    var uplinkConfig = root.querySelector("[data-uplink-config]");
     if (!suspended && physical.length) {
       setHidden(uplinkConfig, false);
-      chipList(document.querySelector("[data-bond-list]"), bond);
-      setHidden(document.querySelector("[data-bond-empty]"), !!bond.length);
-      setHidden(document.querySelector("[data-bond-list]"), !bond.length);
+      chipList(root.querySelector("[data-bond-list]"), bond);
+      setHidden(root.querySelector("[data-bond-empty]"), !!bond.length);
+      setHidden(root.querySelector("[data-bond-list]"), !bond.length);
       var canBond = !!data.can_apply_bond;
-      var bondBtn = document.querySelector("[data-apply-bond]");
+      var bondBtn = root.querySelector("[data-apply-bond]");
       if (bondBtn) bondBtn.disabled = !canBond;
-      setHidden(document.querySelector("[data-bond-hint]"), canBond);
+      setHidden(root.querySelector("[data-bond-hint]"), canBond);
 
-      chipList(document.querySelector("[data-primary-list]"), primary.length === 1 ? primary : [], "is-primary");
-      setHidden(document.querySelector("[data-primary-list]"), primary.length !== 1);
-      setHidden(document.querySelector("[data-primary-empty]"), primary.length !== 0);
-      setHidden(document.querySelector("[data-primary-warn]"), primary.length <= 1);
+      chipList(root.querySelector("[data-primary-list]"), primary.length === 1 ? primary : [], "is-primary");
+      setHidden(root.querySelector("[data-primary-list]"), primary.length !== 1);
+      setHidden(root.querySelector("[data-primary-empty]"), primary.length !== 0);
+      setHidden(root.querySelector("[data-primary-warn]"), primary.length <= 1);
       var backups = data.backup_wan_ports || [];
-      chipList(document.querySelector("[data-backup-list]"), backups, "is-backup");
-      setHidden(document.querySelector("[data-backup-list]"), !backups.length);
-      setHidden(document.querySelector("[data-backup-empty]"), !!backups.length);
+      chipList(root.querySelector("[data-backup-list]"), backups, "is-backup");
+      setHidden(root.querySelector("[data-backup-list]"), !backups.length);
+      setHidden(root.querySelector("[data-backup-empty]"), !!backups.length);
       var canFail = !!data.can_apply_failover;
-      var failBtn = document.querySelector("[data-apply-failover]");
+      var failBtn = root.querySelector("[data-apply-failover]");
       if (failBtn) failBtn.disabled = !canFail;
-      setHidden(document.querySelector("[data-failover-hint]"), canFail);
+      setHidden(root.querySelector("[data-failover-hint]"), canFail);
+
+      var balanceMembers = primary.concat(data.backup_wan_ports || []);
+      chipList(root.querySelector("[data-balance-list]"), balanceMembers, "is-balance");
+      setHidden(root.querySelector("[data-balance-list]"), balanceMembers.length < 2);
+      setHidden(root.querySelector("[data-balance-empty]"), balanceMembers.length >= 2);
+      renderBalanceWeights(balanceMembers, data.uplink_weights || {});
+      var canBalance = !!data.can_apply_balance;
+      var balanceBtn = root.querySelector("[data-apply-balance]");
+      if (balanceBtn) balanceBtn.disabled = !canBalance;
+      setHidden(root.querySelector("[data-balance-hint]"), canBalance);
     } else {
       setHidden(uplinkConfig, true);
+      setHidden(root.querySelector("[data-ports-assign]"), true);
     }
   }
 
-  function refresh() {
-    setHidden(root.querySelector("[data-ports-loading-ui]"), false);
-    setHidden(root.querySelector("[data-ports-error]"), true);
-    fetch(liveUrl + "?refresh=1", {
+  function refresh(options) {
+    var opts = options || {};
+    var silent = !!opts.silent;
+    if (!silent) {
+      setHidden(root.querySelector("[data-ports-loading-ui]"), false);
+      setHidden(root.querySelector("[data-ports-error]"), true);
+    }
+    return fetch(liveUrl + "?refresh=1", {
       headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
     })
       .then(function (res) { return res.json(); })
-      .then(apply)
+      .then(function (data) {
+        apply(data);
+        return data;
+      })
       .catch(function () {
-        apply({ ok: false, error: "Could not load ports from the MikroTik." });
+        if (!silent) {
+          apply({ ok: false, error: "Could not load ports from the MikroTik." });
+        }
       });
   }
 
+  var livePollTimer = null;
+  function startLivePolling() {
+    if (livePollTimer || suspended) return;
+    livePollTimer = window.setInterval(function () {
+      if (document.hidden) return;
+      refresh({ silent: true });
+    }, 5000);
+  }
+  function stopLivePolling() {
+    if (!livePollTimer) return;
+    window.clearInterval(livePollTimer);
+    livePollTimer = null;
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return;
+    refresh({ silent: true });
+  });
+  window.addEventListener("beforeunload", stopLivePolling);
+
+  root.addEventListener("change", function (event) {
+    var select = event.target.closest("[data-uplink-goal-select]");
+    if (!select || !root.contains(select)) return;
+    setSelectedGoal(select.value || "single");
+    var panel = root.querySelector('[data-goal-panel="' + (selectedGoal || "single") + '"]');
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+
+  root.addEventListener("click", function (event) {
+    var preset = event.target.closest("[data-balance-preset]");
+    if (preset && root.contains(preset)) {
+      event.preventDefault();
+      applyBalancePreset(preset.getAttribute("data-balance-preset") || "equal");
+      return;
+    }
+    var jump = event.target.closest("[data-jump-port]");
+    if (!jump || !root.contains(jump)) return;
+    event.preventDefault();
+    jumpToPortCard(jump.getAttribute("data-jump-port") || "");
+  });
+
   var retry = root.querySelector("[data-ports-retry]");
-  if (retry) retry.addEventListener("click", refresh);
-  refresh();
+  if (retry) retry.addEventListener("click", function () { refresh(); });
+  refresh().then(function () { startLivePolling(); });
 })();
 </script>
 {% endblock %}

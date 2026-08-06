@@ -23,7 +23,9 @@
       <table class="org-table">
         <thead>
           <tr>
+            <th></th>
             <th>Equipment</th>
+            <th>Price</th>
             <th>Qty</th>
             <th>Status</th>
             <th>Stock</th>
@@ -33,9 +35,27 @@
         <tbody>
           {% for item in equipment_list %}
             <tr>
+              <td class="equipment-row-thumb-cell">
+                {% if item.image %}
+                  <img class="package-row-thumb" src="{{ item.image.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
+                {% else %}
+                  <span class="package-row-thumb-empty" aria-hidden="true"></span>
+                {% endif %}
+              </td>
               <td>
                 <strong>{{ item.name }}</strong>
                 <small class="lead-location-line">{{ item.get_equipment_type_display }}</small>
+              </td>
+              <td>
+                {% if item.discount_enabled and item.discount_price %}
+                  <strong>KES {{ item.effective_price|floatformat:0 }}</strong>
+                  <small class="lead-location-line">
+                    <s>KES {{ item.selling_price|floatformat:0 }}</s>
+                    · save {{ item.calculated_discount|floatformat:0 }}
+                  </small>
+                {% else %}
+                  <strong>KES {{ item.selling_price|floatformat:0 }}</strong>
+                {% endif %}
               </td>
               <td data-equipment-qty-cell="{{ item.pk }}">{{ item.quantity }}</td>
               <td>
@@ -73,6 +93,10 @@
                     data-equipment-id="{{ item.pk }}"
                     data-equipment-name="{{ item.name }}"
                     data-equipment-type="{{ item.equipment_type }}"
+                    data-equipment-price="{{ item.selling_price }}"
+                    data-equipment-discount-enabled="{% if item.discount_enabled %}1{% else %}0{% endif %}"
+                    data-equipment-discount-price="{{ item.discount_price }}"
+                    data-equipment-image="{% if item.image %}{{ item.image.url }}{% endif %}"
                     title="Edit"
                     aria-label="Edit {{ item.name }}"
                   >
@@ -151,7 +175,7 @@
       </button>
     </header>
 
-    <form method="post" class="pppoe-form" novalidate>
+    <form method="post" class="pppoe-form" enctype="multipart/form-data" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="register">
 
@@ -172,6 +196,43 @@
               <label for="{{ form.equipment_type.id_for_label }}">{{ form.equipment_type.label }} *</label>
               <div class="pppoe-select">{{ form.equipment_type }}</div>
               {% if form.equipment_type.errors %}<div class="field-error">{{ form.equipment_type.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ form.selling_price.id_for_label }}">{{ form.selling_price.label }} *</label>
+              {{ form.selling_price }}
+              {% if form.selling_price.errors %}<div class="field-error">{{ form.selling_price.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label class="equipment-discount-toggle" for="{{ form.discount_enabled.id_for_label }}">
+                {{ form.discount_enabled }}
+                <span>
+                  <strong>{{ form.discount_enabled.label }}</strong>
+                  <small>Set a lower price to sell; discount is calculated automatically</small>
+                </span>
+              </label>
+            </div>
+            <div class="field field-span-2" data-equipment-discount-price-wrap{% if not form.discount_enabled.value %} hidden{% endif %}>
+              <label for="{{ form.discount_price.id_for_label }}">{{ form.discount_price.label }}</label>
+              {{ form.discount_price }}
+              <p class="field-hint" data-equipment-discount-calc>Discount: KES 0</p>
+              {% if form.discount_price.errors %}<div class="field-error">{{ form.discount_price.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label>{{ form.image.label }} <span class="pppoe-optional">optional</span></label>
+              <div class="package-image-upload">
+                <div class="package-image-preview" id="equipment-image-preview" aria-hidden="true">
+                  <span class="package-image-preview-empty">No image</span>
+                  <img id="equipment-image-preview-img" alt="" hidden>
+                </div>
+                <div class="package-image-fields">
+                  <label class="org-edit-file" for="{{ form.image.id_for_label }}">
+                    <span class="org-edit-file-btn">Choose image</span>
+                    <span class="org-edit-file-hint" id="equipment-image-file-name">PNG, JPG, or WebP · optional · max 5 MB</span>
+                    {{ form.image }}
+                  </label>
+                </div>
+              </div>
+              {% if form.image.errors %}<div class="field-error">{{ form.image.errors|striptags }}</div>{% endif %}
             </div>
           </div>
         </section>
@@ -197,14 +258,14 @@
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Infrastructure</p>
         <h2 id="equipment-edit-title">Edit equipment</h2>
-        <p class="role-modal-sub pppoe-sub">Update the equipment name or type.</p>
+        <p class="role-modal-sub pppoe-sub">Update pricing, name, type, or image.</p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-edit-modal aria-label="Close">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </header>
 
-    <form method="post" class="pppoe-form" id="equipment-edit-form" novalidate>
+    <form method="post" class="pppoe-form" id="equipment-edit-form" enctype="multipart/form-data" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="edit">
       <input type="hidden" name="equipment_id" id="edit-equipment-id" value="{% if edit_form.instance.pk %}{{ edit_form.instance.pk }}{% endif %}">
@@ -226,6 +287,49 @@
               <label for="{{ edit_form.equipment_type.id_for_label }}">{{ edit_form.equipment_type.label }} *</label>
               <div class="pppoe-select">{{ edit_form.equipment_type }}</div>
               {% if edit_form.equipment_type.errors %}<div class="field-error">{{ edit_form.equipment_type.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ edit_form.selling_price.id_for_label }}">{{ edit_form.selling_price.label }} *</label>
+              {{ edit_form.selling_price }}
+              {% if edit_form.selling_price.errors %}<div class="field-error">{{ edit_form.selling_price.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label class="equipment-discount-toggle" for="{{ edit_form.discount_enabled.id_for_label }}">
+                {{ edit_form.discount_enabled }}
+                <span>
+                  <strong>{{ edit_form.discount_enabled.label }}</strong>
+                  <small>Set a lower price to sell; discount is calculated automatically</small>
+                </span>
+              </label>
+            </div>
+            <div class="field field-span-2" data-equipment-discount-price-wrap{% if not edit_form.discount_enabled.value and not edit_form.instance.discount_enabled %} hidden{% endif %}>
+              <label for="{{ edit_form.discount_price.id_for_label }}">{{ edit_form.discount_price.label }}</label>
+              {{ edit_form.discount_price }}
+              <p class="field-hint" data-equipment-discount-calc>Discount: KES 0</p>
+              {% if edit_form.discount_price.errors %}<div class="field-error">{{ edit_form.discount_price.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label>{{ edit_form.image.label }} <span class="pppoe-optional">optional</span></label>
+              <div class="package-image-upload">
+                <div class="package-image-preview{% if edit_form.instance.pk and edit_form.instance.image %} has-image{% endif %}" id="edit-equipment-image-preview" aria-hidden="true">
+                  <span class="package-image-preview-empty"{% if edit_form.instance.pk and edit_form.instance.image %} hidden{% endif %}>No image</span>
+                  <img id="edit-equipment-image-preview-img" alt="" {% if edit_form.instance.pk and edit_form.instance.image %}src="{{ edit_form.instance.image.url }}"{% else %}hidden{% endif %}>
+                </div>
+                <div class="package-image-fields">
+                  <label class="org-edit-file" for="{{ edit_form.image.id_for_label }}">
+                    <span class="org-edit-file-btn">Choose image</span>
+                    <span class="org-edit-file-hint" id="edit-equipment-image-file-name">
+                      {% if edit_form.instance.pk and edit_form.instance.image %}
+                        Current image kept unless you choose a new one
+                      {% else %}
+                        PNG, JPG, or WebP · optional · max 5 MB
+                      {% endif %}
+                    </span>
+                    {{ edit_form.image }}
+                  </label>
+                </div>
+              </div>
+              {% if edit_form.image.errors %}<div class="field-error">{{ edit_form.image.errors|striptags }}</div>{% endif %}
             </div>
           </div>
         </section>
@@ -529,6 +633,149 @@
   var editId = document.getElementById("edit-equipment-id");
   var editName = document.getElementById("id_edit-name") || document.getElementById("id_equipment_edit_name");
   var editType = document.getElementById("id_edit-equipment_type") || document.getElementById("id_equipment_edit_type");
+  var editPrice = document.getElementById("id_equipment_edit_selling_price");
+  var editDiscountEnabled = document.getElementById("id_equipment_edit_discount_enabled");
+  var editDiscountPrice = document.getElementById("id_equipment_edit_discount_price");
+  var registerDiscountEnabled = document.getElementById("id_equipment_discount_enabled");
+
+  function formatKes(value) {
+    var n = Number(value);
+    if (!isFinite(n)) n = 0;
+    try {
+      return "KES " + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    } catch (e) {
+      return "KES " + n;
+    }
+  }
+
+  function syncDiscountPriceVisibility(checkbox) {
+    if (!checkbox) return;
+    var form = checkbox.closest("form");
+    if (!form) return;
+    var wrap = form.querySelector("[data-equipment-discount-price-wrap]");
+    if (!wrap) return;
+    wrap.hidden = !checkbox.checked;
+    updateDiscountCalc(form);
+  }
+
+  function updateDiscountCalc(form) {
+    if (!form) return;
+    var hint = form.querySelector("[data-equipment-discount-calc]");
+    var enabled = form.querySelector('input[name$="discount_enabled"], input[name="discount_enabled"]');
+    var selling = form.querySelector('input[name$="selling_price"], input[name="selling_price"]');
+    var discountPrice = form.querySelector('input[name$="discount_price"], input[name="discount_price"]');
+    if (!hint) return;
+    if (!enabled || !enabled.checked) {
+      hint.textContent = "Discount: KES 0";
+      hint.classList.remove("is-error");
+      return;
+    }
+    var sell = parseFloat(selling && selling.value ? selling.value : "0");
+    var target = parseFloat(discountPrice && discountPrice.value ? discountPrice.value : "0");
+    if (!isFinite(sell)) sell = 0;
+    if (!isFinite(target)) target = 0;
+    if (target <= 0) {
+      hint.textContent = "Enter the price to sell at after discount.";
+      hint.classList.add("is-error");
+      return;
+    }
+    if (target > sell) {
+      hint.textContent = "Discount price cannot be higher than the selling price.";
+      hint.classList.add("is-error");
+      return;
+    }
+    var savings = sell - target;
+    hint.classList.remove("is-error");
+    hint.textContent = "Discount: " + formatKes(savings) + " (sell at " + formatKes(target) + ")";
+  }
+
+  function wireDiscountCalc(form) {
+    if (!form) return;
+    ["input", "change"].forEach(function (evt) {
+      form.addEventListener(evt, function (event) {
+        var t = event.target;
+        if (!t) return;
+        if (
+          t.matches &&
+          t.matches(
+            'input[name$="selling_price"], input[name="selling_price"], input[name$="discount_price"], input[name="discount_price"], input[name$="discount_enabled"], input[name="discount_enabled"]'
+          )
+        ) {
+          if (t.type === "checkbox") syncDiscountPriceVisibility(t);
+          else updateDiscountCalc(form);
+        }
+      });
+    });
+    var enabled = form.querySelector('input[name$="discount_enabled"], input[name="discount_enabled"]');
+    syncDiscountPriceVisibility(enabled);
+  }
+
+  wireDiscountCalc(document.querySelector("#equipment-register-modal form"));
+  wireDiscountCalc(document.getElementById("equipment-edit-form"));
+
+
+  function wireEquipmentImagePreview(inputId, previewId, imgId, fileNameId, emptyHint) {
+    var imageInput = document.getElementById(inputId);
+    var preview = document.getElementById(previewId);
+    var previewImg = document.getElementById(imgId);
+    var previewEmpty = preview ? preview.querySelector(".package-image-preview-empty") : null;
+    var fileName = document.getElementById(fileNameId);
+    if (!imageInput) return null;
+
+    function showExisting(url) {
+      if (!previewImg) return;
+      if (url) {
+        previewImg.src = url;
+        previewImg.hidden = false;
+        if (previewEmpty) previewEmpty.hidden = true;
+        if (preview) preview.classList.add("has-image");
+      } else {
+        previewImg.hidden = true;
+        previewImg.removeAttribute("src");
+        if (previewEmpty) previewEmpty.hidden = false;
+        if (preview) preview.classList.remove("has-image");
+      }
+    }
+
+    if (previewImg && previewImg.getAttribute("src")) {
+      showExisting(previewImg.getAttribute("src"));
+    }
+
+    imageInput.addEventListener("change", function () {
+      var file = imageInput.files && imageInput.files[0];
+      if (!file) {
+        if (fileName) {
+          fileName.textContent = emptyHint || "PNG, JPG, or WebP · optional · max 5 MB";
+        }
+        showExisting("");
+        return;
+      }
+      if (fileName) fileName.textContent = file.name;
+      if (!previewImg) return;
+      var url = URL.createObjectURL(file);
+      previewImg.onload = function () { URL.revokeObjectURL(url); };
+      previewImg.src = url;
+      previewImg.hidden = false;
+      if (previewEmpty) previewEmpty.hidden = true;
+      if (preview) preview.classList.add("has-image");
+    });
+
+    return { showExisting: showExisting, fileName: fileName, input: imageInput };
+  }
+
+  wireEquipmentImagePreview(
+    "id_equipment_image",
+    "equipment-image-preview",
+    "equipment-image-preview-img",
+    "equipment-image-file-name"
+  );
+  var editImageControls = wireEquipmentImagePreview(
+    "id_equipment_edit_image",
+    "edit-equipment-image-preview",
+    "edit-equipment-image-preview-img",
+    "edit-equipment-image-file-name",
+    "Current image kept unless you choose a new one"
+  );
 
   function anyModalOpen() {
     return document.querySelector(".role-modal:not([hidden])");
@@ -553,11 +800,29 @@
     }
   }
 
-  function openEditModal(id, name, type) {
+  function openEditModal(id, name, type, imageUrl, price, discountEnabled, discountPrice) {
     if (!editModal) return;
     if (editId) editId.value = id || "";
     if (editName && name != null) editName.value = name;
     if (editType && type != null) editType.value = type;
+    if (editPrice) editPrice.value = price != null && price !== "" ? price : "0";
+    if (editDiscountEnabled) {
+      editDiscountEnabled.checked = discountEnabled === true || discountEnabled === "1" || discountEnabled === 1;
+    }
+    if (editDiscountPrice) {
+      editDiscountPrice.value =
+        discountPrice != null && discountPrice !== "" ? discountPrice : "0";
+    }
+    syncDiscountPriceVisibility(editDiscountEnabled);
+    if (editImageControls) {
+      if (editImageControls.input) editImageControls.input.value = "";
+      editImageControls.showExisting(imageUrl || "");
+      if (editImageControls.fileName) {
+        editImageControls.fileName.textContent = imageUrl
+          ? "Current image kept unless you choose a new one"
+          : "PNG, JPG, or WebP · optional · max 5 MB";
+      }
+    }
     editModal.hidden = false;
     editModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
@@ -1808,7 +2073,11 @@
       openEditModal(
         btn.getAttribute("data-equipment-id"),
         btn.getAttribute("data-equipment-name"),
-        btn.getAttribute("data-equipment-type")
+        btn.getAttribute("data-equipment-type"),
+        btn.getAttribute("data-equipment-image"),
+        btn.getAttribute("data-equipment-price"),
+        btn.getAttribute("data-equipment-discount-enabled"),
+        btn.getAttribute("data-equipment-discount-price")
       );
     });
   });
@@ -1934,6 +2203,17 @@
   });
 
   syncStockAction();
+  document.querySelectorAll(".pppoe-form input.text-upper, .pppoe-form textarea.text-upper").forEach(function (el) {
+    el.addEventListener("input", function () {
+      var start = el.selectionStart;
+      var end = el.selectionEnd;
+      var next = el.value.toUpperCase();
+      if (el.value !== next) {
+        el.value = next;
+        if (typeof start === "number") el.setSelectionRange(start, end);
+      }
+    });
+  });
   if (openRegisterOnLoad) openRegisterModal();
   if (openEditOnLoad) {
     editModal.hidden = false;

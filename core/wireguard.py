@@ -236,6 +236,7 @@ def routeros_script(address: str, private_key: str) -> str:
     before installing the latest address, private key, server peer, and rules.
 
     Besides bringing WireGuard up, the script always:
+    - deletes any previous ISPCENTRIC /system script and scheduler entries first
     - force-enables the RouterOS API on port 8728 (compulsory for Connect)
     - clears any /ip service address= restriction that silently blocks API
     - accepts API + ICMP from the tunnel and private LANs in the input filter
@@ -266,7 +267,12 @@ def routeros_script(address: str, private_key: str) -> str:
         [
             "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
             "# Requires RouterOS 7. Safe to re-run: the newest script replaces the old one.",
-            "# Remove the complete previous ISPCENTRIC tunnel before applying this version.",
+            "# 1) Delete any previous ISPCENTRIC scripts/schedulers saved on the router.",
+            ':do { /system script remove [find where name~"ispcentric"] } on-error={}',
+            ':do { /system script remove [find where comment~"ispcentric"] } on-error={}',
+            ':do { /system scheduler remove [find where name~"ispcentric"] } on-error={}',
+            ':do { /system scheduler remove [find where comment~"ispcentric"] } on-error={}',
+            "# 2) Remove the complete previous ISPCENTRIC tunnel, then install this version.",
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
             # Drop only tunnel/legacy Hotspot bypass rows — never wipe the single-IP

@@ -63,6 +63,35 @@ def _default_route_ipv4() -> str:
         probe.close()
 
 
+def local_ipv4_shares_subnet(target: str) -> tuple[bool, str]:
+    """
+    Whether this machine has a private IPv4 on the same /24 as ``target``.
+
+    Used by local MikroTik onboarding: MNDP can discover a router on L2 while
+    Windows still cannot open TCP 8728 because the PC is on another subnet
+    (e.g. PC 192.168.1.66 vs router 192.168.88.1).
+    """
+    try:
+        target_ip = ipaddress.IPv4Address((target or "").strip())
+    except ValueError:
+        return False, ""
+
+    best_local = ""
+    for raw in local_ipv4_addresses():
+        try:
+            local = ipaddress.IPv4Address(raw)
+        except ValueError:
+            continue
+        if local.is_loopback or local.is_link_local or not local.is_private:
+            continue
+        if not best_local:
+            best_local = str(local)
+        # Home/office MikroTiks are almost always /24; good enough for guidance.
+        if target_ip in ipaddress.IPv4Network(f"{local}/24", strict=False):
+            return True, str(local)
+    return False, best_local
+
+
 def preferred_lan_ipv4() -> str:
     """
     Best private IPv4 for Hotspot clients on the same LAN as this server.

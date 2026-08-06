@@ -185,16 +185,19 @@
     id="client-package-period"
     data-subscription-url="{% url 'core:client_subscription' customer.id %}"
     data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
+    data-subscription-paused="{% if subscription_paused %}1{% else %}0{% endif %}"
     data-package-duration="{{ package_duration|default:'' }}"
   >
-    {% if customer.package_start or customer.package_end %}
-      <div class="client-subscription-banner {% if subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
-        {% if subscription_active %}
-          Active — surfing allowed in this period.
+    {% if customer.package_start or customer.package_end or subscription_paused %}
+      <div class="client-subscription-banner {% if subscription_paused %}is-paused{% elif subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
+        {% if subscription_paused %}
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Paused. Surfing blocked; remaining time is frozen until you resume.
+        {% elif subscription_active %}
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Active. Surfing allowed in this period.
         {% elif subscription_expired %}
-          Ended — surfing blocked.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Ended. Surfing blocked.
         {% else %}
-          Outside package period — surfing blocked.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Outside package period. Surfing blocked.
         {% endif %}
       </div>
     {% else %}
@@ -213,18 +216,50 @@
 
     <dl class="client-simple-list">
       <div>
+        <dt>Plan</dt>
+        <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong>{% if package_duration_label %} · <span data-sub-duration>{{ package_duration_label }}</span>{% else %} · <span data-sub-duration>—</span>{% endif %}</dd>
+      </div>
+      <div>
         <dt>Package</dt>
         <dd>
           <span data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
           →
           <span data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
           · <span data-sub-remaining>—</span> left
-          · <span data-sub-duration>{% if package_duration_label %}{{ package_duration_label }}{% else %}—{% endif %}</span>
+          <span class="client-simple-hint" data-sub-pause-hint {% if not subscription_paused %}hidden{% endif %}>Paused</span>
         </dd>
       </div>
-      <div>
-        <dt>Plan</dt>
-        <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong></dd>
+      <div class="client-package-session-row" data-package-pause-row {% if not customer.package_end and not subscription_paused %}hidden{% endif %}>
+        <dt>Session</dt>
+        <dd>
+          <form method="post" class="client-package-pause-form" data-package-pause-form>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="{% if can_resume_package %}resume_package{% else %}pause_package{% endif %}" data-package-pause-action>
+            <label class="mikrotik-wifi-switch client-package-pause-switch" for="client-package-pause-toggle">
+              <input
+                type="checkbox"
+                id="client-package-pause-toggle"
+                data-package-pause-toggle
+                {% if not subscription_paused %}checked{% endif %}
+                {% if not can_pause_package and not can_resume_package %}disabled{% endif %}
+                aria-describedby="client-package-pause-label"
+              >
+              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+              <span class="mikrotik-wifi-switch-text" id="client-package-pause-label" data-package-pause-label>
+                {% if subscription_paused %}Paused{% else %}Running{% endif %}
+              </span>
+            </label>
+            <span class="client-simple-hint" data-package-pause-hint>
+              {% if subscription_paused %}
+                Turn on to resume and continue with remaining time.
+              {% elif can_pause_package %}
+                Turn off to pause. Remaining time freezes until you resume.
+              {% else %}
+                Set an active package period to pause or resume.
+              {% endif %}
+            </span>
+          </form>
+        </dd>
       </div>
     </dl>
   </div>
@@ -290,21 +325,6 @@
       </div>
     {% endif %}
   </dl>
-
-  <div class="client-simple-actions">
-    <button type="button" class="btn btn-ghost" data-open-modal="client-details-modal">
-      Edit details
-    </button>
-    <button type="button" class="btn btn-primary" data-open-modal="client-package-modal">
-      {% if customer.plan or customer.package_start %}Update package{% else %}Set package{% endif %}
-    </button>
-    {% if customer.service_type == "pppoe" and customer.router and customer.pppoe_username %}
-      <a class="btn btn-ghost" href="{% url 'core:client_router_login' customer.id %}" target="_blank" rel="noopener">Open router</a>
-    {% endif %}
-    {% if can_access_wifi %}
-      <a class="btn btn-ghost" href="{% url 'core:client_wifi_settings' customer.id %}">Wi‑Fi settings</a>
-    {% endif %}
-  </div>
 
   {% if can_live_usage %}
   <details
@@ -489,7 +509,11 @@
         <p class="role-modal-kicker pppoe-kicker">Package</p>
         <h2 id="client-package-title">Update package</h2>
         <p class="role-modal-sub pppoe-sub" data-package-modal-sub>
-          Choose the plan and when it starts. Hourly packages use the clock; other packages use calendar dates. The end updates automatically.
+          {% if customer.plan %}
+            Current plan: <strong data-package-current-plan>{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% if package_duration_label %} · {{ package_duration_label }}{% endif %}</strong>
+          {% else %}
+            Choose the plan and when it starts. The end updates automatically.
+          {% endif %}
         </p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
@@ -505,6 +529,11 @@
         {% endif %}
         <section class="pppoe-section">
           <h3 class="pppoe-section-title">Plan and period</h3>
+          {% if customer.plan %}
+            <p class="field-hint" data-package-current-plan-banner style="margin: 0 0 0.85rem;">
+              Currently on <strong data-package-current-plan>{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% if package_duration_label %} · {{ package_duration_label }}{% endif %}</strong>
+            </p>
+          {% endif %}
           <div class="pppoe-grid">
             <div class="field field-span-2">
               <label for="{{ package_form.plan.id_for_label }}">{{ package_form.plan.label }}</label>
@@ -817,8 +846,10 @@
       var section = document.getElementById("client-package-period");
       if (!section) return;
       var duration = data.package_duration || "";
+      var paused = !!data.subscription_paused;
       section.setAttribute("data-package-duration", duration || "");
       section.setAttribute("data-subscription-active", data.subscription_active ? "1" : "0");
+      section.setAttribute("data-subscription-paused", paused ? "1" : "0");
 
       document.querySelectorAll("[data-sub-start]").forEach(function (el) {
         el.textContent = data.package_start || fmtPeriodValue(data.package_start, duration) || "—";
@@ -831,32 +862,80 @@
       var durationEl = section.querySelector("[data-sub-duration]");
       if (durationEl) durationEl.textContent = data.plan_duration || "—";
       var planEl = section.querySelector("[data-sub-plan]");
-      if (planEl) planEl.textContent = data.plan_name || "—";
+      if (planEl) {
+        var planText = data.plan_name || "—";
+        if (data.plan_name && data.plan_speed) planText = data.plan_name + " · " + data.plan_speed;
+        planEl.textContent = planText;
+      }
+      var pauseHint = section.querySelector("[data-sub-pause-hint]");
+      if (pauseHint) pauseHint.hidden = !paused;
+
+      var heroPlan = document.querySelector('[data-hero-chip="plan"] strong');
+      if (heroPlan && data.plan_name) heroPlan.textContent = data.plan_name;
+      var heroPlanMeta = document.querySelector('[data-hero-chip="plan"] em');
+      if (heroPlanMeta && (data.plan_speed || data.plan_name)) {
+        heroPlanMeta.textContent = data.plan_speed || "Plan";
+      }
 
       var modal = document.getElementById("client-package-modal");
       if (modal && duration) modal.setAttribute("data-package-duration", duration);
 
       var banner = section.querySelector("[data-sub-banner]");
-      if (data.package_start || data.package_end || data.package_start_iso || data.package_end_iso) {
+      if (data.package_start || data.package_end || data.package_start_iso || data.package_end_iso || paused) {
         if (!banner) {
           banner = document.createElement("div");
           banner.className = "client-subscription-banner";
           banner.setAttribute("data-sub-banner", "");
           var toolbar = section.querySelector(".mikrotik-detail-toolbar");
           if (toolbar) toolbar.insertAdjacentElement("afterend", banner);
+          else section.prepend(banner);
         }
-        banner.classList.remove("is-active", "is-blocked");
-        if (data.subscription_active) {
+        banner.classList.remove("is-active", "is-blocked", "is-paused");
+        var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
+        if (paused) {
+          banner.classList.add("is-paused");
+          banner.textContent = planPrefix + "Paused. Surfing blocked; remaining time is frozen until you resume.";
+        } else if (data.subscription_active) {
           banner.classList.add("is-active");
-          banner.textContent = "Subscription active — devices on this client's Wi‑Fi can surf within this period.";
+          banner.textContent = planPrefix + "Active. Surfing allowed in this period.";
         } else {
           banner.classList.add("is-blocked");
-          banner.textContent = data.subscription_expired
-            ? "Subscription ended — surfing is blocked for users outside the subscription period."
-            : "Outside the package period — surfing is blocked for users.";
+          banner.textContent = planPrefix + (data.subscription_expired
+            ? "Ended. Surfing blocked."
+            : "Outside package period. Surfing blocked.");
         }
         banner.hidden = false;
       }
+
+      var currentPlanEl = document.querySelector("[data-package-current-plan]");
+      var currentPlanBanner = document.querySelector("[data-package-current-plan-banner]");
+      if (data.plan_name) {
+        var planTxt = data.plan_name;
+        if (data.plan_speed) planTxt += " · " + data.plan_speed;
+        if (data.plan_duration) planTxt += " · " + data.plan_duration;
+        if (currentPlanEl) {
+          currentPlanEl.textContent = planTxt;
+        } else if (currentPlanBanner) {
+          currentPlanBanner.innerHTML = 'Currently on <strong data-package-current-plan></strong>';
+          var created = currentPlanBanner.querySelector("[data-package-current-plan]");
+          if (created) created.textContent = planTxt;
+        } else {
+          var sectionTitle = document.querySelector("#client-package-form .pppoe-section-title");
+          if (sectionTitle) {
+            var hint = document.createElement("p");
+            hint.className = "field-hint";
+            hint.setAttribute("data-package-current-plan-banner", "");
+            hint.style.margin = "0 0 0.85rem";
+            hint.innerHTML = 'Currently on <strong data-package-current-plan></strong>';
+            sectionTitle.insertAdjacentElement("afterend", hint);
+            var createdEl = hint.querySelector("[data-package-current-plan]");
+            if (createdEl) createdEl.textContent = planTxt;
+          }
+        }
+        if (currentPlanBanner) currentPlanBanner.hidden = false;
+      }
+
+      syncPauseControls(data);
 
       var panelSub = section.querySelector(".panel-sub");
       if (panelSub && data.plan_name) {
@@ -864,6 +943,37 @@
         if (data.plan_duration) txt += " · " + data.plan_duration;
         if (data.plan_speed) txt += " · " + data.plan_speed;
         panelSub.textContent = txt;
+      }
+    }
+
+    function syncPauseControls(data) {
+      var form = document.querySelector("[data-package-pause-form]");
+      var row = document.querySelector("[data-package-pause-row]");
+      var toggle = document.querySelector("[data-package-pause-toggle]");
+      var label = document.querySelector("[data-package-pause-label]");
+      var hint = document.querySelector("[data-package-pause-hint]");
+      var actionInput = form && form.querySelector("[data-package-pause-action]");
+      var canPause = !!data.can_pause_package;
+      var canResume = !!data.can_resume_package;
+      var paused = !!data.subscription_paused;
+      var show = !!(data.package_end || data.package_end_iso || paused || canPause || canResume);
+      if (row) row.hidden = !show;
+      if (!form) return;
+      form.hidden = false;
+      if (actionInput) actionInput.value = paused ? "resume_package" : "pause_package";
+      if (toggle) {
+        toggle.checked = !paused;
+        toggle.disabled = !(canPause || canResume);
+      }
+      if (label) label.textContent = paused ? "Paused" : "Running";
+      if (hint) {
+        if (paused) {
+          hint.textContent = "Turn on to resume and continue with remaining time.";
+        } else if (canPause) {
+          hint.textContent = "Turn off to pause. Remaining time freezes until you resume.";
+        } else {
+          hint.textContent = "Set an active package period to pause or resume.";
+        }
       }
     }
 
@@ -883,6 +993,98 @@
     }
 
     window.updatePackageSection = updatePackageSection;
+    window.syncPauseControls = syncPauseControls;
+    window.showPackageToast = showPackageToast;
+  })();
+
+  (function setupPackagePauseAjax() {
+    document.querySelectorAll("[data-package-pause-form]").forEach(function (form) {
+      var toggle = form.querySelector("[data-package-pause-toggle]");
+      var actionInput = form.querySelector("[data-package-pause-action]");
+      var label = form.querySelector("[data-package-pause-label]");
+      var inFlight = false;
+
+      function setBusy(busy) {
+        if (!toggle) return;
+        if (busy) {
+          toggle.disabled = true;
+          if (label) label.textContent = toggle.checked ? "Resuming…" : "Pausing…";
+        }
+      }
+
+      function submitPause(wantRunning) {
+        if (inFlight || !actionInput) return;
+        actionInput.value = wantRunning ? "resume_package" : "pause_package";
+        inFlight = true;
+        setBusy(true);
+        fetch(form.getAttribute("action") || window.location.pathname, {
+          method: "POST",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          body: new FormData(form),
+        })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            if (!result.ok || !result.data || !result.data.ok) {
+              var err = (result.data && (result.data.error || result.data.message)) || "Could not update package session.";
+              if (typeof window.showPackageToast === "function") {
+                window.showPackageToast(err, "error");
+              }
+              if (toggle) toggle.checked = !wantRunning;
+              if (typeof window.syncPauseControls === "function") {
+                window.syncPauseControls(result.data || {
+                  subscription_paused: !wantRunning,
+                  can_pause_package: !wantRunning,
+                  can_resume_package: wantRunning,
+                });
+              } else if (label) {
+                label.textContent = wantRunning ? "Paused" : "Running";
+                toggle.disabled = false;
+              }
+              return;
+            }
+            if (typeof window.updatePackageSection === "function") {
+              window.updatePackageSection(result.data);
+            } else if (typeof window.syncPauseControls === "function") {
+              window.syncPauseControls(result.data);
+            }
+            if (typeof window.showPackageToast === "function") {
+              window.showPackageToast(result.data.message || "Package session updated.", "info");
+            }
+            if (typeof window.refreshClientSubscription === "function") {
+              window.refreshClientSubscription(true);
+            }
+          })
+          .catch(function () {
+            if (typeof window.showPackageToast === "function") {
+              window.showPackageToast("Network error while updating package session.", "error");
+            }
+            if (toggle) {
+              toggle.checked = !wantRunning;
+              toggle.disabled = false;
+            }
+            if (label) label.textContent = wantRunning ? "Paused" : "Running";
+          })
+          .finally(function () {
+            inFlight = false;
+          });
+      }
+
+      if (toggle) {
+        toggle.addEventListener("change", function () {
+          submitPause(!!toggle.checked);
+        });
+      }
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        if (toggle) submitPause(!!toggle.checked);
+      });
+    });
   })();
 
   (function setupClientDetailsAjax() {
@@ -1091,9 +1293,22 @@
       modal.setAttribute("data-package-duration", duration || "");
       if (hourly) ensureServiceDay();
       if (sub) {
-        sub.textContent = hourly
-          ? "Timed package — pick the day (defaults to today), then start and end times. End fills from the package period."
-          : "Choose the plan and start date. The end date fills automatically from the package period.";
+        var selected = planSelect.options[planSelect.selectedIndex];
+        var planLabel = selected && selected.value ? selected.textContent.trim() : "";
+        var currentPlanEl = sub.querySelector("[data-package-current-plan]");
+        if (planLabel) {
+          if (currentPlanEl) {
+            currentPlanEl.textContent = planLabel;
+          } else {
+            sub.innerHTML = "Current plan: <strong data-package-current-plan></strong>";
+            var el = sub.querySelector("[data-package-current-plan]");
+            if (el) el.textContent = planLabel;
+          }
+        } else {
+          sub.textContent = hourly
+            ? "Timed package — pick the day (defaults to today), then start and end times. End fills from the package period."
+            : "Choose the plan and start date. The end date fills automatically from the package period.";
+        }
       }
       syncEnd();
     }
@@ -1388,6 +1603,10 @@
     var start = Date.parse(data.package_start_iso || "");
     var end = Date.parse(data.package_end_iso || "");
     var now = Date.parse(data.now || "") || Date.now();
+    var pausedAt = Date.parse(data.package_paused_at || "");
+    if (data.subscription_paused && isFinite(pausedAt)) {
+      now = pausedAt;
+    }
     if (!isFinite(start) || !isFinite(end) || end <= start) {
       progress.hidden = true;
       return;
@@ -1396,12 +1615,17 @@
     progress.hidden = false;
     progress.classList.toggle("is-spent", used >= 100);
     progress.classList.toggle("is-ending", used >= 85 && used < 100);
+    progress.classList.toggle("is-paused", !!data.subscription_paused);
     progressFill.style.width = used.toFixed(1) + "%";
     if (progressPct) progressPct.textContent = Math.round(used) + "% used";
     if (progressLabel) {
-      progressLabel.textContent = data.remaining_label && used < 100
-        ? data.remaining_label + " left of this package"
-        : "Package period complete";
+      if (data.subscription_paused && data.remaining_label) {
+        progressLabel.textContent = data.remaining_label + " frozen while paused";
+      } else if (data.remaining_label && used < 100) {
+        progressLabel.textContent = data.remaining_label + " left of this package";
+      } else {
+        progressLabel.textContent = "Package period complete";
+      }
     }
   }
 
@@ -1410,13 +1634,29 @@
     var wasActive = lastActive;
     lastActive = !!data.subscription_active;
     section.setAttribute("data-subscription-active", lastActive ? "1" : "0");
+    section.setAttribute("data-subscription-paused", data.subscription_paused ? "1" : "0");
     renderProgress(data);
     if (typeof window.setClientHeroChip === "function") {
+      var chipLabel = "Inactive";
+      var chipState = "is-bad";
+      if (data.subscription_paused) {
+        chipLabel = "Paused";
+        chipState = "is-idle";
+      } else if (lastActive) {
+        chipLabel = "Active";
+        chipState = "is-good";
+      } else if (data.subscription_expired) {
+        chipLabel = "Ended";
+      }
       window.setClientHeroChip(
         "subscription",
-        lastActive ? "Active" : (data.subscription_expired ? "Ended" : "Inactive"),
-        data.remaining_label ? data.remaining_label + " remaining" : "Package period",
-        lastActive ? "is-good" : "is-bad"
+        chipLabel,
+        data.remaining_label
+          ? (data.subscription_paused
+              ? data.remaining_label + " frozen"
+              : data.remaining_label + " remaining")
+          : "Package period",
+        chipState
       );
     }
     if (typeof window.updatePackageSection === "function") {
@@ -1432,17 +1672,24 @@
       if (remainingEl) remainingEl.textContent = data.remaining_label || "—";
       var banner = section.querySelector("[data-sub-banner]");
       if (banner) {
-        banner.classList.remove("is-active", "is-blocked");
-        if (data.subscription_active) {
+        banner.classList.remove("is-active", "is-blocked", "is-paused");
+        var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
+        if (data.subscription_paused) {
+          banner.classList.add("is-paused");
+          banner.textContent = planPrefix + "Paused. Surfing blocked; remaining time is frozen until you resume.";
+        } else if (data.subscription_active) {
           banner.classList.add("is-active");
-          banner.textContent = "Subscription active — devices on this client's Wi‑Fi can surf within this period.";
+          banner.textContent = planPrefix + "Active. Surfing allowed in this period.";
         } else {
           banner.classList.add("is-blocked");
-          banner.textContent = data.subscription_expired
-            ? "Subscription ended — surfing is blocked for users outside the subscription period."
-            : "Outside the package period — surfing is blocked for users.";
+          banner.textContent = planPrefix + (data.subscription_expired
+            ? "Ended. Surfing blocked."
+            : "Outside package period. Surfing blocked.");
         }
-        banner.hidden = !(data.package_start || data.package_end || data.package_start_iso || data.package_end_iso);
+        banner.hidden = !(data.package_start || data.package_end || data.package_start_iso || data.package_end_iso || data.subscription_paused);
+      }
+      if (typeof window.syncPauseControls === "function") {
+        window.syncPauseControls(data);
       }
     }
     if (!synced && wasActive !== lastActive) {

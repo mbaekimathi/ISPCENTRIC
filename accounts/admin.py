@@ -181,6 +181,21 @@ class NetworkEquipmentAdmin(admin.ModelAdmin):
     search_fields = ("name",)
     readonly_fields = ("created_at", "updated_at")
     raw_id_fields = ("created_by",)
+    fields = (
+        "name",
+        "equipment_type",
+        "image",
+        "selling_price",
+        "discount_enabled",
+        "discount_price",
+        "discount_amount",
+        "quantity",
+        "track_serials",
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
+    )
 
 
 @admin.register(NetworkEquipmentSerial)

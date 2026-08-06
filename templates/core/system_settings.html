@@ -1,6 +1,6 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}My system settings — ISPCENTRIC{% endblock %}
+{% block title %}Company settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
 <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
@@ -24,11 +24,11 @@
   <section class="panel staff-panel stack-gap">
     <div class="panel-head-row">
       <div>
-        <h2>Workspace preferences</h2>
-        <p class="panel-sub">Notifications, billing defaults, and integrations will expand here.</p>
+        <h2>Company settings</h2>
+        <p class="panel-sub">Organization status, join code, and workspace preferences.</p>
       </div>
     </div>
-    <p class="empty">Additional system preferences are coming soon.</p>
+    <p class="empty">Additional company preferences are coming soon.</p>
     <div class="form-actions stack-gap">
       <a class="btn btn-primary" href="{% url 'core:my_account' %}">Edit company profile</a>
     </div>
