@@ -3735,13 +3735,14 @@ class ExpiredCaptivePayTests(SimpleTestCase):
         )
 
     def test_enable_cpe_renew_publishes_dhcp_option_114(self):
-        from unittest.mock import MagicMock, call
+        from unittest.mock import MagicMock
 
         from core.mikrotik_connect import _enable_cpe_renew_hotspot
 
         sock = MagicMock()
         dhcp_calls: list[str] = []
         order: list[str] = []
+        profile_sets: list[dict] = []
 
         def track_pages(*_a, **_k):
             order.append("pages")
@@ -3750,6 +3751,16 @@ class ExpiredCaptivePayTests(SimpleTestCase):
         def track_wan(*_a, **_k):
             order.append("wan")
             return ["client internet blocked on CPE (renew popup only)"]
+
+        def track_set(sock, path, item_id, **props):
+            if path == "/ip/hotspot/profile":
+                profile_sets.append(props)
+            return {"_reply": "!done"}
+
+        def track_add(sock, path, **props):
+            if path == "/ip/hotspot/profile":
+                profile_sets.append(props)
+            return {"_reply": "!done", "ret": "*1"}
 
         with (
             patch(
@@ -3765,11 +3776,11 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             patch("core.mikrotik_connect._print", return_value=[]),
             patch(
                 "core.mikrotik_connect._add",
-                return_value={"_reply": "!done", "ret": "*1"},
+                side_effect=track_add,
             ),
             patch(
                 "core.mikrotik_connect._set",
-                return_value={"_reply": "!done"},
+                side_effect=track_set,
             ),
             patch(
                 "core.mikrotik_connect._clear_captive_dns_hijack",
@@ -3778,6 +3789,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._clear_https_capture_redirect",
                 return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_hotspot_sessions",
+                return_value=["cleared 3 Hotspot session(s) so the pay popup can open"],
             ),
             patch(
                 "core.mikrotik_connect._ensure_cpe_portal_access",
@@ -3814,8 +3829,54 @@ class ExpiredCaptivePayTests(SimpleTestCase):
         )
         self.assertTrue(any("option 114" in n for n in notes))
         self.assertTrue(any("cleared 2 captive DNS" in n for n in notes))
+        self.assertTrue(any("pay popup can open" in n for n in notes))
+        # Cookie auto-login would leave phones "connected, no internet".
+        self.assertTrue(profile_sets)
+        for props in profile_sets:
+            login_by = props.get("login-by", "")
+            self.assertNotIn("cookie", login_by)
+            self.assertNotIn("https", login_by)
+            self.assertIn("http-pap", login_by)
         # login.html must install before WAN drop so /tool/fetch still works.
         self.assertEqual(order, ["pages", "wan"])
+
+    def test_clear_hotspot_sessions_removes_cookies_and_hosts(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _clear_hotspot_sessions
+
+        removed: list[tuple[str, str]] = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/ip/hotspot/cookie":
+                return [{".id": "*c1"}]
+            if path == "/ip/hotspot/active":
+                return [{".id": "*a1"}]
+            if path == "/ip/hotspot/host":
+                return [{".id": "*h1"}, {".id": "*h2"}]
+            return []
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removed.append((path, item_id)) or {"_reply": "!done"}
+                ),
+            ),
+        ):
+            notes = _clear_hotspot_sessions(MagicMock())
+
+        self.assertEqual(
+            removed,
+            [
+                ("/ip/hotspot/cookie", "*c1"),
+                ("/ip/hotspot/active", "*a1"),
+                ("/ip/hotspot/host", "*h1"),
+                ("/ip/hotspot/host", "*h2"),
+            ],
+        )
+        self.assertTrue(any("pay popup can open" in n for n in notes))
 
     def test_enable_cpe_renew_aborts_without_absolute_pay_url(self):
         from unittest.mock import MagicMock
@@ -3824,7 +3885,7 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 
         sock = MagicMock()
         with patch(
-            "core.mikrotik_connect._billing_portal_base_url",
+            "core.mikrotik_connect._resolve_absolute_captive_url",
             return_value="",
         ):
             with self.assertRaises(ConnectionError) as ctx:
@@ -3864,6 +3925,10 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._clear_https_capture_redirect",
                 return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_hotspot_sessions",
+                return_value=[],
             ),
             patch(
                 "core.mikrotik_connect._ensure_cpe_portal_access",

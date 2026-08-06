@@ -7151,6 +7151,58 @@ def _ensure_pppoe_fast_captive_reject(sock: socket.socket) -> list[str]:
     return notes
 
 
+def _ensure_pppoe_client_dns_accept(sock: socket.socket) -> list[str]:
+    """
+    Let dialed PPPoE clients resolve names on the NAS.
+
+    Without this, expired sessions never issue the HTTP probe that dst-nat turns
+    into the pay page — devices report "connected, no internet" with no popup.
+    """
+    notes: list[str] = []
+    existing = {
+        (
+            (row.get("protocol") or "").strip().lower(),
+            (row.get("dst-port") or "").strip(),
+            (row.get("src-address") or "").strip(),
+        )
+        for row in _print(
+            sock,
+            "/ip/firewall/filter",
+            props=".id,chain,action,protocol,dst-port,src-address,comment",
+        )
+        if PPP_SECRET_TAG in (row.get("comment") or "")
+        and (row.get("chain") or "").strip() == "input"
+        and (row.get("action") or "").strip() == "accept"
+        and "client DNS" in (row.get("comment") or "")
+    }
+    input_anchor = ""
+    for row in _print(sock, "/ip/firewall/filter", props=".id,chain,action"):
+        if (row.get("chain") or "").strip() != "input":
+            continue
+        if (row.get("action") or "").strip() == "drop":
+            input_anchor = (row.get(".id") or "").strip()
+            break
+    for protocol in ("udp", "tcp"):
+        key = (protocol, "53", PPPOE_POOL_NETWORK)
+        if key in existing:
+            continue
+        terminal = _add_filter_rule(
+            sock,
+            {
+                "chain": "input",
+                "action": "accept",
+                "protocol": protocol,
+                "dst-port": "53",
+                "src-address": PPPOE_POOL_NETWORK,
+                "comment": f"{PPP_SECRET_TAG} client DNS",
+            },
+            place_before=input_anchor or "",
+        )
+        if terminal.get("_reply") != "!trap":
+            notes.append(f"PPPoE client DNS accept ({protocol}/53)")
+    return notes
+
+
 def _ensure_pppoe_expired_access(
     sock: socket.socket,
     *,
@@ -7173,6 +7225,7 @@ def _ensure_pppoe_expired_access(
 
     for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
         attempt_notes: list[str] = []
+        attempt_notes.extend(_ensure_pppoe_client_dns_accept(sock))
         attempt_notes.extend(_ensure_pppoe_expired_redirect(sock, billing_ip, portal))
         attempt_notes.extend(_ensure_pppoe_fast_captive_reject(sock))
 
@@ -9006,6 +9059,34 @@ def _ensure_cpe_portal_access(sock: socket.socket, portal_url: str) -> list[str]
     return notes
 
 
+def _clear_hotspot_sessions(sock: socket.socket) -> list[str]:
+    """
+    Drop Hotspot cookies / active / host rows so login.html is served again.
+
+    Cookie login-by (or a leftover authorized host) skips the captive portal while
+    the renew WAN drop is active — phones then report "connected, no internet"
+    with no pay popup. Always clear before relying on the renew redirect.
+    """
+    notes: list[str] = []
+    cleared = 0
+    for path in (
+        "/ip/hotspot/cookie",
+        "/ip/hotspot/active",
+        "/ip/hotspot/host",
+    ):
+        for row in _print(sock, path, props=".id"):
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            if _remove(sock, path, item_id).get("_reply") != "!trap":
+                cleared += 1
+    if cleared:
+        notes.append(
+            f"cleared {cleared} Hotspot session(s) so the pay popup can open"
+        )
+    return notes
+
+
 def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
     """
     Block client devices from surfing through the CPE while keeping the CPE online.
@@ -9046,24 +9127,17 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
 
     Order matters for "connect Wi‑Fi → pay page appears immediately":
       1. Absolute pay URL (abort otherwise — never trap phones on 192.168.…)
-      2. Hotspot profile/server + clear probe DNS hijack
-      3. Walled garden / billing allow
-      4. Install login.html redirect WHILE WAN still works
-      5. Drop non-billing WAN
-      6. DHCP option 114 + bounce Wi‑Fi so phones re-probe now
+      2. Hotspot profile/server without cookie auto-login
+      3. Clear probe DNS hijack + leftover Hotspot sessions
+      4. Walled garden / billing allow
+      5. Install login.html redirect WHILE WAN still works
+      6. Drop non-billing WAN
+      7. DHCP option 114 + bounce Wi‑Fi so phones re-probe now
     """
     notes: list[str] = []
-    portal_url = (portal_url or "").strip()
-    if portal_url and not urlparse(portal_url).scheme:
-        base = _billing_portal_base_url()
-        if base:
-            portal_url = (
-                f"{base}{portal_url if portal_url.startswith('/') else '/' + portal_url}"
-            )
-        else:
-            portal_url = ""
-    elif not portal_url:
-        portal_url = _billing_portal_base_url()
+    portal_url = _resolve_absolute_captive_url(portal_url) or _resolve_absolute_captive_url(
+        _billing_portal_base_url()
+    )
 
     if not portal_url or not urlparse(portal_url).scheme:
         raise ConnectionError(
@@ -9074,7 +9148,10 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
 
     lan = _cpe_lan_bridge_name(sock)
     gateway_ip = _cpe_lan_gateway_ip(sock, lan)
-    hotspot_address = gateway_ip or RENEW_HOTSPOT_ADDRESS
+    # Prefer the dedicated renew address so Hotspot, pool, and middleware agree.
+    # Fall back to the CPE LAN gateway only in profile attempts if RouterOS
+    # rejects binding the second subnet as hotspot-address.
+    hotspot_address = RENEW_HOTSPOT_ADDRESS
 
     # Dedicated address so hotspot has a stable captive portal IP even if LAN IP differs.
     _ensure_tagged_ip_address(
@@ -9089,7 +9166,11 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
         ranges=RENEW_HOTSPOT_POOL_RANGES,
         comment=RENEW_HOTSPOT_TAG,
     )
-    notes.append(f"renew portal on {lan} ({hotspot_address})")
+    notes.append(
+        f"renew portal on {lan} ({hotspot_address}"
+        + (f", lan-gw {gateway_ip}" if gateway_ip and gateway_ip != hotspot_address else "")
+        + ")"
+    )
 
     profile_id = ""
     for row in _print(sock, "/ip/hotspot/profile", props=".id,name,comment"):
@@ -9100,30 +9181,35 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
             break
 
     # http-pap/chap forces unauthenticated clients onto login.html (device captive popup).
-    profile_attempts = [
-        {
-            "name": RENEW_HOTSPOT_PROFILE,
-            "hotspot-address": hotspot_address,
-            "html-directory": "hotspot",
-            "login-by": "http-chap,http-pap,https,cookie",
-            "open-status-page": "http-login",
-            "comment": RENEW_HOTSPOT_TAG,
-        },
-        {
-            "name": RENEW_HOTSPOT_PROFILE,
-            "hotspot-address": hotspot_address,
-            "html-directory": "hotspot",
-            "login-by": "http-chap,http-pap,https,cookie",
-            "comment": RENEW_HOTSPOT_TAG,
-        },
-        {
-            "name": RENEW_HOTSPOT_PROFILE,
-            "hotspot-address": RENEW_HOTSPOT_ADDRESS,
-            "html-directory": "hotspot",
-            "login-by": "http-chap,http-pap,cookie",
-            "comment": RENEW_HOTSPOT_TAG,
-        },
-    ]
+    # cookie/https are deliberately absent: cookie would silently re-authorize a
+    # phone while WAN is dropped → "connected, cannot provide internet" with no
+    # pay sheet; https advertises a self-signed login URL phones refuse.
+    address_candidates = [RENEW_HOTSPOT_ADDRESS]
+    if gateway_ip and gateway_ip not in address_candidates:
+        address_candidates.append(gateway_ip)
+    profile_attempts: list[dict[str, str]] = []
+    for addr in address_candidates:
+        profile_attempts.extend(
+            [
+                {
+                    "name": RENEW_HOTSPOT_PROFILE,
+                    "hotspot-address": addr,
+                    "html-directory": "hotspot",
+                    "login-by": "http-chap,http-pap",
+                    "open-status-page": "http-login",
+                    "use-radius": "no",
+                    "comment": RENEW_HOTSPOT_TAG,
+                },
+                {
+                    "name": RENEW_HOTSPOT_PROFILE,
+                    "hotspot-address": addr,
+                    "html-directory": "hotspot",
+                    "login-by": "http-pap",
+                    "open-status-page": "http-login",
+                    "comment": RENEW_HOTSPOT_TAG,
+                },
+            ]
+        )
     terminal: dict[str, str] = {"_reply": "!trap"}
     for profile_props in profile_attempts:
         if profile_id:
@@ -9190,6 +9276,7 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
         notes.append(f"cleared {cleared} captive DNS hijack(s)")
     if _clear_https_capture_redirect(sock, comment=RENEW_HOTSPOT_TAG):
         notes.append("removed HTTPS-to-HTTP capture rule")
+    notes.extend(_clear_hotspot_sessions(sock))
     notes.append("Hotspot intercepts captive HTTP probes")
 
     # Allow pay page + install login.html BEFORE the blanket WAN drop so
@@ -9224,6 +9311,8 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
             sock, portal_url, comment=RENEW_HOTSPOT_TAG
         )
     )
+    # Clear sessions again after WAN drop in case anything re-authed, then bounce.
+    notes.extend(_clear_hotspot_sessions(sock))
     notes.extend(_bounce_cpe_wifi_clients(sock))
 
     try:
