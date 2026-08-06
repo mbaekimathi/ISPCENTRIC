@@ -694,6 +694,83 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_cpe_renew_pool_probe_redirects_to_pppoe_pay_page(self):
+        """Phones on expired CPE renew Wi‑Fi must renew on /pppoe/…/pay/, not Hotspot."""
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="192.168.189.44",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_pppoe_customer_for_ip",
+            return_value=None,
+        ):
+            response = middleware(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertNotIn("/hotspot/", response.url)
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_known_pppoe_customer_prefers_pppoe_even_outside_pool(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from unittest.mock import patch
+
+        from billing.models import Customer
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Known PPPoE",
+            phone="254700000055",
+            account_number="PPP-055",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="user055",
+            status=Customer.Status.ACTIVE,
+        )
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        # Not in 10.20.0.0/24 or renew pool — but IP maps to a PPPoE customer.
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.50.50.77",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_pppoe_customer_for_ip",
+            return_value=customer,
+        ):
+            response = middleware(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertIn("t=", response.url)
+        self.assertNotIn("/hotspot/", response.url)
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_pppoe_pool_probe_attaches_account_token_when_customer_known(self):
         from django.core import signing
         from django.core.cache import cache
@@ -2438,16 +2515,55 @@ class ClientsSurfingStatusTests(TestCase):
             customer=self.customer,
         )
 
-        self.assertFalse(context["hotspot_option_available"])
+        self.assertTrue(context["hotspot_option_available"])
         self.assertFalse(context["dual_access_tabs"])
         self.assertEqual(context["portal_mode"], "pppoe")
         self.assertEqual(context["hotspot_plans"], [])
         self.assertFalse(context["hotspot_payment_start_url"])
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", context["hotspot_pay_url"])
         self.assertEqual(context["account_number"], self.customer.account_number)
         self.assertEqual(context["pppoe_phone_value"], "0700000088")
         self.assertEqual(context["pppoe_selected_plan_id"], self.customer.plan_id)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.service_type, "pppoe")
+
+    def test_pppoe_portal_offers_hotspot_handoff_when_enabled(self):
+        from django.test import RequestFactory
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan
+        from core.views import _pppoe_portal_context
+
+        self.org.hotspot_enabled = True
+        self.org.daraja_enabled = True
+        self.org.daraja_environment = Organization.DarajaEnvironment.PRODUCTION
+        self.org.mpesa_payment_type = Organization.MpesaPaymentType.PAYBILL
+        self.org.mpesa_number = "123456"
+        self.org.daraja_consumer_key = "key"
+        self.org.daraja_consumer_secret = "secret"
+        self.org.daraja_passkey = "pass"
+        self.org.daraja_callback_url = "https://example.com/callback"
+        self.org.save()
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="2000.00",
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        request = RequestFactory().get(f"/pppoe/{self.org.join_code}/pay/")
+        context = _pppoe_portal_context(self.org, request, customer=self.customer)
+        self.assertTrue(context["hotspot_option_available"])
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", context["hotspot_pay_url"])
+        self.assertEqual(context["portal_mode"], "pppoe")
+        self.assertFalse(context["dual_access_tabs"])
+
+        response = self.client.get(f"/pppoe/{self.org.join_code}/pay/")
+        self.assertContains(response, "Pay for Hotspot instead")
+        self.assertContains(response, f"/hotspot/{self.org.join_code}/pay/")
+        self.assertContains(response, 'id="panel-pppoe"')
+        self.assertNotContains(response, 'id="choose-hotspot"')
 
     def test_pppoe_pay_page_starts_on_pppoe_tab_even_without_customer(self):
         """Unidentified /pppoe/…/pay visitors must still open Home / PPPoE first."""
@@ -2487,7 +2603,7 @@ class ClientsSurfingStatusTests(TestCase):
         context = _pppoe_portal_context(self.org, request, customer=None)
         self.assertEqual(context["portal_mode"], "pppoe")
         self.assertTrue(context["pppoe_option_available"])
-        self.assertFalse(context["hotspot_option_available"])
+        self.assertTrue(context["hotspot_option_available"])
         self.assertFalse(context["dual_access_tabs"])
 
         response = self.client.get(f"/pppoe/{self.org.join_code}/pay/")
@@ -2497,6 +2613,7 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertIn('id="panel-pppoe"', html)
         self.assertNotIn('id="choose-hotspot"', html)
         self.assertNotIn('id="panel-hotspot"', html)
+        self.assertIn("Pay for Hotspot instead", html)
 
     def test_hotspot_portal_is_hotspot_only(self):
         from django.test import RequestFactory

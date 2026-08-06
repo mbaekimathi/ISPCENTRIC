@@ -257,18 +257,26 @@ class HotspotCaptiveProbeMiddleware:
             (request.META.get("HTTP_HOST") or "").split(":")[0].strip().lower()
         )
         remote = (request.META.get("REMOTE_ADDR") or "").strip()
-        from core.mikrotik_connect import is_hotspot_pool_ip, is_pppoe_pool_ip
+        from core.mikrotik_connect import (
+            find_pppoe_customer_for_ip,
+            is_cpe_renew_pool_ip,
+            is_hotspot_pool_ip,
+            is_pppoe_pool_ip,
+            resolve_captive_organization,
+        )
 
-        pppoe_client = is_pppoe_pool_ip(remote)
+        # CPE renew Wi‑Fi (192.168.189.x) is for expired PPPoE homes — never treat
+        # those phones as ISP Hotspot clients or they land on /hotspot/…/pay/.
+        pppoe_pool = is_pppoe_pool_ip(remote) or is_cpe_renew_pool_ip(remote)
         hotspot_client = is_hotspot_pool_ip(remote)
         probe_host = host in self.CAPTIVE_HOSTS or current_host in self.CAPTIVE_HOSTS
         # Root "/" alone is too broad for normal browsing — only treat it as a
         # probe when the Host (original or current) is a known captive hostname
         # or the client is already in a captive pool.
         path_is_probe = path in self.CAPTIVE_PATHS and (
-            path != "/" or probe_host or pppoe_client or hotspot_client
+            path != "/" or probe_host or pppoe_pool or hotspot_client
         )
-        if not (pppoe_client or hotspot_client or probe_host or path_is_probe):
+        if not (pppoe_pool or hotspot_client or probe_host or path_is_probe):
             return self.get_response(request)
 
         from django.conf import settings
@@ -276,11 +284,10 @@ class HotspotCaptiveProbeMiddleware:
         from django.shortcuts import redirect
         from django.urls import reverse
 
-        from core.mikrotik_connect import resolve_captive_organization
-
-        mode = "pppoe" if pppoe_client else "hotspot"
         query = request.META.get("QUERY_STRING") or ""
-        cache_key = f"captive:redirect:{mode}:{remote}:{query}"
+        # Cache the final pay URL per client IP so probe bursts stay cheap.
+        # Mode is decided after org/customer resolution, so the key is IP-based.
+        cache_key = f"captive:redirect:v2:{remote}:{query}"
         cached_target = cache.get(cache_key)
         if cached_target:
             return redirect(cached_target)
@@ -291,7 +298,16 @@ class HotspotCaptiveProbeMiddleware:
         if org is None:
             return self.get_response(request)
 
-        if pppoe_client:
+        pppoe_customer = None
+        try:
+            pppoe_customer = find_pppoe_customer_for_ip(org, remote)
+        except Exception:
+            pppoe_customer = None
+        # Registered PPPoE sessions always renew on /pppoe/…/pay/ (token locked),
+        # even when the phone IP is not in the classic 10.20.0.0/24 pool.
+        prefer_pppoe = bool(pppoe_pool or pppoe_customer is not None)
+
+        if prefer_pppoe:
             pay_path = reverse(
                 "core:pppoe_pay", kwargs={"join_code": org.join_code}
             )
@@ -310,7 +326,7 @@ class HotspotCaptiveProbeMiddleware:
         target = f"{base}{pay_path}"
         if query:
             target = f"{target}?{query}"
-        if pppoe_client:
+        if prefer_pppoe:
             # Attach a signed account token when we can resolve this PPP IP so the
             # renew page auto-fills even if a later /ppp/active lookup misses.
             try:
@@ -318,9 +334,7 @@ class HotspotCaptiveProbeMiddleware:
 
                 from django.core import signing
 
-                from core.mikrotik_connect import find_pppoe_customer_for_ip
-
-                customer = find_pppoe_customer_for_ip(org, remote)
+                customer = pppoe_customer
                 if customer is not None:
                     token = signing.dumps(
                         {

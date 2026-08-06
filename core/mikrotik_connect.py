@@ -6332,6 +6332,8 @@ RENEW_HOTSPOT_PROFILE = "ispcentric-renew"
 RENEW_HOTSPOT_POOL = "ispcentric-renew"
 RENEW_HOTSPOT_POOL_RANGES = "192.168.189.10-192.168.189.250"
 RENEW_HOTSPOT_ADDRESS = "192.168.189.1"
+RENEW_HOTSPOT_POOL_NETWORK = "192.168.189.0/24"
+_RENEW_HOTSPOT_POOL_NET = ipaddress.ip_network(RENEW_HOTSPOT_POOL_NETWORK)
 
 # ISP Hotspot on onboarded NAS routers (voucher / Hotspot clients).
 ISP_HOTSPOT_TAG = "ispcentric-hotspot"
@@ -9415,6 +9417,14 @@ def is_pppoe_pool_ip(ip: str) -> bool:
     """True when the address sits in the ISPCentric PPPoE client pool."""
     try:
         return ipaddress.ip_address((ip or "").strip()) in _PPPOE_POOL_NET
+    except ValueError:
+        return False
+
+
+def is_cpe_renew_pool_ip(ip: str) -> bool:
+    """True when the address sits in the CPE renew Hotspot pool (expired PPPoE Wi‑Fi)."""
+    try:
+        return ipaddress.ip_address((ip or "").strip()) in _RENEW_HOTSPOT_POOL_NET
     except ValueError:
         return False
 

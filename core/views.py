@@ -7255,11 +7255,13 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
         request,
     )
-    # PPPoE pay URL is PPPoE-only. Hotspot uses /hotspot/<join>/pay/.
+    # PPPoE renew by default; optional handoff to Hotspot pay when enabled.
     portal_mode = "pppoe"
     phone_value = _payment_phone_autofill(
         getattr(customer, "phone", "") if customer else ""
     )
+    hotspot_enabled = bool(getattr(org, "hotspot_enabled", False))
+    hotspot_pay_url = urls.get("pay_url") or "" if hotspot_enabled else ""
     return {
         "organization": org,
         "org_name": org.name,
@@ -7298,7 +7300,8 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "error": "",
         "hotspot_mac": "",
         "mikrotik_login": False,
-        "hotspot_option_available": False,
+        "hotspot_option_available": hotspot_enabled and bool(hotspot_pay_url),
+        "hotspot_pay_url": hotspot_pay_url,
         "hotspot_ssids": [],
         "pppoe_option_available": True,
         "pppoe_pay_url": "",

@@ -710,6 +710,13 @@
       letter-spacing: 0.02em;
     }
 
+    .access-handoff a {
+      color: var(--brand-deep);
+      font-weight: 750;
+      text-decoration: underline;
+      text-underline-offset: 0.15em;
+    }
+
     .panel {
       padding: 0.95rem;
       border-radius: 1rem;
@@ -1113,6 +1120,13 @@
             <p class="meta" data-payment-status role="status" aria-live="polite">
               Pay with M-Pesa, then activate with your voucher code.
             </p>
+
+            {% if hotspot_option_available and hotspot_pay_url %}
+              <p class="meta access-handoff">
+                Prefer Hotspot on this device?
+                <a href="{{ hotspot_pay_url }}">Pay for Hotspot instead</a>
+              </p>
+            {% endif %}
           </section>
           {% endif %}
         {% else %}
@@ -1120,6 +1134,10 @@
             {% if portal_mode == "pppoe" %}
               {% if identify_error %}{{ identify_error }}{% else %}
                 Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
+              {% endif %}
+              {% if hotspot_option_available and hotspot_pay_url %}
+                <br>
+                Or <a href="{{ hotspot_pay_url }}">Pay for Hotspot instead</a>.
               {% endif %}
             {% elif not has_payable_plans %}
               No {{ portal_mode|default:"payment" }} packages are available yet. Contact {{ org_name }}.
