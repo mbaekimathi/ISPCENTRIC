@@ -123,9 +123,52 @@ class Command(BaseCommand):
                 router_id = getattr(customer, "router_id", None)
                 if router_id:
                     repair_router_ids.add(router_id)
+                # Re-push CPE renew popup when surfing is blocked but login.html
+                # never landed (or CPE was offline at cut-off).
+                portal = result.get("portal") or {}
+                if (
+                    customer.service_type == Customer.ServiceType.PPPOE
+                    and not portal.get("ok")
+                    and not dry_run
+                ):
+                    try:
+                        from core.mikrotik_connect import (
+                            _pppoe_pay_portal_url,
+                            apply_cpe_renew_portal,
+                        )
+
+                        pay_url = _pppoe_pay_portal_url(
+                            customer.organization, customer=customer
+                        )
+                        retry = apply_cpe_renew_portal(
+                            customer, enabled=True, portal_url=pay_url
+                        )
+                        if retry.get("ok"):
+                            self.stdout.write(
+                                f"{customer.account_number}: cpe-renew repaired"
+                            )
+                        elif not retry.get("skipped"):
+                            errors += 1
+                            self.stderr.write(
+                                self.style.WARNING(
+                                    f"{customer.account_number}: cpe-renew "
+                                    f"{retry.get('error') or 'failed'}"
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        self.stderr.write(
+                            self.style.WARNING(
+                                f"{customer.account_number}: cpe-renew {exc}"
+                            )
+                        )
             if not result.get("ok"):
                 errors += 1
-                err = (result.get("provision") or {}).get("error") or result.get("message")
+                err = (
+                    (result.get("portal") or {}).get("error")
+                    or (result.get("provision") or {}).get("error")
+                    or result.get("message")
+                )
                 self.stderr.write(self.style.WARNING(f"{customer.account_number}: {err}"))
             else:
                 state = "allowed" if result.get("allowed") else "blocked"

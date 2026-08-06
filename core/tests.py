@@ -3735,12 +3735,21 @@ class ExpiredCaptivePayTests(SimpleTestCase):
         )
 
     def test_enable_cpe_renew_publishes_dhcp_option_114(self):
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, call
 
         from core.mikrotik_connect import _enable_cpe_renew_hotspot
 
         sock = MagicMock()
         dhcp_calls: list[str] = []
+        order: list[str] = []
+
+        def track_pages(*_a, **_k):
+            order.append("pages")
+            return ["installed hotspot/login.html"]
+
+        def track_wan(*_a, **_k):
+            order.append("wan")
+            return ["client internet blocked on CPE (renew popup only)"]
 
         with (
             patch(
@@ -3762,22 +3771,25 @@ class ExpiredCaptivePayTests(SimpleTestCase):
                 "core.mikrotik_connect._set",
                 return_value={"_reply": "!done"},
             ),
-            patch("core.mikrotik_connect._ensure_captive_dns", return_value=1),
+            patch(
+                "core.mikrotik_connect._clear_captive_dns_hijack",
+                return_value=2,
+            ),
             patch(
                 "core.mikrotik_connect._clear_https_capture_redirect",
                 return_value=False,
             ),
             patch(
                 "core.mikrotik_connect._ensure_cpe_portal_access",
-                return_value=["walled garden"],
+                return_value=["walled garden for billing"],
             ),
             patch(
                 "core.mikrotik_connect._ensure_cpe_wan_block",
-                return_value=["wan block"],
+                side_effect=track_wan,
             ),
             patch(
                 "core.mikrotik_connect._fetch_hotspot_pages",
-                return_value=["installed login"],
+                side_effect=track_pages,
             ),
             patch(
                 "core.mikrotik_connect._bounce_cpe_wifi_clients",
@@ -3801,6 +3813,383 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             ["http://billing.example/pppoe/121212/pay/?t=abc"],
         )
         self.assertTrue(any("option 114" in n for n in notes))
+        self.assertTrue(any("cleared 2 captive DNS" in n for n in notes))
+        # login.html must install before WAN drop so /tool/fetch still works.
+        self.assertEqual(order, ["pages", "wan"])
+
+    def test_enable_cpe_renew_aborts_without_absolute_pay_url(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _enable_cpe_renew_hotspot
+
+        sock = MagicMock()
+        with patch(
+            "core.mikrotik_connect._billing_portal_base_url",
+            return_value="",
+        ):
+            with self.assertRaises(ConnectionError) as ctx:
+                _enable_cpe_renew_hotspot(sock, portal_url="/pppoe/121212/pay/")
+        self.assertIn("absolute pay URL", str(ctx.exception))
+
+    def test_enable_cpe_renew_aborts_when_login_html_missing(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _enable_cpe_renew_hotspot
+
+        sock = MagicMock()
+        with (
+            patch(
+                "core.mikrotik_connect._cpe_lan_bridge_name",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._cpe_lan_gateway_ip",
+                return_value="192.168.88.1",
+            ),
+            patch("core.mikrotik_connect._ensure_tagged_ip_address"),
+            patch("core.mikrotik_connect._ensure_tagged_pool"),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add",
+                return_value={"_reply": "!done", "ret": "*1"},
+            ),
+            patch(
+                "core.mikrotik_connect._set",
+                return_value={"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect._clear_captive_dns_hijack",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_https_capture_redirect",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_cpe_portal_access",
+                return_value=["walled garden"],
+            ),
+            patch(
+                "core.mikrotik_connect._fetch_hotspot_pages",
+                return_value=["could not write hotspot/login.html"],
+            ),
+            patch("core.mikrotik_connect._command", return_value=([], {})),
+        ):
+            with self.assertRaises(ConnectionError) as ctx:
+                _enable_cpe_renew_hotspot(
+                    sock,
+                    portal_url="http://billing.example/pppoe/1/pay/",
+                )
+        self.assertIn("login.html", str(ctx.exception))
+
+    def test_pppoe_pay_portal_url_accepts_query_and_prefers_http(self):
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        org = SimpleNamespace(pk=1, join_code="999999")
+        with self.settings(PUBLIC_BASE_URL="https://billing.example"):
+            url = _pppoe_pay_portal_url(
+                org,
+                "https://billing.example/pppoe/999999/pay/?t=keep",
+            )
+        self.assertTrue(url.startswith("http://billing.example/pppoe/999999/pay/"))
+        self.assertIn("t=keep", url)
+
+    def test_pppoe_pay_portal_url_empty_without_base(self):
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        org = SimpleNamespace(pk=1, join_code="999999")
+        with patch(
+            "core.mikrotik_connect._billing_portal_base_url",
+            return_value="",
+        ):
+            self.assertEqual(_pppoe_pay_portal_url(org), "")
+
+
+class IspHotspotInstantPayTests(SimpleTestCase):
+    """Non-PPPoE ISP Hotspot: connect Wi‑Fi → /hotspot/…/pay/ immediately."""
+
+    def test_prefer_http_captive_url(self):
+        from core.mikrotik_connect import _prefer_http_captive_url
+
+        self.assertEqual(
+            _prefer_http_captive_url("https://billing.example/hotspot/1/pay/"),
+            "http://billing.example/hotspot/1/pay/",
+        )
+        self.assertEqual(
+            _prefer_http_captive_url("http://billing.example:8000/hotspot/1/pay/"),
+            "http://billing.example:8000/hotspot/1/pay/",
+        )
+
+    def test_enable_isp_hotspot_publishes_option_114_after_login_html(self):
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_POOL,
+            _ensure_isp_hotspot_stack,
+        )
+
+        sock = MagicMock()
+        org = SimpleNamespace(name="Hot ISP", join_code="505050")
+        order: list[str] = []
+        dhcp_calls: list[str] = []
+        server_attempts_seen: list = []
+
+        def track_pages(*_a, **_k):
+            order.append("pages")
+            return ["installed hotspot/login.html", "installed hotspot/rlogin.html"]
+
+        def track_dhcp(sock, url, comment=""):
+            order.append("dhcp")
+            dhcp_calls.append(url)
+            return [f"option 114 → {url}"]
+
+        def track_bounce(*_a, **_k):
+            order.append("bounce")
+            return ["bounced 2 Wi‑Fi client(s) for Hotspot pay popup"]
+
+        def fake_add_or_set(sock, path, item_id, attempts):
+            if path == "/ip/hotspot":
+                server_attempts_seen.extend(attempts)
+            return {"_reply": "!done"}, "*1"
+
+        with (
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._lan_ipv4_for_interface",
+                return_value="10.50.50.1",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_wireless_on_lan",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._ensure_tagged_ip_address"),
+            patch("core.mikrotik_connect._ensure_tagged_pool"),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_user_profile",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_captive_dns_hijack",
+                return_value=1,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_https_capture_redirect",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_owns_http_port",
+                return_value=["Hotspot owns :80"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_walled_garden",
+                return_value=["walled garden"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_server_bypass",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._fetch_isp_hotspot_pages",
+                side_effect=track_pages,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
+                side_effect=track_dhcp,
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_isp_hotspot_clients",
+                side_effect=track_bounce,
+            ),
+        ):
+            notes = _ensure_isp_hotspot_stack(
+                sock,
+                lan_interface="bridge",
+                organization=org,
+                pay_url="https://billing.example/hotspot/505050/pay/",
+            )
+
+        self.assertEqual(order, ["pages", "dhcp", "bounce"])
+        self.assertEqual(
+            dhcp_calls,
+            ["http://billing.example/hotspot/505050/pay/"],
+        )
+        self.assertTrue(any("option 114" in n for n in notes))
+        self.assertTrue(any("Hotspot pay popup" in n for n in notes))
+        # Dedicated 10.50.50 setup must prefer the identifiable Hotspot pool.
+        self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
+
+    def test_enable_isp_hotspot_aborts_without_absolute_pay_url(self):
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import _ensure_isp_hotspot_stack
+
+        sock = MagicMock()
+        org = SimpleNamespace(name="Hot ISP", join_code="505050")
+        with patch(
+            "core.mikrotik_connect._billing_portal_base_url",
+            return_value="",
+        ):
+            with self.assertRaises(ConnectionError) as ctx:
+                _ensure_isp_hotspot_stack(
+                    sock,
+                    lan_interface="bridge",
+                    organization=org,
+                    pay_url="/hotspot/505050/pay/",
+                )
+        self.assertIn("absolute pay URL", str(ctx.exception))
+
+    def test_enable_isp_hotspot_aborts_when_login_html_missing(self):
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import _ensure_isp_hotspot_stack
+
+        sock = MagicMock()
+        org = SimpleNamespace(name="Hot ISP", join_code="505050")
+        with (
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._lan_ipv4_for_interface",
+                return_value="10.50.50.1",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_wireless_on_lan",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._ensure_tagged_ip_address"),
+            patch("core.mikrotik_connect._ensure_tagged_pool"),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_user_profile",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                return_value=({"_reply": "!done"}, "*1"),
+            ),
+            patch(
+                "core.mikrotik_connect._clear_captive_dns_hijack",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_https_capture_redirect",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_owns_http_port",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_walled_garden",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_server_bypass",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._fetch_isp_hotspot_pages",
+                return_value=["could not write hotspot/login.html"],
+            ),
+        ):
+            with self.assertRaises(ConnectionError) as ctx:
+                _ensure_isp_hotspot_stack(
+                    sock,
+                    lan_interface="bridge",
+                    organization=org,
+                    pay_url="http://billing.example/hotspot/505050/pay/",
+                )
+        self.assertIn("login.html", str(ctx.exception))
+
+    def test_fetch_isp_pages_writes_hotspot_pay_redirect(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import _fetch_isp_hotspot_pages
+
+        written: dict[str, str] = {}
+
+        def fake_write(sock, dst, html):
+            written[dst] = html
+            return True
+
+        with (
+            patch(
+                "core.mikrotik_connect._delete_hotspot_file",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._write_hotspot_html_file",
+                side_effect=fake_write,
+            ),
+        ):
+            notes = _fetch_isp_hotspot_pages(
+                MagicMock(),
+                pay_url="https://billing.example/hotspot/505050/pay/",
+                welcome_url="https://billing.example/hotspot/505050/welcome/",
+            )
+
+        self.assertTrue(any("installed hotspot/login.html" in n for n in notes))
+        login = written["hotspot/login.html"]
+        self.assertIn("http://billing.example/hotspot/505050/pay", login)
+        self.assertIn("mac=$(mac)", login)
+        self.assertIn("$(if http-status == 302)", login)
+        self.assertIn(
+            "http://billing.example/hotspot/505050/welcome/",
+            written["hotspot/alogin.html"],
+        )
+
+    def test_apply_hotspot_rejects_missing_public_base(self):
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import apply_hotspot_on_router
+
+        router = SimpleNamespace(
+            pk=1,
+            name="NAS",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            organization=SimpleNamespace(pk=9, join_code="505050", name="ISP"),
+            account_status="active",
+            lan_bridge="bridge",
+            wan_interface="ether1",
+            vpn_address="",
+            wifi_ssid="",
+        )
+        with (
+            patch(
+                "core.mikrotik_connect._hotspot_portal_urls_for_org",
+                return_value={"pay_url": "/hotspot/505050/pay/"},
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="",
+            ),
+            patch(
+                "core.mikrotik_connect._resolve_absolute_captive_url",
+                return_value="",
+            ),
+        ):
+            result = apply_hotspot_on_router(router, enabled=True)
+        self.assertFalse(result["ok"])
+        self.assertIn("absolute pay URL", result["error"])
 
 
 class MikroTikStatusOfflineTests(TestCase):

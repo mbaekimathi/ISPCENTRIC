@@ -1,20 +1,30 @@
-<div class="client-type-tabs" role="tablist" aria-label="Access settings">
+<div class="access-settings-tabs client-type-tabs" role="tablist" aria-label="Access settings">
   <a
-    class="client-type-tab{% if access_settings_tab == 'pppoe' %} is-active{% endif %}"
+    class="client-type-tab tone-pppoe{% if access_settings_tab == 'pppoe' %} is-active{% endif %}"
     role="tab"
     href="{% url 'core:mikrotik_pppoe_settings' router.id %}"
     aria-selected="{% if access_settings_tab == 'pppoe' %}true{% else %}false{% endif %}"
     id="tab-access-pppoe"
   >
-    <span class="client-type-tab-label">PPPoE settings</span>
+    <span class="client-type-tab-ico" aria-hidden="true">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v10"/><path d="M8 7h8"/><rect x="5" y="13" width="14" height="8" rx="2"/>
+      </svg>
+    </span>
+    <span class="client-type-tab-label">PPPoE</span>
   </a>
   <a
-    class="client-type-tab{% if access_settings_tab == 'hotspot' %} is-active{% endif %}"
+    class="client-type-tab tone-hotspot{% if access_settings_tab == 'hotspot' %} is-active{% endif %}"
     role="tab"
     href="{% url 'core:mikrotik_hotspot_settings' router.id %}"
     aria-selected="{% if access_settings_tab == 'hotspot' %}true{% else %}false{% endif %}"
     id="tab-access-hotspot"
   >
-    <span class="client-type-tab-label">Hotspot settings</span>
+    <span class="client-type-tab-ico" aria-hidden="true">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12.5a7 7 0 0 1 14 0"/><path d="M8.5 15.5a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="18.5" r="1.2" fill="currentColor" stroke="none"/>
+      </svg>
+    </span>
+    <span class="client-type-tab-label">Hotspot</span>
   </a>
 </div>

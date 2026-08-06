@@ -3,97 +3,127 @@
 {% block title %}PPPoE settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="access-settings-shell account-page-shell">
+  <header class="access-settings-intro account-page-intro">
+    <p class="account-page-kicker">Access · {{ router.name }}</p>
+    <h2 class="access-settings-title">PPPoE settings</h2>
+    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  </header>
 
-{% include "core/includes/access_settings_tabs.html" %}
+  {% include "core/includes/access_settings_tabs.html" %}
 
-{% if organization %}
-  {% if pppoe_compulsory %}
-    <div class="settings-policy-banner">
-      Enforcement is <strong>on</strong>. Free LAN/DHCP browsing is blocked on your MikroTik routers.
-      Dialed PPPoE clients keep internet; other devices can still get online via Hotspot login if Hotspot is enabled.
-    </div>
-  {% endif %}
-
-  <section class="panel settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
-    <div class="settings-policy-head">
-      <div>
-        <p class="mikrotik-section-label">Access policy</p>
-        <h2>PPPoE enforcement</h2>
-        <p class="settings-policy-copy">
-          When this is on, free LAN/DHCP browsing to the internet is blocked. Registered PPPoE
-          clients that dial in stay online. If Hotspot is also enabled, other devices can log in
-          through the Hotspot portal instead of needing PPPoE.
-        </p>
-      </div>
-      <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}">
-        {% if pppoe_compulsory %}On{% else %}Off{% endif %}
-      </span>
-    </div>
-
-    {% if form and can_edit %}
-      <form method="post" class="settings-policy-form" id="pppoe-settings-form">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="save_policy" id="pppoe-settings-action">
-        <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.pppoe_compulsory.id_for_label }}">
-          {{ form.pppoe_compulsory }}
-          <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
-          <span class="mikrotik-wifi-switch-text" id="pppoe-enforcement-label">
-            {% if pppoe_compulsory %}On{% else %}Off{% endif %}
-          </span>
-        </label>
-        {% if form.pppoe_compulsory.errors %}
-          <div class="field-error">{{ form.pppoe_compulsory.errors|striptags }}</div>
-        {% endif %}
-        <p class="settings-policy-hint">{{ form.pppoe_compulsory.help_text }}</p>
-        <noscript>
-          <div class="form-actions" style="margin-top:1rem;">
-            <button type="submit" class="btn btn-primary">Save settings</button>
-          </div>
-        </noscript>
-      </form>
-      <form method="post" class="settings-policy-form" style="margin-top:0.75rem;">
-        {% csrf_token %}
-        <input type="hidden" name="action" value="push_policy">
-        {% if pppoe_compulsory %}
-          <input type="hidden" name="pppoe_compulsory" value="on">
-        {% endif %}
-        <button type="submit" class="btn btn-primary" data-loading-label="Pushing PPPoE policy…">
-          {% if pppoe_compulsory %}Push block &amp; PPPoE logins to this router{% else %}Push PPPoE server &amp; client logins{% endif %}
-        </button>
-        <p class="settings-policy-hint">
-          Installs the PPPoE server and every registered client username/password on this MikroTik
-          so CPE dial-in works. Use this after reconnecting or if clients see “confirm username and password”.
-        </p>
-      </form>
-    {% elif not can_edit %}
-      <p class="empty" style="margin-top:1rem;">You do not have permission to change PPPoE settings.</p>
-    {% endif %}
-
-    <div class="stat-grid settings-policy-stats">
-      <div class="stat">
-        <div class="label">Policy</div>
-        <div class="value" style="font-size:1.05rem;">
-          {% if pppoe_compulsory %}PPPoE clients only{% else %}All active clients{% endif %}
-        </div>
-      </div>
-      <div class="stat">
-        <div class="label">Eligible PPPoE clients</div>
-        <div class="value">{{ pppoe_eligible_count }}</div>
-      </div>
+  {% if organization %}
+    <div class="access-settings-stack account-page">
       {% if pppoe_compulsory %}
-        <div class="stat">
-          <div class="label">Blocked without PPPoE</div>
-          <div class="value">{{ blocked_count }}</div>
+        <div class="settings-policy-banner access-settings-banner" role="status">
+          Enforcement is <strong>on</strong>. Free LAN/DHCP browsing is blocked on your MikroTik routers.
+          Dialed PPPoE clients keep internet; other devices can still get online via Hotspot login if Hotspot is enabled.
         </div>
       {% endif %}
+
+      <section class="panel account-card settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
+        <header class="account-card-head">
+          <div class="account-card-head-main">
+            <span class="account-step" aria-hidden="true">1</span>
+            <div>
+              <h3>PPPoE enforcement</h3>
+              <p>
+                When this is on, free LAN/DHCP browsing to the internet is blocked.
+                Registered PPPoE clients that dial in stay online. If Hotspot is also enabled,
+                other devices can log in through the Hotspot portal instead.
+              </p>
+            </div>
+          </div>
+          <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}" id="pppoe-status-pill">
+            {% if pppoe_compulsory %}On{% else %}Off{% endif %}
+          </span>
+        </header>
+
+        {% if form and can_edit %}
+          <form method="post" class="settings-policy-form access-toggle-row" id="pppoe-settings-form">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="save_policy" id="pppoe-settings-action">
+            <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.pppoe_compulsory.id_for_label }}">
+              {{ form.pppoe_compulsory }}
+              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+              <span class="mikrotik-wifi-switch-text" id="pppoe-enforcement-label">
+                {% if pppoe_compulsory %}On{% else %}Off{% endif %}
+              </span>
+            </label>
+            {% if form.pppoe_compulsory.errors %}
+              <div class="field-error">{{ form.pppoe_compulsory.errors|striptags }}</div>
+            {% endif %}
+            <p class="settings-policy-hint">{{ form.pppoe_compulsory.help_text }}</p>
+            <noscript>
+              <div class="form-actions" style="margin-top:1rem;">
+                <button type="submit" class="btn btn-primary">Save settings</button>
+              </div>
+            </noscript>
+          </form>
+        {% elif not can_edit %}
+          <p class="empty">You do not have permission to change PPPoE settings.</p>
+        {% endif %}
+
+        <div class="account-summary-grid access-settings-stats" aria-label="PPPoE policy summary">
+          <div class="account-summary-item">
+            <span>Policy</span>
+            <strong id="pppoe-policy-label">
+              {% if pppoe_compulsory %}PPPoE clients only{% else %}All active clients{% endif %}
+            </strong>
+          </div>
+          <div class="account-summary-item">
+            <span>Eligible PPPoE clients</span>
+            <strong>{{ pppoe_eligible_count }}</strong>
+          </div>
+          {% if pppoe_compulsory %}
+            <div class="account-summary-item">
+              <span>Blocked without PPPoE</span>
+              <strong>{{ blocked_count }}</strong>
+            </div>
+          {% endif %}
+          <div class="account-summary-item">
+            <span>This router</span>
+            <strong>{{ router.name }}</strong>
+          </div>
+        </div>
+      </section>
+
+      {% if form and can_edit %}
+        <section class="panel account-card access-push-card">
+          <header class="account-card-head">
+            <div class="account-card-head-main">
+              <span class="account-step" aria-hidden="true">2</span>
+              <div>
+                <h3>Push to this router</h3>
+                <p>
+                  Installs the PPPoE server and every registered client username/password on
+                  <strong>{{ router.name }}</strong> so CPE dial-in works.
+                </p>
+              </div>
+            </div>
+          </header>
+          <form method="post" class="access-push-form">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="push_policy">
+            {% if pppoe_compulsory %}
+              <input type="hidden" name="pppoe_compulsory" value="on">
+            {% endif %}
+            <button type="submit" class="btn btn-primary" data-loading-label="Pushing PPPoE policy…">
+              {% if pppoe_compulsory %}Push block &amp; PPPoE logins{% else %}Push PPPoE server &amp; logins{% endif %}
+            </button>
+            <p class="settings-policy-hint">
+              Use after reconnecting, or if clients see “confirm username and password”.
+            </p>
+          </form>
+        </section>
+      {% endif %}
     </div>
-  </section>
-{% else %}
-  <section class="panel">
-    <p class="empty">No organization is linked to this workspace.</p>
-  </section>
-{% endif %}
+  {% else %}
+    <section class="panel account-card">
+      <p class="empty">No organization is linked to this workspace.</p>
+    </section>
+  {% endif %}
+</div>
 {% endblock %}
 
 {% block client_extra_js %}
@@ -103,12 +133,20 @@
   var form = document.getElementById("pppoe-settings-form");
   var input = document.getElementById("id_pppoe_compulsory");
   var label = document.getElementById("pppoe-enforcement-label");
+  var pill = document.getElementById("pppoe-status-pill");
+  var policy = document.getElementById("pppoe-policy-label");
   var panel = document.querySelector(".settings-policy-panel");
   if (!form || !input) return;
 
   function syncUi() {
     var on = !!input.checked;
     if (label) label.textContent = on ? "On" : "Off";
+    if (pill) {
+      pill.textContent = on ? "On" : "Off";
+      pill.classList.toggle("is-on", on);
+      pill.classList.toggle("is-off", !on);
+    }
+    if (policy) policy.textContent = on ? "PPPoE clients only" : "All active clients";
     if (panel) panel.classList.toggle("is-policy-on", on);
   }
 

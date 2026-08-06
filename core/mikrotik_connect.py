@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from typing import Any, Iterator
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from django.conf import settings
 
@@ -6877,6 +6877,40 @@ def _ensure_pppoe_stack(
     return PPPOE_PROFILE_NAME, notes
 
 
+def _prefer_http_captive_url(url: str) -> str:
+    """Captive WebViews stall on HTTPS/HSTS — prefer http:// for pay popups."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if (parsed.scheme or "").lower() != "https" or not parsed.hostname:
+        return url
+    netloc = parsed.hostname
+    if parsed.port and parsed.port not in (80, 443):
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(
+        ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+    )
+
+
+def _resolve_absolute_captive_url(url: str = "") -> str:
+    """
+    Turn a path or blank into an absolute pay URL using PUBLIC_BASE_URL / LAN base.
+
+    Returns "" when no absolute URL can be formed — callers must abort enable.
+    """
+    url = (url or "").strip()
+    if url and urlparse(url).scheme:
+        return _prefer_http_captive_url(url)
+    base = _billing_portal_base_url()
+    if not base:
+        return ""
+    if not url:
+        return _prefer_http_captive_url(base)
+    path = url if url.startswith("/") else f"/{url}"
+    return _prefer_http_captive_url(f"{base.rstrip('/')}{path}")
+
+
 def _billing_portal_base_url(explicit: str = "") -> str:
     """
     Absolute origin for pay redirects / NAT pushed to MikroTik and CPEs.
@@ -8801,6 +8835,10 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
 
     Refuses path-only URLs — those become ``http://192.168.…/pppoe/…`` on the
     CPE Hotspot and trap both payment and admin WebFig.
+
+    Notes include ``installed hotspot/login.html`` or ``fetched hotspot/login.html``
+    when the critical login page landed; callers must treat a missing login page
+    as failure so WAN is not dropped without a popup.
     """
     notes: list[str] = []
     portal_url = (portal_url or "").strip()
@@ -8817,6 +8855,7 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
             )
             return notes
     if not portal_url:
+        notes.append("warning: empty pay URL — Hotspot pages not installed")
         return notes
     if not urlparse(portal_url).scheme:
         notes.append("warning: pay URL is not absolute — Hotspot pages not installed")
@@ -8827,7 +8866,7 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
             notes.append(f"removed {dst}")
 
     pay_html = _captive_pay_redirect_html(portal_url)
-    wrote_any = False
+    wrote_login = False
     if pay_html:
         for dst in (
             "hotspot/login.html",
@@ -8838,14 +8877,16 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
         ):
             if _write_hotspot_html_file(sock, dst, pay_html):
                 notes.append(f"installed {dst}")
-                wrote_any = True
+                if dst == "hotspot/login.html":
+                    wrote_login = True
             else:
                 notes.append(f"could not write {dst}")
 
-    if wrote_any:
+    if wrote_login:
         return notes
 
     # Fallback when /file contents writes are unsupported: HTTP-fetch the pay URL.
+    # Must run while CPE WAN still reaches billing (before renew WAN-drop).
     targets = (
         ("hotspot/login.html", portal_url),
         ("hotspot/redirect.html", portal_url),
@@ -8866,6 +8907,10 @@ def _fetch_hotspot_pages(sock: socket.socket, portal_url: str) -> list[str]:
             notes.append(f"fetch skipped: {dst}")
         else:
             notes.append(f"fetched {dst}")
+            if dst == "hotspot/login.html":
+                wrote_login = True
+    if not wrote_login:
+        notes.append("warning: hotspot/login.html missing — captive pay popup will not open")
     return notes
 
 
@@ -8997,26 +9042,35 @@ def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
 
 def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> list[str]:
     """
-    Turn on a local Hotspot + DNS/HTTP redirects on the CPE.
+    Turn on a local Hotspot + pay redirect on the CPE for instant Wi‑Fi renew.
 
-    Phones/PCs joining Wi‑Fi are redirected to the renew popup on the device.
-    ``portal_url`` must be an absolute billing pay URL — relative Locations keep
-    clients on the CPE's 192.168 address and break both payment and admin HTTP.
+    Order matters for "connect Wi‑Fi → pay page appears immediately":
+      1. Absolute pay URL (abort otherwise — never trap phones on 192.168.…)
+      2. Hotspot profile/server + clear probe DNS hijack
+      3. Walled garden / billing allow
+      4. Install login.html redirect WHILE WAN still works
+      5. Drop non-billing WAN
+      6. DHCP option 114 + bounce Wi‑Fi so phones re-probe now
     """
     notes: list[str] = []
     portal_url = (portal_url or "").strip()
     if portal_url and not urlparse(portal_url).scheme:
-        # Path-only → resolve against the public/LAN billing base.
         base = _billing_portal_base_url()
         if base:
-            portal_url = f"{base}{portal_url if portal_url.startswith('/') else '/' + portal_url}"
-        else:
-            notes.append(
-                "warning: relative pay URL with no PUBLIC_BASE_URL — "
-                "phones would stick on http://192.168.…"
+            portal_url = (
+                f"{base}{portal_url if portal_url.startswith('/') else '/' + portal_url}"
             )
+        else:
+            portal_url = ""
     elif not portal_url:
         portal_url = _billing_portal_base_url()
+
+    if not portal_url or not urlparse(portal_url).scheme:
+        raise ConnectionError(
+            "Cannot enable CPE renew Hotspot without an absolute pay URL. "
+            "Set PUBLIC_BASE_URL to a reachable http://host so phones open "
+            "/pppoe/…/pay/ immediately on Wi‑Fi connect."
+        )
 
     lan = _cpe_lan_bridge_name(sock)
     gateway_ip = _cpe_lan_gateway_ip(sock, lan)
@@ -9094,12 +9148,13 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
             server_id = (row.get(".id") or "").strip()
             break
 
-    # Prefer existing LAN DHCP (no address-pool) so Wi‑Fi clients keep their subnet,
-    # but fall back to the renew pool when the CPE rejects that.
+    # Prefer the renew pool so phones get 192.168.189.x (identifiable + middleware
+    # safe). Fall back to existing LAN DHCP when the CPE rejects the pool.
     server_attempts = [
         {
             "name": RENEW_HOTSPOT_NAME,
             "interface": lan,
+            "address-pool": RENEW_HOTSPOT_POOL,
             "profile": RENEW_HOTSPOT_PROFILE,
             "disabled": "no",
             "comment": RENEW_HOTSPOT_TAG,
@@ -9107,7 +9162,6 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
         {
             "name": RENEW_HOTSPOT_NAME,
             "interface": lan,
-            "address-pool": RENEW_HOTSPOT_POOL,
             "profile": RENEW_HOTSPOT_PROFILE,
             "disabled": "no",
             "comment": RENEW_HOTSPOT_TAG,
@@ -9129,24 +9183,47 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
         )
     notes.append(f"renew hotspot redirect on {lan}")
 
-    dns_added = _ensure_captive_dns(sock, hotspot_address, RENEW_HOTSPOT_TAG)
-    if dns_added:
-        notes.append(f"captive DNS probes -> {hotspot_address}")
+    # Do NOT resolve captive probes to the Hotspot IP — that 404s generate_204
+    # and suppresses the OS sign-in sheet. Clear any previous hijack rows.
+    cleared = _clear_captive_dns_hijack(sock, RENEW_HOTSPOT_TAG)
+    if cleared:
+        notes.append(f"cleared {cleared} captive DNS hijack(s)")
     if _clear_https_capture_redirect(sock, comment=RENEW_HOTSPOT_TAG):
         notes.append("removed HTTPS-to-HTTP capture rule")
     notes.append("Hotspot intercepts captive HTTP probes")
-    # Allow pay page BEFORE the blanket WAN drop.
-    notes.extend(_ensure_cpe_portal_access(sock, portal_url))
+
+    # Allow pay page + install login.html BEFORE the blanket WAN drop so
+    # /tool/fetch fallback and garden checks still reach billing.
+    access_notes = _ensure_cpe_portal_access(sock, portal_url)
+    notes.extend(access_notes)
+    if not any("walled garden" in n.lower() or "allow" in n.lower() for n in access_notes):
+        # Soft warning only — some CPEs use IP garden wording variations.
+        if any("warning" in n.lower() for n in access_notes):
+            notes.append("warning: billing allow may be incomplete — pay page could loop")
+
+    page_notes = _fetch_hotspot_pages(sock, portal_url)
+    notes.extend(page_notes)
+    login_ready = any(
+        n.startswith("installed hotspot/login.html")
+        or n.startswith("fetched hotspot/login.html")
+        for n in page_notes
+    )
+    if not login_ready:
+        raise ConnectionError(
+            "CPE renew Hotspot enabled but hotspot/login.html was not installed. "
+            "Phones would show no internet without a pay popup. "
+            + "; ".join(page_notes[-4:])
+        )
+
     notes.extend(_ensure_cpe_wan_block(sock))
-    notes.extend(_fetch_hotspot_pages(sock, portal_url))
+
     # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
     # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
-    if portal_url and urlparse(portal_url).scheme:
-        notes.extend(
-            _ensure_captive_portal_dhcp_option(
-                sock, portal_url, comment=RENEW_HOTSPOT_TAG
-            )
+    notes.extend(
+        _ensure_captive_portal_dhcp_option(
+            sock, portal_url, comment=RENEW_HOTSPOT_TAG
         )
+    )
     notes.extend(_bounce_cpe_wifi_clients(sock))
 
     try:
@@ -9158,12 +9235,14 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     return notes
 
 
-def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
+def _bounce_wifi_clients(
+    sock: socket.socket, *, reason: str = "captive pay popup"
+) -> list[str]:
     """
-    Drop Wi‑Fi associations so phones re-run captive probes against the renew Hotspot.
+    Drop Wi‑Fi associations so phones re-run captive probes / DHCP option 114.
 
-    Without this, surfing dies on the WAN while LAN clients keep their old DHCP
-    lease and never open the pay popup until the user toggles Wi‑Fi.
+    Without this, clients keep their old association and never open the pay
+    popup until the user toggles Wi‑Fi.
     """
     notes: list[str] = []
     removed = 0
@@ -9180,7 +9259,38 @@ def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
             if terminal.get("_reply") != "!trap":
                 removed += 1
     if removed:
-        notes.append(f"bounced {removed} Wi‑Fi client(s) for captive renew popup")
+        notes.append(f"bounced {removed} Wi‑Fi client(s) for {reason}")
+    return notes
+
+
+def _bounce_cpe_wifi_clients(sock: socket.socket) -> list[str]:
+    """Drop Wi‑Fi associations so phones re-run captive probes against the renew Hotspot."""
+    return _bounce_wifi_clients(sock, reason="captive renew popup")
+
+
+def _bounce_isp_hotspot_clients(sock: socket.socket) -> list[str]:
+    """
+    Force Hotspot Wi‑Fi clients to re-probe so the pay page opens immediately.
+
+    Clears unauthorized Hotspot host/active rows (so login.html is served again)
+    then drops Wi‑Fi associations for a fresh DHCP + option 114 / captive probe.
+    """
+    notes: list[str] = []
+    cleared = 0
+    for path in ("/ip/hotspot/active", "/ip/hotspot/host"):
+        for row in _print(sock, path, props=".id,authorized"):
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            # Leave authorized (paid) sessions alone — only bounce unpaid hosts.
+            if (row.get("authorized") or "").strip().lower() in {"true", "yes"}:
+                continue
+            terminal = _remove(sock, path, item_id)
+            if terminal.get("_reply") != "!trap":
+                cleared += 1
+    if cleared:
+        notes.append(f"cleared {cleared} unauthorized Hotspot host(s)")
+    notes.extend(_bounce_wifi_clients(sock, reason="Hotspot pay popup"))
     return notes
 
 
@@ -9777,12 +9887,10 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> 
     When ``customer`` is provided, append a signed token so the renew page can
     auto-fill that account even when the phone is on CPE Wi‑Fi (not 10.20.0.x).
 
-    Always returns an absolute http(s) URL when a portal base is known — a
-    path-only Location on the CPE Hotspot keeps phones on
-    ``http://192.168.…/pppoe/…/pay/`` (unreachable Django), which also traps
-    anyone opening the CPE/NAS web UI during renew.
+    Returns an absolute http(s) URL, or "" when no public/LAN base is known —
+    never a path-only Location (those trap phones on ``http://192.168.…/pppoe/…``).
     """
-    from urllib.parse import urlencode
+    from urllib.parse import urlencode, urlparse, urlunparse
 
     from django.core import signing
     from django.urls import reverse
@@ -9791,18 +9899,32 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> 
     if not join_code:
         return _billing_portal_base_url(portal_url)
     path = reverse("core:pppoe_pay", kwargs={"join_code": join_code})
-    explicit = (portal_url or "").strip().rstrip("/")
+    explicit = (portal_url or "").strip()
+    parsed_explicit = urlparse(explicit)
+    explicit_path = (parsed_explicit.path or "").rstrip("/")
     # Caller may already pass the full pay URL (with or without ?t=).
-    if explicit and "/pppoe/" in explicit and explicit.rstrip("/").endswith("/pay"):
+    if (
+        explicit
+        and "/pppoe/" in explicit_path
+        and explicit_path.endswith("/pay")
+        and parsed_explicit.scheme
+    ):
         url = explicit
     else:
-        base = _billing_portal_base_url(explicit)
+        base = _billing_portal_base_url(explicit if parsed_explicit.scheme else "")
         if not base:
-            # Last resort: still absolute-ish via public_base_url empty → path.
-            # Prefer refusing a relative Location over shipping one.
-            url = path
-        else:
-            url = f"{base}{path}"
+            return ""
+        url = f"{base.rstrip('/')}{path}"
+
+    # Captive WebViews stall on HTTPS/HSTS; prefer http:// for the CPE popup.
+    parsed = urlparse(url)
+    if (parsed.scheme or "").lower() == "https" and parsed.hostname:
+        netloc = parsed.hostname
+        if parsed.port and parsed.port not in (80, 443):
+            netloc = f"{netloc}:{parsed.port}"
+        url = urlunparse(
+            ("http", netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
+        )
 
     if customer is not None and getattr(customer, "pk", None) and getattr(organization, "pk", None):
         token = signing.dumps(
@@ -9818,8 +9940,22 @@ def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> 
         account = (getattr(customer, "account_number", None) or "").strip()
         if account:
             params["account"] = account
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}{urlencode(params)}"
+        # Replace or append token params without duplicating.
+        parsed = urlparse(url)
+        from urllib.parse import parse_qsl, urlencode as _urlencode
+
+        q = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        q.update(params)
+        url = urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                _urlencode(q),
+                parsed.fragment,
+            )
+        )
     return url
 
 
@@ -9873,7 +10009,16 @@ def sync_customer_subscription_access(
             return cached_provision
 
     def _finish(payload: dict[str, Any]) -> dict[str, Any]:
+        # Never cache a "blocked" success when the CPE renew popup failed —
+        # otherwise status polls / sweeps skip re-pushing login.html for 8s+.
         if provision and provision_cache_key and payload.get("ok"):
+            portal = payload.get("portal") or {}
+            if (
+                not payload.get("allowed")
+                and status_active
+                and not portal.get("ok")
+            ):
+                return payload
             _captive_cache_set(provision_cache_key, payload, 8)
         return payload
 
@@ -10034,22 +10179,44 @@ def sync_customer_subscription_access(
         and provision_result.get("ok")
         and provision_result.get("profile") == PPPOE_BLOCKED_PROFILE_NAME
     )
+    portal_ok = bool(portal_result.get("ok"))
+    # Surfing can be blocked on the NAS even if CPE popup failed, but overall
+    # success for expired active clients requires the Wi‑Fi pay redirect.
+    if not allowed and status_active and provision:
+        overall_ok = bool(provision_result.get("ok")) and (
+            portal_ok or bool(portal_result.get("skipped"))
+        )
+        # Hard-fail (and count as error in sweeps) when portal attempted & failed.
+        if not portal_ok and not portal_result.get("skipped"):
+            overall_ok = False
+    else:
+        overall_ok = bool(
+            provision_result.get("ok") or not provision or portal_ok
+        )
+    message = (
+        "Internet allowed for subscription period."
+        if allowed
+        else (
+            "Surfing blocked on the ISP MikroTik"
+            + (" outside subscription period." if nas_blocked else ".")
+            + (
+                " CPE renew pay popup is live."
+                if portal_ok
+                else (
+                    " CPE renew pay popup pending (CPE offline)."
+                    if portal_result.get("skipped")
+                    else " CPE renew pay popup failed — Wi‑Fi clients may not see pay."
+                )
+            )
+        )
+    )
     return _finish(
         {
-            "ok": bool(
-                provision_result.get("ok") or not provision or portal_result.get("ok")
-            ),
+            "ok": overall_ok,
             "allowed": allowed,
             "portal": portal_result,
             "provision": provision_result,
-            "message": (
-                "Internet allowed for subscription period."
-                if allowed
-                else (
-                    "Surfing blocked on the ISP MikroTik"
-                    + (" outside subscription period." if nas_blocked else ".")
-                )
-            ),
+            "message": message,
         }
     )
 
@@ -11508,12 +11675,25 @@ def _fetch_isp_hotspot_pages(
 
     Prefers writing HTML via the API so the router does not need to download from
     PUBLIC_BASE_URL (which often fails when Django only listens on 127.0.0.1).
+
+    Notes include ``installed hotspot/login.html`` when the critical login page
+    landed; callers must treat a missing login page as failure so Hotspot is
+    not left without an instant pay popup.
     """
     notes: list[str] = []
-    pay = (pay_url or login_url or "").strip()
-    welcome = (welcome_url or alogin_url or "").strip()
+    pay = _resolve_absolute_captive_url(pay_url or login_url or "")
+    welcome = _resolve_absolute_captive_url(welcome_url or alogin_url or "") or (
+        welcome_url or alogin_url or ""
+    ).strip()
 
-    pay_html = _captive_pay_redirect_html(pay) if pay else ""
+    if not pay:
+        notes.append(
+            "warning: refused relative/empty Hotspot pay URL — "
+            "login.html not installed (would stick clients on http://10.50.50.…)"
+        )
+        return notes
+
+    pay_html = _captive_pay_redirect_html(pay)
     alogin_html = _captive_alogin_html(welcome) if welcome else ""
 
     for dst in _STALE_PROBE_FILES:
@@ -11545,11 +11725,14 @@ def _fetch_isp_hotspot_pages(
                 notes.append(f"could not write {dst}")
 
     # Optional fallback: try HTTP fetch when API write failed and a URL is available.
-    missing_login = pay and not any("installed hotspot/login" in n for n in notes)
-    if missing_login and login_url:
+    missing_login = not any(
+        n.startswith("installed hotspot/login.html") for n in notes
+    )
+    fetch_src = pay or _resolve_absolute_captive_url(login_url)
+    if missing_login and fetch_src:
         fetch_words = [
             "/tool/fetch",
-            f"=url={login_url}",
+            f"=url={fetch_src}",
             "=mode=http",
             "=dst-path=hotspot/login.html",
             "=keep-result=no",
@@ -11567,8 +11750,7 @@ def _fetch_isp_hotspot_pages(
     if missing_login:
         notes.append(
             "warning: payment login page was not installed — "
-            "set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP and run "
-            "python manage.py runserver 0.0.0.0:8000, then push again"
+            "set PUBLIC_BASE_URL to a reachable http://host and push Hotspot again"
         )
     return notes
 
@@ -11681,10 +11863,29 @@ def _ensure_isp_hotspot_stack(
     """
     Enable Hotspot on the ISP MikroTik LAN so Wi‑Fi/LAN clients authenticate.
 
-    Installs a payment-page captive redirect, captive DNS probes for phones, and
-    post-login welcome redirect HTML.
+    Order for "connect Wi‑Fi → Hotspot pay page immediately":
+      1. Absolute http pay URL (abort otherwise)
+      2. Hotspot profile/server + prefer 10.50.50 pool when dedicated
+      3. Clear probe DNS hijack; walled garden / HTTP bind
+      4. Install login.html → /hotspot/…/pay/
+      5. DHCP option 114 + bounce unauthorized clients for instant popup
     """
     notes: list[str] = []
+
+    pay_url = _resolve_absolute_captive_url(pay_url or login_url or "")
+    login_url = _resolve_absolute_captive_url(login_url) or pay_url
+    welcome_url = _resolve_absolute_captive_url(
+        welcome_url or redirect_url or alogin_url or ""
+    )
+    alogin_url = _resolve_absolute_captive_url(alogin_url) or welcome_url
+    redirect_url = _resolve_absolute_captive_url(redirect_url) or welcome_url
+    if not pay_url:
+        raise ConnectionError(
+            "Cannot enable ISP Hotspot without an absolute pay URL. "
+            "Set PUBLIC_BASE_URL to a reachable http://host so phones open "
+            "/hotspot/…/pay/ immediately on Wi‑Fi connect."
+        )
+
     requested_lan = (lan_interface or "").strip()
     # The saved bridge name is often stale; RouterOS rejects interface-scoped
     # commands outright when it does not exist.
@@ -11692,6 +11893,7 @@ def _ensure_isp_hotspot_stack(
     if requested_lan and requested_lan != lan:
         notes.append(f"LAN interface {requested_lan} not found; using {lan}")
     hotspot_address = _lan_ipv4_for_interface(sock, lan)
+    use_dedicated_pool = hotspot_address == ISP_HOTSPOT_ADDRESS
 
     # Prefer the onboarded router's Wi‑Fi name, then a short org-based SSID so
     # clients can tell this apart from a third-party AP like Tenda_0C8890.
@@ -11712,7 +11914,7 @@ def _ensure_isp_hotspot_stack(
     )
 
     # Dedicated address/pool only when the LAN has no usable IPv4 yet.
-    if hotspot_address == ISP_HOTSPOT_ADDRESS:
+    if use_dedicated_pool:
         _ensure_tagged_ip_address(
             sock,
             address=f"{ISP_HOTSPOT_ADDRESS}/24",
@@ -11812,34 +12014,33 @@ def _ensure_isp_hotspot_stack(
             server_id = (row.get(".id") or "").strip()
             break
 
-    server_attempts = [
-        {
-            "name": ISP_HOTSPOT_NAME,
-            "interface": lan,
-            "profile": ISP_HOTSPOT_PROFILE,
-            "disabled": "no",
-            "comment": ISP_HOTSPOT_TAG,
-        },
-        {
-            "name": ISP_HOTSPOT_NAME,
-            "interface": lan,
-            "address-pool": ISP_HOTSPOT_POOL,
-            "profile": ISP_HOTSPOT_PROFILE,
-            "disabled": "no",
-            "comment": ISP_HOTSPOT_TAG,
-        },
-        {
-            "name": ISP_HOTSPOT_NAME,
-            "interface": lan,
-            "profile": ISP_HOTSPOT_PROFILE,
-            "disabled": "no",
-        },
-        {
-            "name": ISP_HOTSPOT_NAME,
-            "interface": lan,
-            "disabled": "no",
-        },
-    ]
+    # Prefer the dedicated 10.50.50 pool so phones get an identifiable Hotspot IP
+    # (middleware → /hotspot/…/pay/). Fall back to existing LAN DHCP when the
+    # router is already using another LAN subnet.
+    pooled = {
+        "name": ISP_HOTSPOT_NAME,
+        "interface": lan,
+        "address-pool": ISP_HOTSPOT_POOL,
+        "profile": ISP_HOTSPOT_PROFILE,
+        "disabled": "no",
+        "comment": ISP_HOTSPOT_TAG,
+    }
+    unpooled = {
+        "name": ISP_HOTSPOT_NAME,
+        "interface": lan,
+        "profile": ISP_HOTSPOT_PROFILE,
+        "disabled": "no",
+        "comment": ISP_HOTSPOT_TAG,
+    }
+    server_attempts = (
+        [pooled, unpooled, {k: v for k, v in unpooled.items() if k != "comment"},
+         {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"}]
+        if use_dedicated_pool
+        else [unpooled, pooled,
+              {"name": ISP_HOTSPOT_NAME, "interface": lan, "profile": ISP_HOTSPOT_PROFILE,
+               "disabled": "no"},
+              {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"}]
+    )
     terminal, server_id = _add_or_set_attempts(
         sock, "/ip/hotspot", server_id, server_attempts
     )
@@ -11872,20 +12073,34 @@ def _ensure_isp_hotspot_stack(
     if redirect_url and redirect_url != garden_url:
         notes.extend(_ensure_hotspot_walled_garden(sock, redirect_url))
     notes.extend(_ensure_hotspot_server_bypass(sock, garden_url))
+
+    # login.html BEFORE option 114 so we never advertise a broken portal.
+    page_notes = _fetch_isp_hotspot_pages(
+        sock,
+        login_url=login_url,
+        alogin_url=alogin_url,
+        pay_url=pay_url or login_url,
+        welcome_url=welcome_url or redirect_url or alogin_url,
+    )
+    notes.extend(page_notes)
+    login_ready = any(
+        n.startswith("installed hotspot/login.html") for n in page_notes
+    )
+    if not login_ready:
+        raise ConnectionError(
+            "ISP Hotspot enabled but hotspot/login.html was not installed. "
+            "Phones would show no internet without a pay popup. "
+            + "; ".join(page_notes[-4:])
+        )
+
+    # RFC 8910 option 114: Android 11+ / iOS 14+ / Win11 raise the sign-in
+    # popup the moment Wi‑Fi associates — do not wait for an HTTP probe.
     notes.extend(
         _ensure_captive_portal_dhcp_option(
             sock, pay_url or garden_url, comment=ISP_HOTSPOT_TAG
         )
     )
-    notes.extend(
-        _fetch_isp_hotspot_pages(
-            sock,
-            login_url=login_url,
-            alogin_url=alogin_url,
-            pay_url=pay_url or login_url,
-            welcome_url=welcome_url or redirect_url or alogin_url,
-        )
-    )
+    notes.extend(_bounce_isp_hotspot_clients(sock))
     return notes
 
 
@@ -11939,6 +12154,26 @@ def apply_hotspot_on_router(
         welcome_url = welcome_url or derived.get("welcome_url", "")
         if not redirect_url and getattr(org, "hotspot_use_welcome_page", True):
             redirect_url = derived.get("welcome_url", "")
+
+    if enabled:
+        # Captive WebViews need absolute http://…/hotspot/…/pay/ — never a path
+        # that the NAS would serve as http://10.50.50.1/hotspot/…
+        pay_url = _resolve_absolute_captive_url(pay_url or login_url or "")
+        login_url = _resolve_absolute_captive_url(login_url) or pay_url
+        welcome_url = _resolve_absolute_captive_url(welcome_url or redirect_url or "")
+        alogin_url = _resolve_absolute_captive_url(alogin_url) or welcome_url
+        redirect_url = _resolve_absolute_captive_url(redirect_url) or welcome_url
+        if not pay_url:
+            return {
+                "ok": False,
+                "router_id": router_id,
+                "router_name": router_name,
+                "error": (
+                    "Cannot enable Hotspot without an absolute pay URL. "
+                    "Set PUBLIC_BASE_URL to a reachable http://host so phones "
+                    "open /hotspot/…/pay/ immediately on Wi‑Fi connect."
+                ),
+            }
 
     if getattr(router, "account_status", "") == "suspended":
         return {

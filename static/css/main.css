@@ -10187,6 +10187,141 @@ a.packages-stat:focus-visible {
   color: var(--ink-soft);
 }
 
+/* Access settings (PPPoE / Hotspot) */
+.access-settings-shell {
+  width: 100%;
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.access-settings-intro {
+  margin-bottom: 0.15rem;
+}
+
+.access-settings-title {
+  margin: 0.1rem 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.15rem + 0.7vw, 1.7rem);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+}
+
+.access-settings-tabs {
+  width: 100%;
+  max-width: 22rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem;
+  margin: 0.9rem 0 1.15rem;
+  border-radius: 16px;
+}
+
+.access-settings-tabs .client-type-tab {
+  justify-content: center;
+  min-height: 2.65rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.access-settings-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.access-settings-banner,
+.access-settings-notice {
+  margin: 0 0 0.15rem;
+}
+
+.access-settings-stats {
+  margin-top: 0.15rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.access-settings-stats .account-summary-item strong {
+  font-size: 0.98rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.access-toggle-row {
+  margin-bottom: 1rem;
+}
+
+.access-toggle-row--choice {
+  margin-top: 0.15rem;
+}
+
+.access-push-card .account-card-head {
+  margin-bottom: 0.95rem;
+}
+
+.access-push-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+.access-push-form .btn {
+  flex: 0 0 auto;
+}
+
+.access-push-form .settings-policy-hint {
+  flex: 1 1 14rem;
+  margin: 0;
+}
+
+.access-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem 1rem;
+}
+
+.access-settings-actions-copy {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.access-settings-actions-copy strong {
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+
+.access-settings-actions-copy span {
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+
+.access-preview-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.access-settings-shell .mikrotik-wifi-switch-track {
+  width: 2.85rem;
+  height: 1.55rem;
+}
+
+.access-settings-shell .mikrotik-wifi-switch-track::after {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.access-settings-shell .mikrotik-wifi-switch input:checked + .mikrotik-wifi-switch-track::after {
+  transform: translateX(1.15rem);
+}
+
+.access-settings-shell .mikrotik-wifi-switch-text {
+  min-width: 6.5rem;
+  font-size: 0.88rem;
+}
+
 .settings-policy-panel {
   display: grid;
   gap: 1rem;
@@ -10247,6 +10382,10 @@ a.packages-stat:focus-visible {
   color: var(--ink);
   font-size: 0.92rem;
   line-height: 1.4;
+}
+
+.access-settings-shell .settings-policy-banner {
+  margin-bottom: 0;
 }
 
 .stk-live-panel {
@@ -10354,10 +10493,99 @@ a.packages-stat:focus-visible {
   margin-top: 0.25rem;
 }
 
+.access-settings-shell .hotspot-settings-form > .account-card,
+.access-settings-shell .access-settings-stack > .account-card {
+  animation: uiRise 0.45s var(--ease-out) both;
+}
+
+.access-settings-shell .hotspot-settings-form > .account-card:nth-child(1),
+.access-settings-shell .access-settings-stack > .account-card:nth-child(1) { animation-delay: 0.04s; }
+.access-settings-shell .hotspot-settings-form > .account-card:nth-child(2),
+.access-settings-shell .access-settings-stack > .account-card:nth-child(2) { animation-delay: 0.08s; }
+.access-settings-shell .hotspot-settings-form > .account-card:nth-child(3),
+.access-settings-shell .access-settings-stack > .account-card:nth-child(3) { animation-delay: 0.12s; }
+.access-settings-shell .hotspot-settings-form > .account-card:nth-child(4),
+.access-settings-shell .access-settings-stack > .account-card:nth-child(4) { animation-delay: 0.16s; }
+
 @media (max-width: 720px) {
   .settings-policy-stats,
-  .hotspot-settings-form .settings-policy-stats {
+  .hotspot-settings-form .settings-policy-stats,
+  .access-settings-stats {
     grid-template-columns: 1fr;
+  }
+
+  .access-settings-shell {
+    max-width: 100%;
+  }
+
+  .access-settings-tabs {
+    max-width: none;
+    margin: 0.65rem 0 0.95rem;
+  }
+
+  .access-settings-tabs .client-type-tab {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .access-toggle-row,
+  .settings-policy-form {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.65rem;
+  }
+
+  .access-toggle-row .mikrotik-wifi-switch,
+  .settings-policy-form .mikrotik-wifi-switch {
+    min-height: 2.75rem;
+    padding: 0.35rem 0;
+  }
+
+  .access-toggle-row .settings-policy-hint,
+  .settings-policy-form .settings-policy-hint {
+    flex-basis: auto;
+  }
+
+  .access-push-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .access-push-form .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .access-settings-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .access-settings-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .access-preview-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .access-voucher-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 900px) {
+  .access-settings-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .access-settings-shell .hotspot-settings-form > .account-card,
+  .access-settings-shell .access-settings-stack > .account-card {
+    animation: none;
   }
 }
 

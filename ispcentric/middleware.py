@@ -115,9 +115,17 @@ class CaptiveHostRewriteMiddleware:
         rewrite = host in CAPTIVE_PROBE_HOSTS
         if not rewrite:
             try:
-                from core.mikrotik_connect import is_hotspot_pool_ip, is_pppoe_pool_ip
+                from core.mikrotik_connect import (
+                    is_cpe_renew_pool_ip,
+                    is_hotspot_pool_ip,
+                    is_pppoe_pool_ip,
+                )
 
-                rewrite = is_pppoe_pool_ip(remote) or is_hotspot_pool_ip(remote)
+                rewrite = (
+                    is_pppoe_pool_ip(remote)
+                    or is_hotspot_pool_ip(remote)
+                    or is_cpe_renew_pool_ip(remote)
+                )
             except Exception:
                 rewrite = False
         if not rewrite:
