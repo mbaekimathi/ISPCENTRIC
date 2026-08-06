@@ -118,7 +118,7 @@
       <div>
         <p class="workspace-dash-panel-kicker">Network</p>
         <h2>MikroTik performance trend</h2>
-        <p class="panel-sub">Health score for every router over the last 24 hours. Dashed line is the fleet average.</p>
+        <p class="panel-sub">Health score for every router over the last 24 hours. Dashed line is the fleet average. Gaps mean no probe was stored.</p>
       </div>
       <div class="workspace-dash-perf-summary">
         <span class="workspace-dash-chip"><strong data-stat="mt-score-lg">—</strong> <span data-stat="mt-label-lg">Checking…</span></span>
@@ -856,7 +856,13 @@
       setExpiredTab(btn.getAttribute("data-expired-tab") || "pppoe");
     });
   });
-  setInterval(function () { loadLive(false); }, 15000);
+  // Soft polls keep the UI fresh from cache; force a live probe about once a
+  // minute so health samples (and outages) keep landing in the trend chart.
+  var pollTick = 0;
+  setInterval(function () {
+    pollTick += 1;
+    loadLive(pollTick % 4 === 0);
+  }, 15000);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) loadLive(true);
   });

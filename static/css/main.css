@@ -20374,6 +20374,43 @@ h1, h2, h3, h4,
   align-items: center;
 }
 
+.client-simple-head-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.55rem;
+  max-width: min(100%, 32rem);
+}
+
+.client-package-session-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: var(--surface-2, var(--surface));
+}
+
+.client-package-session-label {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.client-package-session-top .client-package-pause-form {
+  justify-content: flex-end;
+}
+
+.client-package-session-top .client-simple-hint {
+  max-width: 18rem;
+  text-align: right;
+  line-height: 1.35;
+}
+
 .client-simple-status {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -20511,13 +20548,6 @@ h1, h2, h3, h4,
   margin-top: 0;
 }
 
-.client-package-session-row dd {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.35rem;
-}
-
 .client-simple-actions .btn {
   min-height: 2.45rem;
   border-radius: 0.7rem;
@@ -20591,6 +20621,15 @@ h1, h2, h3, h4,
   scroll-margin-top: 5.5rem;
 }
 
+#client-vouchers {
+  margin-top: 0;
+  scroll-margin-top: 5.5rem;
+}
+
+#client-vouchers + #client-billing {
+  margin-top: 1.1rem;
+}
+
 #client-billing .client-simple-head {
   margin-bottom: 0.85rem;
 }
@@ -20605,6 +20644,72 @@ h1, h2, h3, h4,
 
 #client-billing .org-table-client-billing th {
   white-space: nowrap;
+}
+
+.voucher-code {
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  font-weight: 780;
+}
+
+.voucher-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.voucher-status-pill.is-valid {
+  border-color: color-mix(in srgb, #059669 35%, var(--border));
+  background: color-mix(in srgb, #059669 12%, transparent);
+  color: #047857;
+}
+
+.voucher-status-pill.is-expired {
+  border-color: color-mix(in srgb, #b45309 35%, var(--border));
+  background: color-mix(in srgb, #b45309 12%, transparent);
+  color: #b45309;
+}
+
+.voucher-status-pill.is-invalid {
+  border-color: color-mix(in srgb, #dc2626 30%, var(--border));
+  background: color-mix(in srgb, #dc2626 10%, transparent);
+  color: #b91c1c;
+}
+
+.voucher-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.voucher-share-actions .btn-sm {
+  min-height: 1.85rem;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.voucher-share-wa {
+  background: color-mix(in srgb, #16a34a 14%, transparent);
+  border-color: color-mix(in srgb, #16a34a 35%, var(--border));
+  color: #15803d;
+}
+
+.voucher-row.is-expired,
+.voucher-row.is-invalid {
+  opacity: 0.88;
+}
+
+.org-table-client-vouchers th:nth-child(5),
+.org-table-client-vouchers td:nth-child(5) {
+  min-width: 14rem;
 }
 
 .client-simple-note {
@@ -20675,6 +20780,24 @@ h1, h2, h3, h4,
   .client-simple-head {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .client-simple-head-right {
+    align-items: stretch;
+    max-width: none;
+  }
+
+  .client-package-session-top {
+    justify-content: flex-start;
+  }
+
+  .client-package-session-top .client-package-pause-form {
+    justify-content: flex-start;
+  }
+
+  .client-package-session-top .client-simple-hint {
+    max-width: none;
+    text-align: left;
   }
 
   .client-simple-badges {

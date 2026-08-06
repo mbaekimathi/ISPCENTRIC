@@ -147,14 +147,46 @@
         </p>
       </div>
     </div>
-    <div class="client-simple-badges">
-      <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
-      {% if customer.router %}
-        <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
-          <span class="mikrotik-link-dot" aria-hidden="true"></span>
-          <span class="mikrotik-link-label">Checking…</span>
-        </span>
-      {% endif %}
+    <div class="client-simple-head-right">
+      <div class="client-simple-badges">
+        <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+        {% if customer.router %}
+          <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
+            <span class="mikrotik-link-dot" aria-hidden="true"></span>
+            <span class="mikrotik-link-label">Checking…</span>
+          </span>
+        {% endif %}
+      </div>
+      <div class="client-package-session-top" data-package-pause-row {% if not customer.package_end and not subscription_paused %}hidden{% endif %}>
+        <span class="client-package-session-label">Session</span>
+        <form method="post" class="client-package-pause-form" data-package-pause-form>
+          {% csrf_token %}
+          <input type="hidden" name="action" value="{% if can_resume_package %}resume_package{% else %}pause_package{% endif %}" data-package-pause-action>
+          <label class="mikrotik-wifi-switch client-package-pause-switch" for="client-package-pause-toggle">
+            <input
+              type="checkbox"
+              id="client-package-pause-toggle"
+              data-package-pause-toggle
+              {% if not subscription_paused %}checked{% endif %}
+              {% if not can_pause_package and not can_resume_package %}disabled{% endif %}
+              aria-describedby="client-package-pause-label"
+            >
+            <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+            <span class="mikrotik-wifi-switch-text" id="client-package-pause-label" data-package-pause-label>
+              {% if subscription_paused %}Internet paused{% else %}Running{% endif %}
+            </span>
+          </label>
+          <span class="client-simple-hint" data-package-pause-hint>
+            {% if subscription_paused %}
+              Client internet is paused. Turn on to resume and continue with remaining time.
+            {% elif can_pause_package %}
+              Turn off to pause. Remaining time freezes until you resume.
+            {% else %}
+              Set an active package period to pause or resume.
+            {% endif %}
+          </span>
+        </form>
+      </div>
     </div>
   </header>
 
@@ -191,7 +223,7 @@
     {% if customer.package_start or customer.package_end or subscription_paused %}
       <div class="client-subscription-banner {% if subscription_paused %}is-paused{% elif subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
         {% if subscription_paused %}
-          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Paused. Surfing blocked; remaining time is frozen until you resume.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Client internet is paused. Surfing blocked; remaining time is frozen until you resume.
         {% elif subscription_active %}
           {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Active. Surfing allowed in this period.
         {% elif subscription_expired %}
@@ -226,39 +258,7 @@
           →
           <span data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
           · <span data-sub-remaining>—</span> left
-          <span class="client-simple-hint" data-sub-pause-hint {% if not subscription_paused %}hidden{% endif %}>Paused</span>
-        </dd>
-      </div>
-      <div class="client-package-session-row" data-package-pause-row {% if not customer.package_end and not subscription_paused %}hidden{% endif %}>
-        <dt>Session</dt>
-        <dd>
-          <form method="post" class="client-package-pause-form" data-package-pause-form>
-            {% csrf_token %}
-            <input type="hidden" name="action" value="{% if can_resume_package %}resume_package{% else %}pause_package{% endif %}" data-package-pause-action>
-            <label class="mikrotik-wifi-switch client-package-pause-switch" for="client-package-pause-toggle">
-              <input
-                type="checkbox"
-                id="client-package-pause-toggle"
-                data-package-pause-toggle
-                {% if not subscription_paused %}checked{% endif %}
-                {% if not can_pause_package and not can_resume_package %}disabled{% endif %}
-                aria-describedby="client-package-pause-label"
-              >
-              <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
-              <span class="mikrotik-wifi-switch-text" id="client-package-pause-label" data-package-pause-label>
-                {% if subscription_paused %}Paused{% else %}Running{% endif %}
-              </span>
-            </label>
-            <span class="client-simple-hint" data-package-pause-hint>
-              {% if subscription_paused %}
-                Turn on to resume and continue with remaining time.
-              {% elif can_pause_package %}
-                Turn off to pause. Remaining time freezes until you resume.
-              {% else %}
-                Set an active package period to pause or resume.
-              {% endif %}
-            </span>
-          </form>
+          <span class="client-simple-hint" data-sub-pause-hint {% if not subscription_paused %}hidden{% endif %}>Internet paused</span>
         </dd>
       </div>
     </dl>
@@ -868,7 +868,10 @@
         planEl.textContent = planText;
       }
       var pauseHint = section.querySelector("[data-sub-pause-hint]");
-      if (pauseHint) pauseHint.hidden = !paused;
+      if (pauseHint) {
+        pauseHint.hidden = !paused;
+        if (paused) pauseHint.textContent = "Internet paused";
+      }
 
       var heroPlan = document.querySelector('[data-hero-chip="plan"] strong');
       if (heroPlan && data.plan_name) heroPlan.textContent = data.plan_name;
@@ -894,7 +897,7 @@
         var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
         if (paused) {
           banner.classList.add("is-paused");
-          banner.textContent = planPrefix + "Paused. Surfing blocked; remaining time is frozen until you resume.";
+          banner.textContent = planPrefix + "Client internet is paused. Surfing blocked; remaining time is frozen until you resume.";
         } else if (data.subscription_active) {
           banner.classList.add("is-active");
           banner.textContent = planPrefix + "Active. Surfing allowed in this period.";
@@ -965,10 +968,10 @@
         toggle.checked = !paused;
         toggle.disabled = !(canPause || canResume);
       }
-      if (label) label.textContent = paused ? "Paused" : "Running";
+      if (label) label.textContent = paused ? "Internet paused" : "Running";
       if (hint) {
         if (paused) {
-          hint.textContent = "Turn on to resume and continue with remaining time.";
+          hint.textContent = "Client internet is paused. Turn on to resume and continue with remaining time.";
         } else if (canPause) {
           hint.textContent = "Turn off to pause. Remaining time freezes until you resume.";
         } else {
@@ -1042,7 +1045,7 @@
                   can_resume_package: wantRunning,
                 });
               } else if (label) {
-                label.textContent = wantRunning ? "Paused" : "Running";
+                label.textContent = wantRunning ? "Internet paused" : "Running";
                 toggle.disabled = false;
               }
               return;
@@ -1067,7 +1070,7 @@
               toggle.checked = !wantRunning;
               toggle.disabled = false;
             }
-            if (label) label.textContent = wantRunning ? "Paused" : "Running";
+            if (label) label.textContent = wantRunning ? "Internet paused" : "Running";
           })
           .finally(function () {
             inFlight = false;
@@ -1640,7 +1643,7 @@
       var chipLabel = "Inactive";
       var chipState = "is-bad";
       if (data.subscription_paused) {
-        chipLabel = "Paused";
+        chipLabel = "Internet paused";
         chipState = "is-idle";
       } else if (lastActive) {
         chipLabel = "Active";
@@ -1676,7 +1679,7 @@
         var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
         if (data.subscription_paused) {
           banner.classList.add("is-paused");
-          banner.textContent = planPrefix + "Paused. Surfing blocked; remaining time is frozen until you resume.";
+          banner.textContent = planPrefix + "Client internet is paused. Surfing blocked; remaining time is frozen until you resume.";
         } else if (data.subscription_active) {
           banner.classList.add("is-active");
           banner.textContent = planPrefix + "Active. Surfing allowed in this period.";

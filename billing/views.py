@@ -650,11 +650,14 @@ def _renew_page_context(customer):
 
 
 def subscription_renew(request, token: str):
-    """Public renew notice shown when a subscriber's package period has ended."""
+    """Legacy renew URL — redirect to the canonical PPPoE pay page."""
+    from django.shortcuts import redirect
+
     from billing.services import resolve_customer_from_renew_token
+    from core.views import _pppoe_pay_url_for_customer
 
     customer = resolve_customer_from_renew_token(token)
-    if customer is None:
+    if customer is None or not customer.organization_id:
         return render(
             request,
             "billing/subscription_renew.html",
@@ -665,52 +668,51 @@ def subscription_renew(request, token: str):
             },
             status=404,
         )
-    return render(
-        request,
-        "billing/subscription_renew.html",
-        _renew_page_context(customer),
-    )
+    target = _pppoe_pay_url_for_customer(customer, request)
+    if not target:
+        return render(
+            request,
+            "billing/subscription_renew.html",
+            {
+                "invalid": True,
+                "org_name": "ISPCENTRIC",
+                "popup": True,
+            },
+            status=404,
+        )
+    return redirect(target)
 
 
 def subscription_renew_hotspot(request, token: str):
     """
-    Bare HTML login page fetched onto client CPE Hotspot folders.
+    Legacy CPE Hotspot HTML — redirect phones to the canonical pay page.
 
-    Phones show this as the captive-portal popup when Wi‑Fi connects after expiry.
+    PPPoE CPE renew uses /pppoe/<join>/pay/?t=…; plain Hotspot org falls back
+    to /hotspot/<join>/pay/.
     """
+    from django.http import HttpResponse
+    from django.shortcuts import redirect
+
     from billing.services import resolve_customer_from_renew_token
+    from core.views import _hotspot_pay_url_for_org, _pppoe_pay_url_for_customer
 
     customer = resolve_customer_from_renew_token(token)
-    if customer is None:
-        return render(
-            request,
-            "billing/subscription_renew_hotspot.html",
-            {
-                "invalid": True,
-                "org_name": "ISPCENTRIC",
-                "customer_name": "Subscriber",
-            },
+    if customer is None or not customer.organization_id:
+        return HttpResponse(
+            "<!DOCTYPE html><html><body><p>Renew link invalid.</p></body></html>",
             content_type="text/html; charset=utf-8",
             status=404,
         )
-    ctx = _renew_page_context(customer)
-    org = ctx.get("organization")
-    return render(
-        request,
-        "billing/subscription_renew_hotspot.html",
-        {
-            "invalid": False,
-            "org_name": ctx["org_name"],
-            "organization": org,
-            "customer": customer,
-            "customer_name": customer.full_name,
-            "account_number": customer.account_number,
-            "package_end": customer.package_end,
-            "plan_name": customer.plan.name if customer.plan_id else "",
-            "plan": customer.plan,
-            "expired": ctx["expired"],
-            "not_started": ctx["not_started"],
-            "allowed": ctx["allowed"],
-        },
-        content_type="text/html; charset=utf-8",
-    )
+    org = customer.organization
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        target = _hotspot_pay_url_for_org(org, request)
+    else:
+        target = _pppoe_pay_url_for_customer(customer, request)
+    if not target:
+        return HttpResponse(
+            "<!DOCTYPE html><html><body><p>Renew link invalid.</p></body></html>",
+            content_type="text/html; charset=utf-8",
+            status=404,
+        )
+    # MikroTik Hotspot login.html prefers a 302 Location for captive clients.
+    return redirect(target)

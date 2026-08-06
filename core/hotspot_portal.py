@@ -359,7 +359,8 @@ def public_absolute_url(path: str, request=None) -> str:
 
 def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
     """Absolute URLs for Hotspot portal pages pushed to MikroTik."""
-    login_path = reverse("core:hotspot_portal_login_page", kwargs={"join_code": join_code})
+    # login.html on the NAS redirects to the same Hotspot pay page customers open.
+    login_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
     alogin_path = reverse("core:hotspot_alogin_page", kwargs={"join_code": join_code})
     welcome_path = reverse("core:hotspot_welcome", kwargs={"join_code": join_code})
     pay_path = reverse("core:hotspot_pay", kwargs={"join_code": join_code})

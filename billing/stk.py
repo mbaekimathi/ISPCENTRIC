@@ -14,7 +14,6 @@ from accounts.models import ClientSettings, PaymentGateway
 from accounts.mpesa_daraja import initiate_stk_push, query_stk_push
 from billing.models import Customer, Invoice, StkPushRequest
 from billing.services import (
-    apply_subscription_renewal,
     create_renewal_invoice_and_payment,
     normalize_kenya_msisdn,
     resolve_lead_allocation_fee,
@@ -976,27 +975,33 @@ def fulfill_successful_stk(
             ]
         )
         return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
+
+    from billing.vouchers import create_voucher_for_stk, voucher_payload
+
+    # Already paid: persist receipt updates, return the voucher.
+    # Activation happens when the customer redeems the code on the pay page.
+    if stk.status == StkPushRequest.Status.SUCCESS:
+        persisted = _persist_stk_receipt_fields(
+            stk,
+            raw=stk.raw_callback if raw is not None else None,
+            result_desc=result_desc,
+            result_code=result_code,
+            receipt=receipt,
+        )
+        voucher = create_voucher_for_stk(stk)
+        persisted["already_applied"] = bool(stk.subscription_applied)
+        persisted["needs_voucher"] = voucher.status == voucher.Status.VALID
+        persisted["authorized"] = False
+        persisted["just_provisioned"] = False
+        persisted["provision_ok"] = False
+        persisted["provision_allowed"] = False
+        persisted.update(voucher_payload(voucher))
+        return persisted
+
     paid_plan = stk.plan or customer.plan
     if paid_plan is not None and customer.plan_id != paid_plan.pk:
         customer.plan = paid_plan
         customer.save(update_fields=["plan"])
-    try:
-        apply_subscription_renewal(customer, plan=paid_plan)
-    except ValueError as exc:
-        stk.status = StkPushRequest.Status.FAILED
-        stk.result_desc = str(exc)[:255]
-        stk.completed_at = timezone.now()
-        stk.save(
-            update_fields=[
-                "status",
-                "result_code",
-                "result_desc",
-                "mpesa_receipt",
-                "raw_callback",
-                "completed_at",
-            ]
-        )
-        return {"ok": False, "error": str(exc), "stk_id": stk.pk}
 
     invoice = stk.invoice
     payment = stk.payment
@@ -1011,8 +1016,9 @@ def fulfill_successful_stk(
         stk.invoice = invoice
         stk.payment = payment
 
+    # Payment is recorded; package + MikroTik activate only after voucher redeem.
     stk.status = StkPushRequest.Status.SUCCESS
-    stk.subscription_applied = True
+    stk.subscription_applied = False
     stk.completed_at = timezone.now()
     stk.save(
         update_fields=[
@@ -1028,24 +1034,7 @@ def fulfill_successful_stk(
         ]
     )
 
-    provision = {"ok": False, "allowed": False}
-    try:
-        from core.mikrotik_connect import sync_customer_subscription_access
-
-        # Do not expire the captive client's host entry while this function is
-        # running inside its payment-status request. That network reset can
-        # sever the JSON response before the browser learns payment succeeded.
-        # The loaded welcome page performs the final reauthentication instead.
-        provision = sync_customer_subscription_access(
-            customer,
-            provision=True,
-            reauthenticate=False,
-        )
-    except Exception:  # noqa: BLE001 — payment already succeeded
-        logger.exception(
-            "Subscription renewed for customer %s but MikroTik sync failed",
-            customer.pk,
-        )
+    voucher = create_voucher_for_stk(stk)
 
     return {
         "ok": True,
@@ -1055,11 +1044,14 @@ def fulfill_successful_stk(
         "package_end": customer.package_end,
         "mpesa_receipt": stk.mpesa_receipt,
         "invoice_number": invoice.invoice_number if invoice else "",
-        "provision_ok": bool(provision.get("ok")),
-        "provision_allowed": bool(provision.get("allowed")),
-        "provision_offline": bool(provision.get("offline")),
-        "provision_message": provision.get("message") or "",
-        "just_provisioned": True,
+        "provision_ok": False,
+        "provision_allowed": False,
+        "provision_offline": False,
+        "provision_message": "",
+        "just_provisioned": False,
+        "needs_voucher": True,
+        "authorized": False,
+        **voucher_payload(voucher),
     }
 
 
@@ -1071,7 +1063,7 @@ def mark_stk_failed(
     cancelled: bool = False,
     raw: dict | None = None,
 ) -> StkPushRequest:
-    if stk.status == StkPushRequest.Status.SUCCESS and stk.subscription_applied:
+    if stk.status == StkPushRequest.Status.SUCCESS:
         return stk
     stk.status = (
         StkPushRequest.Status.CANCELLED if cancelled else StkPushRequest.Status.FAILED
@@ -1287,6 +1279,10 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
             base["reason"] = stk_failure_reason(stk.result_code, stk.result_desc)
             base["cancelled"] = stk.status == StkPushRequest.Status.CANCELLED
             base["can_retry"] = True
+        elif stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
+            from billing.vouchers import attach_voucher_to_stk_status
+
+            attach_voucher_to_stk_status(base, stk)
         return base
 
     if not stk.checkout_request_id:
@@ -1382,6 +1378,13 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
                 payload["can_retry"] = False
                 payload["can_retry_authorize"] = True
                 payload["offline"] = bool(fulfill.get("provision_offline"))
+        if applied and stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
+            from billing.vouchers import attach_voucher_to_stk_status
+
+            attach_voucher_to_stk_status(payload, stk)
+            if payload.get("needs_voucher"):
+                payload["authorized"] = False
+                payload["just_provisioned"] = False
         if not applied:
             # M-Pesa took the money but the subscription could not be applied.
             # Retrying the charge would double-bill, so send them to support.

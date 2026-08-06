@@ -585,3 +585,86 @@ class CustomerUsageSample(models.Model):
 
     def __str__(self):
         return f"Usage sample {self.customer_id} @ {self.sampled_at}"
+
+
+class AccessVoucher(models.Model):
+    """
+    One-time activation code created after a successful subscription payment.
+
+    Lifecycle (improved from the pay-page product rules):
+      valid   — paid; unused; customer has not started surfing yet (redeemable)
+      expired — redeemed once; subscription activated on the router
+      invalid — surfing detected (burned); code can never activate again
+
+    Transitions:
+      payment success → valid
+      redeem on pay page → expired (+ apply package + MikroTik authorize)
+      surfing while valid → invalid (and apply package so paid time is not lost)
+      surfing while expired → invalid (confirms the session is in use)
+    """
+
+    class Status(models.TextChoices):
+        VALID = "valid", "Valid"
+        EXPIRED = "expired", "Expired"
+        INVALID = "invalid", "Invalid"
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="access_vouchers",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="access_vouchers",
+    )
+    plan = models.ForeignKey(
+        BillingPlan,
+        on_delete=models.PROTECT,
+        related_name="access_vouchers",
+    )
+    stk_request = models.OneToOneField(
+        StkPushRequest,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="access_voucher",
+    )
+    code = models.CharField(max_length=24, db_index=True)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.VALID,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    redeemed_at = models.DateTimeField(null=True, blank=True)
+    invalidated_at = models.DateTimeField(null=True, blank=True)
+    redeemed_mac = models.CharField(max_length=17, blank=True)
+
+    class Meta:
+        db_table = "billing_access_voucher"
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "code"],
+                name="bill_voucher_org_code_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "status", "-created_at"],
+                name="bill_voucher_org_status_idx",
+            ),
+            models.Index(
+                fields=["customer", "status"],
+                name="bill_voucher_cust_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Voucher {self.code} ({self.status})"
+
+    @property
+    def is_redeemable(self) -> bool:
+        return self.status == self.Status.VALID

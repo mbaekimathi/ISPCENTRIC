@@ -2420,15 +2420,13 @@ class ClientsSurfingStatusTests(TestCase):
             timeout=4.0,
         )
 
-    def test_pppoe_portal_offers_hotspot_handoff_without_converting_customer(self):
+    def test_pppoe_portal_is_pppoe_only(self):
         from django.test import RequestFactory
 
         from core.views import _pppoe_portal_context
 
         self.org.hotspot_enabled = True
         self.org.save(update_fields=["hotspot_enabled"])
-        self.router.wifi_ssid = "Live ISP Hotspot"
-        self.router.save(update_fields=["wifi_ssid"])
         request = RequestFactory().get(
             f"/pppoe/{self.org.join_code}/pay/",
             REMOTE_ADDR="10.20.0.2",
@@ -2440,11 +2438,11 @@ class ClientsSurfingStatusTests(TestCase):
             customer=self.customer,
         )
 
-        self.assertTrue(context["hotspot_option_available"])
-        self.assertTrue(context["dual_access_tabs"])
+        self.assertFalse(context["hotspot_option_available"])
+        self.assertFalse(context["dual_access_tabs"])
         self.assertEqual(context["portal_mode"], "pppoe")
-        self.assertEqual(context["hotspot_ssids"], ["Live ISP Hotspot"])
-        self.assertTrue(context["hotspot_payment_start_url"])
+        self.assertEqual(context["hotspot_plans"], [])
+        self.assertFalse(context["hotspot_payment_start_url"])
         self.assertEqual(context["account_number"], self.customer.account_number)
         self.assertEqual(context["pppoe_phone_value"], "0700000088")
         self.assertEqual(context["pppoe_selected_plan_id"], self.customer.plan_id)
@@ -2489,21 +2487,18 @@ class ClientsSurfingStatusTests(TestCase):
         context = _pppoe_portal_context(self.org, request, customer=None)
         self.assertEqual(context["portal_mode"], "pppoe")
         self.assertTrue(context["pppoe_option_available"])
-        self.assertTrue(context["hotspot_option_available"])
+        self.assertFalse(context["hotspot_option_available"])
+        self.assertFalse(context["dual_access_tabs"])
 
         response = self.client.get(f"/pppoe/{self.org.join_code}/pay/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["portal_mode"], "pppoe")
         html = response.content.decode()
-        pppoe_pos = html.find('id="choose-pppoe"')
-        hotspot_pos = html.find('id="choose-hotspot"')
-        self.assertGreater(pppoe_pos, 0)
-        self.assertGreater(hotspot_pos, 0)
-        self.assertLess(pppoe_pos, hotspot_pos)
-        self.assertIn('id="choose-pppoe"', html)
-        self.assertIn("is-active", html[pppoe_pos : pppoe_pos + 120])
+        self.assertIn('id="panel-pppoe"', html)
+        self.assertNotIn('id="choose-hotspot"', html)
+        self.assertNotIn('id="panel-hotspot"', html)
 
-    def test_hotspot_portal_offers_pppoe_handoff_without_converting_customer(self):
+    def test_hotspot_portal_is_hotspot_only(self):
         from django.test import RequestFactory
 
         from accounts.models import Organization
@@ -2555,19 +2550,17 @@ class ClientsSurfingStatusTests(TestCase):
         context = _hotspot_portal_context(self.org, request=request)
         response = self.client.get(f"/hotspot/{self.org.join_code}/pay/?mac=AABBCCDDEE11")
 
-        self.assertTrue(context["pppoe_option_available"])
-        self.assertTrue(context["dual_access_tabs"])
+        self.assertFalse(context["pppoe_option_available"])
+        self.assertFalse(context["dual_access_tabs"])
         self.assertEqual(context["portal_mode"], "hotspot")
         self.assertEqual(context["hotspot_phone_value"], "0700000099")
         self.assertEqual(context["hotspot_selected_plan_id"], hotspot_plan.pk)
-        self.assertTrue(context["pppoe_payment_start_url"])
+        self.assertFalse(context["pppoe_payment_start_url"])
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Home / PPPoE")
-        self.assertContains(response, "Hotspot")
         self.assertContains(response, 'id="panel-hotspot"')
-        self.assertContains(response, 'id="panel-pppoe"')
+        self.assertNotContains(response, 'id="panel-pppoe"')
+        self.assertNotContains(response, "Home / PPPoE")
         self.assertContains(response, 'value="0700000099"')
-        self.assertNotContains(response, "Open PPPoE renew page")
         hotspot_customer.refresh_from_db()
         self.assertEqual(hotspot_customer.service_type, "hotspot")
 
@@ -2714,7 +2707,8 @@ class ClientsSurfingStatusTests(TestCase):
         # mac must lead the appended query so other fields cannot erase it.
         self.assertIn("t=signed.token.value&mac=$(mac)", html)
 
-    def test_pppoe_pay_accepts_mac_query_for_hotspot_tab(self):
+    def test_pppoe_pay_ignores_mac_query_on_pppoe_only_page(self):
+        """PPPoE pay stays PPPoE-only; MAC belongs on /hotspot/…/pay/."""
         from django.core import signing
 
         from accounts.models import Organization
@@ -2738,6 +2732,14 @@ class ClientsSurfingStatusTests(TestCase):
             upload_speed_mbps=5,
             service_type=BillingPlan.ServiceType.HOTSPOT,
         )
+        BillingPlan.objects.create(
+            organization=self.org,
+            name="Home Monthly",
+            price="2000.00",
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
         token = signing.dumps(
             {
                 "cid": self.customer.pk,
@@ -2753,10 +2755,15 @@ class ClientsSurfingStatusTests(TestCase):
             REMOTE_ADDR="192.168.88.50",
         )
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["portal_mode"], "pppoe")
         self.assertEqual(response.context["account_number"], self.customer.account_number)
-        self.assertEqual(response.context["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
-        self.assertContains(response, "AA:BB:CC:DD:EE:FF")
-        self.assertContains(response, 'name="mac" value="AA:BB:CC:DD:EE:FF"')
+        self.assertEqual(response.context["hotspot_mac"], "")
+        self.assertFalse(response.context["dual_access_tabs"])
+        self.assertContains(response, 'id="panel-pppoe"')
+        self.assertNotContains(response, 'id="panel-hotspot"')
+        self.assertNotContains(response, 'value="AA:BB:CC:DD:EE:FF"')
+        self.assertNotContains(response, "Home / PPPoE")
+        self.assertNotContains(response, 'id="choose-hotspot"')
 
     def test_remembered_pppoe_ip_autofills_without_active_session_lookup(self):
         from django.core.cache import cache
@@ -3794,3 +3801,57 @@ class MikroTikStatusOfflineTests(TestCase):
         )
         self.assertEqual(written, 1)
         self.assertEqual(MikroTikStatusSample.objects.count(), 1)
+
+    def test_status_transition_bypasses_healthy_gate(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            _last_status_cache_key,
+            record_mikrotik_status_samples,
+        )
+        from core.models import MikroTikStatusSample
+
+        cache.clear()
+        cache.set(_last_status_cache_key(self.org.pk, self.router.pk), "disconnected", 60)
+        cache.set(f"mikrotik_status_sample_gate:{self.org.pk}", 1, 55)
+        written = record_mikrotik_status_samples(
+            self.org,
+            [
+                {
+                    "id": self.router.pk,
+                    "status": "connected",
+                    "online": True,
+                }
+            ],
+        )
+        self.assertEqual(written, 1)
+        sample = MikroTikStatusSample.objects.get(router=self.router)
+        self.assertEqual(sample.status, "connected")
+        self.assertEqual(sample.score, 100)
+
+    def test_trend_does_not_forward_fill_long_silent_gaps(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_status_samples import mikrotik_performance_trend
+        from core.models import MikroTikStatusSample
+
+        now = timezone.now()
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timedelta(hours=20),
+            status="connected",
+            score=100,
+            online=True,
+        )
+        trend = mikrotik_performance_trend(self.org, hours=24)
+        kari = next(
+            ds for ds in trend["datasets"] if ds.get("router_id") == self.router.pk
+        )
+        filled = [v for v in kari["data"] if v is not None]
+        # One old sample must not paint the entire 24h window as Connected.
+        self.assertLess(len(filled), len(kari["data"]) // 2)
+        self.assertTrue(any(v is None for v in kari["data"]))
+

@@ -24,6 +24,8 @@ _OUTAGE_STATUSES = frozenset(
 _SAMPLE_GATE_TTL = 55  # seconds between org-wide status sample writes
 _OUTAGE_SAMPLE_GATE_TTL = 12  # allow outage transitions through sooner
 _TREND_CACHE_TTL = 20
+# Do not pretend the last score held across silent gaps longer than this.
+_MAX_FORWARD_FILL_BUCKETS = 2
 _CHART_COLORS = [
     "#4f8cff",
     "#2ecc71",
@@ -43,24 +45,45 @@ def status_score(status: str | None) -> int:
     return int(_STATUS_SCORE.get(key, 0))
 
 
+def _last_status_cache_key(organization_id: int, router_id: int) -> str:
+    return f"mikrotik_status_last:{organization_id}:{router_id}"
+
+
 def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) -> int:
     """
     Persist one health sample per router from a mikrotik_status payload.
 
-    Gated so dashboard polling cannot flood the database.
+    Gated so dashboard polling cannot flood the database. Outages and
+    per-router status transitions always bypass the healthy gate so the
+    trend drops (and recovers) immediately.
     """
     if not organization or not routers:
         return 0
-    has_outage = any(
-        (row.get("status") or "").strip().lower() in _OUTAGE_STATUSES
-        for row in routers
-    )
-    gate = f"mikrotik_status_sample_gate:{organization.pk}"
-    # Healthy polls stay gated; outages bypass so the trend drops immediately
-    # instead of forward-filling the last Connected score for up to ~55s.
-    if cache.get(gate) and not has_outage:
+
+    org_id = organization.pk
+    has_outage = False
+    has_transition = False
+    for row in routers:
+        status = (row.get("status") or "disconnected").strip().lower()
+        if status in _OUTAGE_STATUSES:
+            has_outage = True
+        rid = row.get("id")
+        if rid is None:
+            continue
+        previous = cache.get(_last_status_cache_key(org_id, int(rid)))
+        if previous is not None and previous != status:
+            has_transition = True
+
+    gate = f"mikrotik_status_sample_gate:{org_id}"
+    # Healthy steady-state polls stay gated; outages / transitions bypass so
+    # the chart does not keep forward-filling the last Connected score.
+    if cache.get(gate) and not has_outage and not has_transition:
         return 0
-    cache.set(gate, 1, _OUTAGE_SAMPLE_GATE_TTL if has_outage else _SAMPLE_GATE_TTL)
+    cache.set(
+        gate,
+        1,
+        _OUTAGE_SAMPLE_GATE_TTL if (has_outage or has_transition) else _SAMPLE_GATE_TTL,
+    )
 
     now = timezone.now()
     router_ids = {
@@ -81,16 +104,18 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
         if rid is None or int(rid) not in known:
             continue
         status = (row.get("status") or "disconnected").strip().lower()
+        rid_int = int(rid)
         rows.append(
             MikroTikStatusSample(
                 organization=organization,
-                router_id=int(rid),
+                router_id=rid_int,
                 sampled_at=now,
                 status=status[:32],
                 score=status_score(status),
                 online=bool(row.get("online")) or status == "connected",
             )
         )
+        cache.set(_last_status_cache_key(org_id, rid_int), status, 60 * 60 * 6)
     if not rows:
         return 0
     MikroTikStatusSample.objects.bulk_create(rows, batch_size=100)
@@ -102,6 +127,167 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:24")
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:6")
     return len(rows)
+
+
+def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
+    """
+    Probe every active MikroTik for an organization and return status rows.
+
+    Shared by the dashboard status endpoint and the background sampler so
+    outages are recorded even when nobody has /app/ open.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from core.mikrotik_connect import check_mikrotik_reachable, test_mikrotik_api_login
+
+    routers = list(
+        MikroTikRouter.objects.filter(
+            organization=organization,
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        ).only(
+            "id",
+            "host",
+            "name",
+            "username",
+            "password",
+            "serial_number",
+            "software_id",
+            "vpn_address",
+        )
+    )
+    if not routers:
+        return []
+
+    unique_hosts = list(
+        dict.fromkeys(
+            router.api_host for router in routers if (router.api_host or "").strip()
+        )
+    )
+    probe_by_host: dict[str, dict] = {}
+
+    def _probe_host(host: str):
+        return host, check_mikrotik_reachable(host, timeout=1.2)
+
+    workers = min(8, max(1, len(unique_hosts)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_probe_host, host) for host in unique_hosts]
+        for future in as_completed(futures):
+            try:
+                host, probe = future.result()
+                probe_by_host[host] = probe
+            except Exception:
+                continue
+
+    results: dict[int, dict[str, Any]] = {}
+
+    def _check(router: MikroTikRouter):
+        host = (router.api_host or "").strip()
+        probe = probe_by_host.get(host) or {"online": False, "via": "", "error": ""}
+        online = bool(probe.get("online"))
+        via = (probe.get("via") or "").strip()
+        status = "disconnected"
+        auth_ok = False
+        error = ""
+        serial_number = (router.serial_number or "").strip()
+        software_id = (router.software_id or "").strip()
+        if online and via == "api":
+            login = test_mikrotik_api_login(
+                host,
+                router.username,
+                router.password or "",
+                timeout=2.0,
+                include_wifi=False,
+            )
+            if login.get("ok"):
+                auth_ok = True
+                status = "connected"
+                live_serial = (login.get("serial_number") or "").strip()
+                live_soft = (login.get("software_id") or "").strip()
+                if live_serial:
+                    serial_number = live_serial
+                if live_soft:
+                    software_id = live_soft
+            else:
+                auth_ok = False
+                status = "auth_failed"
+                error = login.get("error") or "Login failed"
+        elif online and via == "ping":
+            status = "limited"
+        elif online:
+            status = "reachable"
+        elif probe.get("foreign_http"):
+            status = "wrong_host"
+            error = probe.get("error") or "Another device answers on this address."
+        elif probe.get("error"):
+            error = probe["error"]
+
+        return router.id, {
+            "id": router.id,
+            "host": router.host,
+            "name": router.name,
+            "online": bool(auth_ok) if via == "api" else online and via != "ping",
+            "reachable": online,
+            "auth_ok": auth_ok,
+            "manageable": bool(auth_ok),
+            "status": status,
+            "via": via,
+            "error": error,
+            "serial_number": serial_number,
+            "software_id": software_id,
+        }
+
+    workers = min(8, max(1, len(routers)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_check, router) for router in routers]
+        for future in as_completed(futures):
+            try:
+                router_id, payload = future.result()
+                results[router_id] = payload
+            except Exception:
+                continue
+
+    payload = []
+    for router in routers:
+        payload.append(
+            results.get(
+                router.id,
+                {
+                    "id": router.id,
+                    "host": router.host,
+                    "name": router.name,
+                    "online": False,
+                    "status": "disconnected",
+                    "via": "",
+                    "serial_number": (router.serial_number or "").strip(),
+                    "software_id": (router.software_id or "").strip(),
+                },
+            )
+        )
+    return payload
+
+
+def sample_all_organizations() -> dict[str, int]:
+    """Probe every org with MikroTiks and persist health samples."""
+    from accounts.models import Organization
+
+    orgs = (
+        Organization.objects.filter(mikrotik_routers__isnull=False)
+        .distinct()
+        .order_by("id")
+    )
+    written = 0
+    probed = 0
+    for org in orgs:
+        payload = collect_organization_status_payload(org)
+        probed += len(payload)
+        if not payload:
+            continue
+        # Background sampler always records — clear the gate so steady-state
+        # healthy ticks still land about once a minute from the scheduled job.
+        cache.delete(f"mikrotik_status_sample_gate:{org.pk}")
+        written += record_mikrotik_status_samples(org, payload)
+        cache.set(f"mikrotik_status:{org.pk}", payload, 5)
+    return {"organizations": orgs.count(), "routers": probed, "samples": written}
 
 
 def _bucket_seconds(hours: int) -> int:
@@ -193,12 +379,22 @@ def mikrotik_performance_trend(
     for idx, router in enumerate(routers):
         series = []
         last = None
+        fill_age = 0
         for key in bucket_keys:
             value = by_bucket.get(key, {}).get(router.pk)
             if value is None:
-                series.append(last)
+                # Cap forward-fill so long silent gaps show as holes instead of
+                # a fake flat "Connected" line across hours with no probes.
+                if last is not None and fill_age < _MAX_FORWARD_FILL_BUCKETS:
+                    series.append(last)
+                    fill_age += 1
+                else:
+                    series.append(None)
+                    if fill_age >= _MAX_FORWARD_FILL_BUCKETS:
+                        last = None
             else:
                 last = value
+                fill_age = 0
                 series.append(value)
         color = _CHART_COLORS[idx % len(_CHART_COLORS)]
         datasets.append(
@@ -241,6 +437,12 @@ def mikrotik_performance_trend(
             },
         )
 
+    outage_buckets = 0
+    for key in bucket_keys:
+        scores = by_bucket.get(key) or {}
+        if any(score < 100 for score in scores.values()):
+            outage_buckets += 1
+
     payload = {
         "ok": True,
         "hours": hours,
@@ -249,6 +451,7 @@ def mikrotik_performance_trend(
         "routers": list(router_meta.values()),
         "average": average,
         "sample_count": len(samples),
+        "outage_buckets": outage_buckets,
     }
     cache.set(cache_key, payload, _TREND_CACHE_TTL)
     return payload

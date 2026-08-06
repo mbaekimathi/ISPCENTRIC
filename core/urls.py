@@ -190,6 +190,16 @@ urlpatterns = [
         name="hotspot_payment_start",
     ),
     path(
+        "hotspot/<str:join_code>/pay/voucher/",
+        views.hotspot_voucher_redeem,
+        name="hotspot_voucher_redeem",
+    ),
+    path(
+        "pppoe/<str:join_code>/pay/voucher/",
+        views.pppoe_voucher_redeem,
+        name="pppoe_voucher_redeem",
+    ),
+    path(
         "hotspot/<str:join_code>/pay/status/<int:stk_id>/",
         views.hotspot_payment_status,
         name="hotspot_payment_status",

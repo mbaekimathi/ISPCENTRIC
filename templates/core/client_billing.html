@@ -9,6 +9,108 @@
   <span aria-hidden="true">&larr;</span> Back to {{ customer.full_name }}
 </a>
 
+<section class="panel client-simple-panel" id="client-vouchers">
+  <header class="client-simple-head">
+    <div>
+      <h2 class="client-simple-section-title">Access vouchers</h2>
+      <p class="client-simple-meta">
+        One-time codes from successful M-Pesa payments. Share a valid code so the client can activate on the pay page.
+      </p>
+    </div>
+    <div class="client-simple-badges">
+      <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
+        {{ valid_voucher_count }} valid
+      </span>
+      <span class="org-status">{{ vouchers|length }} total</span>
+    </div>
+  </header>
+
+  {% if vouchers %}
+    <div class="org-table-shell client-detail-table-shell">
+      <table class="org-table org-table-client-billing org-table-client-vouchers">
+        <thead>
+          <tr>
+            <th>Voucher</th>
+            <th>Package</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Share with client</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in vouchers %}
+            <tr class="voucher-row is-{{ row.status }}">
+              <td>
+                <span class="org-code voucher-code" data-voucher-code>{{ row.code_display }}</span>
+                {% if row.mpesa_receipt %}
+                  <div class="client-simple-hint">M-Pesa {{ row.mpesa_receipt }}</div>
+                {% endif %}
+              </td>
+              <td>{{ row.plan_name }}</td>
+              <td>
+                <span class="voucher-status-pill is-{{ row.status }}">{{ row.status_label }}</span>
+                {% if row.status == "expired" and row.redeemed_at %}
+                  <div class="client-simple-hint">Used {{ row.redeemed_at|date:"M j, g:i A" }}</div>
+                {% elif row.status == "invalid" and row.invalidated_at %}
+                  <div class="client-simple-hint">Burned {{ row.invalidated_at|date:"M j, g:i A" }}</div>
+                {% endif %}
+              </td>
+              <td>{{ row.created_at|date:"M j, Y g:i A" }}</td>
+              <td>
+                {% if row.share.can_share %}
+                  <div class="voucher-share-actions" data-voucher-share>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      data-copy-voucher
+                      data-copy-text="{{ row.share.share_text|escape }}"
+                    >
+                      Copy
+                    </button>
+                    {% if row.share.whatsapp_client_url %}
+                      <a
+                        class="btn btn-sm voucher-share-wa"
+                        href="{{ row.share.whatsapp_client_url }}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >WhatsApp client</a>
+                    {% else %}
+                      <a
+                        class="btn btn-sm voucher-share-wa"
+                        href="{{ row.share.whatsapp_share_url }}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >WhatsApp</a>
+                    {% endif %}
+                    <a
+                      class="btn btn-sm"
+                      href="{{ row.share.sms_url }}"
+                    >SMS</a>
+                    {% if row.share.pay_url %}
+                      <a
+                        class="btn btn-sm btn-ghost"
+                        href="{{ row.share.pay_url }}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >Pay page</a>
+                    {% endif %}
+                  </div>
+                {% else %}
+                  <span class="client-simple-hint">Not shareable ({{ row.status_label|lower }})</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="empty client-simple-note">
+      No vouchers yet. When this client pays successfully, a one-time activation code appears here so you can share it.
+    </p>
+  {% endif %}
+</section>
+
 <section class="panel client-simple-panel" id="client-billing">
   <header class="client-simple-head">
     <div>
@@ -81,4 +183,29 @@
 </section>
 
 </div>
+{% endblock %}
+
+{% block client_extra_js %}
+{{ block.super }}
+<script>
+(function () {
+  document.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.getAttribute("data-copy-text") || "";
+      var label = btn.textContent;
+      function done() {
+        btn.textContent = "Copied";
+        window.setTimeout(function () { btn.textContent = label; }, 1400);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {
+          window.prompt("Copy voucher message:", text);
+        });
+      } else {
+        window.prompt("Copy voucher message:", text);
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}
