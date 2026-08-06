@@ -7,6 +7,7 @@ from billing.models import Customer
 from core.mikrotik_connect import (
     repair_hotspot_captive_portal,
     repair_router_expired_captive_redirect,
+    sweep_log_text,
     sync_customer_subscription_access,
 )
 
@@ -30,6 +31,17 @@ class Command(BaseCommand):
             action="store_true",
             help="Report who would be blocked/allowed without touching routers.",
         )
+
+    def _write(self, stream, message, style=None):
+        """Write sweep lines without crashing Windows cp1252 consoles on arrows."""
+        text = sweep_log_text(message)
+        if style is not None:
+            text = style(text)
+        try:
+            stream.write(text)
+        except UnicodeEncodeError:
+            encoding = getattr(getattr(stream, "_out", None), "encoding", None) or "ascii"
+            stream.write(text.encode(encoding, errors="replace").decode(encoding))
 
     @staticmethod
     def _hotspot_routers(org_ids):
@@ -91,9 +103,10 @@ class Command(BaseCommand):
             receives = customer_receives_internet(customer)
             if dry_run:
                 label = "ALLOW" if receives else "BLOCK"
-                self.stdout.write(
+                self._write(
+                    self.stdout,
                     f"{label}  {customer.account_number}  {customer.full_name}  "
-                    f"{customer.package_start} -> {customer.package_end}"
+                    f"{customer.package_start} -> {customer.package_end}",
                 )
                 if receives:
                     allowed += 1
@@ -118,6 +131,48 @@ class Command(BaseCommand):
             )
             if result.get("allowed"):
                 allowed += 1
+                # Paid clients whose CPE was offline at restore time still need
+                # the renew Hotspot cleared once they redial.
+                if (
+                    customer.service_type == Customer.ServiceType.PPPOE
+                    and result.get("cpe_renew_clear_pending")
+                    and not dry_run
+                ):
+                    try:
+                        from core.mikrotik_connect import (
+                            _clear_cpe_renew_with_retries,
+                            _pppoe_pay_portal_url,
+                        )
+
+                        pay_url = _pppoe_pay_portal_url(
+                            customer.organization, customer=customer
+                        )
+                        clear = _clear_cpe_renew_with_retries(
+                            customer,
+                            pay_url=pay_url,
+                            attempts=2,
+                            settle_seconds=1.0,
+                        )
+                        if clear.get("ok"):
+                            self._write(
+                                self.stdout,
+                                f"{customer.account_number}: cpe-renew cleared",
+                            )
+                        elif not clear.get("skipped"):
+                            errors += 1
+                            self._write(
+                                self.stderr,
+                                f"{customer.account_number}: cpe-clear "
+                                f"{clear.get('error') or 'failed'}",
+                                style=self.style.WARNING,
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        self._write(
+                            self.stderr,
+                            f"{customer.account_number}: cpe-clear {exc}",
+                            style=self.style.WARNING,
+                        )
             else:
                 blocked += 1
                 router_id = getattr(customer, "router_id", None)
@@ -145,23 +200,24 @@ class Command(BaseCommand):
                             customer, enabled=True, portal_url=pay_url
                         )
                         if retry.get("ok"):
-                            self.stdout.write(
-                                f"{customer.account_number}: cpe-renew repaired"
+                            self._write(
+                                self.stdout,
+                                f"{customer.account_number}: cpe-renew repaired",
                             )
                         elif not retry.get("skipped"):
                             errors += 1
-                            self.stderr.write(
-                                self.style.WARNING(
-                                    f"{customer.account_number}: cpe-renew "
-                                    f"{retry.get('error') or 'failed'}"
-                                )
+                            self._write(
+                                self.stderr,
+                                f"{customer.account_number}: cpe-renew "
+                                f"{retry.get('error') or 'failed'}",
+                                style=self.style.WARNING,
                             )
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
-                        self.stderr.write(
-                            self.style.WARNING(
-                                f"{customer.account_number}: cpe-renew {exc}"
-                            )
+                        self._write(
+                            self.stderr,
+                            f"{customer.account_number}: cpe-renew {exc}",
+                            style=self.style.WARNING,
                         )
             if not result.get("ok"):
                 errors += 1
@@ -170,14 +226,18 @@ class Command(BaseCommand):
                     or (result.get("provision") or {}).get("error")
                     or result.get("message")
                 )
-                self.stderr.write(self.style.WARNING(f"{customer.account_number}: {err}"))
+                self._write(
+                    self.stderr,
+                    f"{customer.account_number}: {err}",
+                    style=self.style.WARNING,
+                )
             else:
                 state = "allowed" if result.get("allowed") else "blocked"
-                self.stdout.write(f"{customer.account_number}: {state}")
+                self._write(self.stdout, f"{customer.account_number}: {state}")
 
         for router in self._hotspot_routers(hotspot_org_ids):
             # Correction loop: lost login.html / option 114 must not leave unpaid
-            # Wi‑Fi clients on "connected, no internet" until the next cron.
+            # Wi-Fi clients on "connected, no internet" until the next cron.
             result = repair_hotspot_captive_portal(router)
             if result.get("ok") or result.get("skipped"):
                 note = "synced"
@@ -186,31 +246,34 @@ class Command(BaseCommand):
                     for n in (result.get("notes") or [])
                 ):
                     note = "captive repaired"
-                self.stdout.write(f"hotspot {router.host}: {note}")
+                self._write(self.stdout, f"hotspot {router.host}: {note}")
             else:
                 errors += 1
-                self.stderr.write(
-                    self.style.WARNING(f"hotspot {router.host}: {result.get('error')}")
+                self._write(
+                    self.stderr,
+                    f"hotspot {router.host}: {result.get('error')}",
+                    style=self.style.WARNING,
                 )
 
         for router in self._routers_for_ids(repair_router_ids):
             repair = repair_router_expired_captive_redirect(router)
             if repair.get("ok"):
-                self.stdout.write(
+                self._write(
+                    self.stdout,
                     f"expired-redirect {router.host}: "
-                    f"{repair.get('message') or 'ok'}"
+                    f"{repair.get('message') or 'ok'}",
                 )
             elif not repair.get("skipped"):
                 errors += 1
-                self.stderr.write(
-                    self.style.WARNING(
-                        f"expired-redirect {router.host}: {repair.get('error')}"
-                    )
+                self._write(
+                    self.stderr,
+                    f"expired-redirect {router.host}: {repair.get('error')}",
+                    style=self.style.WARNING,
                 )
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Done. allowed={allowed} blocked={blocked} errors={errors}"
-                + (" (dry-run)" if dry_run else "")
-            )
+        self._write(
+            self.stdout,
+            f"Done. allowed={allowed} blocked={blocked} errors={errors}"
+            + (" (dry-run)" if dry_run else ""),
+            style=self.style.SUCCESS,
         )

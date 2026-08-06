@@ -789,7 +789,9 @@
               window.refreshClientSubscription(false);
             }
             showPackageToast(data.message || "Recharged.", "success");
-            if (data.syncing) showPackageToast("Syncing to MikroTik in background…", "info");
+            if (data.syncing) {
+              showPackageToast("Internet restored on MikroTik — finishing CPE sync…", "info");
+            }
           })
           .catch(function (err) {
             showPackageToast((err && err.message) || "Network error — please try again.", "error");

@@ -6356,7 +6356,105 @@ _CAPTIVE_SESSION_CACHE_TTL = 15
 # PPP IP → customer must outlive brief API blips after block/kick/redial so the
 # dst-nat renew page can still auto-fill without a signed CPE token.
 _CAPTIVE_PPPOE_IP_CACHE_TTL = 60 * 60 * 6
+_CPE_RENEW_CLEAR_PENDING_TTL = 60 * 60 * 12
+
+
+def _cpe_renew_clear_pending_key(customer_id) -> str:
+    return f"captive:cpe-renew-clear-pending:{customer_id}"
+
+
+def mark_cpe_renew_clear_pending(customer) -> None:
+    """Remember that Wi‑Fi still has the renew Hotspot after a paid restore."""
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    _captive_cache_set(
+        _cpe_renew_clear_pending_key(customer_id),
+        1,
+        _CPE_RENEW_CLEAR_PENDING_TTL,
+    )
+
+
+def clear_cpe_renew_clear_pending(customer) -> None:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_cpe_renew_clear_pending_key(customer_id))
+    except Exception:
+        pass
+
+
+def cpe_renew_clear_is_pending(customer) -> bool:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return False
+    return bool(_captive_cache_get(_cpe_renew_clear_pending_key(customer_id)))
+
+
+def _clear_cpe_renew_with_retries(
+    customer,
+    *,
+    pay_url: str = "",
+    attempts: int | None = None,
+    settle_seconds: float = 0.0,
+    timeout: float | None = None,
+    stop_on_skipped: bool = False,
+) -> dict[str, Any]:
+    """
+    Remove the CPE renew Hotspot / WAN-block after payment.
+
+    Retries briefly after a NAS restore so a CPE that redials mid-request is
+    cleared without waiting for the next sweep. When ``stop_on_skipped`` is set,
+    an offline CPE exits immediately (background follow-up handles redial).
+    """
+    attempts = int(attempts or _CAPTIVE_REPAIR_ATTEMPTS)
+    api_timeout = float(
+        _CAPTIVE_RESTORE_TIMEOUT if timeout is None else timeout
+    )
+    last: dict[str, Any] = {"ok": False, "skipped": True}
+    for attempt in range(1, attempts + 1):
+        if attempt > 1 and settle_seconds > 0:
+            time.sleep(settle_seconds)
+        try:
+            last = apply_cpe_renew_portal(
+                customer,
+                enabled=False,
+                portal_url=pay_url,
+                timeout=api_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last = {
+                "ok": False,
+                "skipped": False,
+                "error": str(exc) or "Could not clear CPE renew portal.",
+                "attempt": attempt,
+            }
+            continue
+        if last.get("ok"):
+            clear_cpe_renew_clear_pending(customer)
+            if attempt > 1:
+                notes = list(last.get("notes") or [])
+                notes.append(f"CPE renew cleared on attempt {attempt}")
+                last["notes"] = notes
+            return last
+        if last.get("skipped") and stop_on_skipped:
+            break
+        if last.get("skipped"):
+            # Still offline — keep trying later attempts / leave pending.
+            continue
+        # Hard failure (credentials / API) — try again, then surface error.
+    if not last.get("ok"):
+        mark_cpe_renew_clear_pending(customer)
+    return last
+
+
 _CAPTIVE_API_TIMEOUT = 1.5
+# Paid restore must finish quickly — 8s CPE timeouts stacked with settle sleeps
+# made recharges feel like 10–20s before surfing returned.
+_CAPTIVE_RESTORE_TIMEOUT = 2.5
 _CAPTIVE_REDIRECT_CACHE_TTL = 20
 _HOTSPOT_STACK_READY_TTL = 1800
 
@@ -7035,6 +7133,10 @@ def _ensure_pppoe_expired_redirect(
     HTTPS cannot be intercepted without a certificate warning, so this only
     covers port 80 — enough for OS captive probes and neverssl-style checks.
     The billing app then 302s the browser onto the PPPoE pay page.
+
+    Idempotent: correct rules are left alone. Only stale or missing rows are
+    rewritten — full wipe+recreate over a slow WireGuard link was timing out
+    the subscription sweep before phones could get a captive popup.
     """
     notes: list[str] = []
     billing_ip = (billing_ip or "").strip()
@@ -7042,21 +7144,66 @@ def _ensure_pppoe_expired_redirect(
         return notes
     to_port = _portal_http_port(portal_url)
 
+    http_ok = False
+    dns_ok: set[str] = set()
+    stale_ids: list[str] = []
+
     for row in _print(
         sock,
         "/ip/firewall/nat",
-        props=".id,comment,chain,action",
+        props=(
+            ".id,comment,chain,action,protocol,dst-port,to-ports,"
+            "to-addresses,src-address-list"
+        ),
     ):
         comment = row.get("comment") or ""
         if PPP_SECRET_TAG not in comment:
             continue
-        if "expired redirect" not in comment and "expired dns" not in comment:
-            continue
         item_id = (row.get(".id") or "").strip()
-        if item_id:
-            _remove(sock, "/ip/firewall/nat", item_id)
+        chain = (row.get("chain") or "").strip()
+        action = (row.get("action") or "").strip()
+        src_list = (row.get("src-address-list") or "").strip()
+        protocol = (row.get("protocol") or "").strip().lower()
+        dst_port = (row.get("dst-port") or "").strip()
+
+        if "expired redirect" in comment:
+            to_addresses = (row.get("to-addresses") or "").strip()
+            to_ports = (row.get("to-ports") or "").strip() or to_port
+            if (
+                not http_ok
+                and chain == "dstnat"
+                and action in {"dst-nat", "netmap"}
+                and src_list == PPPOE_BLOCKED_ADDRESS_LIST
+                and dst_port in {"80", ""}
+                and to_addresses in {billing_ip, f"{billing_ip}/32"}
+                and to_ports == to_port
+            ):
+                http_ok = True
+            elif item_id:
+                stale_ids.append(item_id)
+            continue
+
+        if "expired dns" in comment:
+            to_ports = (row.get("to-ports") or "").strip() or "53"
+            if (
+                protocol in {"udp", "tcp"}
+                and protocol not in dns_ok
+                and chain == "dstnat"
+                and action == "redirect"
+                and src_list == PPPOE_BLOCKED_ADDRESS_LIST
+                and dst_port == "53"
+                and to_ports == "53"
+            ):
+                dns_ok.add(protocol)
+            elif item_id:
+                stale_ids.append(item_id)
+
+    for item_id in stale_ids:
+        _remove(sock, "/ip/firewall/nat", item_id)
 
     for protocol in ("udp", "tcp"):
+        if protocol in dns_ok:
+            continue
         terminal = _add(
             sock,
             "/ip/firewall/nat",
@@ -7074,6 +7221,10 @@ def _ensure_pppoe_expired_redirect(
             notes.append(f"warning: could not force {protocol}/53 for expired clients")
         else:
             notes.append(f"expired-client DNS redirect ({protocol}/53)")
+
+    if http_ok:
+        notes.append(f"expired PPPoE HTTP -> {billing_ip}:{to_port} (already present)")
+        return notes
 
     terminal = _add(
         sock,
@@ -7094,7 +7245,7 @@ def _ensure_pppoe_expired_redirect(
             f"warning: could not redirect expired PPPoE HTTP to {billing_ip}:{to_port}"
         )
     else:
-        notes.append(f"expired PPPoE HTTP → {billing_ip}:{to_port}")
+        notes.append(f"expired PPPoE HTTP -> {billing_ip}:{to_port}")
     return notes
 
 
@@ -7245,7 +7396,7 @@ def _ensure_pppoe_expired_access(
     portal = _billing_portal_base_url(portal_url)
     billing_ip = _portal_target_ipv4(portal) if portal else ""
     if not billing_ip:
-        notes.append("warning: no billing IP — expired pay redirect not installed")
+        notes.append("warning: no billing IP - expired pay redirect not installed")
         return notes
 
     for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
@@ -7285,7 +7436,7 @@ def _ensure_pppoe_expired_access(
                 notes.append(f"expired redirect repaired on attempt {attempt}")
             return notes
         notes.append(
-            f"expired HTTP redirect missing after attempt {attempt}; correcting…"
+            f"expired HTTP redirect missing after attempt {attempt}; correcting..."
         )
 
     notes.append(
@@ -7295,16 +7446,43 @@ def _ensure_pppoe_expired_access(
     return notes
 
 
+# WireGuard / high-latency NAS links need more than the default API timeout;
+# 8s was aborting expired-redirect repair before dst-nat could be confirmed.
+_EXPIRED_REDIRECT_REPAIR_TIMEOUT = 20.0
+_EXPIRED_REDIRECT_REPAIR_ATTEMPTS = 2
+
+
+def sweep_log_text(value: str) -> str:
+    """ASCII-safe text for Windows cp1252 sweep logs (no arrows / fancy dashes)."""
+    text = str(value or "")
+    for src, dst in (
+        ("\u2192", "->"),
+        ("\u2190", "<-"),
+        ("\u2014", "-"),
+        ("\u2013", "-"),
+        ("\u2011", "-"),
+        ("\u2018", "'"),
+        ("\u2019", "'"),
+        ("\u201c", '"'),
+        ("\u201d", '"'),
+    ):
+        text = text.replace(src, dst)
+    return text
+
+
 def repair_router_expired_captive_redirect(
     router,
     *,
     portal_url: str = "",
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """
     Re-install NAS expired-client redirect rules for one MikroTik.
 
     Used by the subscription sweep so every router that still has blocked
     clients keeps an instant pay popup even if rules were deleted on-box.
+    Retries on timeout so a single slow WireGuard RTT cannot leave expired
+    clients with "connected, no internet" and no pay redirect.
     """
     host = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
     username = (getattr(router, "username", None) or "").strip()
@@ -7312,22 +7490,48 @@ def repair_router_expired_captive_redirect(
     if not host or not username:
         return {"ok": False, "skipped": True, "error": "Router host or API user missing."}
     portal = _billing_portal_base_url(portal_url)
-    try:
-        with _api_session(host, username, password, timeout=8.0) as sock:
-            notes = _ensure_pppoe_expired_access(sock, portal_url=portal)
-            notes.extend(_ensure_pppoe_blocked_profile(sock))
-        return {
-            "ok": True,
-            "skipped": False,
-            "notes": notes,
-            "message": "; ".join(notes) if notes else "expired captive redirect ok",
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "skipped": False,
-            "error": str(exc) or "Could not repair expired redirect.",
-        }
+    api_timeout = float(
+        _EXPIRED_REDIRECT_REPAIR_TIMEOUT if timeout is None else timeout
+    )
+    last_error = ""
+    for attempt in range(1, _EXPIRED_REDIRECT_REPAIR_ATTEMPTS + 1):
+        try:
+            with _api_session(
+                host, username, password, timeout=api_timeout
+            ) as sock:
+                notes = _ensure_pppoe_expired_access(sock, portal_url=portal)
+                notes.extend(_ensure_pppoe_blocked_profile(sock))
+            safe_notes = [sweep_log_text(n) for n in notes]
+            message = (
+                "; ".join(safe_notes)
+                if safe_notes
+                else "expired captive redirect ok"
+            )
+            if attempt > 1:
+                message = f"{message} (repaired on session attempt {attempt})"
+            return {
+                "ok": True,
+                "skipped": False,
+                "notes": safe_notes,
+                "message": message,
+                "attempt": attempt,
+            }
+        except (TimeoutError, socket.timeout, OSError, ConnectionError) as exc:
+            last_error = sweep_log_text(str(exc) or "timed out")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "skipped": False,
+                "error": sweep_log_text(
+                    str(exc) or "Could not repair expired redirect."
+                ),
+            }
+    return {
+        "ok": False,
+        "skipped": False,
+        "error": last_error or "Could not repair expired redirect.",
+    }
 
 
 def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
@@ -8237,7 +8441,13 @@ def provision_customer_pppoe(
                 if candidate != host:
                     continue
                 via = ""
-            attempt_timeout = 4.0
+            # Blocking also installs expired HTTP/DNS dst-nat — give WireGuard
+            # NAS links enough time or phones stay on "no internet" with no popup.
+            attempt_timeout = (
+                _EXPIRED_REDIRECT_REPAIR_TIMEOUT
+                if profile == PPPOE_BLOCKED_PROFILE_NAME
+                else 4.0
+            )
         try:
             with _api_session(candidate, api_user, api_password, timeout=attempt_timeout) as sock:
                 if ensure_stack:
@@ -8275,9 +8485,17 @@ def provision_customer_pppoe(
                 )
                 # Kick when profile changes so the blocked address-list (or restore)
                 # takes effect immediately — otherwise established TCP keeps surfing.
-                if (previous_profile or "") != profile or (
+                # Also kick/nudge when a paid restore still has CPE renew pending:
+                # the CPE may be stuck offline until it redials the restored secret.
+                needs_redial_nudge = bool(
+                    internet_allowed
+                    and profile != PPPOE_BLOCKED_PROFILE_NAME
+                    and cpe_renew_clear_is_pending(customer)
+                )
+                should_kick = (previous_profile or "") != profile or (
                     internet_allowed and session_was_blocked
-                ):
+                ) or needs_redial_nudge
+                if should_kick:
                     kicked = _disconnect_pppoe_sessions(sock, username)
                     if kicked:
                         notes.append(
@@ -8287,6 +8505,31 @@ def provision_customer_pppoe(
                                 if profile == PPPOE_BLOCKED_PROFILE_NAME
                                 else "internet restore"
                             )
+                        )
+                    elif needs_redial_nudge and not disabled:
+                        # No live session to kick — briefly disable/enable the
+                        # secret so a CPE stuck after expiry drops and redials.
+                        _ensure_ppp_secret(
+                            sock,
+                            username=username,
+                            password=password,
+                            profile=profile,
+                            comment=comment,
+                            disabled=True,
+                            rate_limit=rate_limit,
+                        )
+                        _ensure_ppp_secret(
+                            sock,
+                            username=username,
+                            password=password,
+                            profile=profile,
+                            comment=comment,
+                            disabled=False,
+                            rate_limit=rate_limit,
+                        )
+                        notes.append(
+                            "nudged PPPoE secret to force CPE redial "
+                            "(renew Hotspot still pending clear)"
                         )
             working_host = candidate
             break
@@ -10180,12 +10423,23 @@ def sync_customer_subscription_access(
     def _finish(payload: dict[str, Any]) -> dict[str, Any]:
         # Never cache a "blocked" success when the CPE renew popup failed —
         # otherwise status polls / sweeps skip re-pushing login.html for 8s+.
+        # Also never cache an "allowed" success when CPE renew clear is still
+        # pending (CPE was offline) — phones would stay on the pay popup.
         if provision and provision_cache_key and payload.get("ok"):
             portal = payload.get("portal") or {}
             if (
                 not payload.get("allowed")
                 and status_active
                 and not portal.get("ok")
+            ):
+                return payload
+            if (
+                payload.get("allowed")
+                and not portal.get("ok")
+                and (
+                    portal.get("skipped")
+                    or cpe_renew_clear_is_pending(customer)
+                )
             ):
                 return payload
             _captive_cache_set(provision_cache_key, payload, 8)
@@ -10308,39 +10562,65 @@ def sync_customer_subscription_access(
             # kicks the session so a post-kick clear often fails with "CPE
             # offline", leaving phones trapped behind the renew popup and the
             # CPE stuck redialing.
+            #
+            # Keep this path tight: one fast clear (short timeout), then NAS
+            # restore immediately. Long settle loops blocked surfing for
+            # 8–15s after cash recharge.
             portal_result = {"ok": False, "skipped": True}
-            for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+            try:
+                portal_result = apply_cpe_renew_portal(
+                    customer,
+                    enabled=False,
+                    portal_url=pay_url,
+                    timeout=_CAPTIVE_RESTORE_TIMEOUT,
+                )
+            except Exception as exc:  # noqa: BLE001
+                portal_result = {
+                    "ok": False,
+                    "skipped": False,
+                    "error": str(exc) or "Could not clear CPE renew portal.",
+                }
+            if (
+                not portal_result.get("ok")
+                and not portal_result.get("skipped")
+            ):
+                # One quick retry on hard CPE API flake, then move on to NAS.
                 try:
                     portal_result = apply_cpe_renew_portal(
-                        customer, enabled=False, portal_url=pay_url
+                        customer,
+                        enabled=False,
+                        portal_url=pay_url,
+                        timeout=_CAPTIVE_RESTORE_TIMEOUT,
                     )
                 except Exception as exc:  # noqa: BLE001
                     portal_result = {
                         "ok": False,
                         "skipped": False,
                         "error": str(exc) or "Could not clear CPE renew portal.",
-                        "attempt": attempt,
                     }
-                if portal_result.get("ok") or portal_result.get("skipped"):
-                    break
+            if portal_result.get("ok"):
+                clear_cpe_renew_clear_pending(customer)
+            else:
+                mark_cpe_renew_clear_pending(customer)
+
             provision_result = provision_customer_pppoe(
                 customer,
                 ensure_stack=False,
                 force_disabled=False,
             )
-            # If the CPE was briefly offline before the kick, try once more
-            # after the speed profile is restored (redial may already be up).
-            if not portal_result.get("ok") and not portal_result.get("skipped"):
-                for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
-                    try:
-                        retry = apply_cpe_renew_portal(
-                            customer, enabled=False, portal_url=pay_url
-                        )
-                        portal_result = retry
-                        if retry.get("ok") or retry.get("skipped"):
-                            break
-                    except Exception:
-                        pass
+            # After NAS restore / redial nudge, try clear again briefly.
+            # Offline CPEs exit immediately (stop_on_skipped) so recharge
+            # returns in ~1–3s; background follow-up finishes when CPE dials.
+            if not portal_result.get("ok"):
+                was_offline = bool(portal_result.get("skipped"))
+                portal_result = _clear_cpe_renew_with_retries(
+                    customer,
+                    pay_url=pay_url,
+                    attempts=1 if was_offline else 2,
+                    settle_seconds=0.0 if was_offline else 0.4,
+                    timeout=_CAPTIVE_RESTORE_TIMEOUT,
+                    stop_on_skipped=was_offline,
+                )
 
     nas_blocked = bool(
         not allowed
@@ -10359,13 +10639,31 @@ def sync_customer_subscription_access(
         if not portal_ok and not portal_result.get("skipped"):
             overall_ok = False
     else:
-        overall_ok = bool(
-            provision_result.get("ok") or not provision or portal_ok
-        )
-    message = (
-        "Internet allowed for subscription period."
-        if allowed
-        else (
+        provision_ok = bool(provision_result.get("ok") or not provision)
+        # Paid restore is incomplete while the CPE renew Hotspot still traps Wi‑Fi.
+        if (
+            allowed
+            and provision
+            and provision_ok
+            and not portal_ok
+            and cpe_renew_clear_is_pending(customer)
+        ):
+            overall_ok = False
+        else:
+            overall_ok = bool(provision_ok or portal_ok)
+    if allowed:
+        if portal_ok:
+            message = "Internet allowed for subscription period."
+        elif portal_result.get("skipped") or cpe_renew_clear_is_pending(customer):
+            message = (
+                "Package restored on the ISP MikroTik, but the CPE renew "
+                "Hotspot is still pending clear (CPE offline). Wi‑Fi may show "
+                "the pay page until the CPE redials — will retry automatically."
+            )
+        else:
+            message = "Internet allowed for subscription period."
+    else:
+        message = (
             "Surfing blocked on the ISP MikroTik"
             + (" outside subscription period." if nas_blocked else ".")
             + (
@@ -10378,7 +10676,6 @@ def sync_customer_subscription_access(
                 )
             )
         )
-    )
     return _finish(
         {
             "ok": overall_ok,
@@ -10386,6 +10683,9 @@ def sync_customer_subscription_access(
             "portal": portal_result,
             "provision": provision_result,
             "message": message,
+            "cpe_renew_clear_pending": bool(
+                allowed and cpe_renew_clear_is_pending(customer)
+            ),
         }
     )
 

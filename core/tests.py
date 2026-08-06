@@ -3719,6 +3719,138 @@ class ExpiredCaptivePayTests(SimpleTestCase):
             )
         )
 
+    def test_expired_redirect_skips_rewrite_when_rules_already_correct(self):
+        """Idempotent install must not wipe+recreate good rules (WireGuard timeouts)."""
+        from core.mikrotik_connect import (
+            PPP_SECRET_TAG,
+            PPPOE_BLOCKED_ADDRESS_LIST,
+            _ensure_pppoe_expired_redirect,
+        )
+
+        nat_rows = [
+            {
+                ".id": "*d1",
+                "chain": "dstnat",
+                "action": "redirect",
+                "protocol": "udp",
+                "dst-port": "53",
+                "to-ports": "53",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "comment": f"{PPP_SECRET_TAG} expired dns",
+            },
+            {
+                ".id": "*d2",
+                "chain": "dstnat",
+                "action": "redirect",
+                "protocol": "tcp",
+                "dst-port": "53",
+                "to-ports": "53",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "comment": f"{PPP_SECRET_TAG} expired dns",
+            },
+            {
+                ".id": "*h1",
+                "chain": "dstnat",
+                "action": "dst-nat",
+                "protocol": "tcp",
+                "dst-port": "80",
+                "to-ports": "8000",
+                "to-addresses": "203.0.113.10",
+                "src-address-list": PPPOE_BLOCKED_ADDRESS_LIST,
+                "comment": f"{PPP_SECRET_TAG} expired redirect",
+            },
+        ]
+        adds: list[tuple] = []
+        removes: list[str] = []
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(nat_rows),
+            ),
+            patch(
+                "core.mikrotik_connect._add",
+                side_effect=lambda sock, path, **props: (
+                    adds.append((path, props)) or {"_reply": "!done", "ret": "*x"}
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                side_effect=lambda sock, path, item_id: (
+                    removes.append(item_id) or {"_reply": "!done"}
+                ),
+            ),
+        ):
+            notes = _ensure_pppoe_expired_redirect(
+                object(), "203.0.113.10", "http://billing.example:8000"
+            )
+
+        self.assertEqual(adds, [])
+        self.assertEqual(removes, [])
+        self.assertTrue(any("already present" in n for n in notes))
+        self.assertTrue(any("->" in n for n in notes))
+        self.assertFalse(any("\u2192" in n for n in notes))
+
+    def test_repair_expired_redirect_retries_after_timeout(self):
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import repair_router_expired_captive_redirect
+
+        router = SimpleNamespace(
+            api_host="10.9.0.8",
+            host="10.9.0.8",
+            username="admin",
+            password="x",
+        )
+        sessions = {"n": 0}
+
+        class _FakeSession:
+            def __enter__(self):
+                sessions["n"] += 1
+                if sessions["n"] == 1:
+                    raise TimeoutError("timed out")
+                return object()
+
+            def __exit__(self, *args):
+                return False
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=lambda *a, **k: _FakeSession(),
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_expired_access",
+                return_value=["expired PPPoE HTTP -> 203.0.113.10:80"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_blocked_profile",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example",
+            ),
+        ):
+            result = repair_router_expired_captive_redirect(router, timeout=1.0)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attempt"], 2)
+        self.assertIn("session attempt 2", result["message"])
+        self.assertEqual(sessions["n"], 2)
+
+    def test_sweep_log_text_strips_unicode_arrows(self):
+        from core.mikrotik_connect import sweep_log_text
+
+        self.assertEqual(
+            sweep_log_text("expired PPPoE HTTP \u2192 10.0.0.1:80"),
+            "expired PPPoE HTTP -> 10.0.0.1:80",
+        )
+        self.assertEqual(
+            sweep_log_text("CPE is offline \u2014 renew Wi\u2011Fi"),
+            "CPE is offline - renew Wi-Fi",
+        )
+
     def test_captive_html_is_mobile_ready(self):
         from core.mikrotik_connect import _captive_pay_redirect_html
 
@@ -4375,7 +4507,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
 
         order = []
 
-        def portal_side_effect(customer, *, enabled, portal_url=""):
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
             order.append(("portal", enabled))
             return {"ok": True, "enabled": enabled}
 
@@ -4396,8 +4528,101 @@ class AccessFlowCorrectionLoopTests(TestCase):
             result = sync_customer_subscription_access(self.pppoe, provision=True)
 
         self.assertTrue(result["allowed"])
+        self.assertTrue(result["ok"])
         self.assertEqual(order[0], ("portal", False))
         self.assertEqual(order[1], ("provision",))
+
+    def test_pppoe_restore_retries_cpe_clear_after_offline_skip(self):
+        """Paid restore clears renew Hotspot on the post-provision attempt."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import (
+            cpe_renew_clear_is_pending,
+            sync_customer_subscription_access,
+        )
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+
+        portal_calls = []
+
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
+            portal_calls.append(enabled)
+            # First attempt: CPE offline. Post-provision attempt: online.
+            if len(portal_calls) < 2:
+                return {
+                    "ok": False,
+                    "skipped": True,
+                    "session_active": False,
+                    "error": "Subscriber is not online on this router right now.",
+                }
+            return {"ok": True, "enabled": False, "notes": ["renew removed"]}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                return_value={"ok": True, "profile": "ispcentric-pppoe-5u-10d"},
+            ),
+            patch("core.mikrotik_connect.time.sleep") as sleep_mock,
+        ):
+            result = sync_customer_subscription_access(self.pppoe, provision=True)
+
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result["portal"]["ok"])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result.get("cpe_renew_clear_pending"))
+        self.assertFalse(cpe_renew_clear_is_pending(self.pppoe))
+        self.assertEqual(len(portal_calls), 2)
+        self.assertTrue(all(enabled is False for enabled in portal_calls))
+        # Offline path must not burn settle sleeps before returning.
+        sleep_mock.assert_not_called()
+
+    def test_pppoe_restore_exits_fast_when_cpe_stays_offline(self):
+        """Offline CPE must not delay NAS restore with settle loops."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import (
+            cpe_renew_clear_is_pending,
+            sync_customer_subscription_access,
+        )
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                return_value={
+                    "ok": False,
+                    "skipped": True,
+                    "session_active": False,
+                    "error": "CPE offline",
+                },
+            ) as portal_mock,
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                return_value={"ok": True, "profile": "ispcentric"},
+            ),
+            patch("core.mikrotik_connect.time.sleep") as sleep_mock,
+        ):
+            result = sync_customer_subscription_access(self.pppoe, provision=True)
+
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result.get("cpe_renew_clear_pending"))
+        self.assertTrue(cpe_renew_clear_is_pending(self.pppoe))
+        self.assertFalse(result["ok"])
+        self.assertIn("pending clear", result["message"])
+        # One pre-provision + one post-provision attempt only.
+        self.assertEqual(portal_mock.call_count, 2)
+        sleep_mock.assert_not_called()
 
     def test_cpe_renew_pool_ip_resolves_remembered_customer(self):
         from core.mikrotik_connect import (
@@ -4682,6 +4907,150 @@ class AccessFlowCorrectionLoopTests(TestCase):
             self.assertIn("window.location.replace", html)
             # Absolute pay target present (trailing slash may be stripped before ?mac=).
             self.assertIn(url.rstrip("/").split("?")[0], html)
+
+    @override_settings(PUBLIC_BASE_URL="http://127.0.0.1:8000", HOSTED=False)
+    def test_local_and_hosted_pay_urls_stay_absolute_http(self):
+        from core.mikrotik_connect import (
+            _normalize_hotspot_portal_urls,
+            _pppoe_pay_portal_url,
+            _prefer_http_captive_url,
+        )
+
+        with patch(
+            "core.mikrotik_connect._billing_portal_base_url",
+            return_value="http://127.0.0.1:8000",
+        ):
+            local_pppoe = _pppoe_pay_portal_url(self.org, customer=self.pppoe)
+            local_hs = _normalize_hotspot_portal_urls(
+                pay_url=f"/hotspot/{self.org.join_code}/pay/"
+            )
+
+        self.assertTrue(local_pppoe.startswith("http://127.0.0.1:8000/pppoe/"))
+        self.assertIn("t=", local_pppoe)
+        self.assertEqual(
+            local_hs["pay_url"],
+            f"http://127.0.0.1:8000/hotspot/{self.org.join_code}/pay/",
+        )
+
+        hosted = _prefer_http_captive_url(
+            f"https://isp.example.co.ke/pppoe/{self.org.join_code}/pay/"
+        )
+        self.assertEqual(
+            hosted,
+            f"http://isp.example.co.ke/pppoe/{self.org.join_code}/pay/",
+        )
+
+    def test_verify_command_loops_until_surfing_restored(self):
+        from datetime import timedelta
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.utils import timezone
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=1)
+        self.pppoe.save(update_fields=["package_end"])
+
+        calls = {"n": 0}
+
+        def fake_sync(customer, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return {
+                    "ok": False,
+                    "allowed": True,
+                    "cpe_renew_clear_pending": True,
+                    "message": "pending clear",
+                    "portal": {"ok": False, "skipped": True, "error": "offline"},
+                    "provision": {
+                        "ok": True,
+                        "profile": "ispcentric",
+                        "disabled": False,
+                        "kicked": 0,
+                        "notes": [],
+                    },
+                }
+            return {
+                "ok": True,
+                "allowed": True,
+                "cpe_renew_clear_pending": False,
+                "message": "Internet allowed for subscription period.",
+                "portal": {"ok": True, "enabled": False},
+                "provision": {
+                    "ok": True,
+                    "profile": "ispcentric",
+                    "disabled": False,
+                    "kicked": 0,
+                    "notes": ["nudged"],
+                },
+            }
+
+        out = StringIO()
+        with (
+            patch(
+                "core.mikrotik_connect.sync_customer_subscription_access",
+                side_effect=fake_sync,
+            ),
+            patch(
+                "core.mikrotik_connect.cpe_renew_clear_is_pending",
+                side_effect=lambda c: calls["n"] < 2,
+            ),
+            patch("billing.management.commands.verify_subscription_access.time.sleep"),
+        ):
+            call_command(
+                "verify_subscription_access",
+                customer=self.pppoe.pk,
+                loops=3,
+                settle=0.1,
+                stdout=out,
+            )
+        text = out.getvalue()
+        self.assertIn("PASS", text)
+        self.assertGreaterEqual(calls["n"], 2)
+
+    def test_verify_command_fails_when_cpe_never_comes_online(self):
+        from datetime import timedelta
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        from django.utils import timezone
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=1)
+        self.pppoe.save(update_fields=["package_end"])
+
+        with (
+            patch(
+                "core.mikrotik_connect.sync_customer_subscription_access",
+                return_value={
+                    "ok": False,
+                    "allowed": True,
+                    "cpe_renew_clear_pending": True,
+                    "message": "pending clear",
+                    "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
+                    "provision": {
+                        "ok": True,
+                        "profile": "ispcentric",
+                        "disabled": False,
+                        "notes": [],
+                    },
+                },
+            ),
+            patch(
+                "core.mikrotik_connect.cpe_renew_clear_is_pending",
+                return_value=True,
+            ),
+            patch("billing.management.commands.verify_subscription_access.time.sleep"),
+        ):
+            with self.assertRaises(CommandError) as ctx:
+                call_command(
+                    "verify_subscription_access",
+                    customer=self.pppoe.pk,
+                    loops=2,
+                    settle=0.01,
+                    stdout=StringIO(),
+                    stderr=StringIO(),
+                )
+        self.assertIn("CPE renew clear", str(ctx.exception))
 
 
 class MikroTikStatusOfflineTests(TestCase):

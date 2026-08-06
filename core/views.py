@@ -3980,17 +3980,81 @@ def client_detail(request, customer_id: int):
 
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
-    def _enqueue_subscription_sync(customer_pk: int, provision: bool) -> None:
-        def _bg_sync():
-            from django.db import connection
+    def _enqueue_subscription_sync(
+        customer_pk: int,
+        provision: bool,
+        *,
+        wait_first: bool = False,
+    ) -> None:
+        """
+        Push package access to MikroTik.
+
+        ``wait_first=True`` (cash recharge / pause / resume) runs one sync on
+        the request thread so NAS restore is immediate, then a short background
+        follow-up clears CPE renew if the router was still redialing.
+        """
+
+        def _run_once(cust):
+            from core.mikrotik_connect import sync_customer_subscription_access
+
+            return sync_customer_subscription_access(
+                cust,
+                provision=provision,
+            )
+
+        if wait_first:
             try:
+                from core.mikrotik_connect import cpe_renew_clear_is_pending
+
                 _cust = Customer.objects.select_related(
                     "plan", "router", "organization"
                 ).get(pk=customer_pk)
-                sync_customer_subscription_access(
-                    _cust,
-                    provision=provision,
+                result = _run_once(_cust)
+                if (
+                    result.get("ok")
+                    and not result.get("cpe_renew_clear_pending")
+                    and not cpe_renew_clear_is_pending(_cust)
+                ):
+                    return
+            except Exception:
+                # Fall through to background retries.
+                pass
+
+        def _bg_sync():
+            from django.db import connection
+
+            try:
+                from core.mikrotik_connect import (
+                    cpe_renew_clear_is_pending,
+                    sync_customer_subscription_access,
                 )
+
+                _cust = Customer.objects.select_related(
+                    "plan", "router", "organization"
+                ).get(pk=customer_pk)
+                # Short follow-up only — first restore already ran (or runs
+                # here). Avoid the old 2s×3 sleeps that made surfing feel slow.
+                delays = (0.4, 0.8, 1.5)
+                for attempt, delay in enumerate(delays, start=1):
+                    result = sync_customer_subscription_access(
+                        _cust,
+                        provision=provision,
+                    )
+                    if not result.get("allowed"):
+                        break
+                    if result.get("ok") and not result.get(
+                        "cpe_renew_clear_pending"
+                    ):
+                        break
+                    if not cpe_renew_clear_is_pending(_cust) and result.get(
+                        "ok"
+                    ):
+                        break
+                    if attempt < len(delays):
+                        time.sleep(delay)
+                    _cust = Customer.objects.select_related(
+                        "plan", "router", "organization"
+                    ).get(pk=customer_pk)
             except Exception:
                 pass
             finally:
@@ -4172,7 +4236,9 @@ def client_detail(request, customer_id: int):
                 customer = result["customer"]
                 invoice = result["invoice"]
                 provision = bool(customer.pppoe_username and customer.router_id)
-                _enqueue_subscription_sync(customer.pk, provision)
+                _enqueue_subscription_sync(
+                    customer.pk, provision, wait_first=True
+                )
 
                 amount_label = f"{recharge_form.cleaned_data['amount']:.2f}"
                 end_label = (
@@ -4220,7 +4286,9 @@ def client_detail(request, customer_id: int):
 
             customer.refresh_from_db()
             provision = bool(customer.pppoe_username and customer.router_id)
-            _enqueue_subscription_sync(customer.pk, provision)
+            _enqueue_subscription_sync(
+                customer.pk, provision, wait_first=True
+            )
             if is_ajax:
                 return _package_json_response(
                     customer,
