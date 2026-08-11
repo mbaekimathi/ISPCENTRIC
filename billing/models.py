@@ -159,6 +159,13 @@ class Customer(models.Model):
     )
     full_name = models.CharField(max_length=150)
     phone = models.CharField(max_length=30)
+    phone_normalized = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Digits-only phone key used to enforce one account per number.",
+    )
     email = models.EmailField(blank=True)
     address = models.CharField(
         "Location",
@@ -302,11 +309,23 @@ class Customer(models.Model):
                 fields=["organization", "hotspot_mac"],
                 name="bill_cust_org_hotspot_mac_uniq",
             ),
+            models.UniqueConstraint(
+                fields=["organization", "phone_normalized"],
+                condition=models.Q(phone_normalized__gt=""),
+                name="bill_cust_org_phone_uniq",
+            ),
         ]
 
     def save(self, *args, **kwargs):
+        from billing.services import normalize_customer_phone_key
+
         mac = (self.hotspot_mac or "").strip()
         self.hotspot_mac = mac or None
+        self.phone_normalized = normalize_customer_phone_key(self.phone)
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "phone_normalized" not in update_fields:
+            if "phone" in update_fields or "hotspot_mac" in update_fields:
+                kwargs["update_fields"] = list(update_fields) + ["phone_normalized"]
         super().save(*args, **kwargs)
 
     def __str__(self):

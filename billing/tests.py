@@ -801,6 +801,74 @@ class HotspotMacUniquenessTests(TestCase):
             )
 
 
+class CustomerPhoneUniquenessTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-phone", password="x")
+        self.org = Organization.objects.create(
+            name="Phone ISP",
+            owner=self.owner,
+            join_code="555666",
+        )
+
+    def test_duplicate_phone_in_same_org_is_rejected(self):
+        from django.db import IntegrityError
+
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Client A",
+            phone="254700000010",
+            account_number="CLT-A",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:01",
+        )
+        with self.assertRaises(IntegrityError):
+            Customer.objects.create(
+                organization=self.org,
+                full_name="Client B",
+                phone="0710000010",
+                account_number="CLT-B",
+                service_type=Customer.ServiceType.HOTSPOT,
+                hotspot_mac="AA:BB:CC:DD:EE:02",
+            )
+
+    def test_pppoe_register_form_rejects_duplicate_phone(self):
+        from billing.forms import PppoeClientRegisterForm
+
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Existing",
+            phone="254700000011",
+            account_number="CLT-EXIST",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="EXIST",
+            pppoe_password="secret",
+        )
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "New Client",
+                "phone": "0710000011",
+                "pppoe_username": "NEWUSER",
+                "pppoe_password": "secret",
+                "router": "",
+            },
+            organization=self.org,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("phone", form.errors)
+
+    def test_normalized_phone_key_matches_equivalent_formats(self):
+        from billing.services import normalize_customer_phone_key
+
+        self.assertEqual(
+            normalize_customer_phone_key("254700000012"),
+            normalize_customer_phone_key("0710000012"),
+        )
+        self.assertEqual(
+            normalize_customer_phone_key("+254700000012"),
+            normalize_customer_phone_key("254700000012"),
+        )
+
+
 class FulfillIdempotencyTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user("owner-stk", password="x")

@@ -522,6 +522,39 @@ def normalize_kenya_msisdn(phone: str) -> str:
     return digits
 
 
+def normalize_customer_phone_key(phone: str) -> str:
+    """Canonical phone key for duplicate detection within an organization."""
+    raw = (phone or "").strip()
+    if not raw:
+        return ""
+    msisdn = normalize_kenya_msisdn(raw)
+    if msisdn.startswith("254") and len(msisdn) == 12:
+        return msisdn
+    return "".join(ch for ch in raw if ch.isdigit())
+
+
+def find_customer_by_phone(organization, phone: str, *, exclude_pk=None):
+    """Return the first customer in this org whose phone normalizes to the same key."""
+    key = normalize_customer_phone_key(phone)
+    if not key or organization is None:
+        return None
+    org_id = getattr(organization, "pk", organization)
+    qs = Customer.objects.filter(organization_id=org_id).exclude(phone="").order_by("id")
+    if exclude_pk:
+        qs = qs.exclude(pk=exclude_pk)
+    for row in qs.iterator():
+        if normalize_customer_phone_key(row.phone) == key:
+            return row
+    return None
+
+
+def customer_phone_is_taken(organization, phone: str, *, exclude_pk=None) -> bool:
+    return find_customer_by_phone(organization, phone, exclude_pk=exclude_pk) is not None
+
+
+PHONE_ALREADY_REGISTERED = "That phone number is already registered to another account."
+
+
 def apply_subscription_renewal(customer, *, plan=None):
     """
     Extend the customer's package period after a successful payment.

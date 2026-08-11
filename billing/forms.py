@@ -9,8 +9,10 @@ from accounts.countries import DEFAULT_COUNTRY, country_choices, get_country_opt
 from accounts.forms import national_phone_length, validate_and_normalize_phone
 from billing.models import BillingPlan, Customer
 from billing.services import (
+    PHONE_ALREADY_REGISTERED,
     clear_customer_package_pause,
     compute_package_end,
+    customer_phone_is_taken,
     plan_uses_clock_time,
     plans_for_router,
 )
@@ -289,6 +291,13 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
                 self.add_error("pppoe_username", "That PPPoE username is already registered.")
+        phone = cleaned.get("phone") or ""
+        if phone and self.organization and customer_phone_is_taken(
+            self.organization,
+            phone,
+            exclude_pk=getattr(self.instance, "pk", None),
+        ):
+            self.add_error("phone", PHONE_ALREADY_REGISTERED)
         plan = cleaned.get("plan")
         router = cleaned.get("router")
         if plan and plan.service_type != BillingPlan.ServiceType.PPPOE:
@@ -789,6 +798,10 @@ class SalesClientRegisterForm(forms.ModelForm):
                 "address",
                 "Choose a suggested location so latitude and longitude can be saved.",
             )
+        phone = cleaned.get("phone") or ""
+        org = cleaned.get("organization")
+        if phone and org and customer_phone_is_taken(org, phone):
+            self.add_error("phone", PHONE_ALREADY_REGISTERED)
         return cleaned
 
     def save(self, commit=True, *, registered_by=None):

@@ -7737,6 +7737,14 @@ def hotspot_payment_start(request, join_code: str):
             status=404,
         )
     phone = (request.POST.get("phone") or "").strip()
+    if not phone:
+        return JsonResponse(
+            {"ok": False, "error": "Enter the M-Pesa phone number for this payment."},
+            status=400,
+        )
+    from billing.services import PHONE_ALREADY_REGISTERED, find_customer_by_phone
+
+    phone_customer = find_customer_by_phone(org, phone)
     active_routers = MikroTikRouter.objects.filter(
         organization=org,
         account_status=MikroTikRouter.AccountStatus.ACTIVE,
@@ -7774,6 +7782,19 @@ def hotspot_payment_start(request, join_code: str):
             .order_by("id")
             .first()
         )
+        if customer is None and phone_customer is not None:
+            if phone_customer.service_type != Customer.ServiceType.HOTSPOT:
+                return JsonResponse(
+                    {"ok": False, "error": PHONE_ALREADY_REGISTERED},
+                    status=400,
+                )
+            customer = (
+                Customer.objects.select_for_update()
+                .filter(pk=phone_customer.pk)
+                .first()
+            )
+            if customer is not None:
+                customer.hotspot_mac = mac
         if customer is None:
             try:
                 with transaction.atomic():
@@ -7799,7 +7820,11 @@ def hotspot_payment_start(request, join_code: str):
                     .first()
                 )
                 if customer is None:
-                    raise
+                    phone_customer = find_customer_by_phone(org, phone)
+                    if phone_customer is not None:
+                        customer = phone_customer
+                    else:
+                        raise
         if customer is not None:
             if customer.status != Customer.Status.ACTIVE:
                 return JsonResponse(
@@ -7812,9 +7837,18 @@ def hotspot_payment_start(request, join_code: str):
                     },
                     status=403,
                 )
+            if (
+                phone_customer is not None
+                and phone_customer.pk != customer.pk
+            ):
+                return JsonResponse(
+                    {"ok": False, "error": PHONE_ALREADY_REGISTERED},
+                    status=400,
+                )
             customer.phone = phone
             customer.router = router
-            customer.save(update_fields=["phone", "router"])
+            customer.hotspot_mac = mac
+            customer.save(update_fields=["phone", "router", "hotspot_mac"])
 
     result = start_subscription_stk_payment(
         organization=org,
@@ -8412,6 +8446,13 @@ def pppoe_payment_start(request, join_code: str):
             status=400,
         )
     phone = (request.POST.get("phone") or "").strip() or (customer.phone or "")
+    from billing.services import PHONE_ALREADY_REGISTERED, customer_phone_is_taken
+
+    if phone and customer_phone_is_taken(org, phone, exclude_pk=customer.pk):
+        return JsonResponse(
+            {"ok": False, "error": PHONE_ALREADY_REGISTERED},
+            status=400,
+        )
     customer.phone = phone
     customer.save(update_fields=["phone"])
 
