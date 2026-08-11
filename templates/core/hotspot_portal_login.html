@@ -227,6 +227,18 @@
 
     .pay-panel { display: grid; gap: 0.85rem; }
     .pay-panel[hidden] { display: none !important; }
+    .pay-panel-secondary {
+      margin-top: 1.35rem;
+      padding-top: 1.35rem;
+      border-top: 1px solid var(--line);
+    }
+    .pay-panel-heading {
+      margin: 0 0 0.25rem;
+      font-size: 1.05rem;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .pay-panel-lead { margin: 0 0 0.75rem; }
 
     .plans {
       display: grid;
@@ -877,110 +889,7 @@
           <p class="error">{{ error }}</p>
         {% endif %}
 
-        {% if stk_ready and has_payable_plans %}
-          {% if hotspot_plans and portal_mode == "hotspot" %}
-          <section
-            class="pay-panel"
-            id="panel-hotspot"
-            role="tabpanel"
-            data-pay-panel="hotspot"
-          >
-            {% if hotspot_mac and hotspot_mac != "$(mac)" %}
-              <div class="customer-chip">
-                <strong>This device</strong>
-                <span>{{ hotspot_mac }}</span>
-              </div>
-            {% endif %}
-
-            <form
-              class="login"
-              data-payment-form
-              method="post"
-              action="{{ hotspot_payment_start_url|default:payment_start_url }}"
-            >
-              {% csrf_token %}
-              <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
-              <div class="field">
-                <label for="hotspot-plan-id">Package</label>
-                <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
-                  {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
-                  {% for plan in hotspot_plans %}
-                    <option
-                      value="{{ plan.pk }}"
-                      data-price="{{ plan.price }}"
-                      {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not hsel and forloop.first %}selected{% endif %}
-                    >
-                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %} (previous){% endif %}
-                    </option>
-                  {% endfor %}
-                  {% endwith %}
-                </select>
-                {% if hotspot_selected_plan_id %}
-                  <p class="field-hint">Previous package selected — you can choose another</p>
-                {% endif %}
-              </div>
-              <div class="field">
-                <label for="hotspot-phone">M-Pesa phone number</label>
-                <input
-                  id="hotspot-phone"
-                  name="phone"
-                  type="tel"
-                  inputmode="tel"
-                  autocomplete="tel"
-                  placeholder="07xxxxxxxx"
-                  value="{{ hotspot_phone_value|default:phone_value|default:'' }}"
-                  required
-                >
-                <p class="field-hint">We’ll send the M-Pesa prompt to this number</p>
-              </div>
-              <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
-            </form>
-
-            <div class="voucher-code-reveal" data-voucher-reveal hidden>
-              <div>
-                <p class="voucher-copy">Payment received. Enter this code to activate:</p>
-                <strong data-voucher-code-display></strong>
-              </div>
-              <button type="button" data-voucher-copy>Copy</button>
-            </div>
-
-            <div class="voucher-box" data-voucher-box>
-              <h2>Have a voucher?</h2>
-              <p class="voucher-copy">
-                After M-Pesa payment you get a one-time code. Enter it here to activate internet.
-              </p>
-              <form
-                class="login"
-                data-voucher-form
-                method="post"
-                action="{{ voucher_redeem_url }}"
-              >
-                {% csrf_token %}
-                <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
-                <div class="field">
-                  <label for="hotspot-voucher-code">Voucher code</label>
-                  <input
-                    id="hotspot-voucher-code"
-                    name="voucher_code"
-                    type="text"
-                    inputmode="text"
-                    autocomplete="one-time-code"
-                    placeholder="XXXX-XXXX"
-                    data-voucher-input
-                    required
-                  >
-                </div>
-                <button type="submit" class="cta" data-voucher-submit>Activate voucher</button>
-              </form>
-              <p class="meta" data-voucher-status role="status" aria-live="polite"></p>
-            </div>
-
-            <p class="meta" data-payment-status role="status" aria-live="polite">
-              Pay with M-Pesa, then activate with your voucher code.
-            </p>
-          </section>
-          {% endif %}
-
+        {% if has_payable_plans %}
           {% if pppoe_plans and portal_mode == "pppoe" %}
           <section
             class="pay-panel"
@@ -1070,8 +979,11 @@
                   required
                 >
               </div>
-              <button type="submit" class="cta" data-payment-submit>Pay with M-Pesa</button>
+              <button type="submit" class="cta" data-payment-submit {% if not stk_ready %}disabled aria-disabled="true"{% endif %}>Pay with M-Pesa</button>
             </form>
+            {% if not stk_ready %}
+              <p class="meta">M-Pesa payment is not configured yet. Choose a package above, then contact {{ org_name }} or redeem a voucher below.</p>
+            {% endif %}
 
             <div class="voucher-code-reveal" data-voucher-reveal hidden>
               <div>
@@ -1121,7 +1033,7 @@
               Pay with M-Pesa, then activate with your voucher code.
             </p>
 
-            {% if hotspot_option_available and hotspot_pay_url %}
+            {% if hotspot_option_available and hotspot_pay_url and not show_inline_hotspot %}
               <p class="meta access-handoff">
                 Prefer Hotspot on this device?
                 <a href="{{ hotspot_pay_url }}">Pay for Hotspot instead</a>
@@ -1129,13 +1041,105 @@
             {% endif %}
           </section>
           {% endif %}
+
+          {% if hotspot_plans and portal_mode == "hotspot" or hotspot_plans and portal_mode == "pppoe" and show_inline_hotspot %}
+          {% if show_inline_hotspot %}
+            <h2 class="pay-panel-heading">Hotspot on this device</h2>
+            <p class="meta pay-panel-lead">Temporary Wi‑Fi access for this phone only. Your home PPPoE account stays the same.</p>
+          {% endif %}
+          <section
+            class="pay-panel{% if show_inline_hotspot %} pay-panel-secondary{% endif %}"
+            id="panel-hotspot"
+            role="tabpanel"
+            data-pay-panel="hotspot"
+          >
+            {% if hotspot_mac and hotspot_mac != "$(mac)" %}
+              <div class="customer-chip">
+                <strong>This device</strong>
+                <span>{{ hotspot_mac }}</span>
+              </div>
+            {% endif %}
+
+            <form
+              class="login"
+              data-payment-form
+              method="post"
+              action="{{ hotspot_payment_start_url|default:payment_start_url }}"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
+              <div class="field">
+                <label for="hotspot-plan-id">Package</label>
+                <select id="hotspot-plan-id" name="plan_id" data-plan-select required>
+                  {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
+                  {% for plan in hotspot_plans %}
+                    <option
+                      value="{{ plan.pk }}"
+                      data-price="{{ plan.price }}"
+                      {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}selected{% elif not hsel and forloop.first %}selected{% endif %}
+                    >
+                      {{ plan.name }} — KES {{ plan.price }}{% if plan.speed_label %} · {{ plan.speed_label }}{% endif %}{% if plan.get_duration_display %} · {{ plan.get_duration_display }}{% endif %}{% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %} (previous){% endif %}
+                    </option>
+                  {% endfor %}
+                  {% endwith %}
+                </select>
+              </div>
+              <div class="field">
+                <label for="hotspot-phone">M-Pesa phone number</label>
+                <input
+                  id="hotspot-phone"
+                  name="phone"
+                  type="tel"
+                  inputmode="tel"
+                  autocomplete="tel"
+                  placeholder="07xxxxxxxx"
+                  value="{{ hotspot_phone_value|default:phone_value|default:'' }}"
+                  required
+                >
+                <p class="field-hint">We’ll send the M-Pesa prompt to this number</p>
+              </div>
+              <button type="submit" class="cta" data-payment-submit {% if not stk_ready %}disabled aria-disabled="true"{% endif %}>Pay with M-Pesa</button>
+            </form>
+
+            <div class="voucher-box" data-voucher-box>
+              <h2>Have a Hotspot voucher?</h2>
+              <form
+                class="login"
+                data-voucher-form
+                method="post"
+                action="{{ hotspot_voucher_redeem_url|default:voucher_redeem_url }}"
+              >
+                {% csrf_token %}
+                <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
+                <div class="field">
+                  <label for="hotspot-voucher-code">Voucher code</label>
+                  <input
+                    id="hotspot-voucher-code"
+                    name="voucher_code"
+                    type="text"
+                    inputmode="text"
+                    autocomplete="one-time-code"
+                    placeholder="XXXX-XXXX"
+                    data-voucher-input
+                    required
+                  >
+                </div>
+                <button type="submit" class="cta" data-voucher-submit>Activate voucher</button>
+              </form>
+              <p class="meta" data-voucher-status role="status" aria-live="polite"></p>
+            </div>
+          </section>
+          {% endif %}
         {% else %}
           <p class="meta">
             {% if portal_mode == "pppoe" %}
-              {% if identify_error %}{{ identify_error }}{% else %}
+              {% if not has_payable_plans %}
+                No PPPoE packages are available yet. Contact {{ org_name }}.
+              {% elif identify_error %}{{ identify_error }}
+              {% else %}
                 Could not identify this PPPoE session. Dial from the client router, then open any http:// site.
               {% endif %}
-              {% if hotspot_option_available and hotspot_pay_url %}
+              {% if hotspot_option_available and hotspot_pay_url and not show_inline_hotspot %}
                 <br>
                 Or <a href="{{ hotspot_pay_url }}">Pay for Hotspot instead</a>.
               {% endif %}
