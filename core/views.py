@@ -174,8 +174,14 @@ CLIENT_SIDEBARS = {
         "label": "MikroTik",
         "items": [
             {
-                "key": "change_credentials",
-                "label": "Login credentials",
+                "key": "edit_details",
+                "label": "Edit details",
+                "action": "open_modal",
+                "modal": "mikrotik-edit-modal",
+            },
+            {
+                "key": "wifi_credentials",
+                "label": "Wi‑Fi credentials",
                 "action": "open_modal",
                 "modal": "mikrotik-credentials-modal",
             },
@@ -480,6 +486,94 @@ def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict
         ],
         "end": list(CLIENT_COMMON_NAV_END),
     }
+
+
+def _mikrotik_login_credentials_changed(router: MikroTikRouter, cleaned: dict) -> bool:
+    return (
+        (cleaned.get("host") or "").strip() != (router.host or "").strip()
+        or (cleaned.get("username") or "").strip() != (router.username or "").strip()
+        or (cleaned.get("password") or "") != (router.password or "")
+    )
+
+
+def _apply_mikrotik_login_credentials(
+    router: MikroTikRouter,
+    org,
+    *,
+    new_host: str,
+    new_username: str,
+    new_password: str,
+) -> dict:
+    """Push login credential changes to the live router and update the saved record."""
+    current_host = router.host
+    current_username = router.username
+    current_password = router.password
+    current_wifi_ssid = router.wifi_ssid or ""
+    current_wifi_password = router.wifi_password or ""
+
+    result = apply_mikrotik_access_changes(
+        current_host=current_host,
+        current_username=current_username,
+        current_password=current_password,
+        current_wifi_ssid=current_wifi_ssid,
+        current_wifi_password=current_wifi_password,
+        new_host=new_host,
+        new_username=new_username,
+        new_password=new_password,
+        new_wifi_ssid=current_wifi_ssid,
+        new_wifi_password=current_wifi_password,
+    )
+    if result.get("ok"):
+        live = MikroTikRouter.objects.get(pk=router.pk)
+        live.host = new_host or live.host
+        live.username = new_username or live.username
+        live.password = new_password or live.password
+        live.save(
+            update_fields=[
+                "host",
+                "username",
+                "password",
+                "updated_at",
+            ]
+        )
+        _invalidate_mikrotik_router_caches(org.pk, router.pk)
+    return result
+
+
+def _schedule_mikrotik_login_credentials(
+    request,
+    router: MikroTikRouter,
+    org,
+    *,
+    new_host: str,
+    new_username: str,
+    new_password: str,
+    redirect_url_name: str,
+):
+    """Apply login credential changes in the background."""
+    set_job(router.pk, "credentials", "pending")
+
+    def _apply_login():
+        return _apply_mikrotik_login_credentials(
+            router,
+            org,
+            new_host=new_host,
+            new_username=new_username,
+            new_password=new_password,
+        )
+
+    _schedule_mikrotik_job(
+        _apply_login,
+        name=f"credentials-{router.pk}",
+        router_id=router.pk,
+        job_type="credentials",
+    )
+    messages.success(
+        request,
+        "Updating login credentials on the MikroTik in the background. "
+        "This page will show progress shortly.",
+    )
+    return _redirect_with_mikrotik_job(request, redirect_url_name, router.pk, "credentials")
 
 
 def build_mikrotik_detail_nav(
@@ -1785,7 +1879,7 @@ def mikrotik(request):
 @client_workspace_required
 @require_http_methods(["GET", "POST"])
 def mikrotik_edit(request, router_id: int):
-    """Edit name, model, location, and internet company from the routers list."""
+    """Edit name, model, location, and credentials from the routers list."""
     org = resolve_organization(request.user, request)
     if not org:
         messages.error(request, "No organization is linked to this workspace.")
@@ -1804,6 +1898,59 @@ def mikrotik_edit(request, router_id: int):
 
     edit_form = MikroTikEditDetailsForm(request.POST, instance=router)
     if edit_form.is_valid():
+        cleaned = edit_form.cleaned_data
+        login_changed = _mikrotik_login_credentials_changed(router, cleaned)
+        if login_changed and router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
+            edit_form.add_error(
+                None,
+                "Activate this MikroTik account before changing login credentials.",
+            )
+            return _render_mikrotik_list(
+                request,
+                org=org,
+                edit_form=edit_form,
+                open_edit=True,
+                editing_router_id=router.pk,
+            )
+
+        if login_changed:
+            new_host = cleaned.get("host") or ""
+            new_username = cleaned.get("username") or ""
+            new_password = cleaned.get("password") or ""
+            if _background_mikrotik_ops():
+                edit_form.save()
+                cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+                return _schedule_mikrotik_login_credentials(
+                    request,
+                    router,
+                    org,
+                    new_host=new_host,
+                    new_username=new_username,
+                    new_password=new_password,
+                    redirect_url_name="core:mikrotik",
+                )
+
+            apply_result = _apply_mikrotik_login_credentials(
+                router,
+                org,
+                new_host=new_host,
+                new_username=new_username,
+                new_password=new_password,
+            )
+            if not apply_result.get("ok"):
+                edit_form.add_error(
+                    None,
+                    apply_result.get("error")
+                    or "Could not update login credentials on the MikroTik.",
+                )
+                return _render_mikrotik_list(
+                    request,
+                    org=org,
+                    edit_form=edit_form,
+                    open_edit=True,
+                    editing_router_id=router.pk,
+                )
+
         edit_form.save()
         cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
         messages.success(request, f"Updated “{router.name}”.")
@@ -1958,16 +2105,62 @@ def mikrotik_detail(request, router_id: int):
         if action == "edit_details":
             edit_form = MikroTikEditDetailsForm(request.POST, instance=router)
             if edit_form.is_valid():
-                edit_form.save()
-                cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
-                messages.success(request, "MikroTik details updated.")
-                return redirect("core:mikrotik_detail", router_id=router.pk)
-            open_modal = "mikrotik-edit-modal"
+                cleaned = edit_form.cleaned_data
+                login_changed = _mikrotik_login_credentials_changed(router, cleaned)
+                if login_changed and is_suspended:
+                    edit_form.add_error(
+                        None,
+                        "Activate this MikroTik account before changing login credentials.",
+                    )
+                    open_modal = "mikrotik-edit-modal"
+                elif login_changed:
+                    new_host = cleaned.get("host") or ""
+                    new_username = cleaned.get("username") or ""
+                    new_password = cleaned.get("password") or ""
+                    if _background_mikrotik_ops():
+                        edit_form.save()
+                        cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+                        return _schedule_mikrotik_login_credentials(
+                            request,
+                            router,
+                            org,
+                            new_host=new_host,
+                            new_username=new_username,
+                            new_password=new_password,
+                            redirect_url_name="core:mikrotik_detail",
+                        )
+
+                    apply_result = _apply_mikrotik_login_credentials(
+                        router,
+                        org,
+                        new_host=new_host,
+                        new_username=new_username,
+                        new_password=new_password,
+                    )
+                    if not apply_result.get("ok"):
+                        edit_form.add_error(
+                            None,
+                            apply_result.get("error")
+                            or "Could not update login credentials on the MikroTik.",
+                        )
+                        open_modal = "mikrotik-edit-modal"
+                    else:
+                        edit_form.save()
+                        cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+                        messages.success(request, "MikroTik details updated.")
+                        return redirect("core:mikrotik_detail", router_id=router.pk)
+                else:
+                    edit_form.save()
+                    cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+                    messages.success(request, "MikroTik details updated.")
+                    return redirect("core:mikrotik_detail", router_id=router.pk)
+            else:
+                open_modal = "mikrotik-edit-modal"
         elif action == "change_credentials":
             if is_suspended:
                 messages.error(
                     request,
-                    "Activate this MikroTik account before changing credentials.",
+                    "Activate this MikroTik account before changing Wi‑Fi credentials.",
                 )
                 return redirect("core:mikrotik_detail", router_id=router.pk)
 
@@ -1980,24 +2173,21 @@ def mikrotik_detail(request, router_id: int):
             if credentials_form.is_valid():
                 cleaned = credentials_form.cleaned_data
 
-                def _apply_credentials():
+                def _apply_wifi_credentials():
                     result = apply_mikrotik_access_changes(
                         current_host=current_host,
                         current_username=current_username,
                         current_password=current_password,
                         current_wifi_ssid=current_wifi_ssid,
                         current_wifi_password=current_wifi_password,
-                        new_host=cleaned.get("host") or "",
-                        new_username=cleaned.get("username") or "",
-                        new_password=cleaned.get("password") or "",
+                        new_host=current_host,
+                        new_username=current_username,
+                        new_password=current_password,
                         new_wifi_ssid=cleaned.get("wifi_ssid") or "",
                         new_wifi_password=cleaned.get("wifi_password") or "",
                     )
                     if result.get("ok"):
                         live = MikroTikRouter.objects.get(pk=router.pk)
-                        live.host = cleaned.get("host") or live.host
-                        live.username = cleaned.get("username") or live.username
-                        live.password = cleaned.get("password") or live.password
                         if cleaned.get("wifi_ssid"):
                             live.wifi_ssid = cleaned.get("wifi_ssid") or live.wifi_ssid
                         if cleaned.get("wifi_password"):
@@ -2006,9 +2196,6 @@ def mikrotik_detail(request, router_id: int):
                             )
                         live.save(
                             update_fields=[
-                                "host",
-                                "username",
-                                "password",
                                 "wifi_ssid",
                                 "wifi_password",
                                 "updated_at",
@@ -2020,33 +2207,33 @@ def mikrotik_detail(request, router_id: int):
                 if _background_mikrotik_ops():
                     set_job(router.pk, "credentials", "pending")
                     _schedule_mikrotik_job(
-                        _apply_credentials,
+                        _apply_wifi_credentials,
                         name=f"credentials-{router.pk}",
                         router_id=router.pk,
                         job_type="credentials",
                     )
                     messages.success(
                         request,
-                        "Updating credentials on the MikroTik in the background. "
+                        "Updating Wi‑Fi credentials on the MikroTik in the background. "
                         "This page will show progress shortly.",
                     )
                     return _redirect_with_mikrotik_job(
                         request, "core:mikrotik_detail", router.pk, "credentials"
                     )
 
-                apply_result = _apply_credentials()
+                apply_result = _apply_wifi_credentials()
                 if not apply_result.get("ok"):
                     credentials_form.add_error(
                         None,
                         apply_result.get("error")
-                        or "Could not update credentials on the MikroTik.",
+                        or "Could not update Wi‑Fi credentials on the MikroTik.",
                     )
                     open_modal = "mikrotik-credentials-modal"
                 else:
                     messages.success(
                         request,
                         apply_result.get("message")
-                        or "Login credentials updated on the MikroTik.",
+                        or "Wi‑Fi credentials updated on the MikroTik.",
                     )
                     return redirect("core:mikrotik_detail", router_id=router.pk)
             else:
@@ -3526,22 +3713,21 @@ def mikrotik_live(request, router_id: int):
 
     saved_provider = (router.internet_provider or "").strip()
     detected_provider = (snapshot.get("wan_provider_detected") or "").strip()
-    provider = saved_provider or detected_provider
+    provider = detected_provider or saved_provider
     snapshot["wan_provider"] = provider
     snapshot["wan_provider_label"] = provider or "—"
-    snapshot["wan_provider_saved"] = saved_provider
-    if saved_provider:
-        snapshot["wan_provider_hint"] = "Saved internet company"
-        if snapshot.get("wan_port"):
-            snapshot["wan_summary"] = (
-                f"{saved_provider} internet entering on {snapshot['wan_port']}"
-            )
-        else:
-            snapshot["wan_summary"] = f"Internet from {saved_provider}"
-    elif detected_provider and snapshot.get("wan_port"):
+    if detected_provider and snapshot.get("wan_port"):
         snapshot["wan_summary"] = (
             f"{detected_provider} internet entering on {snapshot['wan_port']}"
         )
+    elif detected_provider:
+        snapshot["wan_summary"] = f"Internet from {detected_provider}"
+    elif saved_provider and snapshot.get("wan_port"):
+        snapshot["wan_summary"] = (
+            f"{saved_provider} internet entering on {snapshot['wan_port']}"
+        )
+    elif saved_provider:
+        snapshot["wan_summary"] = f"Internet from {saved_provider}"
 
     # Cache successes a bit longer; failures briefly so recovery shows soon.
     cache.set(cache_key, snapshot, 5 if snapshot.get("ok") else 3)
@@ -4343,12 +4529,28 @@ def my_clients(request):
         clients_router_param = str(clients_router_id)
 
     client_routers = []
+    router_cpe_defaults: dict[str, dict[str, str]] = {}
     if org:
         client_routers = list(
             MikroTikRouter.objects.filter(organization=org)
             .order_by("name", "host")
             .only("id", "name", "host")
         )
+        for router in MikroTikRouter.objects.filter(organization=org).only(
+            "id",
+            "name",
+            "default_cpe_username",
+            "default_cpe_password",
+            "location",
+        ):
+            default_password = (router.default_cpe_password or "").strip()
+            router_cpe_defaults[str(router.pk)] = {
+                "username": (router.default_cpe_username or "").strip() or "admin",
+                "password": default_password,
+                "has_password": bool(default_password),
+                "address": (router.location or "").strip(),
+                "router_name": (router.name or "").strip(),
+            }
         if clients_router_id and not any(
             r.pk == clients_router_id for r in client_routers
         ):
@@ -4379,6 +4581,14 @@ def my_clients(request):
     static_customers = page_customers if tab == "static" else []
     hotspot_customers = page_customers if tab == "hotspot" else []
 
+    if open_modal != "pppoe-register-modal" and request.method != "POST":
+        pppoe_initial: dict = {}
+        if clients_router_id:
+            pppoe_initial["router"] = clients_router_id
+        elif len(client_routers) == 1:
+            pppoe_initial["router"] = client_routers[0].pk
+        pppoe_form = PppoeClientRegisterForm(organization=org, initial=pppoe_initial)
+
     ctx = client_page_context(
         request,
         active_nav="clients",
@@ -4400,6 +4610,7 @@ def my_clients(request):
         clients_router_param=clients_router_param,
         clients_router_id=clients_router_id,
         pppoe_form=pppoe_form,
+        router_cpe_defaults_json=json.dumps(router_cpe_defaults),
         open_client_modal=open_modal,
         billing_plans_exist=bool(
             org

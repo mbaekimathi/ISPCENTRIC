@@ -11109,6 +11109,60 @@ a.packages-stat:focus-visible {
   padding: 0 1.15rem 0.85rem;
 }
 
+/* MikroTik action modals — match Register PPPoE / client popup polish */
+.mikrotik-action-modal.pppoe-modal {
+  place-items: end center;
+  padding: 0;
+}
+
+.mikrotik-action-modal.pppoe-modal .role-modal-backdrop {
+  background: rgba(6, 14, 20, 0.66);
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-head {
+  margin-bottom: 0;
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.1rem, 3.6vw, 1.4rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-body.mikrotik-action-scroll {
+  padding: 1rem 1.1rem 1.15rem;
+  display: grid;
+  gap: 1.05rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(14, 124, 134, 0.55) transparent;
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-body.mikrotik-action-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-body.mikrotik-action-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(14, 124, 134, 0.45);
+}
+
+.mikrotik-action-modal.pppoe-modal .mikrotik-confirm-check {
+  color: rgba(232, 242, 244, 0.88);
+}
+
+[data-theme="light"] .mikrotik-action-modal.pppoe-modal .mikrotik-confirm-check {
+  color: var(--ink);
+}
+
+@media (min-width: 40rem) {
+  .mikrotik-action-modal.pppoe-modal .pppoe-body.mikrotik-action-scroll {
+    padding: 1.25rem 1.5rem 1.4rem;
+    gap: 1.2rem;
+  }
+}
+
 .mikrotik-confirm-check {
   display: flex;
   align-items: flex-start;
@@ -18230,10 +18284,32 @@ textarea.form-control {
 }
 
 .client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
-  width: min(100%, 28.5rem);
-  max-height: min(90dvh, 36rem);
+  width: min(100%, 32rem);
+  max-height: min(92dvh, 40rem);
   position: relative;
   z-index: 1;
+}
+
+/* Register PPPoE — taller/wider; three sections need room to breathe */
+.client-action-modal.pppoe-modal.pppoe-modal--register .role-modal-panel.pppoe-panel {
+  width: min(100%, 36rem);
+  max-height: min(94dvh, 52rem);
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-section {
+  padding: 0.85rem 0.9rem 0.95rem;
+}
+
+.client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-section-head {
+  margin-bottom: 0.75rem;
 }
 
 .client-action-modal.pppoe-modal .pppoe-body {
@@ -18265,11 +18341,35 @@ textarea.form-control {
 
   .client-action-modal.pppoe-modal .role-modal-panel.pppoe-panel {
     border-radius: 20px;
-    max-height: min(88dvh, 34rem);
+    max-height: min(88dvh, 42rem);
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--register .role-modal-panel.pppoe-panel {
+    width: min(100%, 44rem);
+    max-height: min(92dvh, 56rem);
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-head {
+    padding: 1.15rem 1.5rem 1rem;
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-body {
+    padding: 1.15rem 1.5rem 1.35rem;
+    gap: 1rem;
+  }
+
+  .client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-foot {
+    padding: 1rem 1.5rem;
   }
 
   .client-action-modal.pppoe-modal .pppoe-panel::before {
     display: none;
+  }
+}
+
+@media (min-width: 960px) {
+  .client-action-modal.pppoe-modal.pppoe-modal--register .role-modal-panel.pppoe-panel {
+    width: min(100%, 48rem);
   }
 }
 
@@ -18279,12 +18379,24 @@ textarea.form-control {
     padding: 0;
   }
 
+  .client-action-modal.pppoe-modal.pppoe-modal--register .role-modal-panel.pppoe-panel {
+    width: 100%;
+    max-height: min(94dvh, 58rem);
+    border-radius: 22px 22px 0 0;
+  }
+
   .client-action-modal.pppoe-modal .pppoe-foot {
     padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   }
 
   .client-action-modal.pppoe-modal .pppoe-foot .btn {
     flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 23.99rem) {
+  .client-action-modal.pppoe-modal.pppoe-modal--register .pppoe-grid {
+    grid-template-columns: 1fr;
   }
 }
 

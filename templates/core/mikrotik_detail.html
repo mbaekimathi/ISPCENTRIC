@@ -368,132 +368,169 @@
   </div>
 </div>
 
-<div class="role-modal mikrotik-action-modal" id="mikrotik-edit-modal" {% if open_mikrotik_modal != "mikrotik-edit-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-edit-modal" %}false{% else %}true{% endif %}">
+<div class="role-modal mikrotik-action-modal pppoe-modal" id="mikrotik-edit-modal" {% if open_mikrotik_modal != "mikrotik-edit-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-edit-modal" %}false{% else %}true{% endif %}">
   <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-edit-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">MikroTik</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-edit-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">MikroTik</p>
         <h2 id="mikrotik-edit-title">Edit details</h2>
-        <p class="role-modal-sub">Update name, model, and location for this router.</p>
+        <p class="role-modal-sub pppoe-sub">Update router details, login credentials, and default client-router login.</p>
       </div>
-      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-mikrotik-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form method="post" class="mikrotik-action-form" novalidate>
+    <form method="post" class="pppoe-form mikrotik-action-form" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="edit_details">
       {{ edit_form.place_id }}
       {{ edit_form.location_lat }}
       {{ edit_form.location_lng }}
-      <div class="mikrotik-action-scroll">
-        <div class="form-grid mikrotik-simple-grid">
-          <div class="field field-span-2">
-            <label for="{{ edit_form.name.id_for_label }}">{{ edit_form.name.label }}</label>
-            {{ edit_form.name }}
-            {% if edit_form.name.errors %}<div class="field-error">{{ edit_form.name.errors|striptags }}</div>{% endif %}
+      <div class="pppoe-body mikrotik-action-scroll">
+        {% if edit_form.non_field_errors %}
+          <div class="field-error pppoe-banner">{{ edit_form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Router details</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ edit_form.name.id_for_label }}">{{ edit_form.name.label }}</label>
+              {{ edit_form.name }}
+              {% if edit_form.name.errors %}<div class="field-error">{{ edit_form.name.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label for="{{ edit_form.model.id_for_label }}">{{ edit_form.model.label }}</label>
+              <div class="pppoe-select">{{ edit_form.model }}</div>
+              {% if edit_form.model.errors %}<div class="field-error">{{ edit_form.model.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field field-span-2">
+              <label for="{{ edit_form.location.id_for_label }}">{{ edit_form.location.label }}</label>
+              {{ edit_form.location }}
+              {% if edit_form.location.errors %}<div class="field-error">{{ edit_form.location.errors|striptags }}</div>{% endif %}
+            </div>
           </div>
-          <div class="field field-span-2">
-            <label for="{{ edit_form.model.id_for_label }}">{{ edit_form.model.label }}</label>
-            {{ edit_form.model }}
-            {% if edit_form.model.errors %}<div class="field-error">{{ edit_form.model.errors|striptags }}</div>{% endif %}
+        </section>
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Login credentials</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ edit_form.host.id_for_label }}">{{ edit_form.host.label }}</label>
+              {{ edit_form.host }}
+              {% if edit_form.host.errors %}<div class="field-error">{{ edit_form.host.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ edit_form.username.id_for_label }}">{{ edit_form.username.label }}</label>
+              {{ edit_form.username }}
+              {% if edit_form.username.errors %}<div class="field-error">{{ edit_form.username.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ edit_form.password.id_for_label }}">{{ edit_form.password.label }}</label>
+              <div class="password-field">
+                {{ edit_form.password }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ edit_form.password.id_for_label }}" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if edit_form.password.errors %}<div class="field-error">{{ edit_form.password.errors|striptags }}</div>{% endif %}
+            </div>
           </div>
-          <div class="field field-span-2">
-            <label for="{{ edit_form.location.id_for_label }}">{{ edit_form.location.label }}</label>
-            {{ edit_form.location }}
-            {% if edit_form.location.errors %}<div class="field-error">{{ edit_form.location.errors|striptags }}</div>{% endif %}
+        </section>
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Client router defaults</h3>
+          <div class="pppoe-grid">
+            <div class="field">
+              <label for="{{ edit_form.default_cpe_username.id_for_label }}">{{ edit_form.default_cpe_username.label }}</label>
+              {{ edit_form.default_cpe_username }}
+              {% if edit_form.default_cpe_username.errors %}<div class="field-error">{{ edit_form.default_cpe_username.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ edit_form.default_cpe_password.id_for_label }}">{{ edit_form.default_cpe_password.label }}</label>
+              <div class="password-field">
+                {{ edit_form.default_cpe_password }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ edit_form.default_cpe_password.id_for_label }}" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              <p class="field-hint">Pre-filled when registering PPPoE clients on this MikroTik.</p>
+              {% if edit_form.default_cpe_password.errors %}<div class="field-error">{{ edit_form.default_cpe_password.errors|striptags }}</div>{% endif %}
+            </div>
           </div>
-          <div class="field field-span-2">
-            <label for="{{ edit_form.internet_provider.id_for_label }}">{{ edit_form.internet_provider.label }}</label>
-            {{ edit_form.internet_provider }}
-            {% if edit_form.internet_provider.errors %}<div class="field-error">{{ edit_form.internet_provider.errors|striptags }}</div>{% endif %}
-            <p class="field-hint">Optional. Name of the ISP or upstream company feeding this router.</p>
-          </div>
-        </div>
+        </section>
       </div>
-      <div class="role-modal-actions">
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
         <button type="submit" class="btn btn-primary">Save details</button>
-      </div>
+      </footer>
     </form>
   </div>
 </div>
 
 {# —— Credentials modal —— #}
-<div class="role-modal mikrotik-action-modal" id="mikrotik-credentials-modal" {% if open_mikrotik_modal != "mikrotik-credentials-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-credentials-modal" %}false{% else %}true{% endif %}">
+<div class="role-modal mikrotik-action-modal pppoe-modal" id="mikrotik-credentials-modal" {% if open_mikrotik_modal != "mikrotik-credentials-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-credentials-modal" %}false{% else %}true{% endif %}">
   <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-credentials-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Access</p>
-        <h2 id="mikrotik-credentials-title">Login credentials</h2>
-        <p class="role-modal-sub">Update access and Wi‑Fi credentials for this router.</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-credentials-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Wi‑Fi</p>
+        <h2 id="mikrotik-credentials-title">Wi‑Fi credentials</h2>
+        <p class="role-modal-sub pppoe-sub">Update the Wi‑Fi name and password on this router.</p>
       </div>
-      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-mikrotik-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form method="post" class="mikrotik-action-form" novalidate>
+    <form method="post" class="pppoe-form mikrotik-action-form" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="change_credentials">
-      <div class="mikrotik-action-scroll">
+      <div class="pppoe-body mikrotik-action-scroll">
         {% if credentials_form.non_field_errors %}
-          <div class="field-error mikrotik-form-banner">{{ credentials_form.non_field_errors|striptags }}</div>
+          <div class="field-error pppoe-banner">{{ credentials_form.non_field_errors|striptags }}</div>
         {% endif %}
-        <div class="form-grid mikrotik-simple-grid">
-          <div class="field field-span-2">
-            <label for="{{ credentials_form.host.id_for_label }}">{{ credentials_form.host.label }}</label>
-            {{ credentials_form.host }}
-            {% if credentials_form.host.errors %}<div class="field-error">{{ credentials_form.host.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ credentials_form.username.id_for_label }}">{{ credentials_form.username.label }}</label>
-            {{ credentials_form.username }}
-            {% if credentials_form.username.errors %}<div class="field-error">{{ credentials_form.username.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ credentials_form.password.id_for_label }}">{{ credentials_form.password.label }}</label>
-            <div class="password-field">
-              {{ credentials_form.password }}
-              <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.password.id_for_label }}" aria-label="Show password">
-                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-              </button>
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">Network settings</h3>
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="{{ credentials_form.wifi_ssid.id_for_label }}">{{ credentials_form.wifi_ssid.label }}</label>
+              {{ credentials_form.wifi_ssid }}
+              {% if credentials_form.wifi_ssid.errors %}<div class="field-error">{{ credentials_form.wifi_ssid.errors|striptags }}</div>{% endif %}
             </div>
-            {% if credentials_form.password.errors %}<div class="field-error">{{ credentials_form.password.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ credentials_form.wifi_ssid.id_for_label }}">{{ credentials_form.wifi_ssid.label }}</label>
-            {{ credentials_form.wifi_ssid }}
-            {% if credentials_form.wifi_ssid.errors %}<div class="field-error">{{ credentials_form.wifi_ssid.errors|striptags }}</div>{% endif %}
-          </div>
-          <div class="field">
-            <label for="{{ credentials_form.wifi_password.id_for_label }}">{{ credentials_form.wifi_password.label }}</label>
-            <div class="password-field">
-              {{ credentials_form.wifi_password }}
-              <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.wifi_password.id_for_label }}" aria-label="Show Wi‑Fi password">
-                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-              </button>
+            <div class="field field-span-2">
+              <label for="{{ credentials_form.wifi_password.id_for_label }}">{{ credentials_form.wifi_password.label }}</label>
+              <div class="password-field">
+                {{ credentials_form.wifi_password }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.wifi_password.id_for_label }}" aria-label="Show Wi‑Fi password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if credentials_form.wifi_password.errors %}<div class="field-error">{{ credentials_form.wifi_password.errors|striptags }}</div>{% endif %}
             </div>
-            {% if credentials_form.wifi_password.errors %}<div class="field-error">{{ credentials_form.wifi_password.errors|striptags }}</div>{% endif %}
           </div>
-        </div>
+        </section>
       </div>
-      <div class="role-modal-actions">
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save credentials</button>
-      </div>
+        <button type="submit" class="btn btn-primary">Save Wi‑Fi credentials</button>
+      </footer>
     </form>
   </div>
 </div>
 
 {# —— Activate / deactivate Wi‑Fi modal —— #}
-<div class="role-modal mikrotik-action-modal" id="mikrotik-wifi-modal" {% if open_mikrotik_modal != "mikrotik-wifi-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-wifi-modal" %}false{% else %}true{% endif %}">
+<div class="role-modal mikrotik-action-modal pppoe-modal" id="mikrotik-wifi-modal" {% if open_mikrotik_modal != "mikrotik-wifi-modal" %}hidden{% endif %} aria-hidden="{% if open_mikrotik_modal == "mikrotik-wifi-modal" %}false{% else %}true{% endif %}">
   <div class="role-modal-backdrop" data-close-mikrotik-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-wifi-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Wi‑Fi</p>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="mikrotik-wifi-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Wi‑Fi</p>
         <h2 id="mikrotik-wifi-title" data-mt-wifi-title>{% if wifi_enabled %}Deactivate Wi‑Fi{% else %}Activate Wi‑Fi{% endif %}</h2>
-        <p class="role-modal-sub" data-mt-wifi-sub>
+        <p class="role-modal-sub pppoe-sub" data-mt-wifi-sub>
           {% if wifi_enabled %}
             Turn off the Wi‑Fi radio on “{{ router.name }}”. Credentials stay saved and will show again when Wi‑Fi is activated.
           {% else %}
@@ -501,33 +538,37 @@
           {% endif %}
         </p>
       </div>
-      <button type="button" class="role-modal-close" data-close-mikrotik-modal aria-label="Close">×</button>
+      <button type="button" class="role-modal-close pppoe-close" data-close-mikrotik-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
     </header>
-    <form method="post" class="mikrotik-action-form" novalidate>
+    <form method="post" class="pppoe-form mikrotik-action-form" novalidate>
       {% csrf_token %}
       <input type="hidden" name="action" value="toggle_wifi">
-      <div class="mikrotik-action-scroll">
+      <div class="pppoe-body mikrotik-action-scroll">
         {% if wifi_form.non_field_errors %}
-          <div class="field-error mikrotik-form-banner">{{ wifi_form.non_field_errors|striptags }}</div>
+          <div class="field-error pppoe-banner">{{ wifi_form.non_field_errors|striptags }}</div>
         {% endif %}
-        <label class="mikrotik-confirm-check">
-          {{ wifi_form.confirm }}
-          <span data-mt-wifi-confirm>
-            {% if wifi_enabled %}
-              I confirm I want to deactivate Wi‑Fi on this MikroTik.
-            {% else %}
-              I confirm I want to activate Wi‑Fi on this MikroTik.
-            {% endif %}
-          </span>
-        </label>
-        {% if wifi_form.confirm.errors %}<div class="field-error">{{ wifi_form.confirm.errors|striptags }}</div>{% endif %}
+        <section class="pppoe-section">
+          <label class="mikrotik-confirm-check">
+            {{ wifi_form.confirm }}
+            <span data-mt-wifi-confirm>
+              {% if wifi_enabled %}
+                I confirm I want to deactivate Wi‑Fi on this MikroTik.
+              {% else %}
+                I confirm I want to activate Wi‑Fi on this MikroTik.
+              {% endif %}
+            </span>
+          </label>
+          {% if wifi_form.confirm.errors %}<div class="field-error">{{ wifi_form.confirm.errors|striptags }}</div>{% endif %}
+        </section>
       </div>
-      <div class="role-modal-actions">
+      <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-mikrotik-modal>Cancel</button>
         <button type="submit" class="btn {% if wifi_enabled %}btn-danger{% else %}btn-primary{% endif %}" data-mt-wifi-submit>
           {% if wifi_enabled %}Deactivate Wi‑Fi{% else %}Activate Wi‑Fi{% endif %}
         </button>
-      </div>
+      </footer>
     </form>
   </div>
 </div>

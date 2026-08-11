@@ -52,6 +52,19 @@ class MikroTikRouter(models.Model):
     )
     wifi_ssid = models.CharField("Wi‑Fi name", max_length=32, blank=True)
     wifi_password = models.CharField("Wi‑Fi password", max_length=63, blank=True)
+    default_cpe_username = models.CharField(
+        "Default client router username",
+        max_length=64,
+        blank=True,
+        default="admin",
+        help_text="Pre-filled on new PPPoE clients linked to this MikroTik.",
+    )
+    default_cpe_password = models.CharField(
+        "Default client router password",
+        max_length=128,
+        blank=True,
+        help_text="Pre-filled on new PPPoE clients; used for remote CPE access from ISPCENTRIC.",
+    )
     internet_provider = models.CharField(
         "Internet company",
         max_length=120,

@@ -262,6 +262,7 @@
             <div class="field">
               <label for="{{ pppoe_form.address.id_for_label }}">{{ pppoe_form.address.label }} <span class="pppoe-optional">optional</span></label>
               {{ pppoe_form.address }}
+              <p class="field-hint">Pre-filled from the MikroTik site location — change if needed.</p>
               {% if pppoe_form.address.errors %}<div class="field-error">{{ pppoe_form.address.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
@@ -323,7 +324,7 @@
             </span>
             <div class="pppoe-section-head-text">
               <h3 class="pppoe-section-title">Remote router access</h3>
-              <p class="pppoe-section-desc">Pre-filled admin login for opening the client router from ISPCENTRIC.</p>
+              <p class="pppoe-section-desc" id="pppoe-remote-desc">Pre-filled from the selected MikroTik's default client-router login — edit if this client uses different credentials.</p>
             </div>
             <span class="pppoe-step-badge" aria-hidden="true">3</span>
             <span class="pppoe-status-badge pppoe-status-badge--prefill">Pre-filled</span>
@@ -338,7 +339,7 @@
             <div class="field">
               <div class="pppoe-label-row">
                 <label for="{{ pppoe_form.cpe_password.id_for_label }}">{{ pppoe_form.cpe_password.label }}</label>
-                <button type="button" class="pppoe-mini-btn" data-generate-password="{{ pppoe_form.cpe_password.id_for_label }}" data-sync-from="id_pppoe_password">Generate</button>
+                <button type="button" class="pppoe-mini-btn" data-generate-password="{{ pppoe_form.cpe_password.id_for_label }}">Generate</button>
               </div>
               <div class="password-field">
                 {{ pppoe_form.cpe_password }}
@@ -530,6 +531,11 @@
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
+    if (id === "pppoe-register-modal") {
+      cpePassEdited = false;
+      cpeUserEdited = false;
+      addressEdited = false;
+    }
     ensureRegisterDefaults(modal);
 
     var firstError = modal.querySelector(".field-error");
@@ -592,10 +598,6 @@
     }
   });
 
-  {% if open_client_modal %}
-  openModal("{{ open_client_modal|escapejs }}");
-  {% endif %}
-
   var phoneInput = document.getElementById("{{ pppoe_form.phone.id_for_label|escapejs }}");
   var userInput = document.getElementById("{{ pppoe_form.pppoe_username.id_for_label|escapejs }}");
   var userEdited = false;
@@ -642,14 +644,69 @@
   }
 
   var cpePassEdited = false;
+  var cpeUserEdited = false;
+  var addressEdited = false;
   var pppoePassInput = document.getElementById("id_pppoe_password");
   var cpePassInput = document.getElementById("id_pppoe_cpe_password");
   var cpeUserInput = document.getElementById("id_pppoe_cpe_username");
+  var addressInput = document.getElementById("id_pppoe_address");
+  var routerSelect = document.getElementById("id_pppoe_router");
+  var routerCpeDefaults = {{ router_cpe_defaults_json|default:"{}"|safe }};
+  var remoteDesc = document.getElementById("pppoe-remote-desc");
+
+  function selectedRouterDefaults() {
+    if (!routerSelect || !routerSelect.value) return null;
+    return routerCpeDefaults[routerSelect.value] || null;
+  }
+
+  function routerHasDefaultPassword() {
+    var defs = selectedRouterDefaults();
+    return !!(defs && defs.has_password);
+  }
+
+  function updateRemoteDesc() {
+    if (!remoteDesc) return;
+    var defs = selectedRouterDefaults();
+    if (defs && defs.router_name) {
+      remoteDesc.textContent =
+        "Pre-filled from " + defs.router_name + "'s default client-router login — edit if this client uses different credentials.";
+    } else {
+      remoteDesc.textContent =
+        "Pre-filled from the selected MikroTik's default client-router login — edit if this client uses different credentials.";
+    }
+  }
 
   function syncCpePasswordFromPppoe(force) {
     if (!cpePassInput || !pppoePassInput) return;
     if (!force && cpePassEdited) return;
+    if (routerHasDefaultPassword()) return;
     if (pppoePassInput.value) cpePassInput.value = pppoePassInput.value;
+  }
+
+  function applyRouterCpeDefaults(force) {
+    if (!routerSelect) return;
+    if (routerSelect.options.length === 2 && !routerSelect.value) {
+      routerSelect.selectedIndex = 1;
+    }
+    var defs = selectedRouterDefaults();
+    if (!defs) {
+      updateRemoteDesc();
+      return;
+    }
+    if (cpeUserInput && (force || !cpeUserEdited)) {
+      cpeUserInput.value = defs.username || "admin";
+    }
+    if (cpePassInput && (force || !cpePassEdited)) {
+      if (defs.has_password && defs.password) {
+        cpePassInput.value = defs.password;
+      } else {
+        syncCpePasswordFromPppoe(true);
+      }
+    }
+    if (addressInput && defs.address && (force || !addressEdited)) {
+      addressInput.value = defs.address;
+    }
+    updateRemoteDesc();
   }
 
   function ensureRegisterDefaults(modal) {
@@ -658,10 +715,13 @@
     if (pppoePassInput && !pppoePassInput.value.trim()) {
       pppoePassInput.value = randomPassword();
     }
+    applyRouterCpeDefaults(true);
     if (cpeUserInput && !cpeUserInput.value.trim()) {
       cpeUserInput.value = "admin";
     }
-    syncCpePasswordFromPppoe(true);
+    if (cpePassInput && !cpePassInput.value.trim()) {
+      syncCpePasswordFromPppoe(true);
+    }
     if (phoneInput && userInput && !userEdited) {
       userInput.value = (phoneInput.value || "").toUpperCase();
     }
@@ -671,6 +731,27 @@
     cpePassInput.addEventListener("input", function () {
       cpePassEdited = true;
     });
+  }
+  if (cpeUserInput) {
+    cpeUserInput.addEventListener("input", function () {
+      cpeUserEdited = true;
+    });
+  }
+  if (addressInput) {
+    addressInput.addEventListener("input", function () {
+      addressEdited = true;
+    });
+  }
+  if (routerSelect) {
+    routerSelect.addEventListener("change", function () {
+      cpePassEdited = false;
+      cpeUserEdited = false;
+      addressEdited = false;
+      applyRouterCpeDefaults(true);
+    });
+    if (routerSelect.value) {
+      applyRouterCpeDefaults(true);
+    }
   }
   if (pppoePassInput) {
     pppoePassInput.addEventListener("input", function () {
@@ -763,6 +844,10 @@
     });
   };
   window.__clientsBindSecrets(document);
+
+  {% if open_client_modal %}
+  openModal("{{ open_client_modal|escapejs }}");
+  {% endif %}
 })();
 </script>
 {% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}

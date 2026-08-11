@@ -70,6 +70,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
                     "class": "form-control text-upper",
                     "placeholder": "Install address (optional)",
                     "autocomplete": "street-address",
+                    "id": "id_pppoe_address",
                 }
             ),
             "house_number": forms.TextInput(
@@ -139,7 +140,8 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["cpe_username"].required = False
         self.fields["cpe_password"].required = False
         self.fields["cpe_password"].help_text = (
-            "For remote router access — defaults to the PPPoE password when left blank."
+            "Uses the default client-router login saved on the selected MikroTik. "
+            "Falls back to the PPPoE password only when that MikroTik has no default set."
         )
         self.fields["pppoe_username"].required = False
         # Router is required so the PPPoE secret can be installed on the NAS.
@@ -149,31 +151,24 @@ class PppoeClientRegisterForm(forms.ModelForm):
         if not self.is_bound:
             default_password = self.initial.get("pppoe_password") or _default_client_password()
             self.initial.setdefault("pppoe_password", default_password)
+            router = self._selected_router()
+            cpe_user, cpe_pass = self._cpe_defaults_for_router(router, default_password)
             if not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
-                self.initial.setdefault("cpe_username", "admin")
+                self.initial.setdefault("cpe_username", cpe_user)
             if not self.initial.get("cpe_password"):
-                self.initial.setdefault("cpe_password", default_password)
+                self.initial.setdefault("cpe_password", cpe_pass)
+            if not (self.initial.get("address") or getattr(self.instance, "address", "")):
+                address = self._address_default_for_router(router)
+                if address:
+                    self.initial.setdefault("address", address)
         elif not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
             self.fields["cpe_username"].initial = "admin"
         if organization is not None:
             from billing.services import plans_for_router
 
-            router = None
-            if self.is_bound:
-                raw_router = self.data.get("router")
-                if raw_router:
-                    router = (
-                        MikroTikRouter.objects.filter(
-                            pk=raw_router, organization=organization
-                        ).first()
-                    )
-            elif self.initial.get("router"):
-                router = self.initial.get("router")
-            elif getattr(self.instance, "router_id", None):
-                router = self.instance.router
             self.fields["plan"].queryset = plans_for_router(
                 organization,
-                router,
+                self._selected_router(),
                 service_type=Customer.ServiceType.PPPOE,
             )
             self.fields["router"].queryset = MikroTikRouter.objects.filter(
@@ -182,6 +177,44 @@ class PppoeClientRegisterForm(forms.ModelForm):
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
             self.fields["router"].queryset = MikroTikRouter.objects.none()
+
+    def _selected_router(self):
+        router = None
+        if self.organization is None:
+            return None
+        if self.is_bound:
+            raw_router = self.data.get("router")
+            if raw_router:
+                router = MikroTikRouter.objects.filter(
+                    pk=raw_router, organization=self.organization
+                ).first()
+        elif self.initial.get("router"):
+            candidate = self.initial.get("router")
+            if isinstance(candidate, MikroTikRouter):
+                router = candidate
+            else:
+                router = MikroTikRouter.objects.filter(
+                    pk=candidate, organization=self.organization
+                ).first()
+        elif getattr(self.instance, "router_id", None):
+            router = self.instance.router
+        return router
+
+    @staticmethod
+    def _address_default_for_router(router) -> str:
+        if router is None:
+            return ""
+        return (getattr(router, "location", None) or "").strip()
+
+    @staticmethod
+    def _cpe_defaults_for_router(router, fallback_password: str = "") -> tuple[str, str]:
+        if router is None:
+            return "admin", fallback_password or ""
+        username = (getattr(router, "default_cpe_username", None) or "").strip() or "admin"
+        password = getattr(router, "default_cpe_password", None) or ""
+        if not password:
+            password = fallback_password or ""
+        return username, password
 
     def clean_full_name(self):
         name = (self.cleaned_data.get("full_name") or "").strip().upper()
@@ -226,9 +259,16 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
     def clean_cpe_password(self):
         password = self.cleaned_data.get("cpe_password") or ""
-        if not password:
-            password = self.cleaned_data.get("pppoe_password") or ""
-        return password
+        if password:
+            return password
+        router = self._selected_router()
+        _, router_password = self._cpe_defaults_for_router(
+            router,
+            self.cleaned_data.get("pppoe_password") or "",
+        )
+        if router_password:
+            return router_password
+        return self.cleaned_data.get("pppoe_password") or ""
 
     def clean(self):
         cleaned = super().clean()

@@ -43,6 +43,8 @@ class MikroTikOnboardForm(forms.ModelForm):
             "password",
             "wifi_ssid",
             "wifi_password",
+            "default_cpe_username",
+            "default_cpe_password",
         ]
         widgets = {
             "name": forms.TextInput(
@@ -117,6 +119,23 @@ class MikroTikOnboardForm(forms.ModelForm):
                 },
                 render_value=True,
             ),
+            "default_cpe_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "admin",
+                    "autocomplete": "username",
+                    "id": "id_mikrotik_default_cpe_username",
+                }
+            ),
+            "default_cpe_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "Client router admin password",
+                    "autocomplete": "new-password",
+                    "id": "id_mikrotik_default_cpe_password",
+                },
+                render_value=True,
+            ),
         }
         labels = {
             "name": "Name your MikroTik",
@@ -127,7 +146,16 @@ class MikroTikOnboardForm(forms.ModelForm):
             "password": "Password",
             "wifi_ssid": "Wi‑Fi name",
             "wifi_password": "Wi‑Fi password",
+            "default_cpe_username": "Client router username",
+            "default_cpe_password": "Client router password",
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["default_cpe_username"].required = False
+        self.fields["default_cpe_password"].required = False
+        if not self.is_bound and not (self.initial.get("default_cpe_username") or "").strip():
+            self.initial.setdefault("default_cpe_username", "admin")
 
     def clean_name(self):
         return (self.cleaned_data.get("name") or "").strip()
@@ -152,6 +180,12 @@ class MikroTikOnboardForm(forms.ModelForm):
 
     def clean_wifi_password(self):
         return self.cleaned_data.get("wifi_password") or ""
+
+    def clean_default_cpe_username(self):
+        return (self.cleaned_data.get("default_cpe_username") or "").strip() or "admin"
+
+    def clean_default_cpe_password(self):
+        return self.cleaned_data.get("default_cpe_password") or ""
 
     def clean(self):
         cleaned = super().clean()
@@ -186,7 +220,7 @@ class MikroTikOnboardForm(forms.ModelForm):
 
 
 class MikroTikEditDetailsForm(forms.ModelForm):
-    """Edit name, model, and location without touching login credentials or Wi‑Fi."""
+    """Edit router details, API login credentials, and default client-router credentials."""
 
     place_id = forms.CharField(
         required=False,
@@ -207,7 +241,11 @@ class MikroTikEditDetailsForm(forms.ModelForm):
             "location",
             "location_lat",
             "location_lng",
-            "internet_provider",
+            "host",
+            "username",
+            "password",
+            "default_cpe_username",
+            "default_cpe_password",
         ]
         widgets = {
             "name": forms.TextInput(
@@ -232,25 +270,83 @@ class MikroTikEditDetailsForm(forms.ModelForm):
                     "id": "id_edit_mikrotik_location",
                 }
             ),
-            "internet_provider": forms.TextInput(
+            "host": forms.TextInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "e.g. Safaricom, Starlink, Liquid",
-                    "autocomplete": "organization",
-                    "id": "id_edit_mikrotik_internet_provider",
+                    "placeholder": "192.168.88.1",
+                    "autocomplete": "off",
+                    "id": "id_edit_mikrotik_host",
                 }
+            ),
+            "username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "admin",
+                    "autocomplete": "username",
+                    "id": "id_edit_mikrotik_username",
+                }
+            ),
+            "password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "Router password",
+                    "autocomplete": "new-password",
+                    "id": "id_edit_mikrotik_password",
+                },
+                render_value=True,
+            ),
+            "default_cpe_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "admin",
+                    "autocomplete": "username",
+                    "id": "id_edit_mikrotik_default_cpe_username",
+                }
+            ),
+            "default_cpe_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "Client router admin password",
+                    "autocomplete": "new-password",
+                    "id": "id_edit_mikrotik_default_cpe_password",
+                },
+                render_value=True,
             ),
         }
         labels = {
             "name": "Name",
             "model": "Model",
             "location": "Location",
-            "internet_provider": "Internet company",
+            "host": "IP / Host",
+            "username": "Username",
+            "password": "Password",
+            "default_cpe_username": "Client router username",
+            "default_cpe_password": "Client router password",
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["default_cpe_username"].required = False
+        self.fields["default_cpe_password"].required = False
         self.unlisted_model = self._keep_current_model_selectable()
+
+    def clean_host(self):
+        host = (self.cleaned_data.get("host") or "").strip()
+        if not host:
+            raise forms.ValidationError("Enter the MikroTik IP address or hostname.")
+        return host
+
+    def clean_username(self):
+        username = (self.cleaned_data.get("username") or "").strip()
+        if not username:
+            raise forms.ValidationError("Enter the router username.")
+        return username
+
+    def clean_password(self):
+        password = self.cleaned_data.get("password") or ""
+        if not password:
+            raise forms.ValidationError("Enter the router password.")
+        return password
 
     def _keep_current_model_selectable(self) -> str:
         """Show the stored model even when it predates the current catalog.
@@ -285,8 +381,11 @@ class MikroTikEditDetailsForm(forms.ModelForm):
     def clean_location(self):
         return (self.cleaned_data.get("location") or "").strip()
 
-    def clean_internet_provider(self):
-        return (self.cleaned_data.get("internet_provider") or "").strip()
+    def clean_default_cpe_username(self):
+        return (self.cleaned_data.get("default_cpe_username") or "").strip() or "admin"
+
+    def clean_default_cpe_password(self):
+        return self.cleaned_data.get("default_cpe_password") or ""
 
     def clean(self):
         cleaned = super().clean()
@@ -321,37 +420,12 @@ class MikroTikEditDetailsForm(forms.ModelForm):
 
 
 class MikroTikCredentialsForm(forms.ModelForm):
-    """Update host / username / password and Wi‑Fi credentials."""
+    """Update Wi‑Fi name and password on the router."""
 
     class Meta:
         model = MikroTikRouter
-        fields = ["host", "username", "password", "wifi_ssid", "wifi_password"]
+        fields = ["wifi_ssid", "wifi_password"]
         widgets = {
-            "host": forms.TextInput(
-                attrs={
-                    "class": "form-control",
-                    "placeholder": "192.168.88.1",
-                    "autocomplete": "off",
-                    "id": "id_cred_mikrotik_host",
-                }
-            ),
-            "username": forms.TextInput(
-                attrs={
-                    "class": "form-control",
-                    "placeholder": "admin",
-                    "autocomplete": "username",
-                    "id": "id_cred_mikrotik_username",
-                }
-            ),
-            "password": forms.PasswordInput(
-                attrs={
-                    "class": "form-control password-input",
-                    "placeholder": "Router password",
-                    "autocomplete": "new-password",
-                    "id": "id_cred_mikrotik_password",
-                },
-                render_value=True,
-            ),
             "wifi_ssid": forms.TextInput(
                 attrs={
                     "class": "form-control",
@@ -372,30 +446,9 @@ class MikroTikCredentialsForm(forms.ModelForm):
             ),
         }
         labels = {
-            "host": "IP / Host",
-            "username": "Username",
-            "password": "Password",
             "wifi_ssid": "Wi‑Fi name",
             "wifi_password": "Wi‑Fi password",
         }
-
-    def clean_host(self):
-        host = (self.cleaned_data.get("host") or "").strip()
-        if not host:
-            raise forms.ValidationError("Enter the MikroTik IP address or hostname.")
-        return host
-
-    def clean_username(self):
-        username = (self.cleaned_data.get("username") or "").strip()
-        if not username:
-            raise forms.ValidationError("Enter the router username.")
-        return username
-
-    def clean_password(self):
-        password = self.cleaned_data.get("password") or ""
-        if not password:
-            raise forms.ValidationError("Enter the router password.")
-        return password
 
     def clean_wifi_ssid(self):
         return (self.cleaned_data.get("wifi_ssid") or "").strip()
