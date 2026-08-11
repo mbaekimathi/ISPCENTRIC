@@ -3,7 +3,12 @@ from django.utils import timezone
 
 from accounts.models import Organization, User
 from billing.models import Customer, CustomerUsageSample
-from billing.usage_samples import parse_uptime_seconds, usage_trend_payload
+from billing.usage_samples import (
+    parse_uptime_seconds,
+    router_network_performance_trend,
+    usage_trend_payload,
+)
+from core.models import MikroTikRouter
 
 
 class ParseUptimeSecondsTests(SimpleTestCase):
@@ -56,3 +61,44 @@ class UsageTrendPayloadTests(TestCase):
         self.assertEqual(payload["summary"]["peak_download_bps"], 2000)
         self.assertEqual(payload["summary"]["data_used_bytes"], 4500)
         self.assertEqual(len(payload["series"]["uptime_minutes"]), 2)
+
+
+class RouterNetworkPerformanceTrendTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("net-trend-owner", password="x")
+        self.org = Organization.objects.create(name="Net Trend Org", owner=owner, join_code="NET001")
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Tower A",
+            host="10.0.0.1",
+            username="admin",
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            router=self.router,
+            full_name="Net Client",
+            phone="0700000001",
+            account_number="PPP-NET-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="net1",
+        )
+
+    def test_groups_online_clients_by_router(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=10),
+            session_active=True,
+            download_bps=500000,
+            upload_bps=100000,
+            bytes_in=1000,
+            bytes_out=200,
+        )
+        trend = router_network_performance_trend(self.org, hours=24, use_cache=False)
+        self.assertTrue(trend["ok"])
+        self.assertEqual(len(trend["routers"]), 1)
+        self.assertEqual(trend["summary"]["clients_online"], 1)
+        router_ds = [ds for ds in trend["datasets"] if ds.get("router_id") == self.router.pk]
+        self.assertEqual(len(router_ds), 1)
+        self.assertTrue(any(v and v >= 1 for v in router_ds[0]["data"]))

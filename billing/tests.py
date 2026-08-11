@@ -868,6 +868,25 @@ class CustomerPhoneUniquenessTests(TestCase):
             normalize_customer_phone_key("254700000012"),
         )
 
+    def test_multiple_hotspot_devices_without_stored_phone_do_not_collide(self):
+        Customer.objects.create(
+            organization=self.org,
+            full_name="Device A",
+            phone="",
+            account_number="HOT-A",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:01",
+        )
+        second = Customer.objects.create(
+            organization=self.org,
+            full_name="Device B",
+            phone="",
+            account_number="HOT-B",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:02",
+        )
+        self.assertEqual(second.phone_normalized, "")
+
 
 class FulfillIdempotencyTests(TestCase):
     def setUp(self):

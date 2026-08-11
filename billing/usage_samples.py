@@ -17,6 +17,19 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
+_NETWORK_TREND_TTL = 20
+_NETWORK_TREND_COLORS = [
+    "#2ecc71",
+    "#4f8cff",
+    "#e8a317",
+    "#e74c3c",
+    "#9b59b6",
+    "#1abc9c",
+    "#f39c12",
+    "#3498db",
+    "#e67e22",
+    "#16a085",
+]
 _ORG_SAMPLE_WORKERS = 4
 _ORG_SAMPLE_ROUTER_TIMEOUT = 4.0
 _MAX_USAGE_HOURS = 8760  # 1 year
@@ -254,6 +267,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     # Invalidate payload caches so the next read includes fresh samples.
     for hours in _USAGE_RANGE_CACHE_HOURS:
         cache.delete(f"org_usage_payload:{organization.pk}:{hours}")
+        cache.delete(f"router_network_trend:{organization.pk}:{hours}")
 
     return {
         "ok": True,
@@ -685,6 +699,157 @@ def _build_org_usage_payload(
             else 0,
         },
     }
+
+
+def router_network_performance_trend(
+    organization, *, hours: int = 24, use_cache: bool = True
+) -> dict[str, Any]:
+    """Per-router network activity: online clients on each MikroTik over time."""
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "labels": [],
+        "datasets": [],
+        "routers": [],
+        "summary": {"clients_online": 0, "peak_download_bps": 0},
+    }
+    if not organization:
+        return empty
+
+    hours = clamp_usage_hours(hours, default=24)
+    cache_key = f"router_network_trend:{organization.pk}:{hours}"
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    from core.models import MikroTikRouter
+
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    routers = list(
+        MikroTikRouter.objects.filter(organization=organization)
+        .only("id", "name", "host")
+        .order_by("name")
+    )
+    router_meta = {
+        r.pk: {"id": r.pk, "name": r.name, "host": r.host or ""} for r in routers
+    }
+
+    customer_router = {
+        row["pk"]: row["router_id"]
+        for row in Customer.objects.filter(organization=organization)
+        .exclude(router_id__isnull=True)
+        .values("pk", "router_id")
+    }
+
+    samples = list(
+        CustomerUsageSample.objects.filter(
+            organization=organization,
+            sampled_at__gte=since,
+            session_active=True,
+        )
+        .order_by("sampled_at")
+        .values("customer_id", "sampled_at", "download_bps")[:12000]
+    )
+
+    online_by_bucket: dict[int, dict[int, set[int]]] = {k: {} for k in bucket_keys}
+    down_by_bucket: dict[int, dict[int, float]] = {k: {} for k in bucket_keys}
+    latest_online: dict[int, set[int]] = {}
+
+    for row in samples:
+        cid = int(row["customer_id"])
+        router_id = customer_router.get(cid)
+        if not router_id or router_id not in router_meta:
+            continue
+        stamp = row["sampled_at"]
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        online_by_bucket.setdefault(bucket, {}).setdefault(router_id, set()).add(cid)
+        down = float(int(row["download_bps"] or 0))
+        down_map = down_by_bucket.setdefault(bucket, {}).setdefault(router_id, 0.0)
+        down_by_bucket[bucket][router_id] = max(down_map, down)
+        latest_online.setdefault(router_id, set()).add(cid)
+
+    labels: list[str] = []
+    for key in bucket_keys:
+        stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
+        labels.append(stamp.strftime(_chart_label_format(hours)))
+
+    datasets = []
+    for idx, router in enumerate(routers):
+        series = []
+        for key in bucket_keys:
+            series.append(len(online_by_bucket.get(key, {}).get(router.pk, set())))
+        color = _NETWORK_TREND_COLORS[idx % len(_NETWORK_TREND_COLORS)]
+        datasets.append(
+            {
+                "label": router.name,
+                "router_id": router.pk,
+                "data": series,
+                "borderColor": color,
+                "backgroundColor": color + "33",
+                "tension": 0.3,
+                "spanGaps": True,
+                "pointRadius": 0 if len(bucket_keys) > 40 else 2,
+                "borderWidth": 2,
+            }
+        )
+
+    average = []
+    for i, key in enumerate(bucket_keys):
+        vals = [ds["data"][i] for ds in datasets if ds["data"][i] is not None]
+        average.append(round(sum(vals) / len(vals), 1) if vals else None)
+
+    if datasets:
+        datasets.insert(
+            0,
+            {
+                "label": "Average",
+                "router_id": None,
+                "data": average,
+                "borderColor": "#0b1f2a",
+                "backgroundColor": "rgba(11,31,42,0.08)",
+                "tension": 0.25,
+                "spanGaps": True,
+                "pointRadius": 0,
+                "borderWidth": 2.5,
+                "borderDash": [6, 4],
+            },
+        )
+
+    clients_online = sum(len(s) for s in latest_online.values())
+    peak_download = 0
+    for bucket_down in down_by_bucket.values():
+        peak_download = max(peak_download, int(sum(bucket_down.values())))
+
+    payload = {
+        "ok": True,
+        "hours": hours,
+        "labels": labels,
+        "datasets": datasets,
+        "routers": list(router_meta.values()),
+        "average": average,
+        "sample_count": len(samples),
+        "summary": {
+            "clients_online": clients_online,
+            "peak_download_bps": peak_download,
+            "routers_tracked": len(routers),
+        },
+    }
+    if use_cache:
+        cache.set(cache_key, payload, _NETWORK_TREND_TTL)
+    return payload
 
 
 def org_usage_payload(

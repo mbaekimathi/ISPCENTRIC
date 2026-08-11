@@ -552,7 +552,9 @@ def customer_phone_is_taken(organization, phone: str, *, exclude_pk=None) -> boo
     return find_customer_by_phone(organization, phone, exclude_pk=exclude_pk) is not None
 
 
-PHONE_ALREADY_REGISTERED = "That phone number is already registered to another account."
+PHONE_ALREADY_REGISTERED = (
+    "That phone number is already registered to another account."
+)
 
 
 def apply_subscription_renewal(customer, *, plan=None):

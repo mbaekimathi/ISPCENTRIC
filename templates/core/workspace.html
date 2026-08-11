@@ -116,9 +116,9 @@
   <section class="workspace-dash-panel workspace-dash-panel-chart">
     <div class="workspace-dash-panel-head">
       <div>
-        <p class="workspace-dash-panel-kicker">Network</p>
+        <p class="workspace-dash-panel-kicker">Routers</p>
         <h2>MikroTik performance trend</h2>
-        <p class="panel-sub">Health score for every router over the last 24 hours. Dashed line is the fleet average. Gaps mean no probe was stored.</p>
+        <p class="panel-sub">Router health score (reachability and API login) for every MikroTik over the last 24 hours. Dashed line is the fleet average.</p>
       </div>
       <div class="workspace-dash-perf-summary">
         <span class="workspace-dash-chip"><strong data-stat="mt-score-lg">—</strong> <span data-stat="mt-label-lg">Checking…</span></span>
@@ -137,21 +137,24 @@
   </section>
 
   <div class="workspace-dash-grid">
-    <section class="workspace-dash-panel">
+    <section class="workspace-dash-panel workspace-dash-panel-chart-compact">
       <div class="workspace-dash-panel-head">
         <div>
-          <p class="workspace-dash-panel-kicker">Alerts</p>
-          <h2>Network outages</h2>
-          <p class="panel-sub">Live reachability and login health.</p>
+          <p class="workspace-dash-panel-kicker">Networks</p>
+          <h2>Network performance trend</h2>
+          <p class="panel-sub">Online clients on each MikroTik network over the last 24 hours. One line per router; dashed line is the average.</p>
         </div>
-        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:mikrotik' %}">All routers</a>
-      </div>
-      <div data-outages-body>
-        <div class="workspace-dash-empty is-loading">
-          <p class="workspace-dash-empty-title">Checking routers…</p>
-          <p class="workspace-dash-empty-copy">Live status loads without slowing the page.</p>
+        <div class="workspace-dash-perf-summary">
+          <span class="workspace-dash-chip"><strong data-stat="network-online">—</strong> online now</span>
+          <span class="workspace-dash-chip">Peak <strong data-stat="network-peak">—</strong></span>
         </div>
       </div>
+      <div class="workspace-dash-chart-wrap workspace-dash-chart-wrap-compact">
+        <canvas id="chart-network-trend" height="220"></canvas>
+      </div>
+      <p class="workspace-dash-muted" style="margin:0.65rem 0 0;">
+        <a href="{% url 'core:clients_general_usage' %}?hours=24">Open full usage analytics</a>
+      </p>
     </section>
 
     <section class="workspace-dash-panel">
@@ -280,6 +283,7 @@
   var inFlight = false;
   var initial = {{ analytics_json|safe }};
   var trendChart = null;
+  var networkTrendChart = null;
   var lastRouters = null;
   var lastExpired = Array.isArray(initial && initial.expired) ? initial.expired : [];
   var lastExpiredMeta = {
@@ -407,6 +411,13 @@
     return "Poor";
   }
 
+  function fmtBps(bps) {
+    var n = Number(bps) || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + " Mbps";
+    if (n >= 1000) return (n / 1000).toFixed(1) + " Kbps";
+    return Math.round(n) + " bps";
+  }
+
   function chartDefaults() {
     var dark = document.documentElement.getAttribute("data-theme") === "dark";
     var narrow = window.matchMedia("(max-width: 720px)").matches;
@@ -450,6 +461,76 @@
         }
       }
     };
+  }
+
+  function networkChartDefaults() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    var narrow = window.matchMedia("(max-width: 720px)").matches;
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      layout: { padding: { top: 4, right: 4, bottom: 0, left: 0 } },
+      plugins: {
+        legend: {
+          display: !narrow,
+          position: "bottom",
+          labels: {
+            color: dark ? "#c8d4db" : "#4a6573",
+            boxWidth: 12,
+            font: { weight: "600", size: narrow ? 10 : 12 },
+            padding: narrow ? 10 : 16
+          }
+        },
+        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: dark ? "#8aa0ab" : "#64748b",
+            maxRotation: narrow ? 45 : 0,
+            autoSkip: true,
+            autoSkipPadding: narrow ? 6 : 10,
+            maxTicksLimit: narrow ? 6 : 12
+          },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            color: dark ? "#8aa0ab" : "#64748b",
+            precision: 0
+          },
+          grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
+        }
+      }
+    };
+  }
+
+  function paintNetworkTrend(trend) {
+    var canvas = document.getElementById("chart-network-trend");
+    if (!canvas || !window.Chart) return;
+    var labels = (trend && trend.labels) || [];
+    var summary = (trend && trend.summary) || {};
+    setText('[data-stat="network-online"]', summary.clients_online != null ? summary.clients_online : "0");
+    setText('[data-stat="network-peak"]', fmtBps(summary.peak_download_bps));
+    var datasets = ((trend && trend.datasets) || []).map(function (ds) {
+      return Object.assign({}, ds, {
+        fill: false,
+        spanGaps: true
+      });
+    });
+    if (!networkTrendChart) {
+      networkTrendChart = new Chart(canvas, {
+        type: "line",
+        data: { labels: labels, datasets: datasets },
+        options: networkChartDefaults()
+      });
+    } else {
+      networkTrendChart.data.labels = labels;
+      networkTrendChart.data.datasets = datasets;
+      networkTrendChart.update("none");
+    }
   }
 
   function paintTrend(trend) {
@@ -579,32 +660,6 @@
       outages: outages,
       routers: perRouter
     };
-  }
-
-  function renderOutages(outages) {
-    var body = root.querySelector("[data-outages-body]");
-    if (!body) return;
-    if (!outages || !outages.length) {
-      body.innerHTML =
-        '<div class="workspace-dash-empty">' +
-        '<p class="workspace-dash-empty-title">No outages</p>' +
-        '<p class="workspace-dash-empty-copy">All checked routers look healthy right now.</p>' +
-        "</div>";
-      return;
-    }
-    var html = '<div class="workspace-dash-scroll"><table class="workspace-dash-table"><thead><tr><th>Router</th><th>Status</th><th>Detail</th><th></th></tr></thead><tbody>';
-    outages.forEach(function (row) {
-      var url = row.id ? ("/app/mikrotik/" + row.id + "/") : "{% url 'core:mikrotik' %}";
-      html +=
-        "<tr class=\"is-outage\">" +
-        "<td><a class=\"workspace-dash-client\" href=\"" + url + "\"><strong>" + (row.name || "MikroTik") + "</strong><small>" + (row.host || "") + "</small></a></td>" +
-        '<td><span class="workspace-dash-badge is-warn">' + statusLabel(row.status) + "</span></td>" +
-        "<td class=\"workspace-dash-muted\">" + (row.error || "—") + "</td>" +
-        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
-        "</tr>";
-    });
-    html += "</tbody></table></div>";
-    body.innerHTML = html;
   }
 
   function escapeHtml(value) {
@@ -744,6 +799,7 @@
     setText('[data-stat="stk-pending"]', data.stk_pending != null ? data.stk_pending : "0");
     if (data.stk_failed_today != null) setText('[data-stat="stk-failed"]', data.stk_failed_today);
     if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
+    if (data.network_trend) paintNetworkTrend(data.network_trend);
     if (Array.isArray(data.expired)) {
       lastExpired = data.expired;
       lastExpiredMeta = {
@@ -773,7 +829,6 @@
       netCard.classList.toggle("is-good", (perf.score || 0) >= 70);
       netCard.classList.toggle("is-hot", perf.score != null && perf.score < 45);
     }
-    renderOutages(perf.outages || []);
     renderRouterPerf(perf.routers || []);
   }
 

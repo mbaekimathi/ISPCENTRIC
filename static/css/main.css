@@ -22834,6 +22834,15 @@ h1, h2, h3, h4,
   height: 100% !important;
 }
 
+.workspace-dash-chart-wrap-compact {
+  height: clamp(180px, 34vw, 260px);
+  margin-bottom: 0;
+}
+
+.workspace-dash-panel-chart-compact .workspace-dash-panel-head {
+  margin-bottom: 0.35rem;
+}
+
 .workspace-dash-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

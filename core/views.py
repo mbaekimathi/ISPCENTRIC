@@ -1191,6 +1191,18 @@ def workspace(request):
             "datasets": [],
             "routers": [],
         }
+    try:
+        from billing.usage_samples import router_network_performance_trend
+
+        snapshot["network_trend"] = router_network_performance_trend(org, hours=24)
+    except Exception:
+        snapshot["network_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+            "summary": {"clients_online": 0, "peak_download_bps": 0},
+        }
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     referral_count = 0
     referral_active_count = 0
@@ -1543,14 +1555,14 @@ def workspace_analytics(request):
             "online_ratio": perf["online_ratio"],
         }
         snapshot["outages"] = perf["outages"]
+    hours = 24
+    try:
+        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
+    except (TypeError, ValueError):
+        hours = 24
     try:
         from core.mikrotik_status_samples import mikrotik_performance_trend
 
-        hours = 24
-        try:
-            hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-        except (TypeError, ValueError):
-            hours = 24
         snapshot["mikrotik_trend"] = mikrotik_performance_trend(
             org, hours=hours, live_routers=routers or []
         )
@@ -1560,6 +1572,29 @@ def workspace_analytics(request):
             "labels": [],
             "datasets": [],
             "routers": [],
+        }
+
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    try:
+        from billing.usage_samples import (
+            router_network_performance_trend,
+            sample_organization_usage,
+        )
+
+        try:
+            sample_organization_usage(org, force=force)
+        except Exception:
+            pass
+        snapshot["network_trend"] = router_network_performance_trend(
+            org, hours=hours, use_cache=not force
+        )
+    except Exception:
+        snapshot["network_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "routers": [],
+            "summary": {"clients_online": 0, "peak_download_bps": 0},
         }
 
     return JsonResponse(snapshot)
@@ -7737,14 +7772,6 @@ def hotspot_payment_start(request, join_code: str):
             status=404,
         )
     phone = (request.POST.get("phone") or "").strip()
-    if not phone:
-        return JsonResponse(
-            {"ok": False, "error": "Enter the M-Pesa phone number for this payment."},
-            status=400,
-        )
-    from billing.services import PHONE_ALREADY_REGISTERED, find_customer_by_phone
-
-    phone_customer = find_customer_by_phone(org, phone)
     active_routers = MikroTikRouter.objects.filter(
         organization=org,
         account_status=MikroTikRouter.AccountStatus.ACTIVE,
@@ -7782,26 +7809,13 @@ def hotspot_payment_start(request, join_code: str):
             .order_by("id")
             .first()
         )
-        if customer is None and phone_customer is not None:
-            if phone_customer.service_type != Customer.ServiceType.HOTSPOT:
-                return JsonResponse(
-                    {"ok": False, "error": PHONE_ALREADY_REGISTERED},
-                    status=400,
-                )
-            customer = (
-                Customer.objects.select_for_update()
-                .filter(pk=phone_customer.pk)
-                .first()
-            )
-            if customer is not None:
-                customer.hotspot_mac = mac
         if customer is None:
             try:
                 with transaction.atomic():
                     customer = Customer.objects.create(
                         organization=org,
                         full_name=f"Hotspot device {mac[-5:]}",
-                        phone=phone,
+                        phone="",
                         account_number=account_number,
                         service_type=Customer.ServiceType.HOTSPOT,
                         hotspot_mac=mac,
@@ -7820,11 +7834,7 @@ def hotspot_payment_start(request, join_code: str):
                     .first()
                 )
                 if customer is None:
-                    phone_customer = find_customer_by_phone(org, phone)
-                    if phone_customer is not None:
-                        customer = phone_customer
-                    else:
-                        raise
+                    raise
         if customer is not None:
             if customer.status != Customer.Status.ACTIVE:
                 return JsonResponse(
@@ -7837,18 +7847,8 @@ def hotspot_payment_start(request, join_code: str):
                     },
                     status=403,
                 )
-            if (
-                phone_customer is not None
-                and phone_customer.pk != customer.pk
-            ):
-                return JsonResponse(
-                    {"ok": False, "error": PHONE_ALREADY_REGISTERED},
-                    status=400,
-                )
-            customer.phone = phone
             customer.router = router
-            customer.hotspot_mac = mac
-            customer.save(update_fields=["phone", "router", "hotspot_mac"])
+            customer.save(update_fields=["router"])
 
     result = start_subscription_stk_payment(
         organization=org,
@@ -8446,15 +8446,6 @@ def pppoe_payment_start(request, join_code: str):
             status=400,
         )
     phone = (request.POST.get("phone") or "").strip() or (customer.phone or "")
-    from billing.services import PHONE_ALREADY_REGISTERED, customer_phone_is_taken
-
-    if phone and customer_phone_is_taken(org, phone, exclude_pk=customer.pk):
-        return JsonResponse(
-            {"ok": False, "error": PHONE_ALREADY_REGISTERED},
-            status=400,
-        )
-    customer.phone = phone
-    customer.save(update_fields=["phone"])
 
     result = start_subscription_stk_payment(
         organization=org,
