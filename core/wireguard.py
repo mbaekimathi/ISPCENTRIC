@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import logging
+import shlex
+import shutil
 import socket
+import subprocess
+from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
@@ -22,6 +27,8 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PublicKey,
 )
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 def generate_keypair() -> tuple[str, str]:
@@ -161,23 +168,28 @@ def reserve_peer(label: str):
     """
     Create or reuse a WireGuardReservation for a router that is not onboarded yet.
 
-    Returns the reservation. Same label (case-insensitive) keeps one peer so the
-    Connect modal can regenerate the paste script without burning addresses.
+    Returns (reservation, peer_sync). Same label (case-insensitive) keeps one peer
+    so the Connect modal can regenerate the paste script without burning addresses.
     """
     from core.models import WireGuardReservation
 
     label = (label or "").strip() or "New MikroTik"
     reservation = WireGuardReservation.objects.filter(label__iexact=label).first()
-    if reservation is not None:
-        return reservation
+    if reservation is None:
+        private_key, public_key = generate_keypair()
+        reservation = WireGuardReservation.objects.create(
+            label=label,
+            address=allocate_address(),
+            private_key=private_key,
+            public_key=public_key,
+        )
 
-    private_key, public_key = generate_keypair()
-    return WireGuardReservation.objects.create(
-        label=label,
-        address=allocate_address(),
-        private_key=private_key,
-        public_key=public_key,
+    peer_sync = apply_server_peer(
+        reservation.label,
+        reservation.address,
+        reservation.public_key,
     )
+    return reservation, peer_sync
 
 
 def adopt_reservation_for_router(router) -> bool:
@@ -269,22 +281,171 @@ def _ros_ping_probe(server: str, address: str) -> str:
     """
     Ping the billing server several times without :local or multi-line blocks.
 
-    RouterOS New Terminal executes pasted lines one-by-one; :foreach/{...} spans
-    and :local variables break across lines. Nest :if/:else on one line instead.
+    RouterOS New Terminal executes pasted lines one-by-one. Chaining multiple
+    :delay commands on one line fails with "expected end of command", so each
+    wait and check is its own line.
     """
-    ok = (
-        f"[ISPCENTRIC OK] Tunnel {address} reaches billing server {server} - "
-        f"click Connect in ISPCENTRIC"
+    ok_message = (
+        f"Tunnel {address} reaches billing server {server} - click Connect in ISPCENTRIC"
     )
-    fail = (
-        f"[ISPCENTRIC FAIL] No ping from {server}. Add this router [Peer] on VPS wg0, "
+    fail_message = (
+        f"No ping from {server}. Add this router [Peer] on VPS wg0, "
         f"run: wg-quick down wg0; wg-quick up wg0, then re-paste or Connect"
     )
     ping = f"[/ping {server} count=2]"
-    line = f':if ({ping} > 0) do={{:put "{ok}"}} else={{:put "{fail}"}}'
-    for _ in range(3):
-        line = f':delay 5s :if ({ping} > 0) do={{:put "{ok}"}} else={{{line}}}'
-    return f":delay 3s {line}"
+    lines = [
+        ":delay 3s",
+        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+        ":delay 5s",
+        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+        ":delay 5s",
+        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+        ":delay 5s",
+        _ros_check(f"{ping} > 0", ok_message, fail_message),
+    ]
+    return "\n".join(lines)
+
+
+def _wireguard_interface() -> str:
+    return (getattr(settings, "WIREGUARD_INTERFACE", None) or "wg0").strip() or "wg0"
+
+
+def _wireguard_conf_path() -> str:
+    return (
+        getattr(settings, "WIREGUARD_CONF_PATH", None) or "/etc/wireguard/wg0.conf"
+    ).strip()
+
+
+def _append_peer_to_conf(conf_path: str, public_key: str, block: str) -> bool:
+    """Append a [Peer] block when the public key is not already in wg0.conf."""
+    path = Path(conf_path)
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if public_key in text:
+        return True
+    with path.open("a", encoding="utf-8") as handle:
+        if text and not text.endswith("\n"):
+            handle.write("\n")
+        handle.write("\n")
+        handle.write(block.rstrip())
+        handle.write("\n")
+    return True
+
+
+def apply_server_peer(label: str, address: str, public_key: str) -> dict:
+    """
+    Register a MikroTik peer on the billing VPS WireGuard interface.
+
+    Without this step the router can dial the VPS but the server never accepts
+    the tunnel, so ping/API checks stay on Waiting forever.
+    """
+    if not configured():
+        return {"ok": False, "skipped": True, "reason": "wireguard_not_configured"}
+    if not server_on_tunnel():
+        return {"ok": False, "skipped": True, "reason": "not_on_tunnel"}
+
+    public_key = (public_key or "").strip()
+    address = (address or "").strip()
+    if not public_key or not address:
+        return {"ok": False, "skipped": True, "reason": "missing_peer_fields"}
+
+    iface = _wireguard_interface()
+    conf_path = _wireguard_conf_path()
+    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+    block = server_peer_block(label or "MikroTik", address, public_key)
+    result: dict = {
+        "ok": False,
+        "runtime": False,
+        "persisted": False,
+        "skipped": False,
+        "error": "",
+    }
+
+    if sync_cmd:
+        try:
+            proc = subprocess.run(
+                [*shlex.split(sync_cmd), public_key, address, label or ""],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if proc.returncode == 0:
+                result.update(ok=True, runtime=True, persisted=True)
+                return result
+            result["error"] = (proc.stderr or proc.stdout or "sync command failed").strip()
+        except Exception as exc:
+            result["error"] = str(exc)
+
+    wg_bin = shutil.which("wg") or "wg"
+    try:
+        proc = subprocess.run(
+            [wg_bin, "set", iface, "peer", public_key, "allowed-ips", f"{address}/32"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if proc.returncode == 0:
+            result["runtime"] = True
+            result["ok"] = True
+        elif not result["error"]:
+            result["error"] = (proc.stderr or "wg set failed").strip()
+    except Exception as exc:
+        if not result["error"]:
+            result["error"] = str(exc)
+
+    try:
+        if _append_peer_to_conf(conf_path, public_key, block):
+            result["persisted"] = True
+            result["ok"] = True
+    except OSError as exc:
+        if not result["error"]:
+            result["error"] = str(exc)
+
+    if not result["ok"]:
+        logger.warning(
+            "WireGuard peer sync failed for %s (%s): %s",
+            address,
+            label,
+            result.get("error") or "unknown",
+        )
+    return result
+
+
+def sync_all_server_peers() -> dict:
+    """Apply every onboarded router and pending reservation to the local wg0."""
+    from core.models import MikroTikRouter, WireGuardReservation
+
+    if not server_on_tunnel():
+        return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "synced": 0}
+
+    synced = 0
+    errors: list[str] = []
+    for router in MikroTikRouter.objects.exclude(vpn_address__isnull=True).exclude(
+        vpn_public_key=""
+    ):
+        outcome = apply_server_peer(
+            f"{router.name} (router id {router.pk})",
+            router.vpn_address,
+            router.vpn_public_key,
+        )
+        if outcome.get("ok"):
+            synced += 1
+        elif not outcome.get("skipped") and outcome.get("error"):
+            errors.append(f"{router.vpn_address}: {outcome['error']}")
+    for reservation in WireGuardReservation.objects.all():
+        outcome = apply_server_peer(
+            reservation.label,
+            reservation.address,
+            reservation.public_key,
+        )
+        if outcome.get("ok"):
+            synced += 1
+        elif not outcome.get("skipped") and outcome.get("error"):
+            errors.append(f"{reservation.address}: {outcome['error']}")
+    return {"ok": not errors, "synced": synced, "errors": errors}
 
 
 def tunnel_verification_checks(
@@ -637,7 +798,7 @@ def routeros_script(address: str, private_key: str) -> str:
                 "No-nat rule missing - run: /ip firewall nat print",
             ),
             _ros_info("Probing tunnel to billing server (retries ~20s)..."),
-            _ros_ping_probe(server, address),
+            *_ros_ping_probe(server, address).splitlines(),
             (
                 ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
                 '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
@@ -667,7 +828,7 @@ def routeros_script(address: str, private_key: str) -> str:
                 "Summary: API port 8728",
             ),
             _ros_check(
-                '[:len [find where comment="ispcentric-vpn-api"]] > 0',
+                '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0',
                 "Summary: Firewall API rule",
                 "Summary: Firewall API rule",
             ),

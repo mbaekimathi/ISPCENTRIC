@@ -147,6 +147,10 @@ INSTALLED_APPS = [
 WIREGUARD_ENDPOINT = (os.getenv("WIREGUARD_ENDPOINT") or "").strip()
 WIREGUARD_SERVER_PUBLIC_KEY = (os.getenv("WIREGUARD_SERVER_PUBLIC_KEY") or "").strip()
 WIREGUARD_SUBNET = (os.getenv("WIREGUARD_SUBNET") or "10.9.0.0/24").strip()
+WIREGUARD_INTERFACE = (os.getenv("WIREGUARD_INTERFACE") or "wg0").strip()
+WIREGUARD_CONF_PATH = (os.getenv("WIREGUARD_CONF_PATH") or "/etc/wireguard/wg0.conf").strip()
+# Optional helper on the VPS, e.g. /opt/ispcentric/scripts/wireguard_apply_peer.sh
+WIREGUARD_SYNC_COMMAND = (os.getenv("WIREGUARD_SYNC_COMMAND") or "").strip()
 
 # Local auto portal URLs use this machine's current LAN IPs — accept them as Hosts
 # so DisallowedHost does not block Hotspot clients after the IP changes.

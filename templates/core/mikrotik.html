@@ -1271,7 +1271,16 @@
       markTunnelStep(3, "");
       markTunnelStep(4, "");
       setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
-      if (data && data.hint) setTunnelStatus(data.hint, false);
+      if (data && data.peer_synced === false && data.peer_sync_skipped === false) {
+        setTunnelStatus(
+          (data.peer_sync_error
+            ? "Script ready, but the billing server could not register this router on WireGuard: "
+              + data.peer_sync_error
+            : "Script ready, but the billing server could not register this router on WireGuard yet. "
+              + "The host must run wireguard_peer --sync-server on the VPS, then paste the script again."),
+          true
+        );
+      } else if (data && data.hint) setTunnelStatus(data.hint, false);
       else if (tunnelReadyAddress) {
         setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
       } else {

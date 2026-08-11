@@ -3701,7 +3701,7 @@ def mikrotik_tunnel_script(request):
             )
 
     try:
-        reservation = wireguard.reserve_peer(label)
+        reservation, peer_sync = wireguard.reserve_peer(label)
         payload = wireguard.peer_payload(
             reservation.label,
             reservation.address,
@@ -3734,6 +3734,9 @@ def mikrotik_tunnel_script(request):
             "script": payload["script"],
             "server_peer": payload["server_peer"],
             "endpoint": payload["endpoint"],
+            "peer_synced": bool(peer_sync.get("ok")),
+            "peer_sync_skipped": bool(peer_sync.get("skipped")),
+            "peer_sync_error": (peer_sync.get("error") or "").strip(),
             "status_token": signing.dumps(
                 {"address": payload["address"], "user_id": request.user.pk},
                 salt="mikrotik-tunnel-status",

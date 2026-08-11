@@ -110,8 +110,15 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("dst-address=10.9.0.0/24", script)
         # Prove reachability to the VPS tunnel address (retried, one line per paste).
         self.assertIn("/ping 10.9.0.1 count=2", script)
-        self.assertIn(":delay 5s :if ([/ping 10.9.0.1 count=2]", script)
+        self.assertIn(":delay 3s", script)
+        self.assertIn(":delay 5s", script)
+        self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
+        self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
+        self.assertIn(
+            '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0',
+            script,
+        )
         self.assertIn("[ISPCENTRIC OK] WireGuard interface ispcentric-vpn created", script)
         self.assertIn("[ISPCENTRIC OK] Input firewall rules for API and ICMP installed", script)
         self.assertIn("---------- ISPCENTRIC summary ----------", script)
@@ -125,18 +132,20 @@ class WireGuardKeyTests(SimpleTestCase):
         # Avoid :local / multi-line foreach so paste works cleanly in New Terminal.
         self.assertNotIn(":local ", script)
         self.assertNotIn(":foreach ", script)
-        ping_line = next(
+        ping_checks = [
             line
             for line in script.splitlines()
-            if line.startswith(":delay 3s") and "/ping" in line
-        )
+            if "/ping 10.9.0.1 count=2" in line and line.startswith(":if")
+        ]
+        self.assertEqual(len(ping_checks), 4)
         self.assertIn(
             '[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server 10.9.0.1 - '
             'click Connect in ISPCENTRIC',
-            ping_line,
+            ping_checks[0],
         )
-        self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", ping_line)
-        self.assertEqual(ping_line.count("{"), ping_line.count("}"))
+        self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", ping_checks[-1])
+        for line in ping_checks:
+            self.assertEqual(line.count("{"), line.count("}"))
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",

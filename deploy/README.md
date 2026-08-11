@@ -193,6 +193,36 @@ Re-run that whenever you add a router or reserve a peer. Confirm a site is up
 with `sudo wg show` (a recent handshake) and `ping 10.9.0.2`, then push
 Hotspot/PPPoE settings from the app.
 
+### Automatic peer registration (hosted onboarding)
+
+When a client generates a Winbox script in the app, ISPCENTRIC saves the peer in
+the database. The VPS must also accept that peer on `wg0` or the tunnel never
+comes up (empty WireGuard handshake, ping to `10.9.0.1` fails, Verify stays on
+Waiting).
+
+Allow the app user to run the helper as root:
+
+```bash
+sudo chmod +x /opt/ispcentric/scripts/wireguard_apply_peer.sh
+sudo tee /etc/sudoers.d/ispcentric-wireguard >/dev/null <<'EOF'
+www-data ALL=(root) NOPASSWD: /opt/ispcentric/scripts/wireguard_apply_peer.sh
+EOF
+sudo visudo -cf /etc/sudoers.d/ispcentric-wireguard
+```
+
+Set in `.env` (see `.env.production.example`):
+
+```
+WIREGUARD_SYNC_COMMAND=sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh
+```
+
+Then `sudo systemctl restart ispcentric`. New script generations register the
+peer immediately. To backfill every reservation and onboarded router:
+
+```bash
+sudo -u www-data .venv/bin/python manage.py wireguard_peer --sync-server
+```
+
 The app stops scanning the local network for routers when `DJANGO_HOSTED=true`,
 since on a VPS that would only probe unrelated datacentre hosts. Add routers by
 hand instead.

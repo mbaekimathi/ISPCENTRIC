@@ -48,6 +48,11 @@ class Command(BaseCommand):
             help="Generate the VPS keypair and exit.",
         )
         parser.add_argument(
+            "--sync-server",
+            action="store_true",
+            help="Apply every known peer to the local WireGuard interface (VPS).",
+        )
+        parser.add_argument(
             "--server-config",
             metavar="PRIVATE_KEY",
             help="Print /etc/wireguard/wg0.conf containing all known peers.",
@@ -56,6 +61,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options["server_keys"]:
             self._server_keys()
+            return
+
+        if options["sync_server"]:
+            outcome = wireguard.sync_all_server_peers()
+            if outcome.get("skipped"):
+                raise CommandError(
+                    "This machine is not on the WireGuard tunnel "
+                    f"({wireguard.server_address()})."
+                )
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Synced {outcome.get('synced', 0)} peer(s) to "
+                    f"{wireguard._wireguard_interface()}."
+                )
+            )
+            for err in outcome.get("errors") or []:
+                self.stdout.write(self.style.WARNING(err))
+            if outcome.get("errors"):
+                raise CommandError("Some peers could not be synced.")
             return
 
         if options["server_config"]:
@@ -112,7 +136,7 @@ class Command(BaseCommand):
         )
 
     def _reserve(self, label: str):
-        reservation = wireguard.reserve_peer(label)
+        reservation, peer_sync = wireguard.reserve_peer(label)
         self._report(
             f"{reservation.label} (not onboarded yet) -> {reservation.address}",
             address=reservation.address,
@@ -120,6 +144,19 @@ class Command(BaseCommand):
             public_key=reservation.public_key,
             label=f"{reservation.label} (not onboarded yet)",
         )
+        if peer_sync.get("ok"):
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"VPS peer applied to {wireguard._wireguard_interface()}."
+                )
+            )
+        elif not peer_sync.get("skipped"):
+            self.stdout.write(
+                self.style.WARNING(
+                    "Could not apply peer on this machine: "
+                    + (peer_sync.get("error") or "unknown error")
+                )
+            )
         self.stdout.write("")
         self.stdout.write(
             f"Once the tunnel is up, onboard this router in the app with host "
