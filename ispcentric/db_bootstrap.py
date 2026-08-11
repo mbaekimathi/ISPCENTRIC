@@ -25,6 +25,9 @@ load_project_env(BASE_DIR, override=False)
 _tables_ready = False
 _last_check_at = 0.0
 _CHECK_COOLDOWN_SEC = 30.0
+_SCHEMA_STAMP_MAX_AGE_SEC = float(
+    os.getenv("DJANGO_SCHEMA_CHECK_COOLDOWN") or "120"
+)
 _HOSTED = is_hosted(BASE_DIR)
 
 # Minimum tables expected after a healthy migrate. If any are missing, migrate.
@@ -83,6 +86,33 @@ def ensure_database() -> None:
 def _auto_migrate_enabled() -> bool:
     # Always on unless explicitly disabled.
     return env_flag("DJANGO_AUTO_MIGRATE", "true")
+
+
+def _schema_stamp_path() -> Path:
+    return BASE_DIR / "tmp" / ".schema_verified"
+
+
+def _schema_recently_verified() -> bool:
+    """Skip heavy schema probes across runserver reloads (local dev only)."""
+    if _HOSTED or _SCHEMA_STAMP_MAX_AGE_SEC <= 0:
+        return False
+    stamp = _schema_stamp_path()
+    try:
+        age = time.time() - stamp.stat().st_mtime
+        return age < _SCHEMA_STAMP_MAX_AGE_SEC
+    except OSError:
+        return False
+
+
+def _touch_schema_verified() -> None:
+    if _HOSTED:
+        return
+    stamp = _schema_stamp_path()
+    try:
+        stamp.parent.mkdir(exist_ok=True)
+        stamp.touch()
+    except OSError:
+        pass
 
 
 def _existing_tables() -> set[str]:
@@ -206,6 +236,11 @@ def ensure_tables(*, force: bool = False) -> bool:
     ):
         return True
 
+    if not force and _schema_recently_verified():
+        _tables_ready = True
+        _last_check_at = now
+        return True
+
     _last_check_at = now
 
     try:
@@ -219,6 +254,7 @@ def ensure_tables(*, force: bool = False) -> bool:
 
     if not needs_migrate:
         _tables_ready = True
+        _touch_schema_verified()
         return True
 
     if missing:
@@ -239,6 +275,7 @@ def ensure_tables(*, force: bool = False) -> bool:
         ]
         _tables_ready = not still_missing and not still_pending
         if _tables_ready:
+            _touch_schema_verified()
             logger.info("ISPCENTRIC database schema is up to date.")
         else:
             if still_missing:

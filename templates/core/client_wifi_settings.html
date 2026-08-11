@@ -8,10 +8,6 @@
   id="client-wifi-settings"
   data-wifi-url="{{ wifi_url }}"
 >
-<a class="client-back-link" href="{{ back_url }}">
-  <span aria-hidden="true">&larr;</span> Back to {{ customer.full_name }}
-</a>
-
 <section class="panel client-hero" id="wifi-overview" data-cat="access">
   <div class="mikrotik-detail-toolbar">
     <div class="mikrotik-detail-toolbar-copy">
@@ -33,7 +29,6 @@
       <span class="mikrotik-live-stamp" data-wifi-stamp>—</span>
       {% if can_access_wifi %}
         <button type="button" class="btn btn-ghost" data-wifi-refresh>Refresh</button>
-        <a class="btn btn-primary" href="{{ router_login_url }}" target="_blank" rel="noopener">Open client router</a>
       {% endif %}
     </div>
   </div>

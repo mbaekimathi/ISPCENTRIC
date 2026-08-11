@@ -14,7 +14,13 @@
 
     <div class="client-subscription-banner is-blocked" style="margin-bottom:16px;">
       {% if not session_active %}
-        The client is not online on PPPoE right now, so there is no router to open.
+        {% if access_mode == "dhcp" %}
+          The client router has no active DHCP lease right now, so there is no address to open.
+        {% elif access_mode == "static" %}
+          The client router at {% if cpe_host %}{{ cpe_host }}{% else %}the saved IP{% endif %} is not reachable from the ISP MikroTik.
+        {% else %}
+          The client is not online on PPPoE right now, so there is no router to open.
+        {% endif %}
       {% elif ping_ok %}
         The ISP MikroTik ({{ router.name }}) reaches the client router
         {% if cpe_host %}at {{ cpe_host }}{% endif %}, but the router refuses
@@ -35,7 +41,7 @@
             (Tenda), or the equivalent “Remote / WAN management” toggle.</li>
         <li>Enable it. If it asks for an allowed address, use the ISP gateway
             <strong>{{ gateway }}</strong> so only the billing system can reach it.</li>
-        <li>Save, then come back and click <strong>Open client router</strong> again.</li>
+        <li>Save, then use <strong>Open client router</strong> in the sidebar to try again.</li>
       </ol>
       <p class="panel-sub" style="opacity:.8;">
         Checked ports from the ISP side: {{ checked_ports }}. Routers that already
@@ -43,8 +49,12 @@
       </p>
     {% elif session_active and not ping_ok %}
       <ul class="mikrotik-tunnel-steps" style="margin:0 0 16px 18px;line-height:1.8;">
+        {% if access_mode == "pppoe" %}
         <li>Confirm the client’s router is powered on and dialed in on PPPoE.</li>
-        <li>Check the PPPoE session on {{ router.name }}, then retry.</li>
+        {% else %}
+        <li>Confirm the client’s router is powered on and connected to the ISP LAN.</li>
+        {% endif %}
+        <li>Check the client on {{ router.name }}, then retry.</li>
       </ul>
     {% endif %}
 

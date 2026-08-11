@@ -17,6 +17,13 @@ from billing.services import (
 from core.models import MikroTikRouter
 
 
+def _default_client_password(length: int = 10) -> str:
+    import secrets
+
+    alphabet = "abcdefghjkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ"
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 class PppoeClientRegisterForm(forms.ModelForm):
     """Register a new PPPoE subscriber for an organization."""
 
@@ -78,6 +85,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
                     "class": "form-control text-upper",
                     "placeholder": "PPPoE username",
                     "autocomplete": "off",
+                    "id": "id_pppoe_username",
                 }
             ),
             "pppoe_password": forms.PasswordInput(
@@ -85,6 +93,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
                     "class": "form-control password-input",
                     "placeholder": "PPPoE password",
                     "autocomplete": "new-password",
+                    "id": "id_pppoe_password",
                 },
                 render_value=True,
             ),
@@ -92,14 +101,14 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 attrs={
                     "class": "form-control",
                     "placeholder": "admin",
-                    "autocomplete": "off",
+                    "autocomplete": "username",
                     "id": "id_pppoe_cpe_username",
                 }
             ),
             "cpe_password": forms.PasswordInput(
                 attrs={
                     "class": "form-control password-input",
-                    "placeholder": "CPE Winbox password (optional)",
+                    "placeholder": "Client router admin password",
                     "autocomplete": "new-password",
                     "id": "id_pppoe_cpe_password",
                 },
@@ -116,8 +125,8 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "plan": "Billing plan",
             "pppoe_username": "PPPoE username",
             "pppoe_password": "PPPoE password",
-            "cpe_username": "CPE username",
-            "cpe_password": "CPE password",
+            "cpe_username": "Client router username",
+            "cpe_password": "Client router password",
         }
 
     def __init__(self, *args, organization=None, **kwargs):
@@ -129,12 +138,22 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["plan"].required = False
         self.fields["cpe_username"].required = False
         self.fields["cpe_password"].required = False
+        self.fields["cpe_password"].help_text = (
+            "For remote router access — defaults to the PPPoE password when left blank."
+        )
         self.fields["pppoe_username"].required = False
         # Router is required so the PPPoE secret can be installed on the NAS.
         self.fields["router"].required = True
         self.fields["plan"].empty_label = "No plan yet"
         self.fields["router"].empty_label = "Select MikroTik router"
-        if not self.is_bound and not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
+        if not self.is_bound:
+            default_password = self.initial.get("pppoe_password") or _default_client_password()
+            self.initial.setdefault("pppoe_password", default_password)
+            if not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
+                self.initial.setdefault("cpe_username", "admin")
+            if not self.initial.get("cpe_password"):
+                self.initial.setdefault("cpe_password", default_password)
+        elif not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
             self.fields["cpe_username"].initial = "admin"
         if organization is not None:
             from billing.services import plans_for_router
@@ -186,7 +205,12 @@ class PppoeClientRegisterForm(forms.ModelForm):
         return (self.cleaned_data.get("house_number") or "").strip().upper()
 
     def clean_pppoe_username(self):
-        return (self.cleaned_data.get("pppoe_username") or "").strip().upper()
+        username = (self.cleaned_data.get("pppoe_username") or "").strip().upper()
+        if not username:
+            phone = (self.data.get("phone") or "").strip().upper()
+            if phone:
+                return phone
+        return username
 
     def clean_pppoe_password(self):
         password = self.cleaned_data.get("pppoe_password") or ""
@@ -197,10 +221,14 @@ class PppoeClientRegisterForm(forms.ModelForm):
         return password
 
     def clean_cpe_username(self):
-        return (self.cleaned_data.get("cpe_username") or "").strip() or "admin"
+        username = (self.cleaned_data.get("cpe_username") or "").strip()
+        return username or "admin"
 
     def clean_cpe_password(self):
-        return self.cleaned_data.get("cpe_password") or ""
+        password = self.cleaned_data.get("cpe_password") or ""
+        if not password:
+            password = self.cleaned_data.get("pppoe_password") or ""
+        return password
 
     def clean(self):
         cleaned = super().clean()
@@ -266,11 +294,20 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
 
 class CustomerDetailsEditForm(forms.ModelForm):
-    """Edit subscriber name and PPPoE login from the client detail page."""
+    """Edit subscriber name, MikroTik router, and connection details from the client detail page."""
 
     class Meta:
         model = Customer
-        fields = ["full_name", "pppoe_username", "pppoe_password"]
+        fields = [
+            "full_name",
+            "router",
+            "pppoe_username",
+            "pppoe_password",
+            "cpe_username",
+            "cpe_password",
+            "cpe_ip",
+            "cpe_mac",
+        ]
         widgets = {
             "full_name": forms.TextInput(
                 attrs={
@@ -279,6 +316,9 @@ class CustomerDetailsEditForm(forms.ModelForm):
                     "autocomplete": "name",
                     "id": "id_edit_full_name",
                 }
+            ),
+            "router": forms.Select(
+                attrs={"class": "form-control", "id": "id_edit_router"}
             ),
             "pppoe_username": forms.TextInput(
                 attrs={
@@ -297,22 +337,120 @@ class CustomerDetailsEditForm(forms.ModelForm):
                 },
                 render_value=True,
             ),
+            "cpe_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "admin",
+                    "autocomplete": "username",
+                    "id": "id_edit_cpe_username",
+                }
+            ),
+            "cpe_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control password-input",
+                    "placeholder": "Client router admin password",
+                    "autocomplete": "new-password",
+                    "id": "id_edit_cpe_password",
+                },
+                render_value=True,
+            ),
+            "cpe_ip": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "192.168.88.50",
+                    "autocomplete": "off",
+                    "id": "id_edit_cpe_ip",
+                }
+            ),
+            "cpe_mac": forms.TextInput(
+                attrs={
+                    "class": "form-control text-upper",
+                    "placeholder": "AA:BB:CC:DD:EE:FF",
+                    "autocomplete": "off",
+                    "id": "id_edit_cpe_mac",
+                }
+            ),
         }
         labels = {
             "full_name": "Client name",
+            "router": "MikroTik router",
             "pppoe_username": "PPPoE username",
             "pppoe_password": "PPPoE password",
+            "cpe_username": "Client router username",
+            "cpe_password": "Client router password",
+            "cpe_ip": "Router IP (static)",
+            "cpe_mac": "Router MAC (DHCP)",
         }
 
     def __init__(self, *args, organization=None, **kwargs):
         self.organization = organization
         super().__init__(*args, **kwargs)
-        is_pppoe = (
-            getattr(self.instance, "service_type", "") == Customer.ServiceType.PPPOE
-        )
+        service_type = getattr(self.instance, "service_type", "")
+        is_pppoe = service_type == Customer.ServiceType.PPPOE
+        is_static = service_type == Customer.ServiceType.STATIC
+        if self.organization:
+            self.fields["router"].queryset = MikroTikRouter.objects.filter(
+                organization=self.organization
+            ).order_by("name")
+        else:
+            self.fields["router"].queryset = MikroTikRouter.objects.none()
+        self.fields["router"].empty_label = "Select MikroTik router"
+        self.fields["router"].required = is_pppoe or is_static
         if not is_pppoe:
             self.fields.pop("pppoe_username", None)
             self.fields.pop("pppoe_password", None)
+        if not is_static:
+            self.fields.pop("cpe_ip", None)
+            self.fields.pop("cpe_mac", None)
+        if not (is_pppoe or is_static):
+            self.fields.pop("cpe_username", None)
+            self.fields.pop("cpe_password", None)
+        elif is_pppoe or is_static:
+            self.fields["cpe_username"].required = False
+            self.fields["cpe_password"].required = False
+            self.fields["cpe_password"].help_text = (
+                "For remote router access — leave blank to keep the saved password."
+            )
+        if is_pppoe and "pppoe_password" in self.fields:
+            self.fields["pppoe_password"].required = False
+            self.fields["pppoe_password"].help_text = (
+                "Current password shown — change only to update."
+            )
+        if is_static:
+            self.fields["cpe_ip"].required = False
+            self.fields["cpe_mac"].required = False
+            self.fields["cpe_ip"].help_text = (
+                "Fixed LAN IP — saved to the MikroTik as a static DHCP lease when MAC is set too."
+            )
+            self.fields["cpe_mac"].help_text = (
+                "Router MAC for dynamic DHCP — IP is resolved from the NAS."
+            )
+        self._prefill_edit_credentials()
+
+    def _prefill_edit_credentials(self):
+        if self.is_bound or not (self.instance and self.instance.pk):
+            return
+        values = {
+            "pppoe_username": (self.instance.pppoe_username or "").strip(),
+            "pppoe_password": self.instance.pppoe_password or "",
+            "cpe_username": (self.instance.cpe_username or "").strip() or "admin",
+            "cpe_password": self.instance.cpe_password or "",
+        }
+        for name, value in values.items():
+            if name not in self.fields:
+                continue
+            self.initial[name] = value
+            self.fields[name].initial = value
+            if name.endswith("_password"):
+                widget = self.fields[name].widget
+                attrs = dict(getattr(widget, "attrs", {}))
+                attrs.setdefault("class", "form-control password-input")
+                attrs["autocomplete"] = "off"
+                self.fields[name].widget = forms.TextInput(attrs=attrs)
+                if value:
+                    self.fields[name].help_text = (
+                        "Current password shown — change only to update."
+                    )
 
     def clean_full_name(self):
         name = (self.cleaned_data.get("full_name") or "").strip().upper()
@@ -321,25 +459,80 @@ class CustomerDetailsEditForm(forms.ModelForm):
         return name
 
     def clean_pppoe_username(self):
-        return (self.cleaned_data.get("pppoe_username") or "").strip().upper()
+        username = (self.cleaned_data.get("pppoe_username") or "").strip().upper()
+        if not username and self.instance and self.instance.pk:
+            return (self.instance.pppoe_username or "").strip().upper()
+        return username
 
     def clean_pppoe_password(self):
         password = self.cleaned_data.get("pppoe_password") or ""
+        if not password and self.instance and self.instance.pk:
+            return self.instance.pppoe_password or ""
         if not password:
             raise forms.ValidationError("Enter the PPPoE password.")
         if len(password) < 4:
             raise forms.ValidationError("PPPoE password must be at least 4 characters.")
         return password
 
+    def clean_cpe_username(self):
+        username = (self.cleaned_data.get("cpe_username") or "").strip()
+        if not username and self.instance and self.instance.pk:
+            return (self.instance.cpe_username or "").strip() or "admin"
+        return username or "admin"
+
+    def clean_cpe_password(self):
+        password = self.cleaned_data.get("cpe_password") or ""
+        if not password and self.instance and self.instance.pk:
+            return self.instance.cpe_password or ""
+        return password
+
+    def clean_router(self):
+        router = self.cleaned_data.get("router")
+        if not router:
+            return router
+        if self.organization and router.organization_id != self.organization.pk:
+            raise forms.ValidationError("Choose a router from this organization.")
+        return router
+
+    def clean_cpe_ip(self):
+        ip = (self.cleaned_data.get("cpe_ip") or "").strip()
+        if ip:
+            import ipaddress
+
+            try:
+                ipaddress.ip_address(ip)
+            except ValueError as exc:
+                raise forms.ValidationError("Enter a valid IPv4 or IPv6 address.") from exc
+        return ip
+
+    def clean_cpe_mac(self):
+        return (self.cleaned_data.get("cpe_mac") or "").strip().upper()
+
     def clean(self):
         cleaned = super().clean()
+        router = cleaned.get("router")
+        plan = getattr(self.instance, "plan", None)
+        if plan and router and not plan.is_available_on_router(router):
+            self.add_error(
+                "router",
+                "This plan is not available on the selected MikroTik.",
+            )
         if "pppoe_username" not in self.fields:
             return cleaned
         username = (cleaned.get("pppoe_username") or "").strip().upper()
         cleaned["pppoe_username"] = username
         if not username:
-            self.add_error("pppoe_username", "Enter the PPPoE username.")
-        elif self.organization:
+            existing = (
+                (self.instance.pppoe_username or "").strip().upper()
+                if self.instance and self.instance.pk
+                else ""
+            )
+            if existing:
+                cleaned["pppoe_username"] = existing
+                username = existing
+            else:
+                self.add_error("pppoe_username", "Enter the PPPoE username.")
+        if username and self.organization:
             qs = Customer.objects.filter(
                 organization=self.organization,
                 service_type=Customer.ServiceType.PPPOE,

@@ -1,0 +1,82 @@
+<div
+  id="mikrotik-job-banner"
+  class="mk-banner mk-job-banner is-info"
+  hidden
+  role="status"
+  aria-live="polite"
+  data-mikrotik-job-banner
+>
+  <strong data-mikrotik-job-title>MikroTik update</strong>
+  <span data-mikrotik-job-text></span>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search);
+  var jobType = (params.get("job") || "").trim();
+  if (!jobType) return;
+
+  var banner = document.querySelector("[data-mikrotik-job-banner]");
+  var titleEl = document.querySelector("[data-mikrotik-job-title]");
+  var textEl = document.querySelector("[data-mikrotik-job-text]");
+  if (!banner || !textEl) return;
+
+  var statusUrl = "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" + encodeURIComponent(jobType);
+  var labels = {
+    credentials: "Updating credentials",
+    wifi: "Updating Wi‑Fi",
+    clean_uplink: "Applying clean uplink",
+    port_toggle: "Updating port",
+    port_role: "Syncing WAN port",
+    uplink_bond: "Applying bond uplink",
+    uplink_failover: "Applying failover uplink",
+    uplink_balance: "Applying load balance",
+    pppoe_push: "Pushing PPPoE policy",
+    hotspot_push: "Pushing Hotspot policy"
+  };
+
+  function setBanner(kind, title, text) {
+    banner.hidden = false;
+    banner.classList.remove("is-info", "is-success", "is-danger", "is-warn");
+    banner.classList.add(kind);
+    if (titleEl) titleEl.textContent = title;
+    textEl.textContent = text;
+  }
+
+  function poll() {
+    fetch(statusUrl, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        var job = (data && data.job) || {};
+        var status = (job.status || "").toLowerCase();
+        var label = labels[jobType] || "MikroTik update";
+        if (status === "pending" || status === "running") {
+          setBanner("is-info", label + "…", "Working over the billing tunnel — this can take up to a minute.");
+          window.setTimeout(poll, 2000);
+          return;
+        }
+        if (status === "ok") {
+          setBanner("is-success", label + " complete", job.message || "Settings applied on the MikroTik.");
+          if (window.history && window.history.replaceState) {
+            window.history.replaceState({}, "", window.location.pathname);
+          }
+          return;
+        }
+        if (status === "failed") {
+          setBanner("is-danger", label + " failed", job.error || "Could not apply settings on the MikroTik.");
+          return;
+        }
+        window.setTimeout(poll, 2500);
+      })
+      .catch(function () {
+        setBanner("is-warn", "Checking update status…", "Retrying in a few seconds.");
+        window.setTimeout(poll, 3000);
+      });
+  }
+
+  setBanner("is-info", (labels[jobType] || "MikroTik update") + "…", "Starting background push…");
+  poll();
+})();
+</script>

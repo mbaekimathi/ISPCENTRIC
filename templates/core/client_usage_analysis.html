@@ -5,10 +5,6 @@
 {% block client_content %}
 <div class="client-detail-page client-usage-analysis-page">
 
-<a class="client-back-link" href="{{ back_url }}">
-  <span aria-hidden="true">&larr;</span> Back to {{ customer.full_name }}
-</a>
-
 <nav class="client-cat-nav" aria-label="Usage ranges">
   <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?hours=6">6 hours</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">24 hours</a>

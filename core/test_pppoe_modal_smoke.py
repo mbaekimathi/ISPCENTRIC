@@ -21,6 +21,6 @@ class PppoeModalRenderTests(TestCase):
         html = res.content.decode()
         self.assertIn("pppoe-register-modal", html)
         self.assertIn("data-generate-password=\"id_pppoe_password\"", html)
-        self.assertIn("pppoe-collapse-summary", html)
+        self.assertIn("pppoe-section-head", html)
         self.assertIn("data-pppoe-submit", html)
         self.assertIn("css/main.css", html)

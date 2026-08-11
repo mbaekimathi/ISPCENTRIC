@@ -377,6 +377,47 @@ def clear_customer_package_pause(customer, *, save: bool = True) -> bool:
     return True
 
 
+def organization_uses_dynamic_access(organization) -> bool:
+    """
+    Dual-path access: home CPE dials PPPoE during the subscription window;
+    phones and other devices pay for ISP Hotspot only after a successful purchase.
+    """
+    if not organization:
+        return False
+    return bool(
+        getattr(organization, "pppoe_compulsory", False)
+        and getattr(organization, "hotspot_enabled", False)
+    )
+
+
+def customer_can_surf_via_hotspot(
+    customer, organization=None, *, today: date | None = None
+) -> bool:
+    """
+    Hotspot surfing is allowed only for HOTSPOT customers with an active,
+    paid package window (set after voucher redeem or cash recharge).
+    """
+    if getattr(customer, "service_type", None) != Customer.ServiceType.HOTSPOT:
+        return False
+    return customer_receives_internet(customer, organization, today=today)
+
+
+def customer_can_surf_via_pppoe(
+    customer, organization=None, *, today: date | None = None
+) -> bool:
+    """
+    PPPoE surfing is allowed only for PPPOE customers inside the subscription
+    period. Payment alone does not extend access until the package is applied.
+    """
+    if getattr(customer, "service_type", None) != Customer.ServiceType.PPPOE:
+        return False
+    org = organization or getattr(customer, "organization", None)
+    if org and getattr(org, "pppoe_compulsory", False):
+        if not (customer.pppoe_username or "").strip():
+            return False
+    return customer_receives_internet(customer, organization, today=today)
+
+
 def customer_receives_internet(customer, organization=None, *, today: date | None = None) -> bool:
     """
     Whether this customer is eligible for internet under org + subscription policy.
@@ -387,6 +428,9 @@ def customer_receives_internet(customer, organization=None, *, today: date | Non
     - today/now is outside package_start / package_end (when set)
     - Hotspot or PPPoE customer has no purchased period at all
     - PPPoE is compulsory and a non-Hotspot customer is not a registered PPPoE user
+
+    Prefer ``customer_can_surf_via_hotspot`` / ``customer_can_surf_via_pppoe`` when
+    enforcing the dynamic dual-path model (PPPoE compulsory + Hotspot fallback).
     """
     org = organization or getattr(customer, "organization", None)
     if getattr(customer, "status", None) != Customer.Status.ACTIVE:

@@ -572,3 +572,238 @@ class CustomerCpeWebProxyCacheTests(TestCase):
         self.assertEqual(len(set(first_ports)), 1)
         self.assertEqual(proxy["cpe_host"], "10.20.0.11")
 
+
+class CustomerCpeAccessModeTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("access-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Access ISP",
+            owner=self.owner,
+            join_code="456789",
+        )
+        self.nas = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Access NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.5",
+            username="admin",
+            password="secret",
+            lan_bridge="bridgeLocal",
+        )
+
+    def test_pppoe_client_eligible_with_username(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE User",
+            phone="254700000010",
+            account_number="ACC-PPP-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="user1",
+            router=self.nas,
+        )
+        self.assertTrue(mikrotik_connect.customer_cpe_access_eligible(customer))
+        self.assertEqual(mikrotik_connect.customer_cpe_access_mode(customer), "pppoe")
+
+    def test_static_client_eligible_with_ip(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Static User",
+            phone="254700000011",
+            account_number="ACC-STA-1",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_ip="192.168.88.50",
+            router=self.nas,
+        )
+        self.assertTrue(mikrotik_connect.customer_cpe_access_eligible(customer))
+        self.assertEqual(mikrotik_connect.customer_cpe_access_mode(customer), "static")
+
+    def test_dhcp_client_eligible_with_mac(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="DHCP User",
+            phone="254700000012",
+            account_number="ACC-DHCP-1",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_mac="AA:BB:CC:DD:EE:01",
+            router=self.nas,
+        )
+        self.assertTrue(mikrotik_connect.customer_cpe_access_eligible(customer))
+        self.assertEqual(mikrotik_connect.customer_cpe_access_mode(customer), "dhcp")
+
+    @patch("core.mikrotik_connect._api_session")
+    def test_resolve_static_target(self, mock_api):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Static User",
+            phone="254700000013",
+            account_number="ACC-STA-2",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_ip="192.168.88.60",
+            router=self.nas,
+        )
+
+        @contextmanager
+        def _fake_session(*args, **kwargs):
+            yield object()
+
+        mock_api.side_effect = _fake_session
+        with patch.object(
+            mikrotik_connect,
+            "_nas_lan_gateway_ip",
+            return_value="192.168.88.1",
+        ):
+            target = mikrotik_connect.resolve_customer_cpe_target(
+                self.nas.host,
+                self.nas.username,
+                self.nas.password,
+                customer,
+            )
+        self.assertTrue(target["ok"])
+        self.assertTrue(target["session_active"])
+        self.assertEqual(target["address"], "192.168.88.60")
+        self.assertEqual(target["mode"], "static")
+        self.assertEqual(target["gateway"], "192.168.88.1")
+
+    @patch("core.mikrotik_connect._api_session")
+    def test_resolve_dhcp_target_from_lease(self, mock_api):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="DHCP User",
+            phone="254700000014",
+            account_number="ACC-DHCP-2",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_mac="AA:BB:CC:DD:EE:02",
+            router=self.nas,
+        )
+
+        @contextmanager
+        def _fake_session(*args, **kwargs):
+            yield object()
+
+        mock_api.side_effect = _fake_session
+        with (
+            patch.object(
+                mikrotik_connect,
+                "_nas_lan_gateway_ip",
+                return_value="192.168.88.1",
+            ),
+            patch.object(
+                mikrotik_connect,
+                "_resolve_dhcp_client_ip",
+                return_value="192.168.88.75",
+            ),
+        ):
+            target = mikrotik_connect.resolve_customer_cpe_target(
+                self.nas.host,
+                self.nas.username,
+                self.nas.password,
+                customer,
+            )
+        self.assertTrue(target["ok"])
+        self.assertTrue(target["session_active"])
+        self.assertEqual(target["address"], "192.168.88.75")
+        self.assertEqual(target["mode"], "dhcp")
+
+    @patch("core.views.probe_customer_cpe_web")
+    def test_static_client_router_login_starts_proxy(self, mock_probe):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Static User",
+            phone="254700000015",
+            account_number="ACC-STA-3",
+            service_type=Customer.ServiceType.STATIC,
+            cpe_ip="192.168.88.80",
+            router=self.nas,
+        )
+        mock_probe.return_value = {
+            "ok": True,
+            "session_active": True,
+            "cpe_host": "192.168.88.80",
+            "port": 80,
+            "reachable": True,
+            "ping_ok": True,
+            "gateway": "192.168.88.1",
+            "mode": "static",
+        }
+        client = Client()
+        client.force_login(self.owner)
+        response = client.get(
+            f"/app/clients/{customer.pk}/router-login/",
+            follow=False,
+        )
+        self.assertEqual(response.status_code, 302)
+        mock_probe.assert_called_once()
+        self.assertIs(mock_probe.call_args.kwargs.get("customer"), customer)
+
+
+class StaticClientDhcpLeaseTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("dhcp-owner", password="x")
+        self.org = Organization.objects.create(
+            name="DHCP ISP",
+            owner=self.owner,
+            join_code="789012",
+        )
+        self.nas = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="DHCP NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.6",
+            username="admin",
+            password="secret",
+        )
+
+    def test_skips_without_ip_and_mac(self):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Partial Static",
+            phone="254700000020",
+            account_number="ACC-PARTIAL",
+            service_type=Customer.ServiceType.STATIC,
+            router=self.nas,
+            cpe_ip="192.168.88.90",
+        )
+        result = mikrotik_connect.provision_static_client_dhcp_lease(customer)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["skipped"])
+
+    @patch.object(mikrotik_connect, "_api_session")
+    def test_binds_static_lease_on_nas(self, mock_api):
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Bound Static",
+            phone="254700000021",
+            account_number="ACC-BIND-1",
+            service_type=Customer.ServiceType.STATIC,
+            router=self.nas,
+            cpe_ip="192.168.88.91",
+            cpe_mac="AA:BB:CC:DD:EE:99",
+        )
+
+        @contextmanager
+        def _fake_session(*args, **kwargs):
+            yield object()
+
+        mock_api.side_effect = _fake_session
+        with (
+            patch.object(
+                mikrotik_connect,
+                "_remove_stale_static_client_dhcp_leases",
+                return_value=[],
+            ) as remove_stale,
+            patch.object(
+                mikrotik_connect,
+                "_ensure_static_dhcp_lease",
+                return_value=["DHCP reservation 192.168.88.91 -> AA:BB:CC:DD:EE:99"],
+            ) as ensure,
+        ):
+            result = mikrotik_connect.provision_static_client_dhcp_lease(customer)
+
+        self.assertTrue(result["ok"])
+        remove_stale.assert_called_once()
+        ensure.assert_called_once()
+        args, kwargs = ensure.call_args
+        self.assertEqual(args[1], "192.168.88.91")
+        self.assertEqual(args[2], "AA:BB:CC:DD:EE:99")
+        self.assertIn(customer.account_number, kwargs["comment"])
+

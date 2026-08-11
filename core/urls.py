@@ -52,6 +52,11 @@ urlpatterns = [
         name="mikrotik_hotspot_settings",
     ),
     path("app/mikrotik/<int:router_id>/live/", views.mikrotik_live, name="mikrotik_live"),
+    path(
+        "app/mikrotik/<int:router_id>/push-status/",
+        views.mikrotik_push_status,
+        name="mikrotik_push_status",
+    ),
     path("app/mikrotik/<int:router_id>/wifi/", views.mikrotik_wifi, name="mikrotik_wifi"),
     path(
         "app/mikrotik/<int:router_id>/reconnect/",

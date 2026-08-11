@@ -217,6 +217,18 @@ class Customer(models.Model):
     )
     cpe_wifi_ssid = models.CharField("CPE Wi‑Fi name", max_length=64, blank=True)
     cpe_wifi_password = models.CharField("CPE Wi‑Fi password", max_length=128, blank=True)
+    cpe_ip = models.CharField(
+        "CPE IP address",
+        max_length=45,
+        blank=True,
+        help_text="Fixed LAN IP for static clients (used for remote router access).",
+    )
+    cpe_mac = models.CharField(
+        "CPE MAC address",
+        max_length=17,
+        blank=True,
+        help_text="Router MAC for dynamic DHCP clients — IP is resolved from the NAS lease.",
+    )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     plan = models.ForeignKey(
         BillingPlan,

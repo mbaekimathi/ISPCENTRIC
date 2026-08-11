@@ -3,6 +3,7 @@
 {% block title %}Ports — {{ router.name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
+{% include "core/includes/mikrotik_job_poll.html" %}
 <div class="mk-page mk-ports-page">
   <section
     class="mk-surface mk-ports-surface"

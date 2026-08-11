@@ -231,7 +231,12 @@ DATABASES = {
 
 # Shared file cache so TTL keys (status/surfing/live) work across Passenger workers.
 # Override with DJANGO_CACHE_BACKEND=locmem for single-process local if needed.
-_cache_backend = (os.getenv("DJANGO_CACHE_BACKEND") or "file").strip().lower()
+# In DEBUG, default to in-memory cache (faster, no disk writes under .cache/).
+_cache_backend = (os.getenv("DJANGO_CACHE_BACKEND") or "").strip().lower()
+if not _cache_backend and DEBUG:
+    _cache_backend = "locmem"
+elif not _cache_backend:
+    _cache_backend = "file"
 if _cache_backend in {"locmem", "locmemcache", "local"}:
     CACHES = {
         "default": {
@@ -312,7 +317,10 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = int(os.getenv("DJANGO_SESSION_COOKIE_AGE") or str(60 * 60 * 12))
-SESSION_SAVE_EVERY_REQUEST = env_flag("DJANGO_SESSION_SAVE_EVERY_REQUEST", "true")
+SESSION_SAVE_EVERY_REQUEST = env_flag(
+    "DJANGO_SESSION_SAVE_EVERY_REQUEST",
+    "false" if DEBUG else "true",
+)
 
 # Email (password reset). Console backend in DEBUG when unset.
 EMAIL_BACKEND = (

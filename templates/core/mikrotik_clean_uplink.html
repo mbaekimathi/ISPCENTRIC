@@ -3,6 +3,7 @@
 {% block title %}{{ router.name }} — Clean uplink — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
+{% include "core/includes/mikrotik_job_poll.html" %}
 <div class="mk-page mk-clean-page">
   <header class="mk-page-hero{% if clean_uplink_enabled %} is-on{% endif %}">
     <div class="mk-page-hero-copy">

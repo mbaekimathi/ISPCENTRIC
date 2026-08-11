@@ -1,0 +1,353 @@
+<div
+
+  class="role-modal client-action-modal pppoe-modal pppoe-modal--edit"
+
+  id="client-details-modal"
+  data-edit-pppoe-user="{{ customer.pppoe_username|default:'' }}"
+  data-edit-pppoe-pass="{{ customer.pppoe_password|default:'' }}"
+  data-edit-cpe-user="{{ customer.cpe_username|default:'admin' }}"
+  data-edit-cpe-pass="{{ customer.cpe_password|default:'' }}"
+
+  {% if open_client_modal != "client-details-modal" %}hidden{% endif %}
+
+  aria-hidden="{% if open_client_modal == "client-details-modal" %}false{% else %}true{% endif %}"
+
+>
+
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-details-title">
+
+    <header class="role-modal-head pppoe-head">
+
+      <div class="pppoe-head-text">
+
+        <div class="pppoe-head-badges">
+
+          <p class="role-modal-kicker pppoe-kicker pppoe-kicker--edit">Edit client</p>
+
+          <span class="pppoe-service-chip">{{ customer.get_service_type_display }}</span>
+
+        </div>
+
+        <h2 id="client-details-title">{{ customer.full_name }}</h2>
+
+        <p class="role-modal-sub pppoe-sub">
+          Update profile, connection credentials, and remote router access.
+        </p>
+
+      </div>
+
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+
+      </button>
+
+    </header>
+
+    <form
+
+      method="post"
+
+      class="pppoe-form client-details-ajax-form"
+
+      id="client-details-form"
+
+      action="{% url 'core:client_detail' customer.id %}"
+
+      novalidate
+
+    >
+
+      {% csrf_token %}
+
+      <input type="hidden" name="action" value="update_client_details">
+
+      <div class="pppoe-body">
+
+        {% if details_form.non_field_errors %}
+
+          <div class="field-error pppoe-banner">{{ details_form.non_field_errors|striptags }}</div>
+
+        {% endif %}
+
+
+
+        <section class="pppoe-section">
+
+          <div class="pppoe-section-head">
+
+            <span class="pppoe-section-icon pppoe-section-icon--profile" aria-hidden="true">
+
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm-7 9a7 7 0 0 1 14 0H5z"/></svg>
+
+            </span>
+
+            <div class="pppoe-section-head-text">
+
+              <h3 class="pppoe-section-title">Profile</h3>
+
+              <p class="pppoe-section-desc">Client name and MikroTik router.</p>
+
+            </div>
+
+          </div>
+
+          <div class="pppoe-grid">
+
+            <div class="field field-span-2">
+
+              <label for="{{ details_form.full_name.id_for_label }}">{{ details_form.full_name.label }}</label>
+
+              {{ details_form.full_name }}
+
+              {% if details_form.full_name.errors %}<div class="field-error">{{ details_form.full_name.errors|striptags }}</div>{% endif %}
+
+            </div>
+
+            <div class="field field-span-2">
+
+              <label for="{{ details_form.router.id_for_label }}">{{ details_form.router.label }}</label>
+
+              <div class="pppoe-select">{{ details_form.router }}</div>
+
+              {% if details_form.router.errors %}<div class="field-error">{{ details_form.router.errors|striptags }}</div>{% endif %}
+
+            </div>
+
+          </div>
+
+        </section>
+
+
+
+        {% if details_form.pppoe_username %}
+
+        <section class="pppoe-section pppoe-section--credentials">
+
+          <div class="pppoe-section-head">
+
+            <span class="pppoe-section-icon pppoe-section-icon--connection" aria-hidden="true">
+
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 8a8 8 0 0 1 16 0v2h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h1V8zm2 2h12V8a6 6 0 0 0-12 0v2zm6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+
+            </span>
+
+            <div class="pppoe-section-head-text">
+
+              <h3 class="pppoe-section-title">PPPoE login</h3>
+
+              <p class="pppoe-section-desc">Dial-in credentials installed on the MikroTik.</p>
+
+            </div>
+
+          </div>
+
+          <div class="pppoe-credential-panel">
+
+            <div class="pppoe-grid">
+
+              <div class="field">
+
+                <label for="{{ details_form.pppoe_username.id_for_label }}">{{ details_form.pppoe_username.label }}</label>
+
+                {{ details_form.pppoe_username }}
+
+                {% if details_form.pppoe_username.errors %}<div class="field-error">{{ details_form.pppoe_username.errors|striptags }}</div>{% endif %}
+
+              </div>
+
+              <div class="field">
+
+                <div class="pppoe-label-row">
+
+                  <label for="{{ details_form.pppoe_password.id_for_label }}">{{ details_form.pppoe_password.label }}</label>
+
+                  <button type="button" class="pppoe-mini-btn" data-generate-password="{{ details_form.pppoe_password.id_for_label }}">Generate</button>
+
+                </div>
+
+                <div class="password-field">
+
+                  {{ details_form.pppoe_password }}
+
+                  <button type="button" class="password-toggle" data-toggle-password="{{ details_form.pppoe_password.id_for_label }}" aria-label="Show password">
+
+                    <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+
+                    <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+
+                  </button>
+
+                </div>
+
+                {% if details_form.pppoe_password.help_text %}<p class="field-hint">{{ details_form.pppoe_password.help_text }}</p>{% endif %}
+
+                {% if details_form.pppoe_password.errors %}<div class="field-error">{{ details_form.pppoe_password.errors|striptags }}</div>{% endif %}
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+        {% endif %}
+
+
+
+        {% if details_form.cpe_username %}
+
+        <section class="pppoe-section pppoe-section--credentials pppoe-section--remote">
+
+          <div class="pppoe-section-head">
+
+            <span class="pppoe-section-icon pppoe-section-icon--remote" aria-hidden="true">
+
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6h16v10H4V6zm2 2v6h12V8H6zm8 9a1 1 0 1 0 0 2H8a1 1 0 1 0 0-2h6z"/></svg>
+
+            </span>
+
+            <div class="pppoe-section-head-text">
+
+              <h3 class="pppoe-section-title">Remote router access</h3>
+
+              <p class="pppoe-section-desc">Admin login on the client’s CPE for Wi‑Fi and live router data.</p>
+
+            </div>
+
+            {% if customer.cpe_password %}<span class="pppoe-status-badge">Saved</span>{% endif %}
+
+          </div>
+
+          <div class="pppoe-credential-panel">
+
+            <div class="pppoe-grid">
+
+              <div class="field">
+
+                <label for="{{ details_form.cpe_username.id_for_label }}">{{ details_form.cpe_username.label }}</label>
+
+                {{ details_form.cpe_username }}
+
+                {% if details_form.cpe_username.errors %}<div class="field-error">{{ details_form.cpe_username.errors|striptags }}</div>{% endif %}
+
+              </div>
+
+              <div class="field">
+
+                <div class="pppoe-label-row">
+
+                  <label for="{{ details_form.cpe_password.id_for_label }}">{{ details_form.cpe_password.label }}</label>
+
+                  <button type="button" class="pppoe-mini-btn" data-generate-password="{{ details_form.cpe_password.id_for_label }}" data-sync-from="id_edit_pppoe_password">Generate</button>
+
+                </div>
+
+                <div class="password-field">
+
+                  {{ details_form.cpe_password }}
+
+                  <button type="button" class="password-toggle" data-toggle-password="{{ details_form.cpe_password.id_for_label }}" aria-label="Show password">
+
+                    <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+
+                    <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+
+                  </button>
+
+                </div>
+
+                {% if details_form.cpe_password.help_text %}<p class="field-hint">{{ details_form.cpe_password.help_text }}</p>{% endif %}
+
+                {% if details_form.cpe_password.errors %}<div class="field-error">{{ details_form.cpe_password.errors|striptags }}</div>{% endif %}
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+        {% endif %}
+
+
+
+        {% if details_form.cpe_ip %}
+
+        <section class="pppoe-section pppoe-section--network">
+
+          <div class="pppoe-section-head">
+
+            <span class="pppoe-section-icon pppoe-section-icon--network" aria-hidden="true">
+
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 2 7v2h20V7L12 2zm0 3.2L18.5 9H5.5L12 5.2zM4 11v8h6v-5h4v5h6v-8H4z"/></svg>
+
+            </span>
+
+            <div class="pppoe-section-head-text">
+
+              <h3 class="pppoe-section-title">Network</h3>
+
+              <p class="pppoe-section-desc">Fixed IP or MAC for static and DHCP clients.</p>
+
+            </div>
+
+          </div>
+
+          <div class="pppoe-grid">
+
+            <div class="field">
+
+              <label for="{{ details_form.cpe_ip.id_for_label }}">{{ details_form.cpe_ip.label }}</label>
+
+              {{ details_form.cpe_ip }}
+
+              {% if details_form.cpe_ip.help_text %}<p class="field-hint">{{ details_form.cpe_ip.help_text }}</p>{% endif %}
+
+              {% if details_form.cpe_ip.errors %}<div class="field-error">{{ details_form.cpe_ip.errors|striptags }}</div>{% endif %}
+
+            </div>
+
+            <div class="field">
+
+              <label for="{{ details_form.cpe_mac.id_for_label }}">{{ details_form.cpe_mac.label }}</label>
+
+              {{ details_form.cpe_mac }}
+
+              {% if details_form.cpe_mac.help_text %}<p class="field-hint">{{ details_form.cpe_mac.help_text }}</p>{% endif %}
+
+              {% if details_form.cpe_mac.errors %}<div class="field-error">{{ details_form.cpe_mac.errors|striptags }}</div>{% endif %}
+
+            </div>
+
+          </div>
+
+        </section>
+
+        {% endif %}
+
+      </div>
+
+      <footer class="pppoe-foot">
+
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+
+        <button type="submit" class="btn btn-primary" data-save-label="Save details">
+
+          <span class="pppoe-foot-btn-label">Save details</span>
+
+        </button>
+
+      </footer>
+
+    </form>
+
+  </div>
+
+</div>
+
+

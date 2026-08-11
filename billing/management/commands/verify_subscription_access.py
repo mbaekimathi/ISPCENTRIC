@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import time
-
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from billing.models import Customer
-from billing.services import customer_receives_internet
+from billing.access_verification import (
+    billing_allows_surf,
+    evaluate_nas_policy,
+    run_access_correction_loop,
+)
 
 
 def _safe_text(value) -> str:
@@ -60,10 +62,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        from core.mikrotik_connect import (
-            cpe_renew_clear_is_pending,
-            sync_customer_subscription_access,
-        )
         from core.hotspot_portal import public_base_url
 
         customer_id = int(options["customer"])
@@ -97,45 +95,35 @@ class Command(BaseCommand):
             _safe_text(
                 f"package {customer.package_start} -> {customer.package_end}  "
                 f"status={customer.status}  "
-                f"router={getattr(customer.router, 'name', None) or '-'}"
+                f"router={getattr(customer.router, 'name', None) or '-'}  "
+                f"expect_surf={billing_allows_surf(customer)}"
             )
         )
 
-        last: dict = {}
-        for attempt in range(1, loops + 1):
-            allowed_billing = customer_receives_internet(customer)
-            pending_before = cpe_renew_clear_is_pending(customer)
-            self.stdout.write(
-                f"\n=== attempt {attempt}/{loops}  "
-                f"billing_allows={allowed_billing}  "
-                f"cpe_clear_pending={pending_before} ==="
-            )
-
-            if dry_run:
-                last = {
-                    "ok": allowed_billing and not pending_before,
-                    "allowed": allowed_billing,
-                    "cpe_renew_clear_pending": pending_before,
-                    "message": "dry-run - no router push",
-                    "portal": {},
-                    "provision": {},
-                }
-            else:
-                last = sync_customer_subscription_access(
-                    customer,
-                    provision=True,
-                    reauthenticate=True,
+        outcome = run_access_correction_loop(
+            customer,
+            loops=loops,
+            settle=settle,
+            dry_run=dry_run,
+            log_fn=lambda msg: self.stdout.write(
+                _safe_text(
+                    msg.replace("billing_ok=", "billing_allows=")
                 )
-                customer.refresh_from_db()
+            ),
+        )
 
-            portal = last.get("portal") or {}
-            provision = last.get("provision") or {}
+        for attempt in outcome.attempts:
+            sync_result = attempt.sync_result or {}
+            portal = sync_result.get("portal") or {}
+            provision = sync_result.get("provision") or {}
             self.stdout.write(
                 _safe_text(
-                    f"sync ok={last.get('ok')}  allowed={last.get('allowed')}"
+                    f"sync ok={sync_result.get('ok')}  "
+                    f"allowed={sync_result.get('allowed')}"
                 )
             )
-            self.stdout.write(_safe_text(f"message: {last.get('message')}"))
+            if sync_result.get("message"):
+                self.stdout.write(_safe_text(f"message: {sync_result.get('message')}"))
             if provision:
                 self.stdout.write(
                     _safe_text(
@@ -143,8 +131,7 @@ class Command(BaseCommand):
                         f"ok={provision.get('ok')}  "
                         f"profile={provision.get('profile')}  "
                         f"disabled={provision.get('disabled')}  "
-                        f"kicked={provision.get('kicked')}  "
-                        f"notes={provision.get('notes') or []}"
+                        f"kicked={provision.get('kicked')}"
                     )
                 )
             if portal:
@@ -157,67 +144,39 @@ class Command(BaseCommand):
                     )
                 )
             self.stdout.write(
-                f"pending_after={last.get('cpe_renew_clear_pending')}"
+                f"pending_after={sync_result.get('cpe_renew_clear_pending')}"
             )
 
-            surfing_ok = self._surfing_restored(last, customer)
-            if surfing_ok:
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"\nPASS: {customer.account_number} should be surfing "
-                        f"(attempt {attempt})."
-                    )
+        if outcome.passed:
+            expect = "surfing" if billing_allows_surf(customer) else "blocked"
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"\nPASS: {customer.account_number} access {expect} "
+                    f"(attempt {len(outcome.attempts)})."
                 )
-                return
+            )
+            return
 
-            if attempt < loops and settle > 0 and not dry_run:
-                self.stdout.write(f"settling {settle:.1f}s for CPE redial...")
-                time.sleep(settle)
-                customer = (
-                    Customer.objects.select_related("plan", "router", "organization")
-                    .get(pk=customer_id)
-                )
-
+        last = outcome.last_evaluation.get("sync_result") or {}
         self.stdout.write(
             self.style.ERROR(
-                f"\nFAIL: {customer.account_number} not fully restored after "
-                f"{loops} attempt(s)."
+                f"\nFAIL: {customer.account_number} not fully enforced after "
+                f"{len(outcome.attempts)} attempt(s)."
             )
         )
         hint = (last.get("portal") or {}).get("error") or last.get("message") or ""
         if hint:
             self.stdout.write(self.style.WARNING(_safe_text(f"last status: {hint}")))
-        if not customer_receives_internet(customer):
+        if not billing_allows_surf(customer):
             raise CommandError(
-                "Billing still denies internet - package period/status is not active."
+                "Billing denies internet but NAS is not fully blocking this account."
             )
         raise CommandError(
-            "NAS may be restored but CPE renew clear is still pending "
-            "(CPE offline). Power-cycle the CPE, then re-run this command."
+            "Billing allows internet but NAS restore is incomplete "
+            "(CPE offline or renew popup pending)."
         )
 
     @staticmethod
     def _surfing_restored(result: dict, customer: Customer) -> bool:
-        """True when billing + NAS agree and CPE renew is not trapping Wi-Fi."""
-        if not result.get("allowed"):
-            return False
-        if not customer_receives_internet(customer):
-            return False
-        provision = result.get("provision") or {}
-        if customer.service_type == Customer.ServiceType.PPPOE:
-            if not provision.get("ok"):
-                return False
-            if provision.get("disabled"):
-                return False
-            if result.get("cpe_renew_clear_pending"):
-                return False
-            portal = result.get("portal") or {}
-            # Skipped+pending means Wi-Fi may still be captive.
-            if portal.get("skipped") and not portal.get("ok"):
-                from core.mikrotik_connect import cpe_renew_clear_is_pending
-
-                if cpe_renew_clear_is_pending(customer):
-                    return False
-            return bool(result.get("ok") or provision.get("ok"))
-        # Hotspot: authorize must land (or be explicitly skipped offline).
-        return bool(result.get("ok") and provision.get("ok"))
+        """Legacy helper — prefer evaluate_nas_policy()."""
+        return bool(evaluate_nas_policy(customer, result).get("policy_match"))

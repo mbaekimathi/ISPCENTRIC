@@ -216,6 +216,253 @@ def adopt_reservation_for_router(router) -> bool:
     return True
 
 
+def _ros_ok(message: str) -> str:
+    return f':put "[ISPCENTRIC OK] {message}"'
+
+
+def _ros_fail(message: str) -> str:
+    return f':put "[ISPCENTRIC FAIL] {message}"'
+
+
+def _ros_warn(message: str) -> str:
+    return f':put "[ISPCENTRIC WARN] {message}"'
+
+
+def _ros_info(message: str) -> str:
+    return f':put "[ISPCENTRIC] {message}"'
+
+
+def _ros_check(condition: str, ok_message: str, fail_message: str) -> str:
+    """Single-line pass/fail check for Winbox terminal paste."""
+    return (
+        f":if ({condition}) do={{{_ros_ok(ok_message)}}} "
+        f"else={{{_ros_fail(fail_message)}}}"
+    )
+
+
+def _ros_filter_add(rule: str, comment: str) -> str:
+    """
+    Insert an input-chain filter rule near the top when the chain has rules.
+
+    ``place-before=0`` fails with "no such item" when the filter list is empty
+    (common on cleaned or CHR configs). Fall back to append in that case.
+    """
+    body = f'add chain=input {rule} comment="{comment}"'
+    return (
+        f":do {{ {body} place-before=([find where chain=input and dynamic=no]->0) }} "
+        f"on-error={{ :do {{ {body} place-before=([find where chain=input]->0) }} "
+        f"on-error={{ {body} }} }}"
+    )
+
+
+def _ros_nat_add(rule: str, comment: str) -> str:
+    """Same safe placement for srcnat rules inside /ip firewall nat."""
+    body = f'add chain=srcnat {rule} comment="{comment}"'
+    return (
+        f":do {{ {body} place-before=([find where chain=srcnat and dynamic=no]->0) }} "
+        f"on-error={{ :do {{ {body} place-before=([find where chain=srcnat]->0) }} "
+        f"on-error={{ {body} }} }}"
+    )
+
+
+def _ros_ping_probe(server: str, address: str) -> str:
+    """
+    Ping the billing server several times without :local or multi-line blocks.
+
+    RouterOS New Terminal executes pasted lines one-by-one; :foreach/{...} spans
+    and :local variables break across lines. Nest :if/:else on one line instead.
+    """
+    ok = (
+        f"[ISPCENTRIC OK] Tunnel {address} reaches billing server {server} - "
+        f"click Connect in ISPCENTRIC"
+    )
+    fail = (
+        f"[ISPCENTRIC FAIL] No ping from {server}. Add this router [Peer] on VPS wg0, "
+        f"run: wg-quick down wg0; wg-quick up wg0, then re-paste or Connect"
+    )
+    ping = f"[/ping {server} count=2]"
+    line = f':if ({ping} > 0) do={{:put "{ok}"}} else={{:put "{fail}"}}'
+    for _ in range(3):
+        line = f':delay 5s :if ({ping} > 0) do={{:put "{ok}"}} else={{{line}}}'
+    return f":delay 3s {line}"
+
+
+def tunnel_verification_checks(
+    *,
+    local_mode: bool,
+    address: str,
+    tunnel_reachable: bool,
+    api_enabled: bool,
+    lan_address: str = "",
+    subnet_mismatch: bool = False,
+    multiple_devices: bool = False,
+) -> list[dict[str, str]]:
+    """
+    Structured pass/fail rows for the Connect modal (mirrors Winbox script summary).
+
+    Each item: key, status (ok|fail|warn|waiting), label, message.
+    """
+    server = str(server_address())
+    checks: list[dict[str, str]] = []
+
+    if local_mode:
+        if multiple_devices and not lan_address:
+            checks.append(
+                {
+                    "key": "lan",
+                    "status": "warn",
+                    "label": "MikroTik on LAN",
+                    "message": "Several routers found — pick the LAN IP above, then Check now",
+                }
+            )
+        elif lan_address:
+            checks.append(
+                {
+                    "key": "lan",
+                    "status": "ok",
+                    "label": "MikroTik on LAN",
+                    "message": f"Found at {lan_address}",
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "key": "lan",
+                    "status": "waiting",
+                    "label": "MikroTik on LAN",
+                    "message": "Connect this PC to the router network, then Check now",
+                }
+            )
+
+        if lan_address:
+            checks.append(
+                {
+                    "key": "subnet",
+                    "status": "ok" if not subnet_mismatch else "fail",
+                    "label": "Same subnet as MikroTik",
+                    "message": (
+                        "This PC can reach the router LAN"
+                        if not subnet_mismatch
+                        else "PC and MikroTik are on different subnets — fix IP, then Check now"
+                    ),
+                }
+            )
+
+        checks.append(
+            {
+                "key": "api",
+                "status": (
+                    "ok"
+                    if api_enabled
+                    else ("fail" if lan_address and not subnet_mismatch else "waiting")
+                ),
+                "label": "API port 8728",
+                "message": (
+                    f"RouterOS API open at {lan_address}:8728"
+                    if api_enabled
+                    else (
+                        "Paste the script in Winbox and wait for [ISPCENTRIC OK] lines"
+                        if lan_address and not subnet_mismatch
+                        else "Waiting for LAN discovery and script"
+                    )
+                ),
+            }
+        )
+
+        if lan_address and not subnet_mismatch:
+            checks.append(
+                {
+                    "key": "firewall",
+                    "status": "ok" if api_enabled else "waiting",
+                    "label": "Firewall API rule",
+                    "message": (
+                        "Input filter accepts API from this LAN"
+                        if api_enabled
+                        else "Script adds ispcentric-vpn-api rules — finish paste in Winbox"
+                    ),
+                }
+            )
+        return checks
+
+    checks.append(
+        {
+            "key": "tunnel",
+            "status": "ok" if tunnel_reachable else "waiting",
+            "label": "WireGuard interface",
+            "message": (
+                f"Tunnel IP {address} reachable from billing server"
+                if tunnel_reachable
+                else "Waiting — paste script in Winbox New Terminal"
+            ),
+        }
+    )
+    checks.append(
+        {
+            "key": "vps_peer",
+            "status": "ok" if tunnel_reachable else "fail",
+            "label": "VPS peer",
+            "message": (
+                f"Billing server accepts traffic to {address}"
+                if tunnel_reachable
+                else f"Add [Peer] AllowedIPs={address}/32 on VPS wg0, restart WireGuard"
+            ),
+        }
+    )
+    checks.append(
+        {
+            "key": "billing_ping",
+            "status": (
+                "ok"
+                if tunnel_reachable and api_enabled
+                else ("waiting" if not tunnel_reachable else "warn")
+            ),
+            "label": f"Ping billing server {server}",
+            "message": (
+                f"Router can reach {server} and API is open — ready to Connect"
+                if tunnel_reachable and api_enabled
+                else (
+                    f"Tunnel up — confirm [ISPCENTRIC OK] ping line in Winbox"
+                    if tunnel_reachable
+                    else f"No route to {server} yet — register peer on VPS"
+                )
+            ),
+        }
+    )
+    checks.append(
+        {
+            "key": "api",
+            "status": (
+                "ok"
+                if api_enabled
+                else ("fail" if tunnel_reachable else "waiting")
+            ),
+            "label": "API port 8728",
+            "message": (
+                "RouterOS API enabled on port 8728"
+                if api_enabled
+                else (
+                    "Tunnel up but API closed — re-paste script or enable IP > Services > api"
+                    if tunnel_reachable
+                    else "Waiting for tunnel and script"
+                )
+            ),
+        }
+    )
+    checks.append(
+        {
+            "key": "firewall",
+            "status": "ok" if api_enabled else ("waiting" if tunnel_reachable else "waiting"),
+            "label": "Firewall API rule",
+            "message": (
+                "ispcentric-vpn-api rules active"
+                if api_enabled
+                else "Script installs API allow rules — finish Winbox paste"
+            ),
+        }
+    )
+    return checks
+
+
 def peer_payload(label: str, address: str, private_key: str, public_key: str) -> dict:
     """JSON-friendly tunnel details for the Connect modal."""
     return {
@@ -242,9 +489,9 @@ def routeros_script(address: str, private_key: str) -> str:
     - accepts API + ICMP from the tunnel and private LANs in the input filter
     - removes any old LAN-wide Hotspot bypasses (those opened free internet for everyone)
     - bypasses Hotspot only for the billing WireGuard subnet (not customer LAN)
-    - verifies the API service is enabled and listening, then prints pass/fail
+    - prints [ISPCENTRIC OK/FAIL/WARN] after every step for Winbox visibility
     - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
-    - pings the billing server and prints a clear pass/fail line
+    - retries ping for ~30s while WireGuard negotiates, then prints pass/fail
 
     API access is locked down by firewall (tunnel + private LAN only), not by the
     /ip service address= list — that property has broken silently on some
@@ -267,16 +514,18 @@ def routeros_script(address: str, private_key: str) -> str:
         [
             "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
             "# Requires RouterOS 7. Safe to re-run: the newest script replaces the old one.",
+            _ros_info("Starting ISPCENTRIC tunnel install..."),
+            _ros_info("Look for [ISPCENTRIC OK] or [ISPCENTRIC FAIL] on each line below"),
             "# 1) Delete any previous ISPCENTRIC scripts/schedulers saved on the router.",
-            ':do { /system script remove [find where name~"ispcentric"] } on-error={}',
-            ':do { /system script remove [find where comment~"ispcentric"] } on-error={}',
-            ':do { /system scheduler remove [find where name~"ispcentric"] } on-error={}',
-            ':do { /system scheduler remove [find where comment~"ispcentric"] } on-error={}',
+            ':do { /system script remove [find where name~"ispcentric"] ; '
+            f'/system script remove [find where comment~"ispcentric"] ; '
+            f'/system scheduler remove [find where name~"ispcentric"] ; '
+            f'/system scheduler remove [find where comment~"ispcentric"] ; '
+            f'{_ros_ok("Old ISPCENTRIC scripts/schedulers removed")} }} on-error='
+            f'{{{_ros_warn("Script/scheduler cleanup skipped (none found)")}}}',
             "# 2) Remove the complete previous ISPCENTRIC tunnel, then install this version.",
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
-            # Drop only tunnel/legacy Hotspot bypass rows — never wipe the single-IP
-            # billing-server bypass that Hotspot apply installs (comment ispcentric-hotspot).
             ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
             "on-error={}",
             ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-vpn-hotspot-bypass"] } '
@@ -284,75 +533,152 @@ def routeros_script(address: str, private_key: str) -> str:
             "/interface wireguard peers remove [find where interface=ispcentric-vpn]",
             "/ip address remove [find where interface=ispcentric-vpn]",
             "/interface wireguard remove [find where name=ispcentric-vpn]",
+            _ros_ok("Previous ISPCENTRIC tunnel and rules removed"),
             "# Install the latest tunnel interface, key, address, and VPS peer.",
-            f'/interface wireguard add name=ispcentric-vpn listen-port=13231 private-key="{private_key}" '
-            'comment="ispcentric billing tunnel"',
-            f"/ip address add address={address}/{network.prefixlen} interface=ispcentric-vpn "
-            'comment="ispcentric billing tunnel"',
-            f'/interface wireguard peers add interface=ispcentric-vpn public-key="{_server_public_key()}" '
-            f"endpoint-address={host} endpoint-port={port} "
-            f"allowed-address={network} persistent-keepalive=25s "
-            'comment="ispcentric billing server"',
-            "# Compulsory: RouterOS API on 8728 — Connect cannot work without it.",
-            "# Clear address= restrictions (empty + 0.0.0.0/0) — a LAN-only list looks",
+            "# >>> Required: the next line creates ispcentric-vpn (do not skip) <<<",
+            (
+                f':do {{ /interface wireguard add name=ispcentric-vpn listen-port=13231 '
+                f'private-key="{private_key}" comment="ispcentric billing tunnel" ; '
+                f'{_ros_ok("WireGuard interface ispcentric-vpn created")} }} '
+                f'on-error={{{_ros_fail("WireGuard add failed - copy the add line from Connect and run it alone")}}}'
+            ),
+            (
+                f':do {{ /ip address add address={address}/{network.prefixlen} '
+                f'interface=ispcentric-vpn comment="ispcentric billing tunnel" ; '
+                f'{_ros_ok(f"Tunnel IP {address}/{network.prefixlen} assigned")} }} '
+                f'on-error={{{_ros_fail("Could not assign tunnel IP - WireGuard interface missing")}}}'
+            ),
+            (
+                f':do {{ /interface wireguard peers add interface=ispcentric-vpn '
+                f'public-key="{_server_public_key()}" endpoint-address={host} endpoint-port={port} '
+                f"allowed-address={network} persistent-keepalive=25s "
+                f'comment="ispcentric billing server" ; '
+                f'{_ros_ok(f"VPS peer configured toward {host}:{port}")} }} '
+                f'on-error={{{_ros_fail("VPS peer add failed - check WireGuard interface")}}}'
+            ),
+            _ros_check(
+                "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
+                "Verify: WireGuard interface exists",
+                "Verify: WireGuard interface missing - re-paste full script",
+            ),
+            _ros_check(
+                "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
+                "Verify: VPS peer row exists",
+                "Verify: VPS peer row missing",
+            ),
+            "# Compulsory: RouterOS API on 8728 - Connect cannot work without it.",
+            "# Clear address= restrictions (empty + 0.0.0.0/0) - a LAN-only list looks",
             "# like 'connection refused' from the billing PC / tunnel.",
             ":do { /ip service set [find where name=api] disabled=no port=8728 address=\"\" } on-error={}",
             ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
             ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
             ":do { /ip service enable [find where name=api] } on-error={}",
+            _ros_check(
+                "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+                "RouterOS API enabled on port 8728",
+                "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
+            ),
+            (
+                ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
+                '[/ip service get [find where name=api] address]) } on-error={'
+                f'{_ros_warn("Could not read API allowed-from list")}'
+                "}"
+            ),
             "# Hotspot may still sit on the LAN; only the billing tunnel subnet may bypass.",
-            "# Never bypass 10/8, 172.16/12, or 192.168/16 — that opens free internet for all clients.",
-            f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
-            'comment="ispcentric-vpn-hotspot-bypass" } on-error={}',
+            "# Never bypass 10/8, 172.16/12, or 192.168/16 - that opens free internet for all clients.",
+            (
+                f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
+                f'comment="ispcentric-vpn-hotspot-bypass" ; '
+                f'{_ros_ok(f"Hotspot bypass for billing subnet {network}")} }} '
+                f"on-error={{{_ros_warn('Hotspot bypass skipped (Hotspot may not be running)')}}}"
+            ),
             "# Allow API + ICMP from the billing tunnel (not the public WAN).",
+            "# place-before=0 fails on empty chains - each add falls back to append.",
             "/ip firewall filter",
-            "add chain=input action=accept protocol=tcp dst-port=8728 "
-            f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-api"',
-            "add chain=input action=accept protocol=tcp dst-port=8728 "
-            f'src-address={network} place-before=0 comment="ispcentric-vpn-api-net"',
-            "add chain=input action=accept protocol=icmp "
-            f'in-interface=ispcentric-vpn place-before=0 comment="ispcentric-vpn-icmp"',
-            "add chain=input action=accept protocol=icmp "
-            f'src-address={network} place-before=0 comment="ispcentric-vpn-icmp-net"',
-            "# Local / office LAN: permit API to the router only (not free WAN internet).",
-            "add chain=input action=accept protocol=tcp dst-port=8728 "
-            'src-address=10.0.0.0/8 place-before=0 comment="ispcentric-vpn-api-lan-10"',
-            "add chain=input action=accept protocol=tcp dst-port=8728 "
-            'src-address=172.16.0.0/12 place-before=0 comment="ispcentric-vpn-api-lan-172"',
-            "add chain=input action=accept protocol=tcp dst-port=8728 "
-            'src-address=192.168.0.0/16 place-before=0 comment="ispcentric-vpn-api-lan-192"',
+            _ros_filter_add(
+                "action=accept protocol=tcp dst-port=8728 in-interface=ispcentric-vpn",
+                "ispcentric-vpn-api",
+            ),
+            _ros_filter_add(
+                f"action=accept protocol=tcp dst-port=8728 src-address={network}",
+                "ispcentric-vpn-api-net",
+            ),
+            _ros_filter_add(
+                "action=accept protocol=icmp in-interface=ispcentric-vpn",
+                "ispcentric-vpn-icmp",
+            ),
+            _ros_filter_add(
+                f"action=accept protocol=icmp src-address={network}",
+                "ispcentric-vpn-icmp-net",
+            ),
+            _ros_filter_add(
+                "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
+                "ispcentric-vpn-api-lan-10",
+            ),
+            _ros_filter_add(
+                "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
+                "ispcentric-vpn-api-lan-172",
+            ),
+            _ros_filter_add(
+                "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
+                "ispcentric-vpn-api-lan-192",
+            ),
+            _ros_check(
+                '[:len [find where comment="ispcentric-vpn-api"]] > 0',
+                "Input firewall rules for API and ICMP installed",
+                "API firewall rule missing - run: /ip firewall filter print",
+            ),
             "# Keep client/PPP source IPs intact when talking to the billing tunnel.",
             "/ip firewall nat",
-            "add chain=srcnat action=accept "
-            f'dst-address={network} place-before=0 comment="ispcentric-vpn-no-nat"',
-            "# Prove API is actually enabled and listening on 8728.",
-            ":delay 1s",
-            (
-                ':if ([:len [/ip service find where name=api and disabled=no and port=8728]] = 0) do={'
-                ':put "ispcentric ERROR: RouterOS API is still disabled — '
-                'open IP > Services > api, set port 8728, Allowed From empty, then re-paste"} '
-                'else={:put "ispcentric API: enabled and listening on port 8728"}'
+            _ros_nat_add(f"action=accept dst-address={network}", "ispcentric-vpn-no-nat"),
+            _ros_check(
+                '[:len [find where comment="ispcentric-vpn-no-nat"]] > 0',
+                "Srcnat bypass for billing tunnel installed",
+                "No-nat rule missing - run: /ip firewall nat print",
             ),
+            _ros_info("Probing tunnel to billing server (retries ~20s)..."),
+            _ros_ping_probe(server, address),
             (
-                ':do { :put ("ispcentric API address-list=" . '
-                '[/ip service get [find where name=api] address]) } on-error={'
-                ':put "ispcentric API: address list unread"}'
-            ),
-            "# Wait for the handshake, then prove the billing server answers.",
-            ":delay 3s",
-            (
-                f":if ([/ping {server} count=4 interval=500ms] > 0) do={{:put "
-                f'"ispcentric OK: tunnel {address} reaches {server} - Connect in ISPCENTRIC '
-                f'(API 8728 must show enabled above)"'
-                f"}} else={{:put "
-                f'"ispcentric: tunnel set on {address} but no ping from {server}. '
-                f'Add this peer on the VPS wg0, restart WireGuard, then retry Connect."}}'
+                ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
+                '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
+                'last-handshake]) } on-error={'
+                f'{_ros_warn("No handshake yet - add [Peer] on VPS wg0 and restart WireGuard")}'
+                "}"
             ),
             "# Replace the old backup so it always contains the latest tunnel.",
             ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
             "/system backup",
             "save name=ispcentric-tunnel dont-encrypt=yes",
-            ':put "Backup saved as ispcentric-tunnel.backup - Winbox Save is also fine."',
+            _ros_ok("Backup saved as ispcentric-tunnel.backup"),
+            _ros_info("---------- ISPCENTRIC summary ----------"),
+            _ros_check(
+                "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
+                "Summary: WireGuard interface",
+                "Summary: WireGuard interface",
+            ),
+            _ros_check(
+                "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
+                "Summary: VPS peer",
+                "Summary: VPS peer",
+            ),
+            _ros_check(
+                "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+                "Summary: API port 8728",
+                "Summary: API port 8728",
+            ),
+            _ros_check(
+                '[:len [find where comment="ispcentric-vpn-api"]] > 0',
+                "Summary: Firewall API rule",
+                "Summary: Firewall API rule",
+            ),
+            _ros_check(
+                f'[/ping {server} count=1] > 0',
+                f"Summary: Ping to billing server {server}",
+                f"Summary: Ping to billing server {server} (add VPS [Peer] if FAIL)",
+            ),
+            _ros_info("If all lines above show OK and ping FAIL, add [Peer] on VPS wg0"),
+            _ros_info("Then click Connect in ISPCENTRIC when ping shows OK"),
+            _ros_info("---------- end ISPCENTRIC install ----------"),
         ]
     )
 

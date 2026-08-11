@@ -220,17 +220,30 @@ class Command(BaseCommand):
                             style=self.style.WARNING,
                         )
             if not result.get("ok"):
-                errors += 1
-                err = (
-                    (result.get("portal") or {}).get("error")
-                    or (result.get("provision") or {}).get("error")
-                    or result.get("message")
-                )
-                self._write(
-                    self.stderr,
-                    f"{customer.account_number}: {err}",
-                    style=self.style.WARNING,
-                )
+                portal = result.get("portal") or {}
+                provision = result.get("provision") or {}
+                cpe_offline = bool(portal.get("skipped")) and not portal.get("ok")
+                nas_ok = bool(provision.get("ok"))
+                # CPE offline with NAS already correct is a notice, not a sweep error.
+                if cpe_offline and nas_ok:
+                    state = "allowed" if result.get("allowed") else "blocked"
+                    note = " (CPE offline — NAS ok)"
+                    self._write(
+                        self.stdout,
+                        f"{customer.account_number}: {state}{note}",
+                    )
+                else:
+                    errors += 1
+                    err = (
+                        portal.get("error")
+                        or provision.get("error")
+                        or result.get("message")
+                    )
+                    self._write(
+                        self.stderr,
+                        f"{customer.account_number}: {err}",
+                        style=self.style.WARNING,
+                    )
             else:
                 state = "allowed" if result.get("allowed") else "blocked"
                 self._write(self.stdout, f"{customer.account_number}: {state}")

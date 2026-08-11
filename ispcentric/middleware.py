@@ -266,6 +266,7 @@ class HotspotCaptiveProbeMiddleware:
         )
         remote = (request.META.get("REMOTE_ADDR") or "").strip()
         from core.mikrotik_connect import (
+            captive_redirect_cache_key,
             find_pppoe_customer_for_ip,
             is_cpe_renew_pool_ip,
             is_hotspot_pool_ip,
@@ -294,8 +295,8 @@ class HotspotCaptiveProbeMiddleware:
 
         query = request.META.get("QUERY_STRING") or ""
         # Cache the final pay URL per client IP so probe bursts stay cheap.
-        # Mode is decided after org/customer resolution, so the key is IP-based.
-        cache_key = f"captive:redirect:v2:{remote}:{query}"
+        # Generation bumps on successful renew so clients are not stuck on /pay.
+        cache_key = captive_redirect_cache_key(remote, query)
         cached_target = cache.get(cache_key)
         if cached_target:
             return redirect(cached_target)

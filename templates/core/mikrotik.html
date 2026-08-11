@@ -67,14 +67,6 @@
               </td>
               <td data-label="Manage">
                 <div class="org-actions org-actions-icons">
-                  <a
-                    class="org-action-icon mikrotik-edit-btn"
-                    href="{% url 'core:mikrotik_edit' router.id %}"
-                    title="Edit name, model, location, and internet company"
-                    aria-label="Edit {{ router.name }}"
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-                  </a>
                   <button
                     type="button"
                     class="org-action-icon mikrotik-reconnect-btn"
@@ -122,13 +114,11 @@
                     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 7h12v2H6zm2 3h8l-.7 10.1a1.5 1.5 0 0 1-1.5 1.4H10.2a1.5 1.5 0 0 1-1.5-1.4L8 10zm3-5h2l1 1h4v2H6V6h4z"/></svg>
                   </button>
                   <a
-                    class="org-action-icon mikrotik-view-btn"
+                    class="mikrotik-view-btn"
                     href="{% url 'core:mikrotik_detail' router.id %}"
                     title="View router"
                     aria-label="View {{ router.name }}"
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                  </a>
+                  >View Mikrotik</a>
                 </div>
               </td>
             </tr>
@@ -356,7 +346,7 @@
                 <p class="mikrotik-section-label">Billing tunnel · Winbox script</p>
                 <p class="mikrotik-tunnel-lead">
                   {% if wireguard_ready %}
-                    Four short steps. ISPCENTRIC checks the tunnel and RouterOS API live before you continue.
+                    Name the site, paste one script in Winbox, verify, then Connect.
                   {% elif hosted_server %}
                     This server is remote — routers need a tunnel before Connect can reach them.
                   {% else %}
@@ -367,13 +357,19 @@
             </div>
 
             {% if wireguard_ready %}
+              <nav class="mikrotik-tunnel-rail" aria-label="Tunnel setup progress">
+                <span class="mikrotik-tunnel-rail-item is-active" data-tunnel-rail="1">1 · Name</span>
+                <span class="mikrotik-tunnel-rail-item" data-tunnel-rail="2">2 · Paste</span>
+                <span class="mikrotik-tunnel-rail-item" data-tunnel-rail="3">3 · Verify</span>
+                <span class="mikrotik-tunnel-rail-item" data-tunnel-rail="4">4 · Connect</span>
+              </nav>
               <ol class="mikrotik-tunnel-steps" aria-label="Tunnel setup steps">
                 <li class="mikrotik-tunnel-step is-active" data-tunnel-step="1">
                   <span class="mikrotik-tunnel-step-num" aria-hidden="true">1</span>
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Name the site</h3>
-                      <p class="mikrotik-tunnel-step-desc">Give this router a label{% if onboarding_fee_enabled %}, pay the onboarding fee,{% endif %} then generate the Winbox script.</p>
+                      <p class="mikrotik-tunnel-step-desc">Label this router{% if onboarding_fee_enabled %}, pay,{% endif %} then generate the script.</p>
                     </div>
                     <label for="mikrotik-tunnel-label">Site name</label>
                     <div class="mikrotik-tunnel-actions">
@@ -423,7 +419,7 @@
                         <span class="mikrotik-tunnel-tip-icon" aria-hidden="true"></span>
                         <strong class="mikrotik-tunnel-tip-title">Get started</strong>
                       </div>
-                      <p class="mikrotik-tunnel-tip-lead">Enter a site name, then generate the Winbox script.</p>
+                      <p class="mikrotik-tunnel-tip-lead">Enter a site name and tap Generate.</p>
                     </div>
                   </div>
                 </li>
@@ -432,7 +428,7 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
-                      <p class="mikrotik-tunnel-step-desc">Copy the script, open Winbox → New Terminal, paste it, and wait for “ispcentric OK”.</p>
+                      <p class="mikrotik-tunnel-step-desc">Winbox → New Terminal → paste → wait for green <strong>OK</strong> lines.</p>
                     </div>
                     <div class="mikrotik-tunnel-script-bar">
                       <span>RouterOS script ready</span>
@@ -446,17 +442,26 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Verify connection</h3>
-                      <p class="mikrotik-tunnel-step-desc">We watch the tunnel and RouterOS API. Fix anything below, then check again.</p>
+                      <p class="mikrotik-tunnel-step-desc">Green = good · Red = fix that item · then Check now.</p>
                     </div>
                     <div class="mikrotik-tunnel-check-panel">
-                      <div class="mikrotik-tunnel-check-row">
-                        <span class="mikrotik-tunnel-check is-waiting" id="mikrotik-tunnel-check">
+                      <div class="mikrotik-tunnel-verify-banner is-waiting" id="mikrotik-tunnel-verify-banner" role="status" aria-live="polite">
+                        <span class="mikrotik-tunnel-verify-icon" aria-hidden="true"></span>
+                        <div class="mikrotik-tunnel-verify-copy">
+                          <strong class="mikrotik-tunnel-verify-title" id="mikrotik-tunnel-verify-title">Waiting for script</strong>
+                          <span class="mikrotik-tunnel-verify-sub" id="mikrotik-tunnel-verify-sub">Paste in Winbox first</span>
+                        </div>
+                      </div>
+                      <ul class="mikrotik-tunnel-checklist is-compact" id="mikrotik-tunnel-checklist" aria-live="polite" hidden></ul>
+                      <p class="mikrotik-tunnel-verify-hint" id="mikrotik-tunnel-verify-hint" hidden></p>
+                      <div class="mikrotik-tunnel-check-row is-compact">
+                        <span class="mikrotik-tunnel-check is-waiting" id="mikrotik-tunnel-check" hidden>
                           <span class="mikrotik-tunnel-check-dot" aria-hidden="true"></span>
-                          <span id="mikrotik-tunnel-check-label">Waiting for the script to be pasted…</span>
+                          <span id="mikrotik-tunnel-check-label">Checking…</span>
                         </span>
                         <button type="button" class="btn btn-primary mikrotik-tunnel-check-now" id="mikrotik-tunnel-check-now">Check now</button>
                       </div>
-                      <div class="mikrotik-tunnel-meters" id="mikrotik-tunnel-check-detail" aria-live="polite">
+                      <div class="mikrotik-tunnel-meters is-compact" id="mikrotik-tunnel-check-detail" hidden aria-hidden="true">
                         <div class="mikrotik-tunnel-meter is-waiting" data-meter="tunnel">
                           <span class="mikrotik-tunnel-meter-label">Tunnel</span>
                           <span class="mikrotik-tunnel-meter-value" data-meter-value="tunnel">Waiting</span>
@@ -466,7 +471,7 @@
                           <span class="mikrotik-tunnel-meter-value" data-meter-value="api">Waiting</span>
                         </div>
                       </div>
-                      <div class="mikrotik-tunnel-tip" id="mikrotik-tunnel-status" hidden role="status"></div>
+                      <div class="mikrotik-tunnel-tip is-compact" id="mikrotik-tunnel-status" hidden role="status"></div>
                     </div>
                   </div>
                 </li>
@@ -475,7 +480,7 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Use the tunnel IP</h3>
-                      <p class="mikrotik-tunnel-step-desc">When the checks pass, fill the MikroTik IP below and continue to Connect.</p>
+                      <p class="mikrotik-tunnel-step-desc">All checks passed — use this IP below and Connect.</p>
                     </div>
                     <div class="mikrotik-tunnel-ip-row">
                       <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
@@ -727,6 +732,11 @@
   var tunnelCheck = document.getElementById("mikrotik-tunnel-check");
   var tunnelCheckLabel = document.getElementById("mikrotik-tunnel-check-label");
   var tunnelCheckDetail = document.getElementById("mikrotik-tunnel-check-detail");
+  var tunnelChecklist = document.getElementById("mikrotik-tunnel-checklist");
+  var tunnelVerifyBanner = document.getElementById("mikrotik-tunnel-verify-banner");
+  var tunnelVerifyTitle = document.getElementById("mikrotik-tunnel-verify-title");
+  var tunnelVerifySub = document.getElementById("mikrotik-tunnel-verify-sub");
+  var tunnelVerifyHint = document.getElementById("mikrotik-tunnel-verify-hint");
   var tunnelCheckNow = document.getElementById("mikrotik-tunnel-check-now");
   var tunnelScriptText = "";
   var tunnelReadyAddress = "";
@@ -814,10 +824,122 @@
     connectStatus.classList.toggle("is-ok", !isError);
   }
 
+  var CHECK_SHORT_LABELS = {
+    lan: "Router on LAN",
+    subnet: "Same network",
+    api: "API port 8728",
+    firewall: "Firewall rule",
+    tunnel: "WireGuard tunnel",
+    vps_peer: "VPS peer",
+    billing_ping: "Billing server"
+  };
+
+  var CHECK_FAIL_HINTS = {
+    lan: "Connect this PC to the router network",
+    subnet: "Put this PC on the same subnet as the router",
+    api: "Re-paste the script in Winbox",
+    firewall: "Finish the Winbox script",
+    tunnel: "Paste the script and wait for OK lines",
+    vps_peer: "Add [Peer] on VPS wg0 and restart WireGuard",
+    billing_ping: "Register router on VPS, then check again"
+  };
+
+  function setVerifyBanner(state, title, sub) {
+    if (!tunnelVerifyBanner) return;
+    tunnelVerifyBanner.classList.remove("is-waiting", "is-checking", "is-ready", "is-error", "is-warn");
+    tunnelVerifyBanner.classList.add("is-" + (state || "waiting"));
+    if (tunnelVerifyTitle) tunnelVerifyTitle.textContent = title || "Checking…";
+    if (tunnelVerifySub) tunnelVerifySub.textContent = sub || "";
+  }
+
+  function setVerifyHint(text) {
+    if (!tunnelVerifyHint) return;
+    if (!text) {
+      tunnelVerifyHint.hidden = true;
+      tunnelVerifyHint.textContent = "";
+      return;
+    }
+    tunnelVerifyHint.hidden = false;
+    tunnelVerifyHint.textContent = text;
+  }
+
+  function summarizeChecks(checks) {
+    if (!checks || !checks.length) {
+      return { state: "waiting", title: "Waiting for script", sub: "Paste in Winbox first", hint: "" };
+    }
+    var failed = checks.filter(function (item) { return item.status === "fail"; });
+    var waiting = checks.filter(function (item) { return item.status === "waiting"; });
+    var warned = checks.filter(function (item) { return item.status === "warn"; });
+    var okCount = checks.filter(function (item) { return item.status === "ok"; }).length;
+    if (failed.length) {
+      return {
+        state: "error",
+        title: failed.length + " issue" + (failed.length > 1 ? "s" : "") + " to fix",
+        sub: okCount + " of " + checks.length + " checks passed",
+        hint: CHECK_FAIL_HINTS[failed[0].key] || failed[0].message || "Fix red items, then Check now"
+      };
+    }
+    if (warned.length && !waiting.length && okCount + warned.length === checks.length) {
+      return {
+        state: "warn",
+        title: "Almost ready",
+        sub: okCount + " passed · " + warned.length + " warning",
+        hint: "Review yellow items, then Check now"
+      };
+    }
+    if (okCount === checks.length) {
+      return {
+        state: "ready",
+        title: "All checks passed",
+        sub: "Ready to Connect",
+        hint: "Use the tunnel IP below"
+      };
+    }
+    return {
+      state: waiting.length ? "waiting" : "checking",
+      title: "Checking connection…",
+      sub: okCount + " of " + checks.length + " passed",
+      hint: waiting.length ? "Finish the Winbox script, then Check now" : ""
+    };
+  }
+
+  function renderTunnelChecks(checks) {
+    if (!tunnelChecklist) return;
+    var summary = summarizeChecks(checks);
+    setVerifyBanner(summary.state, summary.title, summary.sub);
+    setVerifyHint(summary.hint);
+    if (!checks || !checks.length) {
+      tunnelChecklist.hidden = true;
+      tunnelChecklist.innerHTML = "";
+      return;
+    }
+    tunnelChecklist.hidden = false;
+    tunnelChecklist.innerHTML = checks.map(function (item) {
+      var status = item.status || "waiting";
+      var label = escapeHtml(CHECK_SHORT_LABELS[item.key] || item.label || "Check");
+      var showDetail = status === "fail" || status === "warn";
+      var detail = showDetail
+        ? escapeHtml(CHECK_FAIL_HINTS[item.key] || item.message || "")
+        : "";
+      return (
+        '<li class="mikrotik-tunnel-checklist-item is-' + status + '">' +
+          '<span class="mikrotik-tunnel-checklist-dot" aria-hidden="true"></span>' +
+          '<span class="mikrotik-tunnel-checklist-label">' + label + "</span>" +
+          (detail ? '<span class="mikrotik-tunnel-checklist-message">' + detail + "</span>" : "") +
+        "</li>"
+      );
+    }).join("");
+  }
+
   function setTunnelStatus(text, isError) {
     tunnelStatusMessage = text || "";
     tunnelStatusIsError = !!isError;
     var inCheckPhase = !!tunnelScriptText;
+    if (inCheckPhase && tunnelChecklist && !tunnelChecklist.hidden) {
+      if (tunnelStatus) tunnelStatus.hidden = true;
+      if (tunnelStatusEarly) tunnelStatusEarly.hidden = true;
+      return;
+    }
     var tip = buildTunnelTip(tunnelStatusMessage, tunnelStatusIsError);
     [tunnelStatus, tunnelStatusEarly].forEach(function (el) {
       if (!el) return;
@@ -832,97 +954,34 @@
     if (!raw) return null;
 
     if (/Local mode is active, but no MikroTik/i.test(raw)) {
-      return {
-        tone: "warn",
-        title: "No MikroTik on this LAN yet",
-        lead: "Local mode is active. Follow these steps, then check again.",
-        steps: [
-          "Connect this computer to the MikroTik network",
-          "Paste the latest script in Winbox → New Terminal",
-          "Click Check now"
-        ]
-      };
+      return { tone: "warn", title: "No router found", lead: "Connect this PC to the MikroTik LAN.", steps: ["Paste script in Winbox", "Check now"] };
     }
-    if (/different subnet/i.test(raw) && /8728/i.test(raw)) {
-      return {
-        tone: "error",
-        title: "PC and MikroTik are on different subnets",
-        lead: raw,
-        steps: [
-          "Set this PC to an IP on the MikroTik LAN (same first three octets)",
-          "Or change the MikroTik LAN IP to match this PC’s subnet",
-          "Winbox Neighbors can work over MAC even when Connect cannot — that is normal",
-          "Click Check now, then Connect"
-        ]
-      };
+    if (/different subnet/i.test(raw)) {
+      return { tone: "error", title: "Wrong subnet", lead: "Use an IP on the same LAN as the router.", steps: ["Fix PC or router IP", "Check now"] };
     }
     if (/Found the MikroTik locally/i.test(raw) && /8728/i.test(raw)) {
-      return {
-        tone: "warn",
-        title: "Router found — API still closed",
-        lead: "The MikroTik is on the LAN, but port 8728 is not ready yet.",
-        steps: [
-          "Paste the latest script in Winbox → New Terminal",
-          "Wait until it finishes",
-          "Click Check now"
-        ]
-      };
+      return { tone: "warn", title: "API not open yet", lead: "Paste the script in Winbox.", steps: ["Wait for OK lines", "Check now"] };
     }
     if (/Several local MikroTik routers were found/i.test(raw)) {
-      return {
-        tone: "warn",
-        title: "Pick the right LAN IP",
-        lead: "More than one MikroTik was found on this network.",
-        steps: [
-          "Choose the correct IP in the MikroTik IP field",
-          "Click Check now"
-        ]
-      };
+      return { tone: "warn", title: "Pick router IP", lead: "Choose the correct LAN IP above.", steps: null };
     }
     if (/Local mode ready/i.test(raw)) {
-      return {
-        tone: "ok",
-        title: "Local MikroTik ready",
-        lead: raw,
-        steps: [
-          "Enter the router username and password",
-          "Press Connect"
-        ]
-      };
+      return { tone: "ok", title: "Ready", lead: "Enter login details and Connect.", steps: null };
     }
-    if (/Script ready|Copied\. Paste|Waiting for MikroTik/i.test(raw)) {
-      return {
-        tone: "ok",
-        title: "Paste the script",
-        lead: raw,
-        steps: [
-          "Open Winbox → New Terminal",
-          "Paste the script and wait for “ispcentric OK”",
-          "Click Check now"
-        ]
-      };
+    if (/Script ready|Copied\. Paste|Waiting for MikroTik|\[ISPCENTRIC OK\]/i.test(raw)) {
+      return { tone: "ok", title: "Paste script", lead: "Winbox → New Terminal → paste.", steps: ["Wait for green OK lines", "Check now"] };
     }
     if (/Success — tunnel is online|Tunnel connected|Tunnel IP filled/i.test(raw)) {
-      return {
-        tone: "ok",
-        title: "Ready to connect",
-        lead: raw,
-        steps: null
-      };
+      return { tone: "ok", title: "Ready to connect", lead: "Press Connect below.", steps: null };
     }
     if (/Enter a site name/i.test(raw)) {
-      return {
-        tone: "ok",
-        title: "Get started",
-        lead: raw,
-        steps: null
-      };
+      return { tone: "ok", title: "Get started", lead: raw, steps: null };
     }
 
     return {
       tone: isError ? "error" : "ok",
-      title: isError ? "Action needed" : "Status",
-      lead: raw,
+      title: isError ? "Fix needed" : "Status",
+      lead: raw.length > 90 ? raw.slice(0, 87) + "…" : raw,
       steps: null
     };
   }
@@ -1149,12 +1208,33 @@
     return true;
   }
 
+  function syncTunnelRail() {
+    if (!tunnelCard) return;
+    var activeStep = 1;
+    var maxDone = 0;
+    tunnelCard.querySelectorAll(".mikrotik-tunnel-step").forEach(function (stepEl) {
+      var stepNum = Number(stepEl.getAttribute("data-tunnel-step") || "0");
+      if (stepEl.classList.contains("is-active")) activeStep = stepNum;
+      if (stepEl.classList.contains("is-done") && stepNum > maxDone) maxDone = stepNum;
+    });
+    tunnelCard.querySelectorAll("[data-tunnel-rail]").forEach(function (rail) {
+      var railStep = Number(rail.getAttribute("data-tunnel-rail") || "0");
+      rail.classList.remove("is-active", "is-done");
+      if (railStep <= maxDone) rail.classList.add("is-done");
+      else if (railStep === activeStep) rail.classList.add("is-active");
+    });
+  }
+
   function markTunnelStep(step, state) {
     if (!tunnelCard) return;
     var el = tunnelCard.querySelector('[data-tunnel-step="' + step + '"]');
     if (!el) return;
     el.classList.toggle("is-active", state === "active");
     el.classList.toggle("is-done", state === "done");
+    syncTunnelRail();
+    if (state === "active" && Number(step) >= 3 && (!tunnelChecklist || tunnelChecklist.hidden)) {
+      setVerifyBanner("waiting", "Waiting for script", "Paste in Winbox first");
+    }
   }
 
   function applyTunnelIp(address) {
@@ -1220,6 +1300,9 @@
     markTunnelStep(3, "");
     markTunnelStep(4, "");
     setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
+    renderTunnelChecks([]);
+    setVerifyBanner("waiting", "Waiting for script", "Paste in Winbox first");
+    setVerifyHint("");
     setTunnelStatus(
       "Enter a site name, then generate the Winbox script.",
       false
@@ -1269,6 +1352,7 @@
     if (tunnelCheckNow) tunnelCheckNow.disabled = true;
     markTunnelStep(2, "done");
     markTunnelStep(3, "active");
+    setVerifyBanner("checking", "Checking connection…", "Tunnel and API");
     setTunnelCheckState("checking", "Checking tunnel and RouterOS API…", false, false);
     var statusCheckUrl = tunnelStatusUrl + "?token=" + encodeURIComponent(tunnelStatusToken);
     if (hostInput && hostInput.value.trim()) {
@@ -1283,8 +1367,10 @@
         var data = result.data || {};
         if (!result.ok || !data.ok) {
           setTunnelCheckState("error", data.error || "Could not check the tunnel.", false, false);
+          renderTunnelChecks([]);
           return;
         }
+        renderTunnelChecks(data.checks || []);
         if (data.local_mode) {
           if (data.lan_address && hostInput) {
             hostInput.value = data.lan_address;
@@ -1294,6 +1380,8 @@
             tunnelApiReady = true;
             stopTunnelStatusPolling();
             setTunnelCheckState("ready", "Local MikroTik connected · API enabled", true, true);
+            setVerifyBanner("ready", "All checks passed", "Ready to Connect");
+            setVerifyHint("Enter router login and press Connect");
             setTunnelMeters(
               data.lan_address ? data.lan_address : "Online",
               "Enabled · Ready",
@@ -1356,6 +1444,8 @@
         if (data.ready) {
           tunnelApiReady = true;
           stopTunnelStatusPolling();
+          setVerifyBanner("ready", "All checks passed", "Ready to Connect");
+          setVerifyHint("Use the tunnel IP below");
           setTunnelCheckState("ready", "Tunnel connected · API enabled", true, true);
           setTunnelStatus(data.message, false);
           markTunnelStep(2, "done");
@@ -1383,6 +1473,8 @@
       })
       .catch(function () {
         setTunnelCheckState("error", "Live check failed — retrying…", false, false);
+        renderTunnelChecks([]);
+        setVerifyBanner("error", "Check failed", "Retrying automatically…");
       })
       .finally(function () {
         tunnelStatusInFlight = false;
@@ -2706,7 +2798,7 @@
     started = true;
     // Use cache when available so the page feels instant; Refresh status forces a probe.
     refreshStatus(false);
-    timer = setInterval(function () { refreshStatus(false); }, 30000);
+    timer = setInterval(function () { refreshStatus(false); }, {% if hosted_server %}45000{% else %}30000{% endif %});
   }
   if (window.requestIdleCallback) window.requestIdleCallback(startPolling, { timeout: 1200 });
   else setTimeout(startPolling, 400);

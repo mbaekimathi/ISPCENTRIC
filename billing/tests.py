@@ -9,11 +9,14 @@ from accounts.models import Organization
 from billing.models import BillingPlan, Customer
 from billing.services import (
     apply_subscription_renewal,
+    customer_can_surf_via_hotspot,
+    customer_can_surf_via_pppoe,
     customer_package_is_paused,
     customer_pppoe_secret_disabled,
     customer_receives_internet,
     customer_subscription_expired,
     generate_account_number_from_phone,
+    organization_uses_dynamic_access,
     package_remaining_seconds,
     pause_customer_package,
     recharge_customer_cash,
@@ -242,6 +245,440 @@ class PrepaidAccessPolicyTests(TestCase):
             side_effect=localtime_at(end),
         ):
             self.assertFalse(subscription_period_allows(customer))
+
+
+class DynamicAccessPolicyTests(TestCase):
+    """
+    Dynamic mode (PPPoE compulsory + Hotspot fallback):
+    - Hotspot surfing only after payment applied (active package window)
+    - PPPoE surfing only inside the subscription period
+    """
+
+    def setUp(self):
+        self.owner = User.objects.create_user("dynamic-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Dynamic ISP",
+            owner=self.owner,
+            join_code="112233",
+            pppoe_compulsory=True,
+            hotspot_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+
+    def test_organization_uses_dynamic_access_when_both_flags_on(self):
+        self.assertTrue(organization_uses_dynamic_access(self.org))
+        self.org.hotspot_enabled = False
+        self.assertFalse(organization_uses_dynamic_access(self.org))
+
+    def test_hotspot_denied_without_paid_package_even_after_stk_success(self):
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Phone",
+            phone="254700000050",
+            account_number="DYN-HS-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:01",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            phone="254700000050",
+            amount=self.plan.price,
+            purpose=StkPushRequest.Purpose.SUBSCRIPTION,
+        )
+        fulfill_successful_stk(stk, mpesa_receipt="PAID123")
+        customer.refresh_from_db()
+        stk.refresh_from_db()
+
+        self.assertEqual(stk.status, StkPushRequest.Status.SUCCESS)
+        self.assertFalse(stk.subscription_applied)
+        self.assertIsNone(customer.package_end)
+        self.assertFalse(customer_can_surf_via_hotspot(customer))
+        self.assertFalse(customer_receives_internet(customer))
+
+    def test_hotspot_allowed_only_after_voucher_redeem(self):
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import redeem_access_voucher
+
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Phone Paid",
+            phone="254700000051",
+            account_number="DYN-HS-2",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:02",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            phone="254700000051",
+            amount=self.plan.price,
+            purpose=StkPushRequest.Purpose.SUBSCRIPTION,
+        )
+        fulfill = fulfill_successful_stk(stk, mpesa_receipt="PAID456")
+        redeem = redeem_access_voucher(
+            organization=self.org,
+            code=fulfill["voucher_code"],
+            customer=customer,
+        )
+        customer.refresh_from_db()
+
+        self.assertTrue(redeem["ok"])
+        self.assertTrue(customer_can_surf_via_hotspot(customer))
+        self.assertIsNotNone(customer.package_end)
+
+    def test_pppoe_allowed_only_inside_subscription_period(self):
+        now = timezone.localtime()
+        active = Customer.objects.create(
+            organization=self.org,
+            full_name="Home Active",
+            phone="254700000052",
+            account_number="DYN-PPP-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="home1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        expired = Customer.objects.create(
+            organization=self.org,
+            full_name="Home Expired",
+            phone="254700000053",
+            account_number="DYN-PPP-2",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="home2",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(days=3),
+            package_end=now - timedelta(days=1),
+        )
+
+        self.assertTrue(customer_can_surf_via_pppoe(active))
+        self.assertFalse(customer_can_surf_via_pppoe(expired))
+
+    def test_pppoe_customer_cannot_surf_via_hotspot_path(self):
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Only",
+            phone="254700000054",
+            account_number="DYN-PPP-3",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="home3",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        self.assertTrue(customer_can_surf_via_pppoe(customer))
+        self.assertFalse(customer_can_surf_via_hotspot(customer))
+
+    def test_hotspot_customer_cannot_surf_via_pppoe_path(self):
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Only",
+            phone="254700000055",
+            account_number="DYN-HS-3",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:03",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=5),
+            package_end=now + timedelta(hours=1),
+        )
+        self.assertTrue(customer_can_surf_via_hotspot(customer))
+        self.assertFalse(customer_can_surf_via_pppoe(customer))
+
+
+class AccessAccountLoopTests(TestCase):
+    """Unit tests for shared PPPoE/Hotspot correction-loop helpers."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user("loop-unit-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Loop Unit ISP",
+            owner=self.owner,
+            join_code="909090",
+            pppoe_compulsory=True,
+            hotspot_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily Loop",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        now = timezone.localtime()
+        self.pppoe_active = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Active",
+            phone="254700000060",
+            account_number="LOOP-PPP-ACT",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="active1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(days=1),
+        )
+        self.pppoe_expired = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Expired",
+            phone="254700000061",
+            account_number="LOOP-PPP-EXP",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="expired1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(days=3),
+            package_end=now - timedelta(days=1),
+        )
+        self.pppoe_inactive = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Inactive",
+            phone="254700000064",
+            account_number="LOOP-PPP-INA",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="inactive1",
+            pppoe_password="secret",
+            status=Customer.Status.ALLOCATED_OPEN,
+            plan=self.plan,
+        )
+        self.hotspot_unpaid = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Unpaid",
+            phone="254700000062",
+            account_number="LOOP-HS-UNP",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:AA",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        self.hotspot_paid = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Paid",
+            phone="254700000063",
+            account_number="LOOP-HS-PAD",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:BB",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=10),
+            package_end=now + timedelta(hours=2),
+        )
+
+    def test_billing_allows_surf_per_account_type(self):
+        from billing.access_verification import billing_allows_surf
+
+        self.assertTrue(billing_allows_surf(self.pppoe_active))
+        self.assertFalse(billing_allows_surf(self.pppoe_expired))
+        self.assertFalse(billing_allows_surf(self.hotspot_unpaid))
+        self.assertTrue(billing_allows_surf(self.hotspot_paid))
+
+    def test_evaluate_pppoe_active_sync(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {"ok": True, "profile": "ispcentric-5u-10d", "disabled": False},
+            "portal": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.pppoe_active, sync)
+        self.assertTrue(result["policy_match"])
+
+    def test_evaluate_pppoe_active_cpe_offline_nas_ready(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": False,
+            "allowed": True,
+            "cpe_renew_clear_pending": True,
+            "provision": {"ok": True, "profile": "ispcentric-5u-10d", "disabled": False},
+            "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
+        }
+        result = evaluate_nas_policy(self.pppoe_active, sync)
+        self.assertTrue(result["policy_match"])
+        self.assertTrue(result["details"].get("cpe_clear_pending"))
+
+    def test_evaluate_pppoe_expired_sync(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": False,
+            "provision": {"ok": True, "profile": "ispcentric-blocked", "disabled": False},
+            "portal": {"ok": True, "skipped": False},
+        }
+        result = evaluate_nas_policy(self.pppoe_expired, sync)
+        self.assertTrue(result["policy_match"])
+
+    def test_evaluate_pppoe_inactive_sync(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": False,
+            "provision": {"ok": True, "profile": "ispcentric-pppoe", "disabled": True},
+            "portal": {"ok": True, "skipped": True},
+        }
+        result = evaluate_nas_policy(self.pppoe_inactive, sync)
+        self.assertTrue(result["policy_match"])
+
+    def test_evaluate_hotspot_unpaid_sync(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": False,
+            "provision": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.hotspot_unpaid, sync)
+        self.assertTrue(result["policy_match"])
+        self.assertTrue(result["details"]["hotspot_disabled"])
+
+    def test_evaluate_hotspot_paid_sync(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.hotspot_paid, sync)
+        self.assertTrue(result["policy_match"])
+        self.assertFalse(result["details"]["hotspot_disabled"])
+        self.assertTrue(result["details"]["hotspot_limit_uptime"].endswith("s"))
+
+    def test_run_correction_loop_retries_until_match(self):
+        from billing.access_verification import run_access_correction_loop
+
+        calls = {"n": 0}
+
+        def fake_sync(customer, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return {
+                    "ok": False,
+                    "allowed": True,
+                    "provision": {"ok": False},
+                }
+            return {
+                "ok": True,
+                "allowed": True,
+                "provision": {"ok": True, "profile": "ispcentric", "disabled": False},
+                "portal": {"ok": True},
+            }
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            side_effect=fake_sync,
+        ):
+            outcome = run_access_correction_loop(
+                self.pppoe_active,
+                loops=3,
+                settle=0,
+            )
+        self.assertTrue(outcome.passed)
+        self.assertEqual(len(outcome.attempts), 2)
+
+    def test_run_correction_loop_blocks_unpaid_hotspot_on_retry(self):
+        from billing.access_verification import run_access_correction_loop
+
+        sync_calls = {"n": 0}
+
+        def fake_sync(customer, **kwargs):
+            sync_calls["n"] += 1
+            if sync_calls["n"] == 1:
+                return {
+                    "ok": False,
+                    "allowed": False,
+                    "provision": {"ok": False},
+                }
+            return {
+                "ok": True,
+                "allowed": False,
+                "provision": {"ok": True},
+            }
+
+        with (
+            patch(
+                "core.mikrotik_connect.sync_customer_subscription_access",
+                side_effect=fake_sync,
+            ),
+            patch(
+                "core.mikrotik_connect.block_hotspot_mac_until_paid",
+                return_value={"ok": True},
+            ) as block_mock,
+        ):
+            outcome = run_access_correction_loop(
+                self.hotspot_unpaid,
+                loops=2,
+                settle=0,
+            )
+        block_mock.assert_called_once()
+        self.assertTrue(outcome.passed)
+
+    def test_verify_access_accounts_command_dry_run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command(
+            "verify_access_accounts",
+            organization=self.org.pk,
+            dry_run=True,
+            stdout=out,
+        )
+        text = out.getvalue()
+        self.assertIn("PASS", text)
+        self.assertIn("LOOP-PPP-ACT", text)
+        self.assertIn("LOOP-HS-UNP", text)
+
+    def test_customers_for_access_verification_filters_service(self):
+        from billing.access_verification import customers_for_access_verification
+
+        pppoe_only = customers_for_access_verification(
+            organization_id=self.org.pk,
+            service="pppoe",
+        )
+        self.assertTrue(all(c.service_type == Customer.ServiceType.PPPOE for c in pppoe_only))
+        self.assertEqual(len(pppoe_only), 2)
+
+        hotspot_only = customers_for_access_verification(
+            organization_id=self.org.pk,
+            service="hotspot",
+        )
+        self.assertTrue(all(c.service_type == Customer.ServiceType.HOTSPOT for c in hotspot_only))
+        self.assertEqual(len(hotspot_only), 2)
 
 
 class PackagePauseResumeTests(TestCase):

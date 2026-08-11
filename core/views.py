@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import logging
 import re
 import ssl
 import threading
@@ -95,6 +96,9 @@ from core.mikrotik_connect import (
     check_mikrotik_reachable,
     clear_mikrotik_uplink_multi,
     customer_cpe_web_proxy,
+    customer_cpe_access_eligible,
+    customer_cpe_proxy_scope,
+    resolve_customer_cpe_target,
     probe_customer_cpe_web,
     CPE_WEB_PORTS,
     PPPOE_LOCAL_ADDRESS as MK_PPPOE_LOCAL_ADDRESS,
@@ -113,16 +117,19 @@ from core.mikrotik_connect import (
     cpe_firewall_unlock_script,
     prepare_customer_cpe_access,
     provision_customer_pppoe,
+    provision_static_client_dhcp_lease,
     read_mikrotik_uplink_multi,
     build_wan_traffic_share,
     read_mikrotik_wifi,
     recover_mikrotik_connection,
     set_mikrotik_clean_uplink,
     set_mikrotik_port_enabled,
-    set_mikrotik_wifi_enabled,
     sync_customer_subscription_access,
     test_mikrotik_api_login,
+    toggle_mikrotik_port,
+    toggle_mikrotik_wifi,
 )
+from core.mikrotik_jobs import get_job, get_router_jobs, set_job
 from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_devices, guess_model
 from core.models import MikroTikRouter, WireGuardReservation
 from core.places import resolve_location, search_locations
@@ -194,7 +201,24 @@ CLIENT_SIDEBARS = {
                 "label": "General usage",
                 "url_name": "core:clients_general_usage",
             },
-            {"key": "clients", "label": "All clients", "url_name": "core:my_clients"},
+            {
+                "key": "clients_pppoe",
+                "label": "View PPPoE clients",
+                "url_name": "core:my_clients",
+                "tab": "pppoe",
+            },
+            {
+                "key": "clients_static",
+                "label": "View static clients",
+                "url_name": "core:my_clients",
+                "tab": "static",
+            },
+            {
+                "key": "clients_hotspot",
+                "label": "View hotspot clients",
+                "url_name": "core:my_clients",
+                "tab": "hotspot",
+            },
         ],
     },
     "client_detail": {
@@ -342,20 +366,89 @@ def client_workspace_required(view_func):
     return _wrapped
 
 
-def _schedule_mikrotik_job(target, *, name: str = "mikrotik-bg") -> None:
+def _schedule_mikrotik_job(
+    target,
+    *,
+    name: str = "mikrotik-bg",
+    router_id: int | None = None,
+    job_type: str = "",
+) -> None:
     """Run RouterOS work off the request thread so nginx does not 504."""
+    logger = logging.getLogger(__name__)
 
     def _runner():
         from django.db import connection
 
+        if router_id and job_type:
+            set_job(router_id, job_type, "running")
         try:
-            target()
+            result = target()
+            if router_id and job_type:
+                if isinstance(result, dict) and result.get("ok") is False:
+                    set_job(
+                        router_id,
+                        job_type,
+                        "failed",
+                        error=(result.get("error") or "Could not apply settings on the MikroTik."),
+                    )
+                else:
+                    message = ""
+                    if isinstance(result, dict):
+                        message = (result.get("message") or "").strip()
+                    set_job(
+                        router_id,
+                        job_type,
+                        "ok",
+                        message=message or "Settings applied on the MikroTik.",
+                    )
         except Exception:
-            pass
+            logger.exception("MikroTik background job %s failed", name)
+            if router_id and job_type:
+                set_job(
+                    router_id,
+                    job_type,
+                    "failed",
+                    error="Unexpected error while updating the MikroTik.",
+                )
         finally:
             connection.close()
 
     threading.Thread(target=_runner, name=name, daemon=True).start()
+
+
+def _background_mikrotik_ops() -> bool:
+    """Heavy RouterOS pushes run in the background on hosted servers."""
+    return bool(getattr(settings, "HOSTED", False))
+
+
+def _router_api_host(router) -> str:
+    return (getattr(router, "api_host", None) or router.host or "").strip()
+
+
+def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
+    cache.delete_many(
+        [
+            f"mikrotik_status:{org_pk}",
+            f"mikrotik_live:{org_pk}:{router_pk}",
+            _wifi_fields_cache_key(org_pk, router_pk),
+            f"mikrotik_ports_live:{org_pk}:{router_pk}",
+            f"mikrotik_discover:{org_pk}:quick",
+            f"mikrotik_discover:{org_pk}:full",
+        ]
+    )
+
+
+def _mikrotik_status_cache_ttl(all_connected: bool) -> int:
+    if getattr(settings, "HOSTED", False):
+        return 20 if all_connected else 15
+    return 5 if all_connected else 3
+
+
+def _redirect_with_mikrotik_job(request, url_name: str, router_id: int, job_type: str):
+    from django.http import HttpResponseRedirect
+
+    base = reverse(url_name, kwargs={"router_id": router_id})
+    return HttpResponseRedirect(f"{base}?job={job_type}")
 
 
 def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict:
@@ -369,7 +462,12 @@ def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict
         if item.get("key") == "referral" and not referral_enabled:
             continue
         row = dict(item)
-        if row.get("url_name") and row.get("anchor") and not row.get("href"):
+        if row.get("url_name") and row.get("tab") and not row.get("href"):
+            try:
+                row["href"] = f"{reverse(row['url_name'])}?tab={row['tab']}"
+            except Exception:  # noqa: BLE001 — keep plain url_name fallback
+                pass
+        elif row.get("url_name") and row.get("anchor") and not row.get("href"):
             try:
                 row["href"] = f"{reverse(row['url_name'])}#{row['anchor']}"
             except Exception:  # noqa: BLE001 — keep plain url_name fallback
@@ -467,6 +565,21 @@ def customer_supports_live_usage(customer) -> bool:
     return False
 
 
+def customer_can_pause_package(customer) -> bool:
+    """Whether the subscriber's active package can be paused."""
+    return bool(
+        customer.package_end
+        and not customer_package_is_paused(customer)
+        and not customer_subscription_expired(customer)
+        and customer.status == Customer.Status.ACTIVE
+    )
+
+
+def customer_can_resume_package(customer) -> bool:
+    """Whether a paused package can be resumed."""
+    return customer_package_is_paused(customer)
+
+
 def resolve_client_usage_router(customer, org=None):
     """MikroTik to query for this client's live usage."""
     router = getattr(customer, "router", None)
@@ -493,12 +606,42 @@ def resolve_client_usage_router(customer, org=None):
 
 def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[dict]:
     """Sidebar items for a single client (sections + cash recharge)."""
+    paused = customer_package_is_paused(customer)
+    can_pause = customer_can_pause_package(customer)
+    can_resume = customer_can_resume_package(customer)
+
     nav: list[dict] = [
+        {
+            "key": "overview",
+            "label": "Client overview",
+            "href": reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        },
         {
             "key": "package",
             "label": "Recharge account",
             "action": "open_modal",
             "modal": "client-recharge-modal",
+        },
+        {
+            "key": "billing",
+            "label": "Client billing",
+            "href": reverse(
+                "core:client_billing",
+                kwargs={"customer_id": customer.pk},
+            ),
+        },
+        {
+            "key": "edit_details",
+            "label": f"Edit {customer.full_name} details",
+            "action": "open_modal",
+            "modal": "client-details-modal",
+        },
+        {
+            "key": "pause",
+            "label": "Resume subscription" if paused else "Pause subscription",
+            "action": "package_pause",
+            "package_action": "resume_package" if paused else "pause_package",
+            "disabled": not (can_pause or can_resume),
         },
     ]
     if customer_supports_live_usage(customer):
@@ -512,17 +655,18 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
                 ),
             }
         )
-    nav.append(
-        {
-            "key": "billing",
-            "label": "Client billing",
-            "href": reverse(
-                "core:client_billing",
-                kwargs={"customer_id": customer.pk},
-            ),
-        }
-    )
     if can_access_wifi:
+        nav.append(
+            {
+                "key": "router",
+                "label": "Open client router",
+                "href": reverse(
+                    "core:client_router_login",
+                    kwargs={"customer_id": customer.pk},
+                ),
+                "external": True,
+            }
+        )
         nav.append(
             {
                 "key": "wifi",
@@ -533,7 +677,28 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
                 ),
             }
         )
+    nav.append(
+        {
+            "key": "clients",
+            "label": "All clients",
+            "href": f"{reverse('core:my_clients')}?tab={customer.service_type}",
+        }
+    )
     return nav
+
+
+def customer_can_access_router(customer, org=None) -> bool:
+    """True when this client supports remote router / CPE Wi‑Fi management."""
+    return bool(org and customer_cpe_access_eligible(customer))
+
+
+def apply_client_shared_forms(ctx: dict, customer, org) -> dict:
+    """Attach shared client edit forms used by sidebar modals."""
+    ctx["details_form"] = CustomerDetailsEditForm(
+        instance=customer, organization=org
+    )
+    ctx.setdefault("open_client_modal", "")
+    return ctx
 
 
 def resolve_port_role(router: MikroTikRouter, port_name: str) -> str:
@@ -1814,18 +1979,62 @@ def mikrotik_detail(request, router_id: int):
             credentials_form = MikroTikCredentialsForm(request.POST, instance=router)
             if credentials_form.is_valid():
                 cleaned = credentials_form.cleaned_data
-                apply_result = apply_mikrotik_access_changes(
-                    current_host=current_host,
-                    current_username=current_username,
-                    current_password=current_password,
-                    current_wifi_ssid=current_wifi_ssid,
-                    current_wifi_password=current_wifi_password,
-                    new_host=cleaned.get("host") or "",
-                    new_username=cleaned.get("username") or "",
-                    new_password=cleaned.get("password") or "",
-                    new_wifi_ssid=cleaned.get("wifi_ssid") or "",
-                    new_wifi_password=cleaned.get("wifi_password") or "",
-                )
+
+                def _apply_credentials():
+                    result = apply_mikrotik_access_changes(
+                        current_host=current_host,
+                        current_username=current_username,
+                        current_password=current_password,
+                        current_wifi_ssid=current_wifi_ssid,
+                        current_wifi_password=current_wifi_password,
+                        new_host=cleaned.get("host") or "",
+                        new_username=cleaned.get("username") or "",
+                        new_password=cleaned.get("password") or "",
+                        new_wifi_ssid=cleaned.get("wifi_ssid") or "",
+                        new_wifi_password=cleaned.get("wifi_password") or "",
+                    )
+                    if result.get("ok"):
+                        live = MikroTikRouter.objects.get(pk=router.pk)
+                        live.host = cleaned.get("host") or live.host
+                        live.username = cleaned.get("username") or live.username
+                        live.password = cleaned.get("password") or live.password
+                        if cleaned.get("wifi_ssid"):
+                            live.wifi_ssid = cleaned.get("wifi_ssid") or live.wifi_ssid
+                        if cleaned.get("wifi_password"):
+                            live.wifi_password = (
+                                cleaned.get("wifi_password") or live.wifi_password
+                            )
+                        live.save(
+                            update_fields=[
+                                "host",
+                                "username",
+                                "password",
+                                "wifi_ssid",
+                                "wifi_password",
+                                "updated_at",
+                            ]
+                        )
+                        _invalidate_mikrotik_router_caches(org.pk, router.pk)
+                    return result
+
+                if _background_mikrotik_ops():
+                    set_job(router.pk, "credentials", "pending")
+                    _schedule_mikrotik_job(
+                        _apply_credentials,
+                        name=f"credentials-{router.pk}",
+                        router_id=router.pk,
+                        job_type="credentials",
+                    )
+                    messages.success(
+                        request,
+                        "Updating credentials on the MikroTik in the background. "
+                        "This page will show progress shortly.",
+                    )
+                    return _redirect_with_mikrotik_job(
+                        request, "core:mikrotik_detail", router.pk, "credentials"
+                    )
+
+                apply_result = _apply_credentials()
                 if not apply_result.get("ok"):
                     credentials_form.add_error(
                         None,
@@ -1834,16 +2043,6 @@ def mikrotik_detail(request, router_id: int):
                     )
                     open_modal = "mikrotik-credentials-modal"
                 else:
-                    credentials_form.save()
-                    cache.delete_many(
-                        [
-                            f"mikrotik_status:{org.pk}",
-                            f"mikrotik_live:{org.pk}:{router.pk}",
-                            _wifi_fields_cache_key(org.pk, router.pk),
-                            f"mikrotik_discover:{org.pk}:quick",
-                            f"mikrotik_discover:{org.pk}:full",
-                        ]
-                    )
                     messages.success(
                         request,
                         apply_result.get("message")
@@ -1862,57 +2061,67 @@ def mikrotik_detail(request, router_id: int):
 
             wifi_form = MikroTikWifiToggleForm(request.POST)
             if wifi_form.is_valid():
-                # Re-read live state so we toggle the real radio, not a stale cache.
-                live_now = read_mikrotik_wifi(
-                    router.host,
-                    router.username,
-                    router.password or "",
-                    timeout=5.0,
-                )
-                currently_on = bool(live_now.get("wifi_enabled"))
-                turn_on = not currently_on
-                result = set_mikrotik_wifi_enabled(
-                    router.host,
-                    router.username,
-                    router.password or "",
-                    enabled=turn_on,
-                    wifi_ssid=router.wifi_ssid or "",
-                    wifi_password=router.wifi_password or "",
-                )
-                cache.delete_many(
-                    [
-                        f"mikrotik_live:{org.pk}:{router.pk}",
-                        _wifi_fields_cache_key(org.pk, router.pk),
-                    ]
-                )
+                api_host = _router_api_host(router)
+
+                def _toggle_wifi():
+                    result = toggle_mikrotik_wifi(
+                        api_host,
+                        router.username,
+                        router.password or "",
+                        wifi_ssid=router.wifi_ssid or "",
+                        wifi_password=router.wifi_password or "",
+                    )
+                    if result.get("ok"):
+                        ssid = (result.get("wifi_ssid") or "").strip()
+                        password = result.get("wifi_password") or ""
+                        update_fields: list[str] = []
+                        live = MikroTikRouter.objects.get(pk=router.pk)
+                        if ssid and ssid != (live.wifi_ssid or ""):
+                            live.wifi_ssid = ssid
+                            update_fields.append("wifi_ssid")
+                        if password and password != (live.wifi_password or ""):
+                            live.wifi_password = password
+                            update_fields.append("wifi_password")
+                        if update_fields:
+                            update_fields.append("updated_at")
+                            live.save(update_fields=update_fields)
+                        cache.delete_many(
+                            [
+                                f"mikrotik_live:{org.pk}:{router.pk}",
+                                _wifi_fields_cache_key(org.pk, router.pk),
+                            ]
+                        )
+                    return result
+
+                if _background_mikrotik_ops():
+                    set_job(router.pk, "wifi", "pending")
+                    _schedule_mikrotik_job(
+                        _toggle_wifi,
+                        name=f"wifi-{router.pk}",
+                        router_id=router.pk,
+                        job_type="wifi",
+                    )
+                    messages.success(
+                        request,
+                        "Updating Wi‑Fi on the MikroTik in the background. "
+                        "This page will show progress shortly.",
+                    )
+                    return _redirect_with_mikrotik_job(
+                        request, "core:mikrotik_detail", router.pk, "wifi"
+                    )
+
+                result = _toggle_wifi()
                 if not result.get("ok"):
                     wifi_form.add_error(
                         None,
                         result.get("error") or "Could not update Wi‑Fi on the MikroTik.",
                     )
-                    wifi_enabled = currently_on
+                    wifi_enabled = bool(result.get("wifi_enabled"))
                     open_modal = "mikrotik-wifi-modal"
                 else:
-                    ssid = (result.get("wifi_ssid") or "").strip()
-                    password = result.get("wifi_password") or ""
-                    update_fields: list[str] = []
-                    if ssid and ssid != (router.wifi_ssid or ""):
-                        router.wifi_ssid = ssid
-                        update_fields.append("wifi_ssid")
-                    if password and password != (router.wifi_password or ""):
-                        router.wifi_password = password
-                        update_fields.append("wifi_password")
-                    if update_fields:
-                        update_fields.append("updated_at")
-                        router.save(update_fields=update_fields)
                     messages.success(
                         request,
-                        result.get("message")
-                        or (
-                            "Wi‑Fi activated on the MikroTik."
-                            if turn_on
-                            else "Wi‑Fi deactivated on the MikroTik."
-                        ),
+                        result.get("message") or "Wi‑Fi updated on the MikroTik.",
                     )
                     return redirect("core:mikrotik_detail", router_id=router.pk)
             else:
@@ -1969,6 +2178,7 @@ def mikrotik_ports(request, router_id: int):
 
     router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
     is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    api_host = _router_api_host(router)
     role_choices = _port_role_choices_for_ui()
     bond_mode_choices = [
         ("balance-xor", "Balance XOR (same provider)"),
@@ -1989,7 +2199,7 @@ def mikrotik_ports(request, router_id: int):
 
         if action == "auto_assign_ports":
             listed = list_mikrotik_ports(
-                router.host,
+                api_host,
                 router.username,
                 router.password or "",
                 timeout=6.0,
@@ -2010,7 +2220,7 @@ def mikrotik_ports(request, router_id: int):
             wan_name = (result.get("wan") or "").strip()
             if wan_name:
                 apply_mikrotik_single_wan(
-                    router.host,
+                    api_host,
                     router.username,
                     router.password or "",
                     wan_interface=wan_name,
@@ -2032,54 +2242,29 @@ def mikrotik_ports(request, router_id: int):
 
         if action == "toggle_port":
             port_name = (request.POST.get("port_name") or "").strip()
-            listed = list_mikrotik_ports(
-                router.host,
+            result = toggle_mikrotik_port(
+                api_host,
                 router.username,
                 router.password or "",
-                timeout=6.0,
+                interface_name=port_name,
             )
-            current = None
-            for row in listed.get("ports") or []:
-                if row.get("name") == port_name:
-                    current = row
-                    break
-            if not listed.get("ok"):
+            cache.delete_many(
+                [
+                    f"mikrotik_live:{org.pk}:{router.pk}",
+                    f"mikrotik_ports_live:{org.pk}:{router.pk}",
+                ]
+            )
+            if result.get("ok"):
+                messages.success(
+                    request,
+                    result.get("message")
+                    or f"Port {port_name} updated.",
+                )
+            else:
                 messages.error(
                     request,
-                    listed.get("error") or "Could not read ports from the MikroTik.",
+                    result.get("error") or f"Could not update port {port_name}.",
                 )
-            elif not current:
-                messages.error(request, f"Port “{port_name}” was not found on the router.")
-            else:
-                turn_on = bool(current.get("disabled"))
-                result = set_mikrotik_port_enabled(
-                    router.host,
-                    router.username,
-                    router.password or "",
-                    interface_name=port_name,
-                    enabled=turn_on,
-                )
-                cache.delete_many(
-                    [
-                        f"mikrotik_live:{org.pk}:{router.pk}",
-                        f"mikrotik_ports_live:{org.pk}:{router.pk}",
-                    ]
-                )
-                if result.get("ok"):
-                    messages.success(
-                        request,
-                        result.get("message")
-                        or (
-                            f"Port {port_name} enabled."
-                            if turn_on
-                            else f"Port {port_name} disabled."
-                        ),
-                    )
-                else:
-                    messages.error(
-                        request,
-                        result.get("error") or f"Could not update port {port_name}.",
-                    )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
         if action == "set_port_role":
@@ -2128,7 +2313,7 @@ def mikrotik_ports(request, router_id: int):
                 update_fields.extend(["wan_interface", "uplink_mode", "uplink_ports"])
                 # Best-effort push so RouterOS WAN list matches the chosen Internet port.
                 sync = apply_mikrotik_single_wan(
-                    router.host,
+                    api_host,
                     router.username,
                     router.password or "",
                     wan_interface=port_name,
@@ -2194,8 +2379,72 @@ def mikrotik_ports(request, router_id: int):
             if bond_mode not in BOND_MODES:
                 bond_mode = "balance-xor"
 
+            router_pk = router.pk
+            org_pk = org.pk
+            bond_ports = list(member_ports)
+
+            def _apply_bond_job(
+                ports=bond_ports,
+                bname=bond_name,
+                bmode=bond_mode,
+                pk=router_pk,
+                organization_pk=org_pk,
+            ):
+                live = MikroTikRouter.objects.get(pk=pk)
+                host = _router_api_host(live)
+                job_result = apply_mikrotik_uplink_bond(
+                    host,
+                    live.username,
+                    live.password or "",
+                    member_ports=ports,
+                    bond_name=bname,
+                    bond_mode=bmode,
+                )
+                if job_result.get("ok"):
+                    members = job_result.get("members") or ports
+                    live.uplink_mode = MikroTikRouter.UplinkMode.BOND
+                    live.uplink_ports = members
+                    live.bond_interface = job_result.get("bond_name") or bname
+                    live.bond_mode = job_result.get("bond_mode") or bmode
+                    live.wan_interface = job_result.get("wan_interface") or bname
+                    live.uplink_unbridged = job_result.get("unbridged") or []
+                    live.port_roles = _sync_roles_for_uplink(
+                        live, mode=MikroTikRouter.UplinkMode.BOND, ports=members
+                    )
+                    live.save(
+                        update_fields=[
+                            "uplink_mode",
+                            "uplink_ports",
+                            "bond_interface",
+                            "bond_mode",
+                            "wan_interface",
+                            "uplink_unbridged",
+                            "port_roles",
+                            "updated_at",
+                        ]
+                    )
+                    _invalidate_mikrotik_router_caches(organization_pk, pk)
+                return job_result
+
+            if _background_mikrotik_ops():
+                set_job(router.pk, "uplink_bond", "pending")
+                _schedule_mikrotik_job(
+                    _apply_bond_job,
+                    name=f"uplink-bond-{router.pk}",
+                    router_id=router.pk,
+                    job_type="uplink_bond",
+                )
+                messages.success(
+                    request,
+                    "Applying bonded uplinks on the MikroTik in the background. "
+                    "This page will show progress shortly.",
+                )
+                return _redirect_with_mikrotik_job(
+                    request, "core:mikrotik_ports", router.pk, "uplink_bond"
+                )
+
             result = apply_mikrotik_uplink_bond(
-                router.host,
+                api_host,
                 router.username,
                 router.password or "",
                 member_ports=member_ports,
@@ -2255,8 +2504,69 @@ def mikrotik_ports(request, router_id: int):
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
+            router_pk = router.pk
+            org_pk = org.pk
+            failover_primary = primary
+            failover_backups = list(backups)
+
+            def _apply_failover_job(
+                primary_port=failover_primary,
+                backup_ports=failover_backups,
+                pk=router_pk,
+                organization_pk=org_pk,
+            ):
+                live = MikroTikRouter.objects.get(pk=pk)
+                host = _router_api_host(live)
+                job_result = apply_mikrotik_uplink_failover(
+                    host,
+                    live.username,
+                    live.password or "",
+                    primary_port=primary_port,
+                    backup_ports=backup_ports,
+                )
+                if job_result.get("ok"):
+                    ordered = job_result.get("ports") or [primary_port, *backup_ports]
+                    live.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
+                    live.uplink_ports = ordered
+                    live.wan_interface = job_result.get("wan_interface") or primary_port
+                    live.uplink_unbridged = job_result.get("unbridged") or []
+                    live.port_roles = _sync_roles_for_uplink(
+                        live,
+                        mode=MikroTikRouter.UplinkMode.FAILOVER,
+                        ports=ordered,
+                    )
+                    live.save(
+                        update_fields=[
+                            "uplink_mode",
+                            "uplink_ports",
+                            "wan_interface",
+                            "uplink_unbridged",
+                            "port_roles",
+                            "updated_at",
+                        ]
+                    )
+                    _invalidate_mikrotik_router_caches(organization_pk, pk)
+                return job_result
+
+            if _background_mikrotik_ops():
+                set_job(router.pk, "uplink_failover", "pending")
+                _schedule_mikrotik_job(
+                    _apply_failover_job,
+                    name=f"uplink-failover-{router.pk}",
+                    router_id=router.pk,
+                    job_type="uplink_failover",
+                )
+                messages.success(
+                    request,
+                    "Applying failover uplinks on the MikroTik in the background. "
+                    "This page will show progress shortly.",
+                )
+                return _redirect_with_mikrotik_job(
+                    request, "core:mikrotik_ports", router.pk, "uplink_failover"
+                )
+
             result = apply_mikrotik_uplink_failover(
-                router.host,
+                api_host,
                 router.username,
                 router.password or "",
                 primary_port=primary,
@@ -2325,8 +2635,71 @@ def mikrotik_ports(request, router_id: int):
                 for name in ordered:
                     weights.setdefault(name, 100)
 
+            router_pk = router.pk
+            org_pk = org.pk
+            balance_ports = list(ordered)
+            balance_weights = dict(weights)
+
+            def _apply_balance_job(
+                ports=balance_ports,
+                port_weights=balance_weights,
+                pk=router_pk,
+                organization_pk=org_pk,
+            ):
+                live = MikroTikRouter.objects.get(pk=pk)
+                host = _router_api_host(live)
+                job_result = apply_mikrotik_uplink_balance(
+                    host,
+                    live.username,
+                    live.password or "",
+                    member_ports=ports,
+                    member_weights=port_weights,
+                )
+                if job_result.get("ok"):
+                    ordered_ports = job_result.get("ports") or ports
+                    live.uplink_mode = MikroTikRouter.UplinkMode.BALANCE
+                    live.uplink_ports = ordered_ports
+                    live.uplink_weights = job_result.get("weights") or port_weights
+                    live.wan_interface = job_result.get("wan_interface") or ports[0]
+                    live.uplink_unbridged = job_result.get("unbridged") or []
+                    live.port_roles = _sync_roles_for_uplink(
+                        live,
+                        mode=MikroTikRouter.UplinkMode.BALANCE,
+                        ports=ordered_ports,
+                    )
+                    live.save(
+                        update_fields=[
+                            "uplink_mode",
+                            "uplink_ports",
+                            "uplink_weights",
+                            "wan_interface",
+                            "uplink_unbridged",
+                            "port_roles",
+                            "updated_at",
+                        ]
+                    )
+                    _invalidate_mikrotik_router_caches(organization_pk, pk)
+                return job_result
+
+            if _background_mikrotik_ops():
+                set_job(router.pk, "uplink_balance", "pending")
+                _schedule_mikrotik_job(
+                    _apply_balance_job,
+                    name=f"uplink-balance-{router.pk}",
+                    router_id=router.pk,
+                    job_type="uplink_balance",
+                )
+                messages.success(
+                    request,
+                    "Applying load-balance uplinks on the MikroTik in the background. "
+                    "This page will show progress shortly.",
+                )
+                return _redirect_with_mikrotik_job(
+                    request, "core:mikrotik_ports", router.pk, "uplink_balance"
+                )
+
             result = apply_mikrotik_uplink_balance(
-                router.host,
+                api_host,
                 router.username,
                 router.password or "",
                 member_ports=ordered,
@@ -2378,7 +2751,7 @@ def mikrotik_ports(request, router_id: int):
                 else []
             )
             result = clear_mikrotik_uplink_multi(
-                router.host,
+                api_host,
                 router.username,
                 router.password or "",
                 restore_bridged=restore,
@@ -2558,19 +2931,77 @@ def mikrotik_clean_uplink(request, router_id: int):
         if form.is_valid():
             cleaned = form.cleaned_data
             turn_on = not clean_uplink_enabled
-            result = set_mikrotik_clean_uplink(
-                router.host,
-                router.username,
-                router.password or "",
-                enabled=turn_on,
-                mode=cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS,
-                wan_interface=cleaned.get("wan_interface") or "ether1",
-                lan_bridge=cleaned.get("lan_bridge") or "bridgeLocal",
-                provider_gateway=cleaned.get("provider_gateway") or "",
-                separate_wan=bool(cleaned.get("separate_wan")),
-                restore_wan_to_bridge=bool(router.clean_uplink_wan_was_bridged),
-            )
-            cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+            api_host = _router_api_host(router)
+            was_bridged = bool(router.clean_uplink_wan_was_bridged)
+
+            def _apply_clean_uplink():
+                result = set_mikrotik_clean_uplink(
+                    api_host,
+                    router.username,
+                    router.password or "",
+                    enabled=turn_on,
+                    mode=cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS,
+                    wan_interface=cleaned.get("wan_interface") or "ether1",
+                    lan_bridge=cleaned.get("lan_bridge") or "bridgeLocal",
+                    provider_gateway=cleaned.get("provider_gateway") or "",
+                    separate_wan=bool(cleaned.get("separate_wan")),
+                    restore_wan_to_bridge=was_bridged,
+                )
+                if result.get("ok"):
+                    live = MikroTikRouter.objects.get(pk=router.pk)
+                    live.clean_uplink_enabled = bool(result.get("enabled"))
+                    live.clean_uplink_mode = (
+                        cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS
+                    )
+                    live.wan_interface = cleaned.get("wan_interface") or "ether1"
+                    live.lan_bridge = cleaned.get("lan_bridge") or "bridgeLocal"
+                    live.provider_gateway = cleaned.get("provider_gateway") or ""
+                    live.clean_uplink_separate_wan = bool(cleaned.get("separate_wan"))
+                    if turn_on:
+                        live.clean_uplink_wan_was_bridged = bool(
+                            result.get("wan_was_bridged")
+                        )
+                    else:
+                        live.clean_uplink_wan_was_bridged = False
+                    live.save(
+                        update_fields=[
+                            "clean_uplink_enabled",
+                            "clean_uplink_mode",
+                            "wan_interface",
+                            "lan_bridge",
+                            "provider_gateway",
+                            "clean_uplink_separate_wan",
+                            "clean_uplink_wan_was_bridged",
+                            "updated_at",
+                        ]
+                    )
+                    cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+                    if not result.get("message"):
+                        result["message"] = (
+                            "Clean uplink enabled on the MikroTik."
+                            if turn_on
+                            else "Clean uplink disabled on the MikroTik."
+                        )
+                return result
+
+            if _background_mikrotik_ops():
+                set_job(router.pk, "clean_uplink", "pending")
+                _schedule_mikrotik_job(
+                    _apply_clean_uplink,
+                    name=f"clean-uplink-{router.pk}",
+                    router_id=router.pk,
+                    job_type="clean_uplink",
+                )
+                messages.success(
+                    request,
+                    "Applying clean uplink on the MikroTik in the background. "
+                    "This page will show progress shortly.",
+                )
+                return _redirect_with_mikrotik_job(
+                    request, "core:mikrotik_clean_uplink", router.pk, "clean_uplink"
+                )
+
+            result = _apply_clean_uplink()
             if not result.get("ok"):
                 form.add_error(
                     None,
@@ -2578,32 +3009,6 @@ def mikrotik_clean_uplink(request, router_id: int):
                     or "Could not update clean uplink on the MikroTik.",
                 )
             else:
-                router.clean_uplink_enabled = bool(result.get("enabled"))
-                router.clean_uplink_mode = (
-                    cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS
-                )
-                router.wan_interface = cleaned.get("wan_interface") or "ether1"
-                router.lan_bridge = cleaned.get("lan_bridge") or "bridgeLocal"
-                router.provider_gateway = cleaned.get("provider_gateway") or ""
-                router.clean_uplink_separate_wan = bool(cleaned.get("separate_wan"))
-                if turn_on:
-                    router.clean_uplink_wan_was_bridged = bool(
-                        result.get("wan_was_bridged")
-                    )
-                else:
-                    router.clean_uplink_wan_was_bridged = False
-                router.save(
-                    update_fields=[
-                        "clean_uplink_enabled",
-                        "clean_uplink_mode",
-                        "wan_interface",
-                        "lan_bridge",
-                        "provider_gateway",
-                        "clean_uplink_separate_wan",
-                        "clean_uplink_wan_was_bridged",
-                        "updated_at",
-                    ]
-                )
                 messages.success(
                     request,
                     result.get("message")
@@ -3490,6 +3895,16 @@ def mikrotik_tunnel_status(request):
                 "then click Check now."
             )
 
+        checks = wireguard.tunnel_verification_checks(
+            local_mode=True,
+            address=address,
+            tunnel_reachable=False,
+            api_enabled=api_enabled,
+            lan_address=lan_address,
+            subnet_mismatch=subnet_mismatch,
+            multiple_devices=len(candidates) > 1,
+        )
+
         return JsonResponse(
             {
                 "ok": True,
@@ -3511,6 +3926,7 @@ def mikrotik_tunnel_status(request):
                 ],
                 "via": via,
                 "message": message,
+                "checks": checks,
             }
         )
 
@@ -3529,6 +3945,13 @@ def mikrotik_tunnel_status(request):
     else:
         message = "Waiting for MikroTik… paste the script in Winbox → New Terminal."
 
+    checks = wireguard.tunnel_verification_checks(
+        local_mode=False,
+        address=address,
+        tunnel_reachable=tunnel_reachable,
+        api_enabled=api_enabled,
+    )
+
     return JsonResponse(
         {
             "ok": True,
@@ -3539,6 +3962,7 @@ def mikrotik_tunnel_status(request):
             "no_tunnel_route": False,
             "via": via,
             "message": message,
+            "checks": checks,
         }
     )
 
@@ -3606,6 +4030,23 @@ def mikrotik_connect(request):
             "already_onboarded": False,
         }
     )
+
+
+@client_workspace_required
+@require_GET
+def mikrotik_push_status(request, router_id: int):
+    """Poll background MikroTik push jobs (credentials, uplink, PPPoE, etc.)."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=403)
+    if not MikroTikRouter.objects.filter(pk=router_id, organization=org).exists():
+        return JsonResponse({"ok": False, "error": "Router not found."}, status=404)
+
+    job_type = (request.GET.get("job") or "").strip()
+    if job_type:
+        job = get_job(router_id, job_type) or {"status": "unknown"}
+        return JsonResponse({"ok": True, "job": job})
+    return JsonResponse({"ok": True, "jobs": get_router_jobs(router_id)})
 
 
 @client_workspace_required
@@ -3682,32 +4123,46 @@ def mikrotik_status(request):
         software_id = (router.software_id or "").strip()
         backfill = {}
         if online and via == "api":
-            # Port 8728 is open — verify saved credentials so "Connected" means usable.
-            # Skip Wi‑Fi reads: status only needs auth + hardware IDs.
-            login = test_mikrotik_api_login(
-                host,
-                router.username,
-                router.password or "",
-                timeout=2.0,
-                include_wifi=False,
+            auth_cache_key = f"mikrotik_auth_ok:{org.pk}:{router.id}"
+            cached_auth = (
+                not force_refresh
+                and getattr(settings, "HOSTED", False)
+                and cache.get(auth_cache_key)
             )
-            if login.get("ok"):
+            if cached_auth:
                 auth_ok = True
                 status = "connected"
-                live_serial = (login.get("serial_number") or "").strip()
-                live_soft = (login.get("software_id") or "").strip()
-                if live_serial:
-                    serial_number = live_serial
-                    if live_serial != (router.serial_number or "").strip():
-                        backfill["serial_number"] = live_serial
-                if live_soft:
-                    software_id = live_soft
-                    if live_soft != (router.software_id or "").strip():
-                        backfill["software_id"] = live_soft
             else:
-                auth_ok = False
-                status = "auth_failed"
-                error = login.get("error") or "Login failed"
+                # Port 8728 is open — verify saved credentials so "Connected" means usable.
+                # Skip Wi‑Fi reads: status only needs auth + hardware IDs.
+                login = test_mikrotik_api_login(
+                    host,
+                    router.username,
+                    router.password or "",
+                    timeout=2.0,
+                    include_wifi=False,
+                )
+                if login.get("ok"):
+                    auth_ok = True
+                    status = "connected"
+                    if getattr(settings, "HOSTED", False):
+                        cache.set(auth_cache_key, True, 60)
+                    live_serial = (login.get("serial_number") or "").strip()
+                    live_soft = (login.get("software_id") or "").strip()
+                    if live_serial:
+                        serial_number = live_serial
+                        if live_serial != (router.serial_number or "").strip():
+                            backfill["serial_number"] = live_serial
+                    if live_soft:
+                        software_id = live_soft
+                        if live_soft != (router.software_id or "").strip():
+                            backfill["software_id"] = live_soft
+                else:
+                    auth_ok = False
+                    status = "auth_failed"
+                    error = login.get("error") or "Login failed"
+                    if getattr(settings, "HOSTED", False):
+                        cache.delete(auth_cache_key)
         elif online and via == "ping":
             status = "limited"
         elif online:
@@ -3785,7 +4240,7 @@ def mikrotik_status(request):
     all_connected = bool(payload) and all(
         (item.get("status") or "") == "connected" for item in payload
     )
-    cache.set(cache_key, payload, 5 if all_connected else 3)
+    cache.set(cache_key, payload, _mikrotik_status_cache_ttl(all_connected))
     # Drop stale live snapshots so the detail page cannot keep showing Online
     # after status has already marked the router down.
     for item in payload:
@@ -3924,6 +4379,7 @@ def my_clients(request):
     ctx = client_page_context(
         request,
         active_nav="clients",
+        sidebar_active=f"clients_{tab}",
         page_title="My clients",
         page_kicker="Subscribers",
         page_subtitle="Browse subscribers by connection type and open a client for details.",
@@ -3947,10 +4403,23 @@ def my_clients(request):
             and BillingPlan.objects.filter(organization=org, is_active=True).exists()
         ),
     )
-    # Already on All clients — hide the redundant sidebar link on this page only.
-    ctx["client_nav_main"] = [
-        item for item in ctx["client_nav_main"] if item.get("key") != "clients"
-    ]
+    tab_badges = {
+        "clients_pppoe": pppoe_count,
+        "clients_static": static_count,
+        "clients_hotspot": hotspot_count,
+    }
+    base_path = reverse("core:my_clients")
+    for item in ctx["client_nav_main"]:
+        key = item.get("key")
+        if key not in tab_badges:
+            continue
+        query_params = {"tab": key.replace("clients_", "")}
+        if clients_query:
+            query_params["q"] = clients_query
+        if clients_router_param:
+            query_params["router"] = clients_router_param
+        item["href"] = f"{base_path}?{urlencode(query_params)}"
+        item["badge"] = tab_badges[key]
     return render(request, "core/my_clients.html", ctx)
 
 
@@ -3964,13 +4433,7 @@ def client_detail(request, customer_id: int):
         organization=org,
     )
     nas = customer.router
-    can_access_wifi = bool(
-        org
-        and customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and nas
-        and nas.account_status != MikroTikRouter.AccountStatus.SUSPENDED
-    )
+    can_access_wifi = customer_can_access_router(customer, org)
 
     wifi_ssid_display = (customer.cpe_wifi_ssid or "").strip()
     wifi_password_display = customer.cpe_wifi_password or ""
@@ -4079,6 +4542,22 @@ def client_detail(request, customer_id: int):
 
         threading.Thread(target=_bg_provision, daemon=True).start()
 
+    def _enqueue_static_dhcp_bind(customer_pk: int) -> None:
+        def _bg_bind():
+            from django.db import connection
+
+            try:
+                _cust = Customer.objects.select_related("router", "organization").get(
+                    pk=customer_pk
+                )
+                provision_static_client_dhcp_lease(_cust)
+            except Exception:
+                pass
+            finally:
+                connection.close()
+
+        threading.Thread(target=_bg_bind, daemon=True).start()
+
     def _package_json_response(customer, *, message: str, provision: bool) -> JsonResponse:
         from django.utils import timezone as dj_tz
 
@@ -4131,13 +4610,8 @@ def client_detail(request, customer_id: int):
             "remaining_seconds": remaining_seconds,
             "remaining_label": remaining_label,
             "syncing": provision,
-            "can_pause_package": bool(
-                customer.package_end
-                and not paused
-                and not expired
-                and customer.status == Customer.Status.ACTIVE
-            ),
-            "can_resume_package": paused,
+            "can_pause_package": customer_can_pause_package(customer),
+            "can_resume_package": customer_can_resume_package(customer),
         })
 
     if request.method == "POST":
@@ -4172,7 +4646,11 @@ def client_detail(request, customer_id: int):
             if details_form.is_valid():
                 old_username = (customer.pppoe_username or "").strip()
                 old_password = customer.pppoe_password or ""
+                old_router_id = customer.router_id
+                old_cpe_ip = (customer.cpe_ip or "").strip()
+                old_cpe_mac = (customer.cpe_mac or "").strip()
                 customer = details_form.save()
+                router_changed = customer.router_id != old_router_id
                 creds_changed = (
                     customer.service_type == Customer.ServiceType.PPPOE
                     and customer.router_id
@@ -4181,29 +4659,81 @@ def client_detail(request, customer_id: int):
                         or (customer.pppoe_password or "") != old_password
                     )
                 )
-                if creds_changed:
+                sync_pppoe = (
+                    customer.service_type == Customer.ServiceType.PPPOE
+                    and customer.router_id
+                    and (creds_changed or router_changed)
+                )
+                static_dhcp_bind = (
+                    customer.service_type == Customer.ServiceType.STATIC
+                    and customer.router_id
+                    and (customer.cpe_ip or "").strip()
+                    and (customer.cpe_mac or "").strip()
+                    and (
+                        router_changed
+                        or (customer.cpe_ip or "").strip() != old_cpe_ip
+                        or (customer.cpe_mac or "").strip() != old_cpe_mac
+                    )
+                )
+                if sync_pppoe:
                     _enqueue_pppoe_provision(customer.pk)
+                if static_dhcp_bind:
+                    _enqueue_static_dhcp_bind(customer.pk)
+                if router_changed:
+                    cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+                    cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+                    if customer.router_id and customer.pppoe_username:
+                        _enqueue_subscription_sync(
+                            customer.pk,
+                            bool(customer.pppoe_username and customer.router_id),
+                            wait_first=True,
+                        )
 
                 if is_ajax:
+                    router = customer.router
+                    sync_message = ""
+                    if router_changed and sync_pppoe:
+                        sync_message = " Syncing PPPoE login to the new MikroTik…"
+                    elif router_changed and static_dhcp_bind:
+                        sync_message = " Binding static DHCP lease on the MikroTik…"
+                    elif router_changed:
+                        sync_message = " MikroTik router updated."
+                    elif sync_pppoe:
+                        sync_message = " Syncing PPPoE login to MikroTik…"
+                    elif static_dhcp_bind:
+                        sync_message = " Binding static DHCP lease on the MikroTik…"
                     return JsonResponse(
                         {
                             "ok": True,
-                            "message": (
-                                "Client details saved."
-                                + (
-                                    " Syncing PPPoE login to MikroTik…"
-                                    if creds_changed
-                                    else ""
-                                )
-                            ),
+                            "message": "Client details saved." + sync_message,
                             "full_name": customer.full_name,
                             "pppoe_username": customer.pppoe_username or "",
                             "pppoe_password": customer.pppoe_password or "",
-                            "initial": (customer.full_name[:1].upper() if customer.full_name else "C"),
-                            "syncing": creds_changed,
+                            "cpe_username": customer.cpe_username or "admin",
+                            "cpe_password": customer.cpe_password or "",
+                            "initial": (
+                                customer.full_name[:1].upper()
+                                if customer.full_name
+                                else "C"
+                            ),
+                            "router_id": customer.router_id,
+                            "router_name": router.name if router else "",
+                            "router_host": router.host if router else "",
+                            "router_url": (
+                                reverse("core:mikrotik_detail", args=[router.pk])
+                                if router
+                                else ""
+                            ),
+                            "syncing": sync_pppoe or router_changed or static_dhcp_bind,
                         }
                     )
-                messages.success(request, "Client details saved.")
+                if static_dhcp_bind:
+                    messages.success(
+                        request,
+                        "Client details saved. Binding static DHCP lease on the MikroTik…",
+                    )
+                else:
+                    messages.success(request, "Client details saved.")
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             if is_ajax:
@@ -4332,13 +4862,8 @@ def client_detail(request, customer_id: int):
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),
         subscription_paused=customer_package_is_paused(customer),
-        can_pause_package=bool(
-            customer.package_end
-            and not customer_package_is_paused(customer)
-            and not customer_subscription_expired(customer)
-            and customer.status == Customer.Status.ACTIVE
-        ),
-        can_resume_package=customer_package_is_paused(customer),
+        can_pause_package=customer_can_pause_package(customer),
+        can_resume_package=customer_can_resume_package(customer),
         renew_url=(
             (
                 _hotspot_pay_url_for_org(customer.organization, request)
@@ -4355,6 +4880,7 @@ def client_detail(request, customer_id: int):
         *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
     ]
     ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_detail.html", ctx)
 
 
@@ -4518,20 +5044,18 @@ def _normalize_proxied_path(router_path: str, prefix: str) -> str:
 @client_workspace_required
 @require_GET
 def client_router_login(request, customer_id: int):
-    """Start a short-lived, user-bound browser session to a live PPPoE CPE."""
+    """Start a short-lived, user-bound browser session to a subscriber CPE."""
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
         Customer.objects.select_related("router"),
         pk=customer_id,
         organization=org,
     )
-    if (
-        customer.service_type != Customer.ServiceType.PPPOE
-        or not customer.pppoe_username
-        or not customer.router_id
-        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
-    ):
-        messages.error(request, "Router login requires an active PPPoE client and NAS.")
+    if not customer_can_access_router(customer, org):
+        messages.error(
+            request,
+            "Router login requires a configured client (PPPoE, static IP, or DHCP MAC) and NAS.",
+        )
         return redirect("core:client_detail", customer_id=customer.pk)
 
     nas = customer.router
@@ -4539,7 +5063,7 @@ def client_router_login(request, customer_id: int):
         nas.host,
         nas.username,
         nas.password or "",
-        pppoe_username=customer.pppoe_username,
+        customer=customer,
         timeout=8.0,
     )
     if not probe.get("ok"):
@@ -4552,7 +5076,8 @@ def client_router_login(request, customer_id: int):
                 "cpe_host": probe.get("cpe_host") or "",
                 "session_active": bool(probe.get("session_active")),
                 "ping_ok": bool(probe.get("ping_ok")),
-                "gateway": MK_PPPOE_LOCAL_ADDRESS,
+                "gateway": probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
+                "access_mode": probe.get("mode") or "",
                 "detail": probe.get("hint") or probe.get("error") or "",
                 "checked_ports": ", ".join(str(p) for p in CPE_WEB_PORTS),
                 "detail_url": reverse("core:client_detail", args=[customer.pk]),
@@ -4609,14 +5134,26 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
 
     cpe_port = int(token_payload.get("cpe_port") or 80)
     cpe_is_tls = cpe_port in {443, 8443}
-    if (
-        customer.service_type != Customer.ServiceType.PPPOE
-        or not customer.pppoe_username
-        or not customer.router_id
-        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
-    ):
+    if not customer_can_access_router(customer, org):
         return HttpResponse(
             "Router login is unavailable for this client.",
+            status=409,
+            content_type="text/plain",
+        )
+
+    nas = customer.router
+    cpe_target = resolve_customer_cpe_target(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        customer,
+        timeout=8.0,
+    )
+    if not cpe_target.get("ok") or not cpe_target.get("session_active"):
+        return HttpResponse(
+            cpe_target.get("hint")
+            or cpe_target.get("error")
+            or "The client router is offline.",
             status=409,
             content_type="text/plain",
         )
@@ -4633,13 +5170,16 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
         target += "?" + query
     cookie_key = "cpe-web:" + hashlib.sha256(token.encode()).hexdigest()
     router_cookies = dict(cache.get(cookie_key) or {})
+    gateway = cpe_target.get("gateway") or MK_PPPOE_LOCAL_ADDRESS
 
     try:
         with customer_cpe_web_proxy(
-            customer.router.host,
-            customer.router.username,
-            customer.router.password or "",
-            pppoe_username=customer.pppoe_username,
+            nas.host,
+            nas.username,
+            nas.password or "",
+            cpe_scope=cpe_target.get("scope") or customer_cpe_proxy_scope(customer),
+            cpe_address=cpe_target.get("address") or "",
+            gateway_ip=gateway,
             cpe_port=cpe_port,
             timeout=10.0,
         ) as proxy:
@@ -4693,8 +5233,8 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
         hint = (
             f" The client router did not answer on port {cpe_port} through the ISP "
             "MikroTik. Enable Remote / WAN Web Management on the client's router "
-            f"(limit it to the ISP gateway {MK_PPPOE_LOCAL_ADDRESS}), confirm the "
-            "client is online on PPPoE, then try again."
+            f"(limit it to the ISP gateway {gateway}), confirm the client is online, "
+            "then try again."
             if timed_out
             else ""
         )
@@ -4802,12 +5342,7 @@ def client_cpe_wifi(request, customer_id: int):
         organization=org,
     )
     nas = customer.router
-    can_access_wifi = bool(
-        customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and nas
-        and nas.account_status != MikroTikRouter.AccountStatus.SUSPENDED
-    )
+    can_access_wifi = customer_can_access_router(customer, org)
     if not can_access_wifi:
         return JsonResponse(
             {
@@ -4852,7 +5387,7 @@ def client_cpe_wifi(request, customer_id: int):
         nas.host,
         nas.username,
         nas.password or "",
-        pppoe_username=customer.pppoe_username,
+        customer=customer,
         timeout=6.0,
     )
     session_active = bool(probe.get("session_active"))
@@ -4862,7 +5397,7 @@ def client_cpe_wifi(request, customer_id: int):
             nas.host,
             nas.username,
             nas.password or "",
-            pppoe_username=customer.pppoe_username,
+            customer=customer,
             cpe_password=customer.cpe_password or "",
             session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
             cpe_port=int(probe["port"]),
@@ -4894,7 +5429,7 @@ def client_cpe_wifi(request, customer_id: int):
             nas.host,
             nas.username,
             nas.password or "",
-            pppoe_username=customer.pppoe_username,
+            customer=customer,
             cpe_username=customer.cpe_username or "admin",
             cpe_password=customer.cpe_password or "",
             pppoe_password=customer.pppoe_password or "",
@@ -4980,13 +5515,7 @@ def client_wifi_settings(request, customer_id: int):
         organization=org,
     )
     nas = customer.router
-    can_access_wifi = bool(
-        org
-        and customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and nas
-        and nas.account_status != MikroTikRouter.AccountStatus.SUSPENDED
-    )
+    can_access_wifi = customer_can_access_router(customer, org)
     wifi_form = MikroTikWifiSettingsForm(
         initial={
             "wifi_ssid": (customer.cpe_wifi_ssid or "").strip(),
@@ -5022,7 +5551,7 @@ def client_wifi_settings(request, customer_id: int):
                 nas.host,
                 nas.username,
                 nas.password or "",
-                pppoe_username=customer.pppoe_username,
+                customer=customer,
                 timeout=8.0,
             )
             if probe.get("reachable") and probe.get("port"):
@@ -5030,7 +5559,7 @@ def client_wifi_settings(request, customer_id: int):
                     nas.host,
                     nas.username,
                     nas.password or "",
-                    pppoe_username=customer.pppoe_username,
+                    customer=customer,
                     cpe_password=customer.cpe_password or "",
                     wifi_ssid=new_ssid,
                     wifi_password=new_password,
@@ -5046,7 +5575,7 @@ def client_wifi_settings(request, customer_id: int):
                     nas.host,
                     nas.username,
                     nas.password or "",
-                    pppoe_username=customer.pppoe_username,
+                    customer=customer,
                     cpe_username=customer.cpe_username or "admin",
                     cpe_password=customer.cpe_password or "",
                     pppoe_password=customer.pppoe_password or "",
@@ -5131,15 +5660,13 @@ def client_wifi_settings(request, customer_id: int):
         router_data_url=reverse(
             "core:client_cpe_router_data", kwargs={"customer_id": customer.pk}
         ),
-        router_login_url=reverse(
-            "core:client_router_login", kwargs={"customer_id": customer.pk}
-        ),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
         *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
     ]
     ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_wifi_settings.html", ctx)
 
 
@@ -5153,12 +5680,7 @@ def client_cpe_router_data(request, customer_id: int):
         pk=customer_id,
         organization=org,
     )
-    if (
-        customer.service_type != Customer.ServiceType.PPPOE
-        or not customer.pppoe_username
-        or not customer.router_id
-        or customer.router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
-    ):
+    if not customer_can_access_router(customer, org):
         return JsonResponse(
             {"ok": False, "error": "Router data is unavailable for this client."},
             status=400,
@@ -5176,7 +5698,7 @@ def client_cpe_router_data(request, customer_id: int):
         nas.host,
         nas.username,
         nas.password or "",
-        pppoe_username=customer.pppoe_username,
+        customer=customer,
         timeout=8.0,
     )
     if not probe.get("reachable") or not probe.get("port"):
@@ -5193,7 +5715,7 @@ def client_cpe_router_data(request, customer_id: int):
         nas.host,
         nas.username,
         nas.password or "",
-        pppoe_username=customer.pppoe_username,
+        customer=customer,
         cpe_password=customer.cpe_password or "",
         session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
         cpe_port=int(probe["port"]),
@@ -5302,13 +5824,8 @@ def client_subscription(request, customer_id: int):
             "package_paused_at": _iso(customer.package_paused_at),
             "remaining_seconds": remaining_seconds,
             "remaining_label": remaining_label,
-            "can_pause_package": bool(
-                customer.package_end
-                and not paused
-                and not expired
-                and customer.status == Customer.Status.ACTIVE
-            ),
-            "can_resume_package": paused,
+            "can_pause_package": customer_can_pause_package(customer),
+            "can_resume_package": customer_can_resume_package(customer),
             "sync": sync_result,
         }
     )
@@ -5578,13 +6095,7 @@ def client_usage_analysis(request, customer_id: int):
         and usage_router is not None
         and usage_router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
     )
-    can_access_wifi = bool(
-        org
-        and customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and customer.router_id
-        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
-    )
+    can_access_wifi = customer_can_access_router(customer, org)
     hours = 24
     try:
         hours = max(1, min(int(request.GET.get("hours") or 24), 168))
@@ -5641,6 +6152,7 @@ def client_usage_analysis(request, customer_id: int):
         *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
     ]
     ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_usage_analysis.html", ctx)
 
 
@@ -5653,13 +6165,7 @@ def client_billing(request, customer_id: int):
         pk=customer_id,
         organization=org,
     )
-    can_access_wifi = bool(
-        org
-        and customer.service_type == Customer.ServiceType.PPPOE
-        and customer.pppoe_username
-        and customer.router_id
-        and customer.router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
-    )
+    can_access_wifi = customer_can_access_router(customer, org)
     payments = (
         list(
             Payment.objects.filter(invoice__customer=customer, organization=org)
@@ -5719,6 +6225,7 @@ def client_billing(request, customer_id: int):
         *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
     ]
     ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_billing.html", ctx)
 
 
@@ -5958,7 +6465,15 @@ def clients_surfing_status(request):
         elif router_unreachable and not session_online:
             reason = router_error or "Router disconnected"
         else:
-            internet_allowed = customer_receives_internet(customer)
+            from billing.services import (
+                customer_can_surf_via_hotspot,
+                customer_can_surf_via_pppoe,
+            )
+
+            if service == "hotspot":
+                internet_allowed = customer_can_surf_via_hotspot(customer)
+            else:
+                internet_allowed = customer_can_surf_via_pppoe(customer)
             # Surfing = real internet right now: package still valid AND live
             # session AND (for PPPoE) not parked on the blocked NAS profile.
             surfing = bool(session_online and internet_allowed)
@@ -6196,16 +6711,17 @@ def mikrotik_pppoe_settings(request, router_id: int):
             enabled = bool(org.pppoe_compulsory)
             router_pk = router.pk
 
-            def _bg_push(pk: int = router_pk, compulsory: bool = enabled) -> None:
-                try:
-                    live = MikroTikRouter.objects.select_related("organization").get(
-                        pk=pk
-                    )
-                    apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
-                except Exception:
-                    pass
+            def _bg_push(pk: int = router_pk, compulsory: bool = enabled):
+                live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
+                return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
 
-            _schedule_mikrotik_job(_bg_push, name=f"pppoe-push-{router_pk}")
+            set_job(router_pk, "pppoe_push", "pending")
+            _schedule_mikrotik_job(
+                _bg_push,
+                name=f"pppoe-push-{router_pk}",
+                router_id=router_pk,
+                job_type="pppoe_push",
+            )
             messages.success(
                 request,
                 f"Pushing PPPoE policy to {router.name} in the background. "
@@ -6220,16 +6736,17 @@ def mikrotik_pppoe_settings(request, router_id: int):
             enabled = bool(form.cleaned_data.get("pppoe_compulsory"))
             router_pk = router.pk
 
-            def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled) -> None:
-                try:
-                    live = MikroTikRouter.objects.select_related("organization").get(
-                        pk=pk
-                    )
-                    apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
-                except Exception:
-                    pass
+            def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled):
+                live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
+                return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
 
-            _schedule_mikrotik_job(_bg_save_push, name=f"pppoe-save-{router_pk}")
+            set_job(router_pk, "pppoe_push", "pending")
+            _schedule_mikrotik_job(
+                _bg_save_push,
+                name=f"pppoe-save-{router_pk}",
+                router_id=router_pk,
+                job_type="pppoe_push",
+            )
             if enabled:
                 messages.success(
                     request,
@@ -6376,26 +6893,29 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 o_pk: int = org_pk,
                 on: bool = enabled,
                 portal: dict = push_urls,
-            ) -> None:
-                try:
-                    live_router = MikroTikRouter.objects.select_related(
-                        "organization"
-                    ).get(pk=r_pk)
-                    live_org = Organization.objects.get(pk=o_pk)
-                    apply_hotspot_on_router(
-                        live_router,
-                        enabled=on,
-                        organization=live_org,
-                        redirect_url=portal.get("redirect_url") or "",
-                        login_url=portal.get("login_url") or "",
-                        alogin_url=portal.get("alogin_url") or "",
-                        pay_url=portal.get("pay_url") or "",
-                        welcome_url=portal.get("welcome_url") or "",
-                    )
-                except Exception:
-                    pass
+            ):
+                live_router = MikroTikRouter.objects.select_related(
+                    "organization"
+                ).get(pk=r_pk)
+                live_org = Organization.objects.get(pk=o_pk)
+                return apply_hotspot_on_router(
+                    live_router,
+                    enabled=on,
+                    organization=live_org,
+                    redirect_url=portal.get("redirect_url") or "",
+                    login_url=portal.get("login_url") or "",
+                    alogin_url=portal.get("alogin_url") or "",
+                    pay_url=portal.get("pay_url") or "",
+                    welcome_url=portal.get("welcome_url") or "",
+                )
 
-            _schedule_mikrotik_job(_bg_hotspot_push, name=f"hotspot-push-{router_pk}")
+            set_job(router_pk, "hotspot_push", "pending")
+            _schedule_mikrotik_job(
+                _bg_hotspot_push,
+                name=f"hotspot-push-{router_pk}",
+                router_id=router_pk,
+                job_type="hotspot_push",
+            )
             messages.success(
                 request,
                 (
@@ -6443,26 +6963,29 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 o_pk: int = org_pk,
                 on: bool = enabled,
                 portal: dict = push_urls,
-            ) -> None:
-                try:
-                    live_router = MikroTikRouter.objects.select_related(
-                        "organization"
-                    ).get(pk=r_pk)
-                    live_org = Organization.objects.get(pk=o_pk)
-                    apply_hotspot_on_router(
-                        live_router,
-                        enabled=on,
-                        organization=live_org,
-                        redirect_url=portal.get("redirect_url") or "",
-                        login_url=portal.get("login_url") or "",
-                        alogin_url=portal.get("alogin_url") or "",
-                        pay_url=portal.get("pay_url") or "",
-                        welcome_url=portal.get("welcome_url") or "",
-                    )
-                except Exception:
-                    pass
+            ):
+                live_router = MikroTikRouter.objects.select_related(
+                    "organization"
+                ).get(pk=r_pk)
+                live_org = Organization.objects.get(pk=o_pk)
+                return apply_hotspot_on_router(
+                    live_router,
+                    enabled=on,
+                    organization=live_org,
+                    redirect_url=portal.get("redirect_url") or "",
+                    login_url=portal.get("login_url") or "",
+                    alogin_url=portal.get("alogin_url") or "",
+                    pay_url=portal.get("pay_url") or "",
+                    welcome_url=portal.get("welcome_url") or "",
+                )
 
-            _schedule_mikrotik_job(_bg_hotspot_save, name=f"hotspot-save-{router_pk}")
+            set_job(router_pk, "hotspot_push", "pending")
+            _schedule_mikrotik_job(
+                _bg_hotspot_save,
+                name=f"hotspot-save-{router_pk}",
+                router_id=router_pk,
+                job_type="hotspot_push",
+            )
             messages.success(
                 request,
                 (
@@ -6902,6 +7425,14 @@ def hotspot_voucher_redeem(request, join_code: str):
     )
     if not result.get("ok"):
         return JsonResponse(result, status=400)
+    remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    if remote:
+        try:
+            from core.mikrotik_connect import invalidate_captive_redirect_cache
+
+            invalidate_captive_redirect_cache(remote)
+        except Exception:
+            pass
     if result.get("stk_id"):
         access_token = signing.dumps(
             {
@@ -6947,6 +7478,14 @@ def pppoe_voucher_redeem(request, join_code: str):
     )
     if not result.get("ok"):
         return JsonResponse(result, status=400)
+    remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    if remote:
+        try:
+            from core.mikrotik_connect import invalidate_captive_redirect_cache
+
+            invalidate_captive_redirect_cache(remote)
+        except Exception:
+            pass
     return JsonResponse(result)
 
 
@@ -7118,23 +7657,6 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
     # Package + MikroTik activate only after voucher redeem — do not auto-authorize.
     if result.get("success") and result.get("needs_voucher"):
         result["authorized"] = False
-    elif result.get("success") and result.get("subscription_applied") and "authorized" not in result:
-        stk.customer.refresh_from_db()
-        provision = sync_customer_subscription_access(
-            stk.customer,
-            provision=True,
-            reauthenticate=False,
-        )
-        result["authorized"] = bool(provision.get("ok") and provision.get("allowed"))
-        if not result["authorized"]:
-            result["authorization_error"] = (
-                provision.get("message") or "Payment succeeded, but router authorization failed."
-            )
-            # The charge went through, so retrying payment would bill twice.
-            # Authorization itself may be retried when the NAS comes back online.
-            result["can_retry"] = False
-            result["can_retry_authorize"] = True
-            result["offline"] = bool(provision.get("offline"))
     return JsonResponse(result)
 
 
@@ -7287,6 +7809,41 @@ def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     org = get_object_or_404(Organization, join_code=join_code)
     context = _hotspot_portal_context(org, mikrotik_login=False, request=request)
+    hotspot_mac = (context.get("hotspot_mac") or "").strip().upper()
+    hotspot_customer = (
+        _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
+    )
+    if hotspot_mac:
+        from billing.services import customer_can_surf_via_hotspot
+
+        if not (
+            hotspot_customer is not None
+            and customer_can_surf_via_hotspot(hotspot_customer)
+        ):
+            mac_for_job = hotspot_mac
+            customer_pk = getattr(hotspot_customer, "pk", None)
+
+            def _block_unpaid_mac(
+                org_pk=org.pk,
+                mac=mac_for_job,
+                customer_id=customer_pk,
+            ) -> None:
+                from accounts.models import Organization
+                from billing.models import Customer
+                from core.mikrotik_connect import block_hotspot_mac_until_paid
+
+                organization = Organization.objects.filter(pk=org_pk).first()
+                if organization is None:
+                    return
+                customer = None
+                if customer_id:
+                    customer = Customer.objects.filter(pk=customer_id).first()
+                block_hotspot_mac_until_paid(organization, mac, customer=customer)
+
+            _schedule_mikrotik_job(
+                _block_unpaid_mac,
+                name=f"hotspot-block-{hotspot_mac[-8:]}",
+            )
     response = render(request, "core/hotspot_portal_login.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
     token = (context.get("pppoe_customer_token") or context.get("customer_token") or "").strip()
@@ -7676,25 +8233,6 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
     result = refresh_stk_status(stk)
     if result.get("success") and result.get("needs_voucher"):
         result["authorized"] = False
-    elif result.get("success") and result.get("subscription_applied") and "authorized" not in result:
-        stk.customer.refresh_from_db()
-        provision = sync_customer_subscription_access(
-            stk.customer,
-            provision=True,
-            reauthenticate=False,
-        )
-        result["authorized"] = bool(provision.get("ok") and provision.get("allowed"))
-        if not result["authorized"]:
-            result["authorization_error"] = (
-                provision.get("message")
-                or "Payment succeeded, but the router could not restore this connection."
-            )
-            result["can_retry"] = False
-            result["can_retry_authorize"] = True
-            result["offline"] = bool(
-                (provision.get("provision") or {}).get("timeout")
-                or (provision.get("provision") or {}).get("skipped")
-            )
     if request.GET.get("view") == "page":
         customer = stk.customer
         customer.refresh_from_db()

@@ -78,7 +78,7 @@ class WireGuardKeyTests(SimpleTestCase):
             script,
         )
         self.assertIn(":do { /ip service enable [find where name=api] } on-error={}", script)
-        self.assertIn("ispcentric API: enabled and listening on port 8728", script)
+        self.assertIn("[ISPCENTRIC OK] RouterOS API enabled on port 8728", script)
         self.assertIn("name=api and disabled=no and port=8728", script)
         # Hotspot bypass is tunnel-subnet only — never whole customer LAN ranges.
         self.assertIn('comment="ispcentric-vpn-hotspot-bypass"', script)
@@ -99,37 +99,44 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("in-interface=ispcentric-vpn", script)
         self.assertIn("src-address=10.9.0.0/24", script)
         self.assertIn(
-            'src-address=192.168.0.0/16 place-before=0 '
             'comment="ispcentric-vpn-api-lan-192"',
             script,
         )
+        self.assertNotIn('place-before=0 comment', script)
+        self.assertIn("place-before=([find where chain=input", script)
         # Masquerade must not rewrite sources talking to the billing tunnel.
         self.assertIn('comment="ispcentric-vpn-no-nat"', script)
         self.assertIn("action=accept", script)
         self.assertIn("dst-address=10.9.0.0/24", script)
-        # Prove reachability to the VPS tunnel address.
-        self.assertIn("/ping 10.9.0.1 count=4", script)
-        self.assertIn("ispcentric OK", script)
+        # Prove reachability to the VPS tunnel address (retried, one line per paste).
+        self.assertIn("/ping 10.9.0.1 count=2", script)
+        self.assertIn(":delay 5s :if ([/ping 10.9.0.1 count=2]", script)
+        self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
+        self.assertIn("[ISPCENTRIC OK] WireGuard interface ispcentric-vpn created", script)
+        self.assertIn("[ISPCENTRIC OK] Input firewall rules for API and ICMP installed", script)
+        self.assertIn("---------- ISPCENTRIC summary ----------", script)
+        self.assertIn("Required: the next line creates ispcentric-vpn", script)
         self.assertIn("save name=ispcentric-tunnel", script)
         # Idempotent cleanup for re-runs.
         self.assertIn(
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             script,
         )
-        # Avoid :local so paste works cleanly in New Terminal.
+        # Avoid :local / multi-line foreach so paste works cleanly in New Terminal.
         self.assertNotIn(":local ", script)
-        if_line = next(
+        self.assertNotIn(":foreach ", script)
+        ping_line = next(
             line
             for line in script.splitlines()
-            if line.startswith(":if") and "ping" in line
+            if line.startswith(":delay 3s") and "/ping" in line
         )
         self.assertIn(
-            'do={:put "ispcentric OK: tunnel 10.9.0.3 reaches 10.9.0.1 - Connect in ISPCENTRIC '
-            '(API 8728 must show enabled above)"} else={:put',
-            if_line,
+            '[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server 10.9.0.1 - '
+            'click Connect in ISPCENTRIC',
+            ping_line,
         )
-        self.assertTrue(if_line.endswith('"}'))
-        self.assertEqual(if_line.count("{"), if_line.count("}"))
+        self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", ping_line)
+        self.assertEqual(ping_line.count("{"), ping_line.count("}"))
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -150,10 +157,7 @@ class WireGuardKeyTests(SimpleTestCase):
 
         lines = latest_script.splitlines()
         cleanup_lines = [
-            ':do { /system script remove [find where name~"ispcentric"] } on-error={}',
-            ':do { /system script remove [find where comment~"ispcentric"] } on-error={}',
-            ':do { /system scheduler remove [find where name~"ispcentric"] } on-error={}',
-            ':do { /system scheduler remove [find where comment~"ispcentric"] } on-error={}',
+            '/system script remove [find where name~"ispcentric"]',
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
             ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
@@ -167,12 +171,13 @@ class WireGuardKeyTests(SimpleTestCase):
         add_interface = next(
             index
             for index, line in enumerate(lines)
-            if line.startswith("/interface wireguard add ")
+            if "/interface wireguard add " in line
         )
         previous_index = -1
         for cleanup in cleanup_lines:
-            self.assertIn(cleanup, lines)
-            cleanup_index = lines.index(cleanup)
+            cleanup_index = next(
+                index for index, line in enumerate(lines) if cleanup in line
+            )
             self.assertLess(cleanup_index, add_interface)
             self.assertGreater(cleanup_index, previous_index)
             previous_index = cleanup_index
@@ -288,6 +293,18 @@ class RouterDialTargetTests(SimpleTestCase):
         discover.assert_not_called()
         self.assertEqual(hosts[0], "192.168.1.104")
         self.assertNotIn("192.168.88.50", hosts)
+
+    @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_tunnel_saved_host_on_lan_skips_lan_guess(self):
+        from core.models import MikroTikRouter
+
+        hosts = _router_api_host_candidates(
+            MikroTikRouter(id=9, name="Remote", host="10.9.0.8"),
+            discover=False,
+        )
+
+        self.assertEqual(hosts, ["10.9.0.8"])
+        self.assertNotIn("192.168.88.1", hosts)
 
     @override_settings(HOSTED=False)
     def test_on_lan_dials_the_saved_address_untouched(self):
@@ -602,6 +619,42 @@ class CaptiveOrganizationResolutionTests(TestCase):
         self.org_hotspot.save(update_fields=["hotspot_enabled"])
         org = resolve_captive_organization("192.168.88.50")
         self.assertEqual(org.pk, self.org_pppoe.pk)
+
+    def test_cpe_renew_pool_resolves_org_from_cached_pppoe_session(self):
+        from billing.models import Customer
+        from core.mikrotik_connect import (
+            remember_pppoe_customer_session_ip,
+            resolve_captive_organization,
+        )
+
+        customer = Customer.objects.create(
+            organization=self.org_pppoe,
+            full_name="Renew WiFi",
+            phone="254700000099",
+            account_number="PPP-RENEW",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="renew99",
+            status=Customer.Status.ACTIVE,
+        )
+        remember_pppoe_customer_session_ip(customer, "192.168.189.44")
+        org = resolve_captive_organization("192.168.189.44")
+        self.assertEqual(org.pk, self.org_pppoe.pk)
+
+
+class CaptiveRedirectCacheTests(SimpleTestCase):
+    def test_invalidate_bumps_redirect_generation(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_connect import (
+            captive_redirect_cache_key,
+            invalidate_captive_redirect_cache,
+        )
+
+        cache.clear()
+        first = captive_redirect_cache_key("10.20.0.44", "")
+        invalidate_captive_redirect_cache("10.20.0.44")
+        second = captive_redirect_cache_key("10.20.0.44", "")
+        self.assertNotEqual(first, second)
 
 
 class CaptiveProbeMiddlewareTests(TestCase):
@@ -1699,7 +1752,7 @@ class HotspotPushUrlDerivationTests(TestCase):
 class PppoeClientDnsRuleTests(SimpleTestCase):
     """PPPoE clients need DNS from the NAS or no captive redirect ever fires."""
 
-    def _build_rules(self):
+    def _build_rules(self, *, compulsory: bool = False):
         from core.mikrotik_connect import _ensure_pppoe_stack
 
         added: list[tuple[dict, str]] = []
@@ -1731,7 +1784,10 @@ class PppoeClientDnsRuleTests(SimpleTestCase):
             ),
         ):
             _ensure_pppoe_stack(
-                object(), lan_interface="bridge", wan_interface="ether1"
+                object(),
+                lan_interface="bridge",
+                wan_interface="ether1",
+                compulsory=compulsory,
             )
         return added
 
@@ -1776,6 +1832,24 @@ class PppoeClientDnsRuleTests(SimpleTestCase):
         self.assertEqual(reject_rules[0].get("reject-with"), "tcp-reset")
         self.assertEqual(reject_rules[0].get("protocol"), "tcp")
         self.assertEqual(reject_rules[0].get("out-interface-list"), "WAN")
+
+    def test_compulsory_mode_does_not_allow_whole_hotspot_pool_to_wan(self):
+        from core.mikrotik_connect import ISP_HOTSPOT_OK_LIST, ISP_HOTSPOT_POOL_NETWORK
+
+        added = self._build_rules(compulsory=True)
+        pool_rules = [
+            rule
+            for rule, _ in added
+            if rule.get("src-address") == ISP_HOTSPOT_POOL_NETWORK
+        ]
+        self.assertEqual(pool_rules, [])
+        ok_rules = [
+            rule
+            for rule, _ in added
+            if rule.get("src-address-list") == ISP_HOTSPOT_OK_LIST
+        ]
+        self.assertEqual(len(ok_rules), 1)
+        self.assertEqual(ok_rules[0].get("action"), "accept")
 
 
 class PppoePaidSessionRestoreTests(SimpleTestCase):
@@ -2156,6 +2230,9 @@ class TunnelStatusTests(TestCase):
         self.assertFalse(data["ready"])
         self.assertIn("Local mode", data["message"])
         self.assertIn("no MikroTik", data["message"])
+        self.assertIn("checks", data)
+        self.assertTrue(any(item["key"] == "lan" for item in data["checks"]))
+        self.assertTrue(any(item["status"] == "waiting" for item in data["checks"]))
 
     def test_local_server_reports_discovered_lan_api_ready(self):
         device = {
@@ -2182,6 +2259,10 @@ class TunnelStatusTests(TestCase):
         self.assertTrue(data["ready"])
         self.assertTrue(data["api_enabled"])
         self.assertEqual(data["lan_address"], "192.168.88.1")
+        self.assertEqual(
+            [item["status"] for item in data["checks"] if item["key"] == "api"],
+            ["ok"],
+        )
 
     def test_local_server_flags_subnet_mismatch_when_api_unreachable(self):
         device = {
@@ -2230,10 +2311,45 @@ class TunnelStatusTests(TestCase):
         self.assertTrue(data["ready"])
         self.assertFalse(data["no_tunnel_route"])
         self.assertTrue(data["api_enabled"])
+        self.assertIn("checks", data)
+        self.assertTrue(
+            any(item["key"] == "tunnel" and item["status"] == "ok" for item in data["checks"])
+        )
+        self.assertTrue(
+            any(item["key"] == "api" and item["status"] == "ok" for item in data["checks"])
+        )
 
     def test_tunnel_server_address_is_not_bindable_on_a_plain_host(self):
         # The dev machine holds no 10.9.0.1, so the helper must not claim a route.
         self.assertFalse(wireguard.server_on_tunnel())
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
+    def test_tunnel_verification_checks_cover_vps_mode(self):
+        checks = wireguard.tunnel_verification_checks(
+            local_mode=False,
+            address="10.9.0.4",
+            tunnel_reachable=False,
+            api_enabled=False,
+        )
+        keys = [item["key"] for item in checks]
+        self.assertEqual(
+            keys,
+            ["tunnel", "vps_peer", "billing_ping", "api", "firewall"],
+        )
+        self.assertEqual(checks[1]["status"], "fail")
+        self.assertIn("[Peer]", checks[1]["message"])
+
+        ready = wireguard.tunnel_verification_checks(
+            local_mode=False,
+            address="10.9.0.4",
+            tunnel_reachable=True,
+            api_enabled=True,
+        )
+        self.assertTrue(all(item["status"] == "ok" for item in ready))
 
 
 class MikroTikDeleteTests(TestCase):
@@ -4994,7 +5110,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "core.mikrotik_connect.cpe_renew_clear_is_pending",
                 side_effect=lambda c: calls["n"] < 2,
             ),
-            patch("billing.management.commands.verify_subscription_access.time.sleep"),
+            patch("billing.access_verification.time.sleep"),
         ):
             call_command(
                 "verify_subscription_access",
@@ -5026,7 +5142,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
                     "allowed": True,
                     "cpe_renew_clear_pending": True,
                     "message": "pending clear",
-                    "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
+                    "portal": {"ok": False, "skipped": False, "error": "CPE API error"},
                     "provision": {
                         "ok": True,
                         "profile": "ispcentric",
@@ -5039,7 +5155,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "core.mikrotik_connect.cpe_renew_clear_is_pending",
                 return_value=True,
             ),
-            patch("billing.management.commands.verify_subscription_access.time.sleep"),
+            patch("billing.access_verification.time.sleep"),
         ):
             with self.assertRaises(CommandError) as ctx:
                 call_command(
@@ -5050,7 +5166,488 @@ class AccessFlowCorrectionLoopTests(TestCase):
                     stdout=StringIO(),
                     stderr=StringIO(),
                 )
-        self.assertIn("CPE renew clear", str(ctx.exception))
+        self.assertIn("renew popup pending", str(ctx.exception))
+
+
+class DynamicAccessEnforcementLoopTests(TestCase):
+    """
+    NAS enforcement loops for dynamic mode: Hotspot MAC disabled until paid;
+    PPPoE blocked profile outside subscription; restore after payment.
+    """
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.contrib.auth.models import User
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan, Customer
+
+        cache.clear()
+        self.owner = User.objects.create_user("dyn-loop-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Dynamic Loop ISP",
+            owner=self.owner,
+            join_code="707070",
+            hotspot_enabled=True,
+            pppoe_compulsory=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=5,
+            upload_speed_mbps=2,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Dynamic NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.0.0.2",
+            username="admin",
+            password="secret",
+        )
+        now = timezone.now()
+        self.pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Dyn PPPoE",
+            phone="0711222333",
+            account_number="DYN-LOOP-PPP",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="dyn1",
+            pppoe_password="pass",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=now - timedelta(days=5),
+            package_end=now - timedelta(days=1),
+        )
+        self.hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Dyn Hotspot",
+            phone="0722333444",
+            account_number="DYN-LOOP-HS",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:99",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            plan=self.plan,
+        )
+
+    def test_unpaid_hotspot_mac_stays_disabled_on_nas(self):
+        from core.mikrotik_connect import _hotspot_customer_access_fields
+
+        mac, disabled, limit_uptime, _comment = _hotspot_customer_access_fields(
+            self.hotspot
+        )
+        self.assertEqual(mac, "AA:BB:CC:DD:EE:99")
+        self.assertTrue(disabled)
+        self.assertEqual(limit_uptime, "")
+
+    def test_hotspot_authorize_loop_after_package_applied(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from billing.services import apply_subscription_renewal
+        from core.mikrotik_connect import (
+            _hotspot_customer_access_fields,
+            _mark_hotspot_stack_ready,
+            authorize_hotspot_customer,
+        )
+
+        apply_subscription_renewal(self.hotspot, plan=self.plan)
+        self.hotspot.refresh_from_db()
+        _mark_hotspot_stack_ready(self.router.pk)
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch("core.mikrotik_connect._api_session"),
+            patch(
+                "core.mikrotik_connect._apply_hotspot_customer_on_socket",
+                return_value=True,
+            ) as apply_one,
+        ):
+            result = authorize_hotspot_customer(
+                self.hotspot, router=self.router, reauthenticate=True
+            )
+
+        self.assertTrue(result.get("ok"))
+        apply_one.assert_called_once()
+        _mac, disabled, limit_uptime, _ = _hotspot_customer_access_fields(self.hotspot)
+        self.assertFalse(disabled)
+        self.assertTrue(limit_uptime.endswith("s"))
+
+    def test_pppoe_expired_then_paid_restore_loop(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            sync_customer_subscription_access,
+        )
+
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision", kwargs.get("force_disabled", False)))
+            profile = (
+                PPPOE_BLOCKED_PROFILE_NAME
+                if customer.package_end < timezone.now()
+                else "ispcentric-5u-10d"
+            )
+            return {"ok": True, "profile": profile}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/707070/pay/?t=x",
+            ),
+        ):
+            blocked = sync_customer_subscription_access(self.pppoe, provision=True)
+            self.pppoe.package_end = timezone.now() + timedelta(days=2)
+            self.pppoe.save(update_fields=["package_end"])
+            restored = sync_customer_subscription_access(self.pppoe, provision=True)
+
+        self.assertFalse(blocked["allowed"])
+        self.assertEqual(order[0], ("portal", True))
+        self.assertTrue(restored["allowed"])
+        self.assertEqual(order[2], ("portal", False))
+
+    def test_verify_dynamic_access_command_passes_dry_run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command(
+            "verify_dynamic_access",
+            customer=self.hotspot.pk,
+            loops=2,
+            dry_run=True,
+            stdout=out,
+        )
+        text = out.getvalue()
+        self.assertIn("PASS", text)
+        self.assertIn("billing_allows=False", text)
+
+    def test_verify_dynamic_access_command_loops_until_nas_matches(self):
+        from datetime import timedelta
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.utils import timezone
+
+        from billing.services import apply_subscription_renewal
+
+        apply_subscription_renewal(self.hotspot, plan=self.plan)
+        self.hotspot.refresh_from_db()
+
+        calls = {"n": 0}
+
+        def fake_sync(customer, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return {
+                    "ok": False,
+                    "allowed": True,
+                    "provision": {"ok": False},
+                    "message": "retry",
+                }
+            return {
+                "ok": True,
+                "allowed": True,
+                "provision": {"ok": True},
+                "message": "authorized",
+            }
+
+        out = StringIO()
+        with (
+            patch(
+                "core.mikrotik_connect.sync_customer_subscription_access",
+                side_effect=fake_sync,
+            ),
+            patch("billing.access_verification.time.sleep"),
+        ):
+            call_command(
+                "verify_dynamic_access",
+                customer=self.hotspot.pk,
+                loops=3,
+                settle=0.01,
+                stdout=out,
+            )
+        self.assertIn("PASS", out.getvalue())
+        self.assertGreaterEqual(calls["n"], 2)
+
+
+class PppoeHotspotAccountLoopCommandTests(TestCase):
+    """Integration tests for verify_access_accounts on both service types."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+
+        from accounts.models import Organization
+        from billing.models import BillingPlan, Customer
+        from core.models import MikroTikRouter
+
+        self.owner = User.objects.create_user("cmd-loop-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Cmd Loop ISP",
+            owner=self.owner,
+            join_code="808080",
+            pppoe_compulsory=True,
+            hotspot_enabled=True,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Cmd NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.0.0.3",
+            username="admin",
+            password="secret",
+        )
+        now = timezone.now()
+        self.pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="Cmd PPPoE",
+            phone="0711000000",
+            account_number="CMD-PPP",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="cmdppp",
+            pppoe_password="pass",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=now - timedelta(days=5),
+            package_end=now - timedelta(days=1),
+        )
+        self.hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Cmd Hotspot",
+            phone="0722000000",
+            account_number="CMD-HS",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:CC",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+        )
+
+    def test_verify_access_accounts_pppoe_service_only(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            return_value={
+                "ok": True,
+                "allowed": False,
+                "provision": {"ok": True, "profile": "ispcentric-blocked"},
+                "portal": {"ok": True},
+            },
+        ):
+            out = StringIO()
+            call_command(
+                "verify_access_accounts",
+                organization=self.org.pk,
+                service="pppoe",
+                loops=1,
+                stdout=out,
+            )
+        self.assertIn("PASS", out.getvalue())
+        self.assertIn("CMD-PPP", out.getvalue())
+
+    def test_verify_access_accounts_hotspot_service_only(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            return_value={
+                "ok": True,
+                "allowed": False,
+                "provision": {"ok": True},
+            },
+        ):
+            out = StringIO()
+            call_command(
+                "verify_access_accounts",
+                organization=self.org.pk,
+                service="hotspot",
+                loops=1,
+                stdout=out,
+            )
+        self.assertIn("PASS", out.getvalue())
+        self.assertIn("CMD-HS", out.getvalue())
+
+
+class RouterConnectivityLoopTests(TestCase):
+    """Unit tests for NAS/CPE connectivity correction loops."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from billing.models import Customer
+        from core.models import MikroTikRouter
+
+        self.owner = User.objects.create_user("conn-loop-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Conn Loop ISP",
+            owner=self.owner,
+            join_code="606060",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Conn NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.1",
+            username="admin",
+            password="secret",
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Conn PPPoE",
+            phone="254700000099",
+            account_number="CONN-PPP",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="connuser",
+            pppoe_password="pass",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+        )
+
+    def test_evaluate_nas_connectivity_success(self):
+        from core.connectivity_verification import evaluate_nas_connectivity
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True, "identity": "MikroTik"},
+            ),
+        ):
+            result = evaluate_nas_connectivity(self.router)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["api_ok"])
+
+    def test_evaluate_nas_tunnel_hint_when_unreachable(self):
+        from core.connectivity_verification import evaluate_nas_connectivity
+
+        self.router.host = "10.9.0.12"
+        self.router.vpn_address = "10.9.0.12"
+        with patch(
+            "core.mikrotik_connect.check_mikrotik_reachable",
+            return_value={"online": False, "error": "timed out"},
+        ):
+            result = evaluate_nas_connectivity(self.router)
+        self.assertFalse(result["ok"])
+        self.assertIn("WireGuard", result["hint"])
+
+    def test_run_nas_loop_retries_until_api_ok(self):
+        from core.connectivity_verification import run_nas_connectivity_loop
+
+        calls = {"n": 0}
+
+        def fake_eval(router, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return {
+                    "ok": False,
+                    "reachable": True,
+                    "api_ok": False,
+                    "error": "auth failed",
+                    "details": {"host": router.host},
+                }
+            return {
+                "ok": True,
+                "reachable": True,
+                "api_ok": True,
+                "details": {"host": router.host},
+            }
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                side_effect=fake_eval,
+            ),
+            patch("core.connectivity_verification.time.sleep"),
+        ):
+            outcome = run_nas_connectivity_loop(self.router, loops=3, settle=0)
+        self.assertTrue(outcome.passed)
+        self.assertEqual(len(outcome.attempts), 2)
+
+    def test_evaluate_cpe_offline_is_skipped_not_failed(self):
+        from core.connectivity_verification import evaluate_cpe_connectivity
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"ok": True, "api_ok": True, "details": {}},
+            ),
+            patch(
+                "core.mikrotik_connect.resolve_customer_cpe_session",
+                return_value={
+                    "ok": True,
+                    "session_active": False,
+                    "address": "",
+                    "hint": "CPE offline",
+                },
+            ),
+        ):
+            result = evaluate_cpe_connectivity(self.customer)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertFalse(result["session_active"])
+
+    def test_verify_router_connectivity_command_dry_run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True, "identity": "MikroTik"},
+            ),
+        ):
+            out = StringIO()
+            call_command(
+                "verify_router_connectivity",
+                router=self.router.pk,
+                dry_run=True,
+                stdout=out,
+            )
+        self.assertIn("PASS", out.getvalue())
+        self.assertIn("Conn NAS", out.getvalue())
 
 
 class MikroTikStatusOfflineTests(TestCase):

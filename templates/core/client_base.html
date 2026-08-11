@@ -24,18 +24,47 @@
             >
               {{ item.label }}
             </button>
+          {% elif item.action == "package_pause" and customer %}
+            <form
+              method="post"
+              action="{% url 'core:client_detail' customer.id %}"
+              class="client-sidebar-pause-form"
+              data-package-pause-form
+              data-no-page-loader="1"
+            >
+              {% csrf_token %}
+              <input type="hidden" name="action" value="{{ item.package_action }}" data-package-pause-action>
+              <button
+                type="submit"
+                class="staff-sidebar-action client-sidebar-pause-btn{% if item.package_action == 'resume_package' %} is-paused{% endif %}"
+                data-package-pause-btn
+                {% if item.disabled %}disabled aria-disabled="true"{% endif %}
+              >
+                {{ item.label }}
+              </button>
+            </form>
           {% elif item.action == "logout" %}
             <form method="post" action="{% url 'accounts:logout' %}" class="client-sidebar-logout">
               {% csrf_token %}
               <button type="submit">{{ item.label }}</button>
             </form>
+          {% elif item.href %}
+            <a
+              class="client-sidebar-link{% if sidebar_active == item.key %} active{% endif %}"
+              href="{{ item.href }}"
+              {% if item.external %}target="_blank" rel="noopener"{% endif %}
+            >
+              <span class="client-sidebar-link-label">{{ item.label }}</span>
+              {% if item.badge is not None %}<span class="client-sidebar-badge">{{ item.badge }}</span>{% endif %}
+            </a>
           {% elif item.url_name %}
             <a
-              class="{% if sidebar_active == item.key %}active{% endif %}"
+              class="client-sidebar-link{% if sidebar_active == item.key %} active{% endif %}"
               href="{% url item.url_name %}{% if item.anchor %}#{{ item.anchor }}{% endif %}"
-            >{{ item.label }}</a>
-          {% elif item.href %}
-            <a class="{% if sidebar_active == item.key %}active{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+            >
+              <span class="client-sidebar-link-label">{{ item.label }}</span>
+              {% if item.badge is not None %}<span class="client-sidebar-badge">{{ item.badge }}</span>{% endif %}
+            </a>
           {% endif %}
         {% endfor %}
       </nav>
@@ -202,6 +231,10 @@
 {% endif %}
 
 {% include "core/includes/owner_profile_modal.html" %}
+
+{% if details_form and customer %}
+{% include "core/includes/client_details_modal.html" %}
+{% endif %}
 
 <script>
 (function () {
@@ -522,6 +555,450 @@
           }
         }
       }, 0);
+    });
+  })();
+
+  (function setupClientModals() {
+    function clientToast(msg, type) {
+      if (typeof window.showPackageToast === "function") {
+        window.showPackageToast(msg, type);
+        return;
+      }
+      var existing = document.getElementById("pkg-toast");
+      if (existing) existing.remove();
+      var el = document.createElement("div");
+      el.id = "pkg-toast";
+      el.className = "pkg-toast pkg-toast-" + (type || "info");
+      el.textContent = msg;
+      document.body.appendChild(el);
+      requestAnimationFrame(function () { el.classList.add("pkg-toast-show"); });
+      setTimeout(function () {
+        el.classList.remove("pkg-toast-show");
+        setTimeout(function () { el.remove(); }, 300);
+      }, type === "error" ? 5000 : 3000);
+    }
+
+    function syncEditClientForm(modal) {
+      if (!modal || modal.id !== "client-details-modal") return;
+      if (modal.querySelector(".field-error")) return;
+      var pairs = [
+        ["id_edit_pppoe_username", "data-edit-pppoe-user"],
+        ["id_edit_pppoe_password", "data-edit-pppoe-pass"],
+        ["id_edit_cpe_username", "data-edit-cpe-user"],
+        ["id_edit_cpe_password", "data-edit-cpe-pass"],
+      ];
+      pairs.forEach(function (pair) {
+        var input = document.getElementById(pair[0]);
+        if (!input) return;
+        var value = modal.getAttribute(pair[1]) || "";
+        input.value = value;
+        if (pair[0].indexOf("password") !== -1 && value) {
+          input.type = "text";
+        }
+      });
+    }
+
+    function openClientModal(id) {
+      var modal = document.getElementById(id);
+      if (!modal) return;
+      document.querySelectorAll(".client-action-modal").forEach(function (el) {
+        el.hidden = true;
+        el.setAttribute("aria-hidden", "true");
+      });
+      modal.hidden = false;
+      modal.setAttribute("aria-hidden", "false");
+      document.body.classList.add("role-modal-open");
+      syncEditClientForm(modal);
+      var focusEl = null;
+      var firstError = modal.querySelector(".field-error");
+      if (firstError) {
+        var errField = firstError.closest(".field");
+        if (errField) focusEl = errField.querySelector("input, select, textarea");
+      }
+      if (!focusEl) {
+        focusEl = modal.querySelector(".pppoe-body select, .pppoe-body input:not([type='hidden']), .pppoe-body textarea");
+      }
+      if (focusEl) {
+        setTimeout(function () { focusEl.focus(); }, 40);
+      }
+    }
+
+    function closeClientModal(modal) {
+      if (!modal) return;
+      modal.hidden = true;
+      modal.setAttribute("aria-hidden", "true");
+      if (!document.querySelector(".client-action-modal:not([hidden])")) {
+        document.body.classList.remove("role-modal-open");
+      }
+    }
+
+    window.openClientModal = openClientModal;
+    window.closeClientModal = closeClientModal;
+
+    document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        openClientModal(btn.getAttribute("data-open-modal"));
+      });
+    });
+
+    document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
+      el.addEventListener("click", function () {
+        closeClientModal(el.closest(".client-action-modal"));
+      });
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      var open = document.querySelector(".client-action-modal:not([hidden])");
+      if (open) closeClientModal(open);
+    });
+
+    document.querySelectorAll("#client-details-modal [data-toggle-password]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+        if (!input) return;
+        var show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+        var eye = btn.querySelector(".icon-eye");
+        var eyeOff = btn.querySelector(".icon-eye-off");
+        if (eye && eyeOff) {
+          eye.hidden = show;
+          eyeOff.hidden = !show;
+        }
+      });
+    });
+
+    function randomClientPassword() {
+      var chars = "abcdefghjkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ";
+      var out = "";
+      var i;
+      if (window.crypto && window.crypto.getRandomValues) {
+        var buf = new Uint32Array(10);
+        window.crypto.getRandomValues(buf);
+        for (i = 0; i < buf.length; i++) out += chars.charAt(buf[i] % chars.length);
+      } else {
+        for (i = 0; i < 10; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return out;
+    }
+
+    document.querySelectorAll("#client-details-modal [data-generate-password]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var input = document.getElementById(btn.getAttribute("data-generate-password"));
+        if (!input) return;
+        var syncFrom = btn.getAttribute("data-sync-from");
+        if (syncFrom) {
+          var source = document.getElementById(syncFrom);
+          input.value = (source && source.value) ? source.value : randomClientPassword();
+        } else {
+          input.value = randomClientPassword();
+        }
+        input.type = "text";
+        var toggle = input.parentNode.querySelector("[data-toggle-password]");
+        if (toggle) {
+          var eye = toggle.querySelector(".icon-eye");
+          var eyeOff = toggle.querySelector(".icon-eye-off");
+          if (eye && eyeOff) {
+            eye.hidden = true;
+            eyeOff.hidden = false;
+          }
+          toggle.setAttribute("aria-label", "Hide password");
+        }
+        input.focus();
+      });
+    });
+
+    function applyClientDetails(data) {
+      var name = data.full_name || "";
+      var initial = data.initial || (name ? name.charAt(0).toUpperCase() : "C");
+      document.querySelectorAll("[data-client-name]").forEach(function (el) {
+        el.textContent = name || "—";
+      });
+      document.querySelectorAll("[data-client-initial]").forEach(function (el) {
+        el.textContent = initial;
+      });
+      if (name) document.title = name + " — ISPCENTRIC";
+
+      var heading = document.querySelector(".staff-topbar-heading");
+      if (heading && name) {
+        var text = heading.textContent || "";
+        if (text.indexOf(" · ") !== -1) {
+          heading.textContent = text.replace(/ · [^·]+$/, " · " + name);
+        } else {
+          heading.textContent = name;
+        }
+      }
+
+      document.querySelectorAll('[data-open-modal="client-details-modal"]').forEach(function (btn) {
+        if (name) btn.textContent = "Edit " + name + " details";
+      });
+
+      var title = document.getElementById("client-details-title");
+      if (title && name) title.textContent = name;
+
+      if (data.router_id) {
+        document.querySelectorAll("[data-client-router-link]").forEach(function (el) {
+          if (data.router_url) el.href = data.router_url;
+          el.textContent = data.router_name || "—";
+        });
+        document.querySelectorAll("[data-client-router-host]").forEach(function (el) {
+          el.textContent = data.router_host || "—";
+        });
+        document.querySelectorAll("[data-router-status]").forEach(function (el) {
+          el.setAttribute("data-router-status", String(data.router_id));
+          el.setAttribute("data-router-host", data.router_host || "");
+          el.classList.remove("is-online", "is-offline", "is-checking");
+          el.classList.add("is-checking");
+          var label = el.querySelector(".mikrotik-link-label");
+          if (label) label.textContent = "Checking…";
+        });
+        var routerSelect = document.getElementById("id_edit_router");
+        if (routerSelect) routerSelect.value = String(data.router_id);
+      } else {
+        document.querySelectorAll("[data-client-router-link]").forEach(function (el) {
+          el.textContent = "—";
+          el.removeAttribute("href");
+        });
+        document.querySelectorAll("[data-client-router-host]").forEach(function (el) {
+          el.textContent = "—";
+        });
+        var routerSelectEmpty = document.getElementById("id_edit_router");
+        if (routerSelectEmpty) routerSelectEmpty.value = "";
+      }
+
+      var userEl = document.querySelector("[data-client-pppoe-user]");
+      if (userEl) userEl.textContent = data.pppoe_username || "—";
+
+      var secret = document.querySelector("[data-client-pppoe-secret]");
+      if (secret) {
+        var password = data.pppoe_password || "";
+        if (!password) {
+          secret.textContent = "—";
+        } else {
+          secret.innerHTML =
+            '<span class="mikrotik-secret-mask" data-secret-mask></span>' +
+            '<span class="mikrotik-secret-value" data-secret-value data-client-pppoe-password hidden></span>' +
+            '<button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>';
+          var mask = secret.querySelector("[data-secret-mask]");
+          var value = secret.querySelector("[data-secret-value]");
+          var toggleBtn = secret.querySelector("[data-toggle-secret]");
+          value.textContent = password;
+          mask.textContent = "•".repeat(Math.min(password.length, 18));
+          toggleBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var showing = !value.hidden;
+            value.hidden = showing;
+            mask.hidden = !showing;
+            toggleBtn.textContent = showing ? "Show" : "Hide";
+            toggleBtn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+          });
+        }
+      }
+
+      document.querySelectorAll("[data-client-cpe-user]").forEach(function (el) {
+        el.textContent = data.cpe_username || "admin";
+      });
+
+      document.querySelectorAll("[data-client-cpe-secret]").forEach(function (cpeSecret) {
+        var cpePassword = data.cpe_password || "";
+        if (!cpePassword) {
+          cpeSecret.textContent = "—";
+          return;
+        }
+        cpeSecret.innerHTML =
+          '<span class="mikrotik-secret-mask" data-secret-mask></span>' +
+          '<span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden></span>' +
+          '<button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>';
+        var cpeMask = cpeSecret.querySelector("[data-secret-mask]");
+        var cpeValue = cpeSecret.querySelector("[data-secret-value]");
+        var cpeToggle = cpeSecret.querySelector("[data-toggle-secret]");
+        cpeValue.textContent = cpePassword;
+        cpeMask.textContent = "•".repeat(Math.min(cpePassword.length, 18));
+        cpeToggle.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var showing = !cpeValue.hidden;
+          cpeValue.hidden = showing;
+          cpeMask.hidden = !showing;
+          cpeToggle.textContent = showing ? "Show" : "Hide";
+          cpeToggle.setAttribute("aria-label", showing ? "Show router password" : "Hide router password");
+        });
+      });
+
+      var routerPasswordInput = document.getElementById("client-router-password");
+      if (routerPasswordInput && data.cpe_password) {
+        routerPasswordInput.value = data.cpe_password;
+      }
+
+      var editModal = document.getElementById("client-details-modal");
+      if (editModal) {
+        if (data.pppoe_username != null) {
+          editModal.setAttribute("data-edit-pppoe-user", data.pppoe_username || "");
+        }
+        if (data.pppoe_password != null) {
+          editModal.setAttribute("data-edit-pppoe-pass", data.pppoe_password || "");
+        }
+        if (data.cpe_username != null) {
+          editModal.setAttribute("data-edit-cpe-user", data.cpe_username || "admin");
+        }
+        if (data.cpe_password != null) {
+          editModal.setAttribute("data-edit-cpe-pass", data.cpe_password || "");
+        }
+        syncEditClientForm(editModal);
+      }
+    }
+
+    document.querySelectorAll(".client-details-ajax-form").forEach(function (form) {
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var submitBtn = form.querySelector('[type="submit"]');
+        var saveLabel = (submitBtn && submitBtn.getAttribute("data-save-label")) || "Save";
+        if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Saving…"; }
+        fetch(form.getAttribute("action") || window.location.pathname, {
+          method: "POST",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          body: new FormData(form),
+        })
+          .then(function (res) {
+            return res.json().then(function (d) {
+              d._status = res.status;
+              return d;
+            }).catch(function () {
+              throw new Error("Invalid server response (" + res.status + ")");
+            });
+          })
+          .then(function (data) {
+            if (!data.ok) {
+              var msg = "";
+              if (data.errors) {
+                Object.keys(data.errors).forEach(function (k) {
+                  (data.errors[k] || []).forEach(function (err) { msg += (err.message || err) + " "; });
+                });
+              }
+              clientToast(msg.trim() || "Validation failed.", "error");
+              return;
+            }
+            closeClientModal(form.closest(".client-action-modal"));
+            applyClientDetails(data);
+            clientToast(data.message || "Saved.", "success");
+            if (data.syncing) clientToast("Syncing PPPoE login to MikroTik…", "info");
+          })
+          .catch(function (err) {
+            clientToast((err && err.message) || "Network error — please try again.", "error");
+          })
+          .finally(function () {
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = saveLabel; }
+          });
+      });
+    });
+
+    {% if open_client_modal %}
+    openClientModal("{{ open_client_modal|escapejs }}");
+    {% endif %}
+  })();
+
+  (function setupClientPackagePause() {
+    function pauseToast(msg, type) {
+      if (typeof window.showPackageToast === "function") {
+        window.showPackageToast(msg, type);
+        return;
+      }
+      var existing = document.getElementById("pkg-toast");
+      if (existing) existing.remove();
+      var el = document.createElement("div");
+      el.id = "pkg-toast";
+      el.className = "pkg-toast pkg-toast-" + (type || "info");
+      el.textContent = msg;
+      document.body.appendChild(el);
+      requestAnimationFrame(function () { el.classList.add("pkg-toast-show"); });
+      setTimeout(function () {
+        el.classList.remove("pkg-toast-show");
+        setTimeout(function () { el.remove(); }, 300);
+      }, type === "error" ? 5000 : 3000);
+    }
+
+    function syncPauseControls(data) {
+      document.querySelectorAll("[data-package-pause-form]").forEach(function (form) {
+        var actionInput = form.querySelector("[data-package-pause-action]");
+        var btn = form.querySelector("[data-package-pause-btn]");
+        var canPause = !!data.can_pause_package;
+        var canResume = !!data.can_resume_package;
+        var paused = !!data.subscription_paused;
+        form.hidden = false;
+        if (actionInput) {
+          actionInput.value = paused ? "resume_package" : "pause_package";
+        }
+        if (btn) {
+          btn.textContent = paused ? "Resume subscription" : "Pause subscription";
+          btn.disabled = !(canPause || canResume);
+          btn.classList.toggle("is-paused", paused);
+        }
+      });
+    }
+
+    window.syncPauseControls = syncPauseControls;
+
+    document.querySelectorAll("[data-package-pause-form]").forEach(function (form) {
+      var btn = form.querySelector("[data-package-pause-btn]");
+      var actionInput = form.querySelector("[data-package-pause-action]");
+      var inFlight = false;
+      var idleLabel = btn ? btn.textContent : "";
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        if (inFlight || !actionInput || !btn) return;
+        var isResume = actionInput.value === "resume_package";
+        inFlight = true;
+        btn.disabled = true;
+        btn.textContent = isResume ? "Resuming…" : "Pausing…";
+        fetch(form.getAttribute("action") || window.location.pathname, {
+          method: "POST",
+          headers: { "X-Requested-With": "XMLHttpRequest" },
+          credentials: "same-origin",
+          body: new FormData(form),
+        })
+          .then(function (res) {
+            return res.json().then(function (data) {
+              return { ok: res.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            if (!result.ok || !result.data || !result.data.ok) {
+              var err = (result.data && (result.data.error || result.data.message))
+                || "Could not update package session.";
+              pauseToast(err, "error");
+              if (typeof window.syncPauseControls === "function") {
+                window.syncPauseControls(result.data || {
+                  subscription_paused: !isResume,
+                  can_pause_package: !isResume,
+                  can_resume_package: isResume,
+                });
+              } else {
+                btn.disabled = false;
+                btn.textContent = idleLabel;
+              }
+              return;
+            }
+            if (typeof window.updatePackageSection === "function") {
+              window.updatePackageSection(result.data);
+            } else if (typeof window.syncPauseControls === "function") {
+              window.syncPauseControls(result.data);
+            }
+            pauseToast(result.data.message || "Package session updated.", "info");
+            if (typeof window.refreshClientSubscription === "function") {
+              window.refreshClientSubscription(true);
+            }
+          })
+          .catch(function () {
+            pauseToast("Network error while updating package session.", "error");
+            btn.disabled = false;
+            btn.textContent = idleLabel;
+          })
+          .finally(function () {
+            inFlight = false;
+          });
+      });
     });
   })();
 })();
