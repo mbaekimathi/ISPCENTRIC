@@ -638,6 +638,15 @@ def create_renewal_invoice_and_payment(
     return invoice, payment
 
 
+def customer_needs_nas_provision(customer) -> bool:
+    """Whether recharge / pause / resume should push MikroTik immediately."""
+    mac = (getattr(customer, "hotspot_mac", None) or "").strip()
+    if mac:
+        return True
+    username = (getattr(customer, "pppoe_username", None) or "").strip()
+    return bool(username and getattr(customer, "router_id", None))
+
+
 def recharge_customer_cash(
     *,
     customer,

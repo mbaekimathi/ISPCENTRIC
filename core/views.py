@@ -28,9 +28,21 @@ from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
-from accounts.forms import HotspotSettingsForm, OrganizationEditForm, OwnerProfileForm, PppoeSettingsForm
+from accounts.communications import (
+    CLIENT_COMMUNICATION_EVENTS,
+    ISP_COMMUNICATION_EVENTS,
+    fetch_provider_options,
+)
+from accounts.forms import (
+    CommunicationSettingsForm,
+    HotspotSettingsForm,
+    OrganizationEditForm,
+    OwnerProfileForm,
+    PppoeSettingsForm,
+)
 from accounts.models import (
     ClientSettings,
+    CommunicationSettings,
     Employee,
     NetworkEquipment,
     Organization,
@@ -50,6 +62,7 @@ from billing.forms import (
 )
 from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from billing.services import (
+    customer_needs_nas_provision,
     customer_package_is_paused,
     customer_receives_internet,
     customer_subscription_expired,
@@ -71,6 +84,7 @@ from billing.stk import (
     start_mikrotik_onboarding_stk_payment,
 )
 from core import wireguard
+from core.subscription_sync import enqueue_customer_subscription_sync
 from core.forms import (
     MikroTikCleanUplinkForm,
     MikroTikCredentialsForm,
@@ -97,9 +111,11 @@ from core.mikrotik_connect import (
     clear_mikrotik_uplink_multi,
     customer_cpe_web_proxy,
     customer_cpe_access_eligible,
+    customer_cpe_access_mode,
     customer_cpe_proxy_scope,
     resolve_customer_cpe_target,
     probe_customer_cpe_web,
+    login_customer_cpe_web_session,
     CPE_WEB_PORTS,
     PPPOE_LOCAL_ADDRESS as MK_PPPOE_LOCAL_ADDRESS,
     configure_customer_cpe_web_wifi,
@@ -274,9 +290,9 @@ CLIENT_SIDEBARS = {
                 "url_name": "core:my_account_payments",
             },
             {
-                "key": "account_daraja",
-                "label": "Daraja STK Push",
-                "url_name": "core:my_account_daraja",
+                "key": "account_communications",
+                "label": "Communications",
+                "url_name": "core:my_account_communications",
             },
         ],
     },
@@ -319,12 +335,12 @@ CLIENT_SIDEBARS = {
             },
             {
                 "key": "communications",
-                "label": "Communications link",
+                "label": "Communication settings",
                 "url_name": "core:settings_communications",
             },
             {
-                "key": "payments_links",
-                "label": "Payments links",
+                "key": "stk_payment_settings",
+                "label": "STK Payment Settings",
                 "url_name": "core:settings_payments",
             },
         ],
@@ -655,7 +671,14 @@ def customer_supports_live_usage(customer) -> bool:
     if customer.service_type == Customer.ServiceType.PPPOE:
         return bool(customer.router_id and customer.pppoe_username)
     if customer.service_type == Customer.ServiceType.HOTSPOT:
-        return bool((customer.hotspot_mac or "").strip())
+        if (customer.hotspot_mac or "").strip():
+            return True
+        try:
+            from billing.devices import hotspot_macs_for_customer
+
+            return bool(hotspot_macs_for_customer(customer))
+        except Exception:
+            return False
     return False
 
 
@@ -758,7 +781,6 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
                     "core:client_router_login",
                     kwargs={"customer_id": customer.pk},
                 ),
-                "external": True,
             }
         )
         nav.append(
@@ -1180,10 +1202,17 @@ def workspace(request):
     """Main ISPCENTRIC workspace home — live day analytics."""
     org = resolve_organization(request.user, request)
     snapshot = _workspace_day_snapshot(org)
+    live_routers = cache.get(f"mikrotik_status:{org.pk}") if org else None
     try:
-        from core.mikrotik_status_samples import mikrotik_performance_trend
+        from core.mikrotik_status_samples import (
+            mikrotik_performance_drops,
+            mikrotik_performance_trend,
+        )
 
         snapshot["mikrotik_trend"] = mikrotik_performance_trend(org, hours=24)
+        snapshot["mikrotik_drops"] = mikrotik_performance_drops(
+            org, hours=24, live_routers=live_routers or []
+        )
     except Exception:
         snapshot["mikrotik_trend"] = {
             "ok": False,
@@ -1191,10 +1220,15 @@ def workspace(request):
             "datasets": [],
             "routers": [],
         }
+        snapshot["mikrotik_drops"] = {"ok": False, "events": [], "current_count": 0}
     try:
-        from billing.usage_samples import router_network_performance_trend
+        from billing.usage_samples import (
+            network_performance_drops,
+            router_network_performance_trend,
+        )
 
         snapshot["network_trend"] = router_network_performance_trend(org, hours=24)
+        snapshot["network_drops"] = network_performance_drops(org, hours=24)
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -1203,6 +1237,7 @@ def workspace(request):
             "routers": [],
             "summary": {"clients_online": 0, "peak_download_bps": 0},
         }
+        snapshot["network_drops"] = {"ok": False, "events": [], "current_count": 0}
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     referral_count = 0
     referral_active_count = 0
@@ -1481,6 +1516,8 @@ def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
             "outages": [],
         }
 
+    from core.mikrotik_status_samples import status_reason
+
     score_map = {
         "connected": 100,
         "reachable": 70,
@@ -1505,6 +1542,7 @@ def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
                     "host": row.get("host") or "",
                     "status": status,
                     "error": row.get("error") or "",
+                    "reason": status_reason(status, row.get("error")),
                     "url": reverse(
                         "core:mikrotik_detail", kwargs={"router_id": row["id"]}
                     )
@@ -1561,9 +1599,15 @@ def workspace_analytics(request):
     except (TypeError, ValueError):
         hours = 24
     try:
-        from core.mikrotik_status_samples import mikrotik_performance_trend
+        from core.mikrotik_status_samples import (
+            mikrotik_performance_drops,
+            mikrotik_performance_trend,
+        )
 
         snapshot["mikrotik_trend"] = mikrotik_performance_trend(
+            org, hours=hours, live_routers=routers or []
+        )
+        snapshot["mikrotik_drops"] = mikrotik_performance_drops(
             org, hours=hours, live_routers=routers or []
         )
     except Exception:
@@ -1573,10 +1617,12 @@ def workspace_analytics(request):
             "datasets": [],
             "routers": [],
         }
+        snapshot["mikrotik_drops"] = {"ok": False, "events": [], "current_count": 0}
 
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     try:
         from billing.usage_samples import (
+            network_performance_drops,
             router_network_performance_trend,
             sample_organization_usage,
         )
@@ -1588,6 +1634,7 @@ def workspace_analytics(request):
         snapshot["network_trend"] = router_network_performance_trend(
             org, hours=hours, use_cache=not force
         )
+        snapshot["network_drops"] = network_performance_drops(org, hours=hours)
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -1596,6 +1643,7 @@ def workspace_analytics(request):
             "routers": [],
             "summary": {"clients_online": 0, "peak_download_bps": 0},
         }
+        snapshot["network_drops"] = {"ok": False, "events": [], "current_count": 0}
 
     return JsonResponse(snapshot)
 
@@ -4692,88 +4740,6 @@ def client_detail(request, customer_id: int):
 
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
-    def _enqueue_subscription_sync(
-        customer_pk: int,
-        provision: bool,
-        *,
-        wait_first: bool = False,
-    ) -> None:
-        """
-        Push package access to MikroTik.
-
-        ``wait_first=True`` (cash recharge / pause / resume) runs one sync on
-        the request thread so NAS restore is immediate, then a short background
-        follow-up clears CPE renew if the router was still redialing.
-        """
-
-        def _run_once(cust):
-            from core.mikrotik_connect import sync_customer_subscription_access
-
-            return sync_customer_subscription_access(
-                cust,
-                provision=provision,
-            )
-
-        if wait_first:
-            try:
-                from core.mikrotik_connect import cpe_renew_clear_is_pending
-
-                _cust = Customer.objects.select_related(
-                    "plan", "router", "organization"
-                ).get(pk=customer_pk)
-                result = _run_once(_cust)
-                if (
-                    result.get("ok")
-                    and not result.get("cpe_renew_clear_pending")
-                    and not cpe_renew_clear_is_pending(_cust)
-                ):
-                    return
-            except Exception:
-                # Fall through to background retries.
-                pass
-
-        def _bg_sync():
-            from django.db import connection
-
-            try:
-                from core.mikrotik_connect import (
-                    cpe_renew_clear_is_pending,
-                    sync_customer_subscription_access,
-                )
-
-                _cust = Customer.objects.select_related(
-                    "plan", "router", "organization"
-                ).get(pk=customer_pk)
-                # Short follow-up only — first restore already ran (or runs
-                # here). Avoid the old 2s×3 sleeps that made surfing feel slow.
-                delays = (0.4, 0.8, 1.5)
-                for attempt, delay in enumerate(delays, start=1):
-                    result = sync_customer_subscription_access(
-                        _cust,
-                        provision=provision,
-                    )
-                    if not result.get("allowed"):
-                        break
-                    if result.get("ok") and not result.get(
-                        "cpe_renew_clear_pending"
-                    ):
-                        break
-                    if not cpe_renew_clear_is_pending(_cust) and result.get(
-                        "ok"
-                    ):
-                        break
-                    if attempt < len(delays):
-                        time.sleep(delay)
-                    _cust = Customer.objects.select_related(
-                        "plan", "router", "organization"
-                    ).get(pk=customer_pk)
-            except Exception:
-                pass
-            finally:
-                connection.close()
-
-        threading.Thread(target=_bg_sync, daemon=True).start()
-
     def _enqueue_pppoe_provision(customer_pk: int) -> None:
         def _bg_provision():
             from django.db import connection
@@ -4932,10 +4898,11 @@ def client_detail(request, customer_id: int):
                     cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
                     cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
                     if customer.router_id and customer.pppoe_username:
-                        _enqueue_subscription_sync(
+                        enqueue_customer_subscription_sync(
                             customer.pk,
-                            bool(customer.pppoe_username and customer.router_id),
+                            customer_needs_nas_provision(customer),
                             wait_first=True,
+                            quick=True,
                         )
 
                 if is_ajax:
@@ -5014,9 +4981,9 @@ def client_detail(request, customer_id: int):
 
                 customer = result["customer"]
                 invoice = result["invoice"]
-                provision = bool(customer.pppoe_username and customer.router_id)
-                _enqueue_subscription_sync(
-                    customer.pk, provision, wait_first=True
+                provision = customer_needs_nas_provision(customer)
+                enqueue_customer_subscription_sync(
+                    customer.pk, provision, wait_first=True, quick=True
                 )
 
                 amount_label = f"{recharge_form.cleaned_data['amount']:.2f}"
@@ -5064,9 +5031,9 @@ def client_detail(request, customer_id: int):
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             customer.refresh_from_db()
-            provision = bool(customer.pppoe_username and customer.router_id)
-            _enqueue_subscription_sync(
-                customer.pk, provision, wait_first=True
+            provision = customer_needs_nas_provision(customer)
+            enqueue_customer_subscription_sync(
+                customer.pk, provision, wait_first=True, quick=True
             )
             if is_ajax:
                 return _package_json_response(
@@ -5293,14 +5260,15 @@ def _normalize_proxied_path(router_path: str, prefix: str) -> str:
 @client_workspace_required
 @require_GET
 def client_router_login(request, customer_id: int):
-    """Start a short-lived, user-bound browser session to a subscriber CPE."""
+    """In-app shell for remote access to a subscriber CPE web UI."""
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
-        Customer.objects.select_related("router"),
+        Customer.objects.select_related("router", "plan", "organization"),
         pk=customer_id,
         organization=org,
     )
-    if not customer_can_access_router(customer, org):
+    can_access = customer_can_access_router(customer, org)
+    if not can_access:
         messages.error(
             request,
             "Router login requires a configured client (PPPoE, static IP, or DHCP MAC) and NAS.",
@@ -5308,37 +5276,168 @@ def client_router_login(request, customer_id: int):
         return redirect("core:client_detail", customer_id=customer.pk)
 
     nas = customer.router
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="router",
+        page_title=f"Router · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=True,
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        start_url=reverse(
+            "core:client_router_login_start", kwargs={"customer_id": customer.pk}
+        ),
+        cpe_username=(customer.cpe_username or "").strip() or "admin",
+        cpe_password=customer.cpe_password or "",
+        has_cpe_password=bool((customer.cpe_password or "").strip()),
+        nas_name=(nas.name if nas else ""),
+        access_mode=customer_cpe_access_mode(customer),
+        gateway=MK_PPPOE_LOCAL_ADDRESS,
+        checked_ports=", ".join(str(p) for p in CPE_WEB_PORTS),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=True),
+    ]
+    ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
+    return render(request, "core/client_router_access.html", ctx)
+
+
+@client_workspace_required
+@require_http_methods(["GET", "POST"])
+def client_router_login_start(request, customer_id: int):
+    """Probe (and if needed enable) CPE www, then return a signed proxy URL."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router"),
+        pk=customer_id,
+        organization=org,
+    )
+    if not customer_can_access_router(customer, org):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Router login requires a configured client and NAS.",
+            },
+            status=400,
+        )
+
+    if request.method == "POST":
+        router_password = (request.POST.get("cpe_password") or "").strip()
+        if router_password:
+            customer.cpe_password = router_password
+            if not (customer.cpe_username or "").strip():
+                customer.cpe_username = "admin"
+            customer.save(update_fields=["cpe_password", "cpe_username"])
+            cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+            cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+
+    nas = customer.router
     probe = probe_customer_cpe_web(
         nas.host,
         nas.username,
         nas.password or "",
         customer=customer,
-        timeout=8.0,
+        cpe_username=customer.cpe_username or "admin",
+        cpe_password=customer.cpe_password or "",
+        pppoe_password=customer.pppoe_password or "",
+        timeout=20.0,
+        auto_enable_www=True,
     )
     if not probe.get("ok"):
-        return render(
-            request,
-            "core/client_router_unavailable.html",
+        return JsonResponse(
             {
-                "customer": customer,
-                "router": nas,
-                "cpe_host": probe.get("cpe_host") or "",
+                "ok": False,
                 "session_active": bool(probe.get("session_active")),
                 "ping_ok": bool(probe.get("ping_ok")),
-                "gateway": probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
+                "api_ok": bool(probe.get("api_ok")),
+                "www_enabled": bool(probe.get("www_enabled")),
+                "cpe_host": probe.get("cpe_host") or "",
                 "access_mode": probe.get("mode") or "",
+                "gateway": probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
                 "detail": probe.get("hint") or probe.get("error") or "",
-                "checked_ports": ", ".join(str(p) for p in CPE_WEB_PORTS),
-                "detail_url": reverse("core:client_detail", args=[customer.pk]),
-            },
-            status=200,
+                "steps": list(probe.get("steps") or []),
+                "checked_ports": [str(p) for p in CPE_WEB_PORTS],
+                "cpe_username": (customer.cpe_username or "").strip() or "admin",
+                "needs_password": not (customer.cpe_password or "").strip(),
+            }
         )
 
     token = _cpe_proxy_token(request, customer, probe.get("port") or 80)
-    return redirect(
+    proxy_url = reverse(
         "core:client_router_proxy_root",
-        customer_id=customer.pk,
-        token=token,
+        kwargs={"customer_id": customer.pk, "token": token},
+    )
+    if not proxy_url.endswith("/"):
+        proxy_url += "/"
+
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    cookie_key = "cpe-web:" + token_hash
+    existing = cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {}
+    login = login_customer_cpe_web_session(
+        nas.host,
+        nas.username,
+        nas.password or "",
+        customer=customer,
+        cpe_username=customer.cpe_username or "admin",
+        cpe_password=customer.cpe_password or "",
+        pppoe_password=customer.pppoe_password or "",
+        cpe_port=int(probe.get("port") or 80),
+        cpe_address=probe.get("cpe_host") or "",
+        gateway_ip=probe.get("gateway") or "",
+        session_cookies=dict(existing),
+        api_ok=bool(probe.get("api_ok") or probe.get("www_enabled")),
+        timeout=12.0,
+    )
+    cookies = dict(login.get("cookies") or existing or {})
+    if cookies:
+        cache.set(cookie_key, cookies, _CPE_PROXY_ABS_AGE)
+        cache.set(f"cpe-web-customer:{org.pk}:{customer.pk}", cookies, _CPE_PROXY_ABS_AGE)
+    basic_header = (login.get("basic_header") or "").strip()
+    if basic_header:
+        cache.set(
+            "cpe-web-basic:" + token_hash,
+            {"header": basic_header},
+            _CPE_PROXY_ABS_AGE,
+        )
+    cache.set("cpe-web-activity:" + token_hash, time.time(), _CPE_PROXY_ABS_AGE)
+
+    working_user = (login.get("cpe_username") or "").strip()
+    working_pass = login.get("cpe_password")
+    if (
+        login.get("authenticated")
+        and working_pass
+        and not login.get("support_user")
+        and not (customer.cpe_password or "").strip()
+    ):
+        customer.cpe_password = working_pass
+        update_fields = ["cpe_password"]
+        if working_user and working_user != (customer.cpe_username or ""):
+            customer.cpe_username = working_user
+            update_fields.append("cpe_username")
+        customer.save(update_fields=update_fields)
+
+    steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
+    return JsonResponse(
+        {
+            "ok": True,
+            "proxy_url": proxy_url,
+            "cpe_host": probe.get("cpe_host") or "",
+            "port": int(probe.get("port") or 80),
+            "ping_ok": bool(probe.get("ping_ok")),
+            "api_ok": bool(probe.get("api_ok")),
+            "www_enabled": bool(probe.get("www_enabled")),
+            "authenticated": bool(login.get("authenticated")),
+            "vendor": login.get("vendor") or "",
+            "access_mode": probe.get("mode") or "",
+            "steps": steps,
+            "cpe_username": working_user
+            or (customer.cpe_username or "").strip()
+            or "admin",
+            "has_password": bool((customer.cpe_password or working_pass or "").strip()),
+            "login_error": login.get("error") or "",
+        }
     )
 
 
@@ -5440,6 +5539,7 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
                     "origin",
                     "referer",
                     "x-csrftoken",
+                    "authorization",
                 }:
                     continue
                 headers[name] = value
@@ -5449,6 +5549,11 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
                 headers["Cookie"] = "; ".join(
                     f"{name}={value}" for name, value in router_cookies.items()
                 )
+            basic = cache.get(
+                "cpe-web-basic:" + hashlib.sha256(token.encode()).hexdigest()
+            ) or {}
+            if basic.get("header"):
+                headers["Authorization"] = basic["header"]
 
             if cpe_is_tls:
                 connection = http.client.HTTPSConnection(
@@ -7323,20 +7428,9 @@ def _payment_phone_autofill(phone: str) -> str:
 
 
 def _find_hotspot_customer_for_mac(org, mac: str):
-    mac = _normalize_hotspot_mac(mac)
-    if not mac:
-        return None
-    return (
-        Customer.objects.filter(
-            organization=org,
-            service_type=Customer.ServiceType.HOTSPOT,
-            hotspot_mac=mac,
-            status=Customer.Status.ACTIVE,
-        )
-        .select_related("plan", "organization", "router")
-        .order_by("id")
-        .first()
-    )
+    from billing.devices import find_hotspot_customer_for_mac
+
+    return find_hotspot_customer_for_mac(org, mac, active_only=True)
 
 
 def _ensure_customer_plan_in_list(org, plans, customer):
@@ -7741,6 +7835,7 @@ def pppoe_voucher_redeem(request, join_code: str):
 @require_POST
 def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
+    from billing.devices import resolve_or_create_hotspot_customer
     from billing.stk import start_subscription_stk_payment
 
     org = get_object_or_404(Organization, join_code=join_code)
@@ -7751,15 +7846,12 @@ def hotspot_payment_start(request, join_code: str):
             status=400,
         )
 
-    existing_hotspot = (
-        Customer.objects.filter(
-            organization=org,
-            service_type=Customer.ServiceType.HOTSPOT,
-            hotspot_mac=mac,
-        )
-        .order_by("id")
-        .first()
-    )
+    existing_hotspot = _find_hotspot_customer_for_mac(org, mac)
+    phone = (request.POST.get("phone") or "").strip()
+    if existing_hotspot is None and phone:
+        from billing.devices import find_hotspot_customer_by_phone
+
+        existing_hotspot = find_hotspot_customer_by_phone(org, phone)
     plan = _resolve_payable_plan(
         org,
         plan_id=request.POST.get("plan_id"),
@@ -7771,7 +7863,6 @@ def hotspot_payment_start(request, join_code: str):
             {"ok": False, "error": "That package is not available."},
             status=404,
         )
-    phone = (request.POST.get("phone") or "").strip()
     active_routers = MikroTikRouter.objects.filter(
         organization=org,
         account_status=MikroTikRouter.AccountStatus.ACTIVE,
@@ -7795,60 +7886,46 @@ def hotspot_payment_start(request, join_code: str):
             status=400,
         )
 
-    account_number = f"HOT-{org.pk}-{mac.replace(':', '')}"[:40]
-    from django.db import IntegrityError, transaction
-
-    with transaction.atomic():
-        customer = (
-            Customer.objects.select_for_update()
-            .filter(
-                organization=org,
-                service_type=Customer.ServiceType.HOTSPOT,
-                hotspot_mac=mac,
-            )
-            .order_by("id")
-            .first()
+    resolved = resolve_or_create_hotspot_customer(
+        org, mac=mac, phone=phone, plan=plan, router=router
+    )
+    if not resolved.get("ok"):
+        return JsonResponse(
+            {"ok": False, "error": resolved.get("error") or "Could not start payment."},
+            status=int(resolved.get("status") or 400),
         )
-        if customer is None:
-            try:
-                with transaction.atomic():
-                    customer = Customer.objects.create(
-                        organization=org,
-                        full_name=f"Hotspot device {mac[-5:]}",
-                        phone="",
-                        account_number=account_number,
-                        service_type=Customer.ServiceType.HOTSPOT,
-                        hotspot_mac=mac,
-                        status=Customer.Status.ACTIVE,
-                        plan=plan,
-                        router=router,
-                    )
-            except IntegrityError:
-                customer = (
-                    Customer.objects.filter(
-                        organization=org,
-                        service_type=Customer.ServiceType.HOTSPOT,
-                        hotspot_mac=mac,
-                    )
-                    .order_by("id")
-                    .first()
+    customer = resolved["customer"]
+
+    # Extra device joining a live package: authorize without charging again.
+    if resolved.get("attached") and resolved.get("already_paid"):
+        provision = {"ok": False, "allowed": False}
+        try:
+            from core.subscription_sync import enqueue_customer_subscription_sync
+
+            provision = (
+                enqueue_customer_subscription_sync(
+                    customer.pk,
+                    True,
+                    wait_first=True,
+                    quick=True,
+                    reauthenticate=False,
                 )
-                if customer is None:
-                    raise
-        if customer is not None:
-            if customer.status != Customer.Status.ACTIVE:
-                return JsonResponse(
-                    {
-                        "ok": False,
-                        "error": (
-                            "This device account is suspended. Contact your internet "
-                            "provider before making a payment."
-                        ),
-                    },
-                    status=403,
-                )
-            customer.router = router
-            customer.save(update_fields=["router"])
+                or provision
+            )
+        except Exception:
+            pass
+        return JsonResponse(
+            {
+                "ok": True,
+                "already_paid": True,
+                "attached": True,
+                "authorized": bool(provision.get("ok") and provision.get("allowed")),
+                "message": "This device was added to your package.",
+                "welcome_url": reverse(
+                    "core:hotspot_welcome", kwargs={"join_code": join_code}
+                ),
+            }
+        )
 
     result = start_subscription_stk_payment(
         organization=org,
@@ -7896,15 +7973,21 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
             "customer",
             "customer__organization",
             "customer__router",
+            "customer__plan",
         ),
         pk=stk_id,
         organization=org,
-        customer__hotspot_mac=payload.get("mac"),
     )
-    result = refresh_stk_status(stk)
-    # Package + MikroTik activate only after voucher redeem — do not auto-authorize.
-    if result.get("success") and result.get("needs_voucher"):
-        result["authorized"] = False
+    from billing.devices import customer_owns_hotspot_mac
+
+    if not customer_owns_hotspot_mac(stk.customer, payload.get("mac") or ""):
+        return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
+    wait_for_nas = (request.GET.get("nas") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    result = refresh_stk_status(stk, wait_for_nas=wait_for_nas)
     return JsonResponse(result)
 
 
@@ -7985,10 +8068,13 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
         StkPushRequest.objects.select_related("customer", "customer__organization"),
         pk=stk_id,
         organization=org,
-        customer__hotspot_mac=payload.get("mac"),
         status=StkPushRequest.Status.SUCCESS,
         subscription_applied=True,
     )
+    from billing.devices import customer_owns_hotspot_mac
+
+    if not customer_owns_hotspot_mac(stk.customer, payload.get("mac") or ""):
+        return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
     customer_pk = stk.customer_id
 
     def _bg_activate(pk: int = customer_pk) -> None:
@@ -8512,15 +8598,33 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
         organization=org,
         customer_id=payload.get("cid"),
     )
-    result = refresh_stk_status(stk)
-    if result.get("success") and result.get("needs_voucher"):
-        result["authorized"] = False
+    wait_for_nas = (request.GET.get("nas") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    result = refresh_stk_status(stk, wait_for_nas=wait_for_nas)
     if request.GET.get("view") == "page":
         customer = stk.customer
         customer.refresh_from_db()
+        try:
+            tries = int(request.GET.get("tries") or 0)
+        except (TypeError, ValueError):
+            tries = 0
         waiting = bool(result.get("pending"))
         authorizing = bool(result.get("success") and not result.get("authorized"))
-        refresh_url = request.get_full_path()
+        voucher_fallback = bool(
+            result.get("success")
+            and not result.get("authorized")
+            and not result.get("surfing")
+            and (result.get("voucher_code") or result.get("voucher_redeemable"))
+            and tries >= 2
+        )
+        if voucher_fallback:
+            authorizing = False
+        params = request.GET.copy()
+        params["tries"] = str(tries + 1)
+        refresh_url = request.path + "?" + params.urlencode()
         return render(
             request,
             "core/pppoe_payment_result.html",
@@ -8531,9 +8635,13 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
                 "plan_name": getattr(getattr(customer, "plan", None), "name", ""),
                 "waiting": waiting,
                 "authorizing": authorizing,
+                "voucher_fallback": voucher_fallback,
                 "auto_refresh": waiting or authorizing,
                 "refresh_url": refresh_url,
                 "retry_url": reverse(
+                    "core:pppoe_pay", kwargs={"join_code": org.join_code}
+                ),
+                "voucher_url": reverse(
                     "core:pppoe_pay", kwargs={"join_code": org.join_code}
                 ),
                 "continue_url": (
@@ -8854,61 +8962,6 @@ def my_account_payments(request):
             package_form=package_form,
             package_edit_form=edit_form,
             open_billing_modal=open_modal,
-            **extra,
-        ),
-    )
-
-
-@client_workspace_required
-def my_account_daraja(request):
-    """Receive subscription money + Daraja STK Push settings."""
-    org = resolve_organization(request.user, request)
-    extra = _account_org_context(request, org)
-    can_edit = extra["can_edit"]
-    form = (
-        OrganizationEditForm(instance=org, section=OrganizationEditForm.SECTION_DARAJA)
-        if org and can_edit
-        else None
-    )
-
-    if request.method == "POST" and can_edit and org:
-        def _daraja_messages(saved_org):
-            creds = saved_org.effective_daraja_credentials()
-            if saved_org.daraja_enabled and creds.get("ready"):
-                return [
-                    "Payment settings saved. Daraja STK Push is ready "
-                    f"({creds.get('source_label')}).",
-                ]
-            if saved_org.daraja_enabled:
-                return [
-                    "Payment settings saved. Daraja is enabled but not fully ready yet — "
-                    f"{creds.get('message')}"
-                ]
-            return ["Receive money and Daraja settings updated."]
-
-        form, early = _save_account_section(
-            request,
-            org,
-            section=OrganizationEditForm.SECTION_DARAJA,
-            success_url_name="core:my_account_daraja",
-            success_messages=_daraja_messages,
-        )
-        if early:
-            return early
-
-    return render(
-        request,
-        "core/my_account_daraja.html",
-        client_page_context(
-            request,
-            active_nav="account",
-            sidebar_active="account_daraja",
-            page_title="Daraja STK Push",
-            page_kicker="My account",
-            page_subtitle=(
-                "Set Paybill or Till for subscription collections, then configure Daraja STK Push."
-            ),
-            form=form,
             **extra,
         ),
     )
@@ -9339,33 +9392,175 @@ def system_settings(request):
     )
 
 
-@client_workspace_required
-def settings_communications(request):
+def _isp_communications_page(request, *, variant):
+    """Settings = credential config only; My account = when messages are sent."""
+    org = resolve_organization(request.user, request)
+    employee = getattr(request.user, "employee_profile", None)
+    viewing_client = bool(employee and is_viewing_as_client(request, employee))
+    can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
+    comms = CommunicationSettings.for_organization(org) if org else None
+    is_settings = variant == "settings"
+    form = (
+        CommunicationSettingsForm(instance=comms)
+        if is_settings and comms and can_edit
+        else None
+    )
+
+    if is_settings and request.method == "POST" and can_edit and comms:
+        form = CommunicationSettingsForm(request.POST, instance=comms)
+        if form.is_valid():
+            comms = form.save()
+            statuses = comms.channel_statuses()
+            parts = []
+            for key, label in (("sms", "SMS"), ("email", "Email"), ("whatsapp", "WhatsApp")):
+                status = statuses[key]
+                if status["ready"]:
+                    parts.append(f"{label} ready")
+                elif status["enabled"]:
+                    parts.append(f"{label} needs setup")
+                else:
+                    parts.append(f"{label} off")
+            messages.success(
+                request,
+                "Communication settings saved. " + " · ".join(parts) + ".",
+            )
+            return redirect("core:settings_communications")
+    elif not is_settings and request.method == "POST":
+        return redirect("core:settings_communications")
+
+    statuses = comms.channel_statuses() if comms else None
+    context = {
+        "form": form,
+        "can_edit": can_edit,
+        "comms": comms,
+        "sms_status": statuses["sms"] if statuses else None,
+        "email_status": statuses["email"] if statuses else None,
+        "whatsapp_status": statuses["whatsapp"] if statuses else None,
+        "show_events": not is_settings,
+        "show_config": is_settings,
+        "save_label": "Save communication settings",
+    }
+    if is_settings:
+        return render(
+            request,
+            "core/settings_communications.html",
+            client_page_context(
+                request,
+                active_nav="settings",
+                sidebar_active="communications",
+                page_title="Communication settings",
+                page_kicker="Settings",
+                page_subtitle=(
+                    "Configure SMS, email, and WhatsApp credentials used to message "
+                    "your clients and this ISP account."
+                ),
+                comms_fetch_url=reverse("core:settings_communications_fetch"),
+                **context,
+            ),
+        )
     return render(
         request,
         "core/settings_communications.html",
         client_page_context(
             request,
-            active_nav="settings",
-            sidebar_active="communications",
-            page_title="Communications link",
-            page_kicker="Settings",
-            page_subtitle="Share and manage the links clients use to reach your support channels.",
+            active_nav="account",
+            sidebar_active="account_communications",
+            page_title="Communications",
+            page_kicker="My account",
+            page_subtitle=(
+                "When this ISP sends messages to clients and to this account. "
+                "Gateway credentials are configured under Communication settings."
+            ),
+            client_events=CLIENT_COMMUNICATION_EVENTS,
+            isp_events=ISP_COMMUNICATION_EVENTS,
+            **context,
         ),
     )
 
 
+def _comms_fetch_payload(request):
+    if "application/json" in (request.content_type or ""):
+        try:
+            return json.loads(request.body.decode() or "{}")
+        except json.JSONDecodeError:
+            return {}
+    return {key: request.POST.get(key, "") for key in request.POST}
+
+
+@client_workspace_required
+@require_POST
+def settings_communications_fetch(request):
+    org = resolve_organization(request.user, request)
+    employee = getattr(request.user, "employee_profile", None)
+    viewing_client = bool(employee and is_viewing_as_client(request, employee))
+    can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
+    if not can_edit:
+        return JsonResponse({"ok": False, "error": "Only the organization owner can fetch providers."}, status=403)
+    result = fetch_provider_options(_comms_fetch_payload(request))
+    return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
+@client_workspace_required
+def settings_communications(request):
+    return _isp_communications_page(request, variant="settings")
+
+
+@client_workspace_required
+def my_account_communications(request):
+    return _isp_communications_page(request, variant="account")
+
+
 @client_workspace_required
 def settings_payments(request):
+    """STK Payment Settings: receive money + Daraja STK Push."""
+    org = resolve_organization(request.user, request)
+    extra = _account_org_context(request, org)
+    can_edit = extra["can_edit"]
+    form = (
+        OrganizationEditForm(instance=org, section=OrganizationEditForm.SECTION_DARAJA)
+        if org and can_edit
+        else None
+    )
+
+    if request.method == "POST" and can_edit and org:
+        def _daraja_messages(saved_org):
+            creds = saved_org.effective_daraja_credentials()
+            if saved_org.daraja_enabled and creds.get("ready"):
+                return [
+                    "Payment settings saved. Daraja STK Push is ready "
+                    f"({creds.get('source_label')}).",
+                ]
+            if saved_org.daraja_enabled:
+                return [
+                    "Payment settings saved. Daraja is enabled but not fully ready yet — "
+                    f"{creds.get('message')}"
+                ]
+            return ["Receive money and Daraja settings updated."]
+
+        form, early = _save_account_section(
+            request,
+            org,
+            section=OrganizationEditForm.SECTION_DARAJA,
+            success_url_name="core:settings_payments",
+            success_messages=_daraja_messages,
+        )
+        if early:
+            return early
+
     return render(
         request,
         "core/settings_payments.html",
         client_page_context(
             request,
             active_nav="settings",
-            sidebar_active="payments_links",
-            page_title="Payments links",
+            sidebar_active="stk_payment_settings",
+            page_title="STK Payment Settings",
             page_kicker="Settings",
-            page_subtitle="Payment portal and collection links for your clients.",
+            page_subtitle=(
+                "Set this ISP's Paybill or Till for manual collections, then choose "
+                "Company Payment Gateway (default) or this ISP's own Daraja app for STK Push."
+            ),
+            form=form,
+            **extra,
         ),
     )

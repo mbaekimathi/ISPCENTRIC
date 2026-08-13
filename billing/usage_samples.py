@@ -852,6 +852,205 @@ def router_network_performance_trend(
     return payload
 
 
+def _wifi_drop_reason(
+    *,
+    lost: int,
+    hotspot_lost: int,
+    pppoe_lost: int,
+    expired_count: int,
+    router_status: str = "",
+    router_error: str = "",
+) -> str:
+    from core.mikrotik_status_samples import status_reason
+
+    parts: list[str] = []
+    status = (router_status or "").strip().lower()
+    if status and status != "connected":
+        parts.append(
+            "MikroTik "
+            + status_reason(status, router_error).rstrip(".")
+            + ", so Wi‑Fi and client sessions dropped."
+        )
+    if expired_count:
+        noun = "package" if expired_count == 1 else "packages"
+        parts.append(f"{expired_count} client {noun} expired.")
+    if parts:
+        return " ".join(parts)
+
+    bits: list[str] = []
+    if hotspot_lost:
+        noun = "client" if hotspot_lost == 1 else "clients"
+        bits.append(f"{hotspot_lost} Wi‑Fi/Hotspot {noun}")
+    if pppoe_lost:
+        noun = "session" if pppoe_lost == 1 else "sessions"
+        bits.append(f"{pppoe_lost} PPPoE {noun}")
+    if bits:
+        return (
+            " and ".join(bits)
+            + " left the network while the MikroTik stayed connected."
+        )
+    noun = "client" if lost == 1 else "clients"
+    return f"{lost} {noun} went offline."
+
+
+def _is_significant_client_drop(previous: int, current: int) -> bool:
+    lost = previous - current
+    if lost < 1 or previous < 1:
+        return False
+    if current == 0:
+        return True
+    if lost >= 2:
+        return True
+    return (lost / previous) >= 0.3
+
+
+def network_performance_drops(
+    organization, *, hours: int = 24, max_events: int = 8
+) -> dict[str, Any]:
+    """Explain Wi‑Fi / online-client drops on each MikroTik over the window."""
+    empty = {"ok": False, "hours": hours, "events": [], "current_count": 0}
+    if not organization:
+        return empty
+
+    from core.models import MikroTikRouter, MikroTikStatusSample
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    routers = {
+        r.pk: {"id": r.pk, "name": r.name, "host": r.host or ""}
+        for r in MikroTikRouter.objects.filter(organization=organization)
+        .only("id", "name", "host")
+        .order_by("name")
+    }
+    customers = {
+        row["pk"]: {
+            "router_id": row["router_id"],
+            "service_type": (row["service_type"] or "").strip().lower(),
+            "package_end": row["package_end"],
+        }
+        for row in Customer.objects.filter(organization=organization)
+        .exclude(router_id__isnull=True)
+        .values("pk", "router_id", "service_type", "package_end")
+    }
+
+    samples = list(
+        CustomerUsageSample.objects.filter(
+            organization=organization,
+            sampled_at__gte=since,
+            session_active=True,
+        )
+        .order_by("sampled_at")
+        .values("customer_id", "sampled_at")[:12000]
+    )
+    online_by_bucket: dict[int, dict[int, set[int]]] = {k: {} for k in bucket_keys}
+    for row in samples:
+        cid = int(row["customer_id"])
+        meta = customers.get(cid)
+        if not meta:
+            continue
+        router_id = meta["router_id"]
+        if router_id not in routers:
+            continue
+        stamp = row["sampled_at"]
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        online_by_bucket.setdefault(bucket, {}).setdefault(router_id, set()).add(cid)
+
+    mt_status_by_bucket: dict[int, dict[int, str]] = {k: {} for k in bucket_keys}
+    for row in MikroTikStatusSample.objects.filter(
+        organization=organization,
+        sampled_at__gte=since,
+    ).order_by("sampled_at").values("router_id", "sampled_at", "status")[:12000]:
+        rid = int(row["router_id"])
+        if rid not in routers:
+            continue
+        stamp = row["sampled_at"]
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        mt_status_by_bucket.setdefault(bucket, {})[rid] = (
+            row["status"] or "disconnected"
+        ).strip().lower()
+
+    events: list[dict[str, Any]] = []
+    for router_id, meta in routers.items():
+        prev_ids: set[int] = set()
+        prev_key = None
+        for key in bucket_keys:
+            current_ids = set(online_by_bucket.get(key, {}).get(router_id, set()))
+            if prev_key is not None and _is_significant_client_drop(
+                len(prev_ids), len(current_ids)
+            ):
+                left = prev_ids - current_ids
+                hotspot_lost = sum(
+                    1
+                    for cid in left
+                    if customers.get(cid, {}).get("service_type") == Customer.ServiceType.HOTSPOT
+                )
+                pppoe_lost = len(left) - hotspot_lost
+                drop_start = datetime.fromtimestamp(prev_key, tz=dt_timezone.utc)
+                drop_end = datetime.fromtimestamp(key, tz=dt_timezone.utc)
+                expired_count = 0
+                for cid in left:
+                    ended = customers.get(cid, {}).get("package_end")
+                    if ended and drop_start <= ended <= drop_end:
+                        expired_count += 1
+                nearby_keys = [prev_key, key, key + bucket_secs]
+                router_status = ""
+                for probe_key in nearby_keys:
+                    status = (mt_status_by_bucket.get(probe_key) or {}).get(
+                        router_id
+                    ) or ""
+                    if status and status != "connected":
+                        router_status = status
+                        break
+                stamp = timezone.localtime(drop_end)
+                events.append(
+                    {
+                        "router_id": router_id,
+                        "router_name": meta["name"],
+                        "host": meta["host"],
+                        "at": stamp.strftime("%H:%M" if hours <= 48 else "%b %d %H:%M"),
+                        "at_iso": drop_end.isoformat(),
+                        "from_online": len(prev_ids),
+                        "to_online": len(current_ids),
+                        "status": router_status,
+                        "reason": _wifi_drop_reason(
+                            lost=len(left),
+                            hotspot_lost=hotspot_lost,
+                            pppoe_lost=pppoe_lost,
+                            expired_count=expired_count,
+                            router_status=router_status,
+                        ),
+                        "current": key == bucket_keys[-1],
+                    }
+                )
+            prev_ids = current_ids
+            prev_key = key
+
+    events.sort(key=lambda row: row.get("at_iso") or "", reverse=True)
+    current_count = sum(1 for row in events if row.get("current"))
+    return {
+        "ok": True,
+        "hours": hours,
+        "events": events[: max(1, int(max_events or 8))],
+        "current_count": current_count,
+    }
+
+
 def org_usage_payload(
     organization,
     *,

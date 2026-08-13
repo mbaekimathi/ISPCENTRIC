@@ -39,6 +39,9 @@ class PackageEditTests(TestCase):
         self.assertIn("billing-package-suspend-modal", html)
         self.assertIn("billing-package-delete-modal", html)
         self.assertIn(f'data-package-id="{self.plan.id}"', html)
+        self.assertIn("Max devices", html)
+        self.assertIn("Unlimited devices", html)
+        self.assertIn('data-package-max-devices="0"', html)
 
     def test_edit_package_can_change_service_type(self):
         self.assertEqual(self.plan.service_type, BillingPlan.ServiceType.PPPOE)
@@ -54,6 +57,7 @@ class PackageEditTests(TestCase):
                 "upload_speed_mbps": "5",
                 "duration": BillingPlan.Duration.MONTHLY,
                 "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "max_devices": "1",
                 "is_active": "on",
             },
         )
@@ -87,6 +91,7 @@ class PackageEditTests(TestCase):
                     "upload_speed_mbps": "10",
                     "duration": BillingPlan.Duration.MONTHLY,
                     "service_type": BillingPlan.ServiceType.PPPOE,
+                    "max_devices": "1",
                     "is_active": "on",
                 },
             )
@@ -122,7 +127,76 @@ class PackageEditTests(TestCase):
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.name, "HOME RENAMED")
+        self.assertEqual(self.plan.max_devices, 0)
         schedule.assert_not_called()
+
+    def test_register_package_blank_max_devices_is_unlimited(self):
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "register_package",
+                "name": "Open WiFi",
+                "description": "",
+                "price": "200.00",
+                "download_speed_mbps": "8",
+                "upload_speed_mbps": "4",
+                "duration": BillingPlan.Duration.DAILY,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        plan = BillingPlan.objects.get(organization=self.org, name="OPEN WIFI")
+        self.assertEqual(plan.max_devices, 0)
+        self.assertEqual(plan.max_devices_label, "Unlimited devices")
+
+    def test_edit_package_blank_max_devices_is_unlimited(self):
+        self.plan.max_devices = 2
+        self.plan.save(update_fields=["max_devices"])
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(self.plan.id),
+                "name": "Home 10",
+                "description": "",
+                "price": "1500.00",
+                "download_speed_mbps": "10",
+                "upload_speed_mbps": "5",
+                "duration": BillingPlan.Duration.MONTHLY,
+                "service_type": BillingPlan.ServiceType.PPPOE,
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.max_devices, 0)
+        self.assertEqual(self.plan.max_devices_label, "Unlimited devices")
+
+    def test_edit_package_reprovisions_when_max_devices_changes(self):
+        with patch(
+            "billing.views._schedule_reprovision_customers_for_plan_speeds",
+        ) as schedule:
+            res = self.client.post(
+                reverse("billing:packages"),
+                {
+                    "action": "edit_package",
+                    "package_id": str(self.plan.id),
+                    "name": "Home 10",
+                    "description": "",
+                    "price": "1500.00",
+                    "download_speed_mbps": "10",
+                    "upload_speed_mbps": "5",
+                    "duration": BillingPlan.Duration.MONTHLY,
+                    "service_type": BillingPlan.ServiceType.PPPOE,
+                    "max_devices": "3",
+                    "is_active": "on",
+                },
+            )
+        self.assertEqual(res.status_code, 302)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.max_devices, 3)
+        schedule.assert_called_once_with(self.plan.id)
 
     def test_edit_package_can_deactivate(self):
         res = self.client.post(
@@ -137,6 +211,7 @@ class PackageEditTests(TestCase):
                 "upload_speed_mbps": "5",
                 "duration": BillingPlan.Duration.MONTHLY,
                 "service_type": BillingPlan.ServiceType.PPPOE,
+                "max_devices": "1",
             },
         )
         self.assertEqual(res.status_code, 302)
@@ -164,6 +239,7 @@ class PackageEditTests(TestCase):
                 "upload_speed_mbps": "5",
                 "duration": BillingPlan.Duration.MONTHLY,
                 "service_type": BillingPlan.ServiceType.PPPOE,
+                "max_devices": "1",
                 "is_active": "on",
             },
         )

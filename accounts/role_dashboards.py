@@ -7,8 +7,10 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from accounts.communications import fetch_provider_options
 from accounts.forms import (
     EmployeeAdminEditForm,
     LeadRegisterForm,
@@ -18,6 +20,7 @@ from accounts.forms import (
     ClientSettingsForm,
     CompanyProfileForm,
     PaymentGatewayForm,
+    PlatformCommunicationSettingsForm,
     RegisterForm,
     RoleCommissionForm,
     SalesCommissionForm,
@@ -32,6 +35,7 @@ from accounts.models import (
     NetworkEquipmentSerial,
     Organization,
     PaymentGateway,
+    PlatformCommunicationSettings,
     RoleCommission,
 )
 from accounts.mpesa_daraja import check_stk_configuration, normalize_gateway_values
@@ -223,6 +227,18 @@ def _super_admin_clients_context(**extra):
         "page_kicker": "Clients",
         "current_page": "clients",
         "dashboard_url_name": "roles:super_admin",
+        "clients_list_url_name": "roles:super_admin_clients",
+        "client_edit_url_name": "roles:super_admin_client_edit",
+        "client_suspend_url_name": "roles:super_admin_client_suspend",
+        "client_unsuspend_url_name": "roles:super_admin_client_unsuspend",
+        "client_delete_url_name": "roles:super_admin_client_delete",
+        "list_heading": "Registered organizations",
+        "list_intro": "Company accounts currently in ISPCENTRIC.",
+        "delete_intro": "This permanently removes the organization and its related billing data.",
+        "delete_warning": (
+            "will be deleted. Staff accounts stay in the system but lose this "
+            "organization link. Customers and plans under this client are removed."
+        ),
         **extra,
     }
 
@@ -1255,6 +1271,162 @@ def it_support_dashboard(request):
     return _role_dashboard(request, Employee.Role.IT_SUPPORT)
 
 
+def _it_support_company_clients_context(**extra):
+    return {
+        "page_title": "Company clients",
+        "page_kicker": "ISPs",
+        "current_page": "company_clients",
+        "dashboard_url_name": "roles:it_support",
+        "clients_list_url_name": "roles:it_support_company_clients",
+        "client_edit_url_name": "roles:it_support_company_client_edit",
+        "client_suspend_url_name": "roles:it_support_company_client_suspend",
+        "client_unsuspend_url_name": "roles:it_support_company_client_unsuspend",
+        "client_delete_url_name": "roles:it_support_company_client_delete",
+        "list_heading": "ISP accounts",
+        "list_intro": "Company / ISP accounts currently registered in ISPCENTRIC.",
+        "delete_intro": (
+            "This permanently removes the ISP account and everything that belongs "
+            "to it. Other ISP accounts are not changed."
+        ),
+        "delete_warning": (
+            "will be permanently deleted, including its owner login, staff, "
+            "subscribers, packages, routers, payments, and settings. Other ISP "
+            "accounts are not affected."
+        ),
+        **extra,
+    }
+
+
+def _isp_client_queryset():
+    from django.db.models import Count
+
+    return (
+        Organization.objects.select_related("owner")
+        .annotate(
+            staff_count=Count("employees", distinct=True),
+            customer_count=Count("customers", distinct=True),
+            plan_count=Count("plans", distinct=True),
+            router_count=Count("mikrotik_routers", distinct=True),
+        )
+        .order_by("-created_at")
+    )
+
+
+def _render_it_support_company_clients(request, **extra):
+    _prepare_it_support_view(request)
+    clients = list(_isp_client_queryset())
+    suspended_count = sum(
+        1 for client in clients if client.status == Organization.Status.SUSPENDED
+    )
+    open_edit_id = extra.pop("open_edit_id", None)
+    if open_edit_id is None:
+        raw = (request.GET.get("edit") or "").strip()
+        try:
+            open_edit_id = int(raw) if raw else None
+        except ValueError:
+            open_edit_id = None
+    return render(
+        request,
+        "accounts/it_support_company_clients.html",
+        _it_support_company_clients_context(
+            clients=clients,
+            clients_count=len(clients),
+            active_count=len(clients) - suspended_count,
+            suspended_count=suspended_count,
+            status_choices=Organization.Status.choices,
+            open_edit_id=open_edit_id,
+            **extra,
+        ),
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_clients(request):
+    return _render_it_support_company_clients(request)
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_client_edit(request, pk):
+    _prepare_it_support_view(request)
+    client = get_object_or_404(Organization.objects.select_related("owner"), pk=pk)
+
+    if request.method != "POST":
+        list_url = reverse("roles:it_support_company_clients")
+        return redirect(f"{list_url}?edit={client.pk}")
+
+    form = OrganizationEditForm(
+        request.POST,
+        request.FILES,
+        instance=client,
+        section=OrganizationEditForm.SECTION_PROFILE,
+    )
+    if form.is_valid():
+        form.save()
+        messages.success(request, f"Updated {client.name}.")
+        return redirect("roles:it_support_company_clients")
+
+    return _render_it_support_company_clients(
+        request,
+        open_edit_id=client.pk,
+        edit_form=form,
+        edit_client=client,
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_company_client_suspend(request, pk):
+    _prepare_it_support_view(request)
+    client = get_object_or_404(Organization, pk=pk)
+    if client.status == Organization.Status.SUSPENDED:
+        messages.info(request, f"{client.name} is already suspended.")
+    else:
+        client.status = Organization.Status.SUSPENDED
+        client.save(update_fields=["status"])
+        messages.success(request, f"Suspended {client.name}.")
+    return redirect("roles:it_support_company_clients")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_company_client_unsuspend(request, pk):
+    _prepare_it_support_view(request)
+    client = get_object_or_404(Organization, pk=pk)
+    if client.status != Organization.Status.SUSPENDED:
+        messages.info(request, f"{client.name} is not suspended.")
+    else:
+        client.status = Organization.Status.ACTIVE
+        client.save(update_fields=["status"])
+        messages.success(request, f"Unsuspended {client.name}.")
+    return redirect("roles:it_support_company_clients")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_client_delete(request, pk):
+    employee = _prepare_it_support_view(request)
+    client = get_object_or_404(Organization, pk=pk)
+
+    if employee.organization_id == client.pk:
+        messages.error(request, "You cannot delete your own organization.")
+        return redirect("roles:it_support_company_clients")
+
+    if request.method == "POST":
+        name = client.name
+        client.purge_account(actor_user_id=request.user.pk)
+        messages.success(request, f"Deleted {name} and all of its account data.")
+        return redirect("roles:it_support_company_clients")
+
+    return render(
+        request,
+        "accounts/it_support_company_client_delete.html",
+        _it_support_company_clients_context(
+            page_title="Delete company client",
+            client=client,
+            deletion_preview=client.deletion_preview(),
+        ),
+    )
+
+
 @role_required(Employee.Role.IT_SUPPORT)
 def it_support_hr(request):
     _prepare_it_support_view(request)
@@ -1402,7 +1574,7 @@ def it_support_payment_gateway(request):
         request,
         "accounts/it_support_payment_gateway.html",
         {
-            "page_title": "Payment Gateway",
+            "page_title": "Company Payment Gateway",
             "page_kicker": "Integrations",
             "current_page": "payment_gateway",
             "dashboard_url_name": "roles:it_support",
@@ -1601,15 +1773,76 @@ def it_support_system_settings(request):
 
 
 @role_required(Employee.Role.IT_SUPPORT)
-def it_support_settings_communications(request):
-    return _it_support_settings_page(
+def it_support_company_communications(request):
+    """Platform SMS / email / WhatsApp credentials (ISPCENTRIC → ISPs), not ISP client gateways."""
+    _prepare_it_support_view(request)
+    comms = PlatformCommunicationSettings.get_solo()
+    if request.method == "POST":
+        form = PlatformCommunicationSettingsForm(request.POST, instance=comms)
+        if form.is_valid():
+            comms = form.save()
+            statuses = comms.channel_statuses()
+            parts = []
+            for key, label in (("sms", "SMS"), ("email", "Email"), ("whatsapp", "WhatsApp")):
+                status = statuses[key]
+                if status["ready"]:
+                    parts.append(f"{label} ready")
+                elif status["enabled"]:
+                    parts.append(f"{label} needs setup")
+                else:
+                    parts.append(f"{label} off")
+            messages.success(
+                request,
+                "Company communications settings saved. " + " · ".join(parts) + ".",
+            )
+            return redirect("roles:it_support_company_communications")
+    else:
+        form = PlatformCommunicationSettingsForm(instance=comms)
+
+    statuses = comms.channel_statuses()
+    return render(
         request,
-        current_page="communications",
-        page_title="Communications link",
-        page_kicker="Settings",
-        page_subtitle="Share and manage the links clients use to reach support channels.",
-        empty_text="Communications link settings are coming soon.",
+        "accounts/it_support_communications.html",
+        {
+            "page_title": "Company communications settings",
+            "page_kicker": "Company",
+            "page_subtitle": (
+                "Configure ISPCENTRIC SMS, email, and WhatsApp credentials used to "
+                "message ISPs and platform staff. Each ISP’s subscriber gateway is "
+                "under Communication settings."
+            ),
+            "current_page": "company_communications",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "comms": comms,
+            "company_profile": CompanyProfile.get_solo(),
+            "sms_status": statuses["sms"],
+            "email_status": statuses["email"],
+            "whatsapp_status": statuses["whatsapp"],
+            "comms_fetch_url": reverse("roles:it_support_company_communications_fetch"),
+        },
     )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+@require_POST
+def it_support_company_communications_fetch(request):
+    _prepare_it_support_view(request)
+    payload = {}
+    if "application/json" in (request.content_type or ""):
+        try:
+            payload = json.loads(request.body.decode() or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+    else:
+        payload = {key: request.POST.get(key, "") for key in request.POST}
+    result = fetch_provider_options(payload)
+    return JsonResponse(result, status=200 if result.get("ok") else 400)
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_settings_communications(request):
+    return redirect("roles:it_support_company_communications")
 
 
 @role_required(Employee.Role.IT_SUPPORT)

@@ -10,115 +10,47 @@
   data-mikrotik-status-url="{{ mikrotik_status_url }}"
   data-surfing-url="{% url 'core:clients_surfing' %}"
 >
-  <header class="workspace-dash-hero">
-    <div class="workspace-dash-hero-copy">
-      <div class="workspace-dash-live-row">
-        <span class="workspace-dash-live-dot" aria-hidden="true"></span>
-        <p class="workspace-dash-kicker">Live today</p>
-      </div>
-      <h2 class="workspace-dash-title">{% if organization %}{{ organization.name }}{% else %}Workspace{% endif %}</h2>
-      <p class="workspace-dash-lead" data-day-label>{{ analytics.day_label }}</p>
-    </div>
-    <div class="workspace-dash-hero-actions">
-      <span class="workspace-dash-stamp" data-live-stamp>Updating…</span>
-      <button type="button" class="btn btn-ghost workspace-dash-btn" data-live-refresh>
-        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M12 6V3L8 7l4 4V8a4 4 0 1 1-4 4H6a6 6 0 1 0 6-6Z"/></svg>
-        Refresh
-      </button>
-      <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billings</a>
-      <a class="btn btn-primary workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
-    </div>
-  </header>
-
-  <div class="workspace-dash-stats{% if referral_enabled %} has-referral{% endif %}" aria-label="Today's key metrics">
-    <article class="workspace-dash-stat tone-money" style="--i:0">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 15h-2v-2h2Zm0-4h-2V7h2Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Collected today</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="collected">KES {{ analytics.collected_today|floatformat:0 }}</p>
-      <p class="workspace-dash-stat-meta"><span data-stat="payments-today">{{ analytics.payments_today }}</span> payments</p>
+  <div class="workspace-dash-kpis" aria-label="Live snapshot">
+    <article class="workspace-dash-kpi tone-net" data-mikrotik-card style="--i:0">
+      <p class="workspace-dash-kpi-label">MikroTik health</p>
+      <p class="workspace-dash-kpi-value"><span data-stat="mt-score">—</span></p>
+      <p class="workspace-dash-kpi-meta" data-stat="mt-label">Checking…</p>
     </article>
-
-    <article class="workspace-dash-stat tone-danger{% if analytics.expired_count %} is-hot{% endif %}" style="--i:1">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 1 21h22Zm0 4.5L18.2 19H5.8ZM11 10h2v5h-2Zm0 6h2v2h-2Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Expired</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="expired">{{ analytics.expired_count }}</p>
-      <p class="workspace-dash-stat-meta">Packages past end date</p>
-    </article>
-
-    <article class="workspace-dash-stat tone-net" data-mikrotik-card style="--i:2">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">MikroTik health</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="mt-score">—</p>
-      <p class="workspace-dash-stat-meta"><span data-stat="mt-label">Checking…</span> · <span data-stat="mt-connected">0</span>/<span data-stat="mt-total">{{ analytics.routers_total }}</span></p>
-    </article>
-
-    <article class="workspace-dash-stat tone-warn" data-offline-surf-card style="--i:3">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Zm0 4c-3.2 0-6 1.3-7.9 3.4l1.8 1.8A7.4 7.4 0 0 1 12 9a7.4 7.4 0 0 1 6.1 3.2l1.8-1.8A9.9 9.9 0 0 0 12 7Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Not surfing</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="not-surfing">—</p>
-      <p class="workspace-dash-stat-meta">PPPoE · paid period · router OK</p>
-    </article>
-
-    <article class="workspace-dash-stat tone-warn{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:4">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Outages</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="outages">{{ analytics.outages|length }}</p>
-      <p class="workspace-dash-stat-meta">Routers needing attention</p>
-    </article>
-
-    <article class="workspace-dash-stat tone-clients" style="--i:5">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Active clients</p>
-      </div>
-      <p class="workspace-dash-stat-value" data-stat="active">{{ analytics.active_customers }}</p>
-      <p class="workspace-dash-stat-meta"><span data-stat="customers">{{ analytics.customers }}</span> total · <span data-stat="pending">{{ analytics.pending_invoices }}</span> pending</p>
-    </article>
-
-    {% if referral_enabled %}
-    <article class="workspace-dash-stat tone-referral" style="--i:6">
-      <div class="workspace-dash-stat-top">
-        <span class="workspace-dash-stat-ico" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
-        </span>
-        <p class="workspace-dash-stat-label">Referrals</p>
-      </div>
-      <p class="workspace-dash-stat-value">{{ referral_count }}</p>
-      <p class="workspace-dash-stat-meta">
-        <a href="{% url 'core:referrals' %}">{{ referral_active_count }} active · {{ referral_pending_count }} pending</a>
+    <article class="workspace-dash-kpi" style="--i:1">
+      <p class="workspace-dash-kpi-label">Routers online</p>
+      <p class="workspace-dash-kpi-value">
+        <span data-stat="mt-connected">0</span><small>/<span data-stat="mt-total">{{ analytics.routers_total }}</span></small>
       </p>
+      <p class="workspace-dash-kpi-meta">Online <span data-stat="mt-ratio">—</span></p>
     </article>
-    {% endif %}
+    <article class="workspace-dash-kpi{% if analytics.outages %} is-hot{% endif %}" data-outage-card style="--i:2">
+      <p class="workspace-dash-kpi-label">Outages</p>
+      <p class="workspace-dash-kpi-value" data-stat="outages">{{ analytics.outages|length }}</p>
+      <p class="workspace-dash-kpi-meta">Needs attention</p>
+    </article>
+    <article class="workspace-dash-kpi tone-clients" style="--i:3">
+      <p class="workspace-dash-kpi-label">Clients online</p>
+      <p class="workspace-dash-kpi-value" data-stat="network-online">—</p>
+      <p class="workspace-dash-kpi-meta">Peak <span data-stat="network-peak">—</span></p>
+    </article>
+    <article class="workspace-dash-kpi" data-offline-surf-card style="--i:4">
+      <p class="workspace-dash-kpi-label">Not surfing</p>
+      <p class="workspace-dash-kpi-value" data-stat="not-surfing">—</p>
+      <p class="workspace-dash-kpi-meta">Paid, no live session</p>
+    </article>
+    <article class="workspace-dash-kpi{% if analytics.expired_count %} is-hot{% endif %}" data-expired-metric style="--i:5">
+      <p class="workspace-dash-kpi-label">Expired</p>
+      <p class="workspace-dash-kpi-value" data-stat="expired">{{ analytics.expired_count }}</p>
+      <p class="workspace-dash-kpi-meta"><span data-stat="active">{{ analytics.active_customers }}</span>/<span data-stat="customers">{{ analytics.customers }}</span> active</p>
+    </article>
   </div>
 
   <section class="workspace-dash-panel workspace-dash-panel-chart">
     <div class="workspace-dash-panel-head">
       <div>
         <p class="workspace-dash-panel-kicker">Routers</p>
-        <h2>MikroTik performance trend</h2>
-        <p class="panel-sub">Router health score (reachability and API login) for every MikroTik over the last 24 hours. Dashed line is the fleet average.</p>
+        <h2>MikroTik performance</h2>
+        <p class="panel-sub">Health score for each router over 24 hours. Dashed line is the average. Drop reasons appear below the chart.</p>
       </div>
       <div class="workspace-dash-perf-summary">
         <span class="workspace-dash-chip"><strong data-stat="mt-score-lg">—</strong> <span data-stat="mt-label-lg">Checking…</span></span>
@@ -128,6 +60,12 @@
     </div>
     <div class="workspace-dash-chart-wrap">
       <canvas id="chart-mikrotik-trend" height="280"></canvas>
+    </div>
+    <div class="workspace-dash-drops" data-mikrotik-drops>
+      <h3>Why it dropped</h3>
+      <div class="workspace-dash-empty is-loading">
+        <p class="workspace-dash-empty-title">Checking router health…</p>
+      </div>
     </div>
     <div class="workspace-dash-router-perf" data-router-perf-body>
       <div class="workspace-dash-empty is-loading">
@@ -140,9 +78,9 @@
     <section class="workspace-dash-panel workspace-dash-panel-chart-compact">
       <div class="workspace-dash-panel-head">
         <div>
-          <p class="workspace-dash-panel-kicker">Networks</p>
-          <h2>Network performance trend</h2>
-          <p class="panel-sub">Online clients on each MikroTik network over the last 24 hours. One line per router; dashed line is the average.</p>
+          <p class="workspace-dash-panel-kicker">Wi‑Fi</p>
+          <h2>Wi‑Fi / network</h2>
+          <p class="panel-sub">Online PPPoE and Wi‑Fi clients per router over 24 hours. Drop reasons appear below.</p>
         </div>
         <div class="workspace-dash-perf-summary">
           <span class="workspace-dash-chip"><strong data-stat="network-online">—</strong> online now</span>
@@ -152,7 +90,13 @@
       <div class="workspace-dash-chart-wrap workspace-dash-chart-wrap-compact">
         <canvas id="chart-network-trend" height="220"></canvas>
       </div>
-      <p class="workspace-dash-muted" style="margin:0.65rem 0 0;">
+      <div class="workspace-dash-drops" data-network-drops>
+        <h3>Why it dropped</h3>
+        <div class="workspace-dash-empty is-loading">
+          <p class="workspace-dash-empty-title">Checking Wi‑Fi and client sessions…</p>
+        </div>
+      </div>
+      <p class="workspace-dash-muted workspace-dash-more">
         <a href="{% url 'core:clients_general_usage' %}?hours=24">Open full usage analytics</a>
       </p>
     </section>
@@ -162,7 +106,7 @@
         <div>
           <p class="workspace-dash-panel-kicker">Alerts</p>
           <h2>Not surfing</h2>
-          <p class="panel-sub">PPPoE clients in subscription period, router connected, but no live session.</p>
+          <p class="panel-sub">Paid PPPoE clients whose MikroTik is up, but they have no live session.</p>
         </div>
         <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
       </div>
@@ -190,11 +134,11 @@
       </div>
       {% if analytics.recent_payments %}
         <div class="workspace-dash-scroll">
-          <table class="workspace-dash-table">
+          <table class="workspace-dash-table is-stack">
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Client</th>
+                <th class="workspace-dash-name-col">Client</th>
                 <th>Method</th>
                 <th>Amount</th>
                 <th>Reference</th>
@@ -203,17 +147,17 @@
             <tbody data-payments-body>
               {% for pay in analytics.recent_payments %}
                 <tr>
-                  <td><span class="workspace-dash-time">{{ pay.received_at }}</span></td>
-                  <td>
+                  <td data-label="Time"><span class="workspace-dash-time">{{ pay.received_at }}</span></td>
+                  <td class="workspace-dash-name-col" data-label="Client">
                     {% if pay.customer_url %}
                       <a class="workspace-dash-client" href="{{ pay.customer_url }}"><strong>{{ pay.customer_name }}</strong></a>
                     {% else %}
                       {{ pay.customer_name }}
                     {% endif %}
                   </td>
-                  <td>{{ pay.method }}</td>
-                  <td><strong class="workspace-dash-amount">KES {{ pay.amount }}</strong></td>
-                  <td class="workspace-dash-muted">{{ pay.reference|default:"—" }}</td>
+                  <td data-label="Method">{{ pay.method }}</td>
+                  <td data-label="Amount"><strong class="workspace-dash-amount">KES {{ pay.amount }}</strong></td>
+                  <td class="workspace-dash-muted" data-label="Reference">{{ pay.reference|default:"—" }}</td>
                 </tr>
               {% endfor %}
             </tbody>
@@ -278,13 +222,13 @@
   var analyticsUrl = root.getAttribute("data-analytics-url");
   var mikrotikUrl = root.getAttribute("data-mikrotik-status-url");
   var surfingUrl = root.getAttribute("data-surfing-url");
-  var stamp = root.querySelector("[data-live-stamp]");
-  var refreshBtn = root.querySelector("[data-live-refresh]");
   var inFlight = false;
   var initial = {{ analytics_json|safe }};
   var trendChart = null;
   var networkTrendChart = null;
   var lastRouters = null;
+  var lastMikrotikDrops = (initial && initial.mikrotik_drops) || { events: [] };
+  var lastNetworkDrops = (initial && initial.network_drops) || { events: [] };
   var lastExpired = Array.isArray(initial && initial.expired) ? initial.expired : [];
   var lastExpiredMeta = {
     expired_pppoe_count: initial && initial.expired_pppoe_count,
@@ -329,27 +273,27 @@
       return;
     }
     var html =
-      '<div class="workspace-dash-scroll"><table class="workspace-dash-table">' +
-      "<thead><tr><th>Client</th><th>Package</th><th>Ended</th><th></th></tr></thead><tbody>";
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack">' +
+      '<thead><tr><th class="workspace-dash-name-col">Client</th><th>Package</th><th>Ended</th><th></th></tr></thead><tbody>';
     filtered.slice(0, 12).forEach(function (row) {
       html +=
         "<tr>" +
-        '<td><a class="workspace-dash-client" href="' +
+        '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' +
         escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
         '"><strong>' +
         escapeHtml(row.full_name || "Client") +
         "</strong><small>" +
         escapeHtml(row.account_number || "") +
         "</small></a></td>" +
-        "<td>" +
+        '<td data-label="Package">' +
         (row.plan_name
           ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
           : "—") +
         "</td>" +
-        "<td>" +
+        '<td data-label="Ended">' +
         escapeHtml(row.package_end || "—") +
         "</td>" +
-        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
+        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
         escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
         '">Open</a></td>' +
         "</tr>";
@@ -403,6 +347,32 @@
     return map[status] || status || "Unknown";
   }
 
+  function statusReason(status, error) {
+    var map = {
+      connected: "Router is online and API login succeeded.",
+      reachable: "Host is reachable over HTTP/Winbox, but API login was not confirmed.",
+      limited: "Router replies to ping only. API port 8728 is not reachable.",
+      auth_failed: "API is reachable but login failed. Check saved username and password.",
+      wrong_host: "A different device now answers on this address.",
+      disconnected: "Router is offline or unreachable on the management tunnel or IP."
+    };
+    var reason = map[status] || "Router health is degraded.";
+    var extra = String(error || "").trim();
+    if (extra && status !== "connected" && reason.toLowerCase().indexOf(extra.toLowerCase()) < 0) {
+      return reason + " " + extra;
+    }
+    return reason;
+  }
+
+  function scoreReason(score) {
+    if (score == null || score >= 100) return "";
+    if (score >= 70) return "Host reachable, API login not confirmed.";
+    if (score >= 45) return "Ping only — API port 8728 not reachable.";
+    if (score >= 20) return "API login failed.";
+    if (score >= 5) return "A different device answers on this address.";
+    return "Router is offline or unreachable.";
+  }
+
   function scoreLabel(score) {
     if (score == null) return "Unknown";
     if (score >= 85) return "Excellent";
@@ -437,7 +407,22 @@
             padding: narrow ? 10 : 16
           }
         },
-        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+        tooltip: {
+          backgroundColor: dark ? "#141c22" : "#0b1f2a",
+          callbacks: {
+            afterBody: function (items) {
+              if (!items || !items.length) return [];
+              var lines = [];
+              items.forEach(function (item) {
+                var value = item.parsed && item.parsed.y;
+                var why = scoreReason(value);
+                if (!why) return;
+                lines.push((item.dataset.label || "Router") + ": " + why);
+              });
+              return lines;
+            }
+          }
+        }
       },
       scales: {
         x: {
@@ -642,6 +627,7 @@
         host: row.host || "",
         status: status,
         error: row.error || "",
+        reason: statusReason(status, row.error || ""),
         score: score,
         label: scoreLabel(score)
       });
@@ -686,29 +672,29 @@
       return;
     }
     var html =
-      '<div class="workspace-dash-scroll"><table class="workspace-dash-table">' +
-      "<thead><tr><th>Client</th><th>Package</th><th>Status</th><th></th></tr></thead><tbody>";
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack">' +
+      '<thead><tr><th class="workspace-dash-name-col">Client</th><th>Package</th><th>Status</th><th></th></tr></thead><tbody>';
     rows.slice(0, 12).forEach(function (row) {
       var url = row.url || ("/app/clients/" + row.id + "/");
       var service = (row.service_type || "").toLowerCase() === "hotspot" ? "Hotspot" : "PPPoE";
       html +=
         "<tr>" +
-        '<td><a class="workspace-dash-client" href="' + escapeHtml(url) + '"><strong>' +
+        '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' + escapeHtml(url) + '"><strong>' +
         escapeHtml(row.full_name || "Client") +
         "</strong><small>" +
         escapeHtml(row.account_number || service) +
         "</small></a></td>" +
-        "<td>" +
+        '<td data-label="Package">' +
         (row.plan_name
           ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
           : "—") +
         "</td>" +
-        '<td><span class="workspace-dash-badge is-warn" title="' +
+        '<td data-label="Status"><span class="workspace-dash-badge is-warn" title="' +
         escapeHtml(row.reason || "") +
         '">' +
         escapeHtml(row.label || "Disconnected") +
         "</span></td>" +
-        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
+        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
         escapeHtml(url) +
         '">Open</a></td>' +
         "</tr>";
@@ -769,30 +755,112 @@
         "</div>";
       return;
     }
-    var html = '<div class="workspace-dash-scroll"><table class="workspace-dash-table"><thead><tr><th>Router</th><th>Status</th><th>Score</th><th>Health</th><th></th></tr></thead><tbody>';
+    var html = '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack"><thead><tr><th>Router</th><th>Status</th><th>Score</th><th>Health</th><th>Reason</th><th></th></tr></thead><tbody>';
     routers.forEach(function (row) {
       var url = row.id ? ("/app/mikrotik/" + row.id + "/") : "{% url 'core:mikrotik' %}";
       var tone = row.score >= 85 ? "is-good" : (row.score >= 45 ? "is-fair" : "is-poor");
       html +=
         "<tr class=\"" + tone + "\">" +
-        "<td><a class=\"workspace-dash-client\" href=\"" + url + "\"><strong>" + row.name + "</strong><small>" + row.host + "</small></a></td>" +
-        "<td>" + statusLabel(row.status) + "</td>" +
-        "<td><strong>" + row.score + "%</strong></td>" +
-        "<td><span class=\"workspace-dash-health " + tone + "\">" + row.label + "</span>" +
+        '<td data-label="Router"><a class="workspace-dash-client" href="' + url + '"><strong>' + escapeHtml(row.name) + "</strong><small>" + escapeHtml(row.host) + "</small></a></td>" +
+        '<td data-label="Status">' + statusLabel(row.status) + "</td>" +
+        '<td data-label="Score"><strong>' + row.score + "%</strong></td>" +
+        '<td data-label="Health"><span class="workspace-dash-health ' + tone + '">' + row.label + "</span>" +
         '<div class="workspace-dash-scorebar" aria-hidden="true"><span style="width:' + row.score + '%"></span></div></td>' +
-        '<td><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
+        '<td class="workspace-dash-reason" data-label="Reason">' + escapeHtml(row.reason || statusReason(row.status, row.error)) + "</td>" +
+        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
         "</tr>";
     });
     html += "</tbody></table></div>";
     body.innerHTML = html;
   }
 
+  function renderDrops(target, payload, emptyTitle, emptyCopy) {
+    var host = root.querySelector(target);
+    if (!host) return;
+    var events = (payload && payload.events) || [];
+    var html = "<h3>Why it dropped</h3>";
+    if (!events.length) {
+      html +=
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">' + escapeHtml(emptyTitle) + "</p>" +
+        '<p class="workspace-dash-empty-copy">' + escapeHtml(emptyCopy) + "</p>" +
+        "</div>";
+      host.innerHTML = html;
+      host.classList.toggle("has-drops", false);
+      return;
+    }
+    html += '<ul class="workspace-dash-drop-list">';
+    events.forEach(function (row) {
+      var tone = row.current ? "is-now" : "";
+      var detail = "";
+      if (row.from_score != null && row.to_score != null) {
+        detail = "Health " + row.from_score + "% → " + row.to_score + "%";
+      } else if (row.from_online != null && row.to_online != null) {
+        detail = "Online " + row.from_online + " → " + row.to_online;
+      }
+      html +=
+        '<li class="workspace-dash-drop ' + tone + '">' +
+        '<span class="workspace-dash-drop-time">' + escapeHtml(row.at || "—") + "</span>" +
+        "<div>" +
+        '<p class="workspace-dash-drop-title">' +
+        escapeHtml(row.router_name || "MikroTik") +
+        (row.status ? " · " + escapeHtml(statusLabel(row.status)) : "") +
+        "</p>" +
+        '<p class="workspace-dash-drop-copy">' + escapeHtml(row.reason || "") + "</p>" +
+        (detail ? '<p class="workspace-dash-drop-meta">' + escapeHtml(detail) + "</p>" : "") +
+        "</div>" +
+        "</li>";
+    });
+    html += "</ul>";
+    host.innerHTML = html;
+    host.classList.toggle("has-drops", true);
+  }
+
+  function liveMikrotikDrops(routers) {
+    return (routers || []).filter(function (row) {
+      var status = String(row.status || "").toLowerCase();
+      return status && status !== "connected";
+    }).map(function (row) {
+      var status = String(row.status || "disconnected").toLowerCase();
+      var scoreMap = {
+        connected: 100,
+        reachable: 70,
+        limited: 55,
+        auth_failed: 25,
+        wrong_host: 10,
+        disconnected: 0
+      };
+      return {
+        router_id: row.id,
+        router_name: row.name || "MikroTik",
+        at: "Now",
+        from_score: 100,
+        to_score: scoreMap[status] != null ? scoreMap[status] : 0,
+        status: status,
+        reason: statusReason(status, row.error),
+        current: true
+      };
+    });
+  }
+
+  function mergeMikrotikDrops(apiDrops, routers) {
+    var live = liveMikrotikDrops(routers);
+    var historical = ((apiDrops && apiDrops.events) || []).filter(function (event) {
+      if (event.current) return false;
+      return !live.some(function (row) {
+        return row.router_id === event.router_id && row.status === event.status;
+      });
+    });
+    return { ok: true, events: live.concat(historical).slice(0, 8) };
+  }
+
   function applyAnalytics(data) {
     if (!data) return;
-    if (data.day_label) setText("[data-day-label]", data.day_label);
     setText('[data-stat="collected"]', money(data.collected_today));
     setText('[data-stat="payments-today"]', data.payments_today != null ? data.payments_today : "0");
     setText('[data-stat="expired"]', data.expired_count != null ? data.expired_count : "0");
+    var expiredMetric = root.querySelector("[data-expired-metric]");
+    if (expiredMetric) expiredMetric.classList.toggle("is-hot", Number(data.expired_count || 0) > 0);
     setText('[data-stat="active"]', data.active_customers != null ? data.active_customers : "0");
     setText('[data-stat="customers"]', data.customers != null ? data.customers : "0");
     setText('[data-stat="pending"]', data.pending_invoices != null ? data.pending_invoices : "0");
@@ -800,6 +868,20 @@
     if (data.stk_failed_today != null) setText('[data-stat="stk-failed"]', data.stk_failed_today);
     if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
     if (data.network_trend) paintNetworkTrend(data.network_trend);
+    lastMikrotikDrops = data.mikrotik_drops || lastMikrotikDrops;
+    lastNetworkDrops = data.network_drops || lastNetworkDrops;
+    renderDrops(
+      "[data-mikrotik-drops]",
+      mergeMikrotikDrops(lastMikrotikDrops, lastRouters),
+      "No MikroTik health drops",
+      "All routers stayed reachable with a successful API login over the last 24 hours."
+    );
+    renderDrops(
+      "[data-network-drops]",
+      lastNetworkDrops,
+      "No Wi‑Fi / network drops",
+      "Online PPPoE and Wi‑Fi client counts stayed steady on every MikroTik over the last 24 hours."
+    );
     if (Array.isArray(data.expired)) {
       lastExpired = data.expired;
       lastExpiredMeta = {
@@ -830,19 +912,17 @@
       netCard.classList.toggle("is-hot", perf.score != null && perf.score < 45);
     }
     renderRouterPerf(perf.routers || []);
-  }
-
-  function markStamp() {
-    if (!stamp) return;
-    stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
-      hour: "2-digit", minute: "2-digit", second: "2-digit"
-    });
+    renderDrops(
+      "[data-mikrotik-drops]",
+      mergeMikrotikDrops(lastMikrotikDrops, lastRouters || perf.routers || []),
+      "No MikroTik health drops",
+      "All routers stayed reachable with a successful API login over the last 24 hours."
+    );
   }
 
   function loadLive(force) {
     if (inFlight) return Promise.resolve();
     inFlight = true;
-    root.classList.add("is-refreshing");
     var analyticsReq = analyticsUrl
       ? fetch(analyticsUrl + (force ? "?refresh=1" : ""), {
           headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
@@ -883,12 +963,10 @@
         if (mikrotik && mikrotik.ok !== false && Array.isArray(mikrotik.routers)) {
           applyMikrotik(performance(routers));
         }
-        markStamp();
       })
       .catch(function () {})
       .finally(function () {
         inFlight = false;
-        root.classList.remove("is-refreshing");
       });
   }
 
@@ -905,7 +983,6 @@
       boot();
     }, 40);
   }
-  if (refreshBtn) refreshBtn.addEventListener("click", function () { loadLive(true); });
   root.querySelectorAll("[data-expired-tab]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       setExpiredTab(btn.getAttribute("data-expired-tab") || "pppoe");

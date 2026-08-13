@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
@@ -63,6 +64,16 @@ class BillingPlan(models.Model):
         help_text="Optional. Leave empty to offer this package on all MikroTiks; "
         "select specific routers to limit where it can be used.",
     )
+    max_devices = models.PositiveIntegerField(
+        "Max devices",
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(50)],
+        help_text=(
+            "How many devices this package allows. 0 / blank = unlimited. "
+            "Hotspot: phones/laptops on one paid account. PPPoE: CPEs that may dial "
+            "this username (LAN behind one CPE is already unlimited)."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -86,6 +97,13 @@ class BillingPlan(models.Model):
         if down:
             return f"{down} Mbps"
         return "—"
+
+    @property
+    def max_devices_label(self) -> str:
+        n = int(self.max_devices or 0)
+        if n <= 0:
+            return "Unlimited devices"
+        return "1 device" if n == 1 else f"{n} devices"
 
     @property
     def router_scope_label(self) -> str:
@@ -327,9 +345,63 @@ class Customer(models.Model):
             if "phone" in update_fields or "hotspot_mac" in update_fields:
                 kwargs["update_fields"] = list(update_fields) + ["phone_normalized"]
         super().save(*args, **kwargs)
+        mac = (self.hotspot_mac or "").strip()
+        if mac and self.pk and self.organization_id:
+            from billing.devices import ensure_customer_device
+
+            ensure_customer_device(self, mac)
 
     def __str__(self):
         return f"{self.full_name} ({self.account_number})"
+
+
+class CustomerDevice(models.Model):
+    """A Hotspot MAC authorized on a Customer, up to BillingPlan.max_devices."""
+
+    organization = models.ForeignKey(
+        "accounts.Organization",
+        on_delete=models.CASCADE,
+        related_name="customer_devices",
+    )
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="devices",
+    )
+    mac = models.CharField("Device MAC", max_length=17, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "billing_customer_device"
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "mac"],
+                name="bill_cust_dev_org_mac_uniq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["customer", "mac"], name="bill_cust_dev_cust_mac_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        from billing.devices import normalize_device_mac
+
+        self.mac = normalize_device_mac(self.mac)
+        if self.organization_id is None and self.customer_id:
+            org_id = getattr(self.customer, "organization_id", None)
+            if org_id is None:
+                org_id = (
+                    Customer.objects.filter(pk=self.customer_id)
+                    .values_list("organization_id", flat=True)
+                    .first()
+                )
+            self.organization_id = org_id
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.mac} ({self.customer_id})"
 
 
 class InstallationDecline(models.Model):

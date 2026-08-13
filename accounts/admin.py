@@ -3,6 +3,7 @@ from django.contrib import admin
 
 from .models import (
     ClientSettings,
+    CommunicationSettings,
     CompanyProfile,
     Employee,
     Lead,
@@ -11,6 +12,7 @@ from .models import (
     NetworkEquipmentSerial,
     Organization,
     PaymentGateway,
+    PlatformCommunicationSettings,
     RoleCommission,
 )
 
@@ -69,6 +71,42 @@ class CompanyProfileAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(PlatformCommunicationSettings)
+class PlatformCommunicationSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "sms_enabled",
+        "sms_provider",
+        "email_enabled",
+        "whatsapp_enabled",
+        "whatsapp_provider",
+        "updated_at",
+    )
+    readonly_fields = ("updated_at",)
+
+    def has_add_permission(self, request):
+        return not PlatformCommunicationSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(CommunicationSettings)
+class CommunicationSettingsAdmin(admin.ModelAdmin):
+    list_display = (
+        "organization",
+        "sms_enabled",
+        "sms_provider",
+        "email_enabled",
+        "whatsapp_enabled",
+        "whatsapp_provider",
+        "updated_at",
+    )
+    list_filter = ("sms_enabled", "email_enabled", "whatsapp_enabled", "sms_provider", "whatsapp_provider")
+    search_fields = ("organization__name", "email_host", "email_from_email", "sms_username")
+    readonly_fields = ("updated_at",)
+    raw_id_fields = ("organization",)
 
 
 @admin.register(ClientSettings)

@@ -295,8 +295,9 @@ def customers_for_access_verification(
 
     qs = Customer.objects.filter(
         Q(service_type=Customer.ServiceType.PPPOE) & ~Q(pppoe_username="")
-        | Q(service_type=Customer.ServiceType.HOTSPOT) & ~Q(hotspot_mac="")
-    ).select_related("plan", "organization", "router")
+        | Q(service_type=Customer.ServiceType.HOTSPOT)
+        & (~Q(hotspot_mac="") | Q(devices__isnull=False))
+    ).select_related("plan", "organization", "router").distinct()
 
     if customer_id:
         qs = qs.filter(pk=customer_id)

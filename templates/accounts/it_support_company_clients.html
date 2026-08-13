@@ -1,0 +1,399 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="cc-page" id="org-clients">
+  <header class="cc-hero">
+    <div class="cc-hero-copy">
+      <p class="cc-kicker">IT Support</p>
+      <h2>{{ list_heading }}</h2>
+      <p>{{ list_intro }}</p>
+    </div>
+    <div class="cc-hero-stats" aria-label="ISP summary">
+      <div class="cc-stat">
+        <strong id="org-visible-count">{{ clients_count }}</strong>
+        <span id="org-count-label">{% if clients_count == 1 %}ISP{% else %}ISPs{% endif %}</span>
+      </div>
+      <div class="cc-stat">
+        <strong>{{ active_count }}</strong>
+        <span>Active</span>
+      </div>
+      <div class="cc-stat">
+        <strong>{{ suspended_count }}</strong>
+        <span>Suspended</span>
+      </div>
+    </div>
+  </header>
+
+  {% if clients %}
+  <div class="cc-toolbar">
+    <label class="visually-hidden" for="org-search">Search ISP accounts</label>
+    <input
+      type="search"
+      id="org-search"
+      class="cc-search"
+      placeholder="Search by name, owner, email, phone, join code, or status…"
+      autocomplete="off"
+      spellcheck="false"
+    >
+  </div>
+
+  <div class="cc-grid cc-list" id="org-table">
+    {% for client in clients %}
+    <article
+      class="cc-card"
+      data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}"
+    >
+      <div class="cc-card-top">
+        <div class="cc-identity">
+          {% if client.profile_photo %}
+            <img src="{{ client.profile_photo.url }}" alt="" width="48" height="48" loading="lazy" decoding="async">
+          {% else %}
+            <span aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
+          {% endif %}
+          <div>
+            <h3>{{ client.name }}</h3>
+            <p>
+              {% if client.owner %}
+                {{ client.owner.get_full_name|default:client.owner.username }}
+              {% else %}
+                No owner
+              {% endif %}
+            </p>
+          </div>
+        </div>
+        <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+      </div>
+
+      <dl class="cc-meta">
+        <div>
+          <dt>Contact</dt>
+          <dd>{% if client.phone %}<a href="tel:{{ client.phone }}">{{ client.phone }}</a>{% else %}—{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Join code</dt>
+          <dd><span class="org-code">{{ client.join_code|default:"—" }}</span></dd>
+        </div>
+        <div>
+          <dt>Registered</dt>
+          <dd>{{ client.created_at|date:"d M Y" }}</dd>
+        </div>
+        {% if client.owner and client.owner.email %}
+        <div>
+          <dt>Email</dt>
+          <dd>{{ client.owner.email }}</dd>
+        </div>
+        {% endif %}
+      </dl>
+
+      <div class="cc-metrics">
+        <span><strong>{{ client.staff_count }}</strong> staff</span>
+        <span><strong>{{ client.customer_count }}</strong> subscribers</span>
+        <span><strong>{{ client.plan_count }}</strong> packages</span>
+        <span><strong>{{ client.router_count }}</strong> routers</span>
+      </div>
+
+      <div class="cc-actions">
+        <button
+          type="button"
+          class="btn btn-ghost cc-action"
+          data-cc-edit
+          data-client-id="{{ client.pk }}"
+          data-edit-url="{% url client_edit_url_name client.pk %}"
+          data-name="{{ client.name }}"
+          data-phone="{{ client.phone }}"
+          data-status="{{ client.status }}"
+          data-join-code="{{ client.join_code }}"
+          data-owner="{% if client.owner %}{{ client.owner.get_full_name|default:client.owner.username }}{% endif %}"
+          data-email="{% if client.owner %}{{ client.owner.email }}{% endif %}"
+          data-photo="{% if client.profile_photo %}{{ client.profile_photo.url }}{% endif %}"
+          data-initial="{{ client.name|slice:':1'|upper }}"
+        >Edit</button>
+        {% if client.status == "suspended" %}
+        <form method="post" action="{% url client_unsuspend_url_name client.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-ghost cc-action cc-action-success">Unsuspend</button>
+        </form>
+        {% else %}
+        <form method="post" action="{% url client_suspend_url_name client.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-ghost cc-action cc-action-warn">Suspend</button>
+        </form>
+        {% endif %}
+        <a class="btn btn-ghost cc-action cc-action-danger" href="{% url client_delete_url_name client.pk %}">Delete</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  <p class="cc-empty" id="org-search-empty" hidden>No ISP accounts match your search.</p>
+  {% else %}
+  <p class="cc-empty">No ISP accounts registered yet.</p>
+  {% endif %}
+</section>
+
+{% if clients %}
+<div
+  class="role-modal cc-edit-modal"
+  id="cc-edit-modal"
+  {% if not edit_form %}hidden{% endif %}
+  aria-hidden="{% if edit_form %}false{% else %}true{% endif %}"
+  data-open-id="{% if open_edit_id %}{{ open_edit_id }}{% endif %}"
+  data-has-errors="{% if edit_form %}1{% else %}0{% endif %}"
+>
+  <div class="role-modal-backdrop" data-cc-edit-close></div>
+  <div class="role-modal-panel cc-edit-panel" role="dialog" aria-modal="true" aria-labelledby="cc-edit-title">
+    <header class="cc-edit-head">
+      <div class="cc-edit-head-copy">
+        <p class="cc-kicker">Edit ISP</p>
+        <h2 id="cc-edit-title">{% if edit_client %}{{ edit_client.name }}{% else %}Edit ISP account{% endif %}</h2>
+        <p class="cc-edit-sub" id="cc-edit-sub">
+          {% if edit_client and edit_client.owner %}
+            {{ edit_client.owner.get_full_name|default:edit_client.owner.username }}{% if edit_client.owner.email %} · {{ edit_client.owner.email }}{% endif %}
+          {% else %}
+            Update company name, phone, photo, and status.
+          {% endif %}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close cc-edit-close" data-cc-edit-close aria-label="Close">×</button>
+    </header>
+
+    <form
+      method="post"
+      enctype="multipart/form-data"
+      class="cc-edit-form"
+      id="cc-edit-form"
+      novalidate
+      {% if edit_client %}action="{% url client_edit_url_name edit_client.pk %}"{% endif %}
+    >
+      {% csrf_token %}
+      <div class="cc-edit-body">
+        {% if edit_form and edit_form.non_field_errors %}
+          <div class="notice notice-error">{{ edit_form.non_field_errors }}</div>
+        {% endif %}
+
+        <div class="cc-edit-photo">
+          <div class="cc-edit-photo-preview" id="cc-edit-photo-preview">
+            {% if edit_client and edit_client.profile_photo %}
+              <img id="cc-edit-photo-img" src="{{ edit_client.profile_photo.url }}" alt="" width="72" height="72">
+              <span id="cc-edit-photo-fallback" hidden aria-hidden="true"></span>
+            {% else %}
+              <img id="cc-edit-photo-img" alt="" width="72" height="72" hidden>
+              <span id="cc-edit-photo-fallback" aria-hidden="true">{% if edit_client %}{{ edit_client.name|slice:":1"|upper }}{% endif %}</span>
+            {% endif %}
+          </div>
+          <div class="cc-edit-photo-fields">
+            <label class="cc-edit-file" for="cc-edit-photo">
+              <span class="cc-edit-file-btn">Change photo</span>
+              <span class="cc-edit-file-hint" id="cc-edit-file-hint">PNG or JPG, optional</span>
+            </label>
+            <input id="cc-edit-photo" class="account-photo-input" type="file" name="profile_photo" accept="image/*">
+            {% if edit_form and edit_form.profile_photo.errors %}
+              <div class="field-error">{{ edit_form.profile_photo.errors|striptags }}</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="cc-edit-name">Organization name</label>
+          <input
+            id="cc-edit-name"
+            class="form-control text-upper"
+            type="text"
+            name="name"
+            maxlength="150"
+            autocomplete="organization"
+            required
+            value="{% if edit_form %}{{ edit_form.name.value|default_if_none:'' }}{% endif %}"
+          >
+          {% if edit_form and edit_form.name.errors %}
+            <div class="field-error">{{ edit_form.name.errors|striptags }}</div>
+          {% endif %}
+        </div>
+
+        <div class="cc-edit-grid">
+          <div class="form-group">
+            <label for="cc-edit-phone">Contact phone</label>
+            <input
+              id="cc-edit-phone"
+              class="form-control"
+              type="text"
+              name="phone"
+              maxlength="30"
+              autocomplete="tel"
+              value="{% if edit_form %}{{ edit_form.phone.value|default_if_none:'' }}{% endif %}"
+            >
+            {% if edit_form and edit_form.phone.errors %}
+              <div class="field-error">{{ edit_form.phone.errors|striptags }}</div>
+            {% endif %}
+          </div>
+          <div class="form-group">
+            <label for="cc-edit-status">Status</label>
+            <select id="cc-edit-status" class="form-control" name="status">
+              {% for value, label in status_choices %}
+                <option
+                  value="{{ value }}"
+                  {% if edit_form and edit_form.status.value == value %}selected{% elif edit_client and not edit_form and edit_client.status == value %}selected{% endif %}
+                >{{ label }}</option>
+              {% endfor %}
+            </select>
+            {% if edit_form and edit_form.status.errors %}
+              <div class="field-error">{{ edit_form.status.errors|striptags }}</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="cc-edit-foot">
+        <button type="button" class="btn btn-ghost" data-cc-edit-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var input = document.getElementById("org-search");
+  var cards = Array.prototype.slice.call(document.querySelectorAll(".cc-card"));
+  var countEl = document.getElementById("org-visible-count");
+  var labelEl = document.getElementById("org-count-label");
+  var emptyEl = document.getElementById("org-search-empty");
+  var grid = document.getElementById("org-table");
+
+  function applyFilter() {
+    var q = (input.value || "").trim().toLowerCase();
+    var visible = 0;
+    cards.forEach(function (card) {
+      var hay = (card.getAttribute("data-search") || "").toLowerCase();
+      var show = !q || hay.indexOf(q) !== -1;
+      card.hidden = !show;
+      if (show) visible += 1;
+    });
+    countEl.textContent = String(visible);
+    labelEl.textContent = visible === 1 ? "ISP" : "ISPs";
+    var none = visible === 0;
+    emptyEl.hidden = !none;
+    if (grid) grid.hidden = none;
+  }
+
+  if (input) {
+    input.addEventListener("input", applyFilter);
+    input.addEventListener("search", applyFilter);
+  }
+
+  var modal = document.getElementById("cc-edit-modal");
+  var form = document.getElementById("cc-edit-form");
+  if (!modal || !form) return;
+
+  var titleEl = document.getElementById("cc-edit-title");
+  var subEl = document.getElementById("cc-edit-sub");
+  var nameEl = document.getElementById("cc-edit-name");
+  var phoneEl = document.getElementById("cc-edit-phone");
+  var statusEl = document.getElementById("cc-edit-status");
+  var photoInput = document.getElementById("cc-edit-photo");
+  var photoImg = document.getElementById("cc-edit-photo-img");
+  var photoFallback = document.getElementById("cc-edit-photo-fallback");
+  var fileHint = document.getElementById("cc-edit-file-hint");
+  var previewUrl = "";
+
+  function setPhoto(url, initial) {
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      previewUrl = "";
+    }
+    if (url) {
+      photoImg.src = url;
+      photoImg.hidden = false;
+      photoFallback.hidden = true;
+      return;
+    }
+    photoImg.removeAttribute("src");
+    photoImg.hidden = true;
+    photoFallback.hidden = false;
+    photoFallback.textContent = initial || "";
+  }
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (nameEl) nameEl.focus();
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    form.reset();
+    setPhoto("", "");
+    if (fileHint) fileHint.textContent = "PNG or JPG, optional";
+    if (window.history && window.history.replaceState && window.location.search.indexOf("edit=") !== -1) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }
+
+  function fillFromButton(btn) {
+    form.action = btn.getAttribute("data-edit-url") || "";
+    var name = btn.getAttribute("data-name") || "";
+    var owner = btn.getAttribute("data-owner") || "";
+    var email = btn.getAttribute("data-email") || "";
+    var code = btn.getAttribute("data-join-code") || "";
+    titleEl.textContent = name || "Edit ISP account";
+    subEl.textContent = [owner, email, code ? ("Join code " + code) : ""].filter(Boolean).join(" · ")
+      || "Update company name, phone, photo, and status.";
+    nameEl.value = name;
+    phoneEl.value = btn.getAttribute("data-phone") || "";
+    statusEl.value = btn.getAttribute("data-status") || "registered";
+    if (fileHint) fileHint.textContent = "PNG or JPG, optional";
+    if (photoInput) photoInput.value = "";
+    setPhoto(btn.getAttribute("data-photo") || "", btn.getAttribute("data-initial") || "");
+  }
+
+  document.querySelectorAll("[data-cc-edit]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      fillFromButton(btn);
+      openModal();
+    });
+  });
+
+  modal.querySelectorAll("[data-cc-edit-close]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.hidden) closeModal();
+  });
+
+  if (photoInput) {
+    photoInput.addEventListener("change", function () {
+      var file = photoInput.files && photoInput.files[0];
+      if (fileHint) fileHint.textContent = file ? file.name : "PNG or JPG, optional";
+      if (!file) return;
+      var next = URL.createObjectURL(file);
+      setPhoto(next, "");
+      previewUrl = next;
+    });
+  }
+
+  if (modal.getAttribute("data-has-errors") === "1") {
+    openModal();
+  } else {
+    var openId = modal.getAttribute("data-open-id");
+    if (openId) {
+      var match = document.querySelector('[data-cc-edit][data-client-id="' + openId + '"]');
+      if (match) {
+        fillFromButton(match);
+        openModal();
+      }
+    }
+  }
+})();
+</script>
+{% endif %}
+{% endblock %}

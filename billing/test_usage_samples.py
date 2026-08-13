@@ -4,6 +4,7 @@ from django.utils import timezone
 from accounts.models import Organization, User
 from billing.models import Customer, CustomerUsageSample
 from billing.usage_samples import (
+    network_performance_drops,
     parse_uptime_seconds,
     router_network_performance_trend,
     usage_trend_payload,
@@ -102,3 +103,64 @@ class RouterNetworkPerformanceTrendTests(TestCase):
         router_ds = [ds for ds in trend["datasets"] if ds.get("router_id") == self.router.pk]
         self.assertEqual(len(router_ds), 1)
         self.assertTrue(any(v and v >= 1 for v in router_ds[0]["data"]))
+
+    def test_explains_wifi_drop_when_clients_leave(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=1, minutes=20),
+            session_active=True,
+            download_bps=500000,
+            upload_bps=100000,
+            bytes_in=1000,
+            bytes_out=200,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=10),
+            session_active=False,
+            download_bps=0,
+            upload_bps=0,
+            bytes_in=1000,
+            bytes_out=200,
+        )
+        payload = network_performance_drops(self.org, hours=24)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["events"])
+        event = payload["events"][0]
+        self.assertEqual(event["router_id"], self.router.pk)
+        self.assertGreaterEqual(event["from_online"], 1)
+        self.assertEqual(event["to_online"], 0)
+        self.assertIn("PPPoE", event["reason"])
+
+    def test_wifi_drop_blames_mikrotik_outage(self):
+        from core.models import MikroTikStatusSample
+
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=1, minutes=10),
+            session_active=True,
+            download_bps=250000,
+            upload_bps=50000,
+            bytes_in=800,
+            bytes_out=100,
+        )
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timezone.timedelta(minutes=20),
+            status="disconnected",
+            score=0,
+            online=False,
+        )
+        payload = network_performance_drops(self.org, hours=24)
+        self.assertTrue(payload["events"])
+        reason = payload["events"][0]["reason"].lower()
+        self.assertTrue(
+            "offline" in reason or "unreachable" in reason,
+            reason,
+        )

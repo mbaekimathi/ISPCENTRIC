@@ -156,6 +156,31 @@ urlpatterns = [
     ),
     path("it-support/dashboard/", role_dashboards.it_support_dashboard, name="it_support"),
     path(
+        "it-support/company-clients/",
+        role_dashboards.it_support_company_clients,
+        name="it_support_company_clients",
+    ),
+    path(
+        "it-support/company-clients/<int:pk>/edit/",
+        role_dashboards.it_support_company_client_edit,
+        name="it_support_company_client_edit",
+    ),
+    path(
+        "it-support/company-clients/<int:pk>/suspend/",
+        role_dashboards.it_support_company_client_suspend,
+        name="it_support_company_client_suspend",
+    ),
+    path(
+        "it-support/company-clients/<int:pk>/unsuspend/",
+        role_dashboards.it_support_company_client_unsuspend,
+        name="it_support_company_client_unsuspend",
+    ),
+    path(
+        "it-support/company-clients/<int:pk>/delete/",
+        role_dashboards.it_support_company_client_delete,
+        name="it_support_company_client_delete",
+    ),
+    path(
         "it-support/human-resources/",
         role_dashboards.it_support_hr,
         name="it_support_hr",
@@ -194,6 +219,16 @@ urlpatterns = [
         "it-support/company-settings/",
         role_dashboards.it_support_company_settings,
         name="it_support_company_settings",
+    ),
+    path(
+        "it-support/company-settings/communications/",
+        role_dashboards.it_support_company_communications,
+        name="it_support_company_communications",
+    ),
+    path(
+        "it-support/company-settings/communications/fetch/",
+        role_dashboards.it_support_company_communications_fetch,
+        name="it_support_company_communications_fetch",
     ),
     path(
         "it-support/commissions/",

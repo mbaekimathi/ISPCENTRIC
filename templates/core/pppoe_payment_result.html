@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  {% if auto_refresh %}<meta http-equiv="refresh" content="3;url={{ refresh_url }}">{% endif %}
+  {% if auto_refresh %}<meta http-equiv="refresh" content="2;url={{ refresh_url }}">{% endif %}
   <meta name="color-scheme" content="light dark">
   <title>{% if result.success and result.authorized %}You're online{% else %}Confirming payment{% endif %}</title>
   <style>
@@ -211,7 +211,7 @@
     }
   </style>
 </head>
-<body class="{% if result.success and result.authorized %}is-ok{% elif waiting or authorizing %}is-pending{% else %}is-error{% endif %}">
+<body class="{% if result.success and result.authorized %}is-ok{% elif waiting or authorizing %}is-pending{% elif voucher_fallback %}is-pending{% else %}is-error{% endif %}">
   <main class="card" role="main" aria-live="polite">
     {% if organization.name %}<p class="brand">{{ organization.name }}</p>{% endif %}
     {% if result.success and result.authorized %}
@@ -252,7 +252,19 @@
       <h1>Payment received</h1>
       <p class="lede">Your package period is updated. We are restoring internet on your router now.</p>
       <p class="lede">{{ result.authorization_error|default:"This page updates on its own." }}</p>
-      <p class="hint">Restoring your connection</p>
+      <p class="hint">Checking again automatically</p>
+    {% elif voucher_fallback %}
+      <div class="badge">
+        <svg viewBox="0 0 52 52" aria-hidden="true" focusable="false">
+          <circle class="ring" cx="26" cy="26" r="23"></circle>
+          <path class="mark" d="M26 15v14"></path>
+          <path class="mark" d="M26 36.5h.01"></path>
+        </svg>
+      </div>
+      <h1>Activate with your voucher</h1>
+      <p class="lede">Payment succeeded, but this line is not surfing yet. Enter the voucher on the pay page to restore internet.</p>
+      {% if result.voucher_code %}<p class="lede"><strong class="code">{{ result.voucher_code }}</strong></p>{% endif %}
+      <a class="action" href="{{ voucher_url }}">Open pay page</a>
     {% else %}
       <div class="badge">
         <svg viewBox="0 0 52 52" aria-hidden="true" focusable="false">

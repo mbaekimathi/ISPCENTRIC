@@ -219,6 +219,89 @@ class WireGuardKeyTests(SimpleTestCase):
         ):
             self.assertTrue(wireguard.configured())
 
+    def test_sync_command_allows_peer_apply_off_tunnel(self):
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh",
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            self.assertTrue(wireguard.can_apply_server_peers())
+
+    def test_without_sync_command_off_tunnel_cannot_apply_peers(self):
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                WIREGUARD_SYNC_COMMAND="",
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            self.assertFalse(wireguard.can_apply_server_peers())
+
+    def test_ensure_tunnel_runtime_skips_when_unconfigured(self):
+        with override_settings(WIREGUARD_ENDPOINT="", WIREGUARD_SERVER_PUBLIC_KEY=""):
+            result = wireguard.ensure_tunnel_runtime()
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "not_configured")
+
+    def test_apply_server_peer_uses_sync_command_when_not_on_tunnel(self):
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                WIREGUARD_SYNC_COMMAND="wg-sync-helper",
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+            patch("core.wireguard.subprocess.run") as run,
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            run.return_value.stderr = ""
+            result = wireguard.apply_server_peer(
+                "Site A", "10.9.0.8", SERVER_PUBLIC_KEY
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["runtime"])
+        self.assertTrue(run.called)
+
+    def test_boot_tasks_skip_migrate_and_test(self):
+        from core.boot import should_start_runtime_tasks
+
+        with patch("core.boot.sys.argv", ["manage.py", "migrate"]):
+            self.assertFalse(should_start_runtime_tasks())
+        with patch("core.boot.sys.argv", ["manage.py", "test", "core.tests"]):
+            self.assertFalse(should_start_runtime_tasks())
+
+    def test_subscription_sweep_startup_is_delayed(self):
+        from core.boot import _subscription_sweep_startup_delay_sec
+
+        self.assertGreaterEqual(_subscription_sweep_startup_delay_sec(), 15)
+
+    def test_nas_access_ready_ignores_pending_cpe(self):
+        from core.subscription_sync import nas_access_ready
+
+        self.assertFalse(nas_access_ready(None))
+        self.assertFalse(nas_access_ready({"ok": False, "allowed": False}))
+        self.assertTrue(nas_access_ready({"ok": True, "allowed": True}))
+        self.assertTrue(
+            nas_access_ready(
+                {
+                    "ok": False,
+                    "allowed": True,
+                    "provision": {"ok": True},
+                    "cpe_renew_clear_pending": True,
+                }
+            )
+        )
+        self.assertFalse(
+            nas_access_ready(
+                {"ok": False, "allowed": True, "provision": {"ok": False}}
+            )
+        )
+
 
 @override_settings(
     WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -437,6 +520,34 @@ class ReachabilityFingerprintTests(SimpleTestCase):
 
         self.assertTrue(result["online"])
         self.assertEqual(result["via"], "http")
+
+    def test_api_port_returns_without_waiting_for_other_probes(self):
+        import time
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import check_mikrotik_reachable
+
+        def api_fast_others_slow(address, timeout=None):
+            port = address[1]
+            if port == 8728:
+                return MagicMock()
+            time.sleep(0.35)
+            raise TimeoutError("timed out")
+
+        started = time.perf_counter()
+        with (
+            patch(
+                "core.mikrotik_connect.socket.create_connection",
+                side_effect=api_fast_others_slow,
+            ),
+            patch("core.mikrotik_connect._icmp_ping", return_value=False),
+        ):
+            result = check_mikrotik_reachable("192.168.88.1", timeout=0.5)
+        elapsed = time.perf_counter() - started
+
+        self.assertTrue(result["online"])
+        self.assertEqual(result["via"], "api")
+        self.assertLess(elapsed, 0.25)
 
     def test_hotspot_redirect_page_identifies_the_router(self):
         from core.mikrotik_connect import _looks_like_routeros_http
@@ -1064,10 +1175,8 @@ class HotspotAuthorizeFastPathTests(TestCase):
 
         _mark_hotspot_stack_ready(self.router.pk)
         with (
-            patch(
-                "core.mikrotik_connect.check_mikrotik_reachable",
-                return_value={"online": True, "via": "api"},
-            ),
+            patch("core.mikrotik_connect.socket.create_connection"),
+            patch("core.mikrotik_connect.check_mikrotik_reachable") as reachable,
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
@@ -1082,8 +1191,9 @@ class HotspotAuthorizeFastPathTests(TestCase):
         self.assertTrue(result.get("fast_path"))
         apply_one.assert_called_once()
         full_push.assert_not_called()
+        reachable.assert_not_called()
 
-    def test_warm_authorize_probes_reachability_once(self):
+    def test_warm_authorize_probes_tcp_once_without_full_scan(self):
         from unittest.mock import patch
 
         from core.mikrotik_connect import (
@@ -1094,9 +1204,9 @@ class HotspotAuthorizeFastPathTests(TestCase):
         _mark_hotspot_stack_ready(self.router.pk)
         with (
             patch(
-                "core.mikrotik_connect.check_mikrotik_reachable",
-                return_value={"online": True, "via": "api"},
-            ) as reachable,
+                "core.mikrotik_connect.socket.create_connection"
+            ) as tcp,
+            patch("core.mikrotik_connect.check_mikrotik_reachable") as reachable,
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
@@ -1106,8 +1216,8 @@ class HotspotAuthorizeFastPathTests(TestCase):
             authorize_hotspot_customer(
                 self.customer, router=self.router, reauthenticate=False
             )
-        # Single saved host → exactly one reachability probe (no pre-scan).
-        self.assertEqual(reachable.call_count, 1)
+        reachable.assert_not_called()
+        self.assertGreaterEqual(tcp.call_count, 1)
 
     def test_offline_router_authorize_is_skipped_not_failed(self):
         from unittest.mock import patch
@@ -1120,8 +1230,8 @@ class HotspotAuthorizeFastPathTests(TestCase):
         _mark_hotspot_stack_ready(self.router.pk)
         with (
             patch(
-                "core.mikrotik_connect.check_mikrotik_reachable",
-                return_value={"online": False, "via": ""},
+                "core.mikrotik_connect.socket.create_connection",
+                side_effect=TimeoutError("offline"),
             ),
             patch(
                 "core.mikrotik_connect._api_session",
@@ -5281,10 +5391,7 @@ class DynamicAccessEnforcementLoopTests(TestCase):
         _mark_hotspot_stack_ready(self.router.pk)
 
         with (
-            patch(
-                "core.mikrotik_connect.check_mikrotik_reachable",
-                return_value={"online": True, "via": "api"},
-            ),
+            patch("core.mikrotik_connect.socket.create_connection"),
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
@@ -5349,6 +5456,52 @@ class DynamicAccessEnforcementLoopTests(TestCase):
         self.assertEqual(order[0], ("portal", True))
         self.assertTrue(restored["allowed"])
         self.assertEqual(order[2], ("portal", False))
+
+    def test_quick_paid_restore_skips_post_kick_cpe_retries(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import sync_customer_subscription_access
+
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
+            order.append(("portal", enabled))
+            return {"ok": False, "skipped": True}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision", kwargs.get("force_disabled", False)))
+            return {"ok": True, "profile": "ispcentric-5u-10d"}
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/707070/pay/?t=x",
+            ),
+            patch(
+                "core.mikrotik_connect._clear_cpe_renew_with_retries"
+            ) as post_kick,
+        ):
+            result = sync_customer_subscription_access(
+                self.pppoe, provision=True, quick=True
+            )
+
+        self.assertTrue(result["allowed"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(order, [("provision", False)])
+        post_kick.assert_not_called()
 
     def test_verify_dynamic_access_command_passes_dry_run(self):
         from io import StringIO
@@ -5836,4 +5989,80 @@ class MikroTikStatusOfflineTests(TestCase):
         # One old sample must not paint the entire 24h window as Connected.
         self.assertLess(len(filled), len(kari["data"]) // 2)
         self.assertTrue(any(v is None for v in kari["data"]))
+
+    def test_performance_drops_explain_status_change(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_status_samples import mikrotik_performance_drops
+        from core.models import MikroTikStatusSample
+
+        now = timezone.now()
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timedelta(hours=2),
+            status="connected",
+            score=100,
+            online=True,
+        )
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timedelta(hours=1),
+            status="disconnected",
+            score=0,
+            online=False,
+        )
+        payload = mikrotik_performance_drops(
+            self.org,
+            hours=24,
+            live_routers=[
+                {
+                    "id": self.router.pk,
+                    "status": "auth_failed",
+                    "error": "Login failed",
+                }
+            ],
+        )
+        self.assertTrue(payload["ok"])
+        self.assertGreaterEqual(payload["current_count"], 1)
+        current = payload["events"][0]
+        self.assertTrue(current["current"])
+        self.assertEqual(current["status"], "auth_failed")
+        self.assertIn("login failed", current["reason"].lower())
+
+    def test_performance_drops_include_historical_reason(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from core.mikrotik_status_samples import mikrotik_performance_drops
+        from core.models import MikroTikStatusSample
+
+        now = timezone.now()
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timedelta(hours=3),
+            status="connected",
+            score=100,
+            online=True,
+        )
+        MikroTikStatusSample.objects.create(
+            organization=self.org,
+            router=self.router,
+            sampled_at=now - timedelta(hours=2),
+            status="limited",
+            score=55,
+            online=False,
+        )
+        payload = mikrotik_performance_drops(self.org, hours=24, live_routers=[])
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["current_count"], 0)
+        self.assertTrue(payload["events"])
+        event = payload["events"][0]
+        self.assertEqual(event["status"], "limited")
+        self.assertIn("ping", event["reason"].lower())
 

@@ -37,20 +37,26 @@
           </header>
           <div class="account-summary-grid">
             <div class="account-summary-item">
-              <span>Receives via</span>
+              <span>Manual receive</span>
               <strong>{{ organization.receives_via_label }}</strong>
             </div>
             <div class="account-summary-item">
-              <span>Account reference</span>
-              <strong>Client account number</strong>
-            </div>
-            <div class="account-summary-item">
-              <span>Daraja</span>
+              <span>STK gateway</span>
               <strong>
                 {% if daraja_status.enabled %}
-                  {{ daraja_status.environment|title }} · {{ daraja_status.source_label }}
+                  {{ daraja_status.source_label }}
                 {% else %}
                   Off
+                {% endif %}
+              </strong>
+            </div>
+            <div class="account-summary-item">
+              <span>STK shortcode</span>
+              <strong>
+                {% if daraja_status.enabled and daraja_status.shortcode %}
+                  {{ daraja_status.shortcode }}
+                {% else %}
+                  —
                 {% endif %}
               </strong>
             </div>
@@ -61,7 +67,7 @@
           </div>
           <p class="account-status-link">
             Configure Paybill/Till and STK Push under
-            <a href="{% url 'core:my_account_daraja' %}">Daraja STK Push</a>.
+            <a href="{% url 'core:settings_payments' %}">STK Payment Settings</a>.
           </p>
         </section>
       {% endif %}

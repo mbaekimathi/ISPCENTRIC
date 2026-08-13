@@ -1,0 +1,98 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_company_settings_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit org-edit--settings company-settings-page">
+  <div class="org-edit-intro">
+    <div class="org-edit-hero">
+      <div class="company-settings-icon" aria-hidden="true">@</div>
+      <div class="org-edit-hero-copy">
+        <p class="org-edit-kicker">ISPCENTRIC platform</p>
+        <h2>Company communications settings</h2>
+        <div class="org-edit-meta">
+          {% if sms_status.ready or email_status.ready or whatsapp_status.ready %}
+            <span class="org-status org-status-active">Gateway configured</span>
+          {% else %}
+            <span class="org-status org-status-suspended">Not ready</span>
+          {% endif %}
+          {% if comms.updated_at %}
+            <span class="org-edit-meta-item">Updated {{ comms.updated_at|date:"d M Y H:i" }}</span>
+          {% endif %}
+        </div>
+        <p class="org-edit-owner">{{ page_subtitle }}</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-policy-banner">
+    These credentials send messages <strong>from ISPCENTRIC to ISPs and platform staff</strong>.
+    They are not the same as each ISP’s
+    <a href="{% url 'core:settings_communications' %}"><strong>Communication settings</strong></a>
+    (<code>/app/settings/communications/</code>).
+  </div>
+
+  <div class="account-page" id="comms-page">
+    {% if sms_status or email_status or whatsapp_status %}
+      <section class="panel account-card account-status-card">
+        <header class="account-card-head">
+          <div class="account-card-head-main">
+            <div>
+              <h3>Platform channel status</h3>
+              <p>Turn on a channel, enter credentials, then fetch senders or type any sender ID, shortcode, or phone number.</p>
+            </div>
+          </div>
+        </header>
+        <div class="account-summary-grid comms-summary-grid">
+          <div class="account-summary-item">
+            <span>SMS</span>
+            <strong>{{ sms_status.provider_label }}</strong>
+            {% if sms_status.ready %}
+              <span class="mikrotik-wifi-pill is-on">Ready</span>
+            {% elif sms_status.enabled %}
+              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+            {% else %}
+              <span class="mikrotik-wifi-pill is-off">Off</span>
+            {% endif %}
+          </div>
+          <div class="account-summary-item">
+            <span>Email</span>
+            <strong>{{ email_status.provider_label }}</strong>
+            {% if email_status.ready %}
+              <span class="mikrotik-wifi-pill is-on">Ready</span>
+            {% elif email_status.enabled %}
+              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+            {% else %}
+              <span class="mikrotik-wifi-pill is-off">Off</span>
+            {% endif %}
+          </div>
+          <div class="account-summary-item">
+            <span>WhatsApp</span>
+            <strong>{{ whatsapp_status.provider_label }}</strong>
+            {% if whatsapp_status.ready %}
+              <span class="mikrotik-wifi-pill is-on">Ready</span>
+            {% elif whatsapp_status.enabled %}
+              <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+            {% else %}
+              <span class="mikrotik-wifi-pill is-off">Off</span>
+            {% endif %}
+          </div>
+        </div>
+      </section>
+    {% endif %}
+
+    {% include "includes/comms_credentials_form.html" with save_label="Save company communications settings" sms_intro="Gateway ISPCENTRIC uses to SMS ISP owners and staff. Senders are fetched after you enter credentials." email_intro="Any mailbox type. SMTP is auto-filled after you enter the email address." whatsapp_intro="Meta, Twilio, or Africa's Talking. Numbers are fetched after you enter credentials." %}
+  </div>
+</section>
+
+{% include "includes/comms_credentials_script.html" %}
+{% endblock %}

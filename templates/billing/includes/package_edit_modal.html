@@ -6,7 +6,7 @@
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Billing</p>
         <h2 id="billing-package-edit-title">Edit package</h2>
-        <p class="role-modal-sub pppoe-sub">Update service type, price, speeds, period, or status. Speed changes are pushed to assigned clients on MikroTik.</p>
+        <p class="role-modal-sub pppoe-sub">Update service type, price, speeds, device limit, period, or status. Speed and device-limit changes are pushed to assigned clients on MikroTik.</p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
@@ -92,6 +92,12 @@
               <label for="{{ package_edit_form.upload_speed_mbps.id_for_label }}">{{ package_edit_form.upload_speed_mbps.label }}</label>
               {{ package_edit_form.upload_speed_mbps }}
               {% if package_edit_form.upload_speed_mbps.errors %}<div class="field-error">{{ package_edit_form.upload_speed_mbps.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="field">
+              <label for="{{ package_edit_form.max_devices.id_for_label }}">{{ package_edit_form.max_devices.label }} <span class="pppoe-optional">optional</span></label>
+              {{ package_edit_form.max_devices }}
+              {% if package_edit_form.max_devices.errors %}<div class="field-error">{{ package_edit_form.max_devices.errors|striptags }}</div>{% endif %}
+              <p class="field-hint" id="edit-package-max-devices-hint">Leave blank for unlimited. Hotspot: phones/laptops on one paid account. PPPoE: CPEs that may dial this username.</p>
             </div>
             <p class="field-hint pppoe-grid-hint" id="edit-package-general-speed-hint">
               General speed will be set from download/upload (shown as download/upload Mbps).

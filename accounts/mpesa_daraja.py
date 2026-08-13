@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import socket
 import ssl
@@ -13,6 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 from urllib.parse import urlparse
 
+from django.core.cache import cache
 from django.utils import timezone
 
 from accounts.models import PaymentGateway
@@ -35,6 +37,8 @@ PRODUCTION_STK_QUERY_URL = (
 )
 OAUTH_TIMEOUT_SECONDS = 12
 STK_TIMEOUT_SECONDS = 25
+_TOKEN_CACHE_PREFIX = "daraja_oauth:"
+_TOKEN_SAFETY_SECONDS = 60
 # Safaricom's edge (especially sandbox) intermittently drops TLS handshakes;
 # retries turn those blips into a normal response instead of a failed payment.
 CONNECT_RETRIES = 4
@@ -225,8 +229,36 @@ def _json_request(
     return {"ok": False, "http_status": None, "data": {}, "error": last_error}
 
 
+def _token_cache_key(consumer_key: str, environment: str) -> str:
+    digest = hashlib.sha256(
+        f"{consumer_key}|{(environment or '').strip().lower()}".encode()
+    ).hexdigest()[:32]
+    return f"{_TOKEN_CACHE_PREFIX}{digest}"
+
+
+def invalidate_access_token_cache(*, consumer_key: str, environment: str) -> None:
+    """Drop a cached Daraja token after Safaricom rejects it."""
+    cache.delete(_token_cache_key(consumer_key, environment))
+
+
+def _looks_like_invalid_access_token(error: str = "", data: dict | None = None) -> bool:
+    blob = f"{error or ''} {json.dumps(data or {})}".lower()
+    return "invalid access token" in blob or "404.001.03" in blob
+
+
 def get_access_token(*, consumer_key: str, consumer_secret: str, environment: str) -> dict[str, Any]:
-    """Request a Daraja OAuth access token."""
+    """Request a Daraja OAuth access token (cached until shortly before expiry)."""
+    cache_key = _token_cache_key(consumer_key, environment)
+    cached = cache.get(cache_key)
+    if cached:
+        return {
+            "ok": True,
+            "access_token": cached,
+            "expires_in": None,
+            "error": "",
+            "cached": True,
+        }
+
     token_url = _oauth_url(environment)
     credentials = base64.b64encode(
         f"{consumer_key}:{consumer_secret}".encode("utf-8")
@@ -239,6 +271,11 @@ def get_access_token(*, consumer_key: str, consumer_secret: str, environment: st
     data = result.get("data") or {}
     token = (data.get("access_token") or "").strip()
     if result.get("ok") and token:
+        try:
+            expires = int(data.get("expires_in") or 3599)
+        except (TypeError, ValueError):
+            expires = 3599
+        cache.set(cache_key, token, timeout=max(30, expires - _TOKEN_SAFETY_SECONDS))
         return {
             "ok": True,
             "access_token": token,
@@ -341,14 +378,19 @@ def initiate_stk_push(
             "environment": (environment or "").strip().lower(),
             "data": data,
         }
+    error = (
+        data.get("errorMessage")
+        or data.get("ResponseDescription")
+        or result.get("error")
+        or "STK Push request failed."
+    )
+    if _looks_like_invalid_access_token(error, data):
+        invalidate_access_token_cache(
+            consumer_key=consumer_key, environment=environment
+        )
     return {
         "ok": False,
-        "error": (
-            data.get("errorMessage")
-            or data.get("ResponseDescription")
-            or result.get("error")
-            or "STK Push request failed."
-        ),
+        "error": error,
         "merchant_request_id": (data.get("MerchantRequestID") or "").strip(),
         "checkout_request_id": checkout_id,
         "customer_message": (data.get("CustomerMessage") or "").strip(),
@@ -420,6 +462,25 @@ def query_stk_push(
         timeout=STK_TIMEOUT_SECONDS,
     )
     data = result.get("data") or {}
+    token_error = (
+        result.get("error")
+        or data.get("errorMessage")
+        or data.get("error_description")
+        or ""
+    )
+    if _looks_like_invalid_access_token(token_error, data):
+        invalidate_access_token_cache(
+            consumer_key=consumer_key, environment=environment
+        )
+        return {
+            "ok": False,
+            "pending": False,
+            "success": False,
+            "result_code": None,
+            "result_desc": token_error or "Invalid Access Token",
+            "data": data,
+            "error": token_error or "Invalid Access Token",
+        }
     result_code = data.get("ResultCode")
     if result_code is None:
         result_code = data.get("resultCode")

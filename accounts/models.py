@@ -152,8 +152,8 @@ class Organization(models.Model):
         help_text="Optional Paybill account / reference clients should enter.",
     )
     class DarajaEnvironment(models.TextChoices):
-        SANDBOX = "sandbox", "Sandbox"
-        PRODUCTION = "production", "Production"
+        SANDBOX = "sandbox", "Company Payment Gateway"
+        PRODUCTION = "production", "My own Payment Gateway"
 
     daraja_enabled = models.BooleanField(
         "Enable Daraja API",
@@ -161,7 +161,7 @@ class Organization(models.Model):
         help_text="Receive subscription payments via M-Pesa Daraja STK Push.",
     )
     daraja_environment = models.CharField(
-        "Daraja environment",
+        "STK gateway",
         max_length=20,
         choices=DarajaEnvironment.choices,
         default=DarajaEnvironment.SANDBOX,
@@ -333,6 +333,150 @@ class Organization(models.Model):
 
         invalidate_switchable_clients_cache()
 
+    def purge_account(self, *, actor_user_id=None):
+        """Delete this ISP and all of its data without touching other organizations."""
+        from django.db import transaction
+
+        from billing.models import AccessVoucher, StkPushRequest
+
+        if not self.pk:
+            return
+
+        org_id = self.pk
+        owner_id = self.owner_id
+
+        with transaction.atomic():
+            type(self).objects.filter(referred_by_id=org_id).update(
+                referred_by=None,
+                referral_status="",
+            )
+            # Clear PROTECT blockers that would otherwise stop plan/org deletion.
+            AccessVoucher.objects.filter(organization_id=org_id).delete()
+            StkPushRequest.objects.filter(organization_id=org_id).delete()
+
+            staff_qs = Employee.objects.filter(organization_id=org_id)
+            if actor_user_id:
+                staff_qs = staff_qs.exclude(user_id=actor_user_id)
+            staff_user_ids = list(staff_qs.values_list("user_id", flat=True))
+
+            self.delete()
+
+            user_ids = {
+                uid
+                for uid in [owner_id, *staff_user_ids]
+                if uid and uid != actor_user_id
+            }
+            if user_ids:
+                User.objects.filter(pk__in=user_ids).delete()
+
+    def deletion_preview(self, *, sample_limit=8):
+        """Counts and sample names of data that purge_account will remove."""
+        from billing.models import AccessVoucher, Invoice, Payment, StkPushRequest
+
+        limit = max(1, int(sample_limit or 8))
+        owner_name = ""
+        owner_email = ""
+        if self.owner_id and self.owner:
+            owner_name = self.owner.get_full_name() or self.owner.username
+            owner_email = (self.owner.email or "").strip()
+
+        staff_qs = Employee.objects.filter(organization_id=self.pk).select_related("user")
+        staff_names = []
+        for member in staff_qs.order_by("user__first_name", "user__username")[:limit]:
+            label = member.user.get_full_name() or member.user.username
+            if member.get_role_display():
+                label = f"{label} · {member.get_role_display()}"
+            staff_names.append(label)
+
+        customer_names = list(
+            self.customers.order_by("full_name").values_list("full_name", flat=True)[:limit]
+        )
+        plan_names = list(self.plans.order_by("name").values_list("name", flat=True)[:limit])
+        router_names = list(
+            self.mikrotik_routers.order_by("name").values_list("name", flat=True)[:limit]
+        )
+        lead_names = list(
+            self.leads.order_by("-created_at").values_list("full_name", flat=True)[:limit]
+        )
+        has_comms = CommunicationSettings.objects.filter(organization_id=self.pk).exists()
+
+        def item(key, label, count, *, detail="", samples=None):
+            return {
+                "key": key,
+                "label": label,
+                "count": int(count or 0),
+                "detail": detail,
+                "samples": list(samples or []),
+            }
+
+        items = [
+            item(
+                "account",
+                "ISP account",
+                1,
+                detail=self.name,
+            ),
+            item(
+                "owner",
+                "Owner login",
+                1 if self.owner_id else 0,
+                detail=" · ".join(part for part in (owner_name, owner_email) if part),
+            ),
+            item("staff", "Staff accounts", staff_qs.count(), samples=staff_names),
+            item(
+                "customers",
+                "Subscribers",
+                self.customers.count(),
+                samples=customer_names,
+            ),
+            item("packages", "Packages", self.plans.count(), samples=plan_names),
+            item(
+                "routers",
+                "MikroTik routers",
+                self.mikrotik_routers.count(),
+                samples=router_names,
+            ),
+            item("leads", "Sales leads", self.leads.count(), samples=lead_names),
+            item("invoices", "Invoices", Invoice.objects.filter(organization_id=self.pk).count()),
+            item("payments", "Payments", Payment.objects.filter(organization_id=self.pk).count()),
+            item(
+                "vouchers",
+                "Access vouchers",
+                AccessVoucher.objects.filter(organization_id=self.pk).count(),
+            ),
+            item(
+                "stk",
+                "STK Push requests",
+                StkPushRequest.objects.filter(organization_id=self.pk).count(),
+            ),
+            item(
+                "devices",
+                "Registered devices",
+                self.customer_devices.count(),
+            ),
+            item(
+                "settings",
+                "ISP settings",
+                1,
+                detail="Hotspot, PPPoE, M-Pesa, and Daraja settings for this ISP",
+            ),
+            item(
+                "comms",
+                "Communication settings",
+                1 if has_comms else 0,
+                detail="SMS, email, and WhatsApp credentials for this ISP",
+            ),
+        ]
+        present = [row for row in items if row["count"]]
+        return {
+            "owner_name": owner_name,
+            "owner_email": owner_email,
+            "items": items,
+            "present_items": present,
+            "empty_labels": [row["label"] for row in items if not row["count"]],
+            "total_records": sum(row["count"] for row in items),
+        }
+
     def __str__(self):
         return self.name
 
@@ -344,17 +488,32 @@ class Organization(models.Model):
             return f"Till {self.mpesa_number}"
         return "Not set"
 
+    def has_own_daraja_credentials(self) -> bool:
+        """True when this ISP has a complete Daraja app of its own."""
+        return bool(
+            (self.daraja_consumer_key or "").strip()
+            and (self.daraja_consumer_secret or "").strip()
+            and (self.daraja_passkey or "").strip()
+            and (self.mpesa_payment_type or "").strip()
+            and (self.mpesa_number or "").strip()
+        )
+
     def uses_platform_daraja_credentials(self) -> bool:
-        """Sandbox / testing uses IT Support Payment Gateway credentials."""
+        """Company Payment Gateway is the default when this ISP has no own Daraja app."""
+        if not self.daraja_enabled:
+            return False
         env = (self.daraja_environment or self.DarajaEnvironment.SANDBOX).strip().lower()
-        return env != self.DarajaEnvironment.PRODUCTION
+        if env == self.DarajaEnvironment.PRODUCTION and self.has_own_daraja_credentials():
+            return False
+        return True
 
     def effective_daraja_credentials(self) -> dict:
         """
-        Credentials used for STK Push.
+        Credentials used for ISP subscription STK Push.
 
-        Testing (sandbox): IT Support Payment Gateway settings.
-        Production: this organization's own Daraja fields + Paybill/Till.
+        Company Payment Gateway is the default when this ISP has no own Daraja app.
+        An ISP Payment Gateway uses only this organization's fields.
+        The two gateways are never mixed (no company keys + ISP shortcode, or vice versa).
         """
         payment_type = (self.mpesa_payment_type or "").strip()
         shortcode = (self.mpesa_number or "").strip()
@@ -373,82 +532,47 @@ class Organization(models.Model):
                 "consumer_secret": "",
                 "passkey": "",
                 "callback_url": "",
-                "message": "Daraja API is turned off.",
+                "message": "STK Push is turned off for this ISP.",
             }
 
-        if not payment_type or not shortcode:
-            return {
-                "enabled": True,
-                "ready": False,
-                "source": "incomplete",
-                "source_label": "Incomplete",
-                "environment": environment,
-                "payment_type": payment_type,
-                "shortcode": shortcode,
-                "consumer_key": "",
-                "consumer_secret": "",
-                "passkey": "",
-                "callback_url": "",
-                "message": "Choose Paybill or Till and enter the number first.",
-            }
-
-        if self.uses_platform_daraja_credentials():
-            gateway = PaymentGateway.get_solo()
-            ready = gateway.is_stk_ready()
-            # STK BusinessShortCode/passkey must match the Daraja app on the gateway.
-            # Org Paybill/Till is the receive method shown to clients; the Lipa Na
-            # M-Pesa Online shortcode comes from IT Support Payment Gateway.
-            gw_shortcode = (gateway.shortcode or "").strip() or shortcode
-            gw_payment_type = (gateway.payment_type or "").strip() or payment_type
-            gw_environment = (
-                gateway.environment or PaymentGateway.Environment.SANDBOX
-            ).strip().lower()
-            # Live Paybill/Till shortcodes must hit api.safaricom.co.ke.
-            # Sandbox host only works with Safaricom's test shortcode 174379.
-            if gw_shortcode and gw_shortcode != "174379":
-                gw_environment = PaymentGateway.Environment.PRODUCTION
+        if not self.uses_platform_daraja_credentials():
+            key = (self.daraja_consumer_key or "").strip()
+            secret = (self.daraja_consumer_secret or "").strip()
+            passkey = (self.daraja_passkey or "").strip()
+            ready = bool(key and secret and passkey and payment_type and shortcode)
             return {
                 "enabled": True,
                 "ready": ready,
-                "source": "it_support",
-                "source_label": "IT Support Payment Gateway",
-                "environment": gw_environment,
-                "payment_type": gw_payment_type,
-                "shortcode": gw_shortcode,
-                "consumer_key": (gateway.consumer_key or "").strip(),
-                "consumer_secret": (gateway.consumer_secret or "").strip(),
-                "passkey": (gateway.passkey or "").strip(),
-                "callback_url": gateway.resolved_callback_url(),
+                "source": "organization",
+                "source_label": "ISP Payment Gateway",
+                "environment": self.DarajaEnvironment.PRODUCTION,
+                "payment_type": payment_type,
+                "shortcode": shortcode,
+                "consumer_key": key,
+                "consumer_secret": secret,
+                "passkey": passkey,
+                "callback_url": "",
                 "message": (
-                    f"Using IT Support Daraja credentials ({gw_environment}) "
-                    f"with shortcode {gw_shortcode}."
+                    f"Using this ISP's Payment Gateway with shortcode {shortcode}."
                     if ready
-                    else "IT Support Payment Gateway is not ready for STK Push."
+                    else "Add this ISP's Paybill/Till and Daraja consumer key, secret, and passkey."
                 ),
             }
 
-        key = (self.daraja_consumer_key or "").strip()
-        secret = (self.daraja_consumer_secret or "").strip()
-        passkey = (self.daraja_passkey or "").strip()
-        ready = bool(key and secret and passkey)
-        return {
-            "enabled": True,
-            "ready": ready,
-            "source": "organization",
-            "source_label": "Organization credentials",
-            "environment": self.DarajaEnvironment.PRODUCTION,
-            "payment_type": payment_type,
-            "shortcode": shortcode,
-            "consumer_key": key,
-            "consumer_secret": secret,
-            "passkey": passkey,
-            "callback_url": "",
-            "message": (
-                "Using this organization's production Daraja credentials."
-                if ready
-                else "Add production consumer key, secret, and passkey."
-            ),
-        }
+        creds = PaymentGateway.get_solo().as_stk_credentials()
+        creds["enabled"] = True
+        if creds.get("ready"):
+            creds["message"] = (
+                f"Using Company Payment Gateway ({creds.get('environment')}) "
+                f"with shortcode {creds.get('shortcode')}. "
+                "This ISP has no own Payment Gateway yet."
+            )
+        else:
+            creds["message"] = (
+                "Company Payment Gateway is the default until this ISP adds its own. "
+                "IT Support must activate Payment Gateway first."
+            )
+        return creds
 
 
 class Employee(models.Model):
@@ -652,7 +776,13 @@ class Lead(models.Model):
 
 
 class PaymentGateway(models.Model):
-    """Platform-wide payment gateway settings (singleton, managed by IT Support)."""
+    """
+    Company / platform Payment Gateway (singleton, managed by IT Support).
+
+    Default STK gateway for ISPs that have not configured their own Daraja app.
+    Also used for platform fees such as MikroTik onboarding. Never mixed with
+    an ISP's Paybill/Till or Daraja credentials.
+    """
 
     class Provider(models.TextChoices):
         MPESA = "mpesa", "M-Pesa"
@@ -669,7 +799,10 @@ class PaymentGateway(models.Model):
     enabled = models.BooleanField(
         "Activate STK Push",
         default=False,
-        help_text="Turn on M-Pesa Daraja Lipa Na M-Pesa Online (STK Push) for collections.",
+        help_text=(
+            "Company Daraja STK Push. Default for ISPs without their own Payment Gateway, "
+            "and for platform fees such as MikroTik onboarding."
+        ),
     )
     provider = models.CharField(
         "Provider",
@@ -755,6 +888,32 @@ class PaymentGateway(models.Model):
             and (self.passkey or "").strip()
             and (self.shortcode or "").strip()
         )
+
+    def as_stk_credentials(self) -> dict:
+        """Company Payment Gateway fields only — never mixed with ISP Daraja values."""
+        shortcode = (self.shortcode or "").strip()
+        environment = (self.environment or self.Environment.SANDBOX).strip().lower()
+        if shortcode and shortcode != "174379":
+            environment = self.Environment.PRODUCTION
+        ready = self.is_stk_ready()
+        return {
+            "enabled": bool(self.enabled),
+            "ready": ready,
+            "source": "platform",
+            "source_label": "Company Payment Gateway",
+            "environment": environment,
+            "payment_type": (self.payment_type or "").strip(),
+            "shortcode": shortcode,
+            "consumer_key": (self.consumer_key or "").strip(),
+            "consumer_secret": (self.consumer_secret or "").strip(),
+            "passkey": (self.passkey or "").strip(),
+            "callback_url": self.resolved_callback_url() if ready else "",
+            "message": (
+                f"Using Company Payment Gateway ({environment}) with shortcode {shortcode}."
+                if ready
+                else "Activate and complete Company Payment Gateway under IT Support → Payment Gateway."
+            ),
+        }
 
     @classmethod
     def sandbox_base_url(cls) -> str:
@@ -930,6 +1089,341 @@ class ClientSettings(models.Model):
 
     def __str__(self):
         return "Client settings"
+
+
+class CommunicationCredentialsBase(models.Model):
+    """Shared SMS, email, and WhatsApp credential fields."""
+
+    class SmsProvider(models.TextChoices):
+        AFRICASTALKING = "africastalking", "Africa's Talking"
+        TWILIO = "twilio", "Twilio"
+        CUSTOM = "custom", "Custom HTTP API"
+
+    class WhatsAppProvider(models.TextChoices):
+        META = "meta", "WhatsApp Cloud API (Meta)"
+        TWILIO = "twilio", "Twilio WhatsApp"
+        AFRICASTALKING = "africastalking", "Africa's Talking WhatsApp"
+
+    class Meta:
+        abstract = True
+
+    sms_enabled = models.BooleanField(
+        "Enable SMS",
+        default=False,
+        help_text="Send SMS notifications to clients using your gateway.",
+    )
+    sms_provider = models.CharField(
+        "SMS provider",
+        max_length=32,
+        choices=SmsProvider.choices,
+        blank=True,
+        default=SmsProvider.AFRICASTALKING,
+    )
+    sms_username = models.CharField(
+        "SMS username / Account SID",
+        max_length=120,
+        blank=True,
+        help_text="Africa's Talking username or Twilio Account SID.",
+    )
+    sms_api_key = models.CharField(
+        "SMS API key / Auth token",
+        max_length=512,
+        blank=True,
+        help_text="Africa's Talking API key, Twilio Auth Token, or custom API key.",
+    )
+    sms_sender_id = models.CharField(
+        "SMS sender ID",
+        max_length=32,
+        blank=True,
+        help_text="Alphanumeric sender ID or shortcode (Africa's Talking / custom).",
+    )
+    sms_from_number = models.CharField(
+        "SMS from number",
+        max_length=30,
+        blank=True,
+        help_text="Twilio phone number that sends SMS, e.g. +2547…",
+    )
+    sms_base_url = models.URLField(
+        "Custom SMS API URL",
+        max_length=500,
+        blank=True,
+        help_text="POST endpoint for a custom SMS gateway.",
+    )
+
+    email_enabled = models.BooleanField(
+        "Enable email",
+        default=False,
+        help_text="Send email using your own SMTP account.",
+    )
+    email_host = models.CharField(
+        "SMTP host",
+        max_length=255,
+        blank=True,
+        help_text="e.g. smtp.gmail.com or mail.yourdomain.com",
+    )
+    email_port = models.PositiveIntegerField(
+        "SMTP port",
+        default=587,
+        help_text="587 for TLS, 465 for SSL, 25 for unencrypted.",
+    )
+    email_use_tls = models.BooleanField(
+        "Use TLS",
+        default=True,
+        help_text="Turn on for port 587. Port 465 uses SSL automatically.",
+    )
+    email_host_user = models.CharField(
+        "SMTP username",
+        max_length=255,
+        blank=True,
+        help_text="Usually the full email address you sign in with.",
+    )
+    email_host_password = models.CharField(
+        "SMTP password",
+        max_length=512,
+        blank=True,
+        help_text="App password or mailbox password.",
+    )
+    email_from_email = models.EmailField(
+        "From email",
+        blank=True,
+        help_text="Address clients see as the sender. Defaults to the SMTP username.",
+    )
+    email_from_name = models.CharField(
+        "From name",
+        max_length=120,
+        blank=True,
+        help_text="Display name, e.g. your ISP name.",
+    )
+
+    whatsapp_enabled = models.BooleanField(
+        "Enable WhatsApp",
+        default=False,
+        help_text="Send WhatsApp messages using your Business API.",
+    )
+    whatsapp_provider = models.CharField(
+        "WhatsApp provider",
+        max_length=32,
+        choices=WhatsAppProvider.choices,
+        blank=True,
+        default=WhatsAppProvider.META,
+    )
+    whatsapp_phone_number_id = models.CharField(
+        "WhatsApp phone number ID",
+        max_length=64,
+        blank=True,
+        help_text="From Meta WhatsApp Cloud API.",
+    )
+    whatsapp_access_token = models.CharField(
+        "WhatsApp access token",
+        max_length=1024,
+        blank=True,
+        help_text="Permanent or temporary Meta Cloud API token.",
+    )
+    whatsapp_username = models.CharField(
+        "WhatsApp username / Account SID",
+        max_length=120,
+        blank=True,
+        help_text="Twilio Account SID or Africa's Talking username.",
+    )
+    whatsapp_api_key = models.CharField(
+        "WhatsApp API key / Auth token",
+        max_length=512,
+        blank=True,
+        help_text="Twilio Auth Token or Africa's Talking API key.",
+    )
+    whatsapp_from_number = models.CharField(
+        "WhatsApp from number",
+        max_length=30,
+        blank=True,
+        help_text="Business number that sends WhatsApp, e.g. +2547…",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def sms_status(self) -> dict:
+        provider = (self.sms_provider or "").strip()
+        label = self.get_sms_provider_display() if provider else "Not set"
+        if not self.sms_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider": provider,
+                "provider_label": "Off",
+                "message": "SMS is turned off.",
+            }
+        if provider == self.SmsProvider.AFRICASTALKING:
+            ready = bool(
+                (self.sms_username or "").strip() and (self.sms_api_key or "").strip()
+            )
+            message = (
+                "Africa's Talking SMS is ready."
+                if ready
+                else "Add Africa's Talking username and API key."
+            )
+        elif provider == self.SmsProvider.TWILIO:
+            ready = bool(
+                (self.sms_username or "").strip()
+                and (self.sms_api_key or "").strip()
+                and ((self.sms_from_number or "").strip() or (self.sms_sender_id or "").strip())
+            )
+            message = (
+                "Twilio SMS is ready."
+                if ready
+                else "Add Twilio Account SID, Auth Token, then fetch or enter any from number / sender."
+            )
+        elif provider == self.SmsProvider.CUSTOM:
+            ready = bool(
+                (self.sms_base_url or "").strip() and (self.sms_api_key or "").strip()
+            )
+            message = (
+                "Custom SMS API is ready."
+                if ready
+                else "Add the SMS API URL and API key."
+            )
+        else:
+            ready = False
+            message = "Choose an SMS provider."
+        return {
+            "enabled": True,
+            "ready": ready,
+            "provider": provider,
+            "provider_label": label,
+            "message": message,
+        }
+
+    def email_status(self) -> dict:
+        if not self.email_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider_label": "Off",
+                "message": "Email is turned off.",
+            }
+        ready = bool(
+            (self.email_host or "").strip()
+            and (self.email_host_user or "").strip()
+            and (self.email_host_password or "").strip()
+            and ((self.email_from_email or "").strip() or (self.email_host_user or "").strip())
+        )
+        return {
+            "enabled": True,
+            "ready": ready,
+            "provider_label": (self.email_host or "").strip() or "SMTP",
+            "message": (
+                "SMTP email is ready."
+                if ready
+                else "Add SMTP host, username, password, and from address."
+            ),
+        }
+
+    def whatsapp_status(self) -> dict:
+        provider = (self.whatsapp_provider or "").strip()
+        label = self.get_whatsapp_provider_display() if provider else "Not set"
+        if not self.whatsapp_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider": provider,
+                "provider_label": "Off",
+                "message": "WhatsApp is turned off.",
+            }
+        if provider == self.WhatsAppProvider.META:
+            ready = bool(
+                (self.whatsapp_phone_number_id or "").strip()
+                and (self.whatsapp_access_token or "").strip()
+            )
+            message = (
+                "WhatsApp Cloud API is ready."
+                if ready
+                else "Add Meta phone number ID and access token."
+            )
+        elif provider == self.WhatsAppProvider.TWILIO:
+            ready = bool(
+                (self.whatsapp_username or "").strip()
+                and (self.whatsapp_api_key or "").strip()
+                and (self.whatsapp_from_number or "").strip()
+            )
+            message = (
+                "Twilio WhatsApp is ready."
+                if ready
+                else "Add Twilio Account SID and Auth Token, then fetch or enter any WhatsApp from number."
+            )
+        elif provider == self.WhatsAppProvider.AFRICASTALKING:
+            ready = bool(
+                (self.whatsapp_username or "").strip()
+                and (self.whatsapp_api_key or "").strip()
+                and (self.whatsapp_from_number or "").strip()
+            )
+            message = (
+                "Africa's Talking WhatsApp is ready."
+                if ready
+                else "Add Africa's Talking username, API key, and from number."
+            )
+        else:
+            ready = False
+            message = "Choose a WhatsApp provider."
+        return {
+            "enabled": True,
+            "ready": ready,
+            "provider": provider,
+            "provider_label": label,
+            "message": message,
+        }
+
+    def channel_statuses(self) -> dict:
+        return {
+            "sms": self.sms_status(),
+            "email": self.email_status(),
+            "whatsapp": self.whatsapp_status(),
+        }
+
+
+class CommunicationSettings(CommunicationCredentialsBase):
+    """Per-ISP organization credentials used to message that ISP's subscribers."""
+
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="communications",
+    )
+
+    class Meta:
+        db_table = "accounts_communication_settings"
+        verbose_name = "ISP communication settings"
+        verbose_name_plural = "ISP communication settings"
+
+    def __str__(self):
+        return f"Communications for {self.organization}"
+
+    @classmethod
+    def for_organization(cls, organization):
+        if organization is None:
+            return None
+        obj, _ = cls.objects.get_or_create(organization=organization)
+        return obj
+
+
+class PlatformCommunicationSettings(CommunicationCredentialsBase):
+    """ISPCENTRIC platform credentials (IT Support) used to message ISPs and staff."""
+
+    class Meta:
+        db_table = "accounts_platform_communication_settings"
+        verbose_name = "Platform communication settings"
+        verbose_name_plural = "Platform communication settings"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        pass
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return "Platform communications"
 
 
 class RoleCommission(models.Model):

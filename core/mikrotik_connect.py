@@ -7,6 +7,7 @@ import hashlib
 import http.client
 import ipaddress
 import json
+import logging
 import socket
 import ssl
 import threading
@@ -14,9 +15,11 @@ import time
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
 from typing import Any, Iterator
-from urllib.parse import urlencode, urlparse, urlunparse
+from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 WIFI_PACKAGES = (
@@ -275,6 +278,8 @@ CLEAN_UPLINK_TAG = "ispcentric-clean-uplink"
 UPLINK_TAG = "ispcentric-uplink"
 CPE_PROXY_TAG = "ispcentric-cpe-proxy"
 CPE_API_AUTO_TAG = "ispcentric-cpe-api"
+CPE_WWW_AUTO_TAG = "ispcentric-cpe-www"
+CPE_WEB_SUPPORT_USER = "ispcentric"
 # ISP PPPoE pool used when opening CPE management from the NAS side.
 PPPOE_LOCAL_ADDRESS = "10.20.0.1"
 PPPOE_POOL_NAME = "ispcentric-pppoe"
@@ -1485,12 +1490,32 @@ def _api_session(
     port: int = 8728,
     timeout: float = 5.0,
 ) -> Iterator[socket.socket]:
-    with socket.create_connection((dial_host(host), port), timeout=timeout) as sock:
-        sock.settimeout(timeout)
-        login_error = _api_login(sock, username, password)
-        if login_error:
-            raise ConnectionError(login_error.get("error") or "Login failed.")
-        yield sock
+    dial = dial_host(host)
+    started = time.perf_counter()
+    tcp_ms = 0
+    login_ms = 0
+    try:
+        tcp_started = time.perf_counter()
+        with socket.create_connection((dial, port), timeout=timeout) as sock:
+            tcp_ms = int((time.perf_counter() - tcp_started) * 1000)
+            sock.settimeout(timeout)
+            login_started = time.perf_counter()
+            login_error = _api_login(sock, username, password)
+            login_ms = int((time.perf_counter() - login_started) * 1000)
+            if login_error:
+                raise ConnectionError(login_error.get("error") or "Login failed.")
+            yield sock
+    finally:
+        total_ms = int((time.perf_counter() - started) * 1000)
+        log = logger.info if total_ms >= 1000 else logger.debug
+        log(
+            "mikrotik api host=%s dial=%s tcp_ms=%s login_ms=%s total_ms=%s",
+            host,
+            dial,
+            tcp_ms,
+            login_ms,
+            total_ms,
+        )
 
 
 def _cpe_proxy_port(cpe_host: str, scope: str = "") -> int:
@@ -1807,6 +1832,25 @@ def customer_cpe_web_proxy(
     }
 
 
+def _remember_cpe_web_proxy(
+    nas_host: str,
+    scope: str,
+    cpe_host: str,
+    cpe_port: int,
+    proxy_port: int,
+    source_address: str = "",
+) -> None:
+    """Keep a just-probed NAS→CPE web forward so the browser can reuse it."""
+    key = (dial_host(nas_host), f"{scope}|{int(cpe_port)}")
+    _CPE_WEB_PROXY_CACHE[key] = {
+        "host": dial_host(nas_host),
+        "port": int(proxy_port),
+        "cpe_host": (cpe_host or "").strip(),
+        "source_address": (source_address or "").strip(),
+        "expires_at": time.monotonic() + _CPE_WEB_PROXY_TTL,
+    }
+
+
 def release_customer_cpe_web_proxy(
     nas_host: str,
     nas_username: str,
@@ -1944,6 +1988,523 @@ def _cpe_login_failure_message(location: str) -> str:
         "The saved client router admin password was rejected. Update it on this "
         "client, then refresh."
     )
+
+
+def _cpe_web_http_request(
+    proxy: dict[str, Any],
+    path: str,
+    *,
+    cpe_port: int,
+    method: str = "GET",
+    body: bytes | None = None,
+    cookies: dict[str, str] | None = None,
+    timeout: float = 8.0,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[int, bytes, dict[str, str], str]:
+    """One CPE HTTP request; return status, body, cookies, and Location."""
+    headers = {
+        "Host": str(proxy["cpe_host"]),
+        "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Encoding": "identity",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in cookies.items())
+    if body is not None:
+        headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        headers["Content-Length"] = str(len(body))
+    is_tls = cpe_port in {443, 8443}
+    connection_class = http.client.HTTPSConnection if is_tls else http.client.HTTPConnection
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if is_tls:
+        kwargs["context"] = ssl._create_unverified_context()
+    connection = connection_class(proxy["host"], proxy["port"], **kwargs)
+    try:
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        raw = response.read(1024 * 1024)
+        response_cookies: dict[str, str] = {}
+        location = ""
+        for name, value in response.getheaders():
+            lower = name.lower()
+            if lower == "location":
+                location = value
+                continue
+            if lower != "set-cookie":
+                continue
+            parsed = SimpleCookie()
+            try:
+                parsed.load(value)
+            except Exception:
+                continue
+            response_cookies.update(
+                {cookie_name: morsel.value for cookie_name, morsel in parsed.items()}
+            )
+        return response.status, raw, response_cookies, location
+    finally:
+        connection.close()
+
+
+def _cpe_basic_auth_header(username: str, password: str) -> str:
+    raw = f"{username or ''}:{password or ''}".encode("utf-8")
+    return "Basic " + base64.b64encode(raw).decode("ascii")
+
+
+def _html_looks_like_login_page(text: str) -> bool:
+    lower = (text or "").lower()
+    if 'type="password"' not in lower and "type='password'" not in lower:
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            'name="name"',
+            "name='name'",
+            'name="username"',
+            'name="user"',
+            'id="name"',
+            "login.html",
+            "webfig login",
+        )
+    )
+
+
+def _html_looks_like_admin_ui(text: str) -> bool:
+    lower = (text or "").lower()
+    if _html_looks_like_login_page(lower):
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            "webfig",
+            "mikrotik",
+            "dhtmlx",
+            "goform",
+            "tenda",
+            "router status",
+            "main.html",
+        )
+    )
+
+
+def _tenda_web_login(
+    proxy: dict[str, Any],
+    password: str,
+    *,
+    cpe_port: int,
+    cookies: dict[str, str] | None = None,
+    timeout: float = 8.0,
+) -> tuple[bool, dict[str, str], str]:
+    """Sign in to a Tenda-style `/login/Auth` admin UI. Returns (ok, cookies, error)."""
+    jar = dict(cookies or {})
+    status_code, status_payload, new_cookies, _ = _cpe_web_json_request(
+        proxy,
+        _CPE_WEB_DATA_PATHS["status"],
+        cpe_port=cpe_port,
+        cookies=jar,
+        timeout=timeout,
+    )
+    jar.update(new_cookies)
+    if status_code == 200 and status_payload:
+        return True, jar, ""
+
+    stok_status, stok, stok_cookies, _ = _cpe_web_json_request(
+        proxy, "/goform/getstok", cpe_port=cpe_port, cookies=jar, timeout=timeout
+    )
+    jar.update(stok_cookies)
+    random_key = str(stok.get("random") or "")
+    if stok_status != 200 or not random_key:
+        return False, jar, ""
+    encoded = base64.b64encode((password or "").encode("utf-8")).decode("ascii")
+    digest = hashlib.md5((encoded + random_key).encode("utf-8")).hexdigest()
+    login_body = urlencode({"password": digest}).encode("ascii")
+    login_status, login_payload, login_cookies, login_location = _cpe_web_json_request(
+        proxy,
+        "/login/Auth",
+        cpe_port=cpe_port,
+        method="POST",
+        body=login_body,
+        cookies=jar,
+        timeout=timeout,
+    )
+    jar.update(login_cookies)
+    login_error = login_payload.get("errCode")
+    rejected = (
+        login_status not in {200, 302, 303}
+        or "login.html" in (login_location or "")
+        or (login_error is not None and str(login_error) != "0")
+    )
+    if rejected:
+        return False, jar, _cpe_login_failure_message(login_location)
+
+    status_code, status_payload, new_cookies, _ = _cpe_web_json_request(
+        proxy,
+        _CPE_WEB_DATA_PATHS["status"],
+        cpe_port=cpe_port,
+        cookies=jar,
+        timeout=timeout,
+    )
+    jar.update(new_cookies)
+    if status_code == 200 and status_payload:
+        return True, jar, ""
+    return False, jar, ""
+
+
+def _mikrotik_web_login(
+    proxy: dict[str, Any],
+    username: str,
+    password: str,
+    *,
+    cpe_port: int,
+    timeout: float = 8.0,
+) -> tuple[bool, dict[str, str], str]:
+    """
+    Sign in to RouterOS WebFig.
+
+    Returns (ok, cookies, basic_header). basic_header is set when HTTP Basic
+    is what actually unlocked the UI (common on ROS www).
+    """
+    username = (username or "").strip() or "admin"
+    password = password or ""
+    jar: dict[str, str] = {}
+    basic = _cpe_basic_auth_header(username, password)
+
+    status, raw, new_cookies, _location = _cpe_web_http_request(
+        proxy,
+        "/",
+        cpe_port=cpe_port,
+        cookies=jar,
+        timeout=timeout,
+        extra_headers={"Authorization": basic},
+    )
+    jar.update(new_cookies)
+    text = raw.decode("utf-8", errors="replace")
+    if status == 200 and raw and not _html_looks_like_login_page(text):
+        if _html_looks_like_admin_ui(text) or len(raw) > 400:
+            return True, jar, basic
+
+    for method, path, body in (
+        (
+            "POST",
+            "/login",
+            urlencode({"name": username, "password": password}).encode("ascii"),
+        ),
+        (
+            "POST",
+            "/login",
+            urlencode({"username": username, "password": password}).encode("ascii"),
+        ),
+        (
+            "GET",
+            f"/login?name={quote(username)}&password={quote(password)}",
+            None,
+        ),
+    ):
+        status, raw, new_cookies, location = _cpe_web_http_request(
+            proxy,
+            path,
+            cpe_port=cpe_port,
+            method=method,
+            body=body,
+            cookies=jar,
+            timeout=timeout,
+            extra_headers={"Authorization": basic},
+        )
+        jar.update(new_cookies)
+        loc = (location or "").lower()
+        if "/login" in loc and "dst=" not in loc:
+            continue
+        check_status, check_raw, check_cookies, _ = _cpe_web_http_request(
+            proxy,
+            "/",
+            cpe_port=cpe_port,
+            cookies=jar,
+            timeout=timeout,
+            extra_headers={"Authorization": basic},
+        )
+        jar.update(check_cookies)
+        check_text = check_raw.decode("utf-8", errors="replace")
+        if check_status == 200 and check_raw and not _html_looks_like_login_page(check_text):
+            return True, jar, basic
+        if status in {200, 302, 303} and jar and not _html_looks_like_login_page(
+            raw.decode("utf-8", errors="replace")
+        ):
+            return True, jar, basic
+    return False, jar, ""
+
+
+def _ensure_cpe_web_support_user(
+    sock: socket.socket, username: str, password: str
+) -> list[str]:
+    """Create or update a full-group WebFig/API user for ISP remote support."""
+    notes: list[str] = []
+    username = (username or "").strip() or CPE_WEB_SUPPORT_USER
+    password = password or ""
+    existing_id = ""
+    try:
+        for row in _print(sock, "/user", props=".id,name,group,disabled"):
+            if (row.get("name") or "").strip() != username:
+                continue
+            existing_id = (row.get(".id") or "").strip()
+            break
+    except Exception:
+        return notes
+    try:
+        if existing_id:
+            terminal = _set(
+                sock,
+                "/user",
+                existing_id,
+                group="full",
+                disabled="no",
+                password=password,
+            )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append(f"updated CPE support user {username}")
+        else:
+            terminal = _add(
+                sock,
+                "/user",
+                name=username,
+                group="full",
+                password=password,
+                comment=CPE_WWW_AUTO_TAG,
+            )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append(f"created CPE support user {username}")
+    except Exception:
+        pass
+    return notes
+
+
+def _cpe_web_support_password(customer, fallback: str = "") -> str:
+    if (fallback or "").strip():
+        return fallback
+    material = (
+        f"ispcentric-cpe-web|{getattr(customer, 'pk', '')}|"
+        f"{getattr(settings, 'SECRET_KEY', '')}"
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def login_customer_cpe_web_session(
+    nas_host: str,
+    nas_username: str,
+    nas_password: str,
+    *,
+    customer=None,
+    pppoe_username: str = "",
+    cpe_scope: str = "",
+    cpe_address: str = "",
+    gateway_ip: str = "",
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
+    cpe_port: int = 80,
+    timeout: float = 10.0,
+    session_cookies: dict[str, str] | None = None,
+    api_ok: bool = False,
+) -> dict[str, Any]:
+    """
+    Authenticate to the CPE web UI and return cookies / Basic auth for the proxy.
+
+    Staff then open the router already signed in. Tries saved credentials, PPPoE
+    password, factory defaults, Tenda `/login/Auth`, MikroTik WebFig, and — when
+    RouterOS API is available — a dedicated ISP support user.
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "authenticated": False,
+        "cookies": {},
+        "basic_header": "",
+        "vendor": "",
+        "cpe_username": (cpe_username or "").strip() or "admin",
+        "cpe_password": cpe_password or "",
+        "support_user": False,
+        "error": "",
+        "steps": [],
+    }
+    scope = (cpe_scope or pppoe_username or "").strip()
+    if customer is not None and not scope:
+        scope = customer_cpe_proxy_scope(customer)
+    if not scope:
+        result["error"] = "Missing client scope for web login."
+        return result
+
+    steps: list[str] = result["steps"]
+    try:
+        with customer_cpe_web_proxy(
+            nas_host,
+            nas_username,
+            nas_password,
+            pppoe_username=pppoe_username,
+            cpe_scope=scope,
+            cpe_address=(cpe_address or "").strip(),
+            gateway_ip=gateway_ip,
+            cpe_port=cpe_port,
+            timeout=timeout,
+        ) as proxy:
+            jar = dict(session_cookies or {})
+            if jar:
+                status_code, status_payload, new_cookies, _ = _cpe_web_json_request(
+                    proxy,
+                    _CPE_WEB_DATA_PATHS["status"],
+                    cpe_port=cpe_port,
+                    cookies=jar,
+                    timeout=timeout,
+                )
+                jar.update(new_cookies)
+                if status_code == 200 and status_payload:
+                    steps.append("reused existing Tenda admin session")
+                    result.update(
+                        {
+                            "ok": True,
+                            "authenticated": True,
+                            "cookies": jar,
+                            "vendor": "tenda",
+                        }
+                    )
+                    return result
+                status, raw, extra, _ = _cpe_web_http_request(
+                    proxy, "/", cpe_port=cpe_port, cookies=jar, timeout=timeout
+                )
+                jar.update(extra)
+                if status == 200 and raw and not _html_looks_like_login_page(
+                    raw.decode("utf-8", errors="replace")
+                ):
+                    steps.append("reused existing router web session")
+                    result.update(
+                        {
+                            "ok": True,
+                            "authenticated": True,
+                            "cookies": jar,
+                            "vendor": "mikrotik",
+                        }
+                    )
+                    return result
+
+            saved_password = (cpe_password or "").strip()
+            if saved_password:
+                tenda_candidates = [
+                    ((cpe_username or "").strip() or "admin", saved_password)
+                ]
+            else:
+                user = (cpe_username or "").strip() or "admin"
+                tenda_candidates = [(user, "")]
+                if pppoe_password:
+                    tenda_candidates.append((user, pppoe_password))
+                tenda_candidates.append(("admin", "admin"))
+
+            for user, password in tenda_candidates:
+                ok, jar, err = _tenda_web_login(
+                    proxy, password, cpe_port=cpe_port, timeout=timeout
+                )
+                if ok:
+                    steps.append(f"signed in to Tenda web UI as {user}")
+                    result.update(
+                        {
+                            "ok": True,
+                            "authenticated": True,
+                            "cookies": jar,
+                            "vendor": "tenda",
+                            "cpe_username": user,
+                            "cpe_password": password,
+                        }
+                    )
+                    return result
+                if err and "locked out" in err.lower():
+                    result["error"] = err
+                    break
+                if err and "rejected" in err.lower() and saved_password:
+                    result["error"] = err
+                    break
+
+            mk_candidates = _cpe_credential_candidates(
+                cpe_username=cpe_username,
+                cpe_password=cpe_password,
+                pppoe_password=pppoe_password,
+            )
+            if not saved_password:
+                if ("admin", "admin") not in mk_candidates:
+                    mk_candidates.append(("admin", "admin"))
+
+            for user, password in mk_candidates:
+                ok, jar, basic = _mikrotik_web_login(
+                    proxy, user, password, cpe_port=cpe_port, timeout=timeout
+                )
+                if ok:
+                    steps.append(f"signed in to MikroTik WebFig as {user}")
+                    result.update(
+                        {
+                            "ok": True,
+                            "authenticated": True,
+                            "cookies": jar,
+                            "basic_header": basic,
+                            "vendor": "mikrotik",
+                            "cpe_username": user,
+                            "cpe_password": password,
+                        }
+                    )
+                    return result
+
+            if api_ok or customer is not None:
+                support_user = CPE_WEB_SUPPORT_USER
+                support_pass = _cpe_web_support_password(
+                    customer, fallback=saved_password or (pppoe_password or "")
+                )
+                try:
+                    with _cpe_api_session(
+                        nas_host,
+                        nas_username,
+                        nas_password,
+                        (cpe_address or "").strip() or str(proxy.get("cpe_host") or ""),
+                        (cpe_username or "").strip() or "admin",
+                        cpe_password or "",
+                        timeout=min(timeout, 10.0),
+                        proxy_scope=scope,
+                        pppoe_password=pppoe_password,
+                        auto_prepare=bool(api_ok),
+                    ) as cpe_sock:
+                        notes = _ensure_cpe_web_support_user(
+                            cpe_sock, support_user, support_pass
+                        )
+                        steps.extend(notes)
+                    ok, jar, basic = _mikrotik_web_login(
+                        proxy,
+                        support_user,
+                        support_pass,
+                        cpe_port=cpe_port,
+                        timeout=timeout,
+                    )
+                    if ok:
+                        steps.append(
+                            f"signed in with ISP support user {support_user}"
+                        )
+                        result.update(
+                            {
+                                "ok": True,
+                                "authenticated": True,
+                                "cookies": jar,
+                                "basic_header": basic,
+                                "vendor": "mikrotik",
+                                "cpe_username": support_user,
+                                "cpe_password": support_pass,
+                                "support_user": True,
+                            }
+                        )
+                        return result
+                except Exception as exc:
+                    steps.append(str(exc) or "Could not create CPE support user.")
+    except (ConnectionError, OSError, TimeoutError, http.client.HTTPException) as exc:
+        result["error"] = str(exc) or "Could not sign in to the client router."
+        return result
+
+    if not result["error"]:
+        result["error"] = (
+            "Opened the router UI but could not sign in automatically. "
+            "Use the saved admin password, or save it on the client."
+        )
+    return result
 
 
 def fetch_customer_cpe_web_data(
@@ -2425,7 +2986,67 @@ def configure_customer_cpe_web_wifi(
     }
 
 
-CPE_WEB_PORTS = (80, 8080, 443, 8443)
+# 8081 first after 80: hotspot setup moves RouterOS WebFig off :80 onto :8081.
+CPE_WEB_PORTS = (80, 8081, 8080, 443, 8443)
+
+
+def _try_cpe_web_ports(
+    nas_sock: socket.socket,
+    *,
+    nas_host: str,
+    address: str,
+    scope: str,
+    gateway: str,
+    source_address: str,
+    ports: tuple[int, ...],
+    connect_timeout: float,
+    remember: bool = True,
+) -> tuple[int | None, str]:
+    """
+    Return (first open CPE web port, last install error).
+
+    Uses the same stable NAS→CPE forward the browser proxy will reuse, so a
+    successful probe does not make the user wait for a second NAT install.
+    """
+    last_error = ""
+    dial = dial_host(nas_host)
+    seen: set[int] = set()
+    for port in ports:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port <= 0 or port in seen:
+            continue
+        seen.add(port)
+        proxy_port = _cpe_proxy_port(address, f"web|{scope}|{port}")
+        install_error = _install_cpe_proxy(
+            nas_sock,
+            proxy_port,
+            address,
+            port,
+            allowed_source=source_address,
+            gateway_ip=gateway,
+        )
+        if install_error:
+            last_error = install_error
+            continue
+        try:
+            with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
+                if remember:
+                    _remember_cpe_web_proxy(
+                        nas_host,
+                        scope,
+                        address,
+                        port,
+                        proxy_port,
+                        source_address,
+                    )
+                return port, last_error
+        except (TimeoutError, OSError):
+            _uninstall_cpe_proxy(nas_sock, proxy_port)
+            continue
+    return None, last_error
 
 
 def probe_customer_cpe_web(
@@ -2438,9 +3059,13 @@ def probe_customer_cpe_web(
     cpe_scope: str = "",
     cpe_address: str = "",
     gateway_ip: str = "",
+    cpe_username: str = "",
+    cpe_password: str = "",
+    pppoe_password: str = "",
     ports: tuple[int, ...] = CPE_WEB_PORTS,
     nas_port: int = 8728,
     timeout: float = 8.0,
+    auto_enable_www: bool = False,
 ) -> dict[str, Any]:
     """
     Preflight for client-router login: which web port answers from the ISP side.
@@ -2451,8 +3076,11 @@ def probe_customer_cpe_web(
     for each candidate port, installs the same NAS→CPE forward the proxy uses and
     does a fast TCP connect. The first port that accepts is returned.
 
+    When auto_enable_www is True and no web port answers, MikroTik CPEs are
+    prepared via API/SSH and WebFig is enabled, then ports are probed again.
+
     Returns keys: ok, session_active, cpe_host, port (int|None), reachable,
-    ping_ok, error, hint, gateway, mode.
+    ping_ok, error, hint, gateway, mode, api_ok, www_enabled, steps.
     """
     result: dict[str, Any] = {
         "ok": False,
@@ -2465,12 +3093,16 @@ def probe_customer_cpe_web(
         "hint": "",
         "gateway": (gateway_ip or PPPOE_LOCAL_ADDRESS).strip() or PPPOE_LOCAL_ADDRESS,
         "mode": "",
+        "api_ok": False,
+        "www_enabled": False,
+        "steps": [],
     }
 
     scope = (cpe_scope or pppoe_username or "").strip()
     address = (cpe_address or "").strip()
     resolved_gateway = (gateway_ip or "").strip()
     mode = ""
+    steps: list[str] = result["steps"]
 
     if customer is not None:
         target = resolve_customer_cpe_target(
@@ -2524,9 +3156,12 @@ def probe_customer_cpe_web(
     result["cpe_host"] = address
     result["gateway"] = resolved_gateway or PPPOE_LOCAL_ADDRESS
     result["mode"] = mode or ("static" if cpe_address else "pppoe")
+    steps.append(f"found client IP {address}")
 
-    connect_timeout = max(2.0, min(timeout, 4.0))
-    try:
+    connect_timeout = max(1.5, min(timeout, 2.5))
+    candidate_ports = tuple(ports or CPE_WEB_PORTS)
+
+    def _scan_ports(port_list: tuple[int, ...]) -> int | None:
         with _api_session(
             nas_host,
             nas_username,
@@ -2539,35 +3174,28 @@ def probe_customer_cpe_web(
             except (AttributeError, OSError, IndexError):
                 source_address = ""
             _ensure_hotspot_bypass(nas_sock, source_address)
-
-            ping = _nas_ping_host(nas_sock, address, count=2)
+            ping = _nas_ping_host(nas_sock, address, count=1)
             result["ping_ok"] = bool(ping.get("reachable"))
+            if result["ping_ok"]:
+                steps.append("NAS can ping CPE")
+            elif ping.get("error"):
+                steps.append(ping.get("error") or "NAS cannot ping CPE")
+            found, install_error = _try_cpe_web_ports(
+                nas_sock,
+                nas_host=nas_host,
+                address=address,
+                scope=scope,
+                gateway=result["gateway"],
+                source_address=source_address,
+                ports=port_list,
+                connect_timeout=connect_timeout,
+            )
+            if install_error:
+                result["error"] = install_error
+            return found
 
-            dial = dial_host(nas_host)
-            for port in ports:
-                probe_scope = f"probe|{scope}|{port}|{time.time_ns()}"
-                proxy_port = _cpe_proxy_port(address, probe_scope)
-                install_error = _install_cpe_proxy(
-                    nas_sock,
-                    proxy_port,
-                    address,
-                    port,
-                    allowed_source=source_address,
-                    gateway_ip=result["gateway"],
-                )
-                if install_error:
-                    result["error"] = install_error
-                    continue
-                try:
-                    with socket.create_connection((dial, proxy_port), timeout=connect_timeout):
-                        result["ok"] = True
-                        result["reachable"] = True
-                        result["port"] = port
-                        return result
-                except (TimeoutError, OSError):
-                    continue
-                finally:
-                    _uninstall_cpe_proxy(nas_sock, proxy_port)
+    try:
+        found_port = _scan_ports(candidate_ports)
     except ConnectionError as exc:
         result["error"] = str(exc) or "Could not sign in to the ISP MikroTik."
         return result
@@ -2575,14 +3203,89 @@ def probe_customer_cpe_web(
         result["error"] = str(exc) or "Timed out probing the client router."
         return result
 
-    if result["ping_ok"]:
-        result["hint"] = (
-            "The client is online and the ISP MikroTik can ping the router, but "
-            "the router refuses management from the ISP side on ports "
-            f"{', '.join(str(p) for p in ports)}. On the client's router "
-            "(e.g. Tenda), enable Remote / WAN Web Management — ideally limited to "
-            f"the ISP gateway {result['gateway']} — then try again."
+    if found_port:
+        result["ok"] = True
+        result["reachable"] = True
+        result["port"] = found_port
+        steps.append(f"web UI open on :{found_port}")
+        return result
+
+    if auto_enable_www and (cpe_password or pppoe_password or (cpe_username or "").strip()):
+        steps.append("web ports closed — enabling MikroTik WebFig")
+        prep = prepare_customer_cpe_access(
+            nas_host,
+            nas_username,
+            nas_password,
+            pppoe_username=scope,
+            customer=customer,
+            cpe_scope=scope,
+            cpe_address=address,
+            gateway_ip=result["gateway"],
+            cpe_username=cpe_username,
+            cpe_password=cpe_password,
+            pppoe_password=pppoe_password,
+            nas_port=nas_port,
+            timeout=max(timeout, 12.0),
+            auto_enable=True,
         )
+        steps.extend(list(prep.get("steps") or []))
+        result["api_ok"] = bool(prep.get("auth_ok"))
+        if prep.get("auth_ok"):
+            discovered: list[int] = []
+            try:
+                with _cpe_api_session(
+                    nas_host,
+                    nas_username,
+                    nas_password,
+                    address,
+                    prep.get("cpe_username") or ((cpe_username or "").strip() or "admin"),
+                    prep.get("cpe_password")
+                    if prep.get("cpe_password") is not None
+                    else (cpe_password or ""),
+                    nas_port=nas_port,
+                    timeout=min(max(timeout, 8.0), 12.0),
+                    proxy_scope=scope,
+                    pppoe_password=pppoe_password,
+                    auto_prepare=False,
+                ) as cpe_sock:
+                    www_notes, discovered = _ensure_cpe_www_ready_on_session(cpe_sock)
+                    steps.extend(www_notes)
+                    result["www_enabled"] = bool(www_notes)
+            except Exception as exc:
+                steps.append(str(exc) or "Could not enable CPE web service.")
+            retry_ports = tuple(
+                dict.fromkeys([*(discovered or []), *candidate_ports])
+            )
+            try:
+                found_port = _scan_ports(retry_ports)
+            except (ConnectionError, TimeoutError, OSError) as exc:
+                result["error"] = str(exc) or result.get("error") or ""
+                found_port = None
+            if found_port:
+                result["ok"] = True
+                result["reachable"] = True
+                result["port"] = found_port
+                result["www_enabled"] = True
+                steps.append(f"web UI open on :{found_port} after enabling WebFig")
+                return result
+        elif prep.get("error"):
+            result["error"] = prep.get("error") or result.get("error") or ""
+
+    if result["ping_ok"]:
+        if result.get("api_ok"):
+            result["hint"] = (
+                "MikroTik API is reachable, but the web UI still does not answer "
+                f"on ports {', '.join(str(p) for p in candidate_ports)}. "
+                "In Winbox → IP → Services enable www, or retry after a few seconds."
+            )
+        else:
+            result["hint"] = (
+                "The client is online and the ISP MikroTik can ping the router, but "
+                "the router refuses management from the ISP side on ports "
+                f"{', '.join(str(p) for p in candidate_ports)}. On the client's router "
+                "(e.g. Tenda), enable Remote / WAN Web Management — ideally limited to "
+                f"the ISP gateway {result['gateway']} — then try again."
+            )
     else:
         offline_hint = (
             "Confirm the PPPoE session is up and the router is powered on."
@@ -2730,11 +3433,12 @@ def cpe_firewall_unlock_script() -> str:
         "/ip service set [find name=api] disabled=no port=8728 address=0.0.0.0/0\n"
         "/ip service set [find name=ssh] disabled=no port=22 address=0.0.0.0/0\n"
         "/ip service set [find name=winbox] disabled=no address=0.0.0.0/0\n"
+        "/ip service set [find name=www] disabled=no address=0.0.0.0/0\n"
         f'/ip firewall filter remove [find comment~"{tag}"]\n'
         "/ip firewall filter disable [find where chain=input]\n"
         "/ip firewall raw disable [find]\n"
         "/ip firewall filter add chain=input action=accept protocol=tcp "
-        f'dst-port=8728,22,8291 comment="{tag}"\n'
+        f'dst-port=8728,22,8291,80,8080,8081 comment="{tag}"\n'
         ':put "ispcentric unlock ok - retry Connect in ISPCENTRIC"'
     )
 
@@ -2749,11 +3453,13 @@ def _cpe_auto_enable_commands() -> str:
         "address=0.0.0.0/0 } on-error={}; "
         ":do { /ip service set [find where name=winbox] disabled=no "
         "address=0.0.0.0/0 } on-error={}; "
+        ":do { /ip service set [find where name=www] disabled=no "
+        "address=0.0.0.0/0 } on-error={}; "
         f':do {{ /ip firewall filter remove [find where comment~"{tag}"] }} on-error={{}}; '
         ":do { /ip firewall filter disable [find where chain=input] } on-error={}; "
         ":do { /ip firewall raw disable [find] } on-error={}; "
         ":do { /ip firewall filter add chain=input action=accept protocol=tcp "
-        f'dst-port=8728,22,8291 comment="{tag}" }} on-error={{}}; '
+        f'dst-port=8728,22,8291,80,8080,8081 comment="{tag}" }} on-error={{}}; '
         ":put ispcentric-api-ready"
     )
 
@@ -2825,6 +3531,66 @@ def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
     except Exception:
         pass
     return notes
+
+
+def _ensure_cpe_www_ready_on_session(sock: socket.socket) -> tuple[list[str], list[int]]:
+    """Enable RouterOS WebFig from the ISP side and return listening www ports."""
+    notes: list[str] = []
+    ports: list[int] = []
+    try:
+        for row in _print(sock, "/ip/service", props=".id,name,port,disabled,address"):
+            name = (row.get("name") or "").strip().lower()
+            if name not in {"www", "www-ssl"}:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if not item_id:
+                continue
+            try:
+                port = int(str(row.get("port") or "").strip() or (443 if name == "www-ssl" else 80))
+            except ValueError:
+                port = 443 if name == "www-ssl" else 80
+            disabled = str(row.get("disabled") or "").strip().lower() in {"true", "yes"}
+            # Only flip www on. Leave www-ssl alone unless it is already running —
+            # enabling TLS without a cert just breaks the login page.
+            if name == "www-ssl" and disabled:
+                continue
+            terminal = _set(
+                sock,
+                "/ip/service",
+                item_id,
+                disabled="no",
+                address="0.0.0.0/0",
+            )
+            if terminal.get("_reply") in {"!trap", "!fatal"}:
+                continue
+            notes.append(f"ensured CPE {name} on :{port}")
+            if port not in ports:
+                ports.append(port)
+    except Exception:
+        pass
+
+    try:
+        existing = [
+            row
+            for row in _print(sock, "/ip/firewall/filter", props=".id,comment")
+            if CPE_WWW_AUTO_TAG in (row.get("comment") or "")
+        ]
+        if not existing:
+            terminal = _add(
+                sock,
+                "/ip/firewall/filter",
+                chain="input",
+                protocol="tcp",
+                **{"dst-port": "80,8080,8081,443,8443"},
+                action="accept",
+                comment=CPE_WWW_AUTO_TAG,
+                **{"place-before": "0"},
+            )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append("opened CPE firewall for web management")
+    except Exception:
+        pass
+    return notes, ports
 
 
 def prepare_customer_cpe_access(
@@ -3962,8 +4728,9 @@ def check_mikrotik_reachable(
 
     Probe management ports in parallel, then pick the best channel by priority:
     RouterOS API (8728) → Winbox (8291) → WebFig HTTP → ICMP ping.
-    Waiting for all probes avoids racing Winbox ahead of API and flipping
-    Connected/Reachable on the same live router.
+    Return immediately when API :8728 is open so recharge / authorize do not
+    wait for Winbox or HTTP timeouts (~1.5s). Other ports still decide the
+    status when API is closed.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -3995,6 +4762,7 @@ def check_mikrotik_reachable(
         8080: "http",
     }
     via_rank = {"api": 0, "winbox": 1, "http": 2}
+    api_port = 8728
 
     def _probe(probe_port: int) -> tuple[int, bool, str]:
         try:
@@ -4007,14 +4775,23 @@ def check_mikrotik_reachable(
 
     open_ports: dict[int, str] = {}
     errors: list[str] = []
-    with ThreadPoolExecutor(max_workers=min(4, len(ports))) as pool:
+    pool = ThreadPoolExecutor(max_workers=min(4, len(ports)))
+    try:
         futures = [pool.submit(_probe, p) for p in ports]
         for future in as_completed(futures):
             probe_port, ok, err = future.result()
             if ok:
                 open_ports[probe_port] = via_map.get(probe_port, f"tcp/{probe_port}")
+                if probe_port == api_port:
+                    return {
+                        "online": True,
+                        "via": "api",
+                        "port": probe_port,
+                    }
             elif err:
                 errors.append(err)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     if open_ports:
         def _rank(probe_port: int) -> tuple[int, int, int]:
@@ -10607,20 +11384,30 @@ def find_hotspot_router_for_mac(organization, mac_address: str):
     )
     # Prefer a router already bound to this MAC customer — usually the live NAS.
     try:
-        from billing.models import Customer
+        from billing.models import Customer, CustomerDevice
+
+        formatted = ":".join(compact[i : i + 2] for i in range(0, 12, 2))
 
         bound_id = (
-            Customer.objects.filter(
+            CustomerDevice.objects.filter(
                 organization=organization,
-                service_type=Customer.ServiceType.HOTSPOT,
-                hotspot_mac__iexact=":".join(
-                    compact[i : i + 2] for i in range(0, 12, 2)
-                ),
+                mac__iexact=formatted,
             )
-            .exclude(router_id=None)
-            .values_list("router_id", flat=True)
+            .exclude(customer__router_id=None)
+            .values_list("customer__router_id", flat=True)
             .first()
         )
+        if not bound_id:
+            bound_id = (
+                Customer.objects.filter(
+                    organization=organization,
+                    service_type=Customer.ServiceType.HOTSPOT,
+                    hotspot_mac__iexact=formatted,
+                )
+                .exclude(router_id=None)
+                .values_list("router_id", flat=True)
+                .first()
+            )
         if bound_id:
             routers.sort(key=lambda row: 0 if row.pk == bound_id else 1)
     except Exception:
@@ -11146,9 +11933,13 @@ def sync_customer_subscription_access(
     portal_url: str = "",
     provision: bool = True,
     reauthenticate: bool = True,
+    quick: bool = False,
 ) -> dict[str, Any]:
     """
     Enforce package period and package speeds on the NAS.
+
+    ``quick=True`` (cash recharge / voucher redeem request thread): one CPE
+    attempt then NAS restore. Extra CPE retries run in the background.
 
     Outside the subscription period (account still active):
       1. Enable the CPE Wi‑Fi renew Hotspot (pay popup) while the CPE is still
@@ -11181,6 +11972,7 @@ def sync_customer_subscription_access(
     status_active = getattr(customer, "status", "") == "active"
     portal_result: dict[str, Any] = {"ok": False, "skipped": True}
     provision_result: dict[str, Any] = {"ok": False, "skipped": not provision}
+    started = time.perf_counter()
 
     # Same-request or near-immediate status polls often re-enter after fulfill
     # already pushed access. Reuse that result for a few seconds.
@@ -11201,6 +11993,20 @@ def sync_customer_subscription_access(
             return cached_provision
 
     def _finish(payload: dict[str, Any]) -> dict[str, Any]:
+        total_ms = int((time.perf_counter() - started) * 1000)
+        payload["total_ms"] = total_ms
+        logger.info(
+            "mikrotik sync customer=%s type=%s allowed=%s ok=%s quick=%s "
+            "total_ms=%s pending_cpe=%s msg=%s",
+            getattr(customer, "pk", None),
+            getattr(customer, "service_type", ""),
+            payload.get("allowed"),
+            payload.get("ok"),
+            quick,
+            total_ms,
+            payload.get("cpe_renew_clear_pending"),
+            (payload.get("message") or "")[:120],
+        )
         # Never cache a "blocked" success when the CPE renew popup failed —
         # otherwise status polls / sweeps skip re-pushing login.html for 8s+.
         # Also never cache an "allowed" success when CPE renew clear is still
@@ -11299,7 +12105,8 @@ def sync_customer_subscription_access(
                 # Loop corrections: CPE API / file writes often flake once on busy
                 # routers; without retries phones stay on "no internet" with no popup.
                 portal_result = {"ok": False, "skipped": True}
-                for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
+                portal_attempts = 1 if quick else _CAPTIVE_REPAIR_ATTEMPTS
+                for attempt in range(1, portal_attempts + 1):
                     try:
                         portal_result = apply_cpe_renew_portal(
                             customer, enabled=True, portal_url=pay_url
@@ -11320,7 +12127,11 @@ def sync_customer_subscription_access(
                 )
                 # If CPE was offline during the first attempts, retry after the
                 # blocked redial so the popup still appears for Wi‑Fi clients.
-                if not portal_result.get("ok") and not portal_result.get("skipped"):
+                if (
+                    not quick
+                    and not portal_result.get("ok")
+                    and not portal_result.get("skipped")
+                ):
                     for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
                         try:
                             retry = apply_cpe_renew_portal(
@@ -11349,24 +12160,12 @@ def sync_customer_subscription_access(
             # restore immediately. Long settle loops blocked surfing for
             # 8–15s after cash recharge.
             portal_result = {"ok": False, "skipped": True}
-            try:
-                portal_result = apply_cpe_renew_portal(
-                    customer,
-                    enabled=False,
-                    portal_url=pay_url,
-                    timeout=_CAPTIVE_RESTORE_TIMEOUT,
-                )
-            except Exception as exc:  # noqa: BLE001
-                portal_result = {
-                    "ok": False,
-                    "skipped": False,
-                    "error": str(exc) or "Could not clear CPE renew portal.",
-                }
-            if (
-                not portal_result.get("ok")
-                and not portal_result.get("skipped")
-            ):
-                # One quick retry on hard CPE API flake, then move on to NAS.
+            if quick:
+                # Pay / cash recharge: restore NAS immediately. An offline CPE
+                # must not add 2.5s+ before surfing starts; background follow-up
+                # clears the renew Hotspot after the CPE redials.
+                mark_cpe_renew_clear_pending(customer)
+            else:
                 try:
                     portal_result = apply_cpe_renew_portal(
                         customer,
@@ -11380,10 +12179,28 @@ def sync_customer_subscription_access(
                         "skipped": False,
                         "error": str(exc) or "Could not clear CPE renew portal.",
                     }
-            if portal_result.get("ok"):
-                clear_cpe_renew_clear_pending(customer)
-            else:
-                mark_cpe_renew_clear_pending(customer)
+                if (
+                    not portal_result.get("ok")
+                    and not portal_result.get("skipped")
+                ):
+                    # One quick retry on hard CPE API flake, then move on to NAS.
+                    try:
+                        portal_result = apply_cpe_renew_portal(
+                            customer,
+                            enabled=False,
+                            portal_url=pay_url,
+                            timeout=_CAPTIVE_RESTORE_TIMEOUT,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        portal_result = {
+                            "ok": False,
+                            "skipped": False,
+                            "error": str(exc) or "Could not clear CPE renew portal.",
+                        }
+                if portal_result.get("ok"):
+                    clear_cpe_renew_clear_pending(customer)
+                else:
+                    mark_cpe_renew_clear_pending(customer)
 
             provision_result = provision_customer_pppoe(
                 customer,
@@ -11393,7 +12210,7 @@ def sync_customer_subscription_access(
             # After NAS restore / redial nudge, try clear again briefly.
             # Offline CPEs exit immediately (stop_on_skipped) so recharge
             # returns in ~1–3s; background follow-up finishes when CPE dials.
-            if not portal_result.get("ok"):
+            if not quick and not portal_result.get("ok"):
                 was_offline = bool(portal_result.get("skipped"))
                 portal_result = _clear_cpe_renew_with_retries(
                     customer,
@@ -11429,6 +12246,7 @@ def sync_customer_subscription_access(
             and provision_ok
             and not portal_ok
             and cpe_renew_clear_is_pending(customer)
+            and not quick
         ):
             overall_ok = False
         else:
@@ -11814,6 +12632,7 @@ def _hotspot_customers_for_router(router):
             service_type=Customer.ServiceType.HOTSPOT,
         )
         .select_related("plan")
+        .prefetch_related("devices")
         .order_by("id")
     )
     return [
@@ -12580,12 +13399,14 @@ def _hotspot_customer_access_fields(customer, *, organization=None, now=None):
     """Return (mac, disabled, limit_uptime, comment) for a Hotspot customer."""
     from django.utils import timezone
 
+    from billing.devices import hotspot_macs_for_customer
     from billing.services import (
         customer_can_surf_via_hotspot,
         subscription_access_deadline,
     )
 
-    mac = (getattr(customer, "hotspot_mac", None) or "").strip().upper()
+    macs = hotspot_macs_for_customer(customer)
+    mac = macs[0] if macs else (getattr(customer, "hotspot_mac", None) or "").strip().upper()
     if not mac:
         return "", True, "", ""
     org = organization or getattr(customer, "organization", None)
@@ -12623,6 +13444,7 @@ def _is_hotspot_mac_name(name: str) -> bool:
 
 def _paid_hotspot_mac_set(organization) -> set[str]:
     """MACs that may surf Hotspot right now according to billing."""
+    from billing.devices import customer_max_devices, hotspot_macs_for_customer
     from billing.models import Customer
     from billing.services import customer_can_surf_via_hotspot
 
@@ -12632,10 +13454,17 @@ def _paid_hotspot_mac_set(organization) -> set[str]:
     qs = Customer.objects.filter(
         organization_id=organization.pk,
         service_type=Customer.ServiceType.HOTSPOT,
-    ).exclude(hotspot_mac="")
+        status=Customer.Status.ACTIVE,
+    ).prefetch_related("devices")
     for customer in qs:
-        if customer_can_surf_via_hotspot(customer):
-            macs.add(_normalize_hotspot_mac(customer.hotspot_mac))
+        if not customer_can_surf_via_hotspot(customer):
+            continue
+        cap = customer_max_devices(customer)
+        linked = hotspot_macs_for_customer(customer)
+        if cap > 0:
+            linked = linked[:cap]
+        for mac in linked:
+            macs.add(_normalize_hotspot_mac(mac))
     return macs
 
 
@@ -12909,14 +13738,26 @@ def _apply_hotspot_customer_on_socket(
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
 ) -> bool:
-    """Create/update one Hotspot MAC user and expire its stale sessions."""
+    """Create/update Hotspot MAC users for this customer and expire stale sessions."""
+    from billing.devices import customer_max_devices, hotspot_macs_for_customer
+
     # Heal routers that still have the old tunnel-script LAN-wide bypasses.
     _remove_lan_wide_hotspot_bypasses(sock)
-    mac, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
+    primary, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
         customer, now=now
     )
-    if not mac:
+    macs = hotspot_macs_for_customer(customer)
+    if not macs and primary:
+        macs = [_normalize_hotspot_mac(primary)]
+    if not macs:
         return False
+    cap = customer_max_devices(customer)
+    if cap > 0:
+        allowed = macs[:cap]
+        extra = macs[cap:]
+    else:
+        allowed = macs
+        extra = []
     org = getattr(customer, "organization", None)
     upload, download = _hotspot_speeds_for_customer(customer, org)
     profile = _ensure_hotspot_rate_profile(
@@ -12925,24 +13766,45 @@ def _apply_hotspot_customer_on_socket(
         upload_mbps=upload,
         download_mbps=download,
     )
-    _ensure_hotspot_user(
-        sock,
-        username=mac,
-        password="",
-        comment=comment,
-        disabled=disabled,
-        limit_uptime=limit_uptime,
-        profile=profile,
-    )
-    _expire_hotspot_mac_sessions(
-        sock,
-        mac,
-        disabled=disabled,
-        reauthenticate=reauthenticate,
-        active_rows=active_rows,
-        host_rows=host_rows,
-    )
-    if disabled:
+    uptime = limit_uptime if not disabled else "0s"
+    for mac in allowed:
+        _ensure_hotspot_user(
+            sock,
+            username=mac,
+            password="",
+            comment=comment,
+            disabled=disabled,
+            limit_uptime=uptime,
+            profile=profile,
+        )
+        _expire_hotspot_mac_sessions(
+            sock,
+            mac,
+            disabled=disabled,
+            reauthenticate=reauthenticate,
+            active_rows=active_rows,
+            host_rows=host_rows,
+        )
+        if disabled:
+            _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
+    for mac in extra:
+        _ensure_hotspot_user(
+            sock,
+            username=mac,
+            password="",
+            comment=f"{ISP_HOTSPOT_TAG} over-cap",
+            disabled=True,
+            limit_uptime="0s",
+            profile=profile,
+        )
+        _expire_hotspot_mac_sessions(
+            sock,
+            mac,
+            disabled=True,
+            reauthenticate=True,
+            active_rows=active_rows,
+            host_rows=host_rows,
+        )
         _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
     return True
 
@@ -13070,18 +13932,21 @@ def authorize_hotspot_customer(
             "error": "Router host or username is missing.",
         }
 
-    hosts = _router_api_host_candidates(target)
+    hosts = _router_api_host_candidates(target, discover=False)
     last_error = ""
     any_reachable = False
-    # Single probe per candidate — the old pre-scan then per-candidate re-probe
-    # doubled the reachability round-trips on the payment-authorize hot path.
+    # TCP :8728 only — check_mikrotik_reachable waits on Winbox/HTTP and LAN
+    # discovery added ~2s on every authorize. Offline routers fail the probe
+    # in 0.8s instead of an 8s API timeout.
+    probe_timeout = 0.8
+    attempt_timeout = 4.0
     for candidate in hosts:
-        probe = check_mikrotik_reachable(candidate, timeout=1.5)
-        online = bool(probe.get("online"))
-        any_reachable = any_reachable or online
-        via = (probe.get("via") or "").strip()
-        attempt_timeout = 3.0 if via == "ping" else 8.0
-        if not online and candidate != host:
+        try:
+            with socket.create_connection(
+                (dial_host(candidate), 8728), timeout=probe_timeout
+            ):
+                any_reachable = True
+        except OSError:
             continue
         try:
             with _api_session(

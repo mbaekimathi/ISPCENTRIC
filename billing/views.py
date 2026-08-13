@@ -133,7 +133,7 @@ def _handle_register_package(request, org, *, success_url_name: str):
         plan = form.save()
         messages.success(
             request,
-            f"Package “{plan.name}” registered ({plan.speed_label} · {plan.get_duration_display()}).",
+            f"Package “{plan.name}” registered ({plan.speed_label} · {plan.max_devices_label} · {plan.get_duration_display()}).",
         )
         return form, open_modal, redirect(success_url_name)
 
@@ -163,6 +163,7 @@ def _handle_edit_package(request, org, *, success_url_name: str):
     plan = get_object_or_404(BillingPlan, pk=int(package_id), organization=org)
     previous_download = int(plan.download_speed_mbps or 0)
     previous_upload = int(plan.upload_speed_mbps or 0)
+    previous_max_devices = int(plan.max_devices or 0)
     form = BillingPackageRegisterForm(
         request.POST,
         request.FILES,
@@ -176,26 +177,36 @@ def _handle_edit_package(request, org, *, success_url_name: str):
             int(plan.download_speed_mbps or 0) != previous_download
             or int(plan.upload_speed_mbps or 0) != previous_upload
         )
-        if speeds_changed:
+        devices_changed = int(plan.max_devices or 0) != previous_max_devices
+        if speeds_changed or devices_changed:
             # Sync MikroTik in the background so nginx does not 504 while
             # every assigned client is reprovisioned on the router.
             _schedule_reprovision_customers_for_plan_speeds(plan.pk)
             assigned = Customer.objects.filter(plan_id=plan.pk).count()
             if assigned:
+                extra = []
+                if speeds_changed:
+                    extra.append("speeds")
+                if devices_changed:
+                    extra.append("device limit")
+                pushed = " and ".join(extra)
                 messages.success(
                     request,
-                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}). "
-                    f"Pushing new speeds to {assigned} client(s) on MikroTik in the background.",
+                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.max_devices_label} · "
+                    f"{plan.get_duration_display()}). "
+                    f"Pushing new {pushed} to {assigned} client(s) on MikroTik in the background.",
                 )
             else:
                 messages.success(
                     request,
-                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
+                    f"Package “{plan.name}” updated ({plan.speed_label} · {plan.max_devices_label} · "
+                    f"{plan.get_duration_display()}).",
                 )
         else:
             messages.success(
                 request,
-                f"Package “{plan.name}” updated ({plan.speed_label} · {plan.get_duration_display()}).",
+                f"Package “{plan.name}” updated ({plan.speed_label} · {plan.max_devices_label} · "
+                f"{plan.get_duration_display()}).",
             )
         return form, open_modal, redirect(success_url_name)
 

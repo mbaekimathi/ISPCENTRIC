@@ -11,6 +11,7 @@ from billing.services import (
     apply_subscription_renewal,
     customer_can_surf_via_hotspot,
     customer_can_surf_via_pppoe,
+    customer_needs_nas_provision,
     customer_package_is_paused,
     customer_pppoe_secret_disabled,
     customer_receives_internet,
@@ -1304,6 +1305,145 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertIn(voucher.code[:4], row["share"]["share_text"])
         self.assertIn("wa.me/254700000777", row["share"]["whatsapp_client_url"])
 
+    def test_refresh_stk_status_auto_applies_package(self):
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="AUTO1"
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ) as enqueue:
+            result = refresh_stk_status(stk, wait_for_nas=True)
+
+        stk.refresh_from_db()
+        self.customer.refresh_from_db()
+        self.assertTrue(result["success"])
+        self.assertTrue(result["subscription_applied"])
+        self.assertTrue(result["authorized"])
+        self.assertFalse(result.get("needs_voucher"))
+        self.assertIsNotNone(self.customer.package_end)
+        enqueue.assert_called()
+        self.assertTrue(enqueue.call_args.kwargs.get("wait_first"))
+        self.assertTrue(enqueue.call_args.kwargs.get("quick"))
+        from billing.models import AccessVoucher
+
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+        self.assertEqual(voucher.status, AccessVoucher.Status.EXPIRED)
+        self.assertTrue(result.get("surfing"))
+
+    def test_auto_connect_keeps_voucher_when_nas_fails(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="AUTO2"
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": False, "allowed": False, "offline": True},
+        ):
+            result = refresh_stk_status(stk, wait_for_nas=True)
+
+        stk.refresh_from_db()
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["subscription_applied"])
+        self.assertFalse(result.get("authorized"))
+        self.assertFalse(result.get("surfing"))
+        self.assertFalse(result.get("needs_voucher"))
+        self.assertTrue(result.get("voucher_fallback"))
+        self.assertTrue(result.get("voucher_redeemable"))
+        self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
+
+    def test_auto_connect_treats_pending_cpe_as_authorized(self):
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="AUTO3"
+        )
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={
+                "ok": False,
+                "allowed": True,
+                "provision": {"ok": True},
+                "cpe_renew_clear_pending": True,
+            },
+        ):
+            result = refresh_stk_status(stk, wait_for_nas=True)
+
+        self.assertTrue(result["authorized"])
+        self.assertTrue(result["surfing"])
+        self.assertFalse(result.get("needs_voucher"))
+
+    def test_status_poll_loop_retries_until_nas_ready(self):
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="LOOP1"
+        )
+        calls = {"n": 0}
+
+        def fake_enqueue(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return {"ok": False, "allowed": False, "provision": {"ok": False}}
+            return {"ok": True, "allowed": True, "provision": {"ok": True}}
+
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            side_effect=fake_enqueue,
+        ):
+            result = {"authorized": False}
+            for _ in range(5):
+                result = refresh_stk_status(stk, wait_for_nas=True)
+                if result.get("authorized") or result.get("surfing"):
+                    break
+
+        self.assertTrue(result.get("authorized"))
+        self.assertGreaterEqual(calls["n"], 3)
+        self.assertLessEqual(calls["n"], 5)
+
+    def test_callback_queues_background_activate(self):
+        from billing.stk import process_stk_callback_payload
+
+        stk = self._stk()
+        stk.checkout_request_id = "ws_CO_TEST"
+        stk.merchant_request_id = "ws_MR_TEST"
+        stk.save(update_fields=["checkout_request_id", "merchant_request_id"])
+        payload = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "ws_MR_TEST",
+                    "CheckoutRequestID": "ws_CO_TEST",
+                    "ResultCode": 0,
+                    "ResultDesc": "The service request is processed successfully.",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 50},
+                            {"Name": "MpesaReceiptNumber", "Value": "CBK1"},
+                            {"Name": "PhoneNumber", "Value": 254700000777},
+                        ]
+                    },
+                }
+            }
+        }
+        with patch(
+            "billing.vouchers.activate_paid_subscription_stk",
+            return_value={"ok": True, "queued": True},
+        ) as activate:
+            result = process_stk_callback_payload(payload)
+
+        self.assertTrue(result["ok"])
+        activate.assert_called_once()
+        self.assertTrue(activate.call_args.kwargs.get("background"))
+
 
 class CashRechargeTests(TestCase):
     def setUp(self):
@@ -1359,3 +1499,36 @@ class CashRechargeTests(TestCase):
         self.assertEqual(invoice.status, Invoice.Status.PAID)
         self.assertTrue(invoice.invoice_number.startswith("CASH-"))
         self.assertTrue(customer_receives_internet(self.customer))
+
+
+class CustomerNeedsNasProvisionTests(SimpleTestCase):
+    def test_hotspot_mac_is_enough_without_pppoe(self):
+        class Fake:
+            hotspot_mac = "AA:BB:CC:DD:EE:FF"
+            pppoe_username = ""
+            router_id = None
+
+        self.assertTrue(customer_needs_nas_provision(Fake()))
+
+    def test_pppoe_requires_username_and_router(self):
+        class Fake:
+            hotspot_mac = ""
+            pppoe_username = "user1"
+            router_id = 18
+
+        self.assertTrue(customer_needs_nas_provision(Fake()))
+
+        class NoRouter:
+            hotspot_mac = ""
+            pppoe_username = "user1"
+            router_id = None
+
+        self.assertFalse(customer_needs_nas_provision(NoRouter()))
+
+    def test_empty_identity_does_not_provision(self):
+        class Fake:
+            hotspot_mac = ""
+            pppoe_username = ""
+            router_id = 18
+
+        self.assertFalse(customer_needs_nas_provision(Fake()))

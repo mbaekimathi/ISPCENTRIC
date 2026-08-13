@@ -1,3 +1,4 @@
+import hashlib
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -66,6 +67,32 @@ class ClientRouterProxyTests(TestCase):
             router=self.nas,
         )
         self.client.force_login(self.owner)
+        self.cpe_target_patcher = patch(
+            "core.views.resolve_customer_cpe_target",
+            return_value={
+                "ok": True,
+                "session_active": True,
+                "address": "10.20.0.55",
+                "scope": "customer1",
+                "gateway": "10.20.0.1",
+                "mode": "pppoe",
+            },
+        )
+        self.cpe_target_patcher.start()
+        self.addCleanup(self.cpe_target_patcher.stop)
+        self.cpe_login_patcher = patch(
+            "core.views.login_customer_cpe_web_session",
+            return_value={
+                "ok": False,
+                "authenticated": False,
+                "cookies": {},
+                "basic_header": "",
+                "error": "",
+                "steps": [],
+            },
+        )
+        self.cpe_login_patcher.start()
+        self.addCleanup(self.cpe_login_patcher.stop)
 
     def _start_url(self, client=None, port=80):
         client = client or self.client
@@ -81,10 +108,13 @@ class ClientRouterProxyTests(TestCase):
             },
         ):
             response = client.get(
-                f"/app/clients/{self.customer.pk}/router-login/",
+                f"/app/clients/{self.customer.pk}/router-login/start/",
             )
-        self.assertEqual(response.status_code, 302)
-        return response.url
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["proxy_url"])
+        return payload["proxy_url"]
 
     @staticmethod
     @contextmanager
@@ -102,6 +132,12 @@ class ClientRouterProxyTests(TestCase):
         self.assertContains(
             response,
             f"/app/clients/{self.customer.pk}/router-login/",
+        )
+        html = response.content.decode()
+        self.assertNotRegex(
+            html,
+            r'href="/app/clients/%s/router-login/"[^>]*target="_blank"'
+            % self.customer.pk,
         )
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
@@ -129,6 +165,21 @@ class ClientRouterProxyTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
+    def test_router_login_page_loads_without_blocking_on_probe(self):
+        with patch("core.views.probe_customer_cpe_web") as probe:
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/",
+            )
+
+        probe.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "core/client_router_access.html")
+        self.assertContains(response, "Opening the client router")
+        self.assertContains(
+            response,
+            f"/app/clients/{self.customer.pk}/router-login/start/",
+        )
+
     def test_preflight_blocked_cpe_shows_remote_management_guidance(self):
         with patch(
             "core.views.probe_customer_cpe_web",
@@ -143,15 +194,18 @@ class ClientRouterProxyTests(TestCase):
             },
         ) as probe:
             response = self.client.get(
-                f"/app/clients/{self.customer.pk}/router-login/",
+                f"/app/clients/{self.customer.pk}/router-login/start/",
             )
 
         probe.assert_called_once()
+        self.assertTrue(probe.call_args.kwargs.get("auto_enable_www"))
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "core/client_router_unavailable.html")
-        self.assertContains(response, "Remote Web Management")
-        # It must not hand out a proxy link when the CPE is unreachable.
-        self.assertNotContains(response, "/router/")
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["session_active"])
+        self.assertTrue(payload["ping_ok"])
+        self.assertIn("refuses management", payload["detail"])
+        self.assertNotIn("proxy_url", payload)
 
     def test_preflight_offline_client_explains_pppoe_is_down(self):
         with patch(
@@ -163,15 +217,18 @@ class ClientRouterProxyTests(TestCase):
                 "port": None,
                 "reachable": False,
                 "ping_ok": False,
-                "hint": "The client router is offline.",
+                "hint": "The client is not online on PPPoE right now.",
             },
         ):
             response = self.client.get(
-                f"/app/clients/{self.customer.pk}/router-login/",
+                f"/app/clients/{self.customer.pk}/router-login/start/",
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "not online on PPPoE")
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["session_active"])
+        self.assertIn("PPPoE", payload["detail"])
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
     @patch("core.views.customer_cpe_web_proxy", _proxy)
@@ -383,6 +440,102 @@ class ClientRouterProxyTests(TestCase):
         fetch.assert_called_once()
         self.assertEqual(fetch.call_args.kwargs["cpe_port"], 80)
 
+    def test_web_ports_include_webfig_8081(self):
+        self.assertEqual(mikrotik_connect.CPE_WEB_PORTS[0], 80)
+        self.assertEqual(mikrotik_connect.CPE_WEB_PORTS[1], 8081)
+
+    def test_start_saves_router_password_before_probe(self):
+        with patch(
+            "core.views.probe_customer_cpe_web",
+            return_value={
+                "ok": True,
+                "session_active": True,
+                "cpe_host": "10.20.0.55",
+                "port": 80,
+                "reachable": True,
+                "ping_ok": True,
+            },
+        ) as probe:
+            response = self.client.post(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+                {"cpe_password": "newsecret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_password, "newsecret")
+        self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "newsecret")
+
+    def test_start_auto_login_seeds_proxy_cookies_and_basic_auth(self):
+        from django.core.cache import cache
+
+        self.cpe_login_patcher.stop()
+        self.addCleanup(self.cpe_login_patcher.start)
+        with (
+            patch(
+                "core.views.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "port": 80,
+                    "reachable": True,
+                    "ping_ok": True,
+                    "steps": ["found client IP"],
+                },
+            ),
+            patch(
+                "core.views.login_customer_cpe_web_session",
+                return_value={
+                    "ok": True,
+                    "authenticated": True,
+                    "cookies": {"stok": "router-session"},
+                    "basic_header": "Basic YWRtaW46c2VjcmV0",
+                    "vendor": "tenda",
+                    "cpe_username": "admin",
+                    "cpe_password": "secret",
+                    "support_user": False,
+                    "error": "",
+                    "steps": ["signed in to Tenda web UI as admin"],
+                },
+            ),
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["authenticated"])
+        token = payload["proxy_url"].rstrip("/").rsplit("/", 1)[-1]
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        self.assertEqual(cache.get("cpe-web:" + digest)["stok"], "router-session")
+        self.assertEqual(
+            cache.get("cpe-web-basic:" + digest)["header"],
+            "Basic YWRtaW46c2VjcmV0",
+        )
+
+    @patch("core.views.http.client.HTTPConnection", _FakeConnection)
+    @patch("core.views.customer_cpe_web_proxy", _proxy)
+    def test_proxy_sends_cached_basic_authorization(self):
+        from django.core.cache import cache
+
+        proxy_url = self._start_url()
+        token = proxy_url.rstrip("/").rsplit("/", 1)[-1]
+        cache.set(
+            "cpe-web-basic:" + hashlib.sha256(token.encode()).hexdigest(),
+            {"header": "Basic YWRtaW46c2VjcmV0"},
+            60,
+        )
+
+        response = self.client.get(proxy_url + "status.asp")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            _FakeConnection.last_request[3].get("Authorization"),
+            "Basic YWRtaW46c2VjcmV0",
+        )
 
     def test_saving_the_router_password_clears_the_cached_snapshot(self):
         from django.core.cache import cache
@@ -401,6 +554,54 @@ class ClientRouterProxyTests(TestCase):
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.cpe_password, "realsecret")
         self.assertIsNone(cache.get(cache_key))
+
+
+class CpeWebAutoLoginTests(TestCase):
+    def test_login_page_detection(self):
+        self.assertTrue(
+            mikrotik_connect._html_looks_like_login_page(
+                '<form><input name="name"><input type="password"></form>'
+            )
+        )
+        self.assertFalse(
+            mikrotik_connect._html_looks_like_login_page(
+                "<html><title>WebFig</title><div id=app></div></html>"
+            )
+        )
+
+    @patch.object(mikrotik_connect, "customer_cpe_web_proxy")
+    @patch.object(mikrotik_connect, "_cpe_web_json_request")
+    def test_tenda_auto_login_returns_session_cookies(self, json_request, proxy):
+        @contextmanager
+        def _proxy(*args, **kwargs):
+            yield {"host": "10.9.0.2", "port": 39001, "cpe_host": "10.20.0.11"}
+
+        proxy.side_effect = _proxy
+
+        def _responses(_proxy, path, **kwargs):
+            if path.endswith("getStatus") or "getStatus" in path:
+                if kwargs.get("cookies") and kwargs["cookies"].get("stok") == "ok":
+                    return 200, {"internetStatus": {"wan": "up"}}, {}, ""
+                return 302, {}, {}, "/login.html"
+            if path == "/goform/getstok":
+                return 200, {"random": "abc"}, {}, ""
+            if path == "/login/Auth":
+                return 200, {"errCode": "0"}, {"stok": "ok"}, ""
+            return 404, {}, {}, ""
+
+        json_request.side_effect = _responses
+        result = mikrotik_connect.login_customer_cpe_web_session(
+            "10.9.0.2",
+            "admin",
+            "secret",
+            pppoe_username="customer1",
+            cpe_username="admin",
+            cpe_password="housepass",
+            cpe_port=80,
+        )
+        self.assertTrue(result["authenticated"])
+        self.assertEqual(result["vendor"], "tenda")
+        self.assertEqual(result["cookies"].get("stok"), "ok")
 
 
 class CpeWebLoginLockoutTests(TestCase):
@@ -704,8 +905,9 @@ class CustomerCpeAccessModeTests(TestCase):
         self.assertEqual(target["address"], "192.168.88.75")
         self.assertEqual(target["mode"], "dhcp")
 
+    @patch("core.views.login_customer_cpe_web_session")
     @patch("core.views.probe_customer_cpe_web")
-    def test_static_client_router_login_starts_proxy(self, mock_probe):
+    def test_static_client_router_login_starts_proxy(self, mock_probe, mock_login):
         customer = Customer.objects.create(
             organization=self.org,
             full_name="Static User",
@@ -725,15 +927,27 @@ class CustomerCpeAccessModeTests(TestCase):
             "gateway": "192.168.88.1",
             "mode": "static",
         }
+        mock_login.return_value = {
+            "ok": False,
+            "authenticated": False,
+            "cookies": {},
+            "basic_header": "",
+            "error": "",
+            "steps": [],
+        }
         client = Client()
         client.force_login(self.owner)
         response = client.get(
-            f"/app/clients/{customer.pk}/router-login/",
+            f"/app/clients/{customer.pk}/router-login/start/",
             follow=False,
         )
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["proxy_url"].endswith("/"))
         mock_probe.assert_called_once()
-        self.assertIs(mock_probe.call_args.kwargs.get("customer"), customer)
+        self.assertEqual(mock_probe.call_args.kwargs.get("customer").pk, customer.pk)
+        self.assertTrue(mock_probe.call_args.kwargs.get("auto_enable_www"))
 
 
 class StaticClientDhcpLeaseTests(TestCase):

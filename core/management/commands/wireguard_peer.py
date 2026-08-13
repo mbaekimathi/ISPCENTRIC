@@ -67,8 +67,9 @@ class Command(BaseCommand):
             outcome = wireguard.sync_all_server_peers()
             if outcome.get("skipped"):
                 raise CommandError(
-                    "This machine is not on the WireGuard tunnel "
-                    f"({wireguard.server_address()})."
+                    "Cannot update WireGuard peers from this process "
+                    f"(not bound to {wireguard.server_address()} and "
+                    "WIREGUARD_SYNC_COMMAND is unset)."
                 )
             self.stdout.write(
                 self.style.SUCCESS(

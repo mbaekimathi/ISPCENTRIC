@@ -487,7 +487,7 @@
   function pollStatus(stkId) {
     stopPoll();
     var tries = 0;
-    pollTimer = setInterval(function () {
+    function tick() {
       tries += 1;
       fetch(statusUrl(stkId), {
         headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
@@ -503,7 +503,7 @@
                 ? data.result_desc
                 : "Enter the PIN on the phone. Do not close this window."
             );
-            if (tries >= 40) {
+            if (tries >= 75) {
               stopPoll();
               setWaiting(false);
               setStatus("Timed out waiting for confirmation. Refresh later if the client paid.", true, true);
@@ -540,7 +540,9 @@
             "Could not check payment status. Retrying…"
           );
         });
-    }, 3000);
+    }
+    tick();
+    pollTimer = setInterval(tick, 2000);
   }
 
   document.querySelectorAll("[data-stk-pay]").forEach(function (btn) {

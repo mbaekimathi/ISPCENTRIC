@@ -1,4 +1,5 @@
 from django.urls import path
+from django.views.generic import RedirectView
 
 from . import views
 from .landing import LandingView
@@ -128,6 +129,11 @@ urlpatterns = [
         name="client_router_login",
     ),
     path(
+        "app/clients/<int:customer_id>/router-login/start/",
+        views.client_router_login_start,
+        name="client_router_login_start",
+    ),
+    path(
         "app/clients/<int:customer_id>/router/<str:token>/",
         views.client_router_proxy,
         name="client_router_proxy_root",
@@ -231,9 +237,17 @@ urlpatterns = [
         name="my_account_payments",
     ),
     path(
+        "app/account/communications/",
+        views.my_account_communications,
+        name="my_account_communications",
+    ),
+    path(
         "app/account/daraja/",
-        views.my_account_daraja,
-        name="my_account_daraja",
+        RedirectView.as_view(
+            pattern_name="core:settings_payments",
+            permanent=False,
+            query_string=True,
+        ),
     ),
     path("app/account/profile/", views.save_owner_profile, name="save_owner_profile"),
     path("app/leads/", views.leads, name="leads"),
@@ -265,6 +279,11 @@ urlpatterns = [
         "app/settings/communications/",
         views.settings_communications,
         name="settings_communications",
+    ),
+    path(
+        "app/settings/communications/fetch/",
+        views.settings_communications_fetch,
+        name="settings_communications_fetch",
     ),
     path(
         "app/settings/payments/",

@@ -8,12 +8,14 @@ from django.db import models
 from .countries import DEFAULT_COUNTRY, country_choices, dial_from_choice, get_country_options, option_for_value
 from .models import (
     ClientSettings,
+    CommunicationSettings,
     CompanyProfile,
     Employee,
     Lead,
     NetworkEquipment,
     Organization,
     PaymentGateway,
+    PlatformCommunicationSettings,
     RoleCommission,
 )
 from .security import (
@@ -1041,7 +1043,7 @@ class OrganizationEditForm(forms.ModelForm):
             "status": "Status",
             "profile_photo": "Profile photo",
             "daraja_enabled": "Enable Daraja STK Push",
-            "daraja_environment": "Mode",
+            "daraja_environment": "STK gateway",
             "mpesa_payment_type": "Receive via",
             "mpesa_number": "Paybill / Till number",
             "mpesa_account": "Custom account value",
@@ -1051,12 +1053,12 @@ class OrganizationEditForm(forms.ModelForm):
         }
         help_texts = {
             "daraja_enabled": (
-                "When on, clients can pay subscriptions with M-Pesa STK Push "
-                "to your Paybill or Till."
+                "When on, clients can pay subscriptions with M-Pesa STK Push. "
+                "Company Payment Gateway is used until this ISP adds its own."
             ),
             "daraja_environment": (
-                "Sandbox uses IT Support Payment Gateway credentials for testing. "
-                "Production uses this organization's own Daraja app."
+                "Company Payment Gateway is the default (IT Support → Payment Gateway). "
+                "My own Payment Gateway uses only this ISP's Paybill/Till and Daraja app."
             ),
             "mpesa_payment_type": "Choose Paybill or Buy Goods Till to receive subscription money.",
             "mpesa_number": "Your Paybill or Till shortcode that receives M-Pesa payments.",
@@ -1064,9 +1066,9 @@ class OrganizationEditForm(forms.ModelForm):
                 "Enter the Account name clients should type for manual Paybill payments "
                 "(your name, company name, or any reference)."
             ),
-            "daraja_consumer_key": "Required in Production mode only.",
-            "daraja_consumer_secret": "Required in Production mode only.",
-            "daraja_passkey": "Required in Production mode only.",
+            "daraja_consumer_key": "Required for My own Payment Gateway only.",
+            "daraja_consumer_secret": "Required for My own Payment Gateway only.",
+            "daraja_passkey": "Required for My own Payment Gateway only.",
         }
 
     def __init__(self, *args, section=SECTION_ALL, **kwargs):
@@ -1178,34 +1180,39 @@ class OrganizationEditForm(forms.ModelForm):
         ).strip()
         if environment != Organization.DarajaEnvironment.PRODUCTION:
             cleaned["daraja_environment"] = Organization.DarajaEnvironment.SANDBOX
-        else:
-            cleaned["daraja_environment"] = Organization.DarajaEnvironment.PRODUCTION
-
-        if not payment_type or not number:
-            self.add_error(
-                "daraja_enabled",
-                "Select Paybill or Till and enter the number above, then enable Daraja.",
-            )
-            return
-
-        if cleaned["daraja_environment"] == Organization.DarajaEnvironment.SANDBOX:
             gateway = PaymentGateway.get_solo()
             if not gateway.is_stk_ready():
                 self.add_error(
                     "daraja_enabled",
-                    "Sandbox needs IT Support → Payment Gateway activated with Daraja credentials first.",
+                    "Company Payment Gateway is the default. "
+                    "Ask IT Support to activate Payment Gateway first, "
+                    "or switch to My own Payment Gateway.",
                 )
             return
 
+        cleaned["daraja_environment"] = Organization.DarajaEnvironment.PRODUCTION
+        if not payment_type or not number:
+            self.add_error(
+                "daraja_enabled",
+                "My own Payment Gateway needs Paybill or Till above.",
+            )
+            return
+
         if not (cleaned.get("daraja_consumer_key") or "").strip():
-            self.add_error("daraja_consumer_key", "Consumer key is required for Production.")
+            self.add_error(
+                "daraja_consumer_key",
+                "Consumer key is required for My own Payment Gateway.",
+            )
         if not (cleaned.get("daraja_consumer_secret") or "").strip():
             self.add_error(
                 "daraja_consumer_secret",
-                "Consumer secret is required for Production.",
+                "Consumer secret is required for My own Payment Gateway.",
             )
         if not (cleaned.get("daraja_passkey") or "").strip():
-            self.add_error("daraja_passkey", "Passkey is required for Production.")
+            self.add_error(
+                "daraja_passkey",
+                "Passkey is required for My own Payment Gateway.",
+            )
 
     def clean(self):
         cleaned = super().clean()
@@ -1214,10 +1221,18 @@ class OrganizationEditForm(forms.ModelForm):
 
         if self.section == self.SECTION_PAYMENTS:
             payment_type, number = self._validate_receive_method(cleaned)
-            if self.instance.daraja_enabled and (not payment_type or not number):
+            own_gateway = (
+                self.instance.daraja_enabled
+                and (
+                    self.instance.daraja_environment
+                    or Organization.DarajaEnvironment.SANDBOX
+                )
+                == Organization.DarajaEnvironment.PRODUCTION
+            )
+            if own_gateway and (not payment_type or not number):
                 self.add_error(
                     "mpesa_payment_type",
-                    "Daraja STK Push is enabled — keep Paybill/Till set, or turn Daraja off first.",
+                    "My own Payment Gateway needs Paybill/Till set, or switch to Company Payment Gateway.",
                 )
             return cleaned
 
@@ -1317,7 +1332,10 @@ class PaymentGatewayForm(forms.ModelForm):
             "callback_url": "STK callback URL",
         }
         help_texts = {
-            "enabled": "When on, the platform can send Lipa Na M-Pesa Online (STK Push) prompts.",
+            "enabled": (
+                "Company Daraja STK Push. Default for ISPs without their own Payment Gateway, "
+                "and for platform fees such as MikroTik onboarding."
+            ),
             "environment": (
                 "Sandbox supports local testing with http://localhost:8000. "
                 "Use Production only with a public HTTPS domain."
@@ -1620,6 +1638,330 @@ class ClientSettingsForm(forms.ModelForm):
                 "Enter an amount greater than zero when onboarding fee is enabled.",
             )
         return cleaned
+
+
+class CommunicationSettingsForm(forms.ModelForm):
+    """SMS, email, and WhatsApp credentials used to message clients."""
+
+    class Meta:
+        model = CommunicationSettings
+        fields = [
+            "sms_enabled",
+            "sms_provider",
+            "sms_username",
+            "sms_api_key",
+            "sms_sender_id",
+            "sms_from_number",
+            "sms_base_url",
+            "email_enabled",
+            "email_host",
+            "email_port",
+            "email_use_tls",
+            "email_host_user",
+            "email_host_password",
+            "email_from_email",
+            "email_from_name",
+            "whatsapp_enabled",
+            "whatsapp_provider",
+            "whatsapp_phone_number_id",
+            "whatsapp_access_token",
+            "whatsapp_username",
+            "whatsapp_api_key",
+            "whatsapp_from_number",
+        ]
+        labels = {
+            "sms_enabled": "Enable SMS",
+            "sms_provider": "SMS provider",
+            "sms_username": "Username / Account SID",
+            "sms_api_key": "API key / Auth token",
+            "sms_sender_id": "Sender ID",
+            "sms_from_number": "From number",
+            "sms_base_url": "API URL",
+            "email_enabled": "Enable email",
+            "email_host": "SMTP host",
+            "email_port": "SMTP port",
+            "email_use_tls": "Use TLS",
+            "email_host_user": "SMTP username",
+            "email_host_password": "SMTP password",
+            "email_from_email": "From email",
+            "email_from_name": "From name",
+            "whatsapp_enabled": "Enable WhatsApp",
+            "whatsapp_provider": "WhatsApp provider",
+            "whatsapp_phone_number_id": "Phone number ID",
+            "whatsapp_access_token": "Access token",
+            "whatsapp_username": "Username / Account SID",
+            "whatsapp_api_key": "API key / Auth token",
+            "whatsapp_from_number": "From number",
+        }
+        help_texts = {
+            "sms_enabled": "Send SMS to clients from this organization.",
+            "sms_provider": "Gateway used to deliver SMS. After credentials are entered, available senders are fetched automatically.",
+            "sms_username": "Africa's Talking username or Twilio Account SID.",
+            "sms_api_key": "Africa's Talking API key, Twilio Auth Token, or custom API key.",
+            "sms_sender_id": "Any sender ID, shortcode, or phone. Fetched automatically after you configure the provider.",
+            "sms_from_number": "Phone or Messaging Service SID. Fetched automatically, or type any from value.",
+            "sms_base_url": "HTTPS endpoint that accepts POST {to, message, from, api_key}.",
+            "email_enabled": "Send email using your mailbox or transactional SMTP.",
+            "email_host": "Auto-filled from Gmail, Outlook, Yahoo, Zoho, or iCloud. Any other SMTP host also works.",
+            "email_port": "587 for TLS, 465 for SSL.",
+            "email_use_tls": "Recommended for port 587. Port 465 uses SSL automatically.",
+            "email_host_user": "Usually the full email address.",
+            "email_host_password": "Mailbox password or app password.",
+            "email_from_email": "Address clients see. Defaults to the SMTP username.",
+            "email_from_name": "Display name, e.g. your company name.",
+            "whatsapp_enabled": "Send WhatsApp messages from your business number.",
+            "whatsapp_provider": "Meta Cloud API, Twilio WhatsApp, or Africa's Talking. Senders are fetched after configuration.",
+            "whatsapp_phone_number_id": "Fetched from Meta after the access token is entered, or paste any phone number ID.",
+            "whatsapp_access_token": "Permanent or temporary Meta Cloud API token.",
+            "whatsapp_username": "Twilio Account SID or Africa's Talking username.",
+            "whatsapp_api_key": "Twilio Auth Token or Africa's Talking API key.",
+            "whatsapp_from_number": "Fetched automatically, or type any WhatsApp business number.",
+        }
+        widgets = {
+            "sms_enabled": forms.CheckboxInput(attrs={"id": "id_sms_enabled"}),
+            "sms_provider": forms.Select(
+                attrs={"class": "form-control", "id": "id_sms_provider"}
+            ),
+            "sms_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_sms_username",
+                    "placeholder": "e.g. myisp or ACxxxxxxxx",
+                }
+            ),
+            "sms_api_key": forms.PasswordInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "new-password",
+                    "id": "id_sms_api_key",
+                },
+                render_value=True,
+            ),
+            "sms_sender_id": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_sms_sender_id",
+                    "placeholder": "e.g. ISPCENTRIC",
+                }
+            ),
+            "sms_from_number": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_sms_from_number",
+                    "placeholder": "+2547…",
+                }
+            ),
+            "sms_base_url": forms.URLInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_sms_base_url",
+                    "placeholder": "https://sms.example.com/send",
+                }
+            ),
+            "email_enabled": forms.CheckboxInput(attrs={"id": "id_email_enabled"}),
+            "email_host": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_email_host",
+                    "placeholder": "smtp.gmail.com",
+                }
+            ),
+            "email_port": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_email_port",
+                    "min": "1",
+                    "max": "65535",
+                    "inputmode": "numeric",
+                }
+            ),
+            "email_use_tls": forms.CheckboxInput(attrs={"id": "id_email_use_tls"}),
+            "email_host_user": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_email_host_user",
+                    "placeholder": "noreply@yourisp.co.ke",
+                }
+            ),
+            "email_host_password": forms.PasswordInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "new-password",
+                    "id": "id_email_host_password",
+                },
+                render_value=True,
+            ),
+            "email_from_email": forms.EmailInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_email_from_email",
+                    "placeholder": "billing@yourisp.co.ke",
+                }
+            ),
+            "email_from_name": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_email_from_name",
+                    "placeholder": "Your ISP name",
+                }
+            ),
+            "whatsapp_enabled": forms.CheckboxInput(attrs={"id": "id_whatsapp_enabled"}),
+            "whatsapp_provider": forms.Select(
+                attrs={"class": "form-control", "id": "id_whatsapp_provider"}
+            ),
+            "whatsapp_phone_number_id": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_whatsapp_phone_number_id",
+                }
+            ),
+            "whatsapp_access_token": forms.PasswordInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "new-password",
+                    "id": "id_whatsapp_access_token",
+                },
+                render_value=True,
+            ),
+            "whatsapp_username": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_whatsapp_username",
+                    "placeholder": "e.g. ACxxxxxxxx",
+                }
+            ),
+            "whatsapp_api_key": forms.PasswordInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "new-password",
+                    "id": "id_whatsapp_api_key",
+                },
+                render_value=True,
+            ),
+            "whatsapp_from_number": forms.TextInput(
+                attrs={
+                    "class": "form-control",
+                    "autocomplete": "off",
+                    "id": "id_whatsapp_from_number",
+                    "placeholder": "+2547…",
+                }
+            ),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for name in list(self.fields):
+            if name not in {"sms_enabled", "email_enabled", "whatsapp_enabled", "email_use_tls"}:
+                self.fields[name].required = False
+
+    def clean_email_port(self):
+        port = self.cleaned_data.get("email_port")
+        if not port:
+            return 587
+        if port < 1 or port > 65535:
+            raise forms.ValidationError("Enter a valid SMTP port between 1 and 65535.")
+        return port
+
+    def clean(self):
+        cleaned = super().clean()
+        for name in (
+            "sms_username",
+            "sms_api_key",
+            "sms_sender_id",
+            "sms_from_number",
+            "sms_base_url",
+            "email_host",
+            "email_host_user",
+            "email_host_password",
+            "email_from_email",
+            "email_from_name",
+            "whatsapp_phone_number_id",
+            "whatsapp_access_token",
+            "whatsapp_username",
+            "whatsapp_api_key",
+            "whatsapp_from_number",
+        ):
+            if name in cleaned and isinstance(cleaned.get(name), str):
+                cleaned[name] = cleaned[name].strip()
+
+        model = self._meta.model
+        if cleaned.get("sms_enabled"):
+            provider = (cleaned.get("sms_provider") or "").strip()
+            if not provider:
+                self.add_error("sms_provider", "Choose an SMS provider.")
+            elif provider == model.SmsProvider.AFRICASTALKING:
+                if not cleaned.get("sms_username"):
+                    self.add_error("sms_username", "Enter the Africa's Talking username.")
+                if not cleaned.get("sms_api_key"):
+                    self.add_error("sms_api_key", "Enter the Africa's Talking API key.")
+            elif provider == model.SmsProvider.TWILIO:
+                if not cleaned.get("sms_username"):
+                    self.add_error("sms_username", "Enter the Twilio Account SID.")
+                if not cleaned.get("sms_api_key"):
+                    self.add_error("sms_api_key", "Enter the Twilio Auth Token.")
+            elif provider == model.SmsProvider.CUSTOM:
+                if not cleaned.get("sms_base_url"):
+                    self.add_error("sms_base_url", "Enter the custom SMS API URL.")
+                if not cleaned.get("sms_api_key"):
+                    self.add_error("sms_api_key", "Enter the API key for the custom SMS gateway.")
+
+        if cleaned.get("email_enabled"):
+            if not cleaned.get("email_host"):
+                self.add_error("email_host", "Enter the SMTP host.")
+            if not cleaned.get("email_host_user"):
+                self.add_error("email_host_user", "Enter the SMTP username.")
+            if not cleaned.get("email_host_password"):
+                self.add_error("email_host_password", "Enter the SMTP password.")
+            if not cleaned.get("email_from_email") and not cleaned.get("email_host_user"):
+                self.add_error("email_from_email", "Enter the from email address.")
+
+        if cleaned.get("whatsapp_enabled"):
+            provider = (cleaned.get("whatsapp_provider") or "").strip()
+            if not provider:
+                self.add_error("whatsapp_provider", "Choose a WhatsApp provider.")
+            elif provider == model.WhatsAppProvider.META:
+                if not cleaned.get("whatsapp_phone_number_id"):
+                    self.add_error(
+                        "whatsapp_phone_number_id",
+                        "Enter the Meta WhatsApp phone number ID.",
+                    )
+                if not cleaned.get("whatsapp_access_token"):
+                    self.add_error("whatsapp_access_token", "Enter the Meta access token.")
+            elif provider == model.WhatsAppProvider.TWILIO:
+                if not cleaned.get("whatsapp_username"):
+                    self.add_error("whatsapp_username", "Enter the Twilio Account SID.")
+                if not cleaned.get("whatsapp_api_key"):
+                    self.add_error("whatsapp_api_key", "Enter the Twilio Auth Token.")
+            elif provider == model.WhatsAppProvider.AFRICASTALKING:
+                if not cleaned.get("whatsapp_username"):
+                    self.add_error("whatsapp_username", "Enter the Africa's Talking username.")
+                if not cleaned.get("whatsapp_api_key"):
+                    self.add_error("whatsapp_api_key", "Enter the Africa's Talking API key.")
+        return cleaned
+
+
+class PlatformCommunicationSettingsForm(CommunicationSettingsForm):
+    """ISPCENTRIC platform credentials used to message ISPs and staff."""
+
+    class Meta(CommunicationSettingsForm.Meta):
+        model = PlatformCommunicationSettings
+        help_texts = {
+            **CommunicationSettingsForm.Meta.help_texts,
+            "sms_enabled": "Send SMS from ISPCENTRIC to ISP owners and platform staff.",
+            "email_enabled": "SMTP used for platform notices to ISPs. Password reset can also use Django EMAIL_*.",
+            "email_from_name": "Display name, e.g. ISPCENTRIC.",
+            "whatsapp_enabled": "Send WhatsApp from ISPCENTRIC to ISP owners and staff.",
+        }
 
 
 class RoleCommissionForm(forms.ModelForm):

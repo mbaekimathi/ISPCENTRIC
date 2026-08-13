@@ -15,8 +15,8 @@
     <div class="org-edit-hero">
       <div class="company-settings-icon company-settings-icon--pay" aria-hidden="true">M</div>
       <div class="org-edit-hero-copy">
-        <p class="org-edit-kicker">M-Pesa · Daraja</p>
-        <h2>STK Push</h2>
+        <p class="org-edit-kicker">Company · M-Pesa · Daraja</p>
+        <h2>Company Payment Gateway</h2>
         <div class="org-edit-meta">
           {% if gateway.enabled %}
             <span class="org-status org-status-active">Activated</span>
@@ -28,7 +28,11 @@
             <span class="org-edit-meta-item">Updated {{ gateway.updated_at|date:"d M Y H:i" }}</span>
           {% endif %}
         </div>
-        <p class="org-edit-owner">Configure Safaricom Lipa Na M-Pesa Online credentials for phone payment prompts.</p>
+        <p class="org-edit-owner">
+          This is the company Daraja app. It is the default STK gateway for ISPs that have not
+          set up their own Payment Gateway, and it is always used for platform fees such as
+          MikroTik onboarding. ISP-owned gateways never use these credentials.
+        </p>
       </div>
     </div>
   </div>

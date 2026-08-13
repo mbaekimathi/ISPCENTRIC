@@ -8,11 +8,11 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="org-page" id="org-clients">
+<section class="org-page org-page-responsive" id="org-clients">
   <header class="org-page-header">
     <div>
-      <h2>Registered organizations</h2>
-      <p>Company accounts currently in ISPCENTRIC.</p>
+      <h2>{{ list_heading|default:"Registered organizations" }}</h2>
+      <p>{{ list_intro|default:"Company accounts currently in ISPCENTRIC." }}</p>
     </div>
     <p class="org-page-count"><strong id="org-visible-count">{{ clients_count }}</strong> <span id="org-count-label">{% if clients_count == 1 %}client{% else %}clients{% endif %}</span></p>
   </header>
@@ -31,7 +31,7 @@
   </div>
 
   <div class="org-table-shell">
-    <table class="org-table org-table-clients" id="org-table">
+    <table class="org-table org-table-clients org-table-clients-responsive" id="org-table">
       <thead>
         <tr>
           <th>Organization</th>
@@ -47,8 +47,8 @@
       </thead>
       <tbody>
         {% for client in clients %}
-        <tr data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}">
-          <td>
+        <tr class="org-client-row" data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}">
+          <td data-label="Organization">
             <div class="org-identity">
               {% if client.profile_photo %}
                 <img src="{{ client.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
@@ -58,7 +58,7 @@
               <strong>{{ client.name }}</strong>
             </div>
           </td>
-          <td>
+          <td data-label="Owner">
             {% if client.owner %}
               <div class="org-owner">
                 <strong>{{ client.owner.get_full_name|default:client.owner.username }}</strong>
@@ -68,26 +68,26 @@
               —
             {% endif %}
           </td>
-          <td>{{ client.phone|default:"—" }}</td>
-          <td><span class="org-code">{{ client.join_code|default:"—" }}</span></td>
-          <td>
+          <td data-label="Contact">{{ client.phone|default:"—" }}</td>
+          <td data-label="Join code"><span class="org-code">{{ client.join_code|default:"—" }}</span></td>
+          <td data-label="Status">
             <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
           </td>
-          <td class="org-metric">{{ client.staff_count }}</td>
-          <td class="org-metric">{{ client.customer_count }}</td>
-          <td class="org-date">{{ client.created_at|date:"d M Y" }}</td>
-          <td>
+          <td class="org-metric" data-label="Staff">{{ client.staff_count }}</td>
+          <td class="org-metric" data-label="Customers">{{ client.customer_count }}</td>
+          <td class="org-date" data-label="Registered">{{ client.created_at|date:"d M Y" }}</td>
+          <td data-label="Actions">
             <div class="org-actions org-actions-icons">
               <a
                 class="org-action-icon"
-                href="{% url 'roles:super_admin_client_edit' client.pk %}"
+                href="{% url client_edit_url_name client.pk %}"
                 title="Edit"
                 aria-label="Edit {{ client.name }}"
               >
                 <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
               </a>
               {% if client.status == "suspended" %}
-              <form method="post" action="{% url 'roles:super_admin_client_unsuspend' client.pk %}">
+              <form method="post" action="{% url client_unsuspend_url_name client.pk %}">
                 {% csrf_token %}
                 <button
                   type="submit"
@@ -99,7 +99,7 @@
                 </button>
               </form>
               {% else %}
-              <form method="post" action="{% url 'roles:super_admin_client_suspend' client.pk %}">
+              <form method="post" action="{% url client_suspend_url_name client.pk %}">
                 {% csrf_token %}
                 <button
                   type="submit"
@@ -113,7 +113,7 @@
               {% endif %}
               <a
                 class="org-action-icon org-action-danger"
-                href="{% url 'roles:super_admin_client_delete' client.pk %}"
+                href="{% url client_delete_url_name client.pk %}"
                 title="Delete"
                 aria-label="Delete {{ client.name }}"
               >

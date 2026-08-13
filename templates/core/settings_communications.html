@@ -1,23 +1,144 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}Communications link — ISPCENTRIC{% endblock %}
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<div class="account-page-shell">
+  <header class="account-page-intro">
+    <p class="account-page-kicker">{{ page_kicker }}</p>
+    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  </header>
 
-{% if organization %}
-  <section class="panel staff-panel stack-gap">
-    <div class="panel-head-row">
-      <div>
-        <h2>Communications link</h2>
-        <p class="panel-sub">Phone, WhatsApp, SMS, and other channels clients use to reach you.</p>
-      </div>
+  {% if not organization %}
+    <section class="panel staff-panel account-card">
+      <p class="empty">No organization is linked to this account yet.</p>
+    </section>
+  {% else %}
+    <div class="account-page" id="comms-page">
+      {% if sms_status or email_status or whatsapp_status %}
+        <section class="panel account-card account-status-card">
+          <header class="account-card-head">
+            <div class="account-card-head-main">
+              <div>
+                <h3>Channel status</h3>
+                <p>{% if show_config %}Turn on a channel, choose a provider, and save the gateway credentials.{% else %}SMS, email, and WhatsApp readiness for this ISP. Change credentials under Communication settings.{% endif %}</p>
+              </div>
+            </div>
+          </header>
+          <div class="account-summary-grid comms-summary-grid">
+            <div class="account-summary-item">
+              <span>SMS</span>
+              <strong>{{ sms_status.provider_label }}</strong>
+              {% if sms_status.ready %}
+                <span class="mikrotik-wifi-pill is-on">Ready</span>
+              {% elif sms_status.enabled %}
+                <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+              {% else %}
+                <span class="mikrotik-wifi-pill is-off">Off</span>
+              {% endif %}
+            </div>
+            <div class="account-summary-item">
+              <span>Email</span>
+              <strong>{{ email_status.provider_label }}</strong>
+              {% if email_status.ready %}
+                <span class="mikrotik-wifi-pill is-on">Ready</span>
+              {% elif email_status.enabled %}
+                <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+              {% else %}
+                <span class="mikrotik-wifi-pill is-off">Off</span>
+              {% endif %}
+            </div>
+            <div class="account-summary-item">
+              <span>WhatsApp</span>
+              <strong>{{ whatsapp_status.provider_label }}</strong>
+              {% if whatsapp_status.ready %}
+                <span class="mikrotik-wifi-pill is-on">Ready</span>
+              {% elif whatsapp_status.enabled %}
+                <span class="mikrotik-wifi-pill is-off">Needs setup</span>
+              {% else %}
+                <span class="mikrotik-wifi-pill is-off">Off</span>
+              {% endif %}
+            </div>
+          </div>
+        </section>
+      {% endif %}
+
+      {% if show_events and client_events or show_events and isp_events %}
+        <section class="panel account-card comms-events-card">
+          <header class="account-card-head">
+            <div class="account-card-head-main">
+              <div>
+                <h3>When messages are sent</h3>
+                <p>Based on live ISPCENTRIC workflows. Configure SMS, email, and WhatsApp under <a href="{% url 'core:settings_communications' %}">Communication settings</a>.</p>
+              </div>
+            </div>
+          </header>
+          <div class="comms-events-grid">
+            {% if client_events %}
+              <div class="comms-events-col">
+                <h4>Your clients</h4>
+                <p class="comms-events-lead">Subscribers on PPPoE, Hotspot, or Static — their phone and email on the client record.</p>
+                <ol class="comms-event-list">
+                  {% for event in client_events %}
+                    <li class="comms-event">
+                      <strong>{{ event.title }}</strong>
+                      <span class="comms-event-when">{{ event.when }}</span>
+                      <span class="comms-event-includes">{{ event.includes }}</span>
+                      <span class="comms-event-channels">
+                        {% for channel in event.channels %}
+                          <span class="comms-channel-chip">{{ channel }}</span>
+                        {% endfor %}
+                      </span>
+                    </li>
+                  {% endfor %}
+                </ol>
+              </div>
+            {% endif %}
+            {% if isp_events %}
+              <div class="comms-events-col">
+                <h4>This ISP account</h4>
+                <p class="comms-events-lead">The organization owner and staff on this workspace — owner email/phone, or the assigned technician.</p>
+                <ol class="comms-event-list">
+                  {% for event in isp_events %}
+                    <li class="comms-event">
+                      <strong>{{ event.title }}</strong>
+                      {% if event.recipient %}<span class="comms-event-recipient">To: {{ event.recipient }}</span>{% endif %}
+                      <span class="comms-event-when">{{ event.when }}</span>
+                      <span class="comms-event-includes">{{ event.includes }}</span>
+                      <span class="comms-event-channels">
+                        {% for channel in event.channels %}
+                          <span class="comms-channel-chip">{{ channel }}</span>
+                        {% endfor %}
+                      </span>
+                    </li>
+                  {% endfor %}
+                </ol>
+              </div>
+            {% endif %}
+          </div>
+        </section>
+      {% endif %}
+
+      {% if show_config and form and can_edit %}
+        {% include "includes/comms_credentials_form.html" with save_label=save_label %}
+      {% elif show_config and not can_edit %}
+        <section class="panel account-card">
+          <header class="account-card-head">
+            <div>
+              <h3>Communication settings</h3>
+              <p>Read-only. Only the organization owner can change these credentials.</p>
+            </div>
+          </header>
+        </section>
+      {% endif %}
     </div>
-    <p class="empty">Communications link settings are coming soon.</p>
-  </section>
-{% else %}
-  <section class="panel staff-panel">
-    <p class="empty">No organization settings available.</p>
-  </section>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+{% if show_config %}
+{% include "includes/comms_credentials_script.html" %}
 {% endif %}
 {% endblock %}
+

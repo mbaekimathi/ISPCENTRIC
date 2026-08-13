@@ -78,6 +78,11 @@ ROLE_DASHBOARD_ONLY_NAV = {
         },
     ],
     Employee.Role.IT_SUPPORT: [
+        {
+            "key": "company_clients",
+            "label": "Company clients",
+            "url_name": "roles:it_support_company_clients",
+        },
         {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
         {
             "key": "company_settings",
@@ -155,8 +160,13 @@ IT_SUPPORT_COMPANY_SETTINGS_NAV = [
         "url_name": "roles:it_support_company_settings",
     },
     {
+        "key": "company_communications",
+        "label": "Company communications settings",
+        "url_name": "roles:it_support_company_communications",
+    },
+    {
         "key": "payment_gateway",
-        "label": "Payment Gateway",
+        "label": "Company Payment Gateway",
         "url_name": "roles:it_support_payment_gateway",
     },
     {
@@ -259,6 +269,8 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
 
 def page_key_from_path(path: str) -> str | None:
     path = (path or "").rstrip("/") + "/"
+    if "/company-clients/" in path:
+        return "company_clients"
     if "/isp-clients/" in path:
         return "isp_clients"
     if "/clients/" in path:
@@ -267,6 +279,8 @@ def page_key_from_path(path: str) -> str | None:
         return "hr"
     if "/payment-gateway/" in path:
         return "payment_gateway"
+    if "/company-settings/communications/" in path:
+        return "company_communications"
     if "/company-settings/" in path:
         return "company_settings"
     if "/client-settings/" in path:

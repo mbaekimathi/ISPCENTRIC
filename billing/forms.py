@@ -1398,6 +1398,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "download_speed_mbps",
             "upload_speed_mbps",
             "duration",
+            "max_devices",
             "image",
             "is_active",
             "routers",
@@ -1456,6 +1457,15 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "id": "id_package_duration",
                 }
             ),
+            "max_devices": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "Unlimited",
+                    "min": "1",
+                    "max": "50",
+                    "id": "id_package_max_devices",
+                }
+            ),
             "image": forms.FileInput(
                 attrs={
                     "class": "org-edit-file-input",
@@ -1477,6 +1487,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "download_speed_mbps": "Download speed (Mbps)",
             "upload_speed_mbps": "Upload speed (Mbps)",
             "duration": "Billing period",
+            "max_devices": "Max devices",
             "image": "Package image",
             "is_active": "Active package",
             "routers": "MikroTik routers",
@@ -1491,11 +1502,19 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["is_active"].required = False
         self.fields["routers"].required = False
         self.fields["service_type"].required = True
+        self.fields["max_devices"].required = False
+        self.fields["max_devices"].help_text = (
+            "Leave blank for unlimited devices. "
+            "Hotspot: phones/laptops on one paid account. "
+            "PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited)."
+        )
         self.fields["duration"].choices = BillingPlan.Duration.choices
         # Default Active only for new packages — keep the saved value when editing.
         if not self.is_bound and not getattr(self.instance, "pk", None):
             self.fields["is_active"].initial = True
             self.fields["service_type"].initial = BillingPlan.ServiceType.PPPOE
+        if int(getattr(self.instance, "max_devices", 0) or 0) <= 0:
+            self.initial["max_devices"] = None
         if self.organization is not None:
             self.fields["routers"].queryset = MikroTikRouter.objects.filter(
                 organization=self.organization,
@@ -1510,6 +1529,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "download_speed_mbps": f"id_{self.id_prefix}_download_speed",
             "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
             "duration": f"id_{self.id_prefix}_duration",
+            "max_devices": f"id_{self.id_prefix}_max_devices",
             "image": f"id_{self.id_prefix}_image",
             "is_active": f"id_{self.id_prefix}_is_active",
             "routers": f"id_{self.id_prefix}_routers",
@@ -1583,6 +1603,18 @@ class BillingPackageRegisterForm(forms.ModelForm):
         if not speed or speed < 1:
             raise forms.ValidationError("Enter an upload speed of at least 1 Mbps.")
         return speed
+
+    def clean_max_devices(self):
+        count = self.cleaned_data.get("max_devices")
+        if count in (None, "") or count == 0:
+            return 0
+        if count < 1:
+            raise forms.ValidationError(
+                "Enter at least 1 device, or leave blank for unlimited."
+            )
+        if count > 50:
+            raise forms.ValidationError("Max devices cannot exceed 50.")
+        return count
 
     def clean_routers(self):
         routers = self.cleaned_data.get("routers")

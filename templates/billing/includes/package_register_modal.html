@@ -86,6 +86,12 @@
               {{ package_form.upload_speed_mbps }}
               {% if package_form.upload_speed_mbps.errors %}<div class="field-error">{{ package_form.upload_speed_mbps.errors|striptags }}</div>{% endif %}
             </div>
+            <div class="field">
+              <label for="{{ package_form.max_devices.id_for_label }}">{{ package_form.max_devices.label }} <span class="pppoe-optional">optional</span></label>
+              {{ package_form.max_devices }}
+              {% if package_form.max_devices.errors %}<div class="field-error">{{ package_form.max_devices.errors|striptags }}</div>{% endif %}
+              <p class="field-hint" id="package-max-devices-hint">Leave blank for unlimited. Hotspot: phones/laptops on one paid account. PPPoE: CPEs that may dial this username.</p>
+            </div>
             <p class="field-hint pppoe-grid-hint" id="package-general-speed-hint">
               General speed will be set from download/upload (shown as download/upload Mbps).
             </p>

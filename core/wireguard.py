@@ -333,6 +333,105 @@ def _append_peer_to_conf(conf_path: str, public_key: str, block: str) -> bool:
     return True
 
 
+def can_apply_server_peers() -> bool:
+    """True when this process can update wg0 (local address or sudo sync helper)."""
+    if not configured():
+        return False
+    if server_on_tunnel():
+        return True
+    return bool((getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip())
+
+
+def _try_bring_up_interface() -> dict:
+    """Best-effort `wg-quick up` when a conf exists (hosted Linux)."""
+    iface = _wireguard_interface()
+    conf = Path(_wireguard_conf_path())
+    wg_bin = shutil.which("wg")
+    if wg_bin:
+        try:
+            probe = subprocess.run(
+                [wg_bin, "show", iface],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+            if probe.returncode == 0:
+                return {"ok": True, "already_up": True}
+        except Exception:
+            pass
+
+    if not conf.is_file():
+        return {"ok": False, "reason": "no_conf"}
+
+    wg_quick = shutil.which("wg-quick")
+    if not wg_quick:
+        return {"ok": False, "reason": "no_wg_quick"}
+
+    try:
+        proc = subprocess.run(
+            [wg_quick, "up", iface],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        err = (proc.stderr or proc.stdout or "").strip()
+        if proc.returncode == 0 or "already" in err.lower():
+            logger.info("WireGuard interface %s is up.", iface)
+            return {"ok": True, "brought_up": proc.returncode == 0, "already_up": proc.returncode != 0}
+        logger.warning("wg-quick up %s failed: %s", iface, err)
+        return {"ok": False, "error": err}
+    except Exception as exc:
+        logger.warning("wg-quick up %s raised: %s", iface, exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def ensure_tunnel_runtime() -> dict:
+    """
+    Refresh WireGuard whenever the app starts (local runserver or hosted WSGI).
+
+    Hosted: bring wg0 up if needed, then sync every DB peer.
+    Local: sync via WIREGUARD_SYNC_COMMAND when set; otherwise skip (LAN NAS
+    still works). Never blocks startup — caller should run this off-thread.
+    """
+    if not configured():
+        logger.info("WireGuard is not configured — skipping peer sync.")
+        return {"ok": False, "skipped": True, "reason": "not_configured", "synced": 0}
+
+    brought_up = False
+    if not server_on_tunnel():
+        brought_up = bool(_try_bring_up_interface().get("ok"))
+
+    if not can_apply_server_peers():
+        logger.info(
+            "WireGuard endpoint is set, but this process cannot update wg0 "
+            "(not bound to %s and WIREGUARD_SYNC_COMMAND is empty). "
+            "LAN MikroTiks still work. On the VPS set WIREGUARD_SYNC_COMMAND "
+            "or enable wg-quick@wg0.",
+            server_address(),
+        )
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "not_on_tunnel",
+            "synced": 0,
+            "brought_up": brought_up,
+        }
+
+    result = sync_all_server_peers()
+    result["brought_up"] = brought_up
+    logger.info(
+        "WireGuard peer sync on startup: synced=%s errors=%s brought_up=%s",
+        result.get("synced", 0),
+        len(result.get("errors") or []),
+        brought_up,
+    )
+    for err in result.get("errors") or []:
+        logger.warning("WireGuard peer sync: %s", err)
+    return result
+
+
 def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     """
     Register a MikroTik peer on the billing VPS WireGuard interface.
@@ -342,7 +441,7 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     """
     if not configured():
         return {"ok": False, "skipped": True, "reason": "wireguard_not_configured"}
-    if not server_on_tunnel():
+    if not can_apply_server_peers():
         return {"ok": False, "skipped": True, "reason": "not_on_tunnel"}
 
     public_key = (public_key or "").strip()
@@ -418,7 +517,7 @@ def sync_all_server_peers() -> dict:
     """Apply every onboarded router and pending reservation to the local wg0."""
     from core.models import MikroTikRouter, WireGuardReservation
 
-    if not server_on_tunnel():
+    if not can_apply_server_peers():
         return {"ok": False, "skipped": True, "reason": "not_on_tunnel", "synced": 0}
 
     synced = 0

@@ -128,7 +128,7 @@ def start_subscription_stk_payment(
 
     creds = organization.effective_daraja_credentials()
     if not creds.get("enabled"):
-        return {"ok": False, "error": "Enable Daraja STK Push on My Account first."}
+        return {"ok": False, "error": "Enable Daraja STK Push in Settings → STK Payment Settings first."}
     if not creds.get("ready"):
         return {
             "ok": False,
@@ -277,7 +277,7 @@ def start_lead_allocation_stk_payment(
 
     creds = organization.effective_daraja_credentials()
     if not creds.get("enabled"):
-        return {"ok": False, "error": "Enable Daraja STK Push on My Account first."}
+        return {"ok": False, "error": "Enable Daraja STK Push in Settings → STK Payment Settings first."}
     if not creds.get("ready"):
         return {
             "ok": False,
@@ -412,31 +412,8 @@ def start_lead_allocation_stk_payment(
 
 
 def _platform_daraja_credentials() -> dict:
-    """IT Support Payment Gateway credentials for platform fees."""
-    gateway = PaymentGateway.get_solo()
-    shortcode = (gateway.shortcode or "").strip()
-    environment = (
-        gateway.environment or PaymentGateway.Environment.SANDBOX
-    ).strip().lower()
-    if shortcode and shortcode != "174379":
-        environment = PaymentGateway.Environment.PRODUCTION
-    ready = gateway.is_stk_ready()
-    return {
-        "enabled": bool(gateway.enabled),
-        "ready": ready,
-        "environment": environment,
-        "payment_type": (gateway.payment_type or "").strip(),
-        "shortcode": shortcode,
-        "consumer_key": (gateway.consumer_key or "").strip(),
-        "consumer_secret": (gateway.consumer_secret or "").strip(),
-        "passkey": (gateway.passkey or "").strip(),
-        "callback_url": gateway.resolved_callback_url(),
-        "message": (
-            f"Using IT Support Daraja credentials ({environment})."
-            if ready
-            else "Activate and complete IT Support Payment Gateway first."
-        ),
-    }
+    """Company Payment Gateway only — used for platform fees, never ISP Daraja fields."""
+    return PaymentGateway.get_solo().as_stk_credentials()
 
 
 def start_mikrotik_onboarding_stk_payment(
@@ -979,7 +956,7 @@ def fulfill_successful_stk(
     from billing.vouchers import create_voucher_for_stk, voucher_payload
 
     # Already paid: persist receipt updates, return the voucher.
-    # Activation happens when the customer redeems the code on the pay page.
+    # Pay-page / callback auto-redeem applies the package; fulfill itself does not.
     if stk.status == StkPushRequest.Status.SUCCESS:
         persisted = _persist_stk_receipt_fields(
             stk,
@@ -1132,13 +1109,21 @@ def process_stk_callback_payload(payload: dict) -> dict:
             or metadata.get("MpesaReceiptNo")
             or ""
         ).strip()
-        return fulfill_successful_stk(
+        result = fulfill_successful_stk(
             stk,
             result_code=0,
             result_desc=result_desc or "The service request is processed successfully.",
             mpesa_receipt=receipt,
             raw=payload,
         )
+        if result.get("ok"):
+            stk.refresh_from_db()
+            if stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
+                from billing.vouchers import activate_paid_subscription_stk
+
+                # Do not block Daraja's HTTP ack on MikroTik — apply in the background.
+                activate_paid_subscription_stk(stk, background=True)
+        return result
 
     cancelled = result_code == 1032
     mark_stk_failed(
@@ -1237,10 +1222,64 @@ def stk_pending_message(result_desc: str = "") -> str:
     return desc
 
 
-def refresh_stk_status(stk: StkPushRequest) -> dict:
+def _apply_paid_subscription_to_status(
+    payload: dict,
+    stk: StkPushRequest,
+    *,
+    wait_for_nas: bool = False,
+) -> dict:
+    """Redeem the paying customer's voucher and optionally wait for NAS authorize."""
+    if (
+        stk.purpose != StkPushRequest.Purpose.SUBSCRIPTION
+        or stk.status != StkPushRequest.Status.SUCCESS
+    ):
+        return payload
+    from billing.vouchers import activate_paid_subscription_stk, attach_voucher_to_stk_status
+
+    # Dashboard polls must not start a new NAS sync every 2s. Captive pay pages
+    # (wait_for_nas) still push MikroTik on this request so surfing can start.
+    activation = {}
+    if not stk.subscription_applied or wait_for_nas:
+        activation = activate_paid_subscription_stk(
+            stk,
+            wait_first=wait_for_nas,
+            quick=True,
+        )
+    stk.refresh_from_db()
+    customer = stk.customer
+    if customer is not None:
+        customer.refresh_from_db()
+        payload["customer_name"] = customer.full_name
+        payload["account_number"] = customer.account_number
+        payload["package_start"] = (
+            customer.package_start.isoformat() if customer.package_start else ""
+        )
+        payload["package_end"] = (
+            customer.package_end.isoformat() if customer.package_end else ""
+        )
+    payload["subscription_applied"] = stk.subscription_applied
+    if activation.get("queued"):
+        payload["authorized"] = False
+        payload["can_retry_authorize"] = True
+    elif activation.get("ok"):
+        payload["authorized"] = bool(activation.get("authorized"))
+        payload["offline"] = bool(activation.get("offline"))
+        payload["authorization_error"] = activation.get("authorization_error") or ""
+        payload["can_retry_authorize"] = not payload["authorized"]
+    payload["surfing"] = bool(payload.get("authorized"))
+    attach_voucher_to_stk_status(payload, stk)
+    if payload.get("subscription_applied"):
+        payload["needs_voucher"] = False
+    return payload
+
+
+def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> dict:
     """
     Return current STK status; if still pending, query Daraja (needed when
     localhost callbacks cannot be reached).
+
+    ``wait_for_nas=True`` (captive pay pages) applies the package and waits for
+    one quick MikroTik restore so the device can surf on this response.
     """
     stk.refresh_from_db()
     customer = stk.customer
@@ -1280,9 +1319,7 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
             base["cancelled"] = stk.status == StkPushRequest.Status.CANCELLED
             base["can_retry"] = True
         elif stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
-            from billing.vouchers import attach_voucher_to_stk_status
-
-            attach_voucher_to_stk_status(base, stk)
+            _apply_paid_subscription_to_status(base, stk, wait_for_nas=wait_for_nas)
         return base
 
     if not stk.checkout_request_id:
@@ -1379,12 +1416,9 @@ def refresh_stk_status(stk: StkPushRequest) -> dict:
                 payload["can_retry_authorize"] = True
                 payload["offline"] = bool(fulfill.get("provision_offline"))
         if applied and stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
-            from billing.vouchers import attach_voucher_to_stk_status
-
-            attach_voucher_to_stk_status(payload, stk)
-            if payload.get("needs_voucher"):
-                payload["authorized"] = False
-                payload["just_provisioned"] = False
+            _apply_paid_subscription_to_status(
+                payload, stk, wait_for_nas=wait_for_nas
+            )
         if not applied:
             # M-Pesa took the money but the subscription could not be applied.
             # Retrying the charge would double-bill, so send them to support.

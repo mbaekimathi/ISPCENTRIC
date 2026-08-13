@@ -143,6 +143,8 @@
       setFieldValue("id_edit_package_duration", btn.getAttribute("data-package-duration") || "monthly");
       setFieldValue("id_edit_package_download_speed", btn.getAttribute("data-package-download") || "");
       setFieldValue("id_edit_package_upload_speed", btn.getAttribute("data-package-upload") || "");
+      var maxDevices = btn.getAttribute("data-package-max-devices") || "";
+      setFieldValue("id_edit_package_max_devices", maxDevices === "0" ? "" : maxDevices);
 
       var serviceType = btn.getAttribute("data-package-service-type") || "pppoe";
       document.querySelectorAll('#billing-package-edit-form input[name="service_type"]').forEach(function (radio) {

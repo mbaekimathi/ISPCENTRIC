@@ -20,3 +20,10 @@ class CoreConfig(AppConfig):
         except Exception:
             # Connection may not be ready yet during early boot; WSGI/ASGI will retry
             pass
+
+        try:
+            from core.boot import start_runtime_tasks
+
+            start_runtime_tasks()
+        except Exception:
+            pass

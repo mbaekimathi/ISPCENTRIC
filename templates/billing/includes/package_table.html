@@ -8,6 +8,7 @@
             <th>Type</th>
           {% endif %}
           <th>Speed</th>
+          <th>Devices</th>
           <th>Price</th>
           <th>Period</th>
           <th>MikroTik</th>
@@ -53,6 +54,9 @@
                 <span class="package-speed-unit">Mbps</span>
               </span>
             </td>
+            <td data-label="Devices">
+              <span class="package-period">{{ plan.max_devices_label }}</span>
+            </td>
             <td data-label="Price">
               <strong class="package-price">{{ plan.price }}</strong>
             </td>
@@ -84,6 +88,7 @@
                     data-package-duration="{{ plan.duration }}"
                     data-package-download="{{ plan.download_speed_mbps }}"
                     data-package-upload="{{ plan.upload_speed_mbps }}"
+                    data-package-max-devices="{{ plan.max_devices }}"
                     data-package-active="{% if plan.is_active %}1{% else %}0{% endif %}"
                     data-package-image="{% if plan.image %}{{ plan.image.url }}{% endif %}"
                     data-package-routers="{% for r in plan.routers.all %}{{ r.id }}{% if not forloop.last %},{% endif %}{% endfor %}"

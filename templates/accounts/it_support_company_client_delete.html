@@ -1,0 +1,92 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="cc-delete-page">
+  <a class="cc-delete-back" href="{% url clients_list_url_name %}">← Back to company clients</a>
+
+  <article class="cc-delete-shell">
+    <header class="cc-delete-hero">
+      <div class="cc-identity">
+        {% if client.profile_photo %}
+          <img src="{{ client.profile_photo.url }}" alt="" width="56" height="56" decoding="async">
+        {% else %}
+          <span aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
+        {% endif %}
+        <div>
+          <p class="cc-kicker">Delete ISP account</p>
+          <h2>{{ client.name }}</h2>
+          <p>
+            {% if client.owner %}
+              Owner · {{ client.owner.get_full_name|default:client.owner.username }}
+              {% if client.owner.email %} · {{ client.owner.email }}{% endif %}
+            {% else %}
+              No owner linked
+            {% endif %}
+          </p>
+        </div>
+      </div>
+      <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+    </header>
+
+    <div class="cc-delete-banner" role="alert">
+      <strong>This cannot be undone.</strong>
+      <p>{{ delete_intro }}</p>
+    </div>
+
+    <section class="cc-delete-section">
+      <header>
+        <h3>Everything that will be deleted</h3>
+        <p>{{ deletion_preview.total_records }} record{{ deletion_preview.total_records|pluralize }} belonging to <strong>{{ client.name }}</strong>.</p>
+      </header>
+
+      <ul class="cc-delete-list">
+        {% for item in deletion_preview.present_items %}
+        <li class="cc-delete-item">
+          <div class="cc-delete-item-head">
+            <span>{{ item.label }}</span>
+            <strong>{{ item.count }}</strong>
+          </div>
+          {% if item.detail %}
+            <p>{{ item.detail }}</p>
+          {% endif %}
+          {% if item.samples %}
+            <p class="cc-delete-samples">{{ item.samples|join:", " }}{% if item.count > item.samples|length %}…{% endif %}</p>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+
+      {% if deletion_preview.empty_labels %}
+      <p class="cc-delete-none">
+        Not on this account: {{ deletion_preview.empty_labels|join:", " }}.
+      </p>
+      {% endif %}
+    </section>
+
+    <section class="cc-delete-section cc-delete-keep">
+      <header>
+        <h3>Will not be changed</h3>
+        <p>Other ISP accounts and platform settings stay in place.</p>
+      </header>
+      <ul class="cc-keep-list">
+        <li>Other ISP accounts, subscribers, packages, and routers</li>
+        <li>Company profile, Payment Gateway, and platform communications</li>
+        <li>Role commissions and network equipment inventory</li>
+      </ul>
+    </section>
+
+    <form method="post" class="cc-delete-actions">
+      {% csrf_token %}
+      <a class="btn btn-ghost" href="{% url clients_list_url_name %}">Cancel</a>
+      <button type="submit" class="btn btn-danger">Delete {{ client.name }} and all data</button>
+    </form>
+  </article>
+</section>
+{% endblock %}

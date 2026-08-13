@@ -18,6 +18,14 @@ _STATUS_SCORE = {
     "wrong_host": 10,
     "disconnected": 0,
 }
+_STATUS_REASON = {
+    "connected": "Router is online and API login succeeded.",
+    "reachable": "Host is reachable over HTTP/Winbox, but API login was not confirmed.",
+    "limited": "Router replies to ping only. API port 8728 is not reachable.",
+    "auth_failed": "API is reachable but login failed. Check saved username and password.",
+    "wrong_host": "A different device now answers on this address.",
+    "disconnected": "Router is offline or unreachable on the management tunnel or IP.",
+}
 _OUTAGE_STATUSES = frozenset(
     {"disconnected", "auth_failed", "wrong_host", "limited"}
 )
@@ -43,6 +51,16 @@ _CHART_COLORS = [
 def status_score(status: str | None) -> int:
     key = (status or "disconnected").strip().lower()
     return int(_STATUS_SCORE.get(key, 0))
+
+
+def status_reason(status: str | None, error: str | None = None) -> str:
+    """Human-readable explanation for a MikroTik health status."""
+    key = (status or "disconnected").strip().lower()
+    reason = _STATUS_REASON.get(key, "Router health is degraded.")
+    extra = (error or "").strip()
+    if extra and key != "connected" and extra.lower() not in reason.lower():
+        return f"{reason} {extra}"
+    return reason
 
 
 def _last_status_cache_key(organization_id: int, router_id: int) -> str:
@@ -455,3 +473,121 @@ def mikrotik_performance_trend(
     }
     cache.set(cache_key, payload, _TREND_CACHE_TTL)
     return payload
+
+
+def mikrotik_performance_drops(
+    organization,
+    *,
+    hours: int = 24,
+    live_routers: list[dict[str, Any]] | None = None,
+    max_events: int = 8,
+) -> dict[str, Any]:
+    """Explain MikroTik health drops over the window, plus any live outages."""
+    empty = {"ok": False, "hours": hours, "events": [], "current_count": 0}
+    if not organization:
+        return empty
+
+    hours = max(1, min(int(hours or 24), 168))
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    routers = {
+        r.pk: {"id": r.pk, "name": r.name, "host": r.host or ""}
+        for r in MikroTikRouter.objects.filter(organization=organization)
+        .only("id", "name", "host")
+        .order_by("name")
+    }
+    samples = list(
+        MikroTikStatusSample.objects.filter(
+            organization=organization,
+            sampled_at__gte=since,
+        )
+        .order_by("router_id", "sampled_at")
+        .values("router_id", "sampled_at", "score", "status")[:12000]
+    )
+
+    previous: dict[int, dict[str, Any]] = {}
+    historical: list[dict[str, Any]] = []
+    for row in samples:
+        rid = int(row["router_id"])
+        if rid not in routers:
+            continue
+        score = int(row["score"] or 0)
+        status = (row["status"] or "disconnected").strip().lower()
+        prev = previous.get(rid)
+        if prev and score < int(prev["score"]):
+            stamp = row["sampled_at"]
+            # Collapse repeated drops into the same status for one router.
+            if (
+                historical
+                and historical[-1]["router_id"] == rid
+                and historical[-1]["status"] == status
+            ):
+                historical[-1]["to_score"] = score
+                historical[-1]["at"] = timezone.localtime(stamp).strftime("%H:%M")
+                historical[-1]["at_iso"] = stamp.isoformat()
+            else:
+                historical.append(
+                    {
+                        "router_id": rid,
+                        "router_name": routers[rid]["name"],
+                        "host": routers[rid]["host"],
+                        "at": timezone.localtime(stamp).strftime("%H:%M"),
+                        "at_iso": stamp.isoformat(),
+                        "from_score": int(prev["score"]),
+                        "to_score": score,
+                        "status": status,
+                        "reason": status_reason(status),
+                        "current": False,
+                    }
+                )
+        previous[rid] = {"score": score, "status": status}
+
+    current: list[dict[str, Any]] = []
+    seen_current: set[int] = set()
+    for row in live_routers or []:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        rid = int(rid)
+        if rid not in routers or rid in seen_current:
+            continue
+        status = (row.get("status") or "disconnected").strip().lower()
+        score = status_score(status)
+        if score >= 100:
+            continue
+        seen_current.add(rid)
+        current.append(
+            {
+                "router_id": rid,
+                "router_name": routers[rid]["name"],
+                "host": routers[rid]["host"],
+                "at": "Now",
+                "at_iso": now.isoformat(),
+                "from_score": 100,
+                "to_score": score,
+                "status": status,
+                "reason": status_reason(status, row.get("error")),
+                "current": True,
+            }
+        )
+
+    # Prefer live explanation when the same router is still down.
+    historical = [
+        event
+        for event in historical
+        if not (
+            event["router_id"] in seen_current and event["status"]
+            == next(
+                (c["status"] for c in current if c["router_id"] == event["router_id"]),
+                None,
+            )
+        )
+    ]
+    historical.reverse()
+    events = (current + historical)[: max(1, int(max_events or 8))]
+    return {
+        "ok": True,
+        "hours": hours,
+        "events": events,
+        "current_count": len(current),
+    }

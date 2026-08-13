@@ -10,7 +10,7 @@
 {% block staff_content %}
 <section class="org-edit">
   <div class="org-edit-intro">
-    <a class="org-edit-back" href="{% url 'roles:super_admin_clients' %}">← Back to clients</a>
+    <a class="org-edit-back" href="{% url clients_list_url_name %}">← Back to clients</a>
     <div class="org-edit-hero">
       {% if client.profile_photo %}
         <img class="org-edit-avatar" src="{{ client.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
@@ -92,7 +92,7 @@
 
     <div class="org-edit-actions">
       <button type="submit" class="btn btn-primary">Save changes</button>
-      <a class="btn btn-ghost" href="{% url 'roles:super_admin_clients' %}">Cancel</a>
+      <a class="btn btn-ghost" href="{% url clients_list_url_name %}">Cancel</a>
     </div>
   </form>
 </section>

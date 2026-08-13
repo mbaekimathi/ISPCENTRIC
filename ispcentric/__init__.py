@@ -22,7 +22,6 @@ def _relax_local_mariadb_version_check() -> None:
     (requirements pin Django<5). Only patch local dev boxes — never hosted VPS.
     """
     import os
-    from functools import cached_property
     from pathlib import Path
 
     base_dir = Path(__file__).resolve().parent.parent
@@ -60,17 +59,34 @@ def _relax_local_mariadb_version_check() -> None:
         return
 
     try:
+        from functools import cached_property as functools_cached_property
+
         from django.db.backends.mysql import features as mysql_features
+        from django.utils.functional import cached_property as django_cached_property
 
-        original_descriptor = mysql_features.DatabaseFeatures.minimum_database_version
-        if isinstance(original_descriptor, cached_property):
-            original_minimum_version = original_descriptor.func
-        elif hasattr(original_descriptor, "fget"):
-            original_minimum_version = original_descriptor.fget
-        else:
-            original_minimum_version = original_descriptor
+        def _feature_getter(descriptor):
+            # Django and stdlib cached_property both need __set_name__ when
+            # defined on the class. After class creation, unwrap the callable.
+            if isinstance(
+                descriptor, (django_cached_property, functools_cached_property)
+            ):
+                return getattr(descriptor, "real_func", None) or descriptor.func
+            fget = getattr(descriptor, "fget", None)
+            if callable(fget):
+                return fget
+            if callable(descriptor):
+                return descriptor
+            raise TypeError(
+                f"Unsupported database feature descriptor: {descriptor!r}"
+            )
 
-        @cached_property
+        original_minimum_version = _feature_getter(
+            mysql_features.DatabaseFeatures.minimum_database_version
+        )
+
+        # Use a normal property. Assigning functools.cached_property after
+        # class creation skips __set_name__ and crashes on Python 3.12+.
+        @property
         def minimum_database_version(self):
             if getattr(self.connection, "mysql_is_mariadb", False):
                 return (10, 4)
@@ -80,15 +96,9 @@ def _relax_local_mariadb_version_check() -> None:
             minimum_database_version
         )
 
-        original_insert_descriptor = (
+        original_can_return = _feature_getter(
             mysql_features.DatabaseFeatures.can_return_columns_from_insert
         )
-        if isinstance(original_insert_descriptor, cached_property):
-            original_can_return = original_insert_descriptor.func
-        elif hasattr(original_insert_descriptor, "fget"):
-            original_can_return = original_insert_descriptor.fget
-        else:
-            original_can_return = original_insert_descriptor
 
         @property
         def can_return_columns_from_insert(self):

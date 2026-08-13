@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 import string
+import threading
 from typing import Iterable
 
 from django.db import IntegrityError, transaction
@@ -100,11 +101,15 @@ def redeem_access_voucher(
     code: str,
     customer: Customer | None = None,
     mac: str = "",
+    provision: bool = True,
+    wait_first: bool = True,
+    quick: bool = True,
 ) -> dict:
     """
     Redeem a VALID voucher once: apply the paid package and authorize the router.
 
     Marks the voucher EXPIRED (used). Returns provision details for the pay page.
+    ``provision=False`` applies the package only (no MikroTik call).
     """
     compact = normalize_voucher_code(code)
     if len(compact) < 6:
@@ -146,39 +151,54 @@ def redeem_access_voucher(
         target.plan = paid_plan
         target.save(update_fields=["plan"])
 
-    try:
-        apply_subscription_renewal(target, plan=paid_plan)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    stk = voucher.stk_request
+    # Auto-connect may already have applied this payment; don't double-extend.
+    if stk is None or not stk.subscription_applied:
+        try:
+            apply_subscription_renewal(target, plan=paid_plan)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
 
     voucher.status = AccessVoucher.Status.EXPIRED
     voucher.redeemed_at = timezone.now()
     if mac:
+        from billing.devices import attach_hotspot_device, normalize_device_mac
+
+        mac = normalize_device_mac(mac)
         voucher.redeemed_mac = mac[:17]
+        attach_hotspot_device(target, mac, enforce_cap=True)
     voucher.save(update_fields=["status", "redeemed_at", "redeemed_mac"])
 
-    stk = voucher.stk_request
     if stk is not None and not stk.subscription_applied:
         stk.subscription_applied = True
         stk.save(update_fields=["subscription_applied"])
 
-    provision = {"ok": False, "allowed": False}
-    try:
-        from core.mikrotik_connect import sync_customer_subscription_access
+    nas = {"ok": False, "allowed": False}
+    if provision:
+        try:
+            from core.subscription_sync import enqueue_customer_subscription_sync
 
-        provision = sync_customer_subscription_access(
-            target,
-            provision=True,
-            reauthenticate=False,
-        )
-    except Exception:  # noqa: BLE001 — package already applied
-        logger.exception(
-            "Voucher %s redeemed for customer %s but MikroTik sync failed",
-            voucher.code,
-            target.pk,
-        )
+            nas = (
+                enqueue_customer_subscription_sync(
+                    target.pk,
+                    True,
+                    wait_first=wait_first,
+                    quick=quick,
+                    reauthenticate=False,
+                )
+                or nas
+            )
+        except Exception:  # noqa: BLE001 — package already applied
+            logger.exception(
+                "Voucher %s redeemed for customer %s but MikroTik sync failed",
+                voucher.code,
+                target.pk,
+            )
 
     target.refresh_from_db()
+    from core.subscription_sync import nas_access_ready
+
+    authorized = nas_access_ready(nas) if nas else False
     return {
         "ok": True,
         "activated": True,
@@ -188,16 +208,153 @@ def redeem_access_voucher(
         "account_number": target.account_number,
         "package_start": target.package_start.isoformat() if target.package_start else "",
         "package_end": target.package_end.isoformat() if target.package_end else "",
-        "authorized": bool(provision.get("ok") and provision.get("allowed")),
-        "offline": bool(provision.get("offline")),
+        "authorized": authorized,
+        "offline": bool(nas.get("offline")),
         "authorization_error": (
             ""
-            if provision.get("ok") and provision.get("allowed")
-            else (provision.get("message") or "Package activated; router authorize retry needed.")
+            if authorized
+            else (nas.get("message") or "Package activated; router authorize retry needed.")
         ),
-        "can_retry_authorize": not bool(provision.get("ok") and provision.get("allowed")),
+        "can_retry_authorize": not authorized,
         "stk_id": stk.pk if stk else None,
         **voucher_payload(voucher),
+    }
+
+
+def activate_paid_subscription_stk(
+    stk: StkPushRequest,
+    *,
+    mac: str = "",
+    wait_first: bool = False,
+    quick: bool = True,
+    background: bool = False,
+) -> dict:
+    """
+    Apply the paid package and push MikroTik for the customer who just paid.
+
+    The voucher stays VALID until NAS authorize succeeds, so the pay page can
+    fall back to manual entry if auto-connect does not start surfing.
+    ``background=True`` returns immediately (Daraja callback must not wait on NAS).
+    """
+    if stk.purpose != StkPushRequest.Purpose.SUBSCRIPTION:
+        return {"ok": False, "skipped": True, "reason": "not_subscription"}
+    if stk.status != StkPushRequest.Status.SUCCESS:
+        return {"ok": False, "skipped": True, "reason": "not_success"}
+
+    if background:
+        stk_id = stk.pk
+        mac_value = (mac or "").strip()
+
+        def _run(pk: int = stk_id, mac_hint: str = mac_value) -> None:
+            from django.db import connection
+
+            try:
+                request = StkPushRequest.objects.select_related(
+                    "customer",
+                    "customer__plan",
+                    "customer__router",
+                    "organization",
+                ).get(pk=pk)
+                activate_paid_subscription_stk(
+                    request,
+                    mac=mac_hint,
+                    wait_first=False,
+                    quick=True,
+                    background=False,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Background STK activate failed for stk=%s", pk)
+            finally:
+                connection.close()
+
+        threading.Thread(
+            target=_run, daemon=True, name=f"stk-activate-{stk.pk}"
+        ).start()
+        return {"ok": True, "queued": True}
+
+    customer = stk.customer
+    if customer is None:
+        return {"ok": False, "error": "No customer on this payment."}
+
+    device_mac = (mac or getattr(customer, "hotspot_mac", None) or "").strip()
+    voucher = AccessVoucher.objects.filter(stk_request=stk).first()
+    if voucher is None:
+        try:
+            voucher = create_voucher_for_stk(stk)
+        except Exception:  # noqa: BLE001
+            logger.exception("Could not create voucher while activating STK %s", stk.pk)
+            return {"ok": False, "error": "Could not create voucher."}
+
+    if not stk.subscription_applied:
+        paid_plan = voucher.plan or customer.plan
+        if paid_plan is not None and customer.plan_id != paid_plan.pk:
+            customer.plan = paid_plan
+            customer.save(update_fields=["plan"])
+        try:
+            apply_subscription_renewal(customer, plan=paid_plan)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        stk.subscription_applied = True
+        stk.save(update_fields=["subscription_applied"])
+        if device_mac:
+            from billing.devices import attach_hotspot_device, normalize_device_mac
+
+            attach_hotspot_device(
+                customer, normalize_device_mac(device_mac), enforce_cap=True
+            )
+        customer.refresh_from_db()
+
+    nas = {"ok": False, "allowed": False}
+    try:
+        from core.subscription_sync import enqueue_customer_subscription_sync
+
+        nas = (
+            enqueue_customer_subscription_sync(
+                customer.pk,
+                True,
+                wait_first=wait_first,
+                quick=quick,
+                reauthenticate=False,
+            )
+            or nas
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "STK %s package applied but MikroTik sync failed for customer %s",
+            stk.pk,
+            customer.pk,
+        )
+    from core.subscription_sync import nas_access_ready
+
+    authorized = nas_access_ready(nas)
+    if authorized and voucher is not None and voucher.status == AccessVoucher.Status.VALID:
+        voucher.status = AccessVoucher.Status.EXPIRED
+        voucher.redeemed_at = timezone.now()
+        if device_mac:
+            from billing.devices import normalize_device_mac
+
+            voucher.redeemed_mac = normalize_device_mac(device_mac)[:17]
+            voucher.save(update_fields=["status", "redeemed_at", "redeemed_mac"])
+        else:
+            voucher.save(update_fields=["status", "redeemed_at"])
+    return {
+        "ok": True,
+        "activated": True,
+        "already_applied": True,
+        "authorized": authorized,
+        "offline": bool(nas.get("offline")),
+        "authorization_error": (
+            ""
+            if authorized
+            else (nas.get("message") or "Package activated; router authorize retry needed.")
+        ),
+        "can_retry_authorize": not authorized,
+        "stk_id": stk.pk,
+        "voucher_code": format_voucher_code(voucher.code) if voucher else "",
+        "voucher_status": voucher.status if voucher else "",
+        "voucher_redeemable": bool(
+            voucher is not None and voucher.status == AccessVoucher.Status.VALID
+        ),
     }
 
 
@@ -261,14 +418,17 @@ def attach_voucher_to_stk_status(payload: dict, stk: StkPushRequest) -> dict:
             logger.exception("Could not create voucher for STK %s", stk.pk)
             voucher = None
     payload.update(voucher_payload(voucher))
-    if voucher is not None and voucher.status == AccessVoucher.Status.VALID:
-        # Paid but not yet activated — do not claim authorized.
+    voucher_valid = bool(
+        voucher is not None and voucher.status == AccessVoucher.Status.VALID
+    )
+    payload["voucher_fallback"] = bool(
+        voucher_valid and payload.get("subscription_applied") and not payload.get("authorized")
+    )
+    if voucher_valid and not payload.get("subscription_applied"):
         payload["needs_voucher"] = True
         if "authorized" not in payload:
             payload["authorized"] = False
-    elif voucher is not None and voucher.status == AccessVoucher.Status.EXPIRED:
-        payload["needs_voucher"] = False
-    elif voucher is not None and voucher.status == AccessVoucher.Status.INVALID:
+    else:
         payload["needs_voucher"] = False
     return payload
 
