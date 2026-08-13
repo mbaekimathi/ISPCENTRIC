@@ -1067,7 +1067,7 @@ class AccountNumberFromPhoneTests(TestCase):
 
 
 class AccessVoucherLifecycleTests(TestCase):
-    """Payment → valid voucher → redeem/expired → surfing/invalid."""
+    """Payment → valid voucher → redeem/invalid (used) → cannot reuse."""
 
     def setUp(self):
         self.owner = User.objects.create_user("owner-voucher", password="x")
@@ -1144,7 +1144,7 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
         sync_mock.assert_not_called()
 
-    def test_redeem_activates_once_and_marks_expired(self):
+    def test_redeem_activates_once_and_marks_invalid(self):
         from billing.models import AccessVoucher
         from billing.stk import fulfill_successful_stk
         from billing.vouchers import redeem_access_voucher
@@ -1181,15 +1181,16 @@ class AccessVoucherLifecycleTests(TestCase):
 
         self.assertTrue(first["ok"])
         self.assertTrue(first["activated"])
-        self.assertEqual(first["voucher_status"], AccessVoucher.Status.EXPIRED)
+        self.assertEqual(first["voucher_status"], AccessVoucher.Status.INVALID)
         self.assertTrue(first["authorized"])
         self.assertIsNotNone(self.customer.package_end)
         self.assertTrue(stk.subscription_applied)
-        self.assertEqual(voucher.status, AccessVoucher.Status.EXPIRED)
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
+        self.assertIsNotNone(voucher.invalidated_at)
         self.assertFalse(second["ok"])
-        self.assertEqual(second.get("voucher_status"), "expired")
+        self.assertEqual(second.get("voucher_status"), AccessVoucher.Status.INVALID)
 
-    def test_surfing_marks_expired_voucher_invalid(self):
+    def test_surfing_after_redeem_keeps_voucher_invalid(self):
         from billing.models import AccessVoucher
         from billing.stk import fulfill_successful_stk
         from billing.vouchers import (
@@ -1208,11 +1209,11 @@ class AccessVoucherLifecycleTests(TestCase):
                 organization=self.org, code=voucher.code, customer=self.customer
             )
         voucher.refresh_from_db()
-        self.assertEqual(voucher.status, AccessVoucher.Status.EXPIRED)
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
 
         changed = invalidate_vouchers_for_surfing_customers([self.customer])
         voucher.refresh_from_db()
-        self.assertEqual(changed, 1)
+        self.assertEqual(changed, 0)
         self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
         self.assertIsNotNone(voucher.invalidated_at)
 
@@ -1275,9 +1276,34 @@ class AccessVoucherLifecycleTests(TestCase):
 
         response = self.client.get(f"/hotspot/{self.org.join_code}/pay/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Have a voucher?")
+        self.assertContains(response, self.org.name)
+        self.assertContains(response, 'name="phone"')
+        self.assertContains(response, 'name="plan_id"')
+        self.assertNotContains(response, "Have a voucher?")
         self.assertContains(response, 'name="voucher_code"')
         self.assertContains(response, "Activate voucher")
+        self.assertContains(response, 'data-voucher-box hidden')
+
+    def test_pay_page_shows_package_image(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00"
+            b"\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x00\x03\x00\x01"
+            b"\x00\x05\xfe\xd4\xef\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        self.plan.image.save(
+            "daily.png",
+            SimpleUploadedFile("daily.png", png, content_type="image/png"),
+            save=True,
+        )
+        self.plan.refresh_from_db()
+
+        response = self.client.get(f"/hotspot/{self.org.join_code}/pay/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.plan.image.url)
+        self.assertContains(response, 'class="plan-image"')
 
     def test_client_billing_lists_and_shares_voucher(self):
         from billing.models import AccessVoucher, StkPushRequest
@@ -1331,7 +1357,7 @@ class AccessVoucherLifecycleTests(TestCase):
         from billing.models import AccessVoucher
 
         voucher = AccessVoucher.objects.get(stk_request=stk)
-        self.assertEqual(voucher.status, AccessVoucher.Status.EXPIRED)
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
         self.assertTrue(result.get("surfing"))
 
     def test_auto_connect_keeps_voucher_when_nas_fails(self):
@@ -1443,6 +1469,187 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(result["ok"])
         activate.assert_called_once()
         self.assertTrue(activate.call_args.kwargs.get("background"))
+
+
+class HotspotMultiDeviceVoucherTests(TestCase):
+    """A 3-device Hotspot package issues 3 one-time vouchers."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-hs-vouchers", password="x")
+        self.org = Organization.objects.create(
+            name="Family HS ISP",
+            owner=self.owner,
+            join_code="667788",
+            hotspot_enabled=True,
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Family 3",
+            price="150.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=3,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Family Phone",
+            phone="254700000888",
+            account_number="HOT-FAM-V",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:88",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+
+    def _stk(self, **kwargs):
+        from decimal import Decimal
+
+        from billing.models import StkPushRequest
+
+        defaults = {
+            "organization": self.org,
+            "customer": self.customer,
+            "plan": self.plan,
+            "amount": Decimal("150.00"),
+            "phone": "254700000888",
+            "account_reference": self.customer.account_number,
+            "checkout_request_id": "ws_CO_FAM_VOUCHER",
+            "status": StkPushRequest.Status.PENDING,
+            "purpose": StkPushRequest.Purpose.SUBSCRIPTION,
+        }
+        defaults.update(kwargs)
+        return StkPushRequest.objects.create(**defaults)
+
+    def test_plan_label_shows_device_vouchers(self):
+        self.assertEqual(self.plan.max_devices_label, "3 devices · 3 vouchers")
+
+    def test_payment_creates_one_voucher_per_device(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+
+        stk = self._stk()
+        result = fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="FAM1"
+        )
+        codes = result.get("voucher_codes") or []
+        self.assertEqual(result["voucher_count"], 3)
+        self.assertEqual(result["voucher_valid_count"], 3)
+        self.assertEqual(len(codes), 3)
+        self.assertEqual(
+            AccessVoucher.objects.filter(stk_request=stk, status=AccessVoucher.Status.VALID).count(),
+            3,
+        )
+        self.assertTrue(result["needs_voucher"])
+
+    def test_fulfill_is_idempotent_and_does_not_mint_extras(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+
+        stk = self._stk()
+        first = fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM2")
+        second = fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM2")
+        self.assertEqual(AccessVoucher.objects.filter(stk_request=stk).count(), 3)
+        self.assertEqual(sorted(first["voucher_codes"]), sorted(second["voucher_codes"]))
+
+    def test_redeem_one_device_leaves_sibling_vouchers_valid(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import redeem_access_voucher
+
+        stk = self._stk()
+        fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM3")
+        vouchers = list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
+        first, second, third = vouchers
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            return_value={"ok": True, "allowed": True},
+        ):
+            used = redeem_access_voucher(
+                organization=self.org,
+                code=first.code,
+                customer=self.customer,
+                mac="AA:BB:CC:DD:EE:88",
+            )
+            blocked = redeem_access_voucher(
+                organization=self.org,
+                code=first.code,
+                customer=self.customer,
+            )
+            extra = redeem_access_voucher(
+                organization=self.org,
+                code=second.code,
+                mac="AA:BB:CC:DD:EE:89",
+            )
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        third.refresh_from_db()
+        self.assertTrue(used["ok"])
+        self.assertEqual(first.status, AccessVoucher.Status.INVALID)
+        self.assertFalse(blocked["ok"])
+        self.assertTrue(extra["ok"])
+        self.assertEqual(second.status, AccessVoucher.Status.INVALID)
+        self.assertEqual(third.status, AccessVoucher.Status.VALID)
+        self.assertEqual(second.redeemed_mac, "AA:BB:CC:DD:EE:89")
+
+    def test_surfing_does_not_burn_unused_device_vouchers(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import invalidate_vouchers_for_surfing_customers
+
+        stk = self._stk()
+        fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM4")
+        changed = invalidate_vouchers_for_surfing_customers([self.customer])
+        self.assertEqual(changed, 1)
+        statuses = list(
+            AccessVoucher.objects.filter(stk_request=stk)
+            .order_by("id")
+            .values_list("status", flat=True)
+        )
+        self.assertEqual(statuses.count(AccessVoucher.Status.INVALID), 1)
+        self.assertEqual(statuses.count(AccessVoucher.Status.VALID), 2)
+
+    def test_pppoe_payment_still_issues_one_voucher(self):
+        from billing.models import AccessVoucher, BillingPlan, Customer, StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Home PPP",
+            price="1000.00",
+            duration=BillingPlan.Duration.MONTHLY,
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            service_type=BillingPlan.ServiceType.PPPOE,
+            max_devices=4,
+        )
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Home PPP",
+            phone="254700000889",
+            account_number="PPP-FAM-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="homeppp",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=plan,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=plan,
+            amount=plan.price,
+            phone=customer.phone,
+            account_reference=customer.account_number,
+            checkout_request_id="ws_CO_PPP_VOUCHER",
+            purpose=StkPushRequest.Purpose.SUBSCRIPTION,
+        )
+        result = fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="PPP1")
+        self.assertEqual(result["voucher_count"], 1)
+        self.assertEqual(AccessVoucher.objects.filter(stk_request=stk).count(), 1)
 
 
 class CashRechargeTests(TestCase):

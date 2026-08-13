@@ -1505,7 +1505,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["max_devices"].required = False
         self.fields["max_devices"].help_text = (
             "Leave blank for unlimited devices. "
-            "Hotspot: phones/laptops on one paid account. "
+            "Hotspot: number of devices; payment creates one one-time voucher per device. "
             "PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited)."
         )
         self.fields["duration"].choices = BillingPlan.Duration.choices

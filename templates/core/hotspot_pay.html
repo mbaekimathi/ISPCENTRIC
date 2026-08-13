@@ -1,0 +1,1532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#070b14">
+  <title>{{ org_name }} — Pay</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --ink: #f4f7fb;
+      --muted: #9aa8b8;
+      --glass: rgba(16, 22, 34, 0.62);
+      --line: rgba(255, 255, 255, 0.12);
+      --brand: #2ee6c7;
+      --brand-deep: #0e9f8a;
+      --warn: #ffb020;
+      --ok: #3dd68c;
+      --danger: #ff6b6b;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      --font: "Segoe UI Variable", "Segoe UI", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
+    }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      font-family: var(--font);
+      color: var(--ink);
+      background: #070b14;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .atmosphere {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(50px);
+      opacity: 0.7;
+      animation: drift 18s var(--ease) infinite alternate;
+    }
+
+    .orb-a {
+      width: 22rem; height: 22rem;
+      left: -6rem; top: -7rem;
+      background: radial-gradient(circle, #1ee0c4 0%, transparent 68%);
+    }
+
+    .orb-b {
+      width: 18rem; height: 18rem;
+      right: -5rem; top: 18%;
+      background: radial-gradient(circle, #6b5cff 0%, transparent 70%);
+      animation-duration: 22s;
+    }
+
+    .orb-c {
+      width: 20rem; height: 20rem;
+      left: 20%; bottom: -8rem;
+      background: radial-gradient(circle, #ffb020 0%, transparent 72%);
+      animation-duration: 26s;
+    }
+
+    .grain {
+      position: absolute;
+      inset: 0;
+      opacity: 0.18;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+      mix-blend-mode: overlay;
+    }
+
+    @keyframes drift {
+      from { transform: translate3d(0, 0, 0) scale(1); }
+      to { transform: translate3d(4%, 6%, 0) scale(1.08); }
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      width: min(100%, 56rem);
+      margin: 0 auto;
+      padding:
+        max(0.7rem, env(safe-area-inset-top, 0px))
+        max(0.7rem, env(safe-area-inset-right, 0px))
+        max(0.85rem, env(safe-area-inset-bottom, 0px))
+        max(0.7rem, env(safe-area-inset-left, 0px));
+    }
+
+    .hero {
+      display: grid;
+      justify-items: start;
+      gap: 0.7rem;
+      margin-bottom: 1.15rem;
+    }
+
+    .kicker {
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.32rem 0.7rem 0.32rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--brand);
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .kicker::before {
+      content: "";
+      width: 0.48rem;
+      height: 0.48rem;
+      border-radius: 50%;
+      background: var(--brand);
+      box-shadow: 0 0 0 0 rgba(46, 230, 199, 0.7);
+      animation: ping 1.8s ease-out infinite;
+    }
+
+    @keyframes ping {
+      70% { box-shadow: 0 0 0 0.55rem rgba(46, 230, 199, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(46, 230, 199, 0); }
+    }
+
+    .brand {
+      margin: 0;
+      max-width: 14ch;
+      font-size: clamp(2rem, 9vw, 3.15rem);
+      font-weight: 800;
+      letter-spacing: -0.07em;
+      line-height: 0.92;
+      background: linear-gradient(180deg, #fff 20%, #c9d4e3 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .org-phone {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-top: 0.15rem;
+      padding: 0.55rem 0.85rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--line);
+      color: #fff;
+      font-size: 0.92rem;
+      font-weight: 700;
+      text-decoration: none;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .org-phone span {
+      opacity: 0.55;
+      font-size: 0.72rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .stage {
+      display: grid;
+      gap: 0.95rem;
+    }
+
+    .section-label {
+      margin: 0 0 0.15rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 750;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .plan-grid {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      gap: 0.7rem;
+    }
+
+    .plan-card {
+      --card-accent: #2ee6c7;
+      position: relative;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      margin: 0;
+      width: min(9.6rem, calc(50% - 0.35rem));
+      max-width: 9.6rem;
+      flex: 0 1 9.6rem;
+      overflow: hidden;
+      cursor: pointer;
+      border-radius: 1rem;
+      border: 2px solid rgba(210, 224, 240, 0.42);
+      background: #182234;
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.55),
+        0 10px 24px rgba(0, 0, 0, 0.4);
+      transition: transform 0.2s var(--ease), border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .plan-card:nth-child(6n+1) { --card-accent: #2ee6c7; }
+    .plan-card:nth-child(6n+2) { --card-accent: #7aa2ff; }
+    .plan-card:nth-child(6n+3) { --card-accent: #ffb020; }
+    .plan-card:nth-child(6n+4) { --card-accent: #3dd68c; }
+    .plan-card:nth-child(6n+5) { --card-accent: #c084fc; }
+    .plan-card:nth-child(6n+6) { --card-accent: #ff8a5b; }
+
+    .plan-card input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+      .plan-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.4);
+      }
+    }
+
+    .plan-card.is-selected {
+      border-color: var(--card-accent);
+      box-shadow:
+        0 0 0 1px var(--card-accent),
+        0 10px 24px rgba(0, 0, 0, 0.32);
+    }
+
+    .plan-media {
+      position: relative;
+      display: block;
+      overflow: hidden;
+      isolation: isolate;
+      aspect-ratio: 16 / 10;
+      border: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      background: #0d1420;
+    }
+
+    .plan-image {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      background: #0d1420;
+    }
+
+    .plan-art {
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 80% 15%, rgba(255, 255, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 20% 90%, rgba(46, 230, 199, 0.35), transparent 42%),
+        linear-gradient(160deg, #152033 0%, #0c1320 100%);
+    }
+
+    .plan-card:nth-child(6n+2) .plan-art {
+      background:
+        radial-gradient(circle at 80% 15%, rgba(255, 255, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 20% 90%, rgba(122, 162, 255, 0.4), transparent 42%),
+        linear-gradient(160deg, #141b33 0%, #0c1020 100%);
+    }
+    .plan-card:nth-child(6n+3) .plan-art {
+      background:
+        radial-gradient(circle at 80% 15%, rgba(255, 255, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 20% 90%, rgba(255, 176, 32, 0.38), transparent 42%),
+        linear-gradient(160deg, #2a1d10 0%, #120e0a 100%);
+    }
+    .plan-card:nth-child(6n+4) .plan-art {
+      background:
+        radial-gradient(circle at 80% 15%, rgba(255, 255, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 20% 90%, rgba(61, 214, 140, 0.38), transparent 42%),
+        linear-gradient(160deg, #10251c 0%, #0a1410 100%);
+    }
+
+    .plan-art::before,
+    .plan-art::after {
+      content: "";
+      position: absolute;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-radius: 50%;
+      opacity: 0.55;
+    }
+
+    .plan-art::before {
+      width: 4.4rem; height: 4.4rem;
+      right: -0.9rem; top: -1rem;
+    }
+
+    .plan-art::after {
+      width: 2.6rem; height: 2.6rem;
+      right: 0.2rem; top: 0.05rem;
+      border-width: 2px;
+    }
+
+    .plan-media.has-photo .plan-art,
+    .plan-media.has-photo .plan-mono {
+      display: none;
+    }
+
+    .plan-mono {
+      position: absolute;
+      left: 0.6rem;
+      top: 0.55rem;
+      z-index: 1;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.08em;
+      color: rgba(255, 255, 255, 0.88);
+      text-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .plan-shade { display: none; }
+
+    .plan-check {
+      position: absolute;
+      top: 0.45rem;
+      right: 0.45rem;
+      z-index: 2;
+      width: 1.05rem;
+      height: 1.05rem;
+      border-radius: 50%;
+      border: 1.5px solid rgba(255, 255, 255, 0.45);
+      background: rgba(8, 12, 20, 0.35);
+      backdrop-filter: blur(8px);
+    }
+
+    .plan-card.is-selected .plan-check {
+      border-color: transparent;
+      background: var(--card-accent);
+      box-shadow: 0 0 16px rgba(46, 230, 199, 0.55);
+    }
+
+    .plan-card.is-selected .plan-check::after {
+      content: "";
+      position: absolute;
+      left: 0.28rem;
+      top: 0.16rem;
+      width: 0.26rem;
+      height: 0.46rem;
+      border: solid #06221c;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
+
+    .plan-copy {
+      display: grid;
+      align-content: start;
+      gap: 0.32rem;
+      padding: 0.55rem 0.6rem 0.65rem;
+      background: #182234;
+    }
+
+    .plan-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+    }
+
+    .plan-chips span {
+      padding: 0.12rem 0.35rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      color: #d5deea;
+      font-size: 0.56rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .plan-copy strong {
+      display: block;
+      color: #fff;
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .plan-price {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.2rem;
+      width: max-content;
+      padding: 0.22rem 0.45rem;
+      border-radius: 0.45rem;
+      background: var(--card-accent);
+      color: #06221c;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+
+    .plan-price small {
+      font-size: 0.52rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      opacity: 0.72;
+    }
+
+    form.login { display: grid; gap: 0.8rem; }
+
+    .checkout {
+      width: min(100%, 22.5rem);
+      justify-self: start;
+      display: grid;
+      gap: 0.7rem;
+      padding: clamp(0.8rem, 2.8vw, 1.05rem);
+      border-radius: 1.25rem;
+      background: #182234;
+      border: 2px solid rgba(210, 224, 240, 0.42);
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.55),
+        0 14px 34px rgba(0, 0, 0, 0.42);
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 0.4rem;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .field input {
+      width: 100%;
+      min-height: 3.15rem;
+      border: 1.5px solid rgba(210, 224, 240, 0.28);
+      border-radius: 1rem;
+      padding: 0.8rem 0.95rem;
+      font: 700 1.02rem/1.2 var(--font);
+      color: #fff;
+      background: #0f1624;
+      outline: none;
+    }
+
+    .field input::placeholder { color: rgba(255, 255, 255, 0.35); }
+
+    .field input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 4px rgba(46, 230, 199, 0.16);
+    }
+
+    button.cta {
+      display: block;
+      width: 100%;
+      min-height: 3.25rem;
+      border: 0;
+      border-radius: 1.05rem;
+      padding: 0.95rem 1rem;
+      background: linear-gradient(180deg, #5ff0d4 0%, #2ee6c7 42%, #12b89d 100%);
+      color: #06221c;
+      font: 800 1.02rem/1 var(--font);
+      letter-spacing: -0.03em;
+      box-shadow: 0 14px 30px rgba(46, 230, 199, 0.28);
+      cursor: pointer;
+    }
+
+    button.cta:disabled { opacity: 0.6; cursor: progress; }
+
+    .meta, .error {
+      margin: 0;
+      padding: 0.85rem 0.95rem;
+      border-radius: 1rem;
+      font-size: 0.84rem;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .meta {
+      color: var(--muted);
+      background: #182234;
+      border: 2px solid rgba(210, 224, 240, 0.42);
+    }
+
+    .error {
+      color: #ffd4d4;
+      background: rgba(255, 107, 107, 0.1);
+      border: 1px solid rgba(255, 107, 107, 0.28);
+    }
+
+    .voucher-box,
+    .voucher-code-reveal {
+      display: grid;
+      gap: 0.7rem;
+      padding: 0.95rem;
+      border-radius: 1.2rem;
+      background: #182234;
+      border: 2px solid rgba(210, 224, 240, 0.42);
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+    }
+
+    .voucher-box[hidden],
+    .voucher-code-reveal[hidden] {
+      display: none !important;
+    }
+
+    .voucher-box h2 {
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: -0.03em;
+    }
+
+    .voucher-box .voucher-copy,
+    .voucher-code-reveal .voucher-copy {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.45;
+    }
+
+    .voucher-code-reveal {
+      display: none;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+    }
+
+    .voucher-code-reveal.is-visible { display: grid; }
+
+    .voucher-code-reveal strong {
+      font-size: 1.1rem;
+      letter-spacing: 0.08em;
+      color: var(--brand);
+    }
+
+    .voucher-code-reveal button,
+    .voucher-copy-btn {
+      border: 0;
+      background: transparent;
+      color: var(--brand);
+      font: 750 0.8rem/1 var(--font);
+      cursor: pointer;
+    }
+
+    .voucher-box.is-fallback {
+      border-color: rgba(46, 230, 199, 0.35);
+      box-shadow: 0 0 0 4px rgba(46, 230, 199, 0.08);
+    }
+
+    .pay-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding:
+        max(0.6rem, env(safe-area-inset-top, 0px))
+        max(0.6rem, env(safe-area-inset-right, 0px))
+        max(0.6rem, env(safe-area-inset-bottom, 0px))
+        max(0.6rem, env(safe-area-inset-left, 0px));
+      background: rgba(4, 8, 14, 0.72);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .pay-overlay[hidden] { display: none !important; }
+
+    .pay-overlay-card {
+      width: min(100%, 20rem);
+      max-height: min(86dvh, 34rem);
+      overflow: auto;
+      display: grid;
+      justify-items: center;
+      gap: clamp(0.3rem, 1.4vw, 0.55rem);
+      padding: clamp(0.75rem, 3vw, 1.1rem);
+      border-radius: 1rem;
+      background: rgba(14, 20, 32, 0.92);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+      text-align: center;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .pay-overlay:not([hidden]) {
+      animation: overlayIn 0.32s ease both;
+    }
+
+    .pay-overlay:not([hidden]) .pay-overlay-card {
+      animation: cardIn 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    @keyframes overlayIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(0.7rem) scale(0.92); }
+      to { opacity: 1; transform: none; }
+    }
+
+    .pay-overlay.is-error .payment-loader,
+    .pay-overlay.is-success .payment-loader { display: none; }
+    .pay-overlay:not(.is-success) .payment-mark-ok { display: none; }
+    .pay-overlay:not(.is-error) .payment-mark-err { display: none; }
+
+    .pay-overlay:not(.is-error):not(.is-success) .pay-overlay-actions { display: none; }
+    .pay-overlay.is-success .retry { display: none; }
+    .pay-overlay:not(.is-success) .pay-overlay-continue { display: none; }
+    .pay-overlay:not(.is-success) .overlay-vouchers { display: none; }
+    .pay-overlay.is-error .loader-dots,
+    .pay-overlay.is-success .loader-dots { display: none; }
+
+    .payment-loader {
+      position: relative;
+      width: 3.4rem;
+      height: 3.4rem;
+      margin: 0.15rem 0 0.2rem;
+    }
+
+    .loader-halo,
+    .loader-ring,
+    .loader-orbit,
+    .loader-core {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+    }
+
+    .loader-halo {
+      inset: -0.18rem;
+      background: conic-gradient(
+        from 180deg,
+        transparent 0 38%,
+        #7aa2ff 55%,
+        #2ee6c7 78%,
+        #ffb020 90%,
+        transparent 100%
+      );
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 100%);
+      mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 100%);
+      animation: spin 1.05s linear infinite;
+      filter: drop-shadow(0 0 8px rgba(46, 230, 199, 0.45));
+    }
+
+    .loader-ring {
+      border: 1.5px solid rgba(46, 230, 199, 0.28);
+      animation: ripple 2.1s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+    }
+
+    .loader-ring.r1 { inset: 0.08rem; animation-delay: 0s; }
+    .loader-ring.r2 { inset: -0.28rem; animation-delay: 0.45s; }
+    .loader-ring.r3 { inset: -0.58rem; animation-delay: 0.9s; border-color: rgba(122, 162, 255, 0.22); }
+
+    .loader-orbit {
+      animation: spin 2.6s linear infinite;
+    }
+
+    .loader-orbit i {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 0.34rem;
+      height: 0.34rem;
+      margin: -0.17rem;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 10px #2ee6c7;
+    }
+
+    .loader-orbit i:nth-child(1) { transform: rotate(0deg) translateY(-1.45rem); background: #2ee6c7; }
+    .loader-orbit i:nth-child(2) { transform: rotate(120deg) translateY(-1.45rem); background: #7aa2ff; animation: spark 1.2s ease-in-out infinite; }
+    .loader-orbit i:nth-child(3) { transform: rotate(240deg) translateY(-1.45rem); background: #ffb020; animation: spark 1.2s ease-in-out 0.4s infinite; }
+
+    .loader-core {
+      inset: 28%;
+      background:
+        radial-gradient(circle at 32% 28%, #fff 0 18%, #8ff7e4 36%, #2ee6c7 68%, #0e9f8a 100%);
+      box-shadow:
+        0 0 0 3px rgba(46, 230, 199, 0.18),
+        0 0 18px rgba(46, 230, 199, 0.7);
+      animation: corePulse 1.35s ease-in-out infinite;
+    }
+
+    .loader-core::after {
+      content: "";
+      position: absolute;
+      inset: 22%;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.35);
+      filter: blur(1px);
+      animation: gleam 1.6s ease-in-out infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @keyframes ripple {
+      0% { transform: scale(0.72); opacity: 0.7; }
+      100% { transform: scale(1.28); opacity: 0; }
+    }
+
+    @keyframes corePulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.08); }
+    }
+
+    @keyframes gleam {
+      0%, 100% { opacity: 0.2; transform: translate(-12%, -10%) scale(0.8); }
+      50% { opacity: 0.7; transform: translate(10%, 8%) scale(1); }
+    }
+
+    @keyframes spark {
+      0%, 100% { opacity: 0.45; }
+      50% { opacity: 1; }
+    }
+
+    .payment-mark {
+      width: 3rem;
+      height: 3rem;
+      margin: 0.1rem 0 0.15rem;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      animation: markIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+
+    .payment-mark-ok {
+      background: rgba(61, 214, 140, 0.14);
+      box-shadow: 0 0 0 1px rgba(61, 214, 140, 0.35), 0 0 22px rgba(61, 214, 140, 0.25);
+      color: var(--ok);
+    }
+
+    .payment-mark-err {
+      background: rgba(255, 107, 107, 0.12);
+      box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.35), 0 0 22px rgba(255, 107, 107, 0.2);
+      color: var(--danger);
+      animation-name: markShake;
+    }
+
+    .payment-mark svg {
+      width: 1.35rem;
+      height: 1.35rem;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2.6;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .payment-mark-ok svg path {
+      stroke-dasharray: 28;
+      stroke-dashoffset: 28;
+      animation: draw 0.45s 0.12s ease forwards;
+    }
+
+    .payment-mark-err svg path {
+      stroke-dasharray: 20;
+      stroke-dashoffset: 20;
+      animation: draw 0.35s 0.08s ease forwards;
+    }
+
+    @keyframes markIn {
+      from { opacity: 0; transform: scale(0.7); }
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes markShake {
+      0% { opacity: 0; transform: scale(0.7); }
+      40% { opacity: 1; transform: translateX(-3px) scale(1); }
+      70% { transform: translateX(3px); }
+      100% { transform: none; }
+    }
+
+    @keyframes draw { to { stroke-dashoffset: 0; } }
+
+    .payment-waiting-title { margin: 0; font-size: clamp(0.86rem, 3.4vw, 1rem); font-weight: 800; letter-spacing: -0.03em; }
+    .payment-waiting-copy {
+      margin: 0;
+      max-width: 34ch;
+      color: var(--muted);
+      font-size: clamp(0.7rem, 2.8vw, 0.82rem);
+      line-height: 1.4;
+      font-weight: 600;
+    }
+    .payment-waiting-live {
+      margin: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.28rem;
+      color: var(--brand);
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .pay-overlay.is-error .payment-waiting-live { color: var(--danger); }
+    .pay-overlay.is-success .payment-waiting-live { color: var(--ok); }
+
+    .loader-dots {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.18rem;
+      height: 0.55rem;
+    }
+
+    .loader-dots i {
+      width: 0.28rem;
+      height: 0.28rem;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.25;
+      animation: bounceDot 1s ease-in-out infinite;
+    }
+
+    .loader-dots i:nth-child(2) { animation-delay: 0.15s; }
+    .loader-dots i:nth-child(3) { animation-delay: 0.3s; }
+
+    @keyframes bounceDot {
+      0%, 80%, 100% { opacity: 0.2; transform: translateY(0) scale(0.85); }
+      40% { opacity: 1; transform: translateY(-0.18rem) scale(1); }
+    }
+
+    .overlay-vouchers { width: 100%; display: grid; gap: 0.45rem; margin-top: 0.2rem; text-align: left; }
+    .overlay-vouchers ul { margin: 0; padding: 0; display: grid; gap: 0.45rem; }
+    .overlay-vouchers li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 0.7rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--line);
+      list-style: none;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+    }
+
+    .pay-overlay-actions { display: grid; gap: 0.35rem; width: 100%; margin-top: 0.2rem; }
+
+    .retry, .pay-overlay-continue {
+      width: 100%;
+      border: 0;
+      border-radius: 0.75rem;
+      padding: 0.6rem 0.8rem;
+      background: linear-gradient(180deg, #5ff0d4 0%, #2ee6c7 50%, #12b89d 100%);
+      color: #06221c;
+      font: 800 0.82rem/1 var(--font);
+      cursor: pointer;
+    }
+
+    .pay-overlay-dismiss {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: 700 0.76rem/1 var(--font);
+      padding: 0.35rem;
+      cursor: pointer;
+    }
+
+    body.is-paying { overflow: hidden; }
+
+    @media (max-width: 22rem) {
+      .brand { max-width: none; font-size: clamp(1.55rem, 11vw, 2.1rem); }
+      .plan-card {
+        width: 100%;
+        max-width: 14rem;
+        flex-basis: 100%;
+      }
+      .plan-copy strong { white-space: normal; }
+    }
+
+    @media (min-width: 22.5rem) {
+      .checkout {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: end;
+      }
+      .checkout .cta {
+        width: auto;
+        min-width: 8.6rem;
+        min-height: 3.15rem;
+        padding-inline: 1.1rem;
+      }
+    }
+
+    @media (max-height: 28rem) and (orientation: landscape) {
+      .hero { margin-bottom: 0.7rem; }
+      .brand { font-size: clamp(1.4rem, 5vw, 2rem); }
+      .plan-media { aspect-ratio: 16 / 9; }
+      .pay-overlay { align-items: start; }
+      .pay-overlay-card { max-height: 92dvh; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      .loader-halo,
+      .loader-ring,
+      .loader-orbit { display: none; }
+      .loader-core { inset: 22%; opacity: 1; }
+      .loader-dots i { opacity: 0.7; }
+      .payment-mark-ok svg path,
+      .payment-mark-err svg path { stroke-dashoffset: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true">
+    <span class="orb orb-a"></span>
+    <span class="orb orb-b"></span>
+    <span class="orb orb-c"></span>
+    <span class="grain"></span>
+  </div>
+
+  <div class="shell">
+    <header class="hero">
+      <p class="kicker">Live Wi‑Fi</p>
+      <h1 class="brand">{{ org_name }}</h1>
+      {% if organization.phone %}
+        <a class="org-phone" href="tel:{{ organization.phone }}"><span>Call</span> {{ organization.phone }}</a>
+      {% endif %}
+    </header>
+
+    <main class="stage" id="panel-hotspot" data-pay-panel="hotspot">
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+      {% if has_payable_plans %}
+        <form
+          class="login"
+          data-payment-form
+          method="post"
+          action="{{ hotspot_payment_start_url|default:payment_start_url }}"
+        >
+          {% csrf_token %}
+          <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
+
+          <p class="section-label">Choose your access</p>
+          <div class="plan-grid" data-plan-select>
+            {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
+            {% for plan in hotspot_plans %}
+              <label class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.first %} is-selected{% endif %}">
+                <input
+                  type="radio"
+                  name="plan_id"
+                  value="{{ plan.pk }}"
+                  data-price="{{ plan.price }}"
+                  {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.first %}checked{% endif %}
+                  required
+                >
+                <span class="plan-media{% if plan.image or plan.portal_image_url %} has-photo{% endif %}">
+                  {% if plan.image %}
+                    <img class="plan-image" src="{{ plan.image.url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
+                  {% elif plan.portal_image_url %}
+                    <img class="plan-image" src="{{ plan.portal_image_url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
+                  {% endif %}
+                  <span class="plan-art" aria-hidden="true"></span>
+                  <span class="plan-mono" aria-hidden="true">{{ plan.name|slice:":1"|upper }}</span>
+                  <span class="plan-check" aria-hidden="true"></span>
+                </span>
+                <span class="plan-copy">
+                  <span class="plan-chips">
+                    {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
+                    {% if plan.get_duration_display %}<span>{{ plan.get_duration_display }}</span>{% endif %}
+                    {% if plan.max_devices %}
+                      <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
+                    {% else %}
+                      <span>Unlimited</span>
+                    {% endif %}
+                  </span>
+                  <strong>{{ plan.name }}</strong>
+                  <span class="plan-price"><small>KES</small> {{ plan.price|floatformat:"0" }}</span>
+                </span>
+              </label>
+            {% endfor %}
+            {% endwith %}
+          </div>
+
+          <div class="checkout">
+            <div class="field">
+              <label for="hotspot-phone">M-Pesa number</label>
+              <input
+                id="hotspot-phone"
+                name="phone"
+                type="tel"
+                inputmode="tel"
+                autocomplete="tel"
+                placeholder="07xxxxxxxx"
+                value="{{ hotspot_phone_value|default:phone_value|default:'' }}"
+                required
+              >
+            </div>
+            <button type="submit" class="cta" data-payment-submit {% if not stk_ready %}disabled aria-disabled="true"{% endif %}>Pay with M-Pesa</button>
+          </div>
+        </form>
+
+        {% if not stk_ready %}
+          <p class="meta">M-Pesa is not ready yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.</p>
+        {% endif %}
+
+        <p class="meta" data-payment-status role="status" aria-live="polite" hidden></p>
+
+        <div class="voucher-code-reveal" data-voucher-reveal hidden>
+          <div>
+            <p class="voucher-copy">Payment received. Enter this code to activate:</p>
+            <strong data-voucher-code-display></strong>
+          </div>
+          <button type="button" data-voucher-copy>Copy</button>
+        </div>
+
+        <div class="voucher-box" data-voucher-box hidden>
+          <h2>Activate with voucher</h2>
+          <p class="voucher-copy">Enter a voucher code to connect this device.</p>
+          <form
+            class="login"
+            data-voucher-form
+            method="post"
+            action="{{ voucher_redeem_url }}"
+          >
+            {% csrf_token %}
+            <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
+            <div class="field">
+              <label for="hotspot-voucher-code">Voucher code</label>
+              <input
+                id="hotspot-voucher-code"
+                name="voucher_code"
+                type="text"
+                inputmode="text"
+                autocomplete="one-time-code"
+                placeholder="XXXX-XXXX"
+                data-voucher-input
+                required
+              >
+            </div>
+            <button type="submit" class="cta" data-voucher-submit>Activate voucher</button>
+          </form>
+          <p class="meta" data-voucher-status role="status" aria-live="polite"></p>
+        </div>
+      {% else %}
+        <p class="meta">No Hotspot packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.</p>
+      {% endif %}
+    </main>
+  </div>
+
+  {% if has_payable_plans %}
+  <div
+    class="pay-overlay"
+    data-payment-waiting
+    hidden
+    role="alertdialog"
+    aria-modal="true"
+    aria-labelledby="pay-waiting-title"
+    aria-describedby="pay-waiting-copy"
+  >
+    <div class="pay-overlay-card">
+      <div class="payment-loader" aria-hidden="true">
+        <span class="loader-halo"></span>
+        <span class="loader-ring r1"></span>
+        <span class="loader-ring r2"></span>
+        <span class="loader-ring r3"></span>
+        <span class="loader-orbit"><i></i><i></i><i></i></span>
+        <span class="loader-core"></span>
+      </div>
+      <div class="payment-mark payment-mark-ok" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false"><path d="M5 12.5l4.2 4.2L19 7.5"/></svg>
+      </div>
+      <div class="payment-mark payment-mark-err" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false"><path d="M7 7l10 10M17 7L7 17"/></svg>
+      </div>
+      <p class="payment-waiting-live">
+        <span data-waiting-live>Waiting</span>
+        <span class="loader-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </p>
+      <p class="payment-waiting-title" id="pay-waiting-title" data-waiting-title>Waiting for M-Pesa</p>
+      <p class="payment-waiting-copy" id="pay-waiting-copy" data-waiting-copy>
+        Enter your PIN on your phone. This page updates automatically.
+      </p>
+      <div class="overlay-vouchers" data-overlay-vouchers hidden>
+        <p class="voucher-copy">Use these codes on other devices:</p>
+        <ul data-overlay-voucher-list></ul>
+      </div>
+      <div class="pay-overlay-actions">
+        <button type="button" class="retry" data-payment-retry>Try again</button>
+        <button type="button" class="pay-overlay-continue" data-overlay-continue>Continue</button>
+        <button type="button" class="pay-overlay-dismiss" data-payment-dismiss>Back</button>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <script>
+    (function () {
+      var root = document.querySelector("[data-pay-panel]");
+      if (!root) return;
+      var welcomeUrl = "{{ welcome_url|escapejs }}" || "http://neverssl.com/";
+      var POLL_FAST_MS = 1000;
+      var POLL_SLOW_MS = 2500;
+      var POLL_GIVE_UP_MS = 600000;
+      var AUTH_RETRY_MAX = 4;
+
+      var overlay = document.querySelector("[data-payment-waiting]");
+      var waitingTitle = overlay && overlay.querySelector("[data-waiting-title]");
+      var waitingCopy = overlay && overlay.querySelector("[data-waiting-copy]");
+      var waitingLive = overlay && overlay.querySelector("[data-waiting-live]");
+      var retryBtn = overlay && overlay.querySelector("[data-payment-retry]");
+      var dismissBtn = overlay && overlay.querySelector("[data-payment-dismiss]");
+      var continueBtn = overlay && overlay.querySelector("[data-overlay-continue]");
+      var overlayVouchers = overlay && overlay.querySelector("[data-overlay-vouchers]");
+      var overlayVoucherList = overlay && overlay.querySelector("[data-overlay-voucher-list]");
+      var activeCtx = null;
+      var continueTarget = "";
+
+      function setWaiting(active, title, copy, isError, isSuccess) {
+        if (!overlay) return;
+        overlay.hidden = !active;
+        overlay.classList.toggle("is-error", !!isError);
+        overlay.classList.toggle("is-success", !!isSuccess);
+        document.body.classList.toggle("is-paying", !!active);
+        if (waitingLive) waitingLive.textContent = isError ? "Failed" : (isSuccess ? "Connected" : "Waiting");
+        if (active) {
+          if (waitingTitle && title) waitingTitle.textContent = title;
+          if (waitingCopy && copy) waitingCopy.textContent = copy;
+        }
+        if (!isSuccess && overlayVouchers) overlayVouchers.hidden = true;
+      }
+
+      function closeOverlay() {
+        setWaiting(false);
+        if (activeCtx && activeCtx.submit) activeCtx.submit.disabled = false;
+      }
+
+      if (retryBtn) {
+        retryBtn.addEventListener("click", function () {
+          if (!activeCtx || !activeCtx.form) return;
+          setWaiting(false);
+          activeCtx.form.dispatchEvent(new Event("submit", { cancelable: true }));
+        });
+      }
+      if (dismissBtn) dismissBtn.addEventListener("click", closeOverlay);
+      if (continueBtn) {
+        continueBtn.addEventListener("click", function () {
+          if (continueTarget) window.location.replace(continueTarget);
+          else closeOverlay();
+        });
+      }
+
+      function revealVoucher(code) {
+        if (!code) return;
+        var reveal = root.querySelector("[data-voucher-reveal]");
+        var display = root.querySelector("[data-voucher-code-display]");
+        var input = root.querySelector("[data-voucher-input]");
+        if (display) display.textContent = code;
+        if (reveal) {
+          reveal.hidden = false;
+          reveal.classList.add("is-visible");
+        }
+        if (input) input.value = code;
+      }
+
+      function hideVoucherDuringPay() {
+        var box = root.querySelector("[data-voucher-box]");
+        var reveal = root.querySelector("[data-voucher-reveal]");
+        if (box) {
+          box.hidden = true;
+          box.classList.remove("is-fallback");
+        }
+        if (reveal) {
+          reveal.hidden = true;
+          reveal.classList.remove("is-visible");
+        }
+      }
+
+      function showVoucherFallback(code) {
+        revealVoucher(code);
+        var box = root.querySelector("[data-voucher-box]");
+        if (!box) return;
+        box.hidden = false;
+        box.classList.add("is-fallback");
+        var heading = box.querySelector("h2");
+        if (heading) heading.textContent = "Activate with your voucher";
+        var copy = box.querySelector(".voucher-copy");
+        if (copy) {
+          copy.textContent = "Payment succeeded, but this device is not online yet. Enter the code to connect.";
+        }
+        try { box.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (err) {}
+      }
+
+      function extraVoucherCodes(data) {
+        var count = Number(data && data.voucher_valid_count || 0);
+        var codes = (data && data.voucher_codes) || [];
+        if (!count || !codes.length) return [];
+        return codes.filter(Boolean);
+      }
+
+      function showConnectedVouchers(codes, stkId, token) {
+        continueTarget = welcomeUrl;
+        if (stkId && token) {
+          var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+          continueTarget = welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token);
+        }
+        if (overlayVoucherList) {
+          overlayVoucherList.innerHTML = "";
+          codes.forEach(function (code) {
+            var item = document.createElement("li");
+            var label = document.createElement("span");
+            label.textContent = code;
+            var copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.className = "voucher-copy-btn";
+            copyBtn.textContent = "Copy";
+            copyBtn.addEventListener("click", function () {
+              if (!navigator.clipboard) return;
+              navigator.clipboard.writeText(code).then(function () {
+                copyBtn.textContent = "Copied";
+              }).catch(function () {});
+            });
+            item.appendChild(label);
+            item.appendChild(copyBtn);
+            overlayVoucherList.appendChild(item);
+          });
+        }
+        if (overlayVouchers) overlayVouchers.hidden = false;
+        setWaiting(
+          true,
+          "You're online",
+          "Share the remaining vouchers with other devices.",
+          false,
+          true
+        );
+      }
+
+      function openInternet(stkId, token) {
+        setWaiting(true, "You're online", "Payment successful. Restoring your connection…", false, true);
+        var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
+        window.setTimeout(function () {
+          window.location.replace(
+            welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
+          );
+        }, 100);
+      }
+
+      var voucherForm = root.querySelector("[data-voucher-form]");
+      var voucherSubmit = root.querySelector("[data-voucher-submit]");
+      var voucherStatus = root.querySelector("[data-voucher-status]");
+      var copyBtn = root.querySelector("[data-voucher-copy]");
+      if (copyBtn) {
+        copyBtn.addEventListener("click", function () {
+          var display = root.querySelector("[data-voucher-code-display]");
+          var text = display ? display.textContent : "";
+          if (!text || !navigator.clipboard) return;
+          navigator.clipboard.writeText(text).then(function () {
+            copyBtn.textContent = "Copied";
+          }).catch(function () {});
+        });
+      }
+      if (voucherForm && voucherSubmit) {
+        voucherForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          voucherSubmit.disabled = true;
+          if (voucherStatus) {
+            voucherStatus.textContent = "Activating voucher…";
+            voucherStatus.className = "meta";
+          }
+          setWaiting(true, "Activating voucher", "Applying your paid package…");
+          fetch(voucherForm.action, {
+            method: "POST",
+            body: new FormData(voucherForm),
+            headers: { "Accept": "application/json" },
+            credentials: "same-origin"
+          })
+            .then(function (response) {
+              return response.json().then(function (data) {
+                return { ok: response.ok, data: data };
+              });
+            })
+            .then(function (result) {
+              var data = result.data || {};
+              if (!result.ok || !data.ok) throw new Error(data.error || "Could not activate voucher.");
+              var extra = extraVoucherCodes(data);
+              if (data.authorized && extra.length) {
+                showConnectedVouchers(extra, data.stk_id, data.status_token);
+                return;
+              }
+              if (data.authorized && data.stk_id && data.status_token && data.welcome_url) {
+                var target = data.welcome_url;
+                var separator = target.indexOf("?") === -1 ? "?" : "&";
+                window.setTimeout(function () {
+                  window.location.replace(
+                    target + separator + "stk=" + encodeURIComponent(data.stk_id) +
+                    "&token=" + encodeURIComponent(data.status_token)
+                  );
+                }, 500);
+                return;
+              }
+              setWaiting(true, "You're online", data.authorization_error || "Package activated.");
+              window.setTimeout(function () { window.location.reload(); }, 900);
+            })
+            .catch(function (error) {
+              voucherSubmit.disabled = false;
+              setWaiting(false);
+              if (voucherStatus) {
+                voucherStatus.textContent = error.message || "Could not activate voucher.";
+                voucherStatus.className = "error";
+              }
+            });
+        });
+      }
+
+      var form = root.querySelector("[data-payment-form]");
+      var submit = root.querySelector("[data-payment-submit]");
+      var planInputs = root.querySelectorAll('input[name="plan_id"]');
+      var status = root.querySelector("[data-payment-status]");
+      if (!form || !submit || !planInputs.length) return;
+
+      var pollTimer = null;
+      var pollStartedAt = 0;
+      var authTries = 0;
+      var ctx = { form: form, submit: submit, status: status };
+
+      function show(message, isError) {
+        if (!status) return;
+        status.hidden = !message;
+        status.textContent = message || "";
+        status.className = isError ? "error" : "meta";
+      }
+
+      function selectedPlan() {
+        return root.querySelector('input[name="plan_id"]:checked');
+      }
+
+      function updatePayButton() {
+        var option = selectedPlan();
+        var amount = option ? option.getAttribute("data-price") : "";
+        submit.textContent = amount ? "Pay KES " + amount : "Pay";
+        planInputs.forEach(function (input) {
+          var card = input.closest(".plan-card");
+          if (card) card.classList.toggle("is-selected", input.checked);
+        });
+      }
+
+      function offerRetry(message) {
+        activeCtx = ctx;
+        setWaiting(true, "Payment not completed", message || "The payment was not completed.", true);
+        submit.disabled = false;
+        show(message || "The payment was not completed.", true);
+      }
+
+      function poll(url, token, waitNas) {
+        window.clearTimeout(pollTimer);
+        var qs = "?token=" + encodeURIComponent(token);
+        if (waitNas === false) qs += "&nas=0";
+        fetch(url + qs, {
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            var data = result.data || {};
+            if (!result.ok || !data.ok) {
+              if (data.can_retry === false) {
+                offerRetry(data.error || "Could not check payment.");
+                submit.disabled = true;
+                return;
+              }
+              var elapsedErr = Date.now() - pollStartedAt;
+              if (elapsedErr < POLL_GIVE_UP_MS) {
+                setWaiting(true, "Checking payment status", (data.error || "Could not check payment.") + " Retrying automatically…");
+                pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_SLOW_MS);
+                return;
+              }
+              offerRetry(data.error || "Could not check payment.");
+              return;
+            }
+            if (data.success) {
+              if (data.authorized || data.surfing) {
+                var extra = extraVoucherCodes(data);
+                if (extra.length) {
+                  showConnectedVouchers(extra, data.stk_id, token);
+                  return;
+                }
+                openInternet(data.stk_id, token);
+                return;
+              }
+              authTries += 1;
+              var canRetryAuth =
+                data.can_retry_authorize !== false &&
+                authTries < AUTH_RETRY_MAX &&
+                (Date.now() - pollStartedAt) < POLL_GIVE_UP_MS;
+              if (canRetryAuth) {
+                var authMsg = data.offline
+                  ? "Payment successful. Router is offline — checking again…"
+                  : "Payment successful. Connecting you automatically…";
+                setWaiting(true, "Restoring your connection", authMsg);
+                pollTimer = window.setTimeout(function () {
+                  poll(url, token, authTries >= AUTH_RETRY_MAX - 1);
+                }, POLL_FAST_MS);
+                return;
+              }
+              showVoucherFallback(data.voucher_code || "");
+              show(
+                "Payment successful, but this device is not surfing yet. Use the voucher below.",
+                false
+              );
+              submit.disabled = false;
+              window.setTimeout(closeOverlay, 800);
+              return;
+            }
+            if (data.pending) {
+              if (data.expired) {
+                offerRetry(data.reason || "The M-Pesa prompt was not confirmed.");
+                return;
+              }
+              setWaiting(
+                true,
+                "Waiting for M-Pesa",
+                data.result_desc || "Enter your PIN on your phone. This page updates automatically."
+              );
+              if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
+                pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_FAST_MS);
+              } else {
+                offerRetry("The M-Pesa prompt timed out. Try again.");
+              }
+              return;
+            }
+            offerRetry(data.reason || data.result_desc || "The payment was not completed.");
+          })
+          .catch(function (error) {
+            if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
+              setWaiting(true, "Checking payment status", (error.message || "Could not check payment.") + " Retrying automatically…");
+              pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_SLOW_MS);
+              return;
+            }
+            offerRetry(error.message || "Could not check payment.");
+          });
+      }
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var macInput = form.querySelector('input[name="mac"]');
+        if (macInput) {
+          var macVal = (macInput.value || "").trim();
+          if (!macVal || macVal.indexOf("$(") === 0) {
+            try {
+              var params = new URLSearchParams(window.location.search);
+              var fromUrl = (params.get("mac") || "").trim();
+              if (fromUrl && fromUrl.indexOf("$(") !== 0) {
+                macInput.value = fromUrl;
+                macVal = fromUrl;
+              }
+            } catch (err) {}
+          }
+          if (!macVal || macVal.indexOf("$(") === 0) {
+            try {
+              var cookieMatch = document.cookie.match(/(?:^|;\s*)hs_mac=([^;]+)/);
+              var fromCookie = cookieMatch ? decodeURIComponent(cookieMatch[1]).trim() : "";
+              if (fromCookie && fromCookie.indexOf("$(") !== 0) {
+                macInput.value = fromCookie;
+                macVal = fromCookie;
+              }
+            } catch (err2) {}
+          }
+          if (!macVal || macVal.indexOf("$(") === 0) {
+            offerRetry("Could not identify this device. Rejoin the Hotspot Wi‑Fi and try again.");
+            return;
+          }
+        }
+        window.clearTimeout(pollTimer);
+        activeCtx = ctx;
+        submit.disabled = true;
+        pollStartedAt = Date.now();
+        authTries = 0;
+        hideVoucherDuringPay();
+        setWaiting(true, "Sending M-Pesa prompt", "Please wait while we send the payment request to your phone…");
+        fetch(form.action, {
+          method: "POST",
+          body: new FormData(form),
+          headers: { "Accept": "application/json" },
+          credentials: "same-origin"
+        })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              return { ok: response.ok, data: data };
+            });
+          })
+          .then(function (result) {
+            var data = result.data || {};
+            if (!result.ok || !data.ok) throw new Error(data.error || "Could not start payment.");
+            if (data.already_paid) {
+              setWaiting(true, "Connecting", data.message || "This device was added to your package.");
+              window.setTimeout(function () {
+                window.location.replace(data.welcome_url || window.location.href);
+              }, 600);
+              return;
+            }
+            setWaiting(
+              true,
+              "Waiting for M-Pesa",
+              "M-Pesa prompt sent for KES " + data.amount + ". Check your phone and enter your PIN."
+            );
+            poll(data.status_url, data.status_token);
+          })
+          .catch(function (error) {
+            offerRetry(error.message || "Could not start payment.");
+          });
+      });
+
+      planInputs.forEach(function (input) {
+        input.addEventListener("change", updatePayButton);
+      });
+      updatePayButton();
+    })();
+  </script>
+</body>
+</html>

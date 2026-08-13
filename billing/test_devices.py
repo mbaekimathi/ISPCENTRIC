@@ -116,6 +116,33 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertEqual(resolved["customer"].pk, self.customer.pk)
         self.assertEqual(Customer.objects.filter(organization=self.org).count(), 1)
 
+    def test_phone_lookup_requires_voucher_when_unused_codes_remain(self):
+        from billing.models import AccessVoucher
+
+        apply_subscription_renewal(self.customer, plan=self.plan)
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="FAMCODE2",
+            status=AccessVoucher.Status.VALID,
+        )
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="AA:BB:CC:DD:EE:02",
+            phone="0700000100",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        self.assertFalse(resolved["attached"])
+        self.assertTrue(resolved["already_paid"])
+        self.assertTrue(resolved["needs_voucher"])
+        self.assertFalse(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac="AA:BB:CC:DD:EE:02"
+            ).exists()
+        )
+
     def test_phone_lookup_rejects_when_cap_reached(self):
         attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
         resolved = resolve_or_create_hotspot_customer(
@@ -167,6 +194,46 @@ class HotspotPaymentStartDeviceTests(TestCase):
             router=self.router,
             package_start=timezone.now() - timedelta(hours=1),
             package_end=timezone.now() + timedelta(hours=20),
+        )
+
+    def test_second_device_with_unused_voucher_must_redeem(self):
+        from billing.models import AccessVoucher
+
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="PAYCODE2",
+            status=AccessVoucher.Status.VALID,
+        )
+        url = reverse("core:hotspot_payment_start", kwargs={"join_code": self.org.join_code})
+        with (
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=self.router,
+            ),
+            patch(
+                "core.views._resolve_request_hotspot_mac",
+                return_value="11:22:33:44:55:02",
+            ),
+            patch("billing.stk.start_subscription_stk_payment") as stk,
+        ):
+            response = self.client.post(
+                url,
+                {"plan_id": str(self.plan.pk), "phone": "0700000200", "mac": "11:22:33:44:55:02"},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["already_paid"])
+        self.assertTrue(data["needs_voucher"])
+        self.assertFalse(data.get("attached"))
+        self.assertFalse(data.get("authorized"))
+        stk.assert_not_called()
+        self.assertFalse(
+            CustomerDevice.objects.filter(
+                customer=self.customer, mac="11:22:33:44:55:02"
+            ).exists()
         )
 
     def test_second_device_same_phone_attaches_without_stk(self):

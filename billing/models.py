@@ -103,6 +103,10 @@ class BillingPlan(models.Model):
         n = int(self.max_devices or 0)
         if n <= 0:
             return "Unlimited devices"
+        if self.service_type == self.ServiceType.HOTSPOT:
+            if n == 1:
+                return "1 device · 1 voucher"
+            return f"{n} devices · {n} vouchers"
         return "1 device" if n == 1 else f"{n} devices"
 
     @property
@@ -694,21 +698,24 @@ class AccessVoucher(models.Model):
     """
     One-time activation code created after a successful subscription payment.
 
-    Lifecycle (improved from the pay-page product rules):
-      valid   — paid; unused; customer has not started surfing yet (redeemable)
-      expired — redeemed once; subscription activated on the router
-      invalid — surfing detected (burned); code can never activate again
+    Hotspot packages with max_devices = N issue N vouchers (one per device).
+    PPPoE payments issue a single voucher.
+
+    Lifecycle:
+      valid   — paid; unused; redeemable
+      expired — legacy “used” (redeemed once); cannot activate again
+      invalid — used / burned; code can never activate again
 
     Transitions:
-      payment success → valid
-      redeem on pay page → expired (+ apply package + MikroTik authorize)
-      surfing while valid → invalid (and apply package so paid time is not lost)
-      surfing while expired → invalid (confirms the session is in use)
+      payment success → valid (N codes for a Hotspot device package)
+      redeem or successful auto-connect → invalid (this device only)
+      surfing while valid → invalid for that device’s voucher only
+      unused sibling vouchers stay valid for other devices
     """
 
     class Status(models.TextChoices):
         VALID = "valid", "Valid"
-        EXPIRED = "expired", "Expired"
+        EXPIRED = "expired", "Used"
         INVALID = "invalid", "Invalid"
 
     organization = models.ForeignKey(
@@ -726,12 +733,12 @@ class AccessVoucher(models.Model):
         on_delete=models.PROTECT,
         related_name="access_vouchers",
     )
-    stk_request = models.OneToOneField(
+    stk_request = models.ForeignKey(
         StkPushRequest,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="access_voucher",
+        related_name="access_vouchers",
     )
     code = models.CharField(max_length=24, db_index=True)
     status = models.CharField(
@@ -762,6 +769,10 @@ class AccessVoucher(models.Model):
             models.Index(
                 fields=["customer", "status"],
                 name="bill_voucher_cust_status_idx",
+            ),
+            models.Index(
+                fields=["stk_request", "status"],
+                name="bill_voucher_stk_status_idx",
             ),
         ]
 

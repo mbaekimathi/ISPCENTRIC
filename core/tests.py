@@ -2919,9 +2919,11 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertFalse(context["pppoe_payment_start_url"])
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="panel-hotspot"')
+        self.assertContains(response, 'data-pay-panel="hotspot"')
         self.assertNotContains(response, 'id="panel-pppoe"')
         self.assertNotContains(response, "Home / PPPoE")
         self.assertContains(response, 'value="0700000099"')
+        self.assertContains(response, "Choose a package")
         hotspot_customer.refresh_from_db()
         self.assertEqual(hotspot_customer.service_type, "hotspot")
 
@@ -3013,7 +3015,7 @@ class ClientsSurfingStatusTests(TestCase):
         selected = f'value="{previous.pk}"'
         pos = html.find(selected)
         self.assertGreater(pos, 0)
-        self.assertIn("selected", html[pos : pos + 160])
+        self.assertIn("checked", html[pos : pos + 160])
 
     def test_pppoe_pay_autofills_account_from_signed_token(self):
         from django.core import signing

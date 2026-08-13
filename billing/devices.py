@@ -167,6 +167,53 @@ def _ensure_primary_mac(customer, mac: str) -> None:
     customer.save(update_fields=["hotspot_mac"])
 
 
+def reassign_unpaid_hotspot_mac(customer, mac: str) -> dict:
+    """
+    Move a MAC from an unpaid stray Hotspot row onto this paid account.
+
+    Used when an extra device was auto-created, then redeems a family voucher.
+    """
+    from billing.models import Customer, CustomerDevice
+    from billing.services import customer_can_surf_via_hotspot
+
+    mac = normalize_device_mac(mac)
+    if not mac or customer is None:
+        return {"ok": False, "error": "Could not identify this device."}
+    org_id = getattr(customer, "organization_id", None)
+    if not org_id:
+        return {"ok": False, "error": "No customer account."}
+
+    device = CustomerDevice.objects.filter(organization_id=org_id, mac=mac).first()
+    other = None
+    if device is not None and device.customer_id != customer.pk:
+        other = device.customer
+    if other is None:
+        other = (
+            Customer.objects.filter(
+                organization_id=org_id,
+                hotspot_mac__iexact=mac,
+            )
+            .exclude(pk=customer.pk)
+            .first()
+        )
+    if other is None:
+        return attach_hotspot_device(customer, mac, enforce_cap=True)
+    if customer_can_surf_via_hotspot(other):
+        return {
+            "ok": False,
+            "error": "This device is already linked to another account.",
+        }
+    if device is not None and device.customer_id != customer.pk:
+        device.customer = customer
+        device.last_seen_at = timezone.now()
+        device.save(update_fields=["customer", "last_seen_at"])
+    if (getattr(other, "hotspot_mac", "") or "").strip().upper() == mac:
+        other.hotspot_mac = ""
+        other.save(update_fields=["hotspot_mac"])
+    _ensure_primary_mac(customer, mac)
+    return attach_hotspot_device(customer, mac, enforce_cap=True)
+
+
 def attach_hotspot_device(customer, mac: str, *, enforce_cap: bool = True) -> dict:
     """
     Link MAC to customer if under plan.max_devices.
@@ -369,6 +416,19 @@ def resolve_or_create_hotspot_customer(
             if plan is not None and by_phone.plan_id is None:
                 by_phone.plan = plan
                 by_phone.save(update_fields=["plan"])
+            already_paid = customer_can_surf_via_hotspot(by_phone)
+            if already_paid and not customer_devices_unlimited(by_phone):
+                from billing.vouchers import customer_unused_voucher_count
+
+                if customer_unused_voucher_count(by_phone) > 0:
+                    return {
+                        "ok": True,
+                        "customer": by_phone,
+                        "created": False,
+                        "attached": False,
+                        "already_paid": True,
+                        "needs_voucher": True,
+                    }
             attach = attach_hotspot_device(by_phone, mac, enforce_cap=True)
             if not attach.get("ok"):
                 return {

@@ -368,10 +368,12 @@
       display: flex;
     }
 
-    .voucher-code-reveal strong {
-      font-size: 1.15rem;
-      letter-spacing: 0.12em;
+    .voucher-code-reveal strong,
+    .voucher-code-reveal [data-voucher-code-display] {
+      font-size: 1.05rem;
+      letter-spacing: 0.08em;
       font-variant-numeric: tabular-nums;
+      white-space: pre-line;
     }
 
     .voucher-code-reveal button {
@@ -1003,7 +1005,7 @@
             <div class="voucher-box" data-voucher-box>
               <h2>Have a voucher?</h2>
               <p class="voucher-copy">
-                After M-Pesa you are connected automatically. If that fails, enter your code here.
+                After M-Pesa this line connects automatically. If that fails, enter your unused voucher. A used code becomes invalid.
               </p>
               <form
                 class="login"
@@ -1103,14 +1105,14 @@
                   value="{{ hotspot_phone_value|default:phone_value|default:'' }}"
                   required
                 >
-                <p class="field-hint">We’ll send the M-Pesa prompt to this number. Use the same number to add another device to this package.</p>
+                <p class="field-hint">We’ll send the M-Pesa prompt to this number. Extra devices on this package each need their own voucher.</p>
               </div>
               <button type="submit" class="cta" data-payment-submit {% if not stk_ready %}disabled aria-disabled="true"{% endif %}>Pay with M-Pesa</button>
             </form>
 
             <div class="voucher-code-reveal" data-voucher-reveal hidden>
               <div>
-                <p class="voucher-copy">Payment received. Enter this code to activate:</p>
+                <p class="voucher-copy">Payment received. Device voucher(s) — each code works once:</p>
                 <strong data-voucher-code-display></strong>
               </div>
               <button type="button" data-voucher-copy>Copy</button>
@@ -1119,7 +1121,7 @@
             <div class="voucher-box" data-voucher-box>
               <h2>Have a Hotspot voucher?</h2>
               <p class="voucher-copy">
-                After M-Pesa you are connected automatically. If that fails, enter your code here.
+                After M-Pesa this device connects automatically. Extra devices each need their own unused voucher. A used code becomes invalid.
               </p>
               <form
                 class="login"
@@ -1304,17 +1306,30 @@
         dismissBtn.addEventListener("click", closeOverlay);
       }
 
-      function revealVoucher(root, code) {
-        if (!root || !code) return;
+      function voucherCodesFrom(data) {
+        if (!data) return [];
+        var codes = data.voucher_codes;
+        if (Array.isArray(codes) && codes.length) {
+          return codes.filter(Boolean);
+        }
+        return data.voucher_code ? [data.voucher_code] : [];
+      }
+
+      function revealVoucher(root, codeOrCodes) {
+        if (!root) return;
+        var codes = Array.isArray(codeOrCodes)
+          ? codeOrCodes.filter(Boolean)
+          : (codeOrCodes ? [codeOrCodes] : []);
+        if (!codes.length) return;
         var reveal = root.querySelector("[data-voucher-reveal]");
         var display = root.querySelector("[data-voucher-code-display]");
         var input = root.querySelector("[data-voucher-input]");
-        if (display) display.textContent = code;
+        if (display) display.textContent = codes.join("\n");
         if (reveal) {
           reveal.hidden = false;
           reveal.classList.add("is-visible");
         }
-        if (input) input.value = code;
+        if (input && !input.value) input.value = codes[0];
       }
 
       function hideVoucherDuringPay(root) {
@@ -1328,9 +1343,9 @@
         }
       }
 
-      function showVoucherFallback(root, code) {
+      function showVoucherFallback(root, codeOrCodes) {
         if (!root) return;
-        revealVoucher(root, code);
+        revealVoucher(root, codeOrCodes);
         var box = root.querySelector("[data-voucher-box]");
         if (!box) return;
         box.hidden = false;
@@ -1340,7 +1355,7 @@
         var copy = box.querySelector(".voucher-copy");
         if (copy) {
           copy.textContent =
-            "Auto-connect did not finish. Enter the code below to start surfing.";
+            "Enter an unused voucher for this device. A used code is invalid and cannot be reused.";
         }
         try {
           box.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1560,15 +1575,19 @@
                   );
                   return;
                 }
-                showVoucherFallback(root, data.voucher_code || "");
+                var fallbackCodes = voucherCodesFrom(data);
+                showVoucherFallback(root, fallbackCodes);
                 setWaiting(
                   true,
                   "Could not auto-connect",
-                  "Enter your voucher below to start surfing."
+                  "Enter an unused voucher below to start surfing."
                 );
                 show(
-                  "Payment successful, but this device is not surfing yet. Use voucher " +
-                    (data.voucher_code || "") +
+                  "Payment successful, but this device is not surfing yet. Use " +
+                    (fallbackCodes[0] || "your voucher") +
+                    (fallbackCodes.length > 1
+                      ? " (or another unused device voucher)"
+                      : "") +
                     " below.",
                   false
                 );
@@ -1680,6 +1699,23 @@
               var data = result.data || {};
               if (!result.ok || !data.ok) {
                 throw new Error(data.error || "Could not start payment.");
+              }
+              if (data.already_paid && data.needs_voucher) {
+                submit.disabled = false;
+                showVoucherFallback(root, voucherCodesFrom(data));
+                setWaiting(
+                  true,
+                  "Voucher required",
+                  data.message ||
+                    "This package is already paid. Enter an unused voucher for this device."
+                );
+                show(
+                  data.message ||
+                    "Enter an unused voucher for this device. Used codes are invalid.",
+                  false
+                );
+                closeOverlaySoon();
+                return;
               }
               if (data.already_paid) {
                 setWaiting(

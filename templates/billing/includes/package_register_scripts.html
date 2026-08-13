@@ -128,6 +128,29 @@
     "edit-package-general-speed-hint"
   );
 
+  function wireMaxDevicesHint(formSelector, hintId) {
+    var hint = document.getElementById(hintId);
+    if (!hint) return function () {};
+    var hotspotText =
+      "How many devices can connect. Payment creates one one-time voucher per device. Users without a voucher cannot connect; a used voucher becomes invalid.";
+    var pppoeText =
+      "Leave blank for unlimited. PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited).";
+    function update() {
+      var checked = document.querySelector(formSelector + ' input[name="service_type"]:checked');
+      hint.textContent = checked && checked.value === "hotspot" ? hotspotText : pppoeText;
+    }
+    document.querySelectorAll(formSelector + ' input[name="service_type"]').forEach(function (radio) {
+      radio.addEventListener("change", update);
+    });
+    update();
+    return update;
+  }
+  wireMaxDevicesHint("#billing-package-register-form", "package-max-devices-hint");
+  var updateEditMaxDevicesHint = wireMaxDevicesHint(
+    "#billing-package-edit-form",
+    "edit-package-max-devices-hint"
+  );
+
   function setFieldValue(id, value) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -174,6 +197,7 @@
       }
 
       if (updateEditSpeedHint) updateEditSpeedHint();
+      if (updateEditMaxDevicesHint) updateEditMaxDevicesHint();
       openModal("billing-package-edit-modal");
       var nameInput = document.getElementById("id_edit_package_name");
       if (nameInput) nameInput.focus();

@@ -7509,6 +7509,30 @@ def _plans_with_customer_default(org, plans, customer):
     return plans, chosen.pk
 
 
+def _attach_plan_portal_images(plans, request=None):
+    """Expose a same-origin image URL on each plan for portal/pay cards."""
+    for plan in plans or []:
+        image_url = ""
+        image = getattr(plan, "image", None)
+        if image:
+            try:
+                rel = image.url or ""
+            except Exception:
+                rel = ""
+            if rel:
+                image_url = rel
+                if request is not None:
+                    try:
+                        # Use the host the browser already opened (127.0.0.1 or
+                        # LAN), not PUBLIC_BASE_URL which can point at an
+                        # unbound auto-detected IP and break <img> loads.
+                        image_url = request.build_absolute_uri(rel)
+                    except Exception:
+                        image_url = rel
+        plan.portal_image_url = image_url
+    return plans
+
+
 def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
     """
     Load a plan the customer may pay for.
@@ -7587,6 +7611,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     hotspot_phone = _payment_phone_autofill(
         getattr(hotspot_customer, "phone", "") if hotspot_customer else ""
     )
+    _attach_plan_portal_images(hotspot_plans, request)
     return {
         "organization": org,
         "org_name": org.name,
@@ -7896,7 +7921,32 @@ def hotspot_payment_start(request, join_code: str):
         )
     customer = resolved["customer"]
 
-    # Extra device joining a live package: authorize without charging again.
+    from billing.devices import customer_owns_hotspot_mac
+    from billing.vouchers import customer_unused_voucher_count
+
+    unused_vouchers = customer_unused_voucher_count(customer)
+    extra_device = not customer_owns_hotspot_mac(customer, mac)
+    if (
+        resolved.get("already_paid")
+        and extra_device
+        and (resolved.get("needs_voucher") or unused_vouchers > 0)
+    ):
+        return JsonResponse(
+            {
+                "ok": True,
+                "already_paid": True,
+                "needs_voucher": True,
+                "attached": False,
+                "authorized": False,
+                "remaining_vouchers": unused_vouchers,
+                "message": (
+                    "This package is already paid. Enter a voucher code for this "
+                    "device to connect. A used voucher cannot be reused."
+                ),
+            }
+        )
+
+    # Extra device joining a live package (cash / unlimited): authorize without charging again.
     if resolved.get("attached") and resolved.get("already_paid"):
         provision = {"ok": False, "allowed": False}
         try:
@@ -8178,7 +8228,7 @@ def hotspot_pay(request, join_code: str):
                 _block_unpaid_mac,
                 name=f"hotspot-block-{hotspot_mac[-8:]}",
             )
-    response = render(request, "core/hotspot_portal_login.html", context)
+    response = render(request, "core/hotspot_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
     token = (context.get("pppoe_customer_token") or context.get("customer_token") or "").strip()
     account = (
@@ -8214,6 +8264,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     pppoe_plans, pppoe_selected_plan_id = _plans_with_customer_default(
         org, pppoe_plans, customer
     )
+    _attach_plan_portal_images(pppoe_plans, request)
     hotspot_enabled = bool(getattr(org, "hotspot_enabled", False))
     hotspot_plans: list = []
     if hotspot_enabled:
@@ -8228,7 +8279,10 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
                     org, None, service_type=BillingPlan.ServiceType.HOTSPOT
                 )[:8]
             )
-    show_inline_hotspot = hotspot_enabled and bool(hotspot_plans)
+        _attach_plan_portal_images(hotspot_plans, request)
+    # Identified home customers renew PPPoE only; unidentified CPE visitors
+    # also see Hotspot packages on this page.
+    show_inline_hotspot = hotspot_enabled and bool(hotspot_plans) and customer is None
     plans = pppoe_plans or hotspot_plans
     has_payable_plans = bool(pppoe_plans or hotspot_plans)
     has_mpesa = bool(org.mpesa_payment_type and org.mpesa_number)
@@ -8252,7 +8306,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         getattr(customer, "phone", "") if customer else ""
     )
     hotspot_mac = ""
-    if request is not None:
+    if request is not None and show_inline_hotspot:
         hotspot_mac = _resolve_request_hotspot_mac(org, request) or ""
     hotspot_pay_url = urls.get("pay_url") or "" if hotspot_enabled else ""
     return {
@@ -8431,7 +8485,7 @@ def pppoe_pay(request, join_code: str):
     context = _pppoe_portal_context(
         org, request, customer=customer, identify_error=identify_error
     )
-    response = render(request, "core/hotspot_portal_login.html", context)
+    response = render(request, "core/pppoe_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
     if customer is not None:
         response = _set_pppoe_account_cookie(

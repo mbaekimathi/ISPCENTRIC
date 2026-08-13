@@ -97,7 +97,7 @@
               <label for="{{ package_edit_form.max_devices.id_for_label }}">{{ package_edit_form.max_devices.label }} <span class="pppoe-optional">optional</span></label>
               {{ package_edit_form.max_devices }}
               {% if package_edit_form.max_devices.errors %}<div class="field-error">{{ package_edit_form.max_devices.errors|striptags }}</div>{% endif %}
-              <p class="field-hint" id="edit-package-max-devices-hint">Leave blank for unlimited. Hotspot: phones/laptops on one paid account. PPPoE: CPEs that may dial this username.</p>
+              <p class="field-hint" id="edit-package-max-devices-hint">Leave blank for unlimited. Hotspot: set how many devices can connect — payment creates one one-time voucher per device. No voucher = no access. PPPoE: CPEs that may dial this username.</p>
             </div>
             <p class="field-hint pppoe-grid-hint" id="edit-package-general-speed-hint">
               General speed will be set from download/upload (shown as download/upload Mbps).

@@ -953,9 +953,9 @@ def fulfill_successful_stk(
         )
         return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
 
-    from billing.vouchers import create_voucher_for_stk, voucher_payload
+    from billing.vouchers import create_vouchers_for_stk, voucher_payload
 
-    # Already paid: persist receipt updates, return the voucher.
+    # Already paid: persist receipt updates, return the voucher(s).
     # Pay-page / callback auto-redeem applies the package; fulfill itself does not.
     if stk.status == StkPushRequest.Status.SUCCESS:
         persisted = _persist_stk_receipt_fields(
@@ -965,14 +965,20 @@ def fulfill_successful_stk(
             result_code=result_code,
             receipt=receipt,
         )
-        voucher = create_voucher_for_stk(stk)
+        vouchers = create_vouchers_for_stk(stk)
+        voucher = next(
+            (row for row in vouchers if row.status == row.Status.VALID),
+            vouchers[0] if vouchers else None,
+        )
         persisted["already_applied"] = bool(stk.subscription_applied)
-        persisted["needs_voucher"] = voucher.status == voucher.Status.VALID
+        persisted["needs_voucher"] = bool(
+            voucher is not None and voucher.status == voucher.Status.VALID
+        )
         persisted["authorized"] = False
         persisted["just_provisioned"] = False
         persisted["provision_ok"] = False
         persisted["provision_allowed"] = False
-        persisted.update(voucher_payload(voucher))
+        persisted.update(voucher_payload(voucher, all_vouchers=vouchers))
         return persisted
 
     paid_plan = stk.plan or customer.plan
@@ -1011,7 +1017,11 @@ def fulfill_successful_stk(
         ]
     )
 
-    voucher = create_voucher_for_stk(stk)
+    vouchers = create_vouchers_for_stk(stk)
+    voucher = next(
+        (row for row in vouchers if row.status == row.Status.VALID),
+        vouchers[0] if vouchers else None,
+    )
 
     return {
         "ok": True,
@@ -1028,7 +1038,7 @@ def fulfill_successful_stk(
         "just_provisioned": False,
         "needs_voucher": True,
         "authorized": False,
-        **voucher_payload(voucher),
+        **voucher_payload(voucher, all_vouchers=vouchers),
     }
 
 
