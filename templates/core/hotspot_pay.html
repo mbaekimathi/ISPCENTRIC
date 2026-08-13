@@ -505,13 +505,17 @@
 
     .voucher-box,
     .voucher-code-reveal {
+      width: min(100%, 22.5rem);
+      justify-self: start;
       display: grid;
       gap: 0.7rem;
-      padding: 0.95rem;
-      border-radius: 1.2rem;
+      padding: clamp(0.8rem, 2.8vw, 1.05rem);
+      border-radius: 1.25rem;
       background: #182234;
       border: 2px solid rgba(210, 224, 240, 0.42);
-      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.55),
+        0 14px 34px rgba(0, 0, 0, 0.42);
     }
 
     .voucher-box[hidden],
@@ -556,9 +560,17 @@
       cursor: pointer;
     }
 
+    .voucher-box .voucher-login {
+      width: 100%;
+      display: grid;
+      gap: 0.7rem;
+    }
+
     .voucher-box.is-fallback {
-      border-color: rgba(46, 230, 199, 0.35);
-      box-shadow: 0 0 0 4px rgba(46, 230, 199, 0.08);
+      border-color: rgba(46, 230, 199, 0.55);
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.55),
+        0 0 0 4px rgba(46, 230, 199, 0.12);
     }
 
     .pay-overlay {
@@ -887,11 +899,13 @@
     }
 
     @media (min-width: 22.5rem) {
-      .checkout {
+      .checkout,
+      .voucher-box .voucher-login {
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: end;
       }
-      .checkout .cta {
+      .checkout .cta,
+      .voucher-box .voucher-login .cta {
         width: auto;
         min-width: 8.6rem;
         min-height: 3.15rem;
@@ -1022,11 +1036,11 @@
           <button type="button" data-voucher-copy>Copy</button>
         </div>
 
-        <div class="voucher-box" data-voucher-box hidden>
-          <h2>Activate with voucher</h2>
-          <p class="voucher-copy">Enter a voucher code to connect this device.</p>
+        <div class="voucher-box" data-voucher-box>
+          <h2>Have a voucher?</h2>
+          <p class="voucher-copy">Enter a voucher code to connect this device. A used code cannot be reused.</p>
           <form
-            class="login"
+            class="login voucher-login"
             data-voucher-form
             method="post"
             action="{{ voucher_redeem_url }}"
@@ -1048,7 +1062,7 @@
             </div>
             <button type="submit" class="cta" data-voucher-submit>Activate voucher</button>
           </form>
-          <p class="meta" data-voucher-status role="status" aria-live="polite"></p>
+          <p class="meta" data-voucher-status role="status" aria-live="polite" hidden></p>
         </div>
       {% else %}
         <p class="meta">No Hotspot packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.</p>
@@ -1090,7 +1104,7 @@
         Enter your PIN on your phone. This page updates automatically.
       </p>
       <div class="overlay-vouchers" data-overlay-vouchers hidden>
-        <p class="voucher-copy">Use these codes on other devices:</p>
+        <p class="voucher-copy">Remaining valid vouchers for other devices:</p>
         <ul data-overlay-voucher-list></ul>
       </div>
       <div class="pay-overlay-actions">
@@ -1158,34 +1172,35 @@
         });
       }
 
-      function revealVoucher(code) {
-        if (!code) return;
+      function revealVoucher(codeOrCodes) {
+        var codes = Array.isArray(codeOrCodes)
+          ? codeOrCodes.filter(Boolean)
+          : (codeOrCodes ? [codeOrCodes] : []);
+        if (!codes.length) return;
         var reveal = root.querySelector("[data-voucher-reveal]");
         var display = root.querySelector("[data-voucher-code-display]");
         var input = root.querySelector("[data-voucher-input]");
-        if (display) display.textContent = code;
+        if (display) display.textContent = codes.join("\n");
         if (reveal) {
           reveal.hidden = false;
           reveal.classList.add("is-visible");
         }
-        if (input) input.value = code;
+        if (input) input.value = codes[0];
       }
 
       function hideVoucherDuringPay() {
-        var box = root.querySelector("[data-voucher-box]");
         var reveal = root.querySelector("[data-voucher-reveal]");
-        if (box) {
-          box.hidden = true;
-          box.classList.remove("is-fallback");
-        }
         if (reveal) {
           reveal.hidden = true;
           reveal.classList.remove("is-visible");
         }
       }
 
-      function showVoucherFallback(code) {
-        revealVoucher(code);
+      function showVoucherFallback(codeOrCodes) {
+        var codes = Array.isArray(codeOrCodes)
+          ? codeOrCodes.filter(Boolean)
+          : (codeOrCodes ? [codeOrCodes] : []);
+        revealVoucher(codes);
         var box = root.querySelector("[data-voucher-box]");
         if (!box) return;
         box.hidden = false;
@@ -1194,16 +1209,22 @@
         if (heading) heading.textContent = "Activate with your voucher";
         var copy = box.querySelector(".voucher-copy");
         if (copy) {
-          copy.textContent = "Payment succeeded, but this device is not online yet. Enter the code to connect.";
+          copy.textContent = codes.length > 1
+            ? "Payment succeeded. Use one unused voucher below. Extra valid codes are for other devices."
+            : "Payment succeeded, but this device is not online yet. Enter a valid voucher to connect.";
         }
         try { box.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (err) {}
       }
 
       function extraVoucherCodes(data) {
         var count = Number(data && data.voucher_valid_count || 0);
-        var codes = (data && data.voucher_codes) || [];
-        if (!count || !codes.length) return [];
-        return codes.filter(Boolean);
+        var codes = Array.isArray(data && data.voucher_codes) ? data.voucher_codes : [];
+        codes = codes.filter(Boolean);
+        if (count > 0 && codes.length) return codes.slice(0, count);
+        if (data && data.voucher_status === "valid" && data.voucher_code) {
+          return [data.voucher_code];
+        }
+        return [];
       }
 
       function showConnectedVouchers(codes, stkId, token) {
@@ -1237,7 +1258,7 @@
         setWaiting(
           true,
           "You're online",
-          "Share the remaining vouchers with other devices.",
+          "Share the remaining valid vouchers with other devices.",
           false,
           true
         );
@@ -1414,9 +1435,9 @@
                 }, POLL_FAST_MS);
                 return;
               }
-              showVoucherFallback(data.voucher_code || "");
+              showVoucherFallback(extraVoucherCodes(data));
               show(
-                "Payment successful, but this device is not surfing yet. Use the voucher below.",
+                "Payment successful, but this device is not surfing yet. Use a valid voucher below.",
                 false
               );
               submit.disabled = false;

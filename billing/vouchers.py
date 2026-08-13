@@ -139,6 +139,7 @@ def voucher_payload(
     *,
     all_vouchers: list[AccessVoucher] | None = None,
 ) -> dict:
+    """Pay-page fields: only still-valid (unused) voucher codes."""
     if voucher is None and not all_vouchers:
         return {}
     if all_vouchers is None and voucher is not None and voucher.stk_request_id:
@@ -150,20 +151,18 @@ def voucher_payload(
     elif all_vouchers is None:
         all_vouchers = [voucher] if voucher else []
     valid = [row for row in all_vouchers if row.status == AccessVoucher.Status.VALID]
-    primary = next(iter(valid), voucher or (all_vouchers[0] if all_vouchers else None))
-    if primary is None:
-        return {}
     codes = [format_voucher_code(row.code) for row in valid]
-    if not codes:
-        codes = [format_voucher_code(primary.code)]
+    primary = valid[0] if valid else None
     return {
-        "voucher_id": primary.pk,
-        "voucher_code": format_voucher_code(primary.code),
+        "voucher_id": primary.pk if primary else None,
+        "voucher_code": codes[0] if codes else "",
         "voucher_codes": codes,
         "voucher_count": len(all_vouchers),
         "voucher_valid_count": len(valid),
-        "voucher_status": primary.status,
-        "voucher_redeemable": primary.is_redeemable,
+        "voucher_status": (
+            primary.status if primary is not None else AccessVoucher.Status.INVALID
+        ),
+        "voucher_redeemable": bool(primary and primary.is_redeemable),
     }
 
 
@@ -327,7 +326,6 @@ def redeem_access_voucher(
         "stk_id": stk.pk if stk else None,
         **voucher_payload(voucher, all_vouchers=siblings),
         "voucher_status": AccessVoucher.Status.INVALID,
-        "voucher_code": format_voucher_code(voucher.code),
         "voucher_redeemable": False,
     }
 

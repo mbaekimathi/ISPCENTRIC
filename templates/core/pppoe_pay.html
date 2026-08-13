@@ -1450,9 +1450,13 @@
 
       function extraVoucherCodes(data) {
         var count = Number(data && data.voucher_valid_count || 0);
-        var codes = (data && data.voucher_codes) || [];
-        if (!count || !codes.length) return [];
-        return codes.filter(Boolean);
+        var codes = Array.isArray(data && data.voucher_codes) ? data.voucher_codes : [];
+        codes = codes.filter(Boolean);
+        if (count > 0 && codes.length) return codes.slice(0, count);
+        if (data && data.voucher_status === "valid" && data.voucher_code) {
+          return [data.voucher_code];
+        }
+        return [];
       }
 
       function showConnectedVouchers(codes, stkId, token) {
@@ -1486,7 +1490,7 @@
         setWaiting(
           true,
           "You're online",
-          "Share the remaining vouchers with other devices.",
+          "Share the remaining valid vouchers with other devices.",
           false,
           true
         );
@@ -1503,17 +1507,20 @@
       }
 
       function bindPanel(root) {
-      function revealVoucher(code) {
-        if (!code) return;
+      function revealVoucher(codeOrCodes) {
+        var codes = Array.isArray(codeOrCodes)
+          ? codeOrCodes.filter(Boolean)
+          : (codeOrCodes ? [codeOrCodes] : []);
+        if (!codes.length) return;
         var reveal = root.querySelector("[data-voucher-reveal]");
         var display = root.querySelector("[data-voucher-code-display]");
         var input = root.querySelector("[data-voucher-input]");
-        if (display) display.textContent = code;
+        if (display) display.textContent = codes.join("\n");
         if (reveal) {
           reveal.hidden = false;
           reveal.classList.add("is-visible");
         }
-        if (input) input.value = code;
+        if (input) input.value = codes[0];
       }
 
       function hideVoucherDuringPay() {
@@ -1529,8 +1536,11 @@
         }
       }
 
-      function showVoucherFallback(code) {
-        revealVoucher(code);
+      function showVoucherFallback(codeOrCodes) {
+        var codes = Array.isArray(codeOrCodes)
+          ? codeOrCodes.filter(Boolean)
+          : (codeOrCodes ? [codeOrCodes] : []);
+        revealVoucher(codes);
         var box = root.querySelector("[data-voucher-box]");
         if (!box) return;
         box.hidden = false;
@@ -1539,7 +1549,9 @@
         if (heading) heading.textContent = "Activate with your voucher";
         var copy = box.querySelector(".voucher-copy");
         if (copy) {
-          copy.textContent = "Payment succeeded, but this device is not online yet. Enter the code to connect.";
+          copy.textContent = codes.length > 1
+            ? "Payment succeeded. Use one unused voucher below. Extra valid codes are for other devices."
+            : "Payment succeeded, but this device is not online yet. Enter a valid voucher to connect.";
         }
         try { box.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (err) {}
       }
@@ -1705,9 +1717,9 @@
                 }, POLL_FAST_MS);
                 return;
               }
-              showVoucherFallback(data.voucher_code || "");
+              showVoucherFallback(extraVoucherCodes(data));
               show(
-                "Payment successful, but this device is not surfing yet. Use the voucher below.",
+                "Payment successful, but this device is not surfing yet. Use a valid voucher below.",
                 false
               );
               submit.disabled = false;

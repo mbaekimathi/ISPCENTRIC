@@ -1279,10 +1279,11 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertContains(response, self.org.name)
         self.assertContains(response, 'name="phone"')
         self.assertContains(response, 'name="plan_id"')
-        self.assertNotContains(response, "Have a voucher?")
+        self.assertContains(response, "Have a voucher?")
         self.assertContains(response, 'name="voucher_code"')
         self.assertContains(response, "Activate voucher")
-        self.assertContains(response, 'data-voucher-box hidden')
+        self.assertContains(response, 'data-voucher-box')
+        self.assertNotContains(response, 'data-voucher-box hidden')
 
     def test_pay_page_shows_package_image(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -1594,6 +1595,40 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertEqual(second.status, AccessVoucher.Status.INVALID)
         self.assertEqual(third.status, AccessVoucher.Status.VALID)
         self.assertEqual(second.redeemed_mac, "AA:BB:CC:DD:EE:89")
+        from billing.vouchers import format_voucher_code
+
+        remaining = extra.get("voucher_codes") or []
+        self.assertEqual(extra["voucher_valid_count"], 1)
+        self.assertEqual(remaining, [format_voucher_code(third.code)])
+        self.assertNotIn(format_voucher_code(first.code), remaining)
+        self.assertNotIn(format_voucher_code(second.code), remaining)
+
+    def test_pay_payload_lists_only_valid_vouchers(self):
+        from billing.models import AccessVoucher, StkPushRequest
+        from billing.vouchers import (
+            attach_voucher_to_stk_status,
+            create_vouchers_for_stk,
+            format_voucher_code,
+        )
+
+        stk = self._stk()
+        stk.status = StkPushRequest.Status.SUCCESS
+        stk.save(update_fields=["status"])
+        vouchers = create_vouchers_for_stk(stk)
+        used = vouchers[0]
+        used.status = AccessVoucher.Status.INVALID
+        used.save(update_fields=["status"])
+
+        payload = attach_voucher_to_stk_status({"ok": True}, stk)
+        used_code = format_voucher_code(used.code)
+        valid_codes = [
+            format_voucher_code(row.code)
+            for row in vouchers[1:]
+        ]
+        self.assertEqual(payload["voucher_valid_count"], 2)
+        self.assertEqual(sorted(payload["voucher_codes"]), sorted(valid_codes))
+        self.assertNotIn(used_code, payload["voucher_codes"])
+        self.assertIn(payload["voucher_code"], valid_codes)
 
     def test_surfing_does_not_burn_unused_device_vouchers(self):
         from billing.models import AccessVoucher
