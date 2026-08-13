@@ -1036,6 +1036,22 @@ class FulfillIdempotencyTests(TestCase):
         sync_mock.assert_called()
 
 
+class VoucherCodeFormatTests(SimpleTestCase):
+    def test_new_codes_are_four_digits_and_a_letter(self):
+        from billing.vouchers import (
+            _generate_code,
+            format_voucher_code,
+            normalize_voucher_code,
+        )
+
+        code = _generate_code()
+        self.assertRegex(code, r"^[0-9]{4}[A-HJ-NP-Z]$")
+        self.assertEqual(format_voucher_code(code), f"{code[:4]}-{code[4]}")
+        self.assertEqual(normalize_voucher_code("4827-k"), "4827K")
+        self.assertEqual(format_voucher_code("4827K"), "4827-K")
+        self.assertEqual(format_voucher_code("AB12CD34"), "AB12-CD34")
+
+
 class AccountNumberFromPhoneTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user("owner-acct", password="x")
@@ -1143,6 +1159,38 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertIsNone(self.customer.package_end)
         self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
         sync_mock.assert_not_called()
+        from billing.vouchers import format_voucher_code
+
+        self.assertRegex(voucher.code, r"^[0-9]{4}[A-HJ-NP-Z]$")
+        self.assertEqual(result["voucher_code"], format_voucher_code(voucher.code))
+
+    def test_redeem_accepts_short_dashed_code(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import format_voucher_code, redeem_access_voucher
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="RCVSHORT1"
+        )
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+        dashed = format_voucher_code(voucher.code)
+        self.assertRegex(dashed, r"^[0-9]{4}-[A-HJ-NP-Z]$")
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            return_value={"ok": True, "allowed": True},
+        ):
+            result = redeem_access_voucher(
+                organization=self.org,
+                code=dashed,
+                customer=self.customer,
+                mac=self.customer.hotspot_mac,
+            )
+
+        voucher.refresh_from_db()
+        self.assertTrue(result["ok"])
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
 
     def test_redeem_activates_once_and_marks_invalid(self):
         from billing.models import AccessVoucher
@@ -1331,6 +1379,28 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(row["share"]["can_share"])
         self.assertIn(voucher.code[:4], row["share"]["share_text"])
         self.assertIn("wa.me/254700000777", row["share"]["whatsapp_client_url"])
+
+    def test_client_detail_shows_available_voucher(self):
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import format_voucher_code
+
+        self.client.force_login(self.owner)
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="DETAIL1"
+        )
+        from billing.models import AccessVoucher
+
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+        display = format_voucher_code(voucher.code)
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Available vouchers")
+        self.assertContains(response, display)
+        self.assertContains(response, "1 unused voucher")
+        self.assertEqual(response.context["valid_voucher_count"], 1)
+        self.assertEqual(len(response.context["available_vouchers"]), 1)
 
     def test_refresh_stk_status_auto_applies_package(self):
         from billing.stk import fulfill_successful_stk, refresh_stk_status
@@ -1544,6 +1614,35 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         )
         self.assertTrue(result["needs_voucher"])
 
+    def test_client_detail_lists_unused_multi_device_vouchers(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import format_voucher_code
+
+        self.client.force_login(self.owner)
+        stk = self._stk()
+        result = fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="FAMDETAIL"
+        )
+        codes = [format_voucher_code(c) for c in (result.get("voucher_codes") or [])]
+        used = AccessVoucher.objects.filter(stk_request=stk).first()
+        used.status = AccessVoucher.Status.INVALID
+        used.save(update_fields=["status"])
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Available vouchers")
+        self.assertContains(response, "3 devices")
+        self.assertContains(response, "2 unused")
+        self.assertContains(response, "1 used")
+        self.assertEqual(response.context["valid_voucher_count"], 2)
+        self.assertEqual(response.context["voucher_device_cap"], 3)
+        for code in codes:
+            if format_voucher_code(used.code) == code:
+                self.assertNotContains(response, code)
+            else:
+                self.assertContains(response, code)
+
     def test_fulfill_is_idempotent_and_does_not_mint_extras(self):
         from billing.models import AccessVoucher
         from billing.stk import fulfill_successful_stk
@@ -1646,6 +1745,32 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         )
         self.assertEqual(statuses.count(AccessVoucher.Status.INVALID), 1)
         self.assertEqual(statuses.count(AccessVoucher.Status.VALID), 2)
+
+    def test_expired_package_burns_unused_device_vouchers(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import invalidate_unused_vouchers_for_expired_customers
+
+        stk = self._stk()
+        fulfill_successful_stk(stk, result_code=0, result_desc="ok", mpesa_receipt="FAM5")
+        self.customer.package_start = timezone.now() - timedelta(days=2)
+        self.customer.package_end = timezone.now() - timedelta(days=1)
+        self.customer.save(update_fields=["package_start", "package_end"])
+
+        burned = invalidate_unused_vouchers_for_expired_customers([self.customer])
+        self.assertEqual(burned, 3)
+        self.assertEqual(
+            AccessVoucher.objects.filter(
+                stk_request=stk, status=AccessVoucher.Status.VALID
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            AccessVoucher.objects.filter(
+                stk_request=stk, status=AccessVoucher.Status.INVALID
+            ).count(),
+            3,
+        )
 
     def test_pppoe_payment_still_issues_one_voucher(self):
         from billing.models import AccessVoucher, BillingPlan, Customer, StkPushRequest

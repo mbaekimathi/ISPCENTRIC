@@ -142,6 +142,7 @@
     <div class="client-simple-identity">
       <span class="client-simple-avatar" aria-hidden="true" data-client-initial>{{ customer.full_name|slice:":1"|upper }}</span>
       <div>
+        <p class="client-simple-kicker">Subscriber profile</p>
         <button
           type="button"
           class="client-simple-name"
@@ -154,11 +155,11 @@
         >
           {{ customer.full_name }}
         </button>
-        <p class="client-simple-meta">
-          {{ customer.get_service_type_display }}
-          · {{ customer.account_number }}
-          {% if customer.phone %} · {{ customer.phone }}{% endif %}
-        </p>
+        <div class="client-simple-meta-chips">
+          <span class="client-chip is-service">{{ customer.get_service_type_display }}</span>
+          <span class="client-chip">{{ customer.account_number }}</span>
+          {% if customer.phone %}<span class="client-chip">{{ customer.phone }}</span>{% endif %}
+        </div>
       </div>
     </div>
     <div class="client-simple-head-right">
@@ -169,6 +170,11 @@
             <span class="mikrotik-link-dot" aria-hidden="true"></span>
             <span class="mikrotik-link-label">Checking…</span>
           </span>
+        {% endif %}
+        {% if valid_voucher_count %}
+          <a class="org-status org-status-active" href="#client-available-vouchers">
+            {{ valid_voucher_count }} unused voucher{{ valid_voucher_count|pluralize }}
+          </a>
         {% endif %}
       </div>
     </div>
@@ -233,7 +239,7 @@
     <dl class="client-simple-list">
       <div>
         <dt>Plan</dt>
-        <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong>{% if package_duration_label %} · <span data-sub-duration>{{ package_duration_label }}</span>{% else %} · <span data-sub-duration>—</span>{% endif %}</dd>
+        <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong>{% if package_duration_label %} · <span data-sub-duration>{{ package_duration_label }}</span>{% else %} · <span data-sub-duration>—</span>{% endif %}{% if customer.plan and customer.service_type == "hotspot" %} · {{ customer.plan.max_devices_label }}{% endif %}</dd>
       </div>
       <div>
         <dt>Package</dt>
@@ -429,6 +435,102 @@
   </details>
   {% endif %}
 </section>
+
+{% if show_available_vouchers %}
+<section class="panel client-simple-panel" id="client-available-vouchers">
+  <header class="client-simple-head">
+    <div>
+      <p class="client-simple-kicker">Multi-device access</p>
+      <h2 class="client-simple-section-title">Available vouchers</h2>
+      <p class="client-simple-meta">
+        {% if voucher_device_cap > 1 %}
+          This package covers {{ voucher_device_cap }} devices. Each unused code activates one extra phone or laptop — a used voucher cannot be reused.
+        {% else %}
+          Unused one-time codes from successful payments. Share a valid code so another device can connect.
+        {% endif %}
+      </p>
+    </div>
+    <div class="client-simple-badges">
+      <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
+        {{ valid_voucher_count }} unused
+      </span>
+      {% if voucher_device_cap > 1 %}
+        <span class="org-status">{{ voucher_device_cap }} devices</span>
+      {% endif %}
+      {% if used_voucher_count %}
+        <span class="org-status">{{ used_voucher_count }} used</span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if available_vouchers %}
+    <ul class="client-voucher-cards" aria-label="Unused access vouchers">
+      {% for row in available_vouchers %}
+        <li class="client-voucher-card is-valid">
+          <div class="client-voucher-card-kicker">
+            <span>{% if voucher_device_cap > 1 %}Device code{% else %}Access code{% endif %}</span>
+            <span class="voucher-status-pill is-valid">{{ row.status_label }}</span>
+          </div>
+          <button
+            type="button"
+            class="org-code voucher-code client-voucher-code-btn"
+            data-copy-voucher
+            data-copy-text="{{ row.code_display }}"
+            title="Copy {{ row.code_display }}"
+          >{{ row.code_display }}</button>
+          <p class="client-voucher-card-meta">
+            {{ row.plan_name }}
+            {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
+          </p>
+          {% if row.share.can_share %}
+            <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
+              <button
+                type="button"
+                class="btn btn-sm"
+                data-copy-voucher
+                data-copy-text="{{ row.share.share_text|escape }}"
+              >Copy</button>
+              {% if row.share.whatsapp_client_url %}
+                <a
+                  class="btn btn-sm voucher-share-wa"
+                  href="{{ row.share.whatsapp_client_url }}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >WhatsApp client</a>
+              {% else %}
+                <a
+                  class="btn btn-sm voucher-share-wa"
+                  href="{{ row.share.whatsapp_share_url }}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >WhatsApp</a>
+              {% endif %}
+              <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+            </div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="client-voucher-empty">
+      <p class="empty client-simple-note">
+        {% if voucher_device_cap > 1 %}
+          No unused vouchers yet. After this client pays a {{ voucher_device_cap }}-device package, leftover codes for other devices appear here.
+        {% else %}
+          No unused vouchers on this account.
+        {% endif %}
+      </p>
+    </div>
+  {% endif %}
+
+  <p class="client-simple-note">
+    {% if used_voucher_count and not available_vouchers %}
+      All vouchers from the last payment have been used.
+    {% endif %}
+    <a href="{{ voucher_billing_url }}#client-vouchers">Full voucher history</a>
+  </p>
+</section>
+{% endif %}
 
 </div>
 
@@ -1550,6 +1652,32 @@
   if (location.hash) {
     setTimeout(scrollToHash, 40);
   }
+})();
+</script>
+
+<script>
+(function () {
+  document.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var text = btn.getAttribute("data-copy-text") || "";
+      var label = btn.textContent;
+      function done() {
+        btn.textContent = btn.classList.contains("client-voucher-code-btn")
+          ? label
+          : "Copied";
+        if (!btn.classList.contains("client-voucher-code-btn")) {
+          window.setTimeout(function () { btn.textContent = label; }, 1400);
+        }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () {
+          window.prompt("Copy voucher:", text);
+        });
+      } else {
+        window.prompt("Copy voucher:", text);
+      }
+    });
+  });
 })();
 </script>
 

@@ -12034,11 +12034,32 @@ def sync_customer_subscription_access(
         return payload
 
     if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        if not allowed:
+            try:
+                from billing.vouchers import (
+                    invalidate_unused_vouchers_for_expired_customers,
+                )
+
+                invalidate_unused_vouchers_for_expired_customers([customer])
+            except Exception:
+                logger.exception(
+                    "Could not burn leftover Hotspot vouchers for customer=%s",
+                    getattr(customer, "pk", None),
+                )
         router = getattr(customer, "router", None)
-        detected_router = find_hotspot_router_for_mac(
-            customer.organization,
-            getattr(customer, "hotspot_mac", "") or "",
-        )
+        from billing.devices import hotspot_macs_for_customer
+
+        lookup_macs = hotspot_macs_for_customer(customer) or [
+            getattr(customer, "hotspot_mac", "") or ""
+        ]
+        detected_router = None
+        for lookup_mac in lookup_macs:
+            detected_router = find_hotspot_router_for_mac(
+                customer.organization,
+                lookup_mac,
+            )
+            if detected_router is not None:
+                break
         if detected_router is not None:
             router = detected_router
             if customer.router_id != detected_router.pk:
@@ -12632,14 +12653,13 @@ def _hotspot_customers_for_router(router):
             service_type=Customer.ServiceType.HOTSPOT,
         )
         .select_related("plan")
-        .prefetch_related("devices")
+        .prefetch_related("devices", "access_vouchers")
         .order_by("id")
     )
-    return [
-        customer
-        for customer in qs
-        if customer.router_id in (None, getattr(router, "pk", None))
-    ]
+    # Push every Hotspot account onto every org AP. Extra multi-device MACs
+    # often land on a different NAS than customer.router_id; expiry must still
+    # disable and kick them.
+    return list(qs)
 
 
 def _lan_ipv4_for_interface(sock: socket.socket, lan: str) -> str:
@@ -13455,7 +13475,7 @@ def _paid_hotspot_mac_set(organization) -> set[str]:
         organization_id=organization.pk,
         service_type=Customer.ServiceType.HOTSPOT,
         status=Customer.Status.ACTIVE,
-    ).prefetch_related("devices")
+    ).prefetch_related("devices", "access_vouchers")
     for customer in qs:
         if not customer_can_surf_via_hotspot(customer):
             continue
@@ -13696,7 +13716,7 @@ def _expire_hotspot_mac_sessions(
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
 ) -> None:
-    """Expire Hotspot active/host rows for one MAC when access changes."""
+    """Expire Hotspot active/host/cookie rows for one MAC when access changes."""
     mac = (mac or "").strip().upper()
     if not mac:
         return
@@ -13727,6 +13747,22 @@ def _expire_hotspot_mac_sessions(
             item_id = (row.get(".id") or "").strip()
             if should_remove and item_id:
                 _remove(sock, path, item_id)
+    if not disabled:
+        return
+    cookie_rows = _print(
+        sock,
+        "/ip/hotspot/cookie",
+        props=".id,mac-address",
+        query={"mac-address": mac},
+    )
+    if not cookie_rows:
+        cookie_rows = _print(sock, "/ip/hotspot/cookie", props=".id,mac-address")
+    for row in cookie_rows:
+        if (row.get("mac-address") or "").strip().upper() != mac:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if item_id:
+            _remove(sock, "/ip/hotspot/cookie", item_id)
 
 
 def _apply_hotspot_customer_on_socket(
@@ -13767,6 +13803,7 @@ def _apply_hotspot_customer_on_socket(
         download_mbps=download,
     )
     uptime = limit_uptime if not disabled else "0s"
+    kick_sessions = bool(disabled or reauthenticate)
     for mac in allowed:
         _ensure_hotspot_user(
             sock,
@@ -13781,7 +13818,7 @@ def _apply_hotspot_customer_on_socket(
             sock,
             mac,
             disabled=disabled,
-            reauthenticate=reauthenticate,
+            reauthenticate=kick_sessions,
             active_rows=active_rows,
             host_rows=host_rows,
         )

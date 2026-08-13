@@ -16,9 +16,9 @@ from billing.services import apply_subscription_renewal
 
 logger = logging.getLogger(__name__)
 
-_CODE_ALPHABET = string.ascii_uppercase + string.digits
-# Skip ambiguous characters for phone entry.
-_CODE_ALPHABET = "".join(ch for ch in _CODE_ALPHABET if ch not in "01OI")
+# Skip O/I so the letter is not mistaken for 0/1 on a phone.
+_CODE_LETTERS = "".join(ch for ch in string.ascii_uppercase if ch not in "OI")
+_CODE_DIGITS = string.digits
 
 
 def normalize_voucher_code(raw: str) -> str:
@@ -27,15 +27,20 @@ def normalize_voucher_code(raw: str) -> str:
 
 
 def format_voucher_code(code: str) -> str:
-    """Display as XXXX-XXXX when 8 chars."""
+    """Display new codes as 4827-K; keep legacy 8-char as XXXX-XXXX."""
     compact = normalize_voucher_code(code)
+    if len(compact) == 5 and compact[:4].isdigit() and compact[4].isalpha():
+        return f"{compact[:4]}-{compact[4]}"
     if len(compact) == 8:
         return f"{compact[:4]}-{compact[4:]}"
     return compact
 
 
 def _generate_code() -> str:
-    return "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+    """Four digits plus one letter, e.g. 4827K."""
+    digits = "".join(secrets.choice(_CODE_DIGITS) for _ in range(4))
+    letter = secrets.choice(_CODE_LETTERS)
+    return f"{digits}{letter}"
 
 
 def voucher_count_for_plan(plan) -> int:
@@ -198,7 +203,7 @@ def redeem_access_voucher(
     ``provision=False`` applies the package only (no MikroTik call).
     """
     compact = normalize_voucher_code(code)
-    if len(compact) < 6:
+    if len(compact) < 5:
         return {"ok": False, "error": "Enter a valid voucher code."}
 
     voucher = (
@@ -481,6 +486,46 @@ def _apply_package_while_burning(voucher: AccessVoucher) -> None:
             "Failed applying package while invalidating voucher %s",
             voucher.code,
         )
+
+
+def invalidate_unused_vouchers_for_expired_customers(
+    customers: Iterable[Customer],
+) -> int:
+    """
+    Burn leftover VALID device vouchers once the paid period has ended.
+
+    Extra phones must not reconnect after the package clock runs out.
+    Already-used (INVALID) rows stay as history.
+    """
+    from billing.services import (
+        customer_can_surf_via_hotspot,
+        customer_receives_internet,
+    )
+
+    rows = [c for c in customers if getattr(c, "pk", None)]
+    if not rows:
+        return 0
+
+    now = timezone.now()
+    updated = 0
+    with transaction.atomic():
+        for customer in rows:
+            service = getattr(customer, "service_type", "")
+            if service == Customer.ServiceType.HOTSPOT:
+                if customer_can_surf_via_hotspot(customer):
+                    continue
+            elif customer_receives_internet(customer):
+                continue
+            qs = AccessVoucher.objects.select_for_update().filter(
+                customer_id=customer.pk,
+                status=AccessVoucher.Status.VALID,
+            )
+            for voucher in qs:
+                voucher.status = AccessVoucher.Status.INVALID
+                voucher.invalidated_at = now
+                voucher.save(update_fields=["status", "invalidated_at"])
+                updated += 1
+    return updated
 
 
 def invalidate_vouchers_for_surfing_customers(customers: Iterable[Customer]) -> int:

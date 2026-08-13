@@ -44,7 +44,7 @@ def normalize_device_mac(mac: str) -> str:
 
 
 def hotspot_macs_for_customer(customer) -> list[str]:
-    """Primary MAC first, then extra CustomerDevice rows."""
+    """Primary MAC first, then extra CustomerDevice rows, then voucher MACs."""
     if customer is None:
         return []
     seen: list[str] = []
@@ -68,6 +68,21 @@ def hotspot_macs_for_customer(customer) -> list[str]:
             rows = []
     for row in rows:
         _add(getattr(row, "mac", "") or "")
+    if "access_vouchers" in prefetched:
+        for voucher in prefetched["access_vouchers"]:
+            _add(getattr(voucher, "redeemed_mac", "") or "")
+    elif getattr(customer, "pk", None):
+        try:
+            from billing.models import AccessVoucher
+
+            for mac in (
+                AccessVoucher.objects.filter(customer_id=customer.pk)
+                .exclude(redeemed_mac="")
+                .values_list("redeemed_mac", flat=True)
+            ):
+                _add(mac)
+        except Exception:
+            pass
     return seen
 
 

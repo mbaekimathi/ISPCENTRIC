@@ -95,6 +95,7 @@ class Command(BaseCommand):
         dry_run = bool(options.get("dry_run"))
         blocked = allowed = errors = 0
         hotspot_org_ids: set[int] = set()
+        expired_hotspot: list[Customer] = []
         # NAS routers that blocked at least one PPPoE client — repair captive
         # redirect rules so any device that dials/connects still pops pay instantly.
         repair_router_ids: set[int] = set()
@@ -123,6 +124,7 @@ class Command(BaseCommand):
                     allowed += 1
                 else:
                     blocked += 1
+                    expired_hotspot.append(customer)
                 continue
 
             result = sync_customer_subscription_access(
@@ -247,6 +249,28 @@ class Command(BaseCommand):
             else:
                 state = "allowed" if result.get("allowed") else "blocked"
                 self._write(self.stdout, f"{customer.account_number}: {state}")
+
+        if expired_hotspot and not dry_run:
+            try:
+                from billing.vouchers import (
+                    invalidate_unused_vouchers_for_expired_customers,
+                )
+
+                burned = invalidate_unused_vouchers_for_expired_customers(
+                    expired_hotspot
+                )
+                if burned:
+                    self._write(
+                        self.stdout,
+                        f"burned {burned} leftover Hotspot voucher(s) after expiry",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"voucher expiry burn: {exc}",
+                    style=self.style.WARNING,
+                )
 
         for router in self._hotspot_routers(hotspot_org_ids):
             # Correction loop: lost login.html / option 114 must not leave unpaid

@@ -68,6 +68,22 @@ class HotspotDeviceLimitTests(TestCase):
         found = find_hotspot_customer_for_mac(self.org, "AA:BB:CC:DD:EE:02")
         self.assertEqual(found.pk, self.customer.pk)
 
+    def test_hotspot_macs_include_redeemed_voucher_mac(self):
+        from billing.models import AccessVoucher
+
+        AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="4827K",
+            status=AccessVoucher.Status.INVALID,
+            redeemed_mac="AA:BB:CC:DD:EE:77",
+        )
+        self.assertIn(
+            "AA:BB:CC:DD:EE:77",
+            hotspot_macs_for_customer(self.customer),
+        )
+
     def test_unlimited_plan_accepts_extra_macs(self):
         self.plan.max_devices = 0
         self.plan.save(update_fields=["max_devices"])
@@ -350,3 +366,42 @@ class HotspotNasMultiMacTests(TestCase):
         names = [row["username"] for row in users]
         self.assertEqual(names, ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"])
         self.assertTrue(all(not row["disabled"] for row in users))
+
+    def test_apply_disables_all_macs_when_package_expired(self):
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        self.customer.package_end = timezone.now() - timedelta(days=1)
+        self.customer.save(update_fields=["package_end"])
+
+        users = []
+        expired = []
+
+        def fake_ensure(sock, **kwargs):
+            users.append(kwargs)
+            return "updated"
+
+        def fake_expire(sock, mac, **kwargs):
+            expired.append((mac, kwargs.get("disabled"), kwargs.get("reauthenticate")))
+
+        with (
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._ensure_hotspot_rate_profile", return_value="hs-profile"),
+            patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions", side_effect=fake_expire),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=1),
+        ):
+            applied = _apply_hotspot_customer_on_socket(object(), self.customer)
+
+        self.assertTrue(applied)
+        self.assertEqual(
+            [row["username"] for row in users],
+            ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
+        )
+        self.assertTrue(all(row["disabled"] for row in users))
+        self.assertEqual(all(row["limit_uptime"] == "0s" for row in users), True)
+        self.assertEqual(
+            [mac for mac, disabled, _kick in expired],
+            ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
+        )
+        self.assertTrue(all(disabled for _mac, disabled, _kick in expired))
+        self.assertTrue(all(kick for _mac, _disabled, kick in expired))

@@ -60,7 +60,7 @@ from billing.forms import (
     CustomerDetailsEditForm,
     PppoeClientRegisterForm,
 )
-from billing.models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
+from billing.models import AccessVoucher, BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from billing.services import (
     customer_needs_nas_provision,
     customer_package_is_paused,
@@ -5047,6 +5047,27 @@ def client_detail(request, customer_id: int):
 
     client_plans = list(recharge_form.fields["plan"].queryset)
 
+    from billing.vouchers import vouchers_for_customer_billing
+
+    voucher_rows = vouchers_for_customer_billing(customer, request=request) if org else []
+    available_vouchers = [
+        row for row in voucher_rows if row["status"] == AccessVoucher.Status.VALID
+    ]
+    used_voucher_count = sum(
+        1 for row in voucher_rows if row["status"] != AccessVoucher.Status.VALID
+    )
+    try:
+        plan_max_devices = (
+            int(getattr(customer.plan, "max_devices", 0) or 0)
+            if customer.plan_id
+            else 0
+        )
+    except (TypeError, ValueError):
+        plan_max_devices = 0
+    show_available_vouchers = bool(available_vouchers) or bool(voucher_rows) or (
+        customer.service_type == Customer.ServiceType.HOTSPOT and plan_max_devices > 1
+    )
+
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -5090,6 +5111,14 @@ def client_detail(request, customer_id: int):
             else ""
         ),
         open_client_modal=open_client_modal,
+        available_vouchers=available_vouchers,
+        valid_voucher_count=len(available_vouchers),
+        used_voucher_count=used_voucher_count,
+        voucher_device_cap=plan_max_devices,
+        show_available_vouchers=show_available_vouchers,
+        voucher_billing_url=reverse(
+            "core:client_billing", kwargs={"customer_id": customer.pk}
+        ),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
