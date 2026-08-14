@@ -22,6 +22,11 @@ from billing.services import (
 
 logger = logging.getLogger(__name__)
 
+# Captive pay pages poll ~1s for UX, but Safaricom STK Query is slow (up to
+# 25s). Only one Daraja query per STK every few seconds; intervening polls
+# return local pending so the queue does not pile up behind Safaricom.
+STK_QUERY_MIN_INTERVAL_SECONDS = 3
+
 # Keys that must survive Daraja callback/query overwrites of raw_callback.
 _STK_RAW_PRESERVE_KEYS = (
     "lead_allocation_options",
@@ -1339,6 +1344,18 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
     creds = org.effective_daraja_credentials()
     if not creds.get("ready"):
         return _still_pending(base, stk)
+
+    # Skip Safaricom if another poll already queried this STK recently.
+    # Callbacks still flip status in DB — those polls take the SUCCESS branch
+    # above and never reach here.
+    try:
+        from django.core.cache import cache
+
+        query_lock = f"stk:daraja-query:{stk.pk}"
+        if not cache.add(query_lock, 1, STK_QUERY_MIN_INTERVAL_SECONDS):
+            return _still_pending(base, stk, result_desc=stk.result_desc)
+    except Exception:
+        pass
 
     stored = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
     query_env = (

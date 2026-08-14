@@ -125,6 +125,35 @@ class Command(BaseCommand):
                 else:
                     blocked += 1
                     expired_hotspot.append(customer)
+                    # Push the MAC disable + session kill immediately. Waiting
+                    # only for the later per-router rewrite left expired phones
+                    # surfing until that heavier step finished (or failed).
+                    if not dry_run:
+                        try:
+                            hs_result = sync_customer_subscription_access(
+                                customer,
+                                provision=True,
+                            )
+                            if hs_result.get("ok"):
+                                self._write(
+                                    self.stdout,
+                                    f"{customer.account_number}: hotspot blocked",
+                                )
+                            elif not hs_result.get("skipped"):
+                                errors += 1
+                                self._write(
+                                    self.stderr,
+                                    f"{customer.account_number}: hotspot "
+                                    f"{(hs_result.get('provision') or {}).get('error') or hs_result.get('message') or 'block failed'}",
+                                    style=self.style.WARNING,
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            errors += 1
+                            self._write(
+                                self.stderr,
+                                f"{customer.account_number}: hotspot {exc}",
+                                style=self.style.WARNING,
+                            )
                 continue
 
             result = sync_customer_subscription_access(

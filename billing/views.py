@@ -660,12 +660,23 @@ def _renew_page_context(customer):
     }
 
 
+def _canonical_pay_url_for_renew(customer, request) -> str:
+    """Route renew tokens to Hotspot or PPPoE pay by customer service_type."""
+    from core.views import _hotspot_pay_url_for_org, _pppoe_pay_url_for_customer
+
+    org = getattr(customer, "organization", None)
+    if org is None:
+        return ""
+    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
+        return _hotspot_pay_url_for_org(org, request)
+    return _pppoe_pay_url_for_customer(customer, request)
+
+
 def subscription_renew(request, token: str):
-    """Legacy renew URL — redirect to the canonical PPPoE pay page."""
+    """Legacy renew URL — redirect to Hotspot or PPPoE pay by service_type."""
     from django.shortcuts import redirect
 
     from billing.services import resolve_customer_from_renew_token
-    from core.views import _pppoe_pay_url_for_customer
 
     customer = resolve_customer_from_renew_token(token)
     if customer is None or not customer.organization_id:
@@ -679,7 +690,7 @@ def subscription_renew(request, token: str):
             },
             status=404,
         )
-    target = _pppoe_pay_url_for_customer(customer, request)
+    target = _canonical_pay_url_for_renew(customer, request)
     if not target:
         return render(
             request,
@@ -698,14 +709,13 @@ def subscription_renew_hotspot(request, token: str):
     """
     Legacy CPE Hotspot HTML — redirect phones to the canonical pay page.
 
-    PPPoE CPE renew uses /pppoe/<join>/pay/?t=…; plain Hotspot org falls back
-    to /hotspot/<join>/pay/.
+    Same service_type branch as ``subscription_renew``: Hotspot → /hotspot/…/pay/,
+    PPPoE CPE renew → /pppoe/<join>/pay/?t=….
     """
     from django.http import HttpResponse
     from django.shortcuts import redirect
 
     from billing.services import resolve_customer_from_renew_token
-    from core.views import _hotspot_pay_url_for_org, _pppoe_pay_url_for_customer
 
     customer = resolve_customer_from_renew_token(token)
     if customer is None or not customer.organization_id:
@@ -714,11 +724,7 @@ def subscription_renew_hotspot(request, token: str):
             content_type="text/html; charset=utf-8",
             status=404,
         )
-    org = customer.organization
-    if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
-        target = _hotspot_pay_url_for_org(org, request)
-    else:
-        target = _pppoe_pay_url_for_customer(customer, request)
+    target = _canonical_pay_url_for_renew(customer, request)
     if not target:
         return HttpResponse(
             "<!DOCTYPE html><html><body><p>Renew link invalid.</p></body></html>",

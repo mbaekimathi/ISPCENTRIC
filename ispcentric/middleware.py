@@ -294,9 +294,16 @@ class HotspotCaptiveProbeMiddleware:
         from django.urls import reverse
 
         query = request.META.get("QUERY_STRING") or ""
+        # Include pool mode in the key so a brief mis-route cannot stick the
+        # opposite UI (Hotspot vs PPPoE) for the redirect TTL.
+        mode_hint = (
+            "pppoe"
+            if renew_or_pppoe_pool
+            else ("hotspot" if hotspot_client else "probe")
+        )
         # Cache the final pay URL per client IP so probe bursts stay cheap.
         # Generation bumps on successful renew so clients are not stuck on /pay.
-        cache_key = captive_redirect_cache_key(remote, query)
+        cache_key = captive_redirect_cache_key(remote, f"{mode_hint}|{query}")
         cached_target = cache.get(cache_key)
         if cached_target:
             return redirect(cached_target)
@@ -388,9 +395,11 @@ class HotspotCaptiveProbeMiddleware:
             except Exception:
                 pass
         try:
-            # Short TTL: OS probe bursts stay instant, but a renew that just
-            # restored access is not stuck on a stale pay URL for 20s.
-            cache.set(cache_key, target, 8)
+            # Short TTL: OS probe bursts stay instant. Only cache when the
+            # client IP is already in a known pool (or a PPP session matched)
+            # so multi-tenant fallback guesses never stick a wrong join_code.
+            if renew_or_pppoe_pool or hotspot_client or pppoe_customer is not None:
+                cache.set(cache_key, target, 5)
         except Exception:
             pass
         return redirect(target)

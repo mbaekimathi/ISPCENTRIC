@@ -1405,7 +1405,7 @@
               var elapsedErr = Date.now() - pollStartedAt;
               if (elapsedErr < POLL_GIVE_UP_MS) {
                 setWaiting(true, "Checking payment status", (data.error || "Could not check payment.") + " Retrying automatically…");
-                pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_SLOW_MS);
+                pollTimer = window.setTimeout(function () { poll(url, token, false); }, POLL_SLOW_MS);
                 return;
               }
               offerRetry(data.error || "Could not check payment.");
@@ -1431,9 +1431,10 @@
                   ? "Payment successful. Router is offline — checking again…"
                   : "Payment successful. Connecting you automatically…";
                 setWaiting(true, "Restoring your connection", authMsg);
+                // Paid detected with nas=0 — immediately wait for NAS once.
                 pollTimer = window.setTimeout(function () {
-                  poll(url, token, authTries >= AUTH_RETRY_MAX - 1);
-                }, POLL_FAST_MS);
+                  poll(url, token, true);
+                }, waitNas ? POLL_FAST_MS : 0);
                 return;
               }
               showVoucherFallback(extraVoucherCodes(data));
@@ -1456,7 +1457,8 @@
                 data.result_desc || "Enter your PIN on your phone. This page updates automatically."
               );
               if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
-                pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_FAST_MS);
+                // Pending: do not wait for NAS (or re-hit Daraja via nas sync).
+                pollTimer = window.setTimeout(function () { poll(url, token, false); }, POLL_FAST_MS);
               } else {
                 offerRetry("The M-Pesa prompt timed out. Try again.");
               }
@@ -1467,7 +1469,7 @@
           .catch(function (error) {
             if ((Date.now() - pollStartedAt) < POLL_GIVE_UP_MS) {
               setWaiting(true, "Checking payment status", (error.message || "Could not check payment.") + " Retrying automatically…");
-              pollTimer = window.setTimeout(function () { poll(url, token, waitNas); }, POLL_SLOW_MS);
+              pollTimer = window.setTimeout(function () { poll(url, token, false); }, POLL_SLOW_MS);
               return;
             }
             offerRetry(error.message || "Could not check payment.");
@@ -1482,7 +1484,7 @@
           if (!macVal || macVal.indexOf("$(") === 0) {
             try {
               var params = new URLSearchParams(window.location.search);
-              var fromUrl = (params.get("mac") || "").trim();
+              var fromUrl = (params.get("mac") or "").trim();
               if (fromUrl && fromUrl.indexOf("$(") !== 0) {
                 macInput.value = fromUrl;
                 macVal = fromUrl;
@@ -1537,7 +1539,8 @@
               "Waiting for M-Pesa",
               "M-Pesa prompt sent for KES " + data.amount + ". Check your phone and enter your PIN."
             );
-            poll(data.status_url, data.status_token);
+            // nas=0 while waiting for PIN; first success poll waits for NAS.
+            poll(data.status_url, data.status_token, false);
           })
           .catch(function (error) {
             offerRetry(error.message || "Could not start payment.");

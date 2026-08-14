@@ -202,6 +202,43 @@ class PrepaidAccessPolicyTests(TestCase):
             self.assertFalse(customer_receives_internet(customer))
             self.assertTrue(customer_subscription_expired(customer))
 
+    def test_customers_near_access_deadline_includes_just_expired_hourly(self):
+        from billing.services import customers_near_access_deadline
+
+        now = timezone.localtime()
+        hourly = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly Near",
+            price="50.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        due = self._pppoe(
+            account_number="PPP-NEAR",
+            pppoe_username="near1",
+            phone="254700000088",
+            plan=hourly,
+            package_start=now - timedelta(hours=1, minutes=1),
+            package_end=now - timedelta(seconds=20),
+        )
+        far = self._pppoe(
+            account_number="PPP-FAR",
+            pppoe_username="far1",
+            phone="254700000099",
+            plan=hourly,
+            package_start=now - timedelta(minutes=5),
+            package_end=now + timedelta(hours=2),
+        )
+        near_ids = {
+            c.pk
+            for c in customers_near_access_deadline(
+                past_seconds=90, future_seconds=45, now=now
+            )
+        }
+        self.assertIn(due.pk, near_ids)
+        self.assertNotIn(far.pk, near_ids)
+
     def test_hourly_package_still_ends_at_exact_clock_time(self):
         from datetime import datetime, time
         from unittest.mock import patch
@@ -1899,3 +1936,84 @@ class CustomerNeedsNasProvisionTests(SimpleTestCase):
             router_id = 18
 
         self.assertFalse(customer_needs_nas_provision(Fake()))
+
+
+class SubscriptionRenewUrlTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="Renew Org",
+            owner=User.objects.create_user("owner-renew-url", password="x"),
+            join_code="616161",
+            hotspot_enabled=True,
+            pppoe_compulsory=True,
+        )
+        self.plan_hs = BillingPlan.objects.create(
+            organization=self.org,
+            name="HS Day",
+            price=100,
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            is_active=True,
+        )
+        self.plan_pp = BillingPlan.objects.create(
+            organization=self.org,
+            name="PP Month",
+            price=2000,
+            duration=BillingPlan.Duration.MONTHLY,
+            service_type=BillingPlan.ServiceType.PPPOE,
+            is_active=True,
+        )
+
+    def test_billing_renew_sends_hotspot_customer_to_hotspot_pay(self):
+        from billing.services import make_renew_token
+
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Hot Client",
+            phone="254700061616",
+            account_number="HS-6161",
+            service_type=Customer.ServiceType.HOTSPOT,
+            plan=self.plan_hs,
+            status=Customer.Status.ACTIVE,
+        )
+        token = make_renew_token(customer)
+        response = self.client.get(f"/billing/renew/{token}/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertNotIn("/pppoe/", response.url)
+
+    def test_billing_renew_sends_pppoe_customer_to_pppoe_pay(self):
+        from billing.services import make_renew_token
+
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="PPP Client",
+            phone="254700061617",
+            account_number="PP-6161",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="pp6161",
+            plan=self.plan_pp,
+            status=Customer.Status.ACTIVE,
+        )
+        token = make_renew_token(customer)
+        response = self.client.get(f"/billing/renew/{token}/")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+
+    def test_billing_renew_hotspot_html_matches_service_type_branch(self):
+        from billing.services import make_renew_token
+
+        hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Hot HTML",
+            phone="254700061618",
+            account_number="HS-6162",
+            service_type=Customer.ServiceType.HOTSPOT,
+            plan=self.plan_hs,
+            status=Customer.Status.ACTIVE,
+        )
+        response = self.client.get(
+            f"/billing/renew/{make_renew_token(hotspot)}/hotspot.html"
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)

@@ -7616,10 +7616,12 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     from billing.services import plans_for_router
     from core.mikrotik_connect import find_hotspot_router_for_mac
 
-    portal_router = None
-    if hotspot_mac:
-        portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
+    # Customer + bound router first (DB only). Live NAS MAC→router scan is a
+    # last resort — it was the main multi-second cost on every pay-page open.
     hotspot_customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
+    portal_router = getattr(hotspot_customer, "router", None)
+    if hotspot_mac and portal_router is None:
+        portal_router = find_hotspot_router_for_mac(org, hotspot_mac)
     hotspot_plans = list(
         plans_for_router(
             org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT
@@ -7745,6 +7747,34 @@ def _resolve_request_hotspot_mac(org, request) -> str:
         return _normalize_hotspot_mac(find_hotspot_mac_for_ip(org, remote) or "")
     except Exception:
         return ""
+
+
+def _prefetch_daraja_oauth(organization) -> None:
+    """Warm Daraja OAuth off the request so Pay click skips a cold token fetch."""
+    org_pk = getattr(organization, "pk", None)
+    if not org_pk:
+        return
+
+    def _warm(pk: int = org_pk) -> None:
+        try:
+            from accounts.models import Organization
+            from accounts.mpesa_daraja import get_access_token
+
+            org = Organization.objects.filter(pk=pk).first()
+            if org is None:
+                return
+            creds = org.effective_daraja_credentials()
+            if not creds.get("ready"):
+                return
+            get_access_token(
+                consumer_key=creds["consumer_key"],
+                consumer_secret=creds["consumer_secret"],
+                environment=creds.get("environment") or "sandbox",
+            )
+        except Exception:
+            pass
+
+    _schedule_mikrotik_job(_warm, name=f"prefetch-daraja-{org_pk}")
 
 
 def _set_hotspot_mac_cookie(response, mac: str):
@@ -8218,9 +8248,29 @@ def _hotspot_pay_url_for_org(org, request=None) -> str:
     return path
 
 
+def _redirect_pay_preserving_query(request, view_name: str, join_code: str):
+    """302 to the other pay UI while keeping query (mac, t, account, …)."""
+    path = reverse(view_name, kwargs={"join_code": join_code})
+    qs = (request.META.get("QUERY_STRING") or "").strip()
+    if qs:
+        path = f"{path}?{qs}"
+    return redirect(path)
+
+
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     org = get_object_or_404(Organization, join_code=join_code)
+    remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    # Pool mismatch guard: PPPoE / CPE-renew clients must not stick on Hotspot UI.
+    try:
+        from core.mikrotik_connect import is_cpe_renew_pool_ip, is_pppoe_pool_ip
+
+        if is_pppoe_pool_ip(remote) or is_cpe_renew_pool_ip(remote):
+            return _redirect_pay_preserving_query(
+                request, "core:pppoe_pay", join_code
+            )
+    except Exception:
+        pass
     context = _hotspot_portal_context(org, mikrotik_login=False, request=request)
     hotspot_mac = (context.get("hotspot_mac") or "").strip().upper()
     hotspot_customer = (
@@ -8257,6 +8307,7 @@ def hotspot_pay(request, join_code: str):
                 _block_unpaid_mac,
                 name=f"hotspot-block-{hotspot_mac[-8:]}",
             )
+    _prefetch_daraja_oauth(org)
     response = render(request, "core/hotspot_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
     token = (context.get("pppoe_customer_token") or context.get("customer_token") or "").strip()
@@ -8482,6 +8533,16 @@ def pppoe_pay(request, join_code: str):
     """Public renew page for expired PPPoE sessions (dst-nat captive target)."""
     org = get_object_or_404(Organization, join_code=join_code)
     remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    # Pool mismatch guard: dedicated Hotspot clients must not stick on PPPoE UI.
+    try:
+        from core.mikrotik_connect import is_hotspot_pool_ip
+
+        if is_hotspot_pool_ip(remote):
+            return _redirect_pay_preserving_query(
+                request, "core:hotspot_pay", join_code
+            )
+    except Exception:
+        pass
     customer = find_pppoe_customer_for_ip(org, remote)
     identify_error = ""
     if customer is None:
@@ -8514,6 +8575,7 @@ def pppoe_pay(request, join_code: str):
     context = _pppoe_portal_context(
         org, request, customer=customer, identify_error=identify_error
     )
+    _prefetch_daraja_oauth(org)
     response = render(request, "core/pppoe_pay.html", context)
     response = _set_hotspot_mac_cookie(response, context.get("hotspot_mac") or "")
     if customer is not None:

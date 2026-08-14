@@ -243,3 +243,26 @@ sudo -u www-data git pull
 sudo -u www-data bash scripts/vps_deploy.sh
 sudo systemctl restart ispcentric
 ```
+
+`vps_deploy.sh` now also runs `manage.py sync_nas_config`, which re-pushes to
+every **active** MikroTik:
+
+- PPPoE pool / blocked profile / secrets (when the org uses PPPoE)
+- Expired-client pay redirect rules
+- Hotspot `login.html` / captive portal (when Hotspot is enabled)
+
+Check the result:
+
+```bash
+sudo -u www-data tail -n 50 /opt/ispcentric/logs/nas_config_sync.log
+```
+
+If a router was offline during deploy, the pending stamp is kept and the app
+retries once after WireGuard comes up on restart. You can also re-run manually:
+
+```bash
+sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py sync_nas_config
+```
+
+Set `NAS_CONFIG_SYNC_ON_BOOT=true` in `.env` only if you want **every** app
+restart to re-push all routers (slower; usually unnecessary).

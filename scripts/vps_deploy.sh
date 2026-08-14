@@ -40,6 +40,26 @@ echo "==> Collecting static files"
 # gunicorn runs as www-data and needs to write these.
 mkdir -p logs media .cache
 
+echo "==> Pushing NAS config to active MikroTiks"
+# Stamp so the app process also re-pushes after WireGuard comes up on restart.
+mkdir -p logs
+touch logs/.nas_config_sync_pending
+# Routers keep old login.html / blocked profiles until this runs. Failures are
+# logged but do not abort deploy — unreachable NAS boxes should not block a
+# code release.
+set +e
+"$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
+NAS_SYNC_RC=${PIPESTATUS[0]}
+set -e
+if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
+  rm -f logs/.nas_config_sync_pending
+else
+  echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
+  echo "   App deploy continues; pending stamp kept for boot retry after restart."
+  echo "   Or fix unreachable routers then re-run:"
+  echo "     $PYTHON_BIN manage.py sync_nas_config"
+fi
+
 echo
 echo "==> Done. Now restart the service:"
 echo "     sudo systemctl restart ispcentric"

@@ -760,6 +760,14 @@ class CaptiveOrganizationResolutionTests(TestCase):
         org = resolve_captive_organization("192.168.189.44")
         self.assertEqual(org.pk, self.org_pppoe.pk)
 
+    def test_multi_tenant_unmatched_ip_does_not_guess_org(self):
+        from core.mikrotik_connect import resolve_captive_organization
+
+        # Both orgs are captive candidates; unmatched LAN IP must not pick the
+        # first Hotspot org (wrong join_code).
+        self.assertIsNone(resolve_captive_organization("192.168.88.50"))
+        self.assertIsNone(resolve_captive_organization(""))
+
 
 class CaptiveRedirectCacheTests(SimpleTestCase):
     def test_invalidate_bumps_redirect_generation(self):
@@ -775,6 +783,47 @@ class CaptiveRedirectCacheTests(SimpleTestCase):
         invalidate_captive_redirect_cache("10.20.0.44")
         second = captive_redirect_cache_key("10.20.0.44", "")
         self.assertNotEqual(first, second)
+
+
+class PayPagePoolMismatchGuardTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.org = Organization.objects.create(
+            name="Pool Guard Org",
+            owner=User.objects.create_user("owner-pool-guard", password="x"),
+            join_code="424242",
+            hotspot_enabled=True,
+            pppoe_compulsory=True,
+        )
+
+    def test_pppoe_pay_redirects_hotspot_pool_client(self):
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/?mac=AABBCCDDEEFF",
+            REMOTE_ADDR="10.50.50.99",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/hotspot/{self.org.join_code}/pay/", response.url)
+        self.assertIn("mac=AABBCCDDEEFF", response.url)
+
+    def test_hotspot_pay_redirects_pppoe_pool_client(self):
+        response = self.client.get(
+            f"/hotspot/{self.org.join_code}/pay/?account=PPP-1",
+            REMOTE_ADDR="10.20.0.44",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+        self.assertIn("account=PPP-1", response.url)
+
+    def test_hotspot_pay_redirects_cpe_renew_pool_client(self):
+        response = self.client.get(
+            f"/hotspot/{self.org.join_code}/pay/",
+            REMOTE_ADDR="192.168.189.22",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
 
 class CaptiveProbeMiddlewareTests(TestCase):
@@ -3886,6 +3935,122 @@ class ExpiredCaptivePayTests(SimpleTestCase):
 
         self.assertEqual(disconnects, ["alice"])
 
+    def test_blocked_secret_with_unblocked_active_session_is_kicked(self):
+        """
+        If the first kick failed, the secret stays on ispcentric-blocked while
+        the live session still has a paid address-list. Later provision must
+        kick again so surfing stops immediately.
+        """
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            provision_customer_pppoe,
+        )
+
+        customer = SimpleNamespace(
+            pk=42,
+            router_id=1,
+            router=SimpleNamespace(
+                pk=1,
+                api_host="10.0.0.1",
+                username="admin",
+                password="x",
+                host="10.0.0.1",
+                name="NAS",
+            ),
+            organization=SimpleNamespace(pk=1, join_code="111111"),
+            organization_id=1,
+            pppoe_username="alice",
+            pppoe_password="secret",
+            plan=None,
+            account_number="PPP-42",
+            save=MagicMock(),
+        )
+        disconnects = []
+
+        class FakeSock:
+            pass
+
+        class FakeSession:
+            def __enter__(self):
+                return FakeSock()
+
+            def __exit__(self, *args):
+                return False
+
+        with (
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_rate_limit_for_customer",
+                return_value="",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch(
+                "core.mikrotik_connect.socket.create_connection",
+                return_value=MagicMock(
+                    __enter__=lambda *a, **k: MagicMock(),
+                    __exit__=lambda *a, **k: False,
+                ),
+            ),
+            patch("core.mikrotik_connect._api_session", return_value=FakeSession()),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_expired_access",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_blocked_profile",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_ppp_secret",
+                return_value="updated",
+            ),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions",
+                side_effect=lambda sock, username: disconnects.append(username) or 1,
+            ),
+            patch(
+                "core.mikrotik_connect._billing_portal_base_url",
+                return_value="http://billing.example",
+            ),
+            patch(
+                "core.mikrotik_connect.cpe_renew_clear_is_pending",
+                return_value=False,
+            ),
+        ):
+            result = provision_customer_pppoe(customer, ensure_stack=False)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(disconnects, ["alice"])
+
     def test_expired_access_repair_loop_reinstalls_missing_redirect(self):
         """When dst-nat vanishes, correction loop must put it back."""
         from core.mikrotik_connect import (
@@ -4473,6 +4638,108 @@ class IspHotspotInstantPayTests(SimpleTestCase):
         self.assertTrue(any("Hotspot pay popup" in n for n in notes))
         # Dedicated 10.50.50 setup must prefer the identifiable Hotspot pool.
         self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
+
+    def test_enable_isp_hotspot_prefers_dedicated_pool_when_lan_has_ipv4(self):
+        """Existing LAN IPv4 must not skip 10.50.50 — otherwise is_hotspot_pool_ip fails."""
+        from unittest.mock import MagicMock
+        from types import SimpleNamespace
+
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_POOL,
+            _ensure_isp_hotspot_stack,
+        )
+
+        sock = MagicMock()
+        org = SimpleNamespace(name="Hot ISP", join_code="505050")
+        server_attempts_seen: list = []
+        ensured_ips: list[str] = []
+        ensured_pools: list[str] = []
+
+        def fake_add_or_set(sock, path, item_id, attempts):
+            if path == "/ip/hotspot":
+                server_attempts_seen.extend(attempts)
+            return {"_reply": "!done"}, "*1"
+
+        def track_ip(*_a, **kwargs):
+            ensured_ips.append(kwargs.get("address") or "")
+
+        def track_pool(*_a, **kwargs):
+            ensured_pools.append(kwargs.get("name") or "")
+
+        with (
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._lan_ipv4_for_interface",
+                return_value="192.168.88.1",
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_wireless_on_lan",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_tagged_ip_address",
+                side_effect=track_ip,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_tagged_pool",
+                side_effect=track_pool,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_isp_hotspot_user_profile",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_captive_dns_hijack",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_https_capture_redirect",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_owns_http_port",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_walled_garden",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_server_bypass",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._fetch_isp_hotspot_pages",
+                return_value=["installed hotspot/login.html"],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_captive_portal_dhcp_option",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._bounce_isp_hotspot_clients",
+                return_value=[],
+            ),
+        ):
+            notes = _ensure_isp_hotspot_stack(
+                sock,
+                lan_interface="bridge",
+                organization=org,
+                pay_url="http://billing.example/hotspot/505050/pay/",
+            )
+
+        self.assertTrue(any("10.50.50.1/24" in a for a in ensured_ips))
+        self.assertIn(ISP_HOTSPOT_POOL, ensured_pools)
+        self.assertEqual(server_attempts_seen[0].get("address-pool"), ISP_HOTSPOT_POOL)
+        self.assertTrue(any("LAN keeps 192.168.88.1" in n for n in notes))
 
     def test_enable_isp_hotspot_aborts_without_absolute_pay_url(self):
         from unittest.mock import MagicMock
@@ -5797,6 +6064,91 @@ class RouterConnectivityLoopTests(TestCase):
         self.assertTrue(result["skipped"])
         self.assertFalse(result["session_active"])
 
+    def test_evaluate_cpe_shallow_session_is_not_management_ok(self):
+        from core.connectivity_verification import evaluate_cpe_connectivity
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"ok": True, "api_ok": True, "details": {}},
+            ),
+            patch(
+                "core.mikrotik_connect.resolve_customer_cpe_session",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.50",
+                    "caller_id": "AA:BB",
+                },
+            ),
+        ):
+            result = evaluate_cpe_connectivity(self.customer, deep=False)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["session_active"])
+        self.assertTrue(result["session_only"])
+        self.assertFalse(result["cpe_ok"])
+        self.assertFalse(result["management_ok"])
+
+    def test_layered_cpe_classifies_wan_mgmt_blocked(self):
+        from core.connectivity_verification import evaluate_layered_cpe_access
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"ok": True, "api_ok": True, "details": {}},
+            ),
+            patch(
+                "core.mikrotik_connect.probe_customer_cpe_web",
+                return_value={
+                    "ok": False,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.50",
+                    "port": None,
+                    "ping_ok": True,
+                    "error": "ports closed",
+                    "hint": "",
+                    "steps": ["found client IP 10.20.0.50", "ping ok"],
+                },
+            ),
+        ):
+            result = evaluate_layered_cpe_access(self.customer, try_api=False)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["failure_class"], "wan_mgmt_blocked")
+        self.assertTrue(result["details"]["layers"]["ping_ok"])
+        self.assertFalse(result["details"]["layers"]["web_ok"])
+
+    def test_layered_cpe_loop_passes_when_web_ok(self):
+        from core.connectivity_verification import run_layered_cpe_access_loop
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_layered_cpe_access",
+                return_value={
+                    "ok": True,
+                    "skipped": False,
+                    "failure_class": "ok",
+                    "failing_layer": "",
+                    "error": "",
+                    "hint": "",
+                    "details": {
+                        "cpe_host": "10.20.0.50",
+                        "web_port": 80,
+                        "layers": {
+                            "nas_ok": True,
+                            "session_active": True,
+                            "ping_ok": True,
+                            "web_ok": True,
+                            "api_ok": True,
+                        },
+                    },
+                },
+            ),
+            patch("core.connectivity_verification.time.sleep"),
+        ):
+            outcome = run_layered_cpe_access_loop(self.customer, loops=2, settle=0)
+        self.assertTrue(outcome.passed)
+        self.assertEqual(outcome.layer_pass_rates.get("web_ok"), 100.0)
+
     def test_verify_router_connectivity_command_dry_run(self):
         from io import StringIO
 
@@ -5821,6 +6173,157 @@ class RouterConnectivityLoopTests(TestCase):
             )
         self.assertIn("PASS", out.getvalue())
         self.assertIn("Conn NAS", out.getvalue())
+
+
+class LayeredRouterHealthLoopTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("layer-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Layer ISP",
+            owner=self.owner,
+            join_code="112233",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="MIK TEST",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.50",
+            vpn_address="10.9.0.50",
+            username="admin",
+            password="secret",
+        )
+
+    def test_layered_maps_ping_only_to_limited(self):
+        from core.connectivity_verification import evaluate_layered_health
+
+        with (
+            patch("core.mikrotik_connect._icmp_ping", return_value=True),
+            patch(
+                "core.connectivity_verification._tcp_open",
+                return_value=(False, "8728: timed out"),
+            ),
+        ):
+            result = evaluate_layered_health(self.router, timeout=0.5)
+        self.assertEqual(result["status"], "limited")
+        self.assertEqual(result["score"], 55)
+        self.assertEqual(result["failing_layer"], "tcp_8728")
+        self.assertTrue(result["details"]["layers"]["ping"])
+        self.assertFalse(result["details"]["layers"]["tcp_8728"])
+
+    def test_layered_maps_api_open_bad_login_to_auth_failed(self):
+        from core.connectivity_verification import evaluate_layered_health
+
+        def fake_tcp(host, port, timeout):
+            return (port == 8728, "" if port == 8728 else f"{port}: closed")
+
+        with (
+            patch("core.mikrotik_connect._icmp_ping", return_value=True),
+            patch(
+                "core.connectivity_verification._tcp_open",
+                side_effect=fake_tcp,
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": False, "error": "invalid user name or password"},
+            ),
+        ):
+            result = evaluate_layered_health(self.router, timeout=0.5)
+        self.assertEqual(result["status"], "auth_failed")
+        self.assertEqual(result["score"], 25)
+        self.assertEqual(result["failing_layer"], "api_auth")
+        self.assertTrue(result["details"]["layers"]["tcp_8728"])
+        self.assertFalse(result["details"]["layers"]["api_auth"])
+
+    def test_layered_loop_detects_flaky_status(self):
+        from core.connectivity_verification import run_layered_health_loop
+
+        calls = {"n": 0}
+
+        def fake_eval(router, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "ok": False,
+                    "status": "disconnected",
+                    "score": 0,
+                    "failing_layer": "ping",
+                    "error": "unreachable",
+                    "hint": "",
+                    "reason": "offline",
+                    "details": {
+                        "layers": {
+                            "ping": False,
+                            "tcp_8728": False,
+                            "tcp_8291": False,
+                            "tcp_80": False,
+                            "tcp_8080": False,
+                            "api_auth": None,
+                        }
+                    },
+                }
+            return {
+                "ok": True,
+                "status": "connected",
+                "score": 100,
+                "failing_layer": "",
+                "error": "",
+                "hint": "",
+                "reason": "ok",
+                "details": {
+                    "layers": {
+                        "ping": True,
+                        "tcp_8728": True,
+                        "tcp_8291": True,
+                        "tcp_80": True,
+                        "tcp_8080": False,
+                        "api_auth": True,
+                    }
+                },
+            }
+
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_layered_health",
+                side_effect=fake_eval,
+            ),
+            patch("core.connectivity_verification.time.sleep"),
+        ):
+            outcome = run_layered_health_loop(self.router, loops=3, settle=0)
+        self.assertTrue(outcome.passed)
+        self.assertTrue(outcome.flaky)
+        self.assertEqual(outcome.dominant_failure, "disconnected")
+        self.assertEqual(outcome.status_counts.get("connected"), 2)
+        self.assertEqual(outcome.layer_pass_rates.get("tcp_8728"), round(2 / 3 * 100, 1))
+
+    def test_diagnose_router_health_command_dry_run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        with (
+            patch("core.mikrotik_connect._icmp_ping", return_value=True),
+            patch(
+                "core.connectivity_verification._tcp_open",
+                side_effect=lambda host, port, timeout: (port == 8728, ""),
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True, "identity": "MIK TEST"},
+            ),
+        ):
+            out = StringIO()
+            call_command(
+                "diagnose_router_health",
+                router=self.router.pk,
+                dry_run=True,
+                stdout=out,
+            )
+        self.assertIn("PASS", out.getvalue())
+        self.assertIn("MIK TEST", out.getvalue())
 
 
 class MikroTikStatusOfflineTests(TestCase):

@@ -34,6 +34,21 @@ echo "==> Migrating database"
 echo "==> Collecting static files"
 "$PYTHON_BIN" manage.py collectstatic --noinput
 
+echo "==> Pushing NAS config to active MikroTiks"
+mkdir -p logs
+touch logs/.nas_config_sync_pending
+set +e
+"$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
+NAS_SYNC_RC=${PIPESTATUS[0]}
+set -e
+if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
+  rm -f logs/.nas_config_sync_pending
+else
+  echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
+  echo "   Pending stamp kept — Passenger restart will retry after WireGuard."
+  echo "   Or re-run: $PYTHON_BIN manage.py sync_nas_config"
+fi
+
 echo "==> Restarting Passenger"
 mkdir -p tmp
 touch tmp/restart.txt

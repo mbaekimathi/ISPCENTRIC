@@ -184,19 +184,22 @@ class Command(BaseCommand):
 
                     outcome = LoopOutcome(target="cpe", customer=customer)
                     outcome.last_evaluation = evaluation
-                    outcome.passed = bool(
-                        evaluation.get("ok")
-                        and (
-                            evaluation.get("skipped")
-                            or evaluation.get("cpe_ok")
-                            or evaluation.get("session_active")
+                    if evaluation.get("skipped"):
+                        outcome.passed = bool(evaluation.get("ok"))
+                    elif deep:
+                        outcome.passed = bool(
+                            evaluation.get("ok") and evaluation.get("cpe_ok")
                         )
-                    )
+                    else:
+                        outcome.passed = bool(
+                            evaluation.get("ok") and evaluation.get("session_active")
+                        )
                     self.stdout.write(
                         sweep_log_text(
                             f"  nas_ok={evaluation.get('nas_ok')} "
                             f"session_active={evaluation.get('session_active')} "
-                            f"cpe_ok={evaluation.get('cpe_ok')}"
+                            f"cpe_ok={evaluation.get('cpe_ok')} "
+                            f"session_only={evaluation.get('session_only')}"
                         )
                     )
                     outcomes.append(outcome)

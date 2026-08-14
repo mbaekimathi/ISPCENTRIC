@@ -4830,9 +4830,31 @@ def check_mikrotik_reachable(
     if _icmp_ping(check_host, timeout=timeout):
         return {"online": True, "via": "ping", "port": 0}
 
+    # One confirm pass before declaring Offline. Short WireGuard / WAN jitter
+    # often times out the parallel 1.2s probes once, then succeeds immediately.
+    confirm_timeout = min(2.5, max(timeout, 1.5) + 0.6)
+    try:
+        with socket.create_connection(
+            (dial_host(check_host), api_port), timeout=confirm_timeout
+        ):
+            return {"online": True, "via": "api", "port": api_port, "confirmed": True}
+    except OSError:
+        pass
+    if _icmp_ping(check_host, timeout=confirm_timeout):
+        return {"online": True, "via": "ping", "port": 0, "confirmed": True}
+
+    # Prefer a stable multi-port summary over whichever thread finished first
+    # (e.g. "80: timed out" alone looked like only HTTP failed).
+    if errors:
+        unique = list(dict.fromkeys(errors))
+        summary = "; ".join(unique[:4])
+        if len(unique) > 1:
+            summary = f"All management ports closed ({summary})"
+    else:
+        summary = "Unreachable."
     return {
         "online": False,
-        "error": errors[0] if errors else "Unreachable.",
+        "error": summary,
         "via": "",
     }
 
@@ -6698,15 +6720,30 @@ def resolve_customer_cpe_target(
                 if not address:
                     result["error"] = "Enter the client router IP on the client profile."
                     return result
-                result.update(
-                    {
-                        "ok": True,
-                        "session_active": True,
-                        "address": address,
-                        "error": "",
-                        "hint": "",
-                    }
-                )
+                ping = _nas_ping_host(sock, address, count=1)
+                if ping.get("reachable"):
+                    result.update(
+                        {
+                            "ok": True,
+                            "session_active": True,
+                            "address": address,
+                            "error": "",
+                            "hint": "",
+                        }
+                    )
+                else:
+                    result.update(
+                        {
+                            "ok": True,
+                            "session_active": False,
+                            "address": address,
+                            "error": "",
+                            "hint": (
+                                f"Saved CPE IP {address} does not answer ping from the "
+                                "ISP MikroTik — power it on or update the IP."
+                            ),
+                        }
+                    )
                 return result
 
             mac = (customer.cpe_mac or "").strip()
@@ -7808,6 +7845,9 @@ _CAPTIVE_API_TIMEOUT = 1.5
 # made recharges feel like 10–20s before surfing returned.
 _CAPTIVE_RESTORE_TIMEOUT = 2.5
 _CAPTIVE_REDIRECT_CACHE_TTL = 20
+# Brief negative cache so captive probe bursts do not re-walk every NAS when
+# the client IP is not yet in Hotspot/PPP tables.
+_CAPTIVE_IDENTITY_MISS_TTL = 5
 _HOTSPOT_STACK_READY_TTL = 1800
 
 
@@ -9257,6 +9297,24 @@ def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     return removed
 
 
+def _pppoe_has_active_session(sock: socket.socket, username: str) -> bool:
+    """True when this PPP username currently has a live /ppp/active row."""
+    username = (username or "").strip().lower()
+    if not username:
+        return False
+    rows = _print(
+        sock,
+        "/ppp/active",
+        props="name",
+        query={"name": username},
+    )
+    if not rows:
+        rows = _print(sock, "/ppp/active", props="name")
+    return any(
+        (row.get("name") or "").strip().lower() == username for row in rows
+    )
+
+
 def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool:
     """Whether this user's current session IP still carries the blocked tag."""
     username = (username or "").strip().lower()
@@ -9955,14 +10013,21 @@ def provision_customer_pppoe(
                 # takes effect immediately — otherwise established TCP keeps surfing.
                 # Also kick/nudge when a paid restore still has CPE renew pending:
                 # the CPE may be stuck offline until it redials the restored secret.
+                # Also kick when the secret is already blocked but the live session
+                # is still on a paid address-list (first kick failed / race).
                 needs_redial_nudge = bool(
                     internet_allowed
                     and profile != PPPOE_BLOCKED_PROFILE_NAME
                     and cpe_renew_clear_is_pending(customer)
                 )
+                stuck_unblocked_session = bool(
+                    profile == PPPOE_BLOCKED_PROFILE_NAME
+                    and not session_was_blocked
+                    and _pppoe_has_active_session(sock, username)
+                )
                 should_kick = (previous_profile or "") != profile or (
                     internet_allowed and session_was_blocked
-                ) or needs_redial_nudge
+                ) or needs_redial_nudge or stuck_unblocked_session
                 if should_kick:
                     kicked = _disconnect_pppoe_sessions(sock, username)
                     if kicked:
@@ -9973,6 +10038,11 @@ def provision_customer_pppoe(
                                 if profile == PPPOE_BLOCKED_PROFILE_NAME
                                 else "internet restore"
                             )
+                        )
+                    elif stuck_unblocked_session:
+                        notes.append(
+                            "blocked secret still has an active session that "
+                            "could not be kicked — will retry next sweep"
                         )
                     elif needs_redial_nudge and not disabled:
                         # No live session to kick — briefly disable/enable the
@@ -11313,7 +11383,7 @@ def captive_redirect_cache_key(client_ip: str, query: str = "") -> str:
 
 
 def invalidate_captive_redirect_cache(client_ip: str = "") -> None:
-    """Bump redirect generation so renewed clients are not stuck on /pay for 8s."""
+    """Bump redirect generation so renewed clients are not stuck on /pay briefly."""
     client_ip = (client_ip or "").strip()
     if not client_ip:
         return
@@ -11477,6 +11547,9 @@ def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
     cached = _captive_cache_get(cache_key)
     if isinstance(cached, str) and cached:
         return cached
+    if cached == "":
+        # Recent miss — avoid serial NAS walks on probe bursts.
+        return ""
 
     from core.models import MikroTikRouter
 
@@ -11501,14 +11574,14 @@ def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
                     ("/ip/dhcp-server/lease", "mac-address,address,active-mac-address"),
                     ("/ip/arp", "mac-address,address"),
                 ):
+                    # Filtered query only — full-table dumps made captive pay
+                    # open feel like multi-second hangs on busy NAS boxes.
                     rows = _print(
                         sock,
                         path,
                         props=props,
                         query={"address": client_ip},
                     )
-                    if not rows:
-                        rows = _print(sock, path, props=props)
                     for row in rows:
                         if (row.get("address") or "").strip() != client_ip:
                             continue
@@ -11524,6 +11597,7 @@ def find_hotspot_mac_for_ip(organization, client_ip: str) -> str:
                             return mac
         except Exception:
             continue
+    _captive_cache_set(cache_key, "", _CAPTIVE_IDENTITY_MISS_TTL)
     return ""
 
 
@@ -11617,16 +11691,20 @@ def resolve_captive_organization(client_ip: str = ""):
 
     Prefers a live PPPoE/Hotspot session match on an onboarded router so
     multi-tenant deployments do not land clients on the wrong join_code.
+
+    When more than one captive org exists and the client IP cannot be matched,
+    returns None instead of guessing via ``_fallback_captive_organization``.
     """
     from core.models import MikroTikRouter
 
+    candidates = _captive_org_candidates()
     client_ip = (client_ip or "").strip()
     if not client_ip:
-        return _fallback_captive_organization()
+        # Empty REMOTE_ADDR: only safe when a single captive org exists.
+        return candidates[0] if len(candidates) == 1 else None
 
     # Single-tenant shortcut first: one captive org cannot be "wrong", and
     # skipping live NAS scans keeps the OS captive popup immediate.
-    candidates = _captive_org_candidates()
     if len(candidates) == 1:
         return candidates[0]
 
@@ -11712,9 +11790,8 @@ def resolve_captive_organization(client_ip: str = ""):
             _captive_cache_set(cache_key, org.pk, _CAPTIVE_ORG_CACHE_TTL)
             return org
 
-    if len(candidates) == 1:
-        return candidates[0]
-    return _fallback_captive_organization()
+    # Multi-tenant without a session match: do not guess a join_code.
+    return None
 
 
 def remember_pppoe_customer_session_ip(customer, session_ip: str) -> None:
@@ -11821,14 +11898,14 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
             with _api_session(
                 host, username, router.password or "", timeout=_CAPTIVE_API_TIMEOUT
             ) as sock:
+                # Filtered /ppp/active only — dumping every session on miss
+                # added seconds of pay-page latency on large NAS boxes.
                 rows = _print(
                     sock,
                     "/ppp/active",
                     props="name,address",
                     query={"address": session_ip},
                 )
-                if not rows:
-                    rows = _print(sock, "/ppp/active", props="name,address")
                 for row in rows:
                     if (row.get("address") or "").strip() != session_ip:
                         continue
@@ -14398,7 +14475,7 @@ def _ensure_isp_hotspot_stack(
 
     Order for "connect Wi‑Fi → Hotspot pay page immediately":
       1. Absolute http pay URL (abort otherwise)
-      2. Hotspot profile/server + prefer 10.50.50 pool when dedicated
+      2. Hotspot profile/server + always prefer dedicated 10.50.50 pool
       3. Clear probe DNS hijack; walled garden / HTTP bind
       4. Install login.html → /hotspot/…/pay/
       5. DHCP option 114 + bounce unauthorized clients for instant popup
@@ -14430,8 +14507,7 @@ def _ensure_isp_hotspot_stack(
     lan = _resolve_lan_interface(sock, requested_lan, exclude=wan_interface)
     if requested_lan and requested_lan != lan:
         notes.append(f"LAN interface {requested_lan} not found; using {lan}")
-    hotspot_address = _lan_ipv4_for_interface(sock, lan)
-    use_dedicated_pool = hotspot_address == ISP_HOTSPOT_ADDRESS
+    lan_ipv4 = _lan_ipv4_for_interface(sock, lan)
 
     # Prefer the onboarded router's Wi‑Fi name, then a short org-based SSID so
     # clients can tell this apart from a third-party AP like Tenda_0C8890.
@@ -14451,23 +14527,29 @@ def _ensure_isp_hotspot_stack(
         _ensure_hotspot_wireless_on_lan(sock, lan_bridge=lan, ssid=ssid)
     )
 
-    # Dedicated address/pool only when the LAN has no usable IPv4 yet.
-    if use_dedicated_pool:
-        _ensure_tagged_ip_address(
-            sock,
-            address=f"{ISP_HOTSPOT_ADDRESS}/24",
-            interface=lan,
-            comment=ISP_HOTSPOT_TAG,
+    # Always install dedicated 10.50.50 so phones get an identifiable Hotspot IP
+    # (middleware → /hotspot/…/pay/). Keep any existing LAN IPv4 — MikroTik
+    # allows multiple addresses on the bridge. Without this pool,
+    # is_hotspot_pool_ip fails and routing depends only on login.html.
+    _ensure_tagged_ip_address(
+        sock,
+        address=f"{ISP_HOTSPOT_ADDRESS}/24",
+        interface=lan,
+        comment=ISP_HOTSPOT_TAG,
+    )
+    _ensure_tagged_pool(
+        sock,
+        name=ISP_HOTSPOT_POOL,
+        ranges=ISP_HOTSPOT_POOL_RANGES,
+        comment=ISP_HOTSPOT_TAG,
+    )
+    hotspot_address = ISP_HOTSPOT_ADDRESS
+    if lan_ipv4 and lan_ipv4 != ISP_HOTSPOT_ADDRESS:
+        notes.append(
+            f"LAN keeps {lan_ipv4}; Hotspot clients use {ISP_HOTSPOT_ADDRESS}/24"
         )
-        _ensure_tagged_pool(
-            sock,
-            name=ISP_HOTSPOT_POOL,
-            ranges=ISP_HOTSPOT_POOL_RANGES,
-            comment=ISP_HOTSPOT_TAG,
-        )
-        notes.append(f"Hotspot address {ISP_HOTSPOT_ADDRESS} on {lan}")
     else:
-        notes.append(f"Hotspot on {lan} ({hotspot_address})")
+        notes.append(f"Hotspot address {ISP_HOTSPOT_ADDRESS} on {lan}")
 
     notes.extend(_ensure_isp_hotspot_user_profile(sock, organization))
 
@@ -14553,8 +14635,8 @@ def _ensure_isp_hotspot_stack(
             break
 
     # Prefer the dedicated 10.50.50 pool so phones get an identifiable Hotspot IP
-    # (middleware → /hotspot/…/pay/). Fall back to existing LAN DHCP when the
-    # router is already using another LAN subnet.
+    # (middleware → /hotspot/…/pay/). Fall back to existing LAN DHCP only if
+    # RouterOS rejects the dedicated pool binding.
     pooled = {
         "name": ISP_HOTSPOT_NAME,
         "interface": lan,
@@ -14570,15 +14652,12 @@ def _ensure_isp_hotspot_stack(
         "disabled": "no",
         "comment": ISP_HOTSPOT_TAG,
     }
-    server_attempts = (
-        [pooled, unpooled, {k: v for k, v in unpooled.items() if k != "comment"},
-         {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"}]
-        if use_dedicated_pool
-        else [unpooled, pooled,
-              {"name": ISP_HOTSPOT_NAME, "interface": lan, "profile": ISP_HOTSPOT_PROFILE,
-               "disabled": "no"},
-              {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"}]
-    )
+    server_attempts = [
+        pooled,
+        unpooled,
+        {k: v for k, v in unpooled.items() if k != "comment"},
+        {"name": ISP_HOTSPOT_NAME, "interface": lan, "disabled": "no"},
+    ]
     terminal, server_id = _add_or_set_attempts(
         sock, "/ip/hotspot", server_id, server_attempts
     )

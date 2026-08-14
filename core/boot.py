@@ -60,10 +60,12 @@ def _tunnel_sync_enabled() -> bool:
 
 
 def _subscription_sweep_interval_sec() -> float:
+    # Match deploy/systemd/ispcentric-sweep.timer (2 min) so local runserver
+    # does not leave expired clients surfing for ~5 minutes.
     try:
-        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "300")))
+        return max(60.0, float(os.getenv("SUBSCRIPTION_SWEEP_INTERVAL_SEC", "120")))
     except (TypeError, ValueError):
-        return 300.0
+        return 120.0
 
 
 def _subscription_sweep_startup_delay_sec() -> float:
@@ -72,6 +74,14 @@ def _subscription_sweep_startup_delay_sec() -> float:
         return max(0.0, float(os.getenv("SUBSCRIPTION_SWEEP_STARTUP_DELAY_SEC", "20")))
     except (TypeError, ValueError):
         return 20.0
+
+
+def _expiry_watch_interval_sec() -> float:
+    """How often to check customers near their access deadline."""
+    try:
+        return max(15.0, float(os.getenv("SUBSCRIPTION_EXPIRY_WATCH_INTERVAL_SEC", "30")))
+    except (TypeError, ValueError):
+        return 30.0
 
 
 def _run_subscription_sweep(*, label: str = "sweep") -> None:
@@ -89,10 +99,42 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
         logger.exception("subscription %s failed", label)
 
 
+def _run_near_deadline_expiry_sync() -> None:
+    """
+    Immediately block customers whose package deadline is due or imminent.
+
+    The full sweep can take up to SUBSCRIPTION_SWEEP_INTERVAL_SEC. Hourly
+    Hotspot/PPPoE packages need a tighter loop so surfing stops near the
+    exact deadline instead of minutes later.
+    """
+    from billing.services import customers_near_access_deadline
+    from core.mikrotik_connect import sync_customer_subscription_access
+
+    near = list(customers_near_access_deadline(past_seconds=90, future_seconds=45))
+    if not near:
+        return
+    synced = 0
+    for customer in near:
+        try:
+            # Hotspot + PPPoE both get a direct push here so expiry does not
+            # wait for the next full org Hotspot rewrite.
+            result = sync_customer_subscription_access(customer, provision=True)
+            if result.get("ok") or result.get("allowed") is False:
+                synced += 1
+        except Exception:
+            logger.exception(
+                "near-deadline sync failed for %s",
+                getattr(customer, "account_number", customer.pk),
+            )
+    if synced:
+        logger.info("near-deadline expiry synced %s customer(s)", synced)
+
+
 def _start_subscription_sweep_loop() -> None:
     if not _subscription_sweep_enabled():
         return
     interval = _subscription_sweep_interval_sec()
+    watch_interval = _expiry_watch_interval_sec()
 
     def _loop() -> None:
         delay = _subscription_sweep_startup_delay_sec()
@@ -103,9 +145,16 @@ def _start_subscription_sweep_loop() -> None:
             )
             time.sleep(delay)
         _run_subscription_sweep(label="startup")
+        next_full = time.monotonic() + interval
         while True:
-            time.sleep(interval)
-            _run_subscription_sweep(label="interval")
+            time.sleep(watch_interval)
+            try:
+                _run_near_deadline_expiry_sync()
+            except Exception:
+                logger.exception("near-deadline expiry watch failed")
+            if time.monotonic() >= next_full:
+                _run_subscription_sweep(label="interval")
+                next_full = time.monotonic() + interval
 
     threading.Thread(
         target=_loop,
@@ -113,8 +162,10 @@ def _start_subscription_sweep_loop() -> None:
         daemon=True,
     ).start()
     logger.info(
-        "Subscription sweep armed (every %.0fs). Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
+        "Subscription sweep armed (full every %.0fs, expiry watch every %.0fs). "
+        "Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
         interval,
+        watch_interval,
     )
 
 
@@ -129,6 +180,80 @@ def _sync_wireguard() -> None:
         logger.exception("WireGuard startup sync failed")
 
 
+def _nas_config_pending_path() -> str:
+    from pathlib import Path
+
+    from django.conf import settings
+
+    base = Path(getattr(settings, "BASE_DIR", Path.cwd()))
+    return str(base / "logs" / ".nas_config_sync_pending")
+
+
+def _nas_config_sync_requested() -> bool:
+    env = os.getenv("NAS_CONFIG_SYNC_ON_BOOT", "").strip().lower()
+    if env in {"1", "true", "yes"}:
+        return True
+    if env in {"0", "false", "no"}:
+        return False
+    # Deploy scripts touch this stamp so the first app boot after pull
+    # re-pushes MikroTiks even if the deploy-time sync ran before WireGuard.
+    try:
+        return os.path.exists(_nas_config_pending_path())
+    except Exception:
+        return False
+
+
+def _run_nas_config_sync_once() -> None:
+    """
+    One-shot post-deploy NAS push (single winner across gunicorn workers).
+
+    Deploy scripts also call ``sync_nas_config`` directly; this boot path
+    covers the case where routers are only reachable after WireGuard comes up
+    inside the app process.
+    """
+    if not _nas_config_sync_requested():
+        return
+
+    lock_path = _nas_config_pending_path() + ".lock"
+    pending = _nas_config_pending_path()
+    try:
+        os.makedirs(os.path.dirname(pending), exist_ok=True)
+        # Exclusive create — only one worker runs the fleet push.
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(lock_fd)
+    except FileExistsError:
+        return
+    except Exception:
+        logger.exception("NAS config sync lock failed")
+        return
+
+    try:
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        logger.info("NAS config sync starting (post-deploy / boot).")
+        call_command("sync_nas_config", stdout=out, stderr=out)
+        text = out.getvalue().strip()
+        if text:
+            for line in text.splitlines()[-8:]:
+                logger.info("nas-sync: %s", line)
+        try:
+            if os.path.exists(pending):
+                os.remove(pending)
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("NAS config sync on boot failed")
+    finally:
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except Exception:
+            pass
+
+
 def start_runtime_tasks() -> None:
     """Idempotent: WireGuard peer sync + subscription sweep in background threads."""
     global _started
@@ -138,6 +263,11 @@ def start_runtime_tasks() -> None:
 
     def _boot() -> None:
         _sync_wireguard()
+        # After the tunnel is up, push any pending post-deploy NAS config.
+        try:
+            _run_nas_config_sync_once()
+        except Exception:
+            logger.exception("NAS config sync boot hook failed")
         _start_subscription_sweep_loop()
 
     threading.Thread(target=_boot, name="ispcentric-boot", daemon=True).start()

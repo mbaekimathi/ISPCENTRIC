@@ -142,6 +142,48 @@ def subscription_access_deadline(customer) -> datetime | None:
     return timezone.make_aware(next_midnight, timezone.get_current_timezone())
 
 
+def customers_near_access_deadline(
+    *,
+    past_seconds: float = 90,
+    future_seconds: float = 45,
+    now: datetime | None = None,
+):
+    """
+    Active prepaid customers whose access deadline is imminent or just passed.
+
+    Used by the expiry-watch loop so Hotspot/PPPoE are blocked near the real
+    cut-off instead of waiting for the next full subscription sweep.
+    """
+    from billing.models import Customer
+
+    stamp = now or timezone.now()
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    qs = (
+        Customer.objects.filter(
+            status=Customer.Status.ACTIVE,
+            service_type__in={
+                Customer.ServiceType.PPPOE,
+                Customer.ServiceType.HOTSPOT,
+            },
+        )
+        .exclude(package_end=None)
+        .filter(
+            Q(service_type=Customer.ServiceType.PPPOE, pppoe_username__gt="")
+            | Q(service_type=Customer.ServiceType.HOTSPOT, hotspot_mac__gt="")
+        )
+        .select_related("plan", "organization", "router")
+        .order_by("id")
+    )
+    for customer in qs.iterator(chunk_size=200):
+        deadline = subscription_access_deadline(customer)
+        if deadline is None:
+            continue
+        delta = (deadline - stamp).total_seconds()
+        if -float(past_seconds) <= delta <= float(future_seconds):
+            yield customer
+
+
 def subscription_period_allows(customer, *, today: date | None = None) -> bool:
     """
     Whether now/today falls inside the customer's package_start–package_end window.
