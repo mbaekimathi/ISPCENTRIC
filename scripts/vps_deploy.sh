@@ -40,6 +40,12 @@ echo "==> Collecting static files"
 # gunicorn runs as www-data and needs to write these.
 mkdir -p logs media .cache
 
+echo "==> Ensuring deploy scripts are executable (Unix line endings)"
+# Windows checkouts can leave CRLF shebangs; sudo then prints "command not found".
+find "$ROOT/scripts" -maxdepth 1 -name '*.sh' -type f -print0 \
+  | xargs -0 -r sed -i 's/\r$//'
+chmod +x "$ROOT/scripts"/*.sh 2>/dev/null || true
+
 echo "==> Pushing NAS config to active MikroTiks"
 # Stamp so the app process also re-pushes after WireGuard comes up on restart.
 mkdir -p logs

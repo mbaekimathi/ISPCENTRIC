@@ -1,0 +1,4 @@
+# Shell scripts must stay LF on Linux or sudo reports "command not found"
+# (CRLF breaks the shebang: #!/bin/bash\r).
+*.sh text eol=lf
+*.cmd text eol=crlf

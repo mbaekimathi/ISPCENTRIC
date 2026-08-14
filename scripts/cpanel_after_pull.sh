@@ -34,6 +34,11 @@ echo "==> Migrating database"
 echo "==> Collecting static files"
 "$PYTHON_BIN" manage.py collectstatic --noinput
 
+echo "==> Ensuring deploy scripts are executable (Unix line endings)"
+find "$ROOT/scripts" -maxdepth 1 -name '*.sh' -type f -print0 \
+  | xargs -0 -r sed -i 's/\r$//'
+chmod +x "$ROOT/scripts"/*.sh 2>/dev/null || true
+
 echo "==> Pushing NAS config to active MikroTiks"
 mkdir -p logs
 touch logs/.nas_config_sync_pending
