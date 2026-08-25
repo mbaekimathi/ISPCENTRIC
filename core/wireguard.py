@@ -311,13 +311,13 @@ def _ros_nat_add(rule: str, comment: str) -> str:
 
 def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
     """
-    Bring up WAN (DHCP on ether1) and loop until ping or default route works.
+    Bring up WAN (DHCP on ether1) and retry until ping or default route works.
 
-    Stops early on first success. ICMP to public DNS is often "packet rejected"
-    on ISP networks, so a default route OR ping to the billing VPS IP counts.
+    Each attempt is a single line — Winbox New Terminal breaks multi-line :for { }
+    blocks (syntax error) when paste splits them across prompts.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
-    return [
+    lines = [
         _ros_info("Ensuring WAN: DHCP on ether1 + wait for internet..."),
         (
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
@@ -329,23 +329,21 @@ def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
             "add-default-route=yes use-peer-dns=yes } on-error={}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
-        ":local IspWan 0",
-        ":for IspTry from=1 to=12 do={",
-        "  :if ($IspWan = 0) do={",
-        (
-            f"    :if (([/ping {probe_host} count=1] > 0) || "
-            f"([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{ "
-            f":set IspWan 1 ; {_ros_ok('WAN path ready (ping or default route)')} }} "
-            f"else={{ :put (\"[ISPCENTRIC] WAN try \" . $IspTry . \"/12 - waiting...\"); "
-            f":delay 3s }}"
-        ),
-        "  }",
-        "}",
-        (
-            f":if ($IspWan = 0) do="
-            f"{{{_ros_fail('No internet - plug ISP into ether1, wait for DHCP, re-paste')}}}"
-        ),
     ]
+    for try_n in range(1, 11):
+        lines.append(
+            f':if (([/ping {probe_host} count=1] > 0) || '
+            f'([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{'
+            f'{_ros_ok("WAN path ready (ping or default route)")}}} else={{'
+            f':put "[ISPCENTRIC] WAN try {try_n}/10 - waiting..."; :delay 3s}}'
+        )
+    lines.append(
+        f':if (([/ping {probe_host} count=1] > 0) || '
+        f'([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{'
+        f'{_ros_ok("WAN confirmed")}}} else={{'
+        f'{_ros_fail("No internet - plug ISP into ether1, wait for DHCP, re-paste")}}}'
+    )
+    return lines
 
 
 def _handshake_wait_lines(server: str, address: str) -> list[str]:
@@ -1407,11 +1405,11 @@ def _fetch_rsc_retry_lines(
     attempts: int = 8,
 ) -> list[str]:
     """
-    Build URL from short pieces, then retry /tool fetch until success.
+    Build URL from short pieces, then retry /tool fetch (single-line attempts).
 
-    MikroTik often fails once on flaky WAN; 301 (missing slash) also fails hard —
-    callers must pass a trailing-slash URL. Variable names are unique per dst so
-    install.rsc can fetch flash + root without :local redeclare errors.
+    Winbox paste cannot run multi-line :for { } blocks — each line becomes its
+    own prompt and braces cause "syntax error". :global keeps the URL across
+    lines (:local does not persist between interactive paste lines).
     """
     origin, mid, tail = _fetch_rsc_parts(url)
     header = ""
@@ -1419,30 +1417,25 @@ def _fetch_rsc_retry_lines(
         header = f' http-header-field="Host:{host_header}"'
     tag = "Flash" if "flash/" in dst else ("Inst" if "install" in dst else "Root")
     url_var = f"IspUrl{tag}"
-    got_var = f"IspGot{tag}"
     lines = [
-        f':local {url_var} "{origin}"',
+        f':global {url_var}',
+        f':set {url_var} "{origin}"',
         f':set {url_var} (${url_var} . "{mid}")',
     ]
     if tail:
         lines.append(f':set {url_var} (${url_var} . "{tail}")')
-    lines += [
-        f":local {got_var} 0",
-        f":for IspTry from=1 to={attempts} do={{",
-        f"  :if (${got_var} = 0) do={{",
-        (
-            f'    :do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; '
-            f":set {got_var} 1 ; {_ros_ok(ok_msg)} }} on-error={{ "
-            f':put ("[ISPCENTRIC] Fetch try " . $IspTry . "/{attempts} failed - retrying..."); '
-            f":delay 3s }}"
-        ),
-        "  }",
-        "}",
-        (
-            f":if (${got_var} = 0) do={{{_ros_fail(fail_msg)}}} "
-            f"else={{{_ros_ok(f'File ready: {dst}')}}}"
-        ),
-    ]
+    for try_n in range(1, attempts + 1):
+        lines.append(
+            f':if ([:len [/file find where name="{dst}"]] = 0) do={{'
+            f':do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; '
+            f'{_ros_ok(ok_msg)} }} on-error={{'
+            f':put "[ISPCENTRIC] Fetch try {try_n}/{attempts} failed - retrying..."; '
+            f':delay 3s}}}}'
+        )
+    lines.append(
+        f':if ([:len [/file find where name="{dst}"]] = 0) do={{{_ros_fail(fail_msg)}}} '
+        f'else={{{_ros_ok(f"File ready: {dst}")}}}'
+    )
     return lines
 
 

@@ -126,7 +126,7 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("/ping 10.9.0.1 count=2", script)
         self.assertIn(":delay 5s", script)
         self.assertIn("/ping 178.162.241.99 count=1", script)
-        self.assertIn(":for IspTry from=1 to=12 do={", script)
+        self.assertIn("WAN try 1/10 - waiting...", script)
         self.assertIn("WAN path ready", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
@@ -145,8 +145,8 @@ class WireGuardKeyTests(SimpleTestCase):
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             script,
         )
-        # Avoid foreach so paste works cleanly; :local is OK for WAN wait loops.
-        self.assertIn(":local IspWan 0", script)
+        # No multi-line :for — Winbox paste breaks braces across prompts.
+        self.assertNotIn(":for IspTry", script)
         self.assertNotIn(":foreach ", script)
         ping_checks = [
             line
@@ -187,12 +187,14 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("one-paste bootstrap", script)
         self.assertTrue(install_url.endswith("/i/"), "trailing slash required (Django 301 breaks fetch)")
         self.assertIn(f"/app/m/10.9.0.12/{mac}/i/", install_url)
-        self.assertIn(":local IspUrlInst", script)
+        self.assertIn(":global IspUrlInst", script)
         self.assertIn("/tool fetch url=$IspUrlInst", script)
-        self.assertIn(":for IspTry from=1 to=8 do={", script)
-        self.assertIn(":for IspTry from=1 to=12 do={", script)
+        self.assertIn("Fetch try 1/8 failed - retrying...", script)
+        self.assertIn("Fetch try 8/8 failed - retrying...", script)
+        self.assertNotIn(":for IspTry", script)
+        self.assertNotIn(":local Isp", script)
         self.assertIn("WAN path ready", script)
-        self.assertIn("Fetch try ", script)
+        self.assertIn("WAN try 1/10 - waiting...", script)
         self.assertNotIn("tunnel-rsc/?token=", script)
         self.assertIn("http-header-field=\"Host:isp.richcom.co.ke\"", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
