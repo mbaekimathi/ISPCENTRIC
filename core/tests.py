@@ -125,7 +125,8 @@ class WireGuardKeyTests(SimpleTestCase):
         # Prove reachability to the VPS tunnel address (retried, one line per paste).
         self.assertIn("/ping 10.9.0.1 count=2", script)
         self.assertIn(":delay 5s", script)
-        self.assertIn("/ping 8.8.8.8 count=2", script)
+        self.assertIn("/ping 178.162.241.99 count=2", script)
+        self.assertIn("WAN path ready", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
@@ -184,13 +185,16 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("tunnel-rsc/", script)
         self.assertIn("kind=install", script)
         self.assertIn("kind=post-reset", script)
+        self.assertIn("http-header-field=\"Host:isp.richcom.co.ke\"", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
         self.assertIn("[:len [/ip hotspot find]] > 0", script)
+        self.assertNotIn("comment!~\"ispcentric\"]] > 8", script)
         self.assertIn("keep-users=yes", script)
         self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", script)
         self.assertIn("Clean router - importing tunnel install (no reset)", script)
         self.assertIn("Custom config detected", script)
         self.assertIn("dhcp-client add interface=ether1", script)
+        self.assertIn("WAN path ready", script)
         self.assertNotIn("/file add name=", script)
 
     @override_settings(
