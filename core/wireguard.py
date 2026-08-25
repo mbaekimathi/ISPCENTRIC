@@ -355,29 +355,31 @@ def _wan_wait_lines(
     """
     Ensure WAN works, then require a real ping to probe_host.
 
-    Many boards already have defconf DHCP on bridgeLocal (not ether1). Forcing
-    only ether1 breaks those. A hotspot IP (e.g. 10.50.50.1) on the same
-    bridge as WAN often makes /ping show \"packet rejected\" — disable it
-    before probing.
+    Prefer an already-bound DHCP client (often bridgeLocal on defconf). If none
+    is bound, take ether1 out of any bridge (DHCP on a bridge-port fails with
+    \"no route to host\"), then add DHCP on ether1.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
     attempts = max(1, int(attempts))
     ping_ok = f"([/ping {probe_host} count=1] > 0)"
     lines = [
-        _ros_info(f"WAN: keep bound DHCP (or add ether1), ping {probe_host}..."),
-        # Hotspot LAN IP on the WAN bridge causes \"packet rejected\" to the VPS.
+        _ros_info(f"WAN: use bound DHCP, else unbridge ether1 + DHCP — ping {probe_host}..."),
         ':do { /ip address disable [find where comment~"ispcentric-hotspot"] } on-error={}',
+        # Keep any existing clients enabled (bridgeLocal defconf, etc.).
+        (
+            ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes "
+            "use-peer-dns=yes } on-error={}"
+        ),
+        # No lease yet → ether1 must not be a bridge port or DHCP never binds.
         (
             ":if ([:len [/ip dhcp-client find where status=bound]] = 0) do={"
+            ':do { /interface bridge port remove [find where interface=ether1] } on-error={}; '
+            ":do { /ip dhcp-client remove [find where interface=ether1] } on-error={}; "
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
             "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
             "on-error={}; "
             ":do { /ip dhcp-client set [find where interface=ether1] disabled=no "
             "add-default-route=yes use-peer-dns=yes } on-error={}}"
-        ),
-        (
-            ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes "
-            "use-peer-dns=yes } on-error={}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
         ":global IspWanOk",
@@ -388,10 +390,10 @@ def _wan_wait_lines(
             f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
             f'{_ros_ok(f"WAN ready (ping {probe_host})")}}} else={{'
             f':put "[ISPCENTRIC] WAN {try_n}/{attempts} - no ping to {probe_host} '
-            f'(check ISP / DHCP bound)"; :delay {delay}}}}}'
+            f'(ISP on ether1, wait DHCP bound)"; :delay {delay}}}}}'
         )
     lines.append(
-        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - fix WAN DHCP, then re-paste')}}}"
+        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - unbridge ether1, DHCP bound, re-paste')}}}"
     )
     return lines
 
