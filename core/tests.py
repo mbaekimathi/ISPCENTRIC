@@ -166,23 +166,24 @@ class WireGuardKeyTests(SimpleTestCase):
         WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
         WIREGUARD_SUBNET="10.9.0.0/24",
     )
-    def test_routeros_script_factory_reset_wraps_post_reset_installer(self):
+    def test_routeros_script_smart_install_resets_only_when_customized(self):
         private_key, _ = wireguard.generate_keypair()
         with patch(
             "core.wireguard.socket.getaddrinfo",
             return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
         ):
             script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
-        self.assertIn("FACTORY RESET", script)
+        self.assertIn("Resets ONLY if Hotspot/PPPoE/custom config exists", script)
         self.assertIn("ispcentric-post-reset.rsc", script)
-        self.assertIn("/file add name=", script)
+        self.assertIn("/system script add name=ispcentric-install", script)
+        self.assertIn("/system script run ispcentric-install", script)
+        self.assertIn("[:len [/ip hotspot find]] > 0", script)
         self.assertIn("keep-users=yes", script)
         self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", script)
-        self.assertIn("run-after-reset=ispcentric-post-reset.rsc", script)
-        self.assertIn("reset-configuration", script)
-        self.assertIn(f'private-key=\\"{private_key}\\"', script)
+        self.assertIn("Clean router - installing tunnel without reset", script)
+        self.assertIn("Custom config detected", script)
+        self.assertIn(f'private-key="{private_key}"', script)
         self.assertIn("endpoint-address=203.0.113.50", script)
-        self.assertNotIn("/system script add name=ispcentric-post-reset", script)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",

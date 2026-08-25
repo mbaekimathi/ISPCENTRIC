@@ -1268,6 +1268,29 @@ def _escape_ros_file_contents(text: str) -> str:
     )
 
 
+def _routeros_customized_condition() -> str:
+    """
+    RouterOS expression: true when the router has non-default ISP config worth
+    wiping before onboarding (Hotspot, PPPoE, extra WireGuard, etc.).
+
+    A factory-default router or one with only ISPCENTRIC leftovers should install
+    in place without reset.
+    """
+    checks = [
+        "[:len [/ip hotspot find]] > 0",
+        "[:len [/ppp secret find]] > 0",
+        "[:len [/interface pppoe-server server find]] > 0",
+        '[:len [/ip firewall filter find where dynamic=no and comment!~"ispcentric"]] > 8',
+        '[:len [/system script find where name!~"ispcentric"]] > 0',
+        "[:len [/interface wireguard find]] > 1",
+        (
+            "([:len [/interface wireguard find]] > 0 && "
+            "[:len [/interface wireguard find where name=ispcentric-vpn]] = 0)"
+        ),
+    ]
+    return "(" + ") || (".join(checks) + ")"
+
+
 def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
     """
     Compact .rsc run after factory reset (must stay small for /file contents=).
@@ -1344,65 +1367,83 @@ def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
     )
 
 
-def _routeros_factory_reset_wrapper(address: str, private_key: str) -> str:
+def _routeros_smart_install_script(address: str, private_key: str) -> str:
     """
-    Write a .rsc installer to flash (survives reboot), factory-reset (keep passwords),
-    then run that file via run-after-reset.
+    Install the billing tunnel, factory-resetting only when the router already
+    has customized ISP config (Hotspot, PPPoE, etc.).
 
-    RouterOS rejects /system script names for run-after-reset — only .rsc files work.
-    Devices with a flash/ folder must store the file there (RAM files are wiped).
+    Clean or ISPCENTRIC-only routers run the installer in place via
+    /system script run. Customized routers save a .rsc to flash and reset with
+    run-after-reset (RouterOS requires a .rsc file, not a script name).
     """
+    install_lines = _routeros_install_lines(
+        address,
+        private_key,
+        include_cleanup=True,
+    )
     rsc_body = _routeros_post_reset_rsc_body(address, private_key)
     escaped = _escape_ros_file_contents(rsc_body)
     flash_name = "flash/ispcentric-post-reset.rsc"
     root_name = "ispcentric-post-reset.rsc"
-    return "\n".join(
-        [
-            "# ISPCENTRIC billing tunnel - paste once into Winbox -> New Terminal.",
-            "# FACTORY RESET: removes ALL MikroTik config except admin passwords.",
-            "# Winbox disconnects in ~5s; reconnect by MAC/IP after reboot (~2 min).",
-            "# Tunnel + API install runs automatically from ispcentric-post-reset.rsc.",
-            _ros_warn(
-                "Factory reset scheduled - every setting except admin passwords will be cleared"
-            ),
-            ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
-            ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
-            ':do { /file remove [find where name="ispcentric-post-reset.txt"] } on-error={}',
-            '/system script remove [find where name="ispcentric-post-reset"]',
-            '/system scheduler remove [find where name="ispcentric-post-reset"]',
-            (
-                f':do {{ /file add name="{flash_name}" contents="{escaped}" ; '
-                f'{_ros_ok(f"Saved post-reset installer {flash_name}")} }} on-error={{ '
-                f'/file add name="{root_name}" contents="{escaped}" ; '
-                f'{_ros_ok(f"Saved post-reset installer {root_name}")} }}'
-            ),
-            _ros_info("Factory reset in 5 seconds - Winbox will disconnect"),
-            ":delay 5s",
-            (
-                f':if ([:len [/file find where name="{flash_name}"]] > 0) do={{ '
-                f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset={flash_name} }} else={{ "
-                f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset={root_name} }}"
-            ),
-        ]
-    )
+    customized = _routeros_customized_condition()
+    warn_reset = _ros_warn("Custom config detected - factory reset in 5s (passwords kept)")
+    ok_clean = _ros_ok("Clean router - installing tunnel without reset")
+
+    lines = [
+        "# ISPCENTRIC billing tunnel - paste once into Winbox -> New Terminal.",
+        "# Requires RouterOS 7. Resets ONLY if Hotspot/PPPoE/custom config exists.",
+        "# Clean routers install in place; customized routers reset (passwords kept).",
+        _ros_info("Checking whether this router needs a factory reset..."),
+        '/system script remove [find where name="ispcentric-install"]',
+        '/system script remove [find where name="ispcentric-post-reset"]',
+        '/system scheduler remove [find where name="ispcentric-post-reset"]',
+        (
+            '/system script add name=ispcentric-install dont-require-permissions=yes '
+            'comment="ISPCENTRIC billing tunnel install" source={'
+        ),
+        *install_lines,
+        "}",
+        _ros_ok("Saved in-place installer ispcentric-install"),
+        ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
+        ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
+        (
+            f':do {{ /file add name="{flash_name}" contents="{escaped}" ; '
+            f'{_ros_ok(f"Saved post-reset installer {flash_name}")} }} on-error={{ '
+            f'/file add name="{root_name}" contents="{escaped}" ; '
+            f'{_ros_ok(f"Saved post-reset installer {root_name}")} }}'
+        ),
+        (
+            f":if ({customized}) do={{{warn_reset}}} "
+            f"else={{{ok_clean}}}"
+        ),
+        (
+            f":if ({customized}) do={{ :delay 5s ; "
+            f':if ([:len [/file find where name="{flash_name}"]] > 0) do={{ '
+            f"/system reset-configuration keep-users=yes skip-backup=yes "
+            f"run-after-reset={flash_name} }} else={{ "
+            f"/system reset-configuration keep-users=yes skip-backup=yes "
+            f"run-after-reset={root_name} }} }} "
+            f"else={{ /system script run ispcentric-install }}"
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def routeros_script(address: str, private_key: str, *, factory_reset: bool = True) -> str:
     """
     Commands to paste into the MikroTik terminal to join the tunnel.
 
-    When factory_reset is True (default for Connect onboarding), the paste:
-    1. Writes ispcentric-post-reset.rsc (on flash/ when available)
-    2. Factory-resets to RouterOS defaults (admin passwords kept via keep-users)
-    3. Runs that .rsc automatically after reboot (run-after-reset)
+    When factory_reset is True (default for Connect onboarding), the paste
+    checks the router first:
+    - Clean / ISPCENTRIC-only → install in place (no reboot)
+    - Hotspot, PPPoE, or other custom config → factory reset (keep-users), then
+      auto-install from ispcentric-post-reset.rsc after reboot
 
-    When factory_reset is False, only replaces previous ISPCENTRIC components
-    in-place (no factory reset) — useful for re-runs on live routers.
+    When factory_reset is False, always replaces previous ISPCENTRIC components
+    in-place without any reset check.
     """
     if factory_reset:
-        return _routeros_factory_reset_wrapper(address, private_key)
+        return _routeros_smart_install_script(address, private_key)
 
     install = _routeros_install_lines(
         address,
