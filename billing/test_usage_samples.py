@@ -1,12 +1,15 @@
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
+from unittest.mock import patch
 
 from accounts.models import Organization, User
 from billing.models import Customer, CustomerUsageSample
 from billing.usage_samples import (
     network_performance_drops,
+    org_usage_payload,
     parse_uptime_seconds,
     router_network_performance_trend,
+    sample_organization_usage,
     usage_trend_payload,
 )
 from core.models import MikroTikRouter
@@ -227,3 +230,137 @@ class RouterNetworkPerformanceTrendTests(TestCase):
             "offline" in reason or "unreachable" in reason,
             reason,
         )
+
+
+class SampleOrganizationUsageTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("org-sample-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Org Sample", owner=owner, join_code="ORG001"
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Core",
+            host="10.0.0.2",
+            username="admin",
+            password="secret",
+        )
+        self.online = Customer.objects.create(
+            organization=self.org,
+            router=self.router,
+            full_name="Online Client",
+            phone="0700000100",
+            account_number="PPP-ON-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="online1",
+        )
+        self.offline = Customer.objects.create(
+            organization=self.org,
+            router=self.router,
+            full_name="Offline Client",
+            phone="0700000101",
+            account_number="PPP-OFF-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="offline1",
+        )
+        self.unassigned = Customer.objects.create(
+            organization=self.org,
+            full_name="Unassigned Client",
+            phone="0700000102",
+            account_number="PPP-NONE-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="none1",
+        )
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_records_online_and_offline_clients(self, mock_pppoe, mock_hotspot):
+        mock_pppoe.return_value = {
+            "ok": True,
+            "sessions": {
+                "online1": {
+                    "session_active": True,
+                    "bytes_in": 5000,
+                    "bytes_out": 1000,
+                    "uptime_raw": "1h",
+                    "address": "10.10.0.5",
+                }
+            },
+            "error": "",
+        }
+        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
+
+        result = sample_organization_usage(self.org, force=True)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["skipped"])
+        self.assertGreaterEqual(result["sampled"], 2)
+
+        online_sample = (
+            CustomerUsageSample.objects.filter(customer=self.online)
+            .order_by("-sampled_at")
+            .first()
+        )
+        offline_sample = (
+            CustomerUsageSample.objects.filter(customer=self.offline)
+            .order_by("-sampled_at")
+            .first()
+        )
+        self.assertIsNotNone(online_sample)
+        self.assertTrue(online_sample.session_active)
+        self.assertEqual(online_sample.bytes_in, 5000)
+        self.assertIsNotNone(offline_sample)
+        self.assertFalse(offline_sample.session_active)
+        self.assertFalse(
+            CustomerUsageSample.objects.filter(customer=self.unassigned).exists()
+        )
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_failed_probe_does_not_mark_everyone_offline(self, mock_pppoe, mock_hotspot):
+        mock_pppoe.return_value = {
+            "ok": False,
+            "sessions": {},
+            "error": "Connection timed out.",
+        }
+        mock_hotspot.return_value = {"ok": False, "sessions": {}, "error": "timeout"}
+
+        result = sample_organization_usage(self.org, force=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sampled"], 0)
+        self.assertEqual(CustomerUsageSample.objects.count(), 0)
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_org_payload_lists_all_clients_after_sweep(self, mock_pppoe, mock_hotspot):
+        mock_pppoe.return_value = {
+            "ok": True,
+            "sessions": {
+                "online1": {
+                    "session_active": True,
+                    "bytes_in": 9000,
+                    "bytes_out": 2000,
+                    "uptime_raw": "30m",
+                }
+            },
+            "error": "",
+        }
+        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
+        sample_organization_usage(self.org, force=True)
+
+        payload = org_usage_payload(
+            self.org, hours=24, service="pppoe", top_n=0, use_cache=False, auto_widen=False
+        )
+        self.assertTrue(payload["ok"])
+        ids = {u["customer_id"] for u in payload["top_users"]}
+        self.assertIn(self.online.pk, ids)
+        self.assertIn(self.offline.pk, ids)
+        self.assertIn(self.unassigned.pk, ids)
+        self.assertEqual(payload["summary"]["clients_total"], 3)
+        online_row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.online.pk
+        )
+        offline_row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.offline.pk
+        )
+        self.assertTrue(online_row["latest_active"])
+        self.assertFalse(offline_row["latest_active"])

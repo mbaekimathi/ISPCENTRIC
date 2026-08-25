@@ -20241,6 +20241,41 @@ a.packages-stat:focus-visible {
   line-height: 1.5;
 }
 
+.mikrotik-live-stamp.is-loading {
+  opacity: 0.9;
+  color: var(--sea, #0e7c86);
+}
+
+.clients-usage-loading-row td {
+  padding: 0.85rem 1rem !important;
+  text-align: center;
+  border-bottom: none !important;
+  background: color-mix(in srgb, var(--users-tone, var(--sea)) 6%, transparent);
+}
+
+.clients-usage-loading-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+
+.clients-usage-loading-copy::before {
+  content: "";
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--users-tone, var(--sea)) 35%, transparent);
+  border-top-color: var(--users-tone, var(--sea));
+  animation: clients-usage-spin 0.7s linear infinite;
+}
+
+@keyframes clients-usage-spin {
+  to { transform: rotate(360deg); }
+}
+
 @media (min-width: 1101px) {
   .clients-usage-users-table {
     min-width: 68rem;
@@ -20491,6 +20526,11 @@ a.packages-stat:focus-visible {
 
 .client-router-access-page .client-hero {
   flex: 0 0 auto;
+  transition: opacity 0.2s ease, max-height 0.25s ease;
+}
+
+.client-router-access-page.is-connected .client-hero .client-kv-list {
+  display: none;
 }
 
 .client-router-stage {
@@ -20500,6 +20540,10 @@ a.packages-stat:focus-visible {
   min-height: min(70vh, 720px);
   padding: 0;
   overflow: hidden;
+}
+
+.client-router-stage.is-live {
+  min-height: calc(100vh - 11rem);
 }
 
 .client-router-connecting,
@@ -20515,10 +20559,57 @@ a.packages-stat:focus-visible {
 }
 
 .client-router-steps {
-  margin: 1rem 0 0 1.1rem;
+  margin: 1rem 0 0;
   padding: 0;
-  line-height: 1.7;
+  list-style: none;
+  line-height: 1.55;
   color: var(--ink-soft);
+}
+
+.client-router-steps li {
+  position: relative;
+  padding: 0.35rem 0 0.35rem 1.55rem;
+}
+
+.client-router-steps li::before {
+  content: "";
+  position: absolute;
+  left: 0.2rem;
+  top: 0.7rem;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--line, #c9d0d8);
+}
+
+.client-router-steps li.is-active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.client-router-steps li.is-active::before {
+  background: var(--sea, #0d9488);
+  box-shadow: 0 0 0 3px var(--sea-soft, rgba(13, 148, 136, 0.22));
+}
+
+.client-router-steps li.is-done::before {
+  background: var(--sea, #0d9488);
+}
+
+.client-router-steps li.is-fail {
+  color: var(--danger, #b42318);
+  font-weight: 600;
+}
+
+.client-router-steps li.is-fail::before {
+  background: var(--danger, #b42318);
+}
+
+.client-router-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin: 1rem 0 0.25rem;
 }
 
 .client-router-frame {
@@ -20527,6 +20618,10 @@ a.packages-stat:focus-visible {
   min-height: min(70vh, 720px);
   border: 0;
   background: #fff;
+}
+
+.client-router-stage.is-live .client-router-frame {
+  min-height: calc(100vh - 11rem);
 }
 
 .client-router-access-page .mikrotik-secret {
@@ -20542,7 +20637,8 @@ a.packages-stat:focus-visible {
   }
 
   .client-router-stage,
-  .client-router-frame {
+  .client-router-frame,
+  .client-router-stage.is-live .client-router-frame {
     min-height: 60vh;
   }
 }

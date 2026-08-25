@@ -309,16 +309,82 @@ def _ros_nat_add(rule: str, comment: str) -> str:
     )
 
 
-def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
+def _ros_filter_add_abs(rule: str, comment: str) -> str:
     """
-    Bring up WAN (DHCP on ether1) and retry until ping or default route works.
+    Paste-safe input filter add with absolute paths and place-before.
 
-    Each attempt is a single line — Winbox New Terminal breaks multi-line :for { }
-    blocks (syntax error) when paste splits them across prompts.
+    Plain ``/ip firewall filter add`` appends at the end — useless when a
+    defconf drop already exists. Insert near the top of the input chain.
+    """
+    body = f'/ip firewall filter add chain=input {rule} comment="{comment}"'
+    find0 = "[/ip firewall filter find where chain=input and dynamic=no]"
+    find1 = "[/ip firewall filter find where chain=input]"
+    return (
+        f":do {{ {body} place-before=({find0}->0) }} "
+        f"on-error={{ :do {{ {body} place-before=({find1}->0) }} "
+        f"on-error={{ {body} }} }}"
+    )
+
+
+def _api_lan_ready_lines() -> list[str]:
+    """
+    Enable RouterOS API on 8728 and allow it from private LANs.
+
+    Runs first in the Winbox paste so Connect's LAN check can pass even if WAN
+    download is still waiting / fails. Absolute paths — each line is paste-safe.
+    Firewall accepts are place-before so they beat defconf drop rules.
+    """
+    return [
+        _ros_info("Enabling RouterOS API on 8728 (needed for Check now)..."),
+        ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
+        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service enable [find where name=api] } on-error={}",
+        (
+            ':do { /ip firewall filter remove [find where comment~"ispcentric-vpn-api-lan-"] } '
+            "on-error={}"
+        ),
+        _ros_filter_add_abs(
+            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
+            "ispcentric-vpn-api-lan-10",
+        ),
+        _ros_filter_add_abs(
+            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
+            "ispcentric-vpn-api-lan-172",
+        ),
+        _ros_filter_add_abs(
+            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
+            "ispcentric-vpn-api-lan-192",
+        ),
+        _ros_check(
+            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+            "API listening on 8728 - Check now can use LAN",
+            "API still closed - IP > Services > api, port 8728, Allowed From empty",
+        ),
+    ]
+
+
+def _wan_wait_lines(
+    probe_host: str = "8.8.8.8",
+    *,
+    attempts: int = 6,
+    delay: str = "4s",
+) -> list[str]:
+    """
+    Bring up WAN (DHCP on ether1) and wait until ping or default route works.
+
+    Winbox New Terminal breaks multi-line :for/:do blocks across prompts, so each
+    attempt is one short line. :global IspWanOk stops further waits after success
+    (no OK spam) and lets later steps skip work when WAN never came up.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
+    attempts = max(1, int(attempts))
+    ready = (
+        f"([/ping {probe_host} count=1] > 0) || "
+        f"([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)"
+    )
     lines = [
-        _ros_info("Ensuring WAN: DHCP on ether1 + wait for internet..."),
+        _ros_info("ether1 = ISP - enabling DHCP, waiting for internet..."),
         (
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
             "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
@@ -329,19 +395,17 @@ def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
             "add-default-route=yes use-peer-dns=yes } on-error={}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
+        ":global IspWanOk",
+        ":set IspWanOk 0",
     ]
-    for try_n in range(1, 11):
+    for try_n in range(1, attempts + 1):
         lines.append(
-            f':if (([/ping {probe_host} count=1] > 0) || '
-            f'([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{'
-            f'{_ros_ok("WAN path ready (ping or default route)")}}} else={{'
-            f':put "[ISPCENTRIC] WAN try {try_n}/10 - waiting..."; :delay 3s}}'
+            f":if ($IspWanOk = 0) do={{:if ({ready}) do={{:set IspWanOk 1; "
+            f'{_ros_ok("WAN ready")}}} else={{'
+            f':put "[ISPCENTRIC] WAN {try_n}/{attempts}..."; :delay {delay}}}}}'
         )
     lines.append(
-        f':if (([/ping {probe_host} count=1] > 0) || '
-        f'([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{'
-        f'{_ros_ok("WAN confirmed")}}} else={{'
-        f'{_ros_fail("No internet - plug ISP into ether1, wait for DHCP, re-paste")}}}'
+        f":if ($IspWanOk = 0) do={{{_ros_fail('No internet - plug ISP into ether1, re-paste')}}}"
     )
     return lines
 
@@ -935,7 +999,7 @@ def tunnel_verification_checks(
                     f"RouterOS API open at {lan_address}:8728"
                     if api_enabled
                     else (
-                        "Paste the script in Winbox and wait for [ISPCENTRIC OK] lines"
+                        "API closed — paste script and wait for “API listening on 8728”"
                         if lan_address and not subnet_mismatch
                         else "Waiting for LAN discovery and script"
                     )
@@ -1402,14 +1466,15 @@ def _fetch_rsc_retry_lines(
     ok_msg: str,
     fail_msg: str,
     *,
-    attempts: int = 8,
+    attempts: int = 5,
+    require_wan: bool = False,
 ) -> list[str]:
     """
-    Build URL from short pieces, then retry /tool fetch (single-line attempts).
+    Build URL from short pieces, then retry /tool fetch (one short line per try).
 
-    Winbox paste cannot run multi-line :for { } blocks — each line becomes its
-    own prompt and braces cause "syntax error". :global keeps the URL across
-    lines (:local does not persist between interactive paste lines).
+    Winbox paste cannot run multi-line :for { } blocks — each line is its own
+    prompt. :global keeps the URL across lines (:local does not). When
+    require_wan=True, skips fetch unless IspWanOk=1 (bootstrap paste).
     """
     origin, mid, tail = _fetch_rsc_parts(url)
     header = ""
@@ -1417,8 +1482,11 @@ def _fetch_rsc_retry_lines(
         header = f' http-header-field="Host:{host_header}"'
     tag = "Flash" if "flash/" in dst else ("Inst" if "install" in dst else "Root")
     url_var = f"IspUrl{tag}"
+    attempts = max(1, int(attempts))
+    wan_gate = "($IspWanOk = 1) && " if require_wan else ""
+    missing = f'([:len [/file find where name="{dst}"]] = 0)'
     lines = [
-        f':global {url_var}',
+        f":global {url_var}",
         f':set {url_var} "{origin}"',
         f':set {url_var} (${url_var} . "{mid}")',
     ]
@@ -1426,15 +1494,13 @@ def _fetch_rsc_retry_lines(
         lines.append(f':set {url_var} (${url_var} . "{tail}")')
     for try_n in range(1, attempts + 1):
         lines.append(
-            f':if ([:len [/file find where name="{dst}"]] = 0) do={{'
-            f':do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; '
-            f'{_ros_ok(ok_msg)} }} on-error={{'
-            f':put "[ISPCENTRIC] Fetch try {try_n}/{attempts} failed - retrying..."; '
-            f':delay 3s}}}}'
+            f":if ({wan_gate}{missing}) do={{"
+            f":do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; "
+            f"{_ros_ok(ok_msg)} }} on-error={{"
+            f':put "[ISPCENTRIC] Download {try_n}/{attempts}..."; :delay 3s}}}}'
         )
     lines.append(
-        f':if ([:len [/file find where name="{dst}"]] = 0) do={{{_ros_fail(fail_msg)}}} '
-        f'else={{{_ros_ok(f"File ready: {dst}")}}}'
+        f":if ({missing}) do={{{_ros_fail(fail_msg)}}}"
     )
     return lines
 
@@ -1493,9 +1559,9 @@ def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg:
 
 def _routeros_smart_install_script(address: str, private_key: str) -> str:
     """
-    Ultra-short Winbox paste: WAN wait loop, fetch retry loop, import.
+    Short Winbox paste: wait for WAN → download install.rsc → import.
 
-    URL is assembled from short pieces (no mid-line wrap). Path ends with / so
+    URL is built from short pieces (Winbox wrap-safe). Path ends with / so
     Django does not 301 (MikroTik /tool fetch fails on redirect).
     """
     address = (address or "").strip()
@@ -1517,24 +1583,26 @@ def _routeros_smart_install_script(address: str, private_key: str) -> str:
 
     return "\n".join(
         [
-            "# ISPCENTRIC one-paste bootstrap - Winbox -> New Terminal.",
-            "# Loops: wait for WAN, retry .rsc download, then import.",
-            "# Plug ISP into ether1 before or during the wait loops.",
-            _ros_info("ISPCENTRIC one-paste: waiting for internet, then downloading install..."),
+            "# ISPCENTRIC - Winbox -> New Terminal. Plug ISP into ether1, paste once.",
+            "# 1) open API on LAN  2) wait WAN  3) download install.rsc  4) import",
+            *_api_lan_ready_lines(),
+            _ros_info("Waiting for internet, then downloading install..."),
             *_wan_wait_lines(endpoint_host),
             ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
             *_fetch_rsc_retry_lines(
                 install_url,
                 http_host,
                 "ispcentric-install.rsc",
-                "Downloaded ispcentric-install.rsc",
-                "Fetch install.rsc failed after retries - check ether1 WAN / VPS HTTP",
-                attempts=8,
+                "Downloaded install.rsc",
+                "Download failed - check ether1 WAN and billing server HTTP",
+                attempts=5,
+                require_wan=True,
             ),
             (
                 ':if ([:len [/file find where name="ispcentric-install.rsc"]] > 0) do={'
+                ':put "[ISPCENTRIC OK] Importing install.rsc..."; '
                 "/import file-name=ispcentric-install.rsc} else={"
-                ':put "[ISPCENTRIC FAIL] ispcentric-install.rsc missing - fix WAN and re-paste"}'
+                ':put "[ISPCENTRIC FAIL] install.rsc missing - fix WAN and re-paste"}'
             ),
         ]
     )

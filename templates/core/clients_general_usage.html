@@ -93,7 +93,7 @@
       </p>
     </div>
     <div class="mikrotik-detail-actions">
-      <span class="mikrotik-live-stamp" data-usage-stamp>—</span>
+      <span class="mikrotik-live-stamp" data-usage-stamp>Loading…</span>
       <button type="button" class="btn btn-ghost" data-usage-refresh>Refresh</button>
     </div>
   </div>
@@ -196,7 +196,7 @@
         {% endif %}
       </span>
       <div class="clients-usage-users-copy">
-        <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %}{% if top_users %} <span class="clients-usage-users-count">{{ top_users|length }}</span>{% endif %}</h2>
+        <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %} <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span></h2>
           <p class="panel-sub">Ranked by data transferred{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %} — peak/low times, downtime events{% if active_tab == 'hotspot' %}, and gadgets online{% endif %}.</p>
       </div>
     </div>
@@ -291,8 +291,8 @@
                     <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
                   {% endif %}
                 </span>
-                <p class="clients-usage-users-empty-title">No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} usage yet</p>
-                <p class="clients-usage-users-empty-copy">No samples in this window yet. Click Refresh above to pull live sessions from your routers.</p>
+                <p class="clients-usage-users-empty-title">No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients yet</p>
+                <p class="clients-usage-users-empty-copy">Add clients in this service tab, assign them to a MikroTik, then Refresh to pull live usage.</p>
               </div>
             </td>
           </tr>
@@ -319,9 +319,13 @@
   var showGadgets = tab === "hotspot";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
+  var countEl = document.querySelector("[data-users-count]");
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
+  var renderToken = 0;
+  var FIRST_PAINT = 20;
+  var CHUNK = 30;
 
   function fmtBps(bps) {
     var n = Number(bps) || 0;
@@ -351,11 +355,90 @@
       .replace(/"/g, "&quot;");
   }
 
-  function renderUsers(users) {
+  function setStamp(text, loading) {
+    if (!stamp) return;
+    stamp.textContent = text;
+    stamp.classList.toggle("is-loading", !!loading);
+  }
+
+  function setUsersCount(n) {
+    if (countEl && n != null) countEl.textContent = String(n);
+  }
+
+  function rowHtml(user, idx) {
+    var bytes = user.data_used_bytes || user.peak_session_bytes || 0;
+    var level = user.usage_level || "Idle";
+    var levelKey = String(level).toLowerCase();
+    var detail = "/app/clients/" + user.customer_id + "/";
+    var usage = "/app/clients/" + user.customer_id + "/usage-analysis/";
+    var rankClass = user.rank === 1 ? " is-top-1" : user.rank === 2 ? " is-top-2" : user.rank === 3 ? " is-top-3" : "";
+    var initialLetter = esc((user.full_name || "?").slice(0, 1).toUpperCase());
+    var meta = '<span class="clients-usage-user-account">' + esc(user.account_number || "") + "</span>";
+    if (user.router_name) {
+      meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">' + esc(user.router_name) + "</span>";
+    }
+    if (user.plan_name) {
+      meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-plan">' + esc(user.plan_name) + "</span>";
+    }
+    return (
+      '<tr class="clients-usage-user-row" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
+        '<td data-label="#"><span class="clients-usage-rank' + rankClass + '">' + esc(user.rank) + "</span></td>" +
+        '<td data-label="Client"><a class="clients-usage-user-link" href="' + detail + '">' +
+          '<span class="clients-avatar" aria-hidden="true">' + initialLetter + "</span>" +
+          '<span class="clients-usage-user-copy">' +
+            '<strong class="clients-usage-user-name">' + esc(user.full_name) + "</strong>" +
+            '<span class="clients-usage-user-meta">' + meta + "</span>" +
+          "</span></a></td>" +
+        '<td data-label="Level"><span class="clients-usage-level is-' + esc(levelKey) + '">' + esc(level) + "</span></td>" +
+        '<td data-label="Data used"><div class="clients-usage-data-cell">' +
+          '<strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong>' +
+          '<span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>' +
+        "</div></td>" +
+        '<td data-label="Peak"><div class="clients-usage-rate-cell">' +
+          "<strong>" + esc(user.prime_at_label || "—") + "</strong>" +
+          '<small data-bps="' + esc(user.prime_download_bps || 0) + '">—</small></div></td>' +
+        '<td data-label="Lowest"><div class="clients-usage-rate-cell">' +
+          "<strong>" + esc(user.lowest_at_label || "—") + "</strong>" +
+          '<small data-bps="' + esc(user.lowest_download_bps || 0) + '">—</small></div></td>' +
+        '<td data-label="Downtimes"><span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span></td>" +
+        (showGadgets
+          ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '">' + esc(user.gadgets_connected || 0) + "</span></td>")
+          : "") +
+        '<td data-label="Status">' +
+          '<span class="clients-usage-online' + (user.latest_active ? " is-on" : " is-off") + '">' +
+            '<span class="clients-usage-online-dot" aria-hidden="true"></span>' +
+            (user.latest_active ? "Online" : "Offline") +
+          "</span>" +
+          '<small class="clients-usage-online-ratio">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "% uptime</small>" +
+        "</td>" +
+        '<td data-label=""><a class="clients-usage-view-btn" href="' + usage + '">' +
+          "<span>Usage</span>" +
+          '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>' +
+        "</a></td>" +
+      "</tr>"
+    );
+  }
+
+  function loadingRowHtml(cols, loaded, total) {
+    var label = total && total > loaded
+      ? ("Loading more clients… " + loaded + " of " + total)
+      : "Loading more clients…";
+    return (
+      '<tr class="clients-usage-loading-row" data-loading-row>' +
+        '<td colspan="' + cols + '"><span class="clients-usage-loading-copy">' + esc(label) + "</span></td>" +
+      "</tr>"
+    );
+  }
+
+  function renderUsers(users, opts) {
     var body = document.querySelector("[data-top-users-body]");
     if (!body) return;
+    opts = opts || {};
     users = users || [];
     var cols = showGadgets ? 10 : 9;
+    var token = ++renderToken;
+    var totalHint = opts.totalHint != null ? opts.totalHint : users.length;
+
     if (!users.length) {
       body.innerHTML =
         '<tr data-empty-row><td colspan="' + cols + '">' +
@@ -365,65 +448,47 @@
           ? '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>'
           : '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>') +
         '</span>' +
-        '<p class="clients-usage-users-empty-title">No ' + (showGadgets ? "Hotspot" : "PPPoE") + ' usage yet</p>' +
-        '<p class="clients-usage-users-empty-copy">No samples in this window yet. Click Refresh above to pull live sessions from your routers.</p>' +
+        '<p class="clients-usage-users-empty-title">No ' + (showGadgets ? "Hotspot" : "PPPoE") + ' clients yet</p>' +
+        '<p class="clients-usage-users-empty-copy">Add clients in this service tab, assign them to a MikroTik, then Refresh to pull live usage.</p>' +
         '</div></td></tr>';
+      setUsersCount(0);
       return;
     }
-    body.innerHTML = users.map(function (user, idx) {
-      var bytes = user.data_used_bytes || user.peak_session_bytes || 0;
-      var level = user.usage_level || "Idle";
-      var levelKey = String(level).toLowerCase();
-      var detail = "/app/clients/" + user.customer_id + "/";
-      var usage = "/app/clients/" + user.customer_id + "/usage-analysis/";
-      var rankClass = user.rank === 1 ? " is-top-1" : user.rank === 2 ? " is-top-2" : user.rank === 3 ? " is-top-3" : "";
-      var initial = esc((user.full_name || "?").slice(0, 1).toUpperCase());
-      var meta = '<span class="clients-usage-user-account">' + esc(user.account_number || "") + "</span>";
-      if (user.router_name) {
-        meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">' + esc(user.router_name) + "</span>";
+
+    setUsersCount(totalHint || users.length);
+
+    function paintChunk(end, showLoading) {
+      if (token !== renderToken) return;
+      var html = users.slice(0, end).map(rowHtml).join("");
+      if (showLoading && end < users.length) {
+        html += loadingRowHtml(cols, end, totalHint || users.length);
+      } else if (showLoading && opts.expectMore) {
+        html += loadingRowHtml(cols, end, totalHint || users.length);
       }
-      if (user.plan_name) {
-        meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-plan">' + esc(user.plan_name) + "</span>";
+      body.innerHTML = html;
+      formatTableCells();
+    }
+
+    if (!opts.progressive || users.length <= FIRST_PAINT) {
+      paintChunk(users.length, !!opts.expectMore);
+      return;
+    }
+
+    paintChunk(FIRST_PAINT, true);
+    var offset = FIRST_PAINT;
+    function appendMore() {
+      if (token !== renderToken) return;
+      if (offset >= users.length) {
+        paintChunk(users.length, !!opts.expectMore);
+        return;
       }
-      return (
-        '<tr class="clients-usage-user-row" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
-          '<td data-label="#"><span class="clients-usage-rank' + rankClass + '">' + esc(user.rank) + "</span></td>" +
-          '<td data-label="Client"><a class="clients-usage-user-link" href="' + detail + '">' +
-            '<span class="clients-avatar" aria-hidden="true">' + initial + "</span>" +
-            '<span class="clients-usage-user-copy">' +
-              '<strong class="clients-usage-user-name">' + esc(user.full_name) + "</strong>" +
-              '<span class="clients-usage-user-meta">' + meta + "</span>" +
-            "</span></a></td>" +
-          '<td data-label="Level"><span class="clients-usage-level is-' + esc(levelKey) + '">' + esc(level) + "</span></td>" +
-          '<td data-label="Data used"><div class="clients-usage-data-cell">' +
-            '<strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong>' +
-            '<span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>' +
-          "</div></td>" +
-          '<td data-label="Peak"><div class="clients-usage-rate-cell">' +
-            "<strong>" + esc(user.prime_at_label || "—") + "</strong>" +
-            '<small data-bps="' + esc(user.prime_download_bps || 0) + '">—</small></div></td>' +
-          '<td data-label="Lowest"><div class="clients-usage-rate-cell">' +
-            "<strong>" + esc(user.lowest_at_label || "—") + "</strong>" +
-            '<small data-bps="' + esc(user.lowest_download_bps || 0) + '">—</small></div></td>' +
-          '<td data-label="Downtimes"><span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span></td>" +
-          (showGadgets
-            ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '">' + esc(user.gadgets_connected || 0) + "</span></td>")
-            : "") +
-          '<td data-label="Status">' +
-            '<span class="clients-usage-online' + (user.latest_active ? " is-on" : " is-off") + '">' +
-              '<span class="clients-usage-online-dot" aria-hidden="true"></span>' +
-              (user.latest_active ? "Online" : "Offline") +
-            "</span>" +
-            '<small class="clients-usage-online-ratio">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "% uptime</small>" +
-          "</td>" +
-          '<td data-label=""><a class="clients-usage-view-btn" href="' + usage + '">' +
-            "<span>Usage</span>" +
-            '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>' +
-          "</a></td>" +
-        "</tr>"
-      );
-    }).join("");
-    formatTableCells();
+      offset = Math.min(users.length, offset + CHUNK);
+      paintChunk(offset, offset < users.length || !!opts.expectMore);
+      if (offset < users.length) {
+        window.requestAnimationFrame(appendMore);
+      }
+    }
+    window.requestAnimationFrame(appendMore);
   }
 
   function formatTableCells() {
@@ -446,7 +511,8 @@
     });
   }
 
-  function applySummary(data) {
+  function applySummary(data, opts) {
+    opts = opts || {};
     var summary = (data && data.summary) || {};
     var summaryCopy = document.querySelector("[data-usage-summary-copy]");
     var serviceLabel = showGadgets ? "Hotspot" : "PPPoE";
@@ -471,10 +537,12 @@
     setSum("top-user-data", summary.top_user_name
       ? fmtBytes(summary.top_user_bytes) + " transferred"
       : "Most data transferred");
-    if (stamp) {
-      stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
+    if (opts.stampText) {
+      setStamp(opts.stampText, !!opts.loading);
+    } else if (!opts.keepStamp) {
+      setStamp("Updated " + new Date().toLocaleTimeString([], {
         hour: "2-digit", minute: "2-digit", second: "2-digit"
-      });
+      }), false);
     }
   }
 
@@ -543,7 +611,8 @@
     });
   }
 
-  function paint(data) {
+  function paint(data, opts) {
+    opts = opts || {};
     ensureCharts();
     if (!charts.online) return;
     var labels = (data && data.labels) || [];
@@ -606,13 +675,21 @@
     charts.throughput.update("none");
     charts.data.update("none");
     charts.top.update("none");
-    applySummary(data);
-    renderUsers(data && data.top_users);
+    applySummary(data, opts);
+    var users = (data && data.top_users) || [];
+    var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
+    renderUsers(users, {
+      progressive: opts.progressive !== false,
+      expectMore: !!opts.expectMore,
+      totalHint: totalHint
+    });
   }
 
-  function loadTrends(forceRefresh) {
-    if (!trendsUrl || inFlight) return Promise.resolve();
+  function loadTrends(forceRefresh, opts) {
+    opts = opts || {};
+    if (!trendsUrl || inFlight) return Promise.resolve(null);
     inFlight = true;
+    if (opts.stampText) setStamp(opts.stampText, true);
     var url = trendsUrl +
       "?hours=" + encodeURIComponent(hours) +
       "&tab=" + encodeURIComponent(tab);
@@ -624,15 +701,45 @@
       cache: "no-store"
     })
       .then(function (res) { return res.json(); })
-      .then(paint)
-      .catch(function () {})
+      .then(function (data) {
+        paint(data, {
+          progressive: true,
+          stampText: opts.doneStamp,
+          loading: false,
+          keepStamp: !!opts.keepStampAfter
+        });
+        return data;
+      })
+      .catch(function () { return null; })
       .finally(function () { inFlight = false; });
   }
 
   function boot() {
     ensureCharts();
-    paint(initial);
+    var partial = !!(initial && initial.users_partial);
+    paint(initial, {
+      progressive: true,
+      expectMore: partial,
+      stampText: partial ? "Loading clients…" : "Updating live status…",
+      loading: true
+    });
     formatTableCells();
+
+    var chain = Promise.resolve();
+    if (partial) {
+      chain = loadTrends(false, {
+        stampText: "Loading all clients…",
+        keepStampAfter: true
+      });
+    }
+    chain
+      .then(function () {
+        return loadTrends(true, {
+          stampText: "Updating live status…",
+          doneStamp: null
+        });
+      })
+      .catch(function () {});
   }
 
   if (window.Chart) boot();
@@ -645,7 +752,9 @@
   }
 
   if (refreshBtn) {
-    refreshBtn.addEventListener("click", function () { loadTrends(true); });
+    refreshBtn.addEventListener("click", function () {
+      loadTrends(true, { stampText: "Refreshing…" });
+    });
   }
   setInterval(function () { loadTrends(false); }, 60000);
   document.addEventListener("visibilitychange", function () {

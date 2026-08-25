@@ -93,6 +93,19 @@ class ClientRouterProxyTests(TestCase):
         )
         self.cpe_login_patcher.start()
         self.addCleanup(self.cpe_login_patcher.stop)
+        self.nas_check_patcher = patch(
+            "core.connectivity_verification.evaluate_nas_connectivity",
+            return_value={
+                "ok": True,
+                "reachable": True,
+                "api_ok": True,
+                "error": "",
+                "hint": "",
+                "details": {},
+            },
+        )
+        self.nas_check_patcher.start()
+        self.addCleanup(self.nas_check_patcher.stop)
 
     def _start_url(self, client=None, port=80):
         client = client or self.client
@@ -175,6 +188,7 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "core/client_router_access.html")
         self.assertContains(response, "Opening the client router")
+        self.assertContains(response, "Remote client router")
         self.assertContains(
             response,
             f"/app/clients/{self.customer.pk}/router-login/start/",
@@ -204,7 +218,10 @@ class ClientRouterProxyTests(TestCase):
         self.assertFalse(payload["ok"])
         self.assertTrue(payload["session_active"])
         self.assertTrue(payload["ping_ok"])
+        self.assertEqual(payload["failure_class"], "wan_mgmt_blocked")
         self.assertIn("refuses management", payload["detail"])
+        self.assertTrue(payload["guidance"])
+        self.assertIn("Remote / WAN Web Management", payload["guidance"][1])
         self.assertNotIn("proxy_url", payload)
 
     def test_preflight_offline_client_explains_pppoe_is_down(self):
@@ -228,7 +245,37 @@ class ClientRouterProxyTests(TestCase):
         payload = response.json()
         self.assertFalse(payload["ok"])
         self.assertFalse(payload["session_active"])
+        self.assertEqual(payload["failure_class"], "offline")
         self.assertIn("PPPoE", payload["detail"])
+        self.assertTrue(any("PPPoE" in step for step in payload["guidance"]))
+
+    def test_start_fails_fast_when_nas_unreachable(self):
+        with (
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={
+                    "ok": False,
+                    "reachable": False,
+                    "api_ok": False,
+                    "error": "10.9.0.2: unreachable",
+                    "hint": "Tunnel router unreachable — paste the WireGuard script.",
+                    "details": {},
+                },
+            ),
+            patch("core.views.probe_customer_cpe_web") as probe,
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        probe.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failure_class"], "nas_down")
+        self.assertIn("WireGuard", payload["detail"] + " ".join(payload["guidance"]))
+        self.assertTrue(payload["nas_url"])
+        self.assertNotIn("proxy_url", payload)
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
     @patch("core.views.customer_cpe_web_proxy", _proxy)
@@ -980,7 +1027,20 @@ class CustomerCpeAccessModeTests(TestCase):
 
     @patch("core.views.login_customer_cpe_web_session")
     @patch("core.views.probe_customer_cpe_web")
-    def test_static_client_router_login_starts_proxy(self, mock_probe, mock_login):
+    @patch(
+        "core.connectivity_verification.evaluate_nas_connectivity",
+        return_value={
+            "ok": True,
+            "reachable": True,
+            "api_ok": True,
+            "error": "",
+            "hint": "",
+            "details": {},
+        },
+    )
+    def test_static_client_router_login_starts_proxy(
+        self, _mock_nas, mock_probe, mock_login
+    ):
         customer = Customer.objects.create(
             organization=self.org,
             full_name="Static User",

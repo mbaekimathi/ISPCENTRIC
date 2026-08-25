@@ -162,10 +162,22 @@ def _invalidate_client_usage_trend_cache(customer_id: int) -> None:
         cache.delete(f"client_usage_trend:{customer_id}:{hours}")
 
 
+def _offline_usage_payload() -> dict[str, Any]:
+    """Sparse offline marker so every assigned client appears in org rankings."""
+    return {
+        "session_active": False,
+        "bytes_in": 0,
+        "bytes_out": 0,
+        "download_bps": 0,
+        "upload_bps": 0,
+    }
+
+
 def sample_organization_usage(organization, *, force: bool = False) -> dict[str, Any]:
     """
     Lightweight org-wide snapshot: one MikroTik call per router (no per-client
-    monitor-traffic). Records samples for matched PPPoE / Hotspot clients.
+    monitor-traffic). Records samples for every assigned PPPoE / Hotspot client
+    on reachable routers — active sessions plus throttled offline markers.
 
     Gated by cache so the general-usage page cannot hammer routers.
     """
@@ -240,10 +252,19 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 router.password or "",
                 timeout=_ORG_SAMPLE_ROUTER_TIMEOUT,
             )
-            for username, payload in (result.get("sessions") or {}).items():
-                customer = pppoe_map.get(username)
-                if customer:
-                    hits.append((customer, payload))
+            # Only mark missing clients offline when the router answered —
+            # a failed probe must not flood everyone as offline.
+            if result.get("ok"):
+                matched: set[int] = set()
+                for username, payload in (result.get("sessions") or {}).items():
+                    customer = pppoe_map.get((username or "").strip().lower())
+                    if customer:
+                        hits.append((customer, payload))
+                        matched.add(customer.pk)
+                offline = _offline_usage_payload()
+                for customer in pppoe_map.values():
+                    if customer.pk not in matched:
+                        hits.append((customer, offline))
         if hotspot_map:
             result = fetch_router_bulk_hotspot_usage(
                 router.host,
@@ -251,10 +272,17 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 router.password or "",
                 timeout=_ORG_SAMPLE_ROUTER_TIMEOUT,
             )
-            for mac, payload in (result.get("sessions") or {}).items():
-                customer = hotspot_map.get(mac)
-                if customer:
-                    hits.append((customer, payload))
+            if result.get("ok"):
+                matched = set()
+                for mac, payload in (result.get("sessions") or {}).items():
+                    customer = hotspot_map.get((mac or "").strip().upper())
+                    if customer:
+                        hits.append((customer, payload))
+                        matched.add(customer.pk)
+                offline = _offline_usage_payload()
+                for customer in hotspot_map.values():
+                    if customer.pk not in matched:
+                        hits.append((customer, offline))
         return router.pk, hits
 
     sampled = 0
@@ -949,7 +977,12 @@ def _build_org_usage_payload(
 
     clients_with_samples = len(per_customer)
     clients_total = len(customers)
-    online_now = sum(1 for item in per_customer.values() if item["latest_active"])
+    # Prefer latest sample status; fall back to empty (offline) for never-sampled.
+    online_now = sum(
+        1
+        for cid in customers
+        if (per_customer.get(cid) or {}).get("latest_active")
+    )
     gadgets_online = sum(int(u.get("gadgets_connected") or 0) for u in top_users)
     router_filter = _usage_router_cache_key(
         router_id=router_id, unassigned_only=unassigned_only
@@ -1416,11 +1449,14 @@ def org_usage_payload(
         router_id=router_id,
         unassigned_only=unassigned_only,
     )
+    # Roster always lists every customer (empty stats). Signal = real samples.
+    summary = payload.get("summary") or {}
     has_signal = bool(
-        payload.get("summary", {}).get("data_used_bytes")
-        or payload.get("summary", {}).get("peak_download_bps")
-        or payload.get("summary", {}).get("clients_online")
-        or (payload.get("top_users") or [])
+        summary.get("data_used_bytes")
+        or summary.get("peak_download_bps")
+        or summary.get("clients_online")
+        or summary.get("clients_tracked")
+        or payload.get("sample_count")
     )
     if auto_widen and not has_signal and hours < _MAX_USAGE_HOURS:
         for candidate in (72, 168, 720, 8760):
@@ -1434,10 +1470,13 @@ def org_usage_payload(
                 router_id=router_id,
                 unassigned_only=unassigned_only,
             )
+            wider_summary = wider.get("summary") or {}
             wider_signal = bool(
-                wider.get("summary", {}).get("data_used_bytes")
-                or wider.get("summary", {}).get("peak_download_bps")
-                or (wider.get("top_users") or [])
+                wider_summary.get("data_used_bytes")
+                or wider_summary.get("peak_download_bps")
+                or wider_summary.get("clients_online")
+                or wider_summary.get("clients_tracked")
+                or wider.get("sample_count")
             )
             if wider_signal:
                 wider["requested_hours"] = hours

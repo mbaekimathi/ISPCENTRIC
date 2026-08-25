@@ -10,6 +10,8 @@
   data-cpe-user="{{ cpe_username }}"
   data-cpe-pass="{{ cpe_password }}"
   data-detail-url="{{ back_url }}"
+  data-nas-url="{{ nas_url }}"
+  data-via-tunnel="{% if via_tunnel %}1{% else %}0{% endif %}"
   data-has-password="{% if has_cpe_password %}1{% else %}0{% endif %}"
 >
 <section class="panel client-hero" id="router-access-head" data-cat="access">
@@ -18,15 +20,24 @@
       <p class="client-cat client-cat-access">
         <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg></span>
         <span class="client-live-pulse" aria-hidden="true"></span>
-        Client router
+        Remote client router
       </p>
       <h2>{{ customer.full_name }}</h2>
-      <p class="panel-sub" data-router-status>Connecting through {{ nas_name|default:"the ISP MikroTik" }}…</p>
+      <p class="panel-sub" data-router-status>
+        {% if via_tunnel %}
+          Connecting through {{ nas_name|default:"the ISP MikroTik" }} over WireGuard…
+        {% else %}
+          Connecting through {{ nas_name|default:"the ISP MikroTik" }}…
+        {% endif %}
+      </p>
     </div>
     <div class="mikrotik-detail-actions">
       <span class="mikrotik-live-stamp" data-router-stamp>Starting</span>
       <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
       <a class="btn btn-ghost" href="{{ back_url }}">Back to client</a>
+      {% if nas_url %}
+      <a class="btn btn-ghost" href="{{ nas_url }}" data-router-nas-link>Open NAS</a>
+      {% endif %}
       <a class="btn btn-primary" data-router-newtab hidden target="_blank" rel="noopener">Open in new tab</a>
     </div>
   </div>
@@ -59,29 +70,42 @@
       </dd>
     </div>
     <div class="client-kv" data-ico="shield">
-      <dt>NAS</dt>
+      <dt>Path</dt>
       <dd>
         <strong>{{ nas_name|default:"—" }}</strong>
-        <span>{{ access_mode|default:"remote" }} · gateway {{ gateway }}</span>
+        <span>
+          {% if via_tunnel %}WireGuard {{ nas_dial|default:"" }}{% else %}LAN {{ nas_dial|default:"" }}{% endif %}
+          · {{ access_mode|default:"remote" }} · gateway {{ gateway }}
+        </span>
       </dd>
     </div>
   </dl>
 </section>
 
-<section class="panel client-router-stage" id="router-access-stage">
+<section class="panel client-router-stage" id="router-access-stage" data-router-stage>
   <div class="client-router-connecting" data-router-connecting>
     <p class="client-router-connecting-title">Opening the client router</p>
-    <p class="panel-sub">Resolving the live IP, opening the admin UI, and signing in automatically when the router allows it.</p>
+    <p class="panel-sub">
+      Reach the ISP MikroTik{% if via_tunnel %} over the billing tunnel{% endif %},
+      find the live client IP, open its admin UI, and sign in when the router allows it.
+    </p>
     <ol class="client-router-steps" data-router-steps>
-      <li>Find the client on {{ nas_name|default:"the ISP MikroTik" }}</li>
-      <li>Probe web ports {{ checked_ports }}</li>
-      <li>Sign in automatically and open the admin UI</li>
+      <li data-step="nas" class="is-active">Reach {{ nas_name|default:"the ISP MikroTik" }}{% if via_tunnel %} via WireGuard{% endif %}</li>
+      <li data-step="session">Find the client session</li>
+      <li data-step="web">Probe web ports {{ checked_ports }}</li>
+      <li data-step="login">Sign in and open the admin UI</li>
     </ol>
   </div>
 
   <div class="client-router-error" data-router-error hidden>
     <div class="client-subscription-banner is-blocked" data-router-error-banner></div>
     <ol class="mikrotik-tunnel-steps" data-router-guidance hidden></ol>
+    <div class="client-router-error-actions" data-router-error-actions hidden>
+      {% if nas_url %}
+      <a class="btn btn-primary" href="{{ nas_url }}" data-router-fix-nas>Fix NAS / tunnel</a>
+      {% endif %}
+      <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
+    </div>
     <form class="client-router-password-form" data-router-password-form method="post" hidden>
       {% csrf_token %}
       <label for="router-access-password">Client router admin password</label>
@@ -120,6 +144,7 @@
   var startUrl = root.getAttribute("data-start-url") || "";
   var cpeUser = root.getAttribute("data-cpe-user") || "admin";
   var cpePass = root.getAttribute("data-cpe-pass") || "";
+  var viaTunnel = root.getAttribute("data-via-tunnel") === "1";
   var statusEl = root.querySelector("[data-router-status]");
   var stampEl = root.querySelector("[data-router-stamp]");
   var hostEl = root.querySelector("[data-router-host]");
@@ -130,20 +155,19 @@
   var errorBanner = root.querySelector("[data-router-error-banner]");
   var errorDetail = root.querySelector("[data-router-error-detail]");
   var guidance = root.querySelector("[data-router-guidance]");
+  var errorActions = root.querySelector("[data-router-error-actions]");
   var passwordForm = root.querySelector("[data-router-password-form]");
   var frame = root.querySelector("[data-router-frame]");
-  var retryBtn = root.querySelector("[data-router-retry]");
+  var stage = root.querySelector("[data-router-stage]");
   var newTab = root.querySelector("[data-router-newtab]");
   var copyBtn = root.querySelector("[data-copy-password]");
   var csrfInput = root.querySelector("[data-router-password-form] input[name=csrfmiddlewaretoken]");
   var inFlight = false;
   var fillTimer = null;
 
-  function setText(el, value) {
-    if (el) el.textContent = value || "—";
-  }
-
   function showConnecting(message) {
+    root.classList.remove("is-connected", "is-failed");
+    if (stage) stage.classList.remove("is-live");
     if (statusEl) statusEl.textContent = message || "Connecting…";
     if (stampEl) stampEl.textContent = "Connecting";
     if (connecting) connecting.hidden = false;
@@ -153,16 +177,57 @@
       frame.removeAttribute("src");
     }
     if (newTab) newTab.hidden = true;
+    setStepState("nas", "active");
+  }
+
+  function setStepState(key, state) {
+    if (!stepsEl) return;
+    var order = ["nas", "session", "web", "login"];
+    var idx = order.indexOf(key);
+    order.forEach(function (name, i) {
+      var li = stepsEl.querySelector('[data-step="' + name + '"]');
+      if (!li) return;
+      li.classList.remove("is-active", "is-done", "is-fail");
+      if (state === "active" && name === key) li.classList.add("is-active");
+      else if (state === "fail" && name === key) li.classList.add("is-fail");
+      else if (i < idx || (state === "done" && name === key)) li.classList.add("is-done");
+      else if (state === "done" && i <= idx) li.classList.add("is-done");
+    });
+  }
+
+  function markStepsFromData(data) {
+    var fc = (data && data.failure_class) || "";
+    if (data && data.ok) {
+      setStepState("login", "done");
+      return;
+    }
+    if (fc === "nas_down") {
+      setStepState("nas", "fail");
+      return;
+    }
+    if (fc === "offline") {
+      setStepState("session", "fail");
+      return;
+    }
+    if (fc === "wan_mgmt_blocked" || fc === "web_blocked" || fc === "unreachable") {
+      setStepState("web", "fail");
+      return;
+    }
+    setStepState("web", "fail");
   }
 
   function renderSteps(steps) {
-    if (!stepsEl) return;
-    stepsEl.innerHTML = "";
-    (steps || []).forEach(function (step) {
-      var li = document.createElement("li");
-      li.textContent = step;
-      stepsEl.appendChild(li);
-    });
+    if (!stepsEl || !steps || !steps.length) return;
+    // Keep structured step markers; refresh labels from server when provided.
+    var items = stepsEl.querySelectorAll("li[data-step]");
+    if (!items.length) {
+      stepsEl.innerHTML = "";
+      steps.forEach(function (step) {
+        var li = document.createElement("li");
+        li.textContent = step;
+        stepsEl.appendChild(li);
+      });
+    }
   }
 
   function fillLogin(doc) {
@@ -211,17 +276,20 @@
   }
 
   function showProxy(url, data) {
+    root.classList.add("is-connected");
+    root.classList.remove("is-failed");
+    if (stage) stage.classList.add("is-live");
     if (hostEl) hostEl.textContent = data.cpe_host || "—";
     if (portHint) portHint.textContent = data.port ? ("Port " + data.port) : "Live web UI";
     if (statusEl) {
       if (data.authenticated) {
-        statusEl.textContent = "Signed in automatically. You can help the client from here.";
+        statusEl.textContent = "Signed in automatically. You can manage the client router from here.";
       } else if (data.login_error) {
         statusEl.textContent = data.login_error;
       } else if (data.www_enabled) {
         statusEl.textContent = "WebFig enabled from the ISP side. Sign in if the router asks.";
       } else {
-        statusEl.textContent = "Router UI is open. Credentials below are filled when the login form appears.";
+        statusEl.textContent = "Router UI is open. Credentials below fill when the login form appears.";
       }
     }
     if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
@@ -231,6 +299,7 @@
       newTab.href = url;
       newTab.hidden = false;
     }
+    setStepState("login", "done");
     if (frame) {
       frame.hidden = false;
       frame.src = url;
@@ -240,41 +309,25 @@
     }
   }
 
-  function guidanceFor(data) {
-    var items = [];
-    if (!data.session_active) {
-      if ((data.access_mode || "") === "dhcp") {
-        items.push("Confirm the client router has an active DHCP lease.");
-      } else if ((data.access_mode || "") === "static") {
-        items.push("Confirm the saved router IP is online on the ISP LAN.");
-      } else {
-        items.push("Confirm the client is online on PPPoE.");
-      }
-      items.push("Power-cycle the client router, then retry.");
-      return items;
-    }
-    if (data.ping_ok && !data.api_ok) {
-      items.push("Open the router admin page from the client Wi‑Fi/LAN.");
-      items.push("Enable Remote / WAN Web Management (Tenda: Administration).");
-      items.push("If it asks for an allowed address, use the ISP gateway " + (data.gateway || "") + ".");
-      items.push("Save, then retry from this page.");
-      return items;
-    }
-    if (data.api_ok) {
-      items.push("MikroTik API is reachable. Retry once — WebFig sometimes needs a few seconds after enable.");
-      items.push("In Winbox → IP → Services, confirm www is enabled and not limited to the LAN subnet.");
-      return items;
-    }
-    items.push("Confirm the client router is powered on and reachable from " + (data.gateway || "the ISP gateway") + ".");
-    items.push("Retry after the session comes up.");
-    return items;
-  }
-
   function showError(data) {
+    data = data || {};
+    root.classList.add("is-failed");
+    root.classList.remove("is-connected");
+    if (stage) stage.classList.remove("is-live");
+    var fc = data.failure_class || "";
     if (statusEl) statusEl.textContent = data.detail || data.error || "Could not open the client router.";
-    if (stampEl) stampEl.textContent = data.session_active ? (data.ping_ok ? "Blocked" : "Unreachable") : "Offline";
+    if (stampEl) {
+      if (fc === "nas_down") stampEl.textContent = viaTunnel ? "Tunnel down" : "NAS down";
+      else if (fc === "offline") stampEl.textContent = "Offline";
+      else if (data.session_active && data.ping_ok) stampEl.textContent = "Blocked";
+      else stampEl.textContent = "Failed";
+    }
     if (hostEl) hostEl.textContent = data.cpe_host || "—";
-    if (portHint) portHint.textContent = "No web port answered";
+    if (portHint) {
+      portHint.textContent = fc === "nas_down"
+        ? (viaTunnel ? "Cannot reach NAS over WireGuard" : "Cannot reach ISP MikroTik")
+        : "No web port answered";
+    }
     if (connecting) connecting.hidden = true;
     if (frame) {
       frame.hidden = true;
@@ -286,12 +339,11 @@
       errorBanner.textContent = data.detail || data.error || "Could not open the client router.";
     }
     if (errorDetail) {
-      errorDetail.textContent = (data.checked_ports || []).length
-        ? ("Checked ports: " + data.checked_ports.join(", ") + ".")
-        : "";
+      var ports = data.checked_ports || [];
+      errorDetail.textContent = ports.length ? ("Checked ports: " + ports.join(", ") + ".") : "";
     }
     if (guidance) {
-      var items = guidanceFor(data || {});
+      var items = data.guidance || [];
       guidance.innerHTML = "";
       items.forEach(function (item) {
         var li = document.createElement("li");
@@ -300,19 +352,24 @@
       });
       guidance.hidden = !items.length;
     }
-    if (passwordForm) passwordForm.hidden = false;
+    if (errorActions) {
+      errorActions.hidden = fc !== "nas_down";
+    }
+    if (passwordForm) {
+      passwordForm.hidden = !(data.needs_password && fc !== "nas_down" && fc !== "offline");
+    }
+    markStepsFromData(data);
     renderSteps(data.steps || []);
   }
 
   function connect(body) {
     if (!startUrl || inFlight) return;
     inFlight = true;
-    showConnecting("Connecting through the ISP MikroTik…");
-    renderSteps([
-      "Find the client session",
-      "Probe web ports",
-      "Sign in automatically",
-    ]);
+    showConnecting(
+      viaTunnel
+        ? "Connecting through the ISP MikroTik over WireGuard…"
+        : "Connecting through the ISP MikroTik…"
+    );
     var options = {
       method: body ? "POST" : "GET",
       credentials: "same-origin",
@@ -323,9 +380,11 @@
       options.body = body;
     }
     fetch(startUrl, options)
-      .then(function (response) { return response.json().then(function (data) {
-        return { okHttp: response.ok, data: data || {} };
-      }); })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return { okHttp: response.ok, data: data || {} };
+        });
+      })
       .then(function (result) {
         var data = result.data || {};
         if (data.cpe_username) {
@@ -335,22 +394,26 @@
         }
         if (data.ok && data.proxy_url) {
           showProxy(data.proxy_url, data);
-          renderSteps(data.steps || []);
           return;
         }
         showError(data);
       })
       .catch(function () {
-        showError({ detail: "Could not reach the billing server to start router access.", steps: [] });
+        showError({
+          failure_class: "unreachable",
+          detail: "Could not reach the billing server to start router access.",
+          guidance: ["Check that the billing app is running, then retry."],
+          steps: [],
+        });
       })
       .finally(function () {
         inFlight = false;
       });
   }
 
-  if (retryBtn) {
-    retryBtn.addEventListener("click", function () { connect(); });
-  }
+  root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
+    btn.addEventListener("click", function () { connect(); });
+  });
   if (passwordForm) {
     passwordForm.addEventListener("submit", function (event) {
       event.preventDefault();
@@ -385,7 +448,15 @@
         if (!doc || !doc.body) return;
         var text = (doc.body.innerText || "").slice(0, 240).toLowerCase();
         if (text.indexOf("timed out") >= 0 || text.indexOf("could not open") >= 0) {
-          showError({ detail: doc.body.innerText || "Router session ended.", ping_ok: true, session_active: true });
+          showError({
+            failure_class: "unreachable",
+            detail: doc.body.innerText || "Router session ended.",
+            ping_ok: true,
+            session_active: true,
+            guidance: [
+              "The proxy session dropped. Retry — if it keeps failing, enable Remote Web Management on the client router.",
+            ],
+          });
         }
       } catch (err) {}
     });

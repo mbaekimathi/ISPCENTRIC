@@ -113,6 +113,7 @@ from core.mikrotik_connect import (
     customer_cpe_access_eligible,
     customer_cpe_access_mode,
     customer_cpe_proxy_scope,
+    dial_host,
     resolve_customer_cpe_target,
     probe_customer_cpe_web,
     login_customer_cpe_web_session,
@@ -444,7 +445,124 @@ def _background_mikrotik_ops() -> bool:
 
 
 def _router_api_host(router) -> str:
-    return (getattr(router, "api_host", None) or router.host or "").strip()
+    """Dial address for NAS API — prefers WireGuard, remaps LAN→tunnel when hosted."""
+    raw = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
+    try:
+        return dial_host(raw) or raw
+    except Exception:
+        return raw
+
+
+def _router_uses_tunnel(router) -> bool:
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    if tunnel:
+        return True
+    host = (getattr(router, "host", None) or getattr(router, "api_host", None) or "").strip()
+    try:
+        from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+        return _is_wireguard_tunnel_host(host)
+    except Exception:
+        return host.startswith("10.9.")
+
+
+def _cpe_router_failure_class(probe: dict | None = None, *, nas_ok: bool = True) -> str:
+    """Map probe/NAS outcome to a stable UI failure class."""
+    if not nas_ok:
+        return "nas_down"
+    probe = probe or {}
+    if probe.get("ok"):
+        return "ok"
+    if not probe.get("session_active"):
+        return "offline"
+    if probe.get("ping_ok"):
+        if probe.get("api_ok"):
+            return "web_blocked"
+        return "wan_mgmt_blocked"
+    return "unreachable"
+
+
+def _cpe_router_guidance(
+    *,
+    failure_class: str,
+    access_mode: str = "",
+    gateway: str = "",
+    nas_name: str = "",
+    via_tunnel: bool = False,
+    detail: str = "",
+) -> list[str]:
+    """Operator steps for each remote-access failure class."""
+    gateway = (gateway or MK_PPPOE_LOCAL_ADDRESS).strip() or MK_PPPOE_LOCAL_ADDRESS
+    nas = (nas_name or "the ISP MikroTik").strip()
+    mode = (access_mode or "pppoe").strip().lower()
+    fc = (failure_class or "").strip().lower()
+
+    if fc == "nas_down":
+        steps = [
+            f"The billing server cannot reach {nas} right now.",
+        ]
+        if via_tunnel:
+            steps.extend(
+                [
+                    "Confirm the WireGuard tunnel is up (MikroTik page → tunnel / Reconnect).",
+                    "On the MikroTik, paste the ISPCENTRIC tunnel script if the peer never connected.",
+                    "On the VPS, confirm the peer is on wg0 (`wg show`) and has a recent handshake.",
+                ]
+            )
+        else:
+            steps.extend(
+                [
+                    "Confirm this PC/server can reach the MikroTik LAN (or set a WireGuard tunnel address).",
+                    "Open the MikroTik page and use Reconnect / Check now.",
+                ]
+            )
+        if detail:
+            steps.append(detail)
+        return steps
+
+    if fc == "offline":
+        if mode == "dhcp":
+            return [
+                "Confirm the client router has an active DHCP lease on the ISP LAN.",
+                "Power-cycle the client router, wait for it to come online, then retry.",
+            ]
+        if mode == "static":
+            return [
+                "Confirm the saved router IP is online on the ISP LAN.",
+                "Power-cycle the client router, then retry.",
+            ]
+        return [
+            "Confirm the client is online on PPPoE.",
+            "Power-cycle the client router, wait for PPPoE to dial, then retry.",
+        ]
+
+    if fc == "wan_mgmt_blocked":
+        return [
+            "Open the router admin page from the client’s own Wi‑Fi/LAN.",
+            "Enable Remote / WAN Web Management (Tenda: Administration).",
+            f"If it asks for an allowed address, use the ISP gateway {gateway}.",
+            "Save, then retry from this page.",
+        ]
+
+    if fc == "web_blocked":
+        return [
+            "MikroTik API is reachable. Retry once — WebFig sometimes needs a few seconds after enable.",
+            "In Winbox → IP → Services, confirm www is enabled and not limited to the LAN subnet only.",
+        ]
+
+    if fc == "unreachable":
+        return [
+            f"Confirm the client router is powered on and reachable from {gateway}.",
+            "Retry after the session comes up.",
+        ]
+
+    if fc == "needs_password":
+        return [
+            "Enter the client router’s admin password below (not the PPPoE password).",
+            "Save & connect — it will be stored on this client for next time.",
+        ]
+
+    return [detail] if detail else []
 
 
 def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
@@ -5600,6 +5718,11 @@ def client_router_login(request, customer_id: int):
         return redirect("core:client_detail", customer_id=customer.pk)
 
     nas = customer.router
+    via_tunnel = _router_uses_tunnel(nas) if nas else False
+    dial = _router_api_host(nas) if nas else ""
+    nas_url = (
+        reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk}) if nas else ""
+    )
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -5615,6 +5738,9 @@ def client_router_login(request, customer_id: int):
         cpe_password=customer.cpe_password or "",
         has_cpe_password=bool((customer.cpe_password or "").strip()),
         nas_name=(nas.name if nas else ""),
+        nas_url=nas_url,
+        nas_dial=dial,
+        via_tunnel=via_tunnel,
         access_mode=customer_cpe_access_mode(customer),
         gateway=MK_PPPOE_LOCAL_ADDRESS,
         checked_ports=", ".join(str(p) for p in CPE_WEB_PORTS),
@@ -5632,6 +5758,8 @@ def client_router_login(request, customer_id: int):
 @require_http_methods(["GET", "POST"])
 def client_router_login_start(request, customer_id: int):
     """Probe (and if needed enable) CPE www, then return a signed proxy URL."""
+    from core.connectivity_verification import evaluate_nas_connectivity
+
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
         Customer.objects.select_related("router"),
@@ -5642,7 +5770,13 @@ def client_router_login_start(request, customer_id: int):
         return JsonResponse(
             {
                 "ok": False,
+                "failure_class": "not_eligible",
                 "error": "Router login requires a configured client and NAS.",
+                "detail": "Router login requires a configured client and NAS.",
+                "guidance": [
+                    "PPPoE needs a username + assigned NAS; static needs CPE IP or MAC.",
+                    "Hotspot accounts have no client router to open.",
+                ],
             },
             status=400,
         )
@@ -5659,6 +5793,57 @@ def client_router_login_start(request, customer_id: int):
 
     nas = customer.router
     nas_host = _router_api_host(nas)
+    via_tunnel = _router_uses_tunnel(nas)
+    access_mode = customer_cpe_access_mode(customer)
+    nas_url = reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk})
+    base_meta = {
+        "nas_name": nas.name or "",
+        "nas_dial": nas_host,
+        "nas_url": nas_url,
+        "via_tunnel": via_tunnel,
+        "access_mode": access_mode,
+        "gateway": MK_PPPOE_LOCAL_ADDRESS,
+        "checked_ports": [str(p) for p in CPE_WEB_PORTS],
+        "cpe_username": (customer.cpe_username or "").strip() or "admin",
+        "needs_password": not (customer.cpe_password or "").strip(),
+    }
+
+    # Fail fast when the ISP NAS (LAN or WireGuard) is unreachable — otherwise
+    # the CPE probe looks like "client offline" and operators chase the wrong layer.
+    nas_check = evaluate_nas_connectivity(nas, timeout=3.0)
+    if not nas_check.get("api_ok"):
+        detail = (
+            nas_check.get("hint")
+            or nas_check.get("error")
+            or f"Cannot reach {nas.name or nas_host}."
+        )
+        guidance = _cpe_router_guidance(
+            failure_class="nas_down",
+            access_mode=access_mode,
+            gateway=MK_PPPOE_LOCAL_ADDRESS,
+            nas_name=nas.name or "",
+            via_tunnel=via_tunnel,
+            detail=detail,
+        )
+        return JsonResponse(
+            {
+                **base_meta,
+                "ok": False,
+                "failure_class": "nas_down",
+                "session_active": False,
+                "ping_ok": False,
+                "api_ok": False,
+                "cpe_host": "",
+                "detail": detail,
+                "error": nas_check.get("error") or detail,
+                "steps": [
+                    f"NAS {nas.name or nas_host} unreachable"
+                    + (" via WireGuard" if via_tunnel else "")
+                ],
+                "guidance": guidance,
+            }
+        )
+
     probe = probe_customer_cpe_web(
         nas_host,
         nas.username,
@@ -5670,22 +5855,45 @@ def client_router_login_start(request, customer_id: int):
         timeout=20.0,
         auto_enable_www=True,
     )
+    gateway = (probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS).strip() or MK_PPPOE_LOCAL_ADDRESS
+    mode = (probe.get("mode") or access_mode or "").strip()
+    base_meta["gateway"] = gateway
+    base_meta["access_mode"] = mode or access_mode
+
     if not probe.get("ok"):
+        failure_class = _cpe_router_failure_class(probe, nas_ok=True)
+        detail = probe.get("hint") or probe.get("error") or ""
+        needs_password = not (customer.cpe_password or "").strip()
+        # When web is blocked and we have no password, surface that as a next action.
+        if failure_class in {"wan_mgmt_blocked", "web_blocked"} and needs_password:
+            show_password = True
+        else:
+            show_password = needs_password and failure_class != "offline"
+        guidance = _cpe_router_guidance(
+            failure_class=failure_class,
+            access_mode=mode,
+            gateway=gateway,
+            nas_name=nas.name or "",
+            via_tunnel=via_tunnel,
+            detail=detail,
+        )
+        if show_password and failure_class not in {"nas_down", "offline"}:
+            guidance = guidance + _cpe_router_guidance(failure_class="needs_password")
         return JsonResponse(
             {
+                **base_meta,
                 "ok": False,
+                "failure_class": failure_class,
                 "session_active": bool(probe.get("session_active")),
                 "ping_ok": bool(probe.get("ping_ok")),
                 "api_ok": bool(probe.get("api_ok")),
                 "www_enabled": bool(probe.get("www_enabled")),
                 "cpe_host": probe.get("cpe_host") or "",
-                "access_mode": probe.get("mode") or "",
-                "gateway": probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
-                "detail": probe.get("hint") or probe.get("error") or "",
+                "detail": detail,
+                "error": probe.get("error") or detail,
                 "steps": list(probe.get("steps") or []),
-                "checked_ports": [str(p) for p in CPE_WEB_PORTS],
-                "cpe_username": (customer.cpe_username or "").strip() or "admin",
-                "needs_password": not (customer.cpe_password or "").strip(),
+                "guidance": guidance,
+                "needs_password": show_password,
             }
         )
 
@@ -5694,9 +5902,9 @@ def client_router_login_start(request, customer_id: int):
         customer,
         probe.get("port") or 80,
         cpe_host=probe.get("cpe_host") or "",
-        gateway=probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
+        gateway=gateway,
         scope=customer_cpe_proxy_scope(customer),
-        mode=probe.get("mode") or "",
+        mode=mode,
     )
     proxy_url = reverse(
         "core:client_router_proxy_root",
@@ -5718,7 +5926,7 @@ def client_router_login_start(request, customer_id: int):
         pppoe_password=customer.pppoe_password or "",
         cpe_port=int(probe.get("port") or 80),
         cpe_address=probe.get("cpe_host") or "",
-        gateway_ip=probe.get("gateway") or "",
+        gateway_ip=gateway,
         session_cookies=dict(existing),
         api_ok=bool(probe.get("api_ok") or probe.get("www_enabled")),
         timeout=12.0,
@@ -5738,10 +5946,16 @@ def client_router_login_start(request, customer_id: int):
 
     working_user = (login.get("cpe_username") or "").strip()
     working_pass = login.get("cpe_password")
+    # Only persist passwords the operator entered (POST) or that were already saved —
+    # never store guessed factory defaults from auto-login.
+    password_from_operator = request.method == "POST" and bool(
+        (request.POST.get("cpe_password") or "").strip()
+    )
     if (
         login.get("authenticated")
         and working_pass
         and not login.get("support_user")
+        and password_from_operator
         and not (customer.cpe_password or "").strip()
     ):
         customer.cpe_password = working_pass
@@ -5754,7 +5968,9 @@ def client_router_login_start(request, customer_id: int):
     steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
     return JsonResponse(
         {
+            **base_meta,
             "ok": True,
+            "failure_class": "ok",
             "proxy_url": proxy_url,
             "cpe_host": probe.get("cpe_host") or "",
             "port": int(probe.get("port") or 80),
@@ -5763,8 +5979,9 @@ def client_router_login_start(request, customer_id: int):
             "www_enabled": bool(probe.get("www_enabled")),
             "authenticated": bool(login.get("authenticated")),
             "vendor": login.get("vendor") or "",
-            "access_mode": probe.get("mode") or "",
+            "session_active": True,
             "steps": steps,
+            "guidance": [],
             "cpe_username": working_user
             or (customer.cpe_username or "").strip()
             or "admin",
@@ -6784,9 +7001,12 @@ def clients_general_usage(request):
     from billing.usage_samples import (
         clamp_usage_hours,
         org_usage_payload,
-        sample_organization_usage,
         usage_range_label,
     )
+
+    # First paint stays snappy: ranked preview from DB/cache only.
+    # Live MikroTik sampling continues in the background via trends JSON.
+    _USAGE_PAGE_PREVIEW = 30
 
     hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
     tab = (request.GET.get("tab") or "pppoe").strip().lower()
@@ -6795,19 +7015,23 @@ def clients_general_usage(request):
     router_ctx = _clients_usage_router_filter(request, org)
 
     if org:
-        try:
-            sample_organization_usage(org, force=False)
-        except Exception:
-            pass
         trends = org_usage_payload(
             org,
             hours=hours,
             auto_widen=True,
-            top_n=0,
+            use_cache=True,
+            top_n=_USAGE_PAGE_PREVIEW,
             service=tab,
             router_id=router_ctx["clients_router_id"],
             unassigned_only=router_ctx["clients_router_unassigned"],
         )
+        summary = trends.setdefault("summary", {})
+        total_clients = int(summary.get("clients_total") or 0)
+        preview_users = trends.get("top_users") or []
+        trends["users_partial"] = total_clients > len(preview_users)
+        trends["users_loaded"] = len(preview_users)
+        trends["users_total_count"] = total_clients or len(preview_users)
+        trends["progressive"] = True
     else:
         trends = {
             "ok": False,
@@ -6829,6 +7053,10 @@ def clients_general_usage(request):
             "error": "No organization is linked to this workspace.",
             "range_label": usage_range_label(hours),
             "requested_range_label": usage_range_label(hours),
+            "users_partial": False,
+            "users_loaded": 0,
+            "users_total_count": 0,
+            "progressive": True,
         }
 
     effective_hours = trends.get("hours") or hours
@@ -6880,6 +7108,8 @@ def clients_general_usage_trends(request):
     router_ctx = _clients_usage_router_filter(request, org)
 
     try:
+        # Always attempt a sweep; force=True on Refresh so statuses stay current
+        # for every assigned client (online + offline markers).
         sample_organization_usage(org, force=force)
     except Exception:
         pass
