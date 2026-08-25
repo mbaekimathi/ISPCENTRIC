@@ -126,7 +126,7 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("/ping 10.9.0.1 count=2", script)
         self.assertIn(":delay 5s", script)
         self.assertIn("/ping 178.162.241.99 count=1", script)
-        self.assertIn("WAN 1/8 - no ping", script)
+        self.assertIn("WAN 1/6...", script)
         self.assertIn(":global IspWanOk", script)
         self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
         self.assertIn('comment~"ispcentric-hotspot"', script)
@@ -188,37 +188,41 @@ class WireGuardKeyTests(SimpleTestCase):
             install = wireguard.install_rsc_body("10.9.0.12", private_key)
             mac = wireguard.rsc_download_mac("10.9.0.12")
             install_url, _ = wireguard.short_rsc_url("10.9.0.12", "i")
-        self.assertIn("Winbox -> New Terminal", script)
+        self.assertIn("new site", script)
         self.assertTrue(install_url.endswith("/i/"), "trailing slash required (Django 301 breaks fetch)")
         self.assertIn(f"/app/m/10.9.0.12/{mac}/i/", install_url)
         self.assertIn(":global IspUrlInst", script)
         self.assertIn("/tool fetch url=$IspUrlInst", script)
-        self.assertIn("Download 1/5 failed", script)
-        self.assertIn("Download 5/5 failed", script)
-        self.assertIn("($IspWanOk = 1)", script)
+        self.assertIn("Download 1/3 failed", script)
+        self.assertIn("Download 3/3 failed", script)
+        self.assertNotIn("Download 5/5 failed", script)
+        self.assertIn("$IspWanOk = 1", script)
         self.assertNotIn(":for IspTry", script)
         self.assertNotIn(":local Isp", script)
-        self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
-        self.assertIn("WAN 1/8 - no ping", script)
-        # API opens first so LAN Check now works before WAN download finishes.
-        self.assertIn("Enabling RouterOS API on 8728", script)
+        self.assertIn("[ISPCENTRIC OK] WAN ready", script)
+        self.assertIn("WAN 1/4...", script)
+        self.assertIn("1/4 API", script)
+        self.assertIn("2/4 WAN", script)
+        self.assertIn("3/4 Download", script)
         self.assertLess(
-            script.index("Enabling RouterOS API on 8728"),
-            script.index("Waiting for internet, then downloading install"),
+            script.index("1/4 API"),
+            script.index("2/4 WAN"),
         )
-        self.assertIn("API listening on 8728", script)
+        self.assertIn("API open - Check now can use LAN", script)
         self.assertIn('comment="ispcentric-api-boot"', script)
         self.assertIn("place-before=0", script)
+        self.assertIn("bridge port remove", script)
         self.assertNotIn("tunnel-rsc/?token=", script)
         self.assertIn("IspFetchHost", script)
         self.assertIn("http-header-field=$IspFetchHost", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
-        self.assertIn("Importing install.rsc", script)
         self.assertIn("dhcp-client add interface=ether1", script)
-        self.assertIn("bridge port remove", script)
+        # Heavy logic stays in downloaded install.rsc — not in the paste.
+        self.assertNotIn("IspCentricCustom", script)
+        problems = wireguard.validate_new_site_paste(script, expect_fetch=True)
+        self.assertEqual(problems, [], msg=problems)
         self.assertNotIn("/file add name=", script)
         self.assertNotIn("/queue simple", script)
-        self.assertNotIn("IspCentricCustom", script)
         self.assertIn(f"/app/m/10.9.0.12/{mac}/p/", install)
         self.assertIn(":global IspCentricCustom 0", install)
         self.assertIn("[:len [/ip hotspot find]] > 0", install)
@@ -228,6 +232,118 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("Custom config - factory reset", install)
         self.assertTrue(wireguard.verify_rsc_download_mac("10.9.0.12", mac))
         self.assertFalse(wireguard.verify_rsc_download_mac("10.9.0.12", "deadbeefdead"))
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
+    def test_new_site_bootstrap_local_and_hosted_matrix(self):
+        """
+        Loop local + hosted Connect pastes and assert shared invariants.
+
+        Hosted = public hostname (fetch via resolved IP + Host header).
+        Local LAN = PRIVATE_BASE style URL on the LAN.
+        Inline = no PUBLIC_BASE_URL (dev laptop without a portal base).
+        """
+        private_key, _ = wireguard.generate_keypair()
+        address = "10.9.0.21"
+        mac = wireguard.rsc_download_mac(address)
+        scenarios = [
+            {
+                "name": "hosted",
+                "base": "http://isp.richcom.co.ke",
+                "resolve_to": "178.162.241.99",
+                "expect_fetch": True,
+                "expect_host_header": True,
+                "expect_in_url": f"/app/m/{address}/{mac}/i/",
+            },
+            {
+                "name": "local_lan",
+                "base": "http://192.168.100.79:8000",
+                "resolve_to": "192.168.100.79",
+                "expect_fetch": True,
+                "expect_host_header": False,
+                "expect_in_url": f"/app/m/{address}/{mac}/i/",
+            },
+            {
+                "name": "inline",
+                "base": "",
+                "resolve_to": "178.162.241.99",
+                "expect_fetch": False,
+                "expect_host_header": False,
+                "expect_in_url": "",
+            },
+        ]
+
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario["name"]):
+                resolve_ip = scenario["resolve_to"]
+                with (
+                    patch(
+                        "core.wireguard.socket.getaddrinfo",
+                        return_value=[
+                            (socket.AF_INET, socket.SOCK_DGRAM, 17, "", (resolve_ip, 0))
+                        ],
+                    ),
+                    patch(
+                        "core.wireguard._script_public_base_url",
+                        return_value=scenario["base"],
+                    ),
+                ):
+                    script = wireguard.routeros_script(
+                        address, private_key, factory_reset=True
+                    )
+                    install_url, http_host = wireguard.short_rsc_url(address, "i")
+
+                problems = wireguard.validate_new_site_paste(
+                    script, expect_fetch=scenario["expect_fetch"]
+                )
+                self.assertEqual(
+                    problems,
+                    [],
+                    msg=f"{scenario['name']} paste problems: {problems}\n---\n{script[:800]}",
+                )
+                self.assertIn("new site", script)
+                self.assertIn("Already-joined MikroTiks are not changed", script)
+                self.assertIn("1/4 API", script)
+                self.assertIn("2/4 WAN", script)
+                self.assertIn("bridge port remove", script)
+                self.assertIn(":global IspWanOk", script)
+                self.assertNotIn(":for ", script)
+                self.assertNotIn(":foreach ", script)
+
+                if scenario["expect_fetch"]:
+                    self.assertTrue(install_url.endswith("/i/"))
+                    self.assertIn(scenario["expect_in_url"], install_url)
+                    self.assertIn(scenario["expect_in_url"], script)
+                    self.assertIn("/tool fetch url=$IspUrlInst", script)
+                    self.assertIn("Download 1/3 failed", script)
+                    self.assertIn("/import file-name=ispcentric-install.rsc", script)
+                    self.assertNotIn("IspCentricCustom", script)
+                    if scenario["expect_host_header"]:
+                        self.assertIn("IspFetchHost", script)
+                        self.assertIn(f"Host:{http_host}", script)
+                        self.assertIn("http-header-field=$IspFetchHost", script)
+                    else:
+                        # LAN base already uses the IP in the URL - no Host override.
+                        self.assertNotIn("IspFetchHost", script)
+                else:
+                    self.assertEqual(install_url, "")
+                    self.assertIn("public_base_url", script.lower())
+                    self.assertNotIn("IspCentricCustom", script)
+                    self.assertNotIn("/tool fetch url=$IspUrlInst", script)
+                    self.assertNotIn("ispcentric-vpn", script)
+
+                # Every command line must be brace-balanced (Winbox paste).
+                for line in script.splitlines():
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    self.assertEqual(
+                        line.count("{"),
+                        line.count("}"),
+                        msg=f"{scenario['name']} unbalanced: {line}",
+                    )
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",

@@ -310,76 +310,157 @@ def _ros_nat_add(rule: str, comment: str) -> str:
 
 
 def _ros_filter_add_abs(rule: str, comment: str) -> str:
-    """
-    Paste-safe input filter add (absolute path, short line).
-
-    ``place-before=0`` puts the rule first when the chain has items; on empty
-    chains it errors and we fall back to a plain add.
-    """
-    body = f'/ip firewall filter add chain=input {rule} comment="{comment}"'
-    return f":do {{ {body} place-before=0 }} on-error={{ {body} }}"
+    """Paste-safe input filter add. Prefer place-before=0; caller adds fallback line."""
+    return (
+        f':do {{ /ip firewall filter add chain=input {rule} comment="{comment}" '
+        f"place-before=0 }} on-error={{}}"
+    )
 
 
 def _api_lan_ready_lines() -> list[str]:
-    """
-    Enable RouterOS API on 8728 and accept it on the input chain (top).
-
-    Runs first so Connect LAN checks can pass before WAN download finishes.
-    One short firewall rule (not three RFC1918 lines) — Winbox wraps long lines.
-    """
+    """Enable API 8728 + top input accept (new-site paste). Short Winbox-safe lines."""
     return [
-        _ros_info("Enabling RouterOS API on 8728 (needed for Check now)..."),
+        _ros_info("1/4 API on 8728..."),
         ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
         ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
         ":do { /ip service enable [find where name=api] } on-error={}",
         ':do { /ip firewall filter remove [find where comment="ispcentric-api-boot"] } on-error={}',
-        ':do { /ip firewall filter remove [find where comment~"ispcentric-vpn-api-lan-"] } on-error={}',
         _ros_filter_add_abs(
             "action=accept protocol=tcp dst-port=8728",
             "ispcentric-api-boot",
         ),
+        (
+            ':do { :if ([:len [/ip firewall filter find where comment="ispcentric-api-boot"]] = 0) do={'
+            '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=8728 '
+            'comment="ispcentric-api-boot" }} on-error={}'
+        ),
         _ros_check(
             "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-            "API listening on 8728 - Check now can use LAN",
-            "API still closed - IP > Services > api, port 8728, Allowed From empty",
+            "API open - Check now can use LAN",
+            "API still closed - enable IP > Services > api",
         ),
     ]
 
 
-def _wan_wait_lines(
-    probe_host: str = "8.8.8.8",
-    *,
-    attempts: int = 8,
-    delay: str = "4s",
-) -> list[str]:
+def _bootstrap_wan_lines(probe_host: str, *, attempts: int = 4, delay: str = "5s") -> list[str]:
     """
-    Ensure WAN works, then require a real ping to probe_host.
-
-    Prefer an already-bound DHCP client (often bridgeLocal on defconf). If none
-    is bound, take ether1 out of any bridge (DHCP on a bridge-port fails with
-    \"no route to host\"), then add DHCP on ether1.
+    New-site paste WAN prep. Prefer bound DHCP; else unbridge ether1 + DHCP.
+    Split into short lines for Winbox.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
     attempts = max(1, int(attempts))
     ping_ok = f"([/ping {probe_host} count=1] > 0)"
     lines = [
-        _ros_info(f"WAN: use bound DHCP, else unbridge ether1 + DHCP — ping {probe_host}..."),
+        _ros_info(f"2/4 WAN - ping {probe_host}..."),
         ':do { /ip address disable [find where comment~"ispcentric-hotspot"] } on-error={}',
-        # Keep any existing clients enabled (bridgeLocal defconf, etc.).
+        ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes use-peer-dns=yes } on-error={}",
+        ":global IspNeedWan",
+        ":set IspNeedWan 1",
+        ":if ([:len [/ip dhcp-client find where status=bound]] > 0) do={:set IspNeedWan 0}",
+        ':if ($IspNeedWan = 1) do={:put "[ISPCENTRIC] No DHCP lease - unbridging ether1..."}',
+        ':if ($IspNeedWan = 1) do={:do { /interface bridge port remove [find where interface=ether1] } on-error={}}',
+        ':if ($IspNeedWan = 1) do={:do { /ip dhcp-client remove [find where interface=ether1] } on-error={}}',
+        (
+            ":if ($IspNeedWan = 1) do={:do { /ip dhcp-client add interface=ether1 disabled=no "
+            "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } on-error={}}"
+        ),
+        ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
+        ":global IspWanOk",
+        ":set IspWanOk 0",
+    ]
+    for try_n in range(1, attempts + 1):
+        lines.append(
+            f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
+            f'{_ros_ok(f"WAN ready")} }} else={{'
+            f':put "[ISPCENTRIC] WAN {try_n}/{attempts}..."; :delay {delay}}}}}'
+        )
+    lines.append(
+        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping {probe_host} - ISP on ether1, re-paste')}}}"
+    )
+    return lines
+
+
+def _bootstrap_fetch_import_lines(
+    install_url: str,
+    http_host: str,
+    *,
+    attempts: int = 3,
+) -> list[str]:
+    """New-site paste: short URL pieces, few fetch tries, import."""
+    origin, mid, tail = _fetch_rsc_parts(install_url)
+    attempts = max(1, int(attempts))
+    dst = "ispcentric-install.rsc"
+    lines = [
+        _ros_info("3/4 Download install.rsc..."),
+        f':do {{ /file remove [find where name="{dst}"] }} on-error={{}}',
+        ":global IspUrlInst",
+        f':set IspUrlInst "{origin}"',
+        f':set IspUrlInst ($IspUrlInst . "{mid}")',
+    ]
+    if tail:
+        lines.append(f':set IspUrlInst ($IspUrlInst . "{tail}")')
+    if http_host and http_host not in install_url:
+        lines += [
+            ":global IspFetchHost",
+            f':set IspFetchHost "Host:{http_host}"',
+        ]
+        fetch_cmd = (
+            f"/tool fetch url=$IspUrlInst http-header-field=$IspFetchHost "
+            f"dst-path={dst} mode=http"
+        )
+    else:
+        fetch_cmd = f"/tool fetch url=$IspUrlInst dst-path={dst} mode=http"
+    lines += [
+        f':if ($IspWanOk = 0) do={{{_ros_fail("Skip download - WAN failed")}}}',
+        ":global IspGot",
+        ":set IspGot 0",
+    ]
+    for try_n in range(1, attempts + 1):
+        lines.append(
+            f':if ([:len [/file find where name="{dst}"]] > 0) do={{:set IspGot 1}}'
+        )
+        lines.append(
+            f":if (($IspWanOk = 1) && ($IspGot = 0)) do={{:do {{ {fetch_cmd} }} "
+            f'on-error={{:put "[ISPCENTRIC] Download {try_n}/{attempts} failed"; :delay 3s}}}}'
+        )
+    lines += [
+        f':if ([:len [/file find where name="{dst}"]] > 0) do={{:set IspGot 1}}',
+        f':if ($IspGot = 0) do={{{_ros_fail("Download failed - check WAN / HTTP")}}} '
+        f"else={{{_ros_ok('Downloaded install.rsc')}}}",
+        _ros_info("4/4 Importing install.rsc..."),
+        f':if ($IspGot = 1) do={{/import file-name={dst}}} else={{{_ros_fail(f"{dst} missing")}}}',
+    ]
+    return lines
+
+
+def _wan_wait_lines(
+    probe_host: str = "8.8.8.8",
+    *,
+    attempts: int = 6,
+    delay: str = "4s",
+) -> list[str]:
+    """
+    WAN wait for imported .rsc / post-reset (not the short Connect paste).
+
+    Prefer bound DHCP; else unbridge ether1 and DHCP. Require a real ping.
+    """
+    probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
+    attempts = max(1, int(attempts))
+    ping_ok = f"([/ping {probe_host} count=1] > 0)"
+    lines = [
+        _ros_info(f"WAN: bound DHCP or unbridge ether1 - ping {probe_host}..."),
+        ':do { /ip address disable [find where comment~"ispcentric-hotspot"] } on-error={}',
         (
             ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes "
             "use-peer-dns=yes } on-error={}"
         ),
-        # No lease yet → ether1 must not be a bridge port or DHCP never binds.
         (
             ":if ([:len [/ip dhcp-client find where status=bound]] = 0) do={"
             ':do { /interface bridge port remove [find where interface=ether1] } on-error={}; '
             ":do { /ip dhcp-client remove [find where interface=ether1] } on-error={}; "
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
             "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
-            "on-error={}; "
-            ":do { /ip dhcp-client set [find where interface=ether1] disabled=no "
-            "add-default-route=yes use-peer-dns=yes } on-error={}}"
+            "on-error={}}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
         ":global IspWanOk",
@@ -389,11 +470,10 @@ def _wan_wait_lines(
         lines.append(
             f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
             f'{_ros_ok(f"WAN ready (ping {probe_host})")}}} else={{'
-            f':put "[ISPCENTRIC] WAN {try_n}/{attempts} - no ping to {probe_host} '
-            f'(ISP on ether1, wait DHCP bound)"; :delay {delay}}}}}'
+            f':put "[ISPCENTRIC] WAN {try_n}/{attempts}..."; :delay {delay}}}}}'
         )
     lines.append(
-        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - unbridge ether1, DHCP bound, re-paste')}}}"
+        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - fix WAN, re-run')}}}"
     )
     return lines
 
@@ -987,7 +1067,7 @@ def tunnel_verification_checks(
                     f"RouterOS API open at {lan_address}:8728"
                     if api_enabled
                     else (
-                        "API closed — paste script and wait for “API listening on 8728”"
+                        "API closed - paste script and wait for API listening on 8728"
                         if lan_address and not subnet_mismatch
                         else "Waiting for LAN discovery and script"
                     )
@@ -1553,53 +1633,116 @@ def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg:
     )
 
 
+def validate_new_site_paste(script: str, *, expect_fetch: bool) -> list[str]:
+    """
+    Static checks for the Connect Winbox paste (local + hosted).
+
+    Returns human-readable problems (empty list = OK). Used by tests and can
+    be called before showing the script in the UI.
+    """
+    text = script or ""
+    problems: list[str] = []
+    if not text.strip():
+        return ["script is empty"]
+
+    # Winbox New Terminal: each physical line is one command.
+    # Fetch pastes must stay short; inline install may include longer tunnel lines.
+    max_len = 220 if expect_fetch else 560
+    for index, line in enumerate(text.splitlines(), 1):
+        if line.count("{") != line.count("}"):
+            problems.append(f"line {index}: unbalanced braces")
+        if len(line) > max_len:
+            problems.append(f"line {index}: too long for Winbox ({len(line)} chars)")
+        if any(ord(ch) > 127 for ch in line) and not line.lstrip().startswith("#"):
+            # Comments may be edited later; keep runtime commands ASCII-safe.
+            problems.append(f"line {index}: non-ASCII in a command line")
+
+    lowered = text.lower()
+    if ":for " in lowered or ":foreach " in lowered:
+        problems.append("contains :for/:foreach (Winbox paste breaks multi-line blocks)")
+    if ":local " in lowered:
+        problems.append("uses :local (does not persist across paste lines; use :global)")
+
+    if "1/4 api" not in lowered:
+        problems.append("missing API step (1/4)")
+    if "2/4 wan" not in lowered and "wan:" not in lowered:
+        problems.append("missing WAN step")
+    if "ispcentric-api-boot" not in text:
+        problems.append("missing ispcentric-api-boot firewall rule")
+    if "bridge port remove" not in text and "status=bound" not in text:
+        problems.append("missing DHCP bound / ether1 unbridge WAN prep")
+    if ":global IspWanOk" not in text:
+        problems.append("missing IspWanOk gate")
+
+    api_at = text.find("1/4 API")
+    wan_at = text.find("2/4 WAN")
+    if api_at < 0:
+        api_at = text.find("Enabling RouterOS API")
+    if wan_at < 0:
+        wan_at = text.find("WAN:")
+    if api_at >= 0 and wan_at >= 0 and api_at > wan_at:
+        problems.append("API step must run before WAN step")
+
+    if expect_fetch:
+        if "3/4 Download" not in text and "/tool fetch" not in text:
+            problems.append("expected remote install.rsc fetch")
+        if "/import file-name=ispcentric-install.rsc" not in text:
+            problems.append("missing /import install.rsc")
+        if "IspCentricCustom" in text:
+            problems.append("reset/custom logic must stay in install.rsc, not the paste")
+        if "/app/m/" not in text:
+            problems.append("missing short /app/m/ fetch path")
+    else:
+        if "public_base_url" not in lowered and "no install.rsc url" not in lowered:
+            problems.append("empty-base paste should explain missing PUBLIC_BASE_URL")
+        if "ispcentric-vpn" in text and "IspCentricCustom" in text:
+            problems.append("full inline install is too long for Winbox - require .rsc fetch")
+
+    return problems
+
+
 def _routeros_smart_install_script(address: str, private_key: str) -> str:
     """
-    Short Winbox paste: wait for WAN → download install.rsc → import.
+    New-site Winbox paste only (Connect onboarding).
 
-    URL is built from short pieces (Winbox wrap-safe). Path ends with / so
-    Django does not 301 (MikroTik /tool fetch fails on redirect).
+    Does not run on already-onboarded routers unless someone pastes again.
+    Hosted/local with PUBLIC_BASE_URL: API → WAN → fetch install.rsc → import.
+    Local with no public base: API → WAN → inline install (same reset rules).
     """
     address = (address or "").strip()
     private_key = (private_key or "").strip()
     endpoint_host = _resolved_endpoint_host(_endpoint().partition(":")[0])
     install_url, http_host = short_rsc_url(address, "i")
 
+    header = [
+        "# ISPCENTRIC new site - Winbox -> New Terminal - paste once.",
+        "# New onboards only. Already-joined MikroTiks are not changed by this file.",
+    ]
+
     if not install_url:
+        # Full inline install is too long for Winbox paste. Local/hosted Connect
+        # should always expose a PUBLIC_BASE_URL (or auto LAN IP) so .rsc fetch works.
         return "\n".join(
             [
-                "# ISPCENTRIC billing tunnel - paste into Winbox -> New Terminal.",
-                "# PUBLIC_BASE_URL unset - using inline install (no remote .rsc fetch).",
-                _ros_info("Starting inline ISPCENTRIC tunnel install..."),
-                *_routeros_customized_flag_lines(),
-                *_routeros_maybe_reset_lines(),
-                *_routeros_install_lines(address, private_key, include_cleanup=True),
+                *header,
+                "# Mode: no fetch URL - set PUBLIC_BASE_URL on the billing app, then regenerate.",
+                "# 1) API  2) WAN  3) stop (need HTTP base to download install.rsc)",
+                *_api_lan_ready_lines(),
+                *_bootstrap_wan_lines(endpoint_host),
+                _ros_info("3/4 No install.rsc URL..."),
+                _ros_fail(
+                    "Set PUBLIC_BASE_URL (or hosted portal URL), regenerate, re-paste"
+                ),
             ]
         )
 
     return "\n".join(
         [
-            "# ISPCENTRIC - Winbox -> New Terminal. Paste once (ISP already online OK).",
-            "# 1) open API  2) wait WAN ping  3) download install.rsc  4) import",
+            *header,
+            "# 1) API  2) WAN  3) download install.rsc  4) import (tunnel / reset inside)",
             *_api_lan_ready_lines(),
-            _ros_info("Waiting for internet, then downloading install..."),
-            *_wan_wait_lines(endpoint_host),
-            ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
-            *_fetch_rsc_retry_lines(
-                install_url,
-                http_host,
-                "ispcentric-install.rsc",
-                "Downloaded install.rsc",
-                "Download failed - check ether1 WAN and billing server HTTP",
-                attempts=5,
-                require_wan=True,
-            ),
-            (
-                ':if ([:len [/file find where name="ispcentric-install.rsc"]] > 0) do={'
-                ':put "[ISPCENTRIC OK] Importing install.rsc..."; '
-                "/import file-name=ispcentric-install.rsc} else={"
-                ':put "[ISPCENTRIC FAIL] install.rsc missing - fix WAN and re-paste"}'
-            ),
+            *_bootstrap_wan_lines(endpoint_host),
+            *_bootstrap_fetch_import_lines(install_url, http_host),
         ]
     )
 
