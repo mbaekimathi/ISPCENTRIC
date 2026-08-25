@@ -181,12 +181,16 @@ class WireGuardKeyTests(SimpleTestCase):
         ):
             script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
             install = wireguard.install_rsc_body("10.9.0.12", private_key)
-        # Bootstrap paste stays short (no mega :if — Winbox wraps /queue into 'ueue').
+            mac = wireguard.rsc_download_mac("10.9.0.12")
+            install_url, _ = wireguard.short_rsc_url("10.9.0.12", "i")
+        # Bootstrap paste stays short (no long token — Winbox wraps and breaks the next line).
         self.assertIn("one-paste bootstrap", script)
         self.assertIn("/tool fetch url=", script)
-        self.assertIn("tunnel-rsc/", script)
-        self.assertIn("kind=install", script)
-        self.assertIn("kind=post-reset", script)
+        self.assertIn(f"/app/m/10.9.0.12/{mac}/i", script)
+        self.assertIn(install_url, script)
+        self.assertLess(len(install_url), 90, "fetch URL must stay Winbox-safe")
+        self.assertNotIn("tunnel-rsc/?token=", script)
+        self.assertEqual(script.count("/tool fetch url="), 1)
         self.assertIn("http-header-field=\"Host:isp.richcom.co.ke\"", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
         self.assertIn("dhcp-client add interface=ether1", script)
@@ -194,7 +198,8 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertNotIn("/file add name=", script)
         self.assertNotIn("/queue simple", script)
         self.assertNotIn("IspCentricCustom", script)
-        # Smart reset lives in downloaded install.rsc (short flag lines).
+        # Smart reset + post-reset fetch live in downloaded install.rsc.
+        self.assertIn(f"/app/m/10.9.0.12/{mac}/p", install)
         self.assertIn(":global IspCentricCustom 0", install)
         self.assertIn("[:len [/ip hotspot find]] > 0", install)
         self.assertNotIn("/queue simple", install)
@@ -203,6 +208,8 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", install)
         self.assertIn("Clean router - continuing tunnel install (no reset)", install)
         self.assertIn("Custom config - factory reset", install)
+        self.assertTrue(wireguard.verify_rsc_download_mac("10.9.0.12", mac))
+        self.assertFalse(wireguard.verify_rsc_download_mac("10.9.0.12", "deadbeefdead"))
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",

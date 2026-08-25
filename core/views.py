@@ -4054,31 +4054,19 @@ def mikrotik_tunnel_script(request):
     )
 
 
-@require_GET
-def mikrotik_tunnel_rsc(request):
-    """
-    MikroTik /tool fetch target: signed .rsc for tunnel install or post-reset.
-
-    No browser session — the signed token is the credential (same trust as a paste).
-    """
-    from django.core import signing
+def _mikrotik_rsc_response(*, address: str, kind: str):
+    """Build HttpResponse for install or post-reset .rsc from a reservation address."""
     from django.http import HttpResponse
 
     from core.models import WireGuardReservation
 
-    token = (request.GET.get("token") or "").strip()
-    kind = (request.GET.get("kind") or "install").strip().lower()
-    try:
-        signed = signing.loads(token, salt="mikrotik-tunnel-rsc", max_age=86400)
-    except signing.BadSignature:
-        return HttpResponse("invalid or expired token\n", status=403, content_type="text/plain")
-
-    address = (signed.get("address") or "").strip()
+    address = (address or "").strip()
+    kind = (kind or "install").strip().lower()
     reservation = WireGuardReservation.objects.filter(address=address).first()
     if reservation is None:
         return HttpResponse("reservation not found\n", status=404, content_type="text/plain")
 
-    if kind in {"post-reset", "reset", "post_reset"}:
+    if kind in {"post-reset", "reset", "post_reset", "p"}:
         body = wireguard.post_reset_rsc_body(reservation.address, reservation.private_key)
         filename = "ispcentric-post-reset.rsc"
     else:
@@ -4089,6 +4077,41 @@ def mikrotik_tunnel_rsc(request):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "no-store"
     return response
+
+
+@require_GET
+def mikrotik_tunnel_rsc(request):
+    """
+    MikroTik /tool fetch target: signed .rsc for tunnel install or post-reset.
+
+    Prefer the short /app/m/<addr>/<mac>/<i|p>/ URL in new pastes (Winbox-safe).
+    """
+    from django.core import signing
+    from django.http import HttpResponse
+
+    token = (request.GET.get("token") or "").strip()
+    kind = (request.GET.get("kind") or "install").strip().lower()
+    try:
+        signed = signing.loads(token, salt="mikrotik-tunnel-rsc", max_age=86400)
+    except signing.BadSignature:
+        return HttpResponse("invalid or expired token\n", status=403, content_type="text/plain")
+
+    return _mikrotik_rsc_response(address=signed.get("address") or "", kind=kind)
+
+
+@require_GET
+def mikrotik_tunnel_rsc_short(request, address: str, mac: str, kind: str):
+    """
+    Short Winbox-safe .rsc URL: /app/m/10.9.0.12/<hmac12>/i or .../p
+
+    HMAC uses SECRET_KEY — no long query token that wraps mid-paste.
+    """
+    from django.http import HttpResponse
+
+    address = (address or "").strip()
+    if not wireguard.verify_rsc_download_mac(address, mac):
+        return HttpResponse("invalid mac\n", status=403, content_type="text/plain")
+    return _mikrotik_rsc_response(address=address, kind=kind)
 
 
 @client_workspace_required

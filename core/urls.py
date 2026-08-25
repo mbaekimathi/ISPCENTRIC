@@ -77,6 +77,11 @@ urlpatterns = [
         name="mikrotik_tunnel_rsc",
     ),
     path(
+        "app/m/<str:address>/<str:mac>/<str:kind>/",
+        views.mikrotik_tunnel_rsc_short,
+        name="mikrotik_tunnel_rsc_short",
+    ),
+    path(
         "app/mikrotik/onboarding-stk/",
         views.mikrotik_onboarding_stk,
         name="mikrotik_onboarding_stk",
