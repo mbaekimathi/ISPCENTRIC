@@ -311,50 +311,32 @@ def _ros_nat_add(rule: str, comment: str) -> str:
 
 def _ros_filter_add_abs(rule: str, comment: str) -> str:
     """
-    Paste-safe input filter add with absolute paths and place-before.
+    Paste-safe input filter add (absolute path, short line).
 
-    Plain ``/ip firewall filter add`` appends at the end — useless when a
-    defconf drop already exists. Insert near the top of the input chain.
+    ``place-before=0`` puts the rule first when the chain has items; on empty
+    chains it errors and we fall back to a plain add.
     """
     body = f'/ip firewall filter add chain=input {rule} comment="{comment}"'
-    find0 = "[/ip firewall filter find where chain=input and dynamic=no]"
-    find1 = "[/ip firewall filter find where chain=input]"
-    return (
-        f":do {{ {body} place-before=({find0}->0) }} "
-        f"on-error={{ :do {{ {body} place-before=({find1}->0) }} "
-        f"on-error={{ {body} }} }}"
-    )
+    return f":do {{ {body} place-before=0 }} on-error={{ {body} }}"
 
 
 def _api_lan_ready_lines() -> list[str]:
     """
-    Enable RouterOS API on 8728 and allow it from private LANs.
+    Enable RouterOS API on 8728 and accept it on the input chain (top).
 
-    Runs first in the Winbox paste so Connect's LAN check can pass even if WAN
-    download is still waiting / fails. Absolute paths — each line is paste-safe.
-    Firewall accepts are place-before so they beat defconf drop rules.
+    Runs first so Connect LAN checks can pass before WAN download finishes.
+    One short firewall rule (not three RFC1918 lines) — Winbox wraps long lines.
     """
     return [
         _ros_info("Enabling RouterOS API on 8728 (needed for Check now)..."),
-        ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
         ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
         ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
         ":do { /ip service enable [find where name=api] } on-error={}",
-        (
-            ':do { /ip firewall filter remove [find where comment~"ispcentric-vpn-api-lan-"] } '
-            "on-error={}"
-        ),
+        ':do { /ip firewall filter remove [find where comment="ispcentric-api-boot"] } on-error={}',
+        ':do { /ip firewall filter remove [find where comment~"ispcentric-vpn-api-lan-"] } on-error={}',
         _ros_filter_add_abs(
-            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
-            "ispcentric-vpn-api-lan-10",
-        ),
-        _ros_filter_add_abs(
-            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
-            "ispcentric-vpn-api-lan-172",
-        ),
-        _ros_filter_add_abs(
-            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
-            "ispcentric-vpn-api-lan-192",
+            "action=accept protocol=tcp dst-port=8728",
+            "ispcentric-api-boot",
         ),
         _ros_check(
             "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
@@ -367,24 +349,20 @@ def _api_lan_ready_lines() -> list[str]:
 def _wan_wait_lines(
     probe_host: str = "8.8.8.8",
     *,
-    attempts: int = 6,
+    attempts: int = 8,
     delay: str = "4s",
 ) -> list[str]:
     """
-    Bring up WAN (DHCP on ether1) and wait until ping or default route works.
+    Bring up WAN (DHCP on ether1) and wait until ping to probe_host succeeds.
 
-    Winbox New Terminal breaks multi-line :for/:do blocks across prompts, so each
-    attempt is one short line. :global IspWanOk stops further waits after success
-    (no OK spam) and lets later steps skip work when WAN never came up.
+    Default route alone is NOT enough — MikroTik can show a route while ping
+    is \"packet rejected\" and /tool fetch then hangs. Require a real ping.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
     attempts = max(1, int(attempts))
-    ready = (
-        f"([/ping {probe_host} count=1] > 0) || "
-        f"([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)"
-    )
+    ping_ok = f"([/ping {probe_host} count=1] > 0)"
     lines = [
-        _ros_info("ether1 = ISP - enabling DHCP, waiting for internet..."),
+        _ros_info(f"ether1 = ISP - DHCP, then ping {probe_host}..."),
         (
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
             "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
@@ -400,12 +378,13 @@ def _wan_wait_lines(
     ]
     for try_n in range(1, attempts + 1):
         lines.append(
-            f":if ($IspWanOk = 0) do={{:if ({ready}) do={{:set IspWanOk 1; "
-            f'{_ros_ok("WAN ready")}}} else={{'
-            f':put "[ISPCENTRIC] WAN {try_n}/{attempts}..."; :delay {delay}}}}}'
+            f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
+            f'{_ros_ok(f"WAN ready (ping {probe_host})")}}} else={{'
+            f':put "[ISPCENTRIC] WAN {try_n}/{attempts} - no ping to {probe_host} '
+            f'(need ISP on ether1)"; :delay {delay}}}}}'
         )
     lines.append(
-        f":if ($IspWanOk = 0) do={{{_ros_fail('No internet - plug ISP into ether1, re-paste')}}}"
+        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - plug ISP into ether1, wait for DHCP, re-paste')}}}"
     )
     return lines
 
@@ -1478,13 +1457,18 @@ def _fetch_rsc_retry_lines(
     """
     origin, mid, tail = _fetch_rsc_parts(url)
     header = ""
+    host_lines: list[str] = []
     if host_header and host_header not in url:
-        header = f' http-header-field="Host:{host_header}"'
+        host_lines = [
+            ":global IspFetchHost",
+            f':set IspFetchHost "Host:{host_header}"',
+        ]
+        header = " http-header-field=$IspFetchHost"
     tag = "Flash" if "flash/" in dst else ("Inst" if "install" in dst else "Root")
     url_var = f"IspUrl{tag}"
     attempts = max(1, int(attempts))
-    wan_gate = "($IspWanOk = 1) && " if require_wan else ""
     missing = f'([:len [/file find where name="{dst}"]] = 0)'
+    gate = f"($IspWanOk = 1) && {missing}" if require_wan else missing
     lines = [
         f":global {url_var}",
         f':set {url_var} "{origin}"',
@@ -1492,16 +1476,19 @@ def _fetch_rsc_retry_lines(
     ]
     if tail:
         lines.append(f':set {url_var} (${url_var} . "{tail}")')
+    lines.extend(host_lines)
+    if require_wan:
+        lines.append(
+            f':if ($IspWanOk = 0) do={{{_ros_fail("Skip download - WAN ping failed")}}} '
+            f"else={{{_ros_info(f'Downloading {dst}...')}}}"
+        )
     for try_n in range(1, attempts + 1):
         lines.append(
-            f":if ({wan_gate}{missing}) do={{"
-            f":do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; "
-            f"{_ros_ok(ok_msg)} }} on-error={{"
-            f':put "[ISPCENTRIC] Download {try_n}/{attempts}..."; :delay 3s}}}}'
+            f":if ({gate}) do={{:do {{ /tool fetch url=${url_var}{header} "
+            f"dst-path={dst} mode=http ; {_ros_ok(ok_msg)} }} on-error={{"
+            f':put "[ISPCENTRIC] Download {try_n}/{attempts} failed"; :delay 3s}}}}'
         )
-    lines.append(
-        f":if ({missing}) do={{{_ros_fail(fail_msg)}}}"
-    )
+    lines.append(f":if ({missing}) do={{{_ros_fail(fail_msg)}}}")
     return lines
 
 

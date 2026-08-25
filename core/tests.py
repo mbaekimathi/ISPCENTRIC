@@ -126,9 +126,9 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("/ping 10.9.0.1 count=2", script)
         self.assertIn(":delay 5s", script)
         self.assertIn("/ping 178.162.241.99 count=1", script)
-        self.assertIn("WAN 1/6...", script)
+        self.assertIn("WAN 1/8 - no ping", script)
         self.assertIn(":global IspWanOk", script)
-        self.assertIn("[ISPCENTRIC OK] WAN ready", script)
+        self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
@@ -190,13 +190,13 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn(f"/app/m/10.9.0.12/{mac}/i/", install_url)
         self.assertIn(":global IspUrlInst", script)
         self.assertIn("/tool fetch url=$IspUrlInst", script)
-        self.assertIn("Download 1/5...", script)
-        self.assertIn("Download 5/5...", script)
+        self.assertIn("Download 1/5 failed", script)
+        self.assertIn("Download 5/5 failed", script)
         self.assertIn("($IspWanOk = 1)", script)
         self.assertNotIn(":for IspTry", script)
         self.assertNotIn(":local Isp", script)
-        self.assertIn("[ISPCENTRIC OK] WAN ready", script)
-        self.assertIn("WAN 1/6...", script)
+        self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
+        self.assertIn("WAN 1/8 - no ping", script)
         # API opens first so LAN Check now works before WAN download finishes.
         self.assertIn("Enabling RouterOS API on 8728", script)
         self.assertLess(
@@ -204,13 +204,11 @@ class WireGuardKeyTests(SimpleTestCase):
             script.index("Waiting for internet, then downloading install"),
         )
         self.assertIn("API listening on 8728", script)
-        self.assertIn('comment="ispcentric-vpn-api-lan-192"', script)
-        self.assertIn(
-            "place-before=([/ip firewall filter find where chain=input",
-            script,
-        )
+        self.assertIn('comment="ispcentric-api-boot"', script)
+        self.assertIn("place-before=0", script)
         self.assertNotIn("tunnel-rsc/?token=", script)
-        self.assertIn("http-header-field=\"Host:isp.richcom.co.ke\"", script)
+        self.assertIn("IspFetchHost", script)
+        self.assertIn("http-header-field=$IspFetchHost", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
         self.assertIn("Importing install.rsc", script)
         self.assertIn("dhcp-client add interface=ether1", script)
