@@ -1256,35 +1256,134 @@ def _routeros_install_lines(
     return lines
 
 
-def _routeros_factory_reset_wrapper(install_lines: list[str]) -> str:
+def _escape_ros_file_contents(text: str) -> str:
+    """Escape text for RouterOS /file add contents=\"...\"."""
+    return (
+        (text or "")
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\n", "\\n")
+    )
+
+
+def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
     """
-    Save install commands, factory-reset the router (keep admin passwords), then
-    run the installer automatically after reboot via run-after-reset.
+    Compact .rsc run after factory reset (must stay small for /file contents=).
+
+    run-after-reset has a ~2 minute runtime cap and needs a boot delay so
+    interfaces exist before WireGuard/API rules are applied.
     """
+    host, _, port = _endpoint().partition(":")
+    port = port or "51820"
+    network = tunnel_network()
+    server = str(server_address())
+    address = (address or "").strip()
+    private_key = (private_key or "").strip()
+    endpoint_host = _resolved_endpoint_host(host)
+    listen_port = _router_listen_port(address)
+    return "\n".join(
+        [
+            "# ISPCENTRIC post-reset tunnel install",
+            ":delay 20s",
+            "/ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no",
+            (
+                f'/interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
+                f'private-key="{private_key}" comment="ispcentric billing tunnel"'
+            ),
+            (
+                f'/ip address add address={address}/{network.prefixlen} '
+                f'interface=ispcentric-vpn comment="ispcentric billing tunnel"'
+            ),
+            (
+                f'/interface wireguard peers add interface=ispcentric-vpn '
+                f'public-key="{_server_public_key()}" '
+                f'endpoint-address={endpoint_host} endpoint-port={port} '
+                f'allowed-address={network} persistent-keepalive=25s '
+                f'comment="ispcentric billing server"'
+            ),
+            '/ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0',
+            ':do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}',
+            (
+                '/ip firewall filter add chain=input action=accept protocol=tcp '
+                'dst-port=8728 in-interface=ispcentric-vpn comment="ispcentric-vpn-api"'
+            ),
+            (
+                f'/ip firewall filter add chain=input action=accept protocol=tcp '
+                f'dst-port=8728 src-address={network} comment="ispcentric-vpn-api-net"'
+            ),
+            (
+                '/ip firewall filter add chain=input action=accept protocol=icmp '
+                'in-interface=ispcentric-vpn comment="ispcentric-vpn-icmp"'
+            ),
+            (
+                '/ip firewall filter add chain=input action=accept protocol=tcp '
+                'dst-port=8728 src-address=10.0.0.0/8 comment="ispcentric-vpn-api-lan-10"'
+            ),
+            (
+                '/ip firewall filter add chain=input action=accept protocol=tcp '
+                'dst-port=8728 src-address=172.16.0.0/12 comment="ispcentric-vpn-api-lan-172"'
+            ),
+            (
+                '/ip firewall filter add chain=input action=accept protocol=tcp '
+                'dst-port=8728 src-address=192.168.0.0/16 comment="ispcentric-vpn-api-lan-192"'
+            ),
+            (
+                f'/ip firewall nat add chain=srcnat action=accept dst-address={network} '
+                f'comment="ispcentric-vpn-no-nat"'
+            ),
+            (
+                f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
+                f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
+            ),
+            ":delay 10s",
+            f":do {{ /ping {server} count=5 }} on-error={{}}",
+            ':put "[ISPCENTRIC OK] Post-reset tunnel install finished - Check now in ISPCENTRIC"',
+        ]
+    )
+
+
+def _routeros_factory_reset_wrapper(address: str, private_key: str) -> str:
+    """
+    Write a .rsc installer to flash (survives reboot), factory-reset (keep passwords),
+    then run that file via run-after-reset.
+
+    RouterOS rejects /system script names for run-after-reset — only .rsc files work.
+    Devices with a flash/ folder must store the file there (RAM files are wiped).
+    """
+    rsc_body = _routeros_post_reset_rsc_body(address, private_key)
+    escaped = _escape_ros_file_contents(rsc_body)
+    flash_name = "flash/ispcentric-post-reset.rsc"
+    root_name = "ispcentric-post-reset.rsc"
     return "\n".join(
         [
             "# ISPCENTRIC billing tunnel - paste once into Winbox -> New Terminal.",
             "# FACTORY RESET: removes ALL MikroTik config except admin passwords.",
             "# Winbox disconnects in ~5s; reconnect by MAC/IP after reboot (~2 min).",
-            "# Tunnel + API install runs automatically after reset.",
+            "# Tunnel + API install runs automatically from ispcentric-post-reset.rsc.",
             _ros_warn(
                 "Factory reset scheduled - every setting except admin passwords will be cleared"
             ),
+            ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
+            ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
+            ':do { /file remove [find where name="ispcentric-post-reset.txt"] } on-error={}',
             '/system script remove [find where name="ispcentric-post-reset"]',
             '/system scheduler remove [find where name="ispcentric-post-reset"]',
             (
-                '/system script add name=ispcentric-post-reset '
-                'dont-require-permissions=yes comment="ISPCENTRIC billing tunnel auto-install" '
-                "source={"
+                f':do {{ /file add name="{flash_name}" contents="{escaped}" ; '
+                f'{_ros_ok(f"Saved post-reset installer {flash_name}")} }} on-error={{ '
+                f'/file add name="{root_name}" contents="{escaped}" ; '
+                f'{_ros_ok(f"Saved post-reset installer {root_name}")} }}'
             ),
-            *install_lines,
-            "}",
-            _ros_ok("Saved post-reset installer ispcentric-post-reset"),
             _ros_info("Factory reset in 5 seconds - Winbox will disconnect"),
             ":delay 5s",
             (
-                "/system reset-configuration keep-users=yes skip-backup=yes "
-                "run-after-reset=ispcentric-post-reset"
+                f':if ([:len [/file find where name="{flash_name}"]] > 0) do={{ '
+                f"/system reset-configuration keep-users=yes skip-backup=yes "
+                f"run-after-reset={flash_name} }} else={{ "
+                f"/system reset-configuration keep-users=yes skip-backup=yes "
+                f"run-after-reset={root_name} }}"
             ),
         ]
     )
@@ -1295,21 +1394,21 @@ def routeros_script(address: str, private_key: str, *, factory_reset: bool = Tru
     Commands to paste into the MikroTik terminal to join the tunnel.
 
     When factory_reset is True (default for Connect onboarding), the paste:
-    1. Saves a post-reset installer script on the router
+    1. Writes ispcentric-post-reset.rsc (on flash/ when available)
     2. Factory-resets to RouterOS defaults (admin passwords kept via keep-users)
-    3. Runs the tunnel/API install automatically after reboot
+    3. Runs that .rsc automatically after reboot (run-after-reset)
 
     When factory_reset is False, only replaces previous ISPCENTRIC components
     in-place (no factory reset) — useful for re-runs on live routers.
     """
+    if factory_reset:
+        return _routeros_factory_reset_wrapper(address, private_key)
+
     install = _routeros_install_lines(
         address,
         private_key,
-        include_cleanup=not factory_reset,
+        include_cleanup=True,
     )
-    if factory_reset:
-        return _routeros_factory_reset_wrapper(install)
-
     return "\n".join(
         [
             "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",

@@ -174,13 +174,15 @@ class WireGuardKeyTests(SimpleTestCase):
         ):
             script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
         self.assertIn("FACTORY RESET", script)
-        self.assertIn('name=ispcentric-post-reset', script)
+        self.assertIn("ispcentric-post-reset.rsc", script)
+        self.assertIn("/file add name=", script)
         self.assertIn("keep-users=yes", script)
-        self.assertIn("run-after-reset=ispcentric-post-reset", script)
+        self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", script)
+        self.assertIn("run-after-reset=ispcentric-post-reset.rsc", script)
         self.assertIn("reset-configuration", script)
-        self.assertIn(f'private-key="{private_key}"', script)
+        self.assertIn(f'private-key=\\"{private_key}\\"', script)
         self.assertIn("endpoint-address=203.0.113.50", script)
-        self.assertNotIn("/interface wireguard remove", script)
+        self.assertNotIn("/system script add name=ispcentric-post-reset", script)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
