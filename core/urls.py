@@ -72,6 +72,11 @@ urlpatterns = [
         name="mikrotik_tunnel_script",
     ),
     path(
+        "app/mikrotik/tunnel-rsc/",
+        views.mikrotik_tunnel_rsc,
+        name="mikrotik_tunnel_rsc",
+    ),
+    path(
         "app/mikrotik/onboarding-stk/",
         views.mikrotik_onboarding_stk,
         name="mikrotik_onboarding_stk",

@@ -567,9 +567,9 @@
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
                       <p class="mikrotik-tunnel-step-desc">
-                        Winbox → New Terminal → paste once. <strong>Clean routers</strong> install
-                        immediately. Routers with Hotspot/PPPoE/custom config <strong>factory-reset</strong>
-                        first (passwords kept), reboot, then install automatically.
+                        Plug ISP into <strong>ether1</strong>, then Winbox → New Terminal → paste once.
+                        Short script waits for WAN, downloads install, then imports
+                        (or factory-resets only if Hotspot/PPPoE/custom config exists).
                       </p>
                     </div>
                     <div class="mikrotik-tunnel-script-bar">
@@ -1959,7 +1959,7 @@
       markTunnelStep(2, "done");
       markTunnelStep(3, "active");
       if (!tunnelPeerSyncRequired) {
-        setTunnelStatus("Copied. Paste in Winbox → New Terminal. Clean routers install now; customized routers reset then reboot.", false);
+        setTunnelStatus("Copied. Plug ISP into ether1, paste in Winbox. Script waits for internet, then installs.", false);
       }
       startTunnelStatusPolling();
     };

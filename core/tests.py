@@ -124,8 +124,8 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("dst-address=10.9.0.0/24", script)
         # Prove reachability to the VPS tunnel address (retried, one line per paste).
         self.assertIn("/ping 10.9.0.1 count=2", script)
-        self.assertIn(":delay 3s", script)
         self.assertIn(":delay 5s", script)
+        self.assertIn("/ping 8.8.8.8 count=2", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
@@ -151,7 +151,7 @@ class WireGuardKeyTests(SimpleTestCase):
             for line in script.splitlines()
             if "/ping 10.9.0.1 count=2" in line and line.startswith(":if")
         ]
-        self.assertEqual(len(ping_checks), 4)
+        self.assertEqual(len(ping_checks), 6)
         self.assertIn(
             '[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server 10.9.0.1 - '
             'click Connect in ISPCENTRIC',
@@ -168,24 +168,30 @@ class WireGuardKeyTests(SimpleTestCase):
     )
     def test_routeros_script_smart_install_resets_only_when_customized(self):
         private_key, _ = wireguard.generate_keypair()
-        with patch(
-            "core.wireguard.socket.getaddrinfo",
-            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        with (
+            patch(
+                "core.wireguard.socket.getaddrinfo",
+                return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+            ),
+            patch(
+                "core.wireguard._script_public_base_url",
+                return_value="http://isp.richcom.co.ke",
+            ),
         ):
             script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
-        self.assertIn("Resets ONLY if Hotspot/PPPoE/custom config exists", script)
-        self.assertIn("ispcentric-post-reset.rsc", script)
-        self.assertIn("ispcentric-install.rsc", script)
-        self.assertIn("/import file-name=flash/ispcentric-install.rsc", script)
-        self.assertNotIn("/system script add name=ispcentric-install", script)
-        self.assertNotIn("/system script run ispcentric-install", script)
+        self.assertIn("one-paste bootstrap", script)
+        self.assertIn("/tool fetch url=", script)
+        self.assertIn("tunnel-rsc/", script)
+        self.assertIn("kind=install", script)
+        self.assertIn("kind=post-reset", script)
+        self.assertIn("/import file-name=ispcentric-install.rsc", script)
         self.assertIn("[:len [/ip hotspot find]] > 0", script)
         self.assertIn("keep-users=yes", script)
         self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", script)
         self.assertIn("Clean router - importing tunnel install (no reset)", script)
         self.assertIn("Custom config detected", script)
-        self.assertIn(f'private-key=\\"{private_key}\\"', script)
-        self.assertIn("endpoint-address=203.0.113.50", script)
+        self.assertIn("dhcp-client add interface=ether1", script)
+        self.assertNotIn("/file add name=", script)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",

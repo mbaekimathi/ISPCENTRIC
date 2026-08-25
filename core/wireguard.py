@@ -309,35 +309,74 @@ def _ros_nat_add(rule: str, comment: str) -> str:
     )
 
 
-def _ros_ping_probe(server: str, address: str) -> str:
+def _wan_wait_lines() -> list[str]:
     """
-    Ping the billing server several times without :local or multi-line blocks.
+    Bring up WAN (DHCP on ether1) and wait for internet before WireGuard dials.
 
-    RouterOS New Terminal executes pasted lines one-by-one. Chaining multiple
-    :delay commands on one line fails with "expected end of command", so each
-    wait and check is its own line.
+    Each step is its own paste-safe line. Without a default route, WireGuard
+    cannot reach the VPS (no route to host / rx=0 tx=0).
     """
-    ok_message = (
-        f"Tunnel {address} reaches billing server {server} - click Connect in ISPCENTRIC"
+    return [
+        _ros_info("Ensuring WAN: DHCP on ether1 + wait for internet..."),
+        (
+            ":do { /ip dhcp-client add interface=ether1 disabled=no "
+            "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
+            "on-error={}"
+        ),
+        (
+            ":do { /ip dhcp-client set [find where interface=ether1] disabled=no "
+            "add-default-route=yes use-peer-dns=yes } on-error={}"
+        ),
+        ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
+        ":delay 5s",
+        ':if ([/ping 8.8.8.8 count=2] > 0) do={:put "[ISPCENTRIC OK] Internet ready (ping 8.8.8.8)"}',
+        ":delay 5s",
+        ':if ([/ping 8.8.8.8 count=2] > 0) do={:put "[ISPCENTRIC OK] Internet ready (ping 8.8.8.8)"}',
+        ":delay 5s",
+        ':if ([/ping 8.8.8.8 count=2] > 0) do={:put "[ISPCENTRIC OK] Internet ready (ping 8.8.8.8)"}',
+        ":delay 5s",
+        ':if ([/ping 8.8.8.8 count=2] > 0) do={:put "[ISPCENTRIC OK] Internet ready (ping 8.8.8.8)"} '
+        'else={:put "[ISPCENTRIC FAIL] No internet - plug ISP cable into ether1, wait for DHCP, re-paste"}',
+        (
+            ':if ([:len [/ip route find where dst-address=0.0.0.0/0]] > 0) do={'
+            ':put "[ISPCENTRIC OK] Default route present"} else={'
+            ':put "[ISPCENTRIC WARN] Still no default route - WireGuard cannot dial VPS"}'
+        ),
+    ]
+
+
+def _handshake_wait_lines(server: str, address: str) -> list[str]:
+    """Retry ping/handshake so Connect Verify can catch up after dial."""
+    ok = (
+        f'Tunnel {address} reaches billing server {server} - click Connect in ISPCENTRIC'
     )
-    fail_message = (
-        f"No ping from {server}. On the VPS run: "
-        f"manage.py wireguard_peer --sync-server "
-        f"(or add [Peer] AllowedIPs={address}/32 on wg0 and restart), "
-        f"then re-paste or click Check now in ISPCENTRIC"
+    fail = (
+        f"No ping from {server}. Confirm WAN works (/ping 8.8.8.8), then on VPS: "
+        f"manage.py wireguard_peer --sync-server, then Check now"
     )
     ping = f"[/ping {server} count=2]"
-    lines = [
-        ":delay 3s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+    return [
+        _ros_info("Probing tunnel to billing server (retries ~40s)..."),
         ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
         ":delay 5s",
-        f':if ({ping} > 0) do={{{_ros_ok(ok_message)}}}',
+        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
         ":delay 5s",
-        _ros_check(f"{ping} > 0", ok_message, fail_message),
+        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
+        ":delay 5s",
+        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
+        ":delay 5s",
+        f':if ({ping} > 0) do={{{_ros_ok(ok)}}}',
+        ":delay 5s",
+        _ros_check(f"{ping} > 0", ok, fail),
+        (
+            ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
+            '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
+            'last-handshake]) } on-error={'
+            f'{_ros_warn("No handshake yet - need internet + VPS peer")}'
+            "}"
+        ),
     ]
-    return "\n".join(lines)
 
 
 def _wireguard_interface() -> str:
@@ -1087,10 +1126,7 @@ def _routeros_install_lines(
 
     lines: list[str] = [
         _ros_info("ISPCENTRIC tunnel install running..."),
-        "# DNS for routers that reach the internet; endpoint uses VPS IP when possible.",
-        ':do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no ; '
-        f'{_ros_ok("DNS servers configured")} }} on-error='
-        f'{{{_ros_warn("DNS setup skipped - endpoint uses VPS IP")}}}',
+        *_wan_wait_lines(),
     ]
 
     if include_cleanup:
@@ -1209,15 +1245,7 @@ def _routeros_install_lines(
             "Srcnat bypass for billing tunnel installed",
             "No-nat rule missing - run: /ip firewall nat print",
         ),
-        _ros_info("Probing tunnel to billing server (retries ~20s)..."),
-        *_ros_ping_probe(server, address).splitlines(),
-        (
-            ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
-            '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
-            'last-handshake]) } on-error={'
-            f'{_ros_warn("No handshake yet - VPS must have this [Peer] on wg0 (wireguard_peer --sync-server), then wait or re-paste")}'
-            "}"
-        ),
+        *_handshake_wait_lines(server, address),
         ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
         "/system backup",
         "save name=ispcentric-tunnel dont-encrypt=yes",
@@ -1310,7 +1338,7 @@ def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
         [
             "# ISPCENTRIC post-reset tunnel install",
             ":delay 20s",
-            "/ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no",
+            *_wan_wait_lines(),
             (
                 f'/interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
                 f'private-key="{private_key}" comment="ispcentric billing tunnel"'
@@ -1360,81 +1388,115 @@ def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
                 f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
                 f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
             ),
-            ":delay 10s",
-            f":do {{ /ping {server} count=5 }} on-error={{}}",
+            *_handshake_wait_lines(server, address),
             ':put "[ISPCENTRIC OK] Post-reset tunnel install finished - Check now in ISPCENTRIC"',
         ]
     )
 
 
-def _routeros_install_rsc_body(address: str, private_key: str) -> str:
-    """Full in-place install as an .rsc file (no boot delay)."""
+def _script_public_base_url() -> str:
+    """Absolute HTTP base the MikroTik can /tool fetch from."""
+    try:
+        from core.mikrotik_connect import _billing_portal_base_url
+
+        base = (_billing_portal_base_url() or "").strip().rstrip("/")
+    except Exception:
+        base = ""
+    if not base:
+        base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if base.lower() in {"", "auto"}:
+        return ""
+    if base.startswith("https://"):
+        # Captive/fetch on many RouterOS builds is more reliable over plain HTTP.
+        base = "http://" + base[len("https://") :]
+    return base
+
+
+def rsc_access_token(address: str) -> str:
+    """Signed token so MikroTik can download .rsc without a browser session."""
+    from django.core import signing
+
+    return signing.dumps(
+        {"address": (address or "").strip()},
+        salt="mikrotik-tunnel-rsc",
+        compress=True,
+    )
+
+
+def install_rsc_body(address: str, private_key: str) -> str:
+    """Full in-place install as an .rsc file body."""
     return "\n".join(
         _routeros_install_lines(address, private_key, include_cleanup=True)
     )
 
 
-def _routeros_file_add_line(flash_name: str, root_name: str, escaped_contents: str, ok_label: str) -> str:
-    """Write a file to flash/ with fallback to router root."""
-    return (
-        f':do {{ /file remove [find where name="{flash_name}"] }} on-error={{}}\n'
-        f':do {{ /file remove [find where name="{root_name}"] }} on-error={{}}\n'
-        f':do {{ /file add name="{flash_name}" contents="{escaped_contents}" ; '
-        f'{_ros_ok(f"Saved {ok_label} {flash_name}")} }} on-error={{ '
-        f'/file add name="{root_name}" contents="{escaped_contents}" ; '
-        f'{_ros_ok(f"Saved {ok_label} {root_name}")} }}'
-    )
-
-
-def _routeros_import_install_line(flash_name: str, root_name: str) -> str:
-    """Import an .rsc from flash/ or root."""
-    return (
-        f':if ([:len [/file find where name="{flash_name}"]] > 0) do={{ '
-        f'/import file-name={flash_name} }} else={{ /import file-name={root_name} }}'
-    )
+def post_reset_rsc_body(address: str, private_key: str) -> str:
+    """Compact post-reset .rsc body."""
+    return _routeros_post_reset_rsc_body(address, private_key)
 
 
 def _routeros_smart_install_script(address: str, private_key: str) -> str:
     """
-    Install the billing tunnel, factory-resetting only when the router already
-    has customized ISP config (Hotspot, PPPoE, etc.).
+    Short one-paste bootstrap: wait for WAN, fetch .rsc from the billing server,
+    then import (clean) or factory-reset (customized).
 
-    Clean routers import ispcentric-install.rsc in place. Customized routers
-    reset with run-after-reset using ispcentric-post-reset.rsc (keeps passwords).
+    Avoids Winbox 'data too long' / 'interrupted' from embedding huge contents=.
     """
-    install_escaped = _escape_ros_file_contents(_routeros_install_rsc_body(address, private_key))
-    reset_escaped = _escape_ros_file_contents(_routeros_post_reset_rsc_body(address, private_key))
-    install_flash = "flash/ispcentric-install.rsc"
-    install_root = "ispcentric-install.rsc"
-    reset_flash = "flash/ispcentric-post-reset.rsc"
-    reset_root = "ispcentric-post-reset.rsc"
+    address = (address or "").strip()
+    private_key = (private_key or "").strip()
+    base = _script_public_base_url()
     customized = _routeros_customized_condition()
     warn_reset = _ros_warn("Custom config detected - factory reset in 5s (passwords kept)")
     ok_clean = _ros_ok("Clean router - importing tunnel install (no reset)")
 
+    if not base:
+        # Dev/local fallback: paste install lines directly (no fetch).
+        return "\n".join(
+            [
+                "# ISPCENTRIC billing tunnel - paste into Winbox -> New Terminal.",
+                "# PUBLIC_BASE_URL unset - using inline install (no remote .rsc fetch).",
+                _ros_info("Starting inline ISPCENTRIC tunnel install..."),
+                *_routeros_install_lines(address, private_key, include_cleanup=True),
+            ]
+        )
+
+    token = rsc_access_token(address)
+    install_url = f"{base}/app/mikrotik/tunnel-rsc/?token={token}&kind=install"
+    reset_url = f"{base}/app/mikrotik/tunnel-rsc/?token={token}&kind=post-reset"
+
     return "\n".join(
         [
-            "# ISPCENTRIC billing tunnel - paste once into Winbox -> New Terminal.",
-            "# Requires RouterOS 7. Resets ONLY if Hotspot/PPPoE/custom config exists.",
-            "# Clean routers import .rsc in place; customized routers reset (passwords kept).",
-            _ros_info("Checking whether this router needs a factory reset..."),
-            '/system script remove [find where name~"ispcentric"]',
-            '/system scheduler remove [find where name~"ispcentric"]',
-            _routeros_file_add_line(
-                install_flash, install_root, install_escaped, "installer"
+            "# ISPCENTRIC one-paste bootstrap - Winbox -> New Terminal.",
+            "# 1) Wait for WAN  2) Download .rsc  3) Import or factory-reset if customized.",
+            "# Plug ISP into ether1 before or during the wait loops.",
+            _ros_info("ISPCENTRIC one-paste: waiting for internet, then downloading install..."),
+            *_wan_wait_lines(),
+            ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
+            ':do { /file remove [find where name="flash/ispcentric-install.rsc"] } on-error={}',
+            ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
+            ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
+            (
+                f':do {{ /tool fetch url="{install_url}" '
+                f'dst-path=ispcentric-install.rsc mode=http ; '
+                f'{_ros_ok("Downloaded ispcentric-install.rsc")} }} on-error='
+                f'{{{_ros_fail("Fetch install.rsc failed - check WAN and PUBLIC_BASE_URL")}}}'
             ),
-            _routeros_file_add_line(
-                reset_flash, reset_root, reset_escaped, "post-reset installer"
+            (
+                f':do {{ /tool fetch url="{reset_url}" '
+                f'dst-path=flash/ispcentric-post-reset.rsc mode=http ; '
+                f'{_ros_ok("Downloaded flash/ispcentric-post-reset.rsc")} }} on-error={{ '
+                f'/tool fetch url="{reset_url}" dst-path=ispcentric-post-reset.rsc mode=http ; '
+                f'{_ros_ok("Downloaded ispcentric-post-reset.rsc")} }}'
             ),
             f":if ({customized}) do={{{warn_reset}}} else={{{ok_clean}}}",
             (
                 f":if ({customized}) do={{ :delay 5s ; "
-                f':if ([:len [/file find where name="{reset_flash}"]] > 0) do={{ '
+                f':if ([:len [/file find where name="flash/ispcentric-post-reset.rsc"]] > 0) do={{ '
                 f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset={reset_flash} }} else={{ "
+                f"run-after-reset=flash/ispcentric-post-reset.rsc }} else={{ "
                 f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset={reset_root} }} }} "
-                f"else={{{_routeros_import_install_line(install_flash, install_root)}}}"
+                f"run-after-reset=ispcentric-post-reset.rsc }} }} "
+                f"else={{ /import file-name=ispcentric-install.rsc }}"
             ),
         ]
     )
@@ -1453,6 +1515,9 @@ def routeros_script(address: str, private_key: str, *, factory_reset: bool = Tru
     When factory_reset is False, always replaces previous ISPCENTRIC components
     in-place without any reset check.
     """
+    # Validate server settings up front (also used by downloaded .rsc bodies).
+    _endpoint()
+    _server_public_key()
     if factory_reset:
         return _routeros_smart_install_script(address, private_key)
 

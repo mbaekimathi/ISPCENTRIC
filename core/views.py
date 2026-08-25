@@ -4054,6 +4054,43 @@ def mikrotik_tunnel_script(request):
     )
 
 
+@require_GET
+def mikrotik_tunnel_rsc(request):
+    """
+    MikroTik /tool fetch target: signed .rsc for tunnel install or post-reset.
+
+    No browser session — the signed token is the credential (same trust as a paste).
+    """
+    from django.core import signing
+    from django.http import HttpResponse
+
+    from core.models import WireGuardReservation
+
+    token = (request.GET.get("token") or "").strip()
+    kind = (request.GET.get("kind") or "install").strip().lower()
+    try:
+        signed = signing.loads(token, salt="mikrotik-tunnel-rsc", max_age=86400)
+    except signing.BadSignature:
+        return HttpResponse("invalid or expired token\n", status=403, content_type="text/plain")
+
+    address = (signed.get("address") or "").strip()
+    reservation = WireGuardReservation.objects.filter(address=address).first()
+    if reservation is None:
+        return HttpResponse("reservation not found\n", status=404, content_type="text/plain")
+
+    if kind in {"post-reset", "reset", "post_reset"}:
+        body = wireguard.post_reset_rsc_body(reservation.address, reservation.private_key)
+        filename = "ispcentric-post-reset.rsc"
+    else:
+        body = wireguard.install_rsc_body(reservation.address, reservation.private_key)
+        filename = "ispcentric-install.rsc"
+
+    response = HttpResponse(body + "\n", content_type="text/plain; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response["Cache-Control"] = "no-store"
+    return response
+
+
 @client_workspace_required
 @require_POST
 def mikrotik_onboarding_stk(request):
