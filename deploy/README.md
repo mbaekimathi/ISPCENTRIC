@@ -197,8 +197,11 @@ Hotspot/PPPoE settings from the app.
 
 When a client generates a Winbox script in the app, ISPCENTRIC saves the peer in
 the database. The VPS must also accept that peer on `wg0` or the tunnel never
-comes up (empty WireGuard handshake, ping to `10.9.0.1` fails, Verify stays on
-Waiting).
+comes up (empty WireGuard handshake, ping to `10.9.0.1` fails, Verify shows
+**VPS peer missing**).
+
+**Required on every hosted deploy:** set `WIREGUARD_SYNC_COMMAND` and sudoers
+below. Without them, Generate looks successful but Connect never completes.
 
 Allow the app user to run the helper as root:
 

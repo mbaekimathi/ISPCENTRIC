@@ -1565,6 +1565,51 @@ a {
   color: rgba(232, 242, 244, 0.8);
 }
 
+.mikrotik-tunnel-peer-panel {
+  margin-top: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 14px;
+  border: 1px solid rgba(232, 120, 90, 0.35);
+  background: rgba(120, 40, 24, 0.22);
+}
+
+.mikrotik-tunnel-peer-panel[hidden] {
+  display: none !important;
+}
+
+.mikrotik-tunnel-peer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  color: rgba(255, 220, 210, 0.95);
+}
+
+.mikrotik-tunnel-peer-lead {
+  margin: 0 0 0.55rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: rgba(255, 230, 220, 0.78);
+}
+
+.mikrotik-tunnel-peer-block {
+  margin: 0;
+  max-height: 9rem;
+  overflow: auto;
+  padding: 0.65rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: rgba(232, 242, 244, 0.88);
+}
+
 .mikrotik-tunnel-status,
 .mikrotik-tunnel-tip {
   margin: 0.85rem 0 0;
@@ -12692,16 +12737,356 @@ a.packages-stat:focus-visible {
   }
 }
 
+/* MikroTik list page shell (aligned with packages page) */
+.mikrotik-page {
+  display: grid;
+  gap: 1.1rem;
+  width: 100%;
+  max-width: min(76rem, 100%);
+  margin-inline: auto;
+  padding-bottom: 1.5rem;
+}
+
+.mikrotik-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  padding: 1.25rem 1.35rem;
+  border-radius: calc(var(--radius, 14px) + 6px);
+  border: 1px solid var(--border);
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 18%, transparent), transparent 42%),
+    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, var(--signal) 14%, transparent), transparent 38%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #fff), var(--surface));
+  box-shadow: var(--shadow, 0 10px 28px rgba(0, 0, 0, 0.12));
+}
+
+.mikrotik-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.95rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-hero-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 16px;
+  color: var(--sea, #0e7c86);
+  background: color-mix(in srgb, var(--sea) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sea) 24%, transparent);
+}
+
+.mikrotik-hero-copy {
+  min-width: 0;
+}
+
+.mikrotik-kicker {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sea, #0e7c86);
+}
+
+.mikrotik-title {
+  margin: 0 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, 1.1rem + 0.7vw, 1.55rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.mikrotik-lead {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.mikrotik-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  align-items: flex-start;
+}
+
+.mikrotik-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.mikrotik-hero-btn .mikrotik-btn-spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  animation: mk-spin 0.7s linear infinite;
+}
+
+.mikrotik-hero-btn.is-busy > svg:not(.mikrotik-btn-spinner) {
+  display: none;
+}
+
+.mikrotik-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mikrotik-stat {
+  --stat-tone: var(--sea, #0e7c86);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 4.5rem;
+  padding: 1rem 1.05rem;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--stat-tone) 18%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--stat-tone) 10%, transparent), transparent 55%),
+    color-mix(in srgb, var(--surface) 94%, var(--stat-tone) 6%);
+  box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
+  animation: clientsRise 0.4s ease both;
+  animation-delay: calc(0.04s + (var(--i, 0) * 0.05s));
+}
+
+.mikrotik-stat.tone-total { --stat-tone: #0e7c86; }
+.mikrotik-stat.tone-active { --stat-tone: #059669; }
+.mikrotik-stat.tone-suspended { --stat-tone: #d68910; }
+
+.mikrotik-stat-ico {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 12px;
+  color: var(--stat-tone);
+  background: color-mix(in srgb, var(--stat-tone) 14%, transparent);
+}
+
+.mikrotik-stat-text {
+  min-width: 0;
+}
+
+.mikrotik-stat-label {
+  margin: 0 0 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mikrotik-stat-value {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.2rem + 0.55vw, 1.7rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-list-panel {
+  gap: 1rem;
+}
+
+.mikrotik-list-head {
+  margin: 0;
+}
+
+.mikrotik-list-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.mikrotik-list-ico {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 12px;
+  color: var(--sea, #0e7c86);
+  background: color-mix(in srgb, var(--sea) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sea) 18%, transparent);
+}
+
+.mikrotik-list-copy {
+  min-width: 0;
+}
+
+.mikrotik-list-copy h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0 0 0.25rem;
+  font-size: clamp(1.05rem, 0.98rem + 0.35vw, 1.2rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-list-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.55rem;
+  height: 1.4rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--sea-deep, #07545c);
+  background: color-mix(in srgb, var(--sea) 16%, transparent);
+}
+
+[data-theme="dark"] .mikrotik-list-count {
+  color: var(--sea);
+}
+
+.mikrotik-list-copy .panel-sub {
+  margin: 0;
+}
+
+.mikrotik-empty {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: start;
+  margin-top: 0.15rem;
+  padding: 1.55rem 1.25rem;
+  border-radius: 16px;
+  border: 1px dashed color-mix(in srgb, var(--border) 85%, var(--sea));
+  background: color-mix(in srgb, var(--sea) 6%, transparent);
+}
+
+.mikrotik-empty-ico {
+  display: grid;
+  place-items: center;
+  width: 2.55rem;
+  height: 2.55rem;
+  margin-bottom: 0.15rem;
+  border-radius: 12px;
+  color: var(--sea);
+  background: color-mix(in srgb, var(--sea) 14%, transparent);
+}
+
+.mikrotik-empty-title {
+  margin: 0;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.mikrotik-empty-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  max-width: 40ch;
+  line-height: 1.5;
+}
+
+.mikrotik-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+
+.mikrotik-muted {
+  color: var(--ink-soft);
+  opacity: 0.72;
+}
+
+.mikrotik-wifi-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 650;
+  color: var(--chip-sea-fg);
+  background: var(--chip-sea-bg);
+  border: 1px solid color-mix(in srgb, var(--sea) 18%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mikrotik-router-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.mikrotik-router-thumb {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 3.1rem;
+  height: 2.45rem;
+  border-radius: 12px;
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--sea) 10%, transparent), transparent 70%),
+    color-mix(in srgb, var(--surface-2) 88%, var(--sea) 12%);
+  border: 1px solid color-mix(in srgb, var(--sea) 16%, var(--border));
+  overflow: hidden;
+}
+
+.mikrotik-router-thumb img {
+  max-width: 84%;
+  max-height: 78%;
+  object-fit: contain;
+}
+
+.mikrotik-meta-sep {
+  opacity: 0.45;
+}
+
+.mikrotik-router-clients {
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-row-actions {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.mikrotik-cell-text {
+  display: inline-block;
+  max-width: 14rem;
+  overflow-wrap: anywhere;
+}
+
 /* MikroTik router list + detail */
 .mikrotik-router-name {
   color: inherit;
-  font-weight: 700;
+  font-weight: 750;
   text-decoration: none;
+  letter-spacing: -0.015em;
+  transition: color 0.15s ease;
 }
 
 .mikrotik-router-name:hover {
-  color: var(--accent, #2bb0b8);
-  text-decoration: underline;
+  color: var(--sea, #0c7a84);
+  text-decoration: none;
 }
 
 .mikrotik-router-primary {
@@ -12714,7 +13099,7 @@ a.packages-stat:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.35rem 0.65rem;
+  gap: 0.25rem 0.4rem;
   margin: 0;
   font-size: 0.78rem;
   font-weight: 600;
@@ -12749,24 +13134,30 @@ a.packages-stat:focus-visible {
 .mikrotik-view-btn {
   display: inline-flex;
   align-items: center;
-  padding: 0.35rem 0.7rem;
-  border: 1px solid var(--border-strong);
-  border-radius: 0.5rem;
-  background: var(--surface-2);
-  color: var(--accent, #2bb0b8);
-  font-size: 0.82rem;
-  font-weight: 600;
+  gap: 0.3rem;
+  padding: 0.38rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--sea) 28%, var(--border-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sea) 10%, var(--surface-2));
+  color: var(--sea-deep, #07545c);
+  font-size: 0.8rem;
+  font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+[data-theme="dark"] .mikrotik-view-btn {
+  color: var(--sea);
 }
 
 .mikrotik-view-btn:hover,
 .mikrotik-view-btn:focus-visible {
   color: var(--ink);
-  border-color: var(--ink-soft);
-  background: var(--surface);
+  border-color: color-mix(in srgb, var(--sea) 45%, var(--border-strong));
+  background: color-mix(in srgb, var(--sea) 16%, var(--surface));
   outline: none;
+  transform: translateY(-1px);
 }
 
 .mikrotik-detail-panel {
@@ -12953,9 +13344,15 @@ a.packages-stat:focus-visible {
 }
 
 /* MikroTik list uses shared org-table / staff-panel patterns */
+.org-table-shell.mikrotik-table-shell,
 .org-table-shell:has(.org-table-mikrotik) {
   max-width: 100%;
   min-width: 0;
+}
+
+.mikrotik-table-shell {
+  border-radius: 16px;
+  overflow: auto;
 }
 
 .mikrotik-router-primary,
@@ -12965,17 +13362,35 @@ a.packages-stat:focus-visible {
   word-break: break-word;
 }
 
+.org-table-mikrotik thead th {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+.org-table-mikrotik tbody tr.mikrotik-router-row {
+  animation: clientsRise 0.35s ease both;
+  animation-delay: calc(0.05s + (var(--i, 0) * 0.035s));
+  transition: background 0.15s ease;
+}
+
+.org-table-mikrotik tbody tr.mikrotik-router-row:hover td {
+  background: color-mix(in srgb, var(--sea) 5%, transparent);
+}
+
 @media (min-width: 1101px) {
   .org-table-mikrotik {
-    min-width: 58rem;
+    min-width: 62rem;
   }
 
   .org-table-mikrotik th:nth-child(1),
-  .org-table-mikrotik td:nth-child(1) { min-width: 11rem; }
+  .org-table-mikrotik td:nth-child(1) { min-width: 15rem; }
   .org-table-mikrotik th:nth-child(2),
-  .org-table-mikrotik td:nth-child(2) { min-width: 9.5rem; }
+  .org-table-mikrotik td:nth-child(2) { min-width: 10rem; }
   .org-table-mikrotik th:nth-child(7),
-  .org-table-mikrotik td:nth-child(7) { min-width: 10.5rem; }
+  .org-table-mikrotik td:nth-child(7) { min-width: 14rem; }
 }
 
 .mikrotik-router-row.is-suspended {
@@ -12984,6 +13399,7 @@ a.packages-stat:focus-visible {
 
 .mikrotik-reconnect-btn .mikrotik-reconnect-icon {
   display: block;
+  flex: 0 0 auto;
 }
 
 .mikrotik-reconnect-btn.is-busy .mikrotik-reconnect-icon {
@@ -13001,9 +13417,57 @@ a.packages-stat:focus-visible {
   background: transparent;
 }
 
+.org-actions-icons .mikrotik-reconnect-btn {
+  width: 2.15rem;
+  min-width: 2.15rem;
+  overflow: hidden;
+}
+
+.org-actions-icons .mikrotik-reconnect-btn .mikrotik-reconnect-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.org-actions-icons .mikrotik-reconnect-btn.is-needed:not(.is-compact) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  width: auto;
+  min-width: 0;
+  height: 2.15rem;
+  padding: 0 0.7rem 0 0.55rem;
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--signal, #e09a12) 45%, var(--border-strong));
+  color: #9a6700;
+  background: color-mix(in srgb, var(--signal, #e09a12) 14%, var(--surface-solid, #fff));
+  overflow: visible;
+}
+
+.org-actions-icons .mikrotik-reconnect-btn.is-needed:not(.is-compact) .mikrotik-reconnect-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  clip: auto;
+  overflow: visible;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
 .org-actions-icons .mikrotik-reconnect-btn.is-needed {
-  border-color: rgba(251, 191, 36, 0.55);
-  color: #fbbf24;
+  border-color: color-mix(in srgb, var(--signal, #e09a12) 45%, var(--border-strong));
+  color: #9a6700;
 }
 
 .org-actions-icons .mikrotik-reconnect-btn.is-busy,
@@ -13026,9 +13490,18 @@ a.packages-stat:focus-visible {
   color: #f87171;
 }
 
-[data-theme="light"] .org-actions-icons .mikrotik-reconnect-btn.is-needed {
+[data-theme="dark"] .org-actions-icons .mikrotik-reconnect-btn.is-needed,
+[data-theme="dark"] .org-actions-icons .mikrotik-reconnect-btn.is-needed:not(.is-compact) {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+[data-theme="light"] .org-actions-icons .mikrotik-reconnect-btn.is-needed,
+[data-theme="light"] .org-actions-icons .mikrotik-reconnect-btn.is-needed:not(.is-compact) {
   color: #b45309;
   border-color: rgba(180, 83, 9, 0.35);
+  background: rgba(224, 154, 18, 0.12);
 }
 
 [data-theme="light"] .mikrotik-reconnect-hint.is-ok {
@@ -13039,8 +13512,9 @@ a.packages-stat:focus-visible {
   color: #b91c1c;
 }
 
-/* Stack MikroTik routers as cards ? no horizontal scroll on small / mid screens */
+/* Stack MikroTik routers as cards — no horizontal scroll on small / mid screens */
 @media (max-width: 1100px) {
+  .org-table-shell.mikrotik-table-shell,
   .org-table-shell:has(.org-table-mikrotik) {
     overflow: visible;
     border: 0;
@@ -13061,17 +13535,19 @@ a.packages-stat:focus-visible {
 
   .org-table-mikrotik tbody {
     display: grid;
-    gap: 0.75rem;
+    gap: 0.85rem;
   }
 
   .org-table-mikrotik tr.mikrotik-router-row {
     display: grid;
     gap: 0.1rem;
     margin: 0;
-    padding: 0.95rem 1rem;
+    padding: 1rem 1.05rem;
     border: 1px solid var(--border-strong);
-    border-radius: 16px;
-    background: color-mix(in srgb, var(--surface-solid, var(--surface)) 92%, transparent);
+    border-radius: 18px;
+    background:
+      linear-gradient(160deg, color-mix(in srgb, var(--sea) 7%, transparent), transparent 42%),
+      color-mix(in srgb, var(--surface-solid, var(--surface)) 94%, transparent);
     box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
   }
 
@@ -13087,7 +13563,7 @@ a.packages-stat:focus-visible {
     gap: 0.85rem;
     width: 100%;
     min-width: 0 !important;
-    padding: 0.45rem 0;
+    padding: 0.48rem 0;
     border: 0;
     border-bottom: 1px solid var(--border);
     font-size: 0.9rem;
@@ -13095,7 +13571,7 @@ a.packages-stat:focus-visible {
 
   .org-table-mikrotik td:last-child {
     border-bottom: 0;
-    padding-top: 0.75rem;
+    padding-top: 0.8rem;
     padding-bottom: 0;
   }
 
@@ -13119,22 +13595,30 @@ a.packages-stat:focus-visible {
     display: grid;
     gap: 0.3rem;
     padding-top: 0;
-    padding-bottom: 0.7rem;
+    padding-bottom: 0.8rem;
     margin-bottom: 0.15rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--sea) 14%, var(--border));
   }
 
   .org-table-mikrotik td[data-label="Router"]::before {
     display: none;
   }
 
+  .org-table-mikrotik td[data-label="Router"] .mikrotik-router-identity,
   .org-table-mikrotik td[data-label="Router"] .mikrotik-router-primary,
   .org-table-mikrotik td[data-label="Router"] .mikrotik-router-name,
+  .org-table-mikrotik td[data-label="Router"] .mikrotik-router-meta,
   .org-table-mikrotik td[data-label="Router"] .lead-location-line {
     text-align: left;
   }
 
   .org-table-mikrotik td[data-label="Router"] .mikrotik-router-name {
-    font-size: 1.05rem;
+    font-size: 1.08rem;
+  }
+
+  .org-table-mikrotik td[data-label="Router"] .mikrotik-router-thumb {
+    width: 3.4rem;
+    height: 2.65rem;
   }
 
   .org-table-mikrotik td[data-label="Connection"] .mikrotik-router-connection {
@@ -13147,20 +13631,91 @@ a.packages-stat:focus-visible {
     justify-content: flex-end;
   }
 
+  .org-table-mikrotik td[data-label="Wi‑Fi"] .mikrotik-wifi-chip {
+    max-width: min(14rem, 58vw);
+  }
+
   .org-table-mikrotik td[data-label="Manage"]::before {
     display: none;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons {
+  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons,
+  .org-table-mikrotik td[data-label="Manage"] .mikrotik-row-actions {
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .org-table-mikrotik td[data-label="Manage"] .mikrotik-view-btn {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .mikrotik-hero {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 1.1rem 1.05rem;
+  }
+
+  .mikrotik-hero-actions {
+    width: 100%;
+  }
+
+  .mikrotik-hero-actions .btn {
+    flex: 1 1 calc(50% - 0.35rem);
+    justify-content: center;
+  }
+
+  .mikrotik-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .mikrotik-stat {
+    min-height: 4.1rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .mikrotik-page {
+    gap: 0.9rem;
+  }
+
+  .mikrotik-hero-main {
+    gap: 0.7rem;
+  }
+
+  .mikrotik-hero-mark {
+    width: 2.55rem;
+    height: 2.55rem;
+    border-radius: 13px;
+  }
+
+  .mikrotik-title {
+    font-size: 1.2rem;
+  }
+
+  .mikrotik-lead {
+    font-size: 0.9rem;
+  }
+
+  .mikrotik-hero-actions {
+    flex-direction: column;
+  }
+
+  .mikrotik-hero-actions .btn {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .mikrotik-empty {
+    padding: 1.25rem 1rem;
   }
 }
 
 @media (max-width: 520px) {
   .org-table-mikrotik tr.mikrotik-router-row {
-    padding: 0.85rem 0.85rem;
+    padding: 0.9rem 0.9rem;
   }
 
   .org-table-mikrotik td[data-label="Connection"] {
@@ -13182,13 +13737,27 @@ a.packages-stat:focus-visible {
     justify-content: flex-start;
   }
 
-  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons {
+  .org-table-mikrotik td[data-label="Manage"] .org-actions-icons,
+  .org-table-mikrotik td[data-label="Manage"] .mikrotik-row-actions {
     width: 100%;
   }
 
   .org-table-mikrotik td[data-label="Manage"] .org-action-icon {
     flex: 1 1 calc(20% - 0.35rem);
     min-width: 2.4rem;
+  }
+
+  .org-table-mikrotik td[data-label="Manage"] .mikrotik-view-btn {
+    flex: 1 1 100%;
+    justify-content: center;
+    margin-left: 0;
+    margin-top: 0.15rem;
+  }
+}
+
+@media (min-width: 721px) and (max-width: 960px) {
+  .mikrotik-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -19197,18 +19766,49 @@ a.packages-stat:focus-visible {
   }
 }
 
-.clients-general-usage-page .clients-general-usage-table-panel {
-  margin-top: 0.85rem;
-}
-
-.clients-general-usage-page .clients-general-usage-rank {
-  font-weight: 700;
-  width: 2.5rem;
-  color: var(--text-muted, #64748b);
-}
-
 .clients-general-usage-page .clients-general-usage-tabs {
   margin: 0 0 0.75rem;
+}
+
+.clients-general-usage-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.65rem 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.clients-general-usage-tools .clients-router-filter {
+  flex: 1 1 14rem;
+  max-width: 22rem;
+  margin: 0;
+}
+
+.clients-general-usage-router-note {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--sea) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sea) 16%, var(--border));
+}
+
+.clients-general-usage-router-note strong {
+  color: var(--ink);
+}
+
+.clients-general-usage-router-note a {
+  margin-left: 0.35rem;
+  font-weight: 700;
+  color: var(--sea);
+  text-decoration: none;
+}
+
+.clients-general-usage-router-note a:hover,
+.clients-general-usage-router-note a:focus-visible {
+  text-decoration: underline;
 }
 
 .clients-general-usage-page .clients-general-usage-widen-note {
@@ -19217,6 +19817,630 @@ a.packages-stat:focus-visible {
   border-radius: 10px;
   background: var(--cat-live-soft, rgba(46, 204, 113, 0.12));
   color: var(--text, inherit);
+}
+
+@media (max-width: 720px) {
+  .clients-general-usage-tools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .clients-general-usage-tools .clients-router-filter {
+    max-width: none;
+    width: 100%;
+  }
+}
+
+/* PPPoE / Hotspot users ranking table */
+.clients-usage-users-panel {
+  --users-tone: var(--sea, #0e7c86);
+  margin-top: 0.85rem;
+  gap: 1rem;
+}
+
+.clients-usage-users-panel.tone-pppoe { --users-tone: #0e7c86; }
+.clients-usage-users-panel.tone-hotspot { --users-tone: #059669; }
+
+.clients-usage-users-head {
+  margin: 0;
+}
+
+.clients-usage-users-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.clients-usage-users-ico {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 12px;
+  color: var(--users-tone);
+  background: color-mix(in srgb, var(--users-tone) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--users-tone) 18%, transparent);
+}
+
+.clients-usage-users-copy h2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.45rem;
+  margin: 0 0 0.25rem;
+  font-size: clamp(1.05rem, 0.98rem + 0.35vw, 1.2rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.clients-usage-users-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.55rem;
+  height: 1.4rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: color-mix(in srgb, var(--users-tone) 85%, #000);
+  background: color-mix(in srgb, var(--users-tone) 16%, transparent);
+}
+
+.clients-usage-users-copy .panel-sub {
+  margin: 0;
+}
+
+.clients-usage-users-shell {
+  border-radius: 16px;
+  overflow: auto;
+}
+
+.clients-usage-users-table {
+  min-width: 0;
+}
+
+.clients-usage-users-table thead th {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 800;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.clients-usage-user-row {
+  --row-tone: var(--users-tone);
+  animation: clientsRise 0.35s ease both;
+  animation-delay: calc(0.04s + (var(--i, 0) * 0.03s));
+  transition: background 0.15s ease;
+}
+
+.clients-usage-users-table tbody tr.clients-usage-user-row:hover td {
+  background: color-mix(in srgb, var(--users-tone) 5%, transparent);
+}
+
+.clients-usage-rank {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.85rem;
+  height: 1.85rem;
+  padding: 0 0.35rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: var(--surface-3, rgba(11, 31, 42, 0.06));
+  border: 1px solid var(--border);
+}
+
+.clients-usage-rank.is-top-1 {
+  color: #92400e;
+  background: linear-gradient(145deg, #fde68a, #fcd34d);
+  border-color: #f59e0b;
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.25);
+}
+
+.clients-usage-rank.is-top-2 {
+  color: #475569;
+  background: linear-gradient(145deg, #f1f5f9, #cbd5e1);
+  border-color: #94a3b8;
+}
+
+.clients-usage-rank.is-top-3 {
+  color: #9a3412;
+  background: linear-gradient(145deg, #fed7aa, #fdba74);
+  border-color: #fb923c;
+}
+
+.clients-usage-user-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.clients-usage-user-link .clients-avatar {
+  width: 2.15rem;
+  height: 2.15rem;
+  border-radius: 0.7rem;
+  font-size: 0.85rem;
+}
+
+.clients-usage-user-link:hover .clients-usage-user-name,
+.clients-usage-user-link:focus-visible .clients-usage-user-name {
+  color: var(--users-tone);
+}
+
+.clients-usage-user-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.clients-usage-user-name {
+  font-size: 0.92rem;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.clients-usage-user-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.2rem 0.35rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+
+.clients-usage-user-account {
+  font-variant-numeric: tabular-nums;
+}
+
+.clients-usage-user-sep {
+  opacity: 0.45;
+}
+
+.clients-usage-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.5rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.clients-usage-level.is-high {
+  color: #b42318;
+  background: rgba(231, 76, 60, 0.14);
+  border-color: rgba(231, 76, 60, 0.22);
+}
+
+.clients-usage-level.is-medium {
+  color: #9a6700;
+  background: rgba(232, 163, 23, 0.18);
+  border-color: rgba(232, 163, 23, 0.28);
+}
+
+.clients-usage-level.is-low {
+  color: #027a48;
+  background: rgba(46, 204, 113, 0.16);
+  border-color: rgba(46, 204, 113, 0.24);
+}
+
+.clients-usage-level.is-idle {
+  color: var(--ink-soft);
+  background: var(--surface-3, rgba(11, 31, 42, 0.08));
+  border-color: var(--border);
+}
+
+.clients-usage-data-cell {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 6.5rem;
+  max-width: 9.5rem;
+}
+
+.clients-usage-data-value {
+  font-size: 0.9rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.clients-usage-data-bar {
+  display: block;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--users-tone) 10%, var(--border));
+  overflow: hidden;
+}
+
+.clients-usage-data-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--users-tone) 70%, #fff), var(--users-tone));
+  transition: width 0.35s ease;
+}
+
+.clients-usage-rate-cell {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.clients-usage-rate-cell strong {
+  display: block;
+  font-size: 0.84rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.clients-usage-rate-cell small {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+}
+
+.clients-usage-downtime {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: var(--surface-3, rgba(11, 31, 42, 0.06));
+}
+
+.clients-usage-downtime.is-warn {
+  color: #b45309;
+  background: rgba(232, 163, 23, 0.16);
+}
+
+.clients-usage-gadgets {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  background: var(--surface-3, rgba(11, 31, 42, 0.06));
+}
+
+.clients-usage-gadgets.is-active {
+  color: #047857;
+  background: rgba(46, 204, 113, 0.16);
+}
+
+.clients-usage-online {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.clients-usage-online-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.clients-usage-online.is-on {
+  color: #047857;
+}
+
+.clients-usage-online.is-on .clients-usage-online-dot {
+  background: #2ecc71;
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.18);
+}
+
+.clients-usage-online.is-off {
+  color: var(--ink-soft);
+}
+
+.clients-usage-online.is-off .clients-usage-online-dot {
+  background: #94a3b8;
+}
+
+.clients-usage-online-ratio {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.clients-usage-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.38rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--users-tone) 28%, var(--border-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--users-tone) 10%, var(--surface-2));
+  color: color-mix(in srgb, var(--users-tone) 85%, #000);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+[data-theme="dark"] .clients-usage-view-btn {
+  color: var(--users-tone);
+}
+
+.clients-usage-view-btn:hover,
+.clients-usage-view-btn:focus-visible {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--users-tone) 45%, var(--border-strong));
+  background: color-mix(in srgb, var(--users-tone) 16%, var(--surface));
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.clients-usage-users-empty {
+  display: grid;
+  gap: 0.4rem;
+  justify-items: center;
+  text-align: center;
+  padding: 1.55rem 1.25rem;
+  border-radius: 16px;
+  border: 1px dashed color-mix(in srgb, var(--border) 85%, var(--users-tone, var(--sea)));
+  background: color-mix(in srgb, var(--users-tone, var(--sea)) 6%, transparent);
+}
+
+.clients-usage-users-empty-ico {
+  display: grid;
+  place-items: center;
+  width: 2.55rem;
+  height: 2.55rem;
+  margin-bottom: 0.15rem;
+  border-radius: 12px;
+  color: var(--users-tone, var(--sea));
+  background: color-mix(in srgb, var(--users-tone, var(--sea)) 14%, transparent);
+}
+
+.clients-usage-users-empty-title {
+  margin: 0;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.clients-usage-users-empty-copy {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  max-width: 42ch;
+  line-height: 1.5;
+}
+
+@media (min-width: 1101px) {
+  .clients-usage-users-table {
+    min-width: 68rem;
+  }
+
+  .clients-usage-users-table th:nth-child(1),
+  .clients-usage-users-table td:nth-child(1) { width: 3rem; }
+  .clients-usage-users-table th:nth-child(2),
+  .clients-usage-users-table td:nth-child(2) { min-width: 14rem; }
+  .clients-usage-users-table th:last-child,
+  .clients-usage-users-table td:last-child { width: 1%; white-space: nowrap; }
+}
+
+@media (max-width: 1100px) {
+  .clients-usage-users-shell {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .clients-usage-users-table {
+    width: 100%;
+    min-width: 0 !important;
+    border-collapse: separate;
+    border-spacing: 0 0.75rem;
+  }
+
+  .clients-usage-users-table thead {
+    display: none;
+  }
+
+  .clients-usage-users-table tbody {
+    display: grid;
+    gap: 0.85rem;
+  }
+
+  .clients-usage-users-table tr.clients-usage-user-row {
+    display: grid;
+    gap: 0.1rem;
+    margin: 0;
+    padding: 1rem 1.05rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 18px;
+    background:
+      linear-gradient(160deg, color-mix(in srgb, var(--users-tone) 7%, transparent), transparent 42%),
+      color-mix(in srgb, var(--surface-solid, var(--surface)) 94%, transparent);
+    box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
+  }
+
+  .clients-usage-users-table tr.clients-usage-user-row:hover td {
+    background: transparent;
+  }
+
+  .clients-usage-users-table th,
+  .clients-usage-users-table td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.85rem;
+    width: 100%;
+    min-width: 0 !important;
+    padding: 0.48rem 0;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+  }
+
+  .clients-usage-users-table td:last-child {
+    border-bottom: 0;
+    padding-top: 0.75rem;
+  }
+
+  .clients-usage-users-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    max-width: 38%;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .clients-usage-users-table td[data-label=""]::before,
+  .clients-usage-users-table td[data-label="#"]::before {
+    display: none;
+  }
+
+  .clients-usage-users-table td > * {
+    min-width: 0;
+    text-align: right;
+  }
+
+  .clients-usage-users-table td[data-label="Client"] {
+    display: grid;
+    gap: 0.3rem;
+    padding-top: 0;
+    padding-bottom: 0.8rem;
+    margin-bottom: 0.15rem;
+    border-bottom: 1px solid color-mix(in srgb, var(--users-tone) 14%, var(--border));
+  }
+
+  .clients-usage-users-table td[data-label="Client"]::before {
+    display: none;
+  }
+
+  .clients-usage-users-table td[data-label="Client"] .clients-usage-user-link,
+  .clients-usage-users-table td[data-label="Client"] .clients-usage-user-copy,
+  .clients-usage-users-table td[data-label="Client"] .clients-usage-user-name,
+  .clients-usage-users-table td[data-label="Client"] .clients-usage-user-meta {
+    text-align: left;
+  }
+
+  .clients-usage-users-table td[data-label="Client"] .clients-usage-user-link {
+    width: 100%;
+  }
+
+  .clients-usage-users-table td[data-label="#"] {
+    position: absolute;
+    top: 0.85rem;
+    right: 1rem;
+    width: auto;
+    padding: 0;
+    border: 0;
+  }
+
+  .clients-usage-users-table tr.clients-usage-user-row {
+    position: relative;
+    padding-top: 2.35rem;
+  }
+
+  .clients-usage-users-table td[data-label="Data used"] .clients-usage-data-cell {
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .clients-usage-users-table td[data-label="Status"] {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.15rem;
+  }
+
+  .clients-usage-users-table td[data-label=""] {
+    justify-content: stretch;
+  }
+
+  .clients-usage-users-table td[data-label=""]::before {
+    display: none;
+  }
+
+  .clients-usage-users-table td[data-label=""] .clients-usage-view-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .clients-usage-users-table tr[data-empty-row] td {
+    display: block;
+    padding: 0;
+    border: 0;
+  }
+
+  .clients-usage-users-table tr[data-empty-row] td::before {
+    display: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .clients-usage-users-table tr.clients-usage-user-row {
+    padding: 0.9rem 0.9rem;
+    padding-top: 2.2rem;
+  }
+
+  .clients-usage-users-table td[data-label="Peak"],
+  .clients-usage-users-table td[data-label="Lowest"] {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.35rem;
+  }
+
+  .clients-usage-users-table td[data-label="Peak"]::before,
+  .clients-usage-users-table td[data-label="Lowest"]::before {
+    max-width: none;
+  }
+
+  .clients-usage-users-table td[data-label="Peak"] .clients-usage-rate-cell,
+  .clients-usage-users-table td[data-label="Lowest"] .clients-usage-rate-cell {
+    text-align: left;
+  }
+}
+
+/* Legacy aliases kept for any cached markup */
+.clients-general-usage-page .clients-general-usage-table-panel {
+  margin-top: 0.85rem;
+}
+
+.clients-general-usage-page .clients-general-usage-rank {
+  font-weight: 700;
+  width: 2.5rem;
+  color: var(--text-muted, #64748b);
 }
 
 .clients-general-usage-table td strong {
@@ -19229,36 +20453,6 @@ a.packages-stat:focus-visible {
   margin-top: 0.12rem;
   opacity: 0.65;
   font-size: 0.75rem;
-}
-
-.clients-usage-level {
-  display: inline-block;
-  min-width: 4.2rem;
-  padding: 0.18rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-align: center;
-  background: var(--surface-3, rgba(11, 31, 42, 0.08));
-}
-
-.clients-usage-level.is-high {
-  color: #b42318;
-  background: rgba(231, 76, 60, 0.14);
-}
-
-.clients-usage-level.is-medium {
-  color: #9a6700;
-  background: rgba(232, 163, 23, 0.18);
-}
-
-.clients-usage-level.is-low {
-  color: #027a48;
-  background: rgba(46, 204, 113, 0.16);
-}
-
-.clients-usage-level.is-idle {
-  color: var(--text-muted, #64748b);
 }
 
 /* Client Wi?Fi settings -------------------------------------------------- */

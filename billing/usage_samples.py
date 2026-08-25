@@ -274,9 +274,21 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                     continue
 
     # Invalidate payload caches so the next read includes fresh samples.
+    router_keys = ["all", "none"]
+    if organization:
+        router_keys.extend(
+            str(rid)
+            for rid in MikroTikRouter.objects.filter(organization=organization).values_list(
+                "pk", flat=True
+            )
+        )
     for hours in _USAGE_RANGE_CACHE_HOURS:
         for top_n in (0, 25, 100, 200, 300):
             for service in ("all", "pppoe", "hotspot"):
+                for router_key in router_keys:
+                    cache.delete(
+                        f"org_usage_payload:v4:{organization.pk}:{hours}:{top_n}:{service}:{router_key}"
+                    )
                 cache.delete(
                     f"org_usage_payload:v3:{organization.pk}:{hours}:{top_n}:{service}"
                 )
@@ -617,8 +629,22 @@ def _usage_level_label(*, data_used_bytes: int, peak_download_bps: int, latest_a
     return "Idle"
 
 
+def _usage_router_cache_key(*, router_id: int | None = None, unassigned_only: bool = False) -> str:
+    if unassigned_only:
+        return "none"
+    if router_id:
+        return str(int(router_id))
+    return "all"
+
+
 def _build_org_usage_payload(
-    organization, *, hours: int = 24, top_n: int = 0, service: str = ""
+    organization,
+    *,
+    hours: int = 24,
+    top_n: int = 0,
+    service: str = "",
+    router_id: int | None = None,
+    unassigned_only: bool = False,
 ) -> dict[str, Any]:
     hours = clamp_usage_hours(hours)
     top_n = max(0, min(int(top_n if top_n is not None else 0), 5000))
@@ -638,6 +664,10 @@ def _build_org_usage_payload(
     )
     if service:
         customers_qs = customers_qs.filter(service_type=service)
+    if unassigned_only:
+        customers_qs = customers_qs.filter(router__isnull=True)
+    elif router_id:
+        customers_qs = customers_qs.filter(router_id=router_id)
     customers = {
         c.pk: c
         for c in customers_qs.select_related("plan", "router").order_by(
@@ -921,12 +951,34 @@ def _build_org_usage_payload(
     clients_total = len(customers)
     online_now = sum(1 for item in per_customer.values() if item["latest_active"])
     gadgets_online = sum(int(u.get("gadgets_connected") or 0) for u in top_users)
+    router_filter = _usage_router_cache_key(
+        router_id=router_id, unassigned_only=unassigned_only
+    )
+    router_label = ""
+    if unassigned_only:
+        router_label = "No router assigned"
+    elif router_id:
+        matched = next((c.router for c in customers.values() if c.router_id == router_id), None)
+        if matched:
+            router_label = matched.name
+        else:
+            from core.models import MikroTikRouter
+
+            router_label = (
+                MikroTikRouter.objects.filter(pk=router_id, organization=organization)
+                .values_list("name", flat=True)
+                .first()
+                or ""
+            )
     return {
         "ok": True,
         "hours": hours,
         "requested_hours": hours,
         "auto_widened": False,
         "service": service or "all",
+        "router_filter": router_filter if router_filter != "all" else "",
+        "router_id": router_id,
+        "router_name": router_label,
         "sample_count": len(samples),
         "meaningful_samples": meaningful_samples,
         "labels": labels,
@@ -1333,6 +1385,8 @@ def org_usage_payload(
     hours: int = 24,
     top_n: int = 0,
     service: str = "",
+    router_id: int | None = None,
+    unassigned_only: bool = False,
     auto_widen: bool = True,
     use_cache: bool = True,
 ) -> dict[str, Any]:
@@ -1343,8 +1397,11 @@ def org_usage_payload(
     hours = clamp_usage_hours(hours, default=24)
     top_n = max(0, min(int(top_n or 0), 5000))
     service = _normalize_usage_service(service)
+    router_key = _usage_router_cache_key(
+        router_id=router_id, unassigned_only=unassigned_only
+    )
     cache_key = (
-        f"org_usage_payload:v3:{organization.pk}:{hours}:{top_n}:{service or 'all'}"
+        f"org_usage_payload:v4:{organization.pk}:{hours}:{top_n}:{service or 'all'}:{router_key}"
     )
     if use_cache:
         cached = cache.get(cache_key)
@@ -1352,7 +1409,12 @@ def org_usage_payload(
             return cached
 
     payload = _build_org_usage_payload(
-        organization, hours=hours, top_n=top_n, service=service
+        organization,
+        hours=hours,
+        top_n=top_n,
+        service=service,
+        router_id=router_id,
+        unassigned_only=unassigned_only,
     )
     has_signal = bool(
         payload.get("summary", {}).get("data_used_bytes")
@@ -1365,7 +1427,12 @@ def org_usage_payload(
             if candidate <= hours:
                 continue
             wider = _build_org_usage_payload(
-                organization, hours=candidate, top_n=top_n, service=service
+                organization,
+                hours=candidate,
+                top_n=top_n,
+                service=service,
+                router_id=router_id,
+                unassigned_only=unassigned_only,
             )
             wider_signal = bool(
                 wider.get("summary", {}).get("data_used_bytes")

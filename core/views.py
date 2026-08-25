@@ -1764,6 +1764,12 @@ def _render_mikrotik_list(
     editing_router_id=None,
 ):
     client_settings = ClientSettings.get_solo()
+    router_qs = routers if routers is not None else _mikrotik_list_routers(org)
+    router_list = list(router_qs)
+    suspended_count = sum(
+        1 for r in router_list if getattr(r, "account_status", "") == "suspended"
+    )
+    active_count = len(router_list) - suspended_count
     return render(
         request,
         "core/mikrotik.html",
@@ -1772,7 +1778,10 @@ def _render_mikrotik_list(
             active_nav="mikrotik",
             page_title="MikroTik",
             page_subtitle="Manage MikroTik routers, interfaces, and device health for this ISP.",
-            routers=routers if routers is not None else _mikrotik_list_routers(org),
+            routers=router_list,
+            routers_total=len(router_list),
+            routers_active=active_count,
+            routers_suspended=suspended_count,
             onboard_form=onboard_form or MikroTikOnboardForm(),
             edit_form=edit_form or MikroTikEditDetailsForm(),
             mikrotik_models=mikrotik_model_catalog(),
@@ -4020,6 +4029,7 @@ def mikrotik_tunnel_script(request):
             mark_used=True,
         )
 
+    sync_info = wireguard.peer_sync_report(peer_sync)
     return JsonResponse(
         {
             "ok": True,
@@ -4029,18 +4039,17 @@ def mikrotik_tunnel_script(request):
             "script": payload["script"],
             "server_peer": payload["server_peer"],
             "endpoint": payload["endpoint"],
-            "peer_synced": bool(peer_sync.get("ok")),
-            "peer_sync_skipped": bool(peer_sync.get("skipped")),
-            "peer_sync_error": (peer_sync.get("error") or "").strip(),
+            "peer_synced": sync_info["peer_synced"],
+            "peer_sync_skipped": sync_info["peer_sync_skipped"],
+            "peer_sync_required": sync_info["peer_sync_required"],
+            "peer_sync_error": sync_info["peer_sync_error"],
+            "peer_sync_reason": sync_info["peer_sync_reason"],
             "status_token": signing.dumps(
                 {"address": payload["address"], "user_id": request.user.pk},
                 salt="mikrotik-tunnel-status",
                 compress=True,
             ),
-            "hint": (
-                "Script ready. Copy it and paste it into Winbox → New Terminal. "
-                "ISPCENTRIC will check the tunnel and API automatically."
-            ),
+            "hint": sync_info["peer_sync_hint"],
         }
     )
 
@@ -4233,6 +4242,23 @@ def mikrotik_tunnel_status(request):
     api_enabled = bool(probe.get("online") and via == "api")
     tunnel_reachable = bool(probe.get("online"))
 
+    diagnosis = {"code": "ok", "message": "", "peer_sync": {}, "peer": {}}
+    if not tunnel_reachable:
+        diagnosis = wireguard.ensure_reservation_peer(reservation)
+        # Peer may have just been applied — re-probe once.
+        if diagnosis.get("peer_sync", {}).get("ok"):
+            probe = check_mikrotik_reachable(address, timeout=0.8)
+            via = probe.get("via") or ""
+            api_enabled = bool(probe.get("online") and via == "api")
+            tunnel_reachable = bool(probe.get("online"))
+            if tunnel_reachable:
+                diagnosis = {
+                    "code": "ok",
+                    "message": "",
+                    "peer_sync": diagnosis.get("peer_sync") or {},
+                    "peer": diagnosis.get("peer") or {},
+                }
+
     if api_enabled:
         message = "Success — tunnel is online and RouterOS API is enabled on port 8728."
     elif tunnel_reachable:
@@ -4241,15 +4267,27 @@ def mikrotik_tunnel_status(request):
             "Wait for the script to finish or paste it again."
         )
     else:
-        message = "Waiting for MikroTik… paste the script in Winbox → New Terminal."
+        message = diagnosis.get("message") or (
+            "Waiting for MikroTik… paste the script in Winbox → New Terminal."
+        )
+
+    if tunnel_reachable:
+        peer_state = "ok"
+    else:
+        peer_state = diagnosis.get("code") or "unknown"
+        if peer_state == "ok":
+            peer_state = "unknown"
 
     checks = wireguard.tunnel_verification_checks(
         local_mode=False,
         address=address,
         tunnel_reachable=tunnel_reachable,
         api_enabled=api_enabled,
+        peer_state=peer_state,
     )
 
+    peer_sync = diagnosis.get("peer_sync") or {}
+    peer_info = diagnosis.get("peer") or {}
     return JsonResponse(
         {
             "ok": True,
@@ -4261,6 +4299,11 @@ def mikrotik_tunnel_status(request):
             "via": via,
             "message": message,
             "checks": checks,
+            "peer_state": peer_state,
+            "peer_synced": bool(peer_sync.get("ok") or peer_info.get("present") or tunnel_reachable),
+            "peer_present": bool(peer_info.get("present") or tunnel_reachable),
+            "handshake_age_sec": peer_info.get("handshake_age_sec"),
+            "peer_sync_error": (peer_sync.get("error") or "").strip(),
         }
     )
 
@@ -6630,6 +6673,50 @@ def client_usage(request, customer_id: int):
     return JsonResponse(payload)
 
 
+def _clients_usage_router_filter(request, org):
+    """Parse ?router= for usage analytics (all / none / MikroTik id)."""
+    router_raw = (request.GET.get("router") or "").strip()
+    clients_router_param = ""
+    clients_router_id = None
+    unassigned_only = False
+    if router_raw.lower() in {"none", "unassigned", "0"}:
+        clients_router_param = "none"
+        unassigned_only = True
+    elif router_raw.isdigit():
+        clients_router_id = int(router_raw)
+        clients_router_param = str(clients_router_id)
+        if org and not MikroTikRouter.objects.filter(
+            organization=org, pk=clients_router_id
+        ).exists():
+            clients_router_id = None
+            clients_router_param = ""
+
+    client_routers = []
+    if org:
+        client_routers = list(
+            MikroTikRouter.objects.filter(organization=org)
+            .order_by("name", "host")
+            .only("id", "name", "host")
+        )
+
+    router_filter_label = ""
+    if unassigned_only:
+        router_filter_label = "No router assigned"
+    elif clients_router_id:
+        router_filter_label = next(
+            (r.name for r in client_routers if r.pk == clients_router_id),
+            "",
+        )
+
+    return {
+        "client_routers": client_routers,
+        "clients_router_param": clients_router_param,
+        "clients_router_id": clients_router_id,
+        "clients_router_unassigned": unassigned_only,
+        "router_filter_label": router_filter_label,
+    }
+
+
 @client_workspace_required
 def clients_general_usage(request):
     """Organization-wide usage analytics and highest-users ranking."""
@@ -6645,6 +6732,7 @@ def clients_general_usage(request):
     tab = (request.GET.get("tab") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
         tab = "pppoe"
+    router_ctx = _clients_usage_router_filter(request, org)
 
     if org:
         try:
@@ -6652,7 +6740,13 @@ def clients_general_usage(request):
         except Exception:
             pass
         trends = org_usage_payload(
-            org, hours=hours, auto_widen=True, top_n=0, service=tab
+            org,
+            hours=hours,
+            auto_widen=True,
+            top_n=0,
+            service=tab,
+            router_id=router_ctx["clients_router_id"],
+            unassigned_only=router_ctx["clients_router_unassigned"],
         )
     else:
         trends = {
@@ -6700,6 +6794,7 @@ def clients_general_usage(request):
             trends_json=json.dumps(trends),
             top_users=trends.get("top_users") or [],
             trends_url=reverse("core:clients_general_usage_trends"),
+            **router_ctx,
         ),
     )
 
@@ -6722,6 +6817,7 @@ def clients_general_usage_trends(request):
     if tab not in {"pppoe", "hotspot"}:
         tab = "pppoe"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    router_ctx = _clients_usage_router_filter(request, org)
 
     try:
         sample_organization_usage(org, force=force)
@@ -6735,6 +6831,8 @@ def clients_general_usage_trends(request):
             use_cache=not force,
             top_n=0,
             service=tab,
+            router_id=router_ctx["clients_router_id"],
+            unassigned_only=router_ctx["clients_router_unassigned"],
         )
     )
 

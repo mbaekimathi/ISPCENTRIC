@@ -19,6 +19,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -151,6 +152,37 @@ def _endpoint() -> str:
             "for example isp.richcom.co.ke:51820."
         )
     return endpoint
+
+
+def _resolved_endpoint_host(host: str) -> str:
+    """
+    Prefer a literal IPv4 in generated scripts so MikroTiks without DNS still
+    dial the billing VPS (common on fresh routers with empty /ip dns servers).
+    """
+    host = (host or "").strip()
+    if not host:
+        return host
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
+        if infos:
+            return str(infos[0][4][0])
+    except OSError as exc:
+        logger.warning("Could not resolve WireGuard endpoint host %s: %s", host, exc)
+    return host
+
+
+def _router_listen_port(address: str) -> int:
+    """Unique UDP port per tunnel IP so several MikroTiks behind one NAT can coexist."""
+    try:
+        last = int(str(address).rsplit(".", 1)[-1])
+    except (TypeError, ValueError):
+        last = 31
+    return 13200 + max(1, min(last, 254))
 
 
 def _server_public_key() -> str:
@@ -289,8 +321,10 @@ def _ros_ping_probe(server: str, address: str) -> str:
         f"Tunnel {address} reaches billing server {server} - click Connect in ISPCENTRIC"
     )
     fail_message = (
-        f"No ping from {server}. Add this router [Peer] on VPS wg0, "
-        f"run: wg-quick down wg0; wg-quick up wg0, then re-paste or Connect"
+        f"No ping from {server}. On the VPS run: "
+        f"manage.py wireguard_peer --sync-server "
+        f"(or add [Peer] AllowedIPs={address}/32 on wg0 and restart), "
+        f"then re-paste or click Check now in ISPCENTRIC"
     )
     ping = f"[/ping {server} count=2]"
     lines = [
@@ -340,6 +374,225 @@ def can_apply_server_peers() -> bool:
     if server_on_tunnel():
         return True
     return bool((getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip())
+
+
+def peer_sync_report(peer_sync: dict | None) -> dict:
+    """
+    Normalize apply_server_peer() outcome for the Connect UI / tunnel-script API.
+
+    peer_sync_required: operator must fix VPS wg0 before Connect can succeed over
+    the tunnel (always true on failed apply; true on skip only when HOSTED).
+    """
+    peer_sync = peer_sync or {}
+    ok = bool(peer_sync.get("ok"))
+    skipped = bool(peer_sync.get("skipped"))
+    hosted = bool(getattr(settings, "HOSTED", False))
+    reason = (peer_sync.get("reason") or "").strip()
+    error = (peer_sync.get("error") or "").strip()
+
+    if ok:
+        return {
+            "peer_synced": True,
+            "peer_sync_skipped": False,
+            "peer_sync_required": False,
+            "peer_sync_error": "",
+            "peer_sync_reason": "",
+            "peer_sync_hint": (
+                "Script ready. Copy it and paste into Winbox → New Terminal. "
+                "ISPCENTRIC will verify the tunnel and API automatically."
+            ),
+        }
+
+    if skipped and not hosted:
+        return {
+            "peer_synced": False,
+            "peer_sync_skipped": True,
+            "peer_sync_required": False,
+            "peer_sync_error": error,
+            "peer_sync_reason": reason or "sync_unavailable",
+            "peer_sync_hint": (
+                "Local mode: paste the script, then Connect with the router LAN IP. "
+                "On the hosted VPS, set WIREGUARD_SYNC_COMMAND so peers register on wg0."
+            ),
+        }
+
+    if skipped:
+        hint = (
+            "This VPS could not register the router on WireGuard. "
+            "Set WIREGUARD_SYNC_COMMAND=sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh, "
+            "install sudoers for that script, then Generate again "
+            "(or run: manage.py wireguard_peer --sync-server)."
+        )
+        if reason == "sync_command_unset":
+            hint = (
+                "WIREGUARD_SYNC_COMMAND is missing on this VPS — peers never reach wg0. "
+                "Add it to .env with sudoers for wireguard_apply_peer.sh, restart the app, "
+                "then Generate again."
+            )
+        return {
+            "peer_synced": False,
+            "peer_sync_skipped": True,
+            "peer_sync_required": True,
+            "peer_sync_error": error or hint,
+            "peer_sync_reason": reason or "sync_unavailable",
+            "peer_sync_hint": hint,
+        }
+
+    return {
+        "peer_synced": False,
+        "peer_sync_skipped": False,
+        "peer_sync_required": True,
+        "peer_sync_error": error or "WireGuard peer sync failed on the VPS.",
+        "peer_sync_reason": reason or "sync_failed",
+        "peer_sync_hint": (
+            "Script is ready, but the billing server did not accept this peer yet. "
+            "Fix: "
+            + (error + " — " if error else "")
+            + "run manage.py wireguard_peer --sync-server on the VPS "
+            "(or paste the [Peer] block into /etc/wireguard/wg0.conf and restart wg-quick), "
+            "then paste the script in Winbox."
+        ),
+    }
+
+
+def inspect_server_peer(public_key: str) -> dict:
+    """
+    Read live WireGuard state for one peer on this host.
+
+    latest_handshake 0 means the peer exists but never completed a handshake.
+    """
+    public_key = (public_key or "").strip()
+    out: dict = {
+        "checked": False,
+        "present": False,
+        "handshake_age_sec": None,
+        "allowed_ips": "",
+        "error": "",
+    }
+    if not public_key:
+        out["error"] = "missing_public_key"
+        return out
+
+    iface = _wireguard_interface()
+    wg_bin = shutil.which("wg")
+    if not wg_bin:
+        out["error"] = "wg_not_found"
+        return out
+
+    try:
+        proc = subprocess.run(
+            [wg_bin, "show", iface, "dump"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except Exception as exc:
+        out["error"] = str(exc)
+        return out
+
+    if proc.returncode != 0:
+        out["error"] = (proc.stderr or proc.stdout or "wg show failed").strip()
+        return out
+
+    out["checked"] = True
+    now = int(time.time())
+    for line in (proc.stdout or "").splitlines()[1:]:
+        parts = line.split("\t")
+        if len(parts) < 5 or parts[0] != public_key:
+            continue
+        out["present"] = True
+        out["allowed_ips"] = parts[3] if len(parts) > 3 else ""
+        try:
+            latest = int(parts[4] or "0")
+        except ValueError:
+            latest = 0
+        if latest > 0:
+            out["handshake_age_sec"] = max(0, now - latest)
+        else:
+            out["handshake_age_sec"] = None
+        return out
+    return out
+
+
+def ensure_reservation_peer(reservation) -> dict:
+    """
+    Re-apply a pending reservation to wg0 and classify why the tunnel may be down.
+
+    Codes: ok | peer_missing | no_handshake | waiting_router | unknown
+    """
+    label = getattr(reservation, "label", None) or "MikroTik"
+    address = (getattr(reservation, "address", None) or "").strip()
+    public_key = (getattr(reservation, "public_key", None) or "").strip()
+
+    sync = apply_server_peer(label, address, public_key)
+    peer = inspect_server_peer(public_key)
+
+    if peer.get("checked") and not peer.get("present") and not sync.get("ok"):
+        return {
+            "code": "peer_missing",
+            "message": (
+                f"VPS wg0 does not have peer {address} yet. "
+                "Run manage.py wireguard_peer --sync-server "
+                "(or set WIREGUARD_SYNC_COMMAND), then Check now."
+            ),
+            "peer_sync": sync,
+            "peer": peer,
+        }
+
+    if peer.get("checked") and peer.get("present"):
+        age = peer.get("handshake_age_sec")
+        if age is None:
+            return {
+                "code": "no_handshake",
+                "message": (
+                    f"VPS has peer {address}, but WireGuard has no handshake yet. "
+                    "Paste the script in Winbox if you have not, and open UDP "
+                    f"{(_endpoint().partition(':')[2] or '51820')} toward this server."
+                ),
+                "peer_sync": sync,
+                "peer": peer,
+            }
+        if age > 180:
+            return {
+                "code": "no_handshake",
+                "message": (
+                    f"Last WireGuard handshake for {address} was {age}s ago. "
+                    "Re-paste the script on the MikroTik or check the router’s internet path."
+                ),
+                "peer_sync": sync,
+                "peer": peer,
+            }
+        return {
+            "code": "waiting_router",
+            "message": (
+                f"Handshake ok for {address}, but API is not open yet. "
+                "Wait for the Winbox script to finish, then Check now."
+            ),
+            "peer_sync": sync,
+            "peer": peer,
+        }
+
+    if sync.get("ok"):
+        return {
+            "code": "waiting_router",
+            "message": (
+                f"Peer {address} is registered on the VPS. "
+                "Paste the script in Winbox → New Terminal and wait for [ISPCENTRIC OK]."
+            ),
+            "peer_sync": sync,
+            "peer": peer,
+        }
+
+    return {
+        "code": "unknown",
+        "message": (
+            "Waiting for MikroTik… paste the script in Winbox → New Terminal. "
+            "If Winbox shows ping FAIL with an empty handshake, register this peer on VPS wg0."
+        ),
+        "peer_sync": sync,
+        "peer": peer,
+    }
 
 
 def _try_bring_up_interface() -> dict:
@@ -442,7 +695,26 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     if not configured():
         return {"ok": False, "skipped": True, "reason": "wireguard_not_configured"}
     if not can_apply_server_peers():
-        return {"ok": False, "skipped": True, "reason": "not_on_tunnel"}
+        sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+        if not sync_cmd and not server_on_tunnel():
+            return {
+                "ok": False,
+                "skipped": True,
+                "reason": "sync_command_unset",
+                "error": (
+                    "WIREGUARD_SYNC_COMMAND is empty — the app cannot update wg0. "
+                    "Set WIREGUARD_SYNC_COMMAND=sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh "
+                    "and install sudoers for that script."
+                ),
+            }
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "not_on_tunnel",
+            "error": (
+                f"This process is not bound to {server_address()} and has no sync helper."
+            ),
+        }
 
     public_key = (public_key or "").strip()
     address = (address or "").strip()
@@ -556,11 +828,13 @@ def tunnel_verification_checks(
     lan_address: str = "",
     subnet_mismatch: bool = False,
     multiple_devices: bool = False,
+    peer_state: str = "",
 ) -> list[dict[str, str]]:
     """
     Structured pass/fail rows for the Connect modal (mirrors Winbox script summary).
 
     Each item: key, status (ok|fail|warn|waiting), label, message.
+    peer_state (hosted only): ok | missing | no_handshake | waiting_router | unknown
     """
     server = str(server_address())
     checks: list[dict[str, str]] = []
@@ -644,48 +918,102 @@ def tunnel_verification_checks(
             )
         return checks
 
+    state = (peer_state or "").strip() or (
+        "ok" if tunnel_reachable else "unknown"
+    )
+    if tunnel_reachable:
+        state = "ok"
+
+    if state == "missing":
+        tunnel_status, tunnel_msg = (
+            "fail",
+            f"Tunnel IP {address} unreachable — VPS has not accepted this peer",
+        )
+        peer_status, peer_msg = (
+            "fail",
+            f"Missing on VPS wg0 — run wireguard_peer --sync-server (AllowedIPs={address}/32)",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"No route to {server} until the VPS peer exists",
+        )
+    elif state == "no_handshake":
+        tunnel_status, tunnel_msg = (
+            "fail",
+            f"Tunnel IP {address} unreachable — WireGuard handshake missing",
+        )
+        peer_status, peer_msg = (
+            "fail",
+            "Peer is on VPS wg0 but handshake is empty — paste script / open UDP to endpoint",
+        )
+        ping_status, ping_msg = (
+            "fail",
+            f"No ping to {server} until handshake succeeds",
+        )
+    elif state == "waiting_router":
+        tunnel_status, tunnel_msg = (
+            "waiting",
+            f"VPS peer ready — waiting for MikroTik {address} to come online",
+        )
+        peer_status, peer_msg = (
+            "ok",
+            f"Billing server accepts traffic to {address}",
+        )
+        ping_status, ping_msg = (
+            "waiting",
+            f"Waiting for router path to {server}",
+        )
+    elif tunnel_reachable:
+        tunnel_status, tunnel_msg = (
+            "ok",
+            f"Tunnel IP {address} reachable from billing server",
+        )
+        peer_status, peer_msg = (
+            "ok",
+            f"Billing server accepts traffic to {address}",
+        )
+        ping_status = "ok" if api_enabled else "warn"
+        ping_msg = (
+            f"Router can reach {server} and API is open — ready to Connect"
+            if api_enabled
+            else f"Tunnel up — confirm [ISPCENTRIC OK] ping line in Winbox"
+        )
+    else:
+        tunnel_status, tunnel_msg = (
+            "waiting",
+            "Waiting — paste script in Winbox New Terminal",
+        )
+        peer_status, peer_msg = (
+            "fail",
+            f"Add [Peer] AllowedIPs={address}/32 on VPS wg0, then wireguard_peer --sync-server",
+        )
+        ping_status, ping_msg = (
+            "waiting",
+            f"No route to {server} yet — register peer on VPS if Winbox handshake is empty",
+        )
+
     checks.append(
         {
             "key": "tunnel",
-            "status": "ok" if tunnel_reachable else "waiting",
+            "status": tunnel_status,
             "label": "WireGuard interface",
-            "message": (
-                f"Tunnel IP {address} reachable from billing server"
-                if tunnel_reachable
-                else "Waiting — paste script in Winbox New Terminal"
-            ),
+            "message": tunnel_msg,
         }
     )
     checks.append(
         {
             "key": "vps_peer",
-            "status": "ok" if tunnel_reachable else "fail",
+            "status": peer_status,
             "label": "VPS peer",
-            "message": (
-                f"Billing server accepts traffic to {address}"
-                if tunnel_reachable
-                else f"Add [Peer] AllowedIPs={address}/32 on VPS wg0, restart WireGuard"
-            ),
+            "message": peer_msg,
         }
     )
     checks.append(
         {
             "key": "billing_ping",
-            "status": (
-                "ok"
-                if tunnel_reachable and api_enabled
-                else ("waiting" if not tunnel_reachable else "warn")
-            ),
+            "status": ping_status,
             "label": f"Ping billing server {server}",
-            "message": (
-                f"Router can reach {server} and API is open — ready to Connect"
-                if tunnel_reachable and api_enabled
-                else (
-                    f"Tunnel up — confirm [ISPCENTRIC OK] ping line in Winbox"
-                    if tunnel_reachable
-                    else f"No route to {server} yet — register peer on VPS"
-                )
-            ),
+            "message": ping_msg,
         }
     )
     checks.append(
@@ -711,7 +1039,7 @@ def tunnel_verification_checks(
     checks.append(
         {
             "key": "firewall",
-            "status": "ok" if api_enabled else ("waiting" if tunnel_reachable else "waiting"),
+            "status": "ok" if api_enabled else "waiting",
             "label": "Firewall API rule",
             "message": (
                 "ispcentric-vpn-api rules active"
@@ -734,33 +1062,13 @@ def peer_payload(label: str, address: str, private_key: str, public_key: str) ->
     }
 
 
-def routeros_script(address: str, private_key: str) -> str:
-    """
-    Commands to paste into the MikroTik terminal to join the tunnel.
-
-    The interface name is fixed rather than per-site: a router has one tunnel to
-    the billing server. Every run removes all earlier ISPCENTRIC components
-    before installing the latest address, private key, server peer, and rules.
-
-    Besides bringing WireGuard up, the script always:
-    - deletes any previous ISPCENTRIC /system script and scheduler entries first
-    - force-enables the RouterOS API on port 8728 (compulsory for Connect)
-    - clears any /ip service address= restriction that silently blocks API
-    - accepts API + ICMP from the tunnel and private LANs in the input filter
-    - removes any old LAN-wide Hotspot bypasses (those opened free internet for everyone)
-    - bypasses Hotspot only for the billing WireGuard subnet (not customer LAN)
-    - prints [ISPCENTRIC OK/FAIL/WARN] after every step for Winbox visibility
-    - skips srcnat/masquerade for traffic to the tunnel so PPP client IPs survive
-    - retries ping for ~30s while WireGuard negotiates, then prints pass/fail
-
-    API access is locked down by firewall (tunnel + private LAN only), not by the
-    /ip service address= list — that property has broken silently on some
-    RouterOS builds and left API disabled, which blocks Connect entirely.
-
-    Do not Hotspot-bypass whole RFC1918 ranges. That made every unpaid Wi‑Fi
-    client look authorized. Customer internet stays per-MAC Hotspot users; the
-    billing server LAN IP is bypassed separately when Hotspot is applied.
-    """
+def _routeros_install_lines(
+    address: str,
+    private_key: str,
+    *,
+    include_cleanup: bool,
+) -> list[str]:
+    """RouterOS commands that install the billing tunnel (paste-safe, one line each)."""
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
     network = tunnel_network()
@@ -769,21 +1077,31 @@ def routeros_script(address: str, private_key: str) -> str:
     private_key = (private_key or "").strip()
     if not address or not private_key:
         raise ValueError("This peer has no tunnel address or key yet.")
+    endpoint_host = _resolved_endpoint_host(host)
+    listen_port = _router_listen_port(address)
+    endpoint_label = (
+        f"{endpoint_host}:{port}"
+        if endpoint_host != host
+        else f"{host}:{port}"
+    )
 
-    return "\n".join(
-        [
-            "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
-            "# Requires RouterOS 7. Safe to re-run: the newest script replaces the old one.",
-            _ros_info("Starting ISPCENTRIC tunnel install..."),
-            _ros_info("Look for [ISPCENTRIC OK] or [ISPCENTRIC FAIL] on each line below"),
-            "# 1) Delete any previous ISPCENTRIC scripts/schedulers saved on the router.",
+    lines: list[str] = [
+        _ros_info("ISPCENTRIC tunnel install running..."),
+        "# DNS for routers that reach the internet; endpoint uses VPS IP when possible.",
+        ':do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no ; '
+        f'{_ros_ok("DNS servers configured")} }} on-error='
+        f'{{{_ros_warn("DNS setup skipped - endpoint uses VPS IP")}}}',
+    ]
+
+    if include_cleanup:
+        lines += [
+            "# Remove any previous ISPCENTRIC tunnel before replacing it.",
             ':do { /system script remove [find where name~"ispcentric"] ; '
             f'/system script remove [find where comment~"ispcentric"] ; '
             f'/system scheduler remove [find where name~"ispcentric"] ; '
             f'/system scheduler remove [find where comment~"ispcentric"] ; '
             f'{_ros_ok("Old ISPCENTRIC scripts/schedulers removed")} }} on-error='
             f'{{{_ros_warn("Script/scheduler cleanup skipped (none found)")}}}',
-            "# 2) Remove the complete previous ISPCENTRIC tunnel, then install this version.",
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             '/ip firewall nat remove [find where comment="ispcentric-vpn-no-nat"]',
             ':do { /ip hotspot ip-binding remove [find where comment~"ispcentric-hotspot-bypass"] } '
@@ -794,151 +1112,211 @@ def routeros_script(address: str, private_key: str) -> str:
             "/ip address remove [find where interface=ispcentric-vpn]",
             "/interface wireguard remove [find where name=ispcentric-vpn]",
             _ros_ok("Previous ISPCENTRIC tunnel and rules removed"),
-            "# Install the latest tunnel interface, key, address, and VPS peer.",
-            "# >>> Required: the next line creates ispcentric-vpn (do not skip) <<<",
+        ]
+
+    lines += [
+        "# >>> Required: creates ispcentric-vpn (do not skip) <<<",
+        (
+            f':do {{ /interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
+            f'private-key="{private_key}" comment="ispcentric billing tunnel" ; '
+            f'{_ros_ok("WireGuard interface ispcentric-vpn created")} }} '
+            f'on-error={{{_ros_fail("WireGuard add failed - copy the add line from Connect and run it alone")}}}'
+        ),
+        (
+            f':do {{ /ip address add address={address}/{network.prefixlen} '
+            f'interface=ispcentric-vpn comment="ispcentric billing tunnel" ; '
+            f'{_ros_ok(f"Tunnel IP {address}/{network.prefixlen} assigned")} }} '
+            f'on-error={{{_ros_fail("Could not assign tunnel IP - WireGuard interface missing")}}}'
+        ),
+        (
+            f':do {{ /interface wireguard peers add interface=ispcentric-vpn '
+            f'public-key="{_server_public_key()}" endpoint-address={endpoint_host} endpoint-port={port} '
+            f"allowed-address={network} persistent-keepalive=25s "
+            f'comment="ispcentric billing server" ; '
+            f'{_ros_ok(f"VPS peer configured toward {endpoint_label}")} }} '
+            f'on-error={{{_ros_fail("VPS peer add failed - check WireGuard interface")}}}'
+        ),
+        _ros_check(
+            "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
+            "Verify: WireGuard interface exists",
+            "Verify: WireGuard interface missing - re-paste full script",
+        ),
+        _ros_check(
+            "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
+            "Verify: VPS peer row exists",
+            "Verify: VPS peer row missing",
+        ),
+        "# Compulsory: RouterOS API on 8728 - Connect cannot work without it.",
+        ":do { /ip service set [find where name=api] disabled=no port=8728 address=\"\" } on-error={}",
+        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service enable [find where name=api] } on-error={}",
+        _ros_check(
+            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+            "RouterOS API enabled on port 8728",
+            "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
+        ),
+        (
+            ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
+            '[/ip service get [find where name=api] address]) } on-error={'
+            f'{_ros_warn("Could not read API allowed-from list")}'
+            "}"
+        ),
+        (
+            f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
+            f'comment="ispcentric-vpn-hotspot-bypass" ; '
+            f'{_ros_ok(f"Hotspot bypass for billing subnet {network}")} }} '
+            f"on-error={{{_ros_warn('Hotspot bypass skipped (Hotspot may not be running)')}}}"
+        ),
+        "/ip firewall filter",
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 in-interface=ispcentric-vpn",
+            "ispcentric-vpn-api",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port=8728 src-address={network}",
+            "ispcentric-vpn-api-net",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=icmp in-interface=ispcentric-vpn",
+            "ispcentric-vpn-icmp",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=icmp src-address={network}",
+            "ispcentric-vpn-icmp-net",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
+            "ispcentric-vpn-api-lan-10",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
+            "ispcentric-vpn-api-lan-172",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
+            "ispcentric-vpn-api-lan-192",
+        ),
+        _ros_check(
+            '[:len [find where comment="ispcentric-vpn-api"]] > 0',
+            "Input firewall rules for API and ICMP installed",
+            "API firewall rule missing - run: /ip firewall filter print",
+        ),
+        "/ip firewall nat",
+        _ros_nat_add(f"action=accept dst-address={network}", "ispcentric-vpn-no-nat"),
+        _ros_check(
+            '[:len [find where comment="ispcentric-vpn-no-nat"]] > 0',
+            "Srcnat bypass for billing tunnel installed",
+            "No-nat rule missing - run: /ip firewall nat print",
+        ),
+        _ros_info("Probing tunnel to billing server (retries ~20s)..."),
+        *_ros_ping_probe(server, address).splitlines(),
+        (
+            ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
+            '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
+            'last-handshake]) } on-error={'
+            f'{_ros_warn("No handshake yet - VPS must have this [Peer] on wg0 (wireguard_peer --sync-server), then wait or re-paste")}'
+            "}"
+        ),
+        ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
+        "/system backup",
+        "save name=ispcentric-tunnel dont-encrypt=yes",
+        _ros_ok("Backup saved as ispcentric-tunnel.backup"),
+        _ros_info("---------- ISPCENTRIC summary ----------"),
+        _ros_check(
+            "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
+            "Summary: WireGuard interface",
+            "Summary: WireGuard interface",
+        ),
+        _ros_check(
+            "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
+            "Summary: VPS peer",
+            "Summary: VPS peer",
+        ),
+        _ros_check(
+            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+            "Summary: API port 8728",
+            "Summary: API port 8728",
+        ),
+        _ros_check(
+            '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0',
+            "Summary: Firewall API rule",
+            "Summary: Firewall API rule",
+        ),
+        _ros_check(
+            f'[/ping {server} count=1] > 0',
+            f"Summary: Ping to billing server {server}",
+            f"Summary: Ping to billing server {server} (VPS peer / handshake missing)",
+        ),
+        _ros_info(
+            "If ping FAIL: run wireguard_peer --sync-server on VPS, then Check now in ISPCENTRIC"
+        ),
+        _ros_info("---------- end ISPCENTRIC install ----------"),
+    ]
+    return lines
+
+
+def _routeros_factory_reset_wrapper(install_lines: list[str]) -> str:
+    """
+    Save install commands, factory-reset the router (keep admin passwords), then
+    run the installer automatically after reboot via run-after-reset.
+    """
+    return "\n".join(
+        [
+            "# ISPCENTRIC billing tunnel - paste once into Winbox -> New Terminal.",
+            "# FACTORY RESET: removes ALL MikroTik config except admin passwords.",
+            "# Winbox disconnects in ~5s; reconnect by MAC/IP after reboot (~2 min).",
+            "# Tunnel + API install runs automatically after reset.",
+            _ros_warn(
+                "Factory reset scheduled - every setting except admin passwords will be cleared"
+            ),
+            '/system script remove [find where name="ispcentric-post-reset"]',
+            '/system scheduler remove [find where name="ispcentric-post-reset"]',
             (
-                f':do {{ /interface wireguard add name=ispcentric-vpn listen-port=13231 '
-                f'private-key="{private_key}" comment="ispcentric billing tunnel" ; '
-                f'{_ros_ok("WireGuard interface ispcentric-vpn created")} }} '
-                f'on-error={{{_ros_fail("WireGuard add failed - copy the add line from Connect and run it alone")}}}'
+                '/system script add name=ispcentric-post-reset '
+                'dont-require-permissions=yes comment="ISPCENTRIC billing tunnel auto-install" '
+                "source={"
             ),
+            *install_lines,
+            "}",
+            _ros_ok("Saved post-reset installer ispcentric-post-reset"),
+            _ros_info("Factory reset in 5 seconds - Winbox will disconnect"),
+            ":delay 5s",
             (
-                f':do {{ /ip address add address={address}/{network.prefixlen} '
-                f'interface=ispcentric-vpn comment="ispcentric billing tunnel" ; '
-                f'{_ros_ok(f"Tunnel IP {address}/{network.prefixlen} assigned")} }} '
-                f'on-error={{{_ros_fail("Could not assign tunnel IP - WireGuard interface missing")}}}'
+                "/system reset-configuration keep-users=yes skip-backup=yes "
+                "run-after-reset=ispcentric-post-reset"
             ),
-            (
-                f':do {{ /interface wireguard peers add interface=ispcentric-vpn '
-                f'public-key="{_server_public_key()}" endpoint-address={host} endpoint-port={port} '
-                f"allowed-address={network} persistent-keepalive=25s "
-                f'comment="ispcentric billing server" ; '
-                f'{_ros_ok(f"VPS peer configured toward {host}:{port}")} }} '
-                f'on-error={{{_ros_fail("VPS peer add failed - check WireGuard interface")}}}'
-            ),
-            _ros_check(
-                "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
-                "Verify: WireGuard interface exists",
-                "Verify: WireGuard interface missing - re-paste full script",
-            ),
-            _ros_check(
-                "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
-                "Verify: VPS peer row exists",
-                "Verify: VPS peer row missing",
-            ),
-            "# Compulsory: RouterOS API on 8728 - Connect cannot work without it.",
-            "# Clear address= restrictions (empty + 0.0.0.0/0) - a LAN-only list looks",
-            "# like 'connection refused' from the billing PC / tunnel.",
-            ":do { /ip service set [find where name=api] disabled=no port=8728 address=\"\" } on-error={}",
-            ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-            ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-            ":do { /ip service enable [find where name=api] } on-error={}",
-            _ros_check(
-                "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-                "RouterOS API enabled on port 8728",
-                "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
-            ),
-            (
-                ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
-                '[/ip service get [find where name=api] address]) } on-error={'
-                f'{_ros_warn("Could not read API allowed-from list")}'
-                "}"
-            ),
-            "# Hotspot may still sit on the LAN; only the billing tunnel subnet may bypass.",
-            "# Never bypass 10/8, 172.16/12, or 192.168/16 - that opens free internet for all clients.",
-            (
-                f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
-                f'comment="ispcentric-vpn-hotspot-bypass" ; '
-                f'{_ros_ok(f"Hotspot bypass for billing subnet {network}")} }} '
-                f"on-error={{{_ros_warn('Hotspot bypass skipped (Hotspot may not be running)')}}}"
-            ),
-            "# Allow API + ICMP from the billing tunnel (not the public WAN).",
-            "# place-before=0 fails on empty chains - each add falls back to append.",
-            "/ip firewall filter",
-            _ros_filter_add(
-                "action=accept protocol=tcp dst-port=8728 in-interface=ispcentric-vpn",
-                "ispcentric-vpn-api",
-            ),
-            _ros_filter_add(
-                f"action=accept protocol=tcp dst-port=8728 src-address={network}",
-                "ispcentric-vpn-api-net",
-            ),
-            _ros_filter_add(
-                "action=accept protocol=icmp in-interface=ispcentric-vpn",
-                "ispcentric-vpn-icmp",
-            ),
-            _ros_filter_add(
-                f"action=accept protocol=icmp src-address={network}",
-                "ispcentric-vpn-icmp-net",
-            ),
-            _ros_filter_add(
-                "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
-                "ispcentric-vpn-api-lan-10",
-            ),
-            _ros_filter_add(
-                "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
-                "ispcentric-vpn-api-lan-172",
-            ),
-            _ros_filter_add(
-                "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
-                "ispcentric-vpn-api-lan-192",
-            ),
-            _ros_check(
-                '[:len [find where comment="ispcentric-vpn-api"]] > 0',
-                "Input firewall rules for API and ICMP installed",
-                "API firewall rule missing - run: /ip firewall filter print",
-            ),
-            "# Keep client/PPP source IPs intact when talking to the billing tunnel.",
-            "/ip firewall nat",
-            _ros_nat_add(f"action=accept dst-address={network}", "ispcentric-vpn-no-nat"),
-            _ros_check(
-                '[:len [find where comment="ispcentric-vpn-no-nat"]] > 0',
-                "Srcnat bypass for billing tunnel installed",
-                "No-nat rule missing - run: /ip firewall nat print",
-            ),
-            _ros_info("Probing tunnel to billing server (retries ~20s)..."),
-            *_ros_ping_probe(server, address).splitlines(),
-            (
-                ':do { :put ("[ISPCENTRIC] WireGuard last-handshake: " . '
-                '[/interface wireguard peers get [find where interface=ispcentric-vpn] '
-                'last-handshake]) } on-error={'
-                f'{_ros_warn("No handshake yet - add [Peer] on VPS wg0 and restart WireGuard")}'
-                "}"
-            ),
-            "# Replace the old backup so it always contains the latest tunnel.",
-            ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
-            "/system backup",
-            "save name=ispcentric-tunnel dont-encrypt=yes",
-            _ros_ok("Backup saved as ispcentric-tunnel.backup"),
-            _ros_info("---------- ISPCENTRIC summary ----------"),
-            _ros_check(
-                "[:len [/interface wireguard find where name=ispcentric-vpn]] > 0",
-                "Summary: WireGuard interface",
-                "Summary: WireGuard interface",
-            ),
-            _ros_check(
-                "[:len [/interface wireguard peers find where interface=ispcentric-vpn]] > 0",
-                "Summary: VPS peer",
-                "Summary: VPS peer",
-            ),
-            _ros_check(
-                "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-                "Summary: API port 8728",
-                "Summary: API port 8728",
-            ),
-            _ros_check(
-                '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0',
-                "Summary: Firewall API rule",
-                "Summary: Firewall API rule",
-            ),
-            _ros_check(
-                f'[/ping {server} count=1] > 0',
-                f"Summary: Ping to billing server {server}",
-                f"Summary: Ping to billing server {server} (add VPS [Peer] if FAIL)",
-            ),
-            _ros_info("If all lines above show OK and ping FAIL, add [Peer] on VPS wg0"),
-            _ros_info("Then click Connect in ISPCENTRIC when ping shows OK"),
-            _ros_info("---------- end ISPCENTRIC install ----------"),
+        ]
+    )
+
+
+def routeros_script(address: str, private_key: str, *, factory_reset: bool = True) -> str:
+    """
+    Commands to paste into the MikroTik terminal to join the tunnel.
+
+    When factory_reset is True (default for Connect onboarding), the paste:
+    1. Saves a post-reset installer script on the router
+    2. Factory-resets to RouterOS defaults (admin passwords kept via keep-users)
+    3. Runs the tunnel/API install automatically after reboot
+
+    When factory_reset is False, only replaces previous ISPCENTRIC components
+    in-place (no factory reset) — useful for re-runs on live routers.
+    """
+    install = _routeros_install_lines(
+        address,
+        private_key,
+        include_cleanup=not factory_reset,
+    )
+    if factory_reset:
+        return _routeros_factory_reset_wrapper(install)
+
+    return "\n".join(
+        [
+            "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
+            "# Requires RouterOS 7. Safe to re-run: replaces previous ISPCENTRIC config only.",
+            _ros_info("Starting ISPCENTRIC tunnel install (no factory reset)..."),
+            _ros_info("Look for [ISPCENTRIC OK] or [ISPCENTRIC FAIL] on each line below"),
+            *install,
         ]
     )
 

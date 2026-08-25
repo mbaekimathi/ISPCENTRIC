@@ -1,4 +1,5 @@
 from io import StringIO
+import socket
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -46,15 +47,28 @@ class WireGuardKeyTests(SimpleTestCase):
     def test_routeros_script_carries_both_sides_of_the_tunnel(self):
         private_key, _ = wireguard.generate_keypair()
 
-        script = wireguard.routeros_script("10.9.0.3", private_key)
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        ):
+            script = wireguard.routeros_script("10.9.0.3", private_key, factory_reset=False)
 
         self.assertIn(f'private-key="{private_key}"', script)
         self.assertIn(f'public-key="{SERVER_PUBLIC_KEY}"', script)
-        self.assertIn("endpoint-address=isp.richcom.co.ke", script)
+        self.assertIn("endpoint-address=203.0.113.50", script)
+        self.assertNotIn("endpoint-address=isp.richcom.co.ke", script)
         self.assertIn("endpoint-port=51820", script)
+        self.assertIn("listen-port=13203", script)
         self.assertIn("address=10.9.0.3/24", script)
         # The API has to survive the router's input chain to be of any use.
         self.assertIn("dst-port=8728", script)
+
+    def test_routeros_script_keeps_literal_ip_endpoint(self):
+        with override_settings(WIREGUARD_ENDPOINT="203.0.113.50:51820"):
+            private_key, _ = wireguard.generate_keypair()
+            script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=False)
+        self.assertIn("endpoint-address=203.0.113.50", script)
+        self.assertIn("listen-port=13212", script)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -64,7 +78,7 @@ class WireGuardKeyTests(SimpleTestCase):
     def test_routeros_script_hardens_api_skips_nat_and_verifies_tunnel(self):
         private_key, _ = wireguard.generate_keypair()
 
-        script = wireguard.routeros_script("10.9.0.3", private_key)
+        script = wireguard.routeros_script("10.9.0.3", private_key, factory_reset=False)
 
         # Compulsory API enable — Connect dials 8728 over the tunnel / LAN.
         self.assertIn(
@@ -122,7 +136,7 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("[ISPCENTRIC OK] WireGuard interface ispcentric-vpn created", script)
         self.assertIn("[ISPCENTRIC OK] Input firewall rules for API and ICMP installed", script)
         self.assertIn("---------- ISPCENTRIC summary ----------", script)
-        self.assertIn("Required: the next line creates ispcentric-vpn", script)
+        self.assertIn("Required: creates ispcentric-vpn", script)
         self.assertIn("save name=ispcentric-tunnel", script)
         # Idempotent cleanup for re-runs.
         self.assertIn(
@@ -152,12 +166,33 @@ class WireGuardKeyTests(SimpleTestCase):
         WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
         WIREGUARD_SUBNET="10.9.0.0/24",
     )
+    def test_routeros_script_factory_reset_wraps_post_reset_installer(self):
+        private_key, _ = wireguard.generate_keypair()
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        ):
+            script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
+        self.assertIn("FACTORY RESET", script)
+        self.assertIn('name=ispcentric-post-reset', script)
+        self.assertIn("keep-users=yes", script)
+        self.assertIn("run-after-reset=ispcentric-post-reset", script)
+        self.assertIn("reset-configuration", script)
+        self.assertIn(f'private-key="{private_key}"', script)
+        self.assertIn("endpoint-address=203.0.113.50", script)
+        self.assertNotIn("/interface wireguard remove", script)
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
     def test_new_script_removes_every_old_tunnel_component_before_replacing_it(self):
         old_private_key, _ = wireguard.generate_keypair()
         latest_private_key, _ = wireguard.generate_keypair()
 
-        old_script = wireguard.routeros_script("10.9.0.3", old_private_key)
-        latest_script = wireguard.routeros_script("10.9.0.4", latest_private_key)
+        old_script = wireguard.routeros_script("10.9.0.3", old_private_key, factory_reset=False)
+        latest_script = wireguard.routeros_script("10.9.0.4", latest_private_key, factory_reset=False)
 
         self.assertIn(f'private-key="{old_private_key}"', old_script)
         self.assertNotIn(old_private_key, latest_script)
@@ -2519,6 +2554,35 @@ class TunnelStatusTests(TestCase):
         self.assertEqual(checks[1]["status"], "fail")
         self.assertIn("[Peer]", checks[1]["message"])
 
+        missing = wireguard.tunnel_verification_checks(
+            local_mode=False,
+            address="10.9.0.4",
+            tunnel_reachable=False,
+            api_enabled=False,
+            peer_state="missing",
+        )
+        self.assertEqual(missing[1]["status"], "fail")
+        self.assertIn("sync-server", missing[1]["message"])
+
+        no_hs = wireguard.tunnel_verification_checks(
+            local_mode=False,
+            address="10.9.0.4",
+            tunnel_reachable=False,
+            api_enabled=False,
+            peer_state="no_handshake",
+        )
+        self.assertEqual(no_hs[1]["status"], "fail")
+        self.assertIn("handshake", no_hs[1]["message"].lower())
+
+        waiting = wireguard.tunnel_verification_checks(
+            local_mode=False,
+            address="10.9.0.4",
+            tunnel_reachable=False,
+            api_enabled=False,
+            peer_state="waiting_router",
+        )
+        self.assertEqual(waiting[1]["status"], "ok")
+
         ready = wireguard.tunnel_verification_checks(
             local_mode=False,
             address="10.9.0.4",
@@ -2526,6 +2590,90 @@ class TunnelStatusTests(TestCase):
             api_enabled=True,
         )
         self.assertTrue(all(item["status"] == "ok" for item in ready))
+
+    def test_peer_sync_report_marks_hosted_skip_as_required(self):
+        with override_settings(HOSTED=True):
+            report = wireguard.peer_sync_report(
+                {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "sync_command_unset",
+                    "error": "WIREGUARD_SYNC_COMMAND is empty",
+                }
+            )
+        self.assertTrue(report["peer_sync_required"])
+        self.assertFalse(report["peer_synced"])
+        self.assertIn("WIREGUARD_SYNC_COMMAND", report["peer_sync_hint"])
+
+    def test_peer_sync_report_local_skip_is_not_required(self):
+        with override_settings(HOSTED=False):
+            report = wireguard.peer_sync_report(
+                {"ok": False, "skipped": True, "reason": "sync_command_unset"}
+            )
+        self.assertFalse(report["peer_sync_required"])
+        self.assertTrue(report["peer_sync_skipped"])
+
+    def test_inspect_server_peer_parses_wg_dump(self):
+        dump = (
+            "private\tpublic\t51820\toff\n"
+            f"{SERVER_PUBLIC_KEY}\t(none)\t(none)\t10.9.0.8/32\t0\t0\t0\toff\n"
+        )
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+            ),
+            patch("core.wireguard.shutil.which", return_value="wg"),
+            patch("core.wireguard.subprocess.run") as run,
+        ):
+            run.return_value.returncode = 0
+            run.return_value.stdout = dump
+            run.return_value.stderr = ""
+            info = wireguard.inspect_server_peer(SERVER_PUBLIC_KEY)
+        self.assertTrue(info["checked"])
+        self.assertTrue(info["present"])
+        self.assertIsNone(info["handshake_age_sec"])
+
+    def test_ensure_reservation_peer_reports_missing(self):
+        class _Res:
+            label = "Site"
+            address = "10.9.0.8"
+            public_key = SERVER_PUBLIC_KEY
+
+        with (
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": False, "skipped": False, "error": "denied"},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={
+                    "checked": True,
+                    "present": False,
+                    "handshake_age_sec": None,
+                    "error": "",
+                },
+            ),
+        ):
+            result = wireguard.ensure_reservation_peer(_Res())
+        self.assertEqual(result["code"], "peer_missing")
+        self.assertIn("sync-server", result["message"])
+
+    def test_apply_server_peer_reports_sync_command_unset(self):
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                WIREGUARD_SYNC_COMMAND="",
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            result = wireguard.apply_server_peer(
+                "Site A", "10.9.0.8", SERVER_PUBLIC_KEY
+            )
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "sync_command_unset")
+        self.assertIn("WIREGUARD_SYNC_COMMAND", result["error"])
 
 
 class MikroTikDeleteTests(TestCase):

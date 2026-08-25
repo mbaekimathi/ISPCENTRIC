@@ -3,134 +3,222 @@
 {% block title %}MikroTik — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Routers{% if routers %} ({{ routers|length }}){% endif %}</h2>
-      <p class="panel-sub">Onboarded MikroTik devices for Hotspot, PPPoE, and live health checks.</p>
+<div class="mikrotik-page">
+  <header class="mikrotik-hero">
+    <div class="mikrotik-hero-main">
+      <span class="mikrotik-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
+      </span>
+      <div class="mikrotik-hero-copy">
+        <p class="mikrotik-kicker">Network equipment</p>
+        <h2 class="mikrotik-title">MikroTik routers</h2>
+        <p class="mikrotik-lead">
+          {{ page_subtitle|default:"Onboard devices, monitor live health, and manage Hotspot and PPPoE from one place." }}
+        </p>
+      </div>
     </div>
-    <div class="panel-head-actions">
-      <button type="button" class="btn btn-ghost" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
+    <div class="mikrotik-hero-actions">
+      <button type="button" class="btn btn-ghost mikrotik-hero-btn" id="mikrotik-refresh-status" {% if not routers %}disabled{% endif %}>
         <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12a8 8 0 0 1 14.1-5.1M20 12a8 8 0 0 1-14.1 5.1M16 4v4h4M8 20v-4H4"/></svg>
         <span class="mikrotik-btn-label">Refresh status</span>
       </button>
-      <button type="button" class="btn btn-primary" data-open-mikrotik-onboard>Connect to a New MikroTik</button>
+      <button type="button" class="btn btn-primary mikrotik-hero-btn" data-open-mikrotik-onboard>
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+        <span>Connect MikroTik</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="mikrotik-stats" aria-label="Router counts">
+    <div class="mikrotik-stat tone-total" style="--i:0">
+      <span class="mikrotik-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
+      </span>
+      <div class="mikrotik-stat-text">
+        <p class="mikrotik-stat-label">Total routers</p>
+        <p class="mikrotik-stat-value">{{ routers_total|default:0 }}</p>
+      </div>
+    </div>
+    <div class="mikrotik-stat tone-active" style="--i:1">
+      <span class="mikrotik-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1.2 14.4-3.7-3.7 1.4-1.4 2.3 2.3 4.9-4.9 1.4 1.4z"/></svg>
+      </span>
+      <div class="mikrotik-stat-text">
+        <p class="mikrotik-stat-label">Active</p>
+        <p class="mikrotik-stat-value">{{ routers_active|default:0 }}</p>
+      </div>
+    </div>
+    <div class="mikrotik-stat tone-suspended" style="--i:2">
+      <span class="mikrotik-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"/></svg>
+      </span>
+      <div class="mikrotik-stat-text">
+        <p class="mikrotik-stat-label">Suspended</p>
+        <p class="mikrotik-stat-value">{{ routers_suspended|default:0 }}</p>
+      </div>
     </div>
   </div>
 
-  {% if routers %}
-    <div class="org-table-shell">
-      <table class="org-table org-table-mikrotik">
-        <thead>
-          <tr>
-            <th>Router</th>
-            <th>Connection</th>
-            <th>Location</th>
-            <th>Wi‑Fi</th>
-            <th>Username</th>
-            <th>Account</th>
-            <th>Manage</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for router in routers %}
-            <tr data-router-row="{{ router.id }}" class="mikrotik-router-row{% if router.account_status == 'suspended' %} is-suspended{% endif %}">
-              <td data-label="Router">
-                <div class="mikrotik-router-primary">
-                  <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
-                  <small class="lead-location-line">
-                    <span class="mikrotik-router-model">{{ router.get_model_display }}</span>
-                    ·
-                    <span class="mikrotik-router-serial" data-router-serial-cell="{{ router.id }}">{% if router.serial_number %}SN {{ router.serial_number }}{% else %}SN —{% endif %}</span>
-                  </small>
-                </div>
-              </td>
-              <td data-label="Connection">
-                <div class="mikrotik-router-connection">
-                  <span class="org-code mikrotik-router-host" data-router-host-cell="{{ router.id }}">{{ router.host }}</span>
-                  <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
-                    <span class="mikrotik-link-spinner" aria-hidden="true"></span>
-                    <span class="mikrotik-link-dot" aria-hidden="true"></span>
-                    <span class="mikrotik-link-label">Checking…</span>
-                  </span>
-                </div>
-              </td>
-              <td data-label="Location">{{ router.location|default:"—" }}</td>
-              <td data-label="Wi‑Fi">{{ router.wifi_ssid|default:"—" }}</td>
-              <td data-label="Username"><span class="org-code">{{ router.username }}</span></td>
-              <td data-label="Account">
-                <span class="org-status org-status-{{ router.account_status }}">
-                  {{ router.get_account_status_display }}
-                </span>
-              </td>
-              <td data-label="Manage">
-                <div class="org-actions org-actions-icons">
-                  <button
-                    type="button"
-                    class="org-action-icon mikrotik-reconnect-btn"
-                    data-reconnect-router="{{ router.id }}"
-                    data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
-                    data-router-name="{{ router.name }}"
-                    data-router-host="{{ router.host }}"
-                    data-router-username="{{ router.username }}"
-                    aria-label="Reconnect {{ router.name }}"
-                    {% if router.account_status == 'suspended' %}disabled title="Activate account first"{% else %}title="Repair connection and bring this MikroTik back online"{% endif %}
-                  >
-                    <svg class="mikrotik-reconnect-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                      <path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6a6 6 0 0 1-9.66 4.72L7.05 19a8 8 0 0 0 12.9-6 8 8 0 0 0-8-8zm-6 7c0-1.18.33-2.28.9-3.22L5.55 7.4A9.96 9.96 0 0 0 4 12c0 5.01 3.67 9.15 8.43 9.88l.9-1.97C9.06 19.35 6 15.99 6 12z"/>
-                    </svg>
-                    <span class="mikrotik-reconnect-label visually-hidden">Reconnect</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="org-action-icon {% if router.account_status == 'suspended' %}org-action-success{% else %}org-action-warn{% endif %} mikrotik-suspend-btn"
-                    data-suspend-router="{{ router.id }}"
-                    data-suspend-url="{% url 'core:mikrotik_suspend' router.id %}"
-                    data-router-name="{{ router.name }}"
-                    data-router-host="{{ router.host }}"
-                    data-account-status="{{ router.account_status }}"
-                    title="{% if router.account_status == 'suspended' %}Activate this MikroTik account{% else %}Suspend this MikroTik account{% endif %}"
-                    aria-label="{% if router.account_status == 'suspended' %}Activate{% else %}Suspend{% endif %} {{ router.name }}"
-                  >
-                    {% if router.account_status == 'suspended' %}
-                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1.2 14.4-3.7-3.7 1.4-1.4 2.3 2.3 4.9-4.9 1.4 1.4z"/></svg>
-                    {% else %}
-                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"/></svg>
-                    {% endif %}
-                  </button>
-                  <button
-                    type="button"
-                    class="org-action-icon org-action-danger mikrotik-delete-btn"
-                    data-delete-router="{{ router.id }}"
-                    data-delete-url="{% url 'core:mikrotik_delete' router.id %}"
-                    data-router-name="{{ router.name }}"
-                    data-router-host="{{ router.host }}"
-                    data-customer-count="{{ router.customer_count|default:0 }}"
-                    title="Remove this MikroTik from the system"
-                    aria-label="Delete {{ router.name }}"
-                  >
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 7h12v2H6zm2 3h8l-.7 10.1a1.5 1.5 0 0 1-1.5 1.4H10.2a1.5 1.5 0 0 1-1.5-1.4L8 10zm3-5h2l1 1h4v2H6V6h4z"/></svg>
-                  </button>
-                  <a
-                    class="mikrotik-view-btn"
-                    href="{% url 'core:mikrotik_detail' router.id %}"
-                    title="View router"
-                    aria-label="View {{ router.name }}"
-                  >View Mikrotik</a>
-                </div>
-              </td>
+  <section class="panel staff-panel staff-panel-solid mikrotik-list-panel stack-gap-lg">
+    <header class="mikrotik-list-head">
+      <div class="mikrotik-list-title-row">
+        <span class="mikrotik-list-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
+        </span>
+        <div class="mikrotik-list-copy">
+          <h2>Fleet{% if routers %} <span class="mikrotik-list-count">{{ routers|length }}</span>{% endif %}</h2>
+          <p class="panel-sub">Onboarded devices for Hotspot, PPPoE, and live health checks.</p>
+        </div>
+      </div>
+    </header>
+
+    {% if routers %}
+      <div class="org-table-shell mikrotik-table-shell">
+        <table class="org-table org-table-mikrotik">
+          <thead>
+            <tr>
+              <th>Router</th>
+              <th>Connection</th>
+              <th>Location</th>
+              <th>Wi‑Fi</th>
+              <th>Username</th>
+              <th>Account</th>
+              <th>Manage</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
-  {% else %}
-    <p class="empty">No routers yet. Connect your first MikroTik to manage Hotspot, PPPoE, and device health from here.</p>
-  {% endif %}
-</section>
+          </thead>
+          <tbody>
+            {% for router in routers %}
+              <tr data-router-row="{{ router.id }}" class="mikrotik-router-row{% if router.account_status == 'suspended' %} is-suspended{% endif %}" style="--i:{{ forloop.counter0 }}">
+                <td data-label="Router">
+                  <div class="mikrotik-router-identity">
+                    <span class="mikrotik-router-thumb" aria-hidden="true">
+                      {% for item in mikrotik_models %}
+                        {% if item.value == router.model %}
+                          <img src="{{ item.image }}" alt="" width="48" height="36" loading="lazy" decoding="async">
+                        {% endif %}
+                      {% endfor %}
+                    </span>
+                    <div class="mikrotik-router-primary">
+                      <a class="mikrotik-router-name" href="{% url 'core:mikrotik_detail' router.id %}">{{ router.name }}</a>
+                      <small class="lead-location-line mikrotik-router-meta">
+                        <span class="mikrotik-router-model">{{ router.get_model_display }}</span>
+                        <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
+                        <span class="mikrotik-router-serial" data-router-serial-cell="{{ router.id }}">{% if router.serial_number %}SN {{ router.serial_number }}{% else %}SN —{% endif %}</span>
+                        {% if router.customer_count %}
+                          <span class="mikrotik-meta-sep" aria-hidden="true">·</span>
+                          <span class="mikrotik-router-clients">{{ router.customer_count }} client{{ router.customer_count|pluralize }}</span>
+                        {% endif %}
+                      </small>
+                    </div>
+                  </div>
+                </td>
+                <td data-label="Connection">
+                  <div class="mikrotik-router-connection">
+                    <span class="org-code mikrotik-router-host" data-router-host-cell="{{ router.id }}">{{ router.host }}</span>
+                    <span class="mikrotik-link-status is-checking" data-router-status="{{ router.id }}" data-router-host="{{ router.host }}">
+                      <span class="mikrotik-link-spinner" aria-hidden="true"></span>
+                      <span class="mikrotik-link-dot" aria-hidden="true"></span>
+                      <span class="mikrotik-link-label">Checking…</span>
+                    </span>
+                  </div>
+                </td>
+                <td data-label="Location">
+                  <span class="mikrotik-cell-text">{% if router.location %}{{ router.location }}{% else %}<span class="mikrotik-muted">—</span>{% endif %}</span>
+                </td>
+                <td data-label="Wi‑Fi">
+                  {% if router.wifi_ssid %}
+                    <span class="mikrotik-wifi-chip">{{ router.wifi_ssid }}</span>
+                  {% else %}
+                    <span class="mikrotik-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Username"><span class="org-code">{{ router.username }}</span></td>
+                <td data-label="Account">
+                  <span class="org-status org-status-{{ router.account_status }}">
+                    {{ router.get_account_status_display }}
+                  </span>
+                </td>
+                <td data-label="Manage">
+                  <div class="org-actions org-actions-icons mikrotik-row-actions">
+                    <button
+                      type="button"
+                      class="org-action-icon mikrotik-reconnect-btn"
+                      data-reconnect-router="{{ router.id }}"
+                      data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
+                      data-router-name="{{ router.name }}"
+                      data-router-host="{{ router.host }}"
+                      data-router-username="{{ router.username }}"
+                      aria-label="Reconnect {{ router.name }}"
+                      {% if router.account_status == 'suspended' %}disabled title="Activate account first"{% else %}title="Repair connection and bring this MikroTik back online"{% endif %}
+                    >
+                      <svg class="mikrotik-reconnect-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                        <path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6a6 6 0 0 1-9.66 4.72L7.05 19a8 8 0 0 0 12.9-6 8 8 0 0 0-8-8zm-6 7c0-1.18.33-2.28.9-3.22L5.55 7.4A9.96 9.96 0 0 0 4 12c0 5.01 3.67 9.15 8.43 9.88l.9-1.97C9.06 19.35 6 15.99 6 12z"/>
+                      </svg>
+                      <span class="mikrotik-reconnect-label">Reconnect</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="org-action-icon {% if router.account_status == 'suspended' %}org-action-success{% else %}org-action-warn{% endif %} mikrotik-suspend-btn"
+                      data-suspend-router="{{ router.id }}"
+                      data-suspend-url="{% url 'core:mikrotik_suspend' router.id %}"
+                      data-router-name="{{ router.name }}"
+                      data-router-host="{{ router.host }}"
+                      data-account-status="{{ router.account_status }}"
+                      title="{% if router.account_status == 'suspended' %}Activate this MikroTik account{% else %}Suspend this MikroTik account{% endif %}"
+                      aria-label="{% if router.account_status == 'suspended' %}Activate{% else %}Suspend{% endif %} {{ router.name }}"
+                    >
+                      {% if router.account_status == 'suspended' %}
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1.2 14.4-3.7-3.7 1.4-1.4 2.3 2.3 4.9-4.9 1.4 1.4z"/></svg>
+                      {% else %}
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-1 6h2v7h-2zm0 9h2v2h-2z"/></svg>
+                      {% endif %}
+                    </button>
+                    <button
+                      type="button"
+                      class="org-action-icon org-action-danger mikrotik-delete-btn"
+                      data-delete-router="{{ router.id }}"
+                      data-delete-url="{% url 'core:mikrotik_delete' router.id %}"
+                      data-router-name="{{ router.name }}"
+                      data-router-host="{{ router.host }}"
+                      data-customer-count="{{ router.customer_count|default:0 }}"
+                      title="Remove this MikroTik from the system"
+                      aria-label="Delete {{ router.name }}"
+                    >
+                      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6 7h12v2H6zm2 3h8l-.7 10.1a1.5 1.5 0 0 1-1.5 1.4H10.2a1.5 1.5 0 0 1-1.5-1.4L8 10zm3-5h2l1 1h4v2H6V6h4z"/></svg>
+                    </button>
+                    <a
+                      class="mikrotik-view-btn"
+                      href="{% url 'core:mikrotik_detail' router.id %}"
+                      title="View router"
+                      aria-label="View {{ router.name }}"
+                    >
+                      <span>View</span>
+                      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+                    </a>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
+    {% else %}
+      <div class="mikrotik-empty">
+        <span class="mikrotik-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 7h16v2H4Zm2 4h12v2H6Zm3 4h6v2H9ZM2 4h20v2H2Zm0 14h20v2H2Z"/></svg>
+        </span>
+        <p class="mikrotik-empty-title">No routers yet</p>
+        <p class="mikrotik-empty-copy">Connect your first MikroTik to manage Hotspot, PPPoE, and device health from here.</p>
+        <button type="button" class="btn btn-primary mikrotik-empty-btn" data-open-mikrotik-onboard>
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+          Connect MikroTik
+        </button>
+      </div>
+    {% endif %}
+  </section>
+</div>
 
 {# Password popup when Reconnect hits wrong credentials #}
 <div class="role-modal mikrotik-action-modal" id="mikrotik-password-modal" hidden aria-hidden="true">
@@ -478,13 +566,28 @@
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
-                      <p class="mikrotik-tunnel-step-desc">Winbox → New Terminal → paste → wait for green <strong>OK</strong> lines.</p>
+                      <p class="mikrotik-tunnel-step-desc">
+                        Winbox → New Terminal → paste once. The router <strong>factory-resets</strong>
+                        (keeps admin passwords), reboots, then installs the tunnel automatically.
+                        Winbox disconnects — reconnect by MAC after ~2 min.
+                      </p>
                     </div>
                     <div class="mikrotik-tunnel-script-bar">
                       <span>RouterOS script ready</span>
                       <button type="button" class="btn btn-ghost mikrotik-tunnel-copy" id="mikrotik-tunnel-copy">Copy script</button>
                     </div>
                     <pre class="mikrotik-tunnel-script" id="mikrotik-tunnel-script" aria-label="RouterOS tunnel script"></pre>
+                    <div class="mikrotik-tunnel-peer-panel" id="mikrotik-tunnel-peer-panel" hidden>
+                      <div class="mikrotik-tunnel-peer-head">
+                        <strong>VPS peer not registered</strong>
+                        <button type="button" class="btn btn-ghost mikrotik-tunnel-peer-copy" id="mikrotik-tunnel-peer-copy">Copy [Peer]</button>
+                      </div>
+                      <p class="mikrotik-tunnel-peer-lead" id="mikrotik-tunnel-peer-lead">
+                        Paste this into <code>/etc/wireguard/wg0.conf</code> on the billing VPS, then
+                        <code>systemctl restart wg-quick@wg0</code> (or run <code>manage.py wireguard_peer --sync-server</code>).
+                      </p>
+                      <pre class="mikrotik-tunnel-peer-block" id="mikrotik-tunnel-peer-block" aria-label="WireGuard server peer block"></pre>
+                    </div>
                   </div>
                 </li>
                 <li class="mikrotik-tunnel-step" data-tunnel-step="3" id="mikrotik-tunnel-step-check" hidden>
@@ -782,6 +885,10 @@
   var tunnelStatus = document.getElementById("mikrotik-tunnel-status");
   var tunnelStatusEarly = document.getElementById("mikrotik-tunnel-status-early");
   var tunnelScript = document.getElementById("mikrotik-tunnel-script");
+  var tunnelPeerPanel = document.getElementById("mikrotik-tunnel-peer-panel");
+  var tunnelPeerBlock = document.getElementById("mikrotik-tunnel-peer-block");
+  var tunnelPeerLead = document.getElementById("mikrotik-tunnel-peer-lead");
+  var tunnelPeerCopy = document.getElementById("mikrotik-tunnel-peer-copy");
   var tunnelAddress = document.getElementById("mikrotik-tunnel-address");
   var tunnelPhone = document.getElementById("mikrotik-tunnel-phone");
   var onboardingStkUrl = tunnelCard ? (tunnelCard.getAttribute("data-onboarding-stk-url") || "") : "";
@@ -809,6 +916,8 @@
   var tunnelVerifyHint = document.getElementById("mikrotik-tunnel-verify-hint");
   var tunnelCheckNow = document.getElementById("mikrotik-tunnel-check-now");
   var tunnelScriptText = "";
+  var tunnelServerPeerText = "";
+  var tunnelPeerSyncRequired = false;
   var tunnelReadyAddress = "";
   var tunnelStatusToken = "";
   var tunnelStatusTimer = null;
@@ -910,8 +1019,8 @@
     api: "Re-paste the script in Winbox",
     firewall: "Finish the Winbox script",
     tunnel: "Paste the script and wait for OK lines",
-    vps_peer: "Add [Peer] on VPS wg0 and restart WireGuard",
-    billing_ping: "Register router on VPS, then check again"
+    vps_peer: "On the VPS run manage.py wireguard_peer --sync-server, then Check now",
+    billing_ping: "Fix VPS peer / handshake, then Check now"
   };
 
   function setVerifyBanner(state, title, sub) {
@@ -1318,6 +1427,24 @@
     }
   }
 
+  function showTunnelPeerPanel(data) {
+    tunnelServerPeerText = (data && data.server_peer) || "";
+    tunnelPeerSyncRequired = !!(data && data.peer_sync_required);
+    if (tunnelPeerBlock) tunnelPeerBlock.textContent = tunnelServerPeerText;
+    if (tunnelPeerPanel) {
+      tunnelPeerPanel.hidden = !(tunnelPeerSyncRequired && tunnelServerPeerText);
+    }
+    if (tunnelPeerLead && data && data.peer_sync_hint) {
+      tunnelPeerLead.textContent = data.peer_sync_hint;
+    }
+    if (tunnelCopy) {
+      tunnelCopy.disabled = false;
+      tunnelCopy.title = tunnelPeerSyncRequired
+        ? "You can paste on the MikroTik, but Connect will wait until the VPS peer is registered"
+        : "";
+    }
+  }
+
   function showTunnelScript(data, options) {
     options = options || {};
     tunnelScriptText = (data && data.script) || "";
@@ -1336,25 +1463,39 @@
       tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
     }
     if (!options.resume) {
+      showTunnelPeerPanel(data || {});
       markTunnelStep(1, "done");
       markTunnelStep(2, tunnelScriptText ? "active" : "");
       markTunnelStep(3, "");
       markTunnelStep(4, "");
-      setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
-      if (data && data.peer_synced === false && data.peer_sync_skipped === false) {
+      if (tunnelPeerSyncRequired) {
+        setTunnelCheckState(
+          "error",
+          "VPS peer not registered yet — fix wg0 before Connect",
+          false,
+          false
+        );
+        setVerifyBanner("error", "VPS peer missing", "Register on wg0 first");
+        setVerifyHint(
+          (data && (data.peer_sync_hint || data.peer_sync_error)) ||
+            "Run manage.py wireguard_peer --sync-server on the VPS, then Check now."
+        );
         setTunnelStatus(
-          (data.peer_sync_error
-            ? "Script ready, but the billing server could not register this router on WireGuard: "
-              + data.peer_sync_error
-            : "Script ready, but the billing server could not register this router on WireGuard yet. "
-              + "The host must run wireguard_peer --sync-server on the VPS, then paste the script again."),
+          (data && (data.peer_sync_hint || data.hint)) ||
+            "Script ready, but the billing server has not accepted this peer on WireGuard yet.",
           true
         );
-      } else if (data && data.hint) setTunnelStatus(data.hint, false);
-      else if (tunnelReadyAddress) {
-        setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
+        startTunnelStatusPolling();
       } else {
-        setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
+        setTunnelCheckState("waiting", "Waiting for the script to be pasted…", false, false);
+        setVerifyBanner("waiting", "Waiting for script", "Paste in Winbox first");
+        setVerifyHint("");
+        if (data && data.hint) setTunnelStatus(data.hint, false);
+        else if (tunnelReadyAddress) {
+          setTunnelStatus("Script ready. Copy it, paste in Winbox, wait for “ispcentric OK”, then Connect.", false);
+        } else {
+          setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
+        }
       }
     } else {
       setTunnelStatus(tunnelStatusMessage, tunnelStatusIsError);
@@ -1364,11 +1505,15 @@
 
   function clearTunnelScript() {
     tunnelScriptText = "";
+    tunnelServerPeerText = "";
+    tunnelPeerSyncRequired = false;
     tunnelReadyAddress = "";
     tunnelStatusToken = "";
     tunnelApiReady = false;
     stopTunnelStatusPolling();
     if (tunnelScript) tunnelScript.textContent = "";
+    if (tunnelPeerBlock) tunnelPeerBlock.textContent = "";
+    if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
     if (tunnelStepScript) tunnelStepScript.hidden = true;
     if (tunnelStepCheck) tunnelStepCheck.hidden = true;
     if (tunnelStepIp) tunnelStepIp.hidden = true;
@@ -1522,6 +1667,8 @@
         }
         if (data.ready) {
           tunnelApiReady = true;
+          tunnelPeerSyncRequired = false;
+          if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
           stopTunnelStatusPolling();
           setVerifyBanner("ready", "All checks passed", "Ready to Connect");
           setVerifyHint("Use the tunnel IP below");
@@ -1542,13 +1689,33 @@
           setHostHint("Type the router’s LAN IP (for example 192.168.88.1) — the tunnel IP only works from the VPS.");
           return;
         }
+        if (data.peer_state === "missing" || data.peer_state === "no_handshake") {
+          tunnelPeerSyncRequired = data.peer_state === "missing";
+          if (tunnelPeerPanel && tunnelServerPeerText) {
+            tunnelPeerPanel.hidden = data.peer_state !== "missing";
+          }
+          setTunnelCheckState(
+            "error",
+            data.peer_state === "missing"
+              ? "VPS peer missing on wg0"
+              : "WireGuard handshake missing",
+            false,
+            false
+          );
+          setTunnelStatus(data.message, true);
+          return;
+        }
+        if (data.peer_present || data.peer_synced) {
+          tunnelPeerSyncRequired = false;
+          if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
+        }
         setTunnelCheckState(
           data.tunnel_reachable ? "error" : "waiting",
           data.tunnel_reachable ? "Tunnel found · waiting for API 8728" : "Waiting for MikroTik…",
           !!data.tunnel_reachable,
           false
         );
-        setTunnelStatus(data.message, !!data.tunnel_reachable);
+        setTunnelStatus(data.message, !!data.tunnel_reachable || data.peer_state === "waiting_router");
       })
       .catch(function () {
         setTunnelCheckState("error", "Live check failed — retrying…", false, false);
@@ -1777,6 +1944,12 @@
 
   function copyTunnelScript() {
     if (!tunnelScriptText) return;
+    if (tunnelPeerSyncRequired) {
+      setTunnelStatus(
+        "VPS peer is not registered yet. Fix wg0 first (panel below the script), then paste in Winbox. Checking will keep retrying.",
+        true
+      );
+    }
     var done = function () {
       if (tunnelCopy) {
         var original = tunnelCopy.textContent;
@@ -1785,7 +1958,9 @@
       }
       markTunnelStep(2, "done");
       markTunnelStep(3, "active");
-      setTunnelStatus("Copied. Paste in Winbox → New Terminal. Checking starts automatically.", false);
+      if (!tunnelPeerSyncRequired) {
+        setTunnelStatus("Copied. Paste in Winbox → New Terminal. Router resets in ~5s, reboots, then installs the tunnel.", false);
+      }
       startTunnelStatusPolling();
     };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1797,9 +1972,31 @@
     fallbackCopyTunnelScript(done);
   }
 
-  function fallbackCopyTunnelScript(done) {
+  function copyTunnelPeerBlock() {
+    if (!tunnelServerPeerText) return;
+    var done = function () {
+      if (tunnelPeerCopy) {
+        var original = tunnelPeerCopy.textContent;
+        tunnelPeerCopy.textContent = "Copied";
+        setTimeout(function () { tunnelPeerCopy.textContent = original || "Copy [Peer]"; }, 1400);
+      }
+      setTunnelStatus(
+        "Copied [Peer] block. Append it to /etc/wireguard/wg0.conf on the VPS, restart wg-quick, then Check now.",
+        false
+      );
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(tunnelServerPeerText).then(done).catch(function () {
+        fallbackCopyText(tunnelServerPeerText, done);
+      });
+      return;
+    }
+    fallbackCopyText(tunnelServerPeerText, done);
+  }
+
+  function fallbackCopyText(text, done) {
     var area = document.createElement("textarea");
-    area.value = tunnelScriptText;
+    area.value = text || "";
     area.setAttribute("readonly", "");
     area.style.position = "fixed";
     area.style.left = "-9999px";
@@ -1809,9 +2006,13 @@
       document.execCommand("copy");
       if (done) done();
     } catch (err) {
-      setTunnelStatus("Could not copy automatically — select the script and copy manually.", true);
+      setTunnelStatus("Could not copy automatically — select the text and copy manually.", true);
     }
     document.body.removeChild(area);
+  }
+
+  function fallbackCopyTunnelScript(done) {
+    fallbackCopyText(tunnelScriptText, done);
   }
 
   function setStep(step) {
@@ -2228,6 +2429,7 @@
   if (connectBtn) connectBtn.addEventListener("click", connectRouter);
   if (tunnelGenerate) tunnelGenerate.addEventListener("click", generateTunnelScript);
   if (tunnelCopy) tunnelCopy.addEventListener("click", copyTunnelScript);
+  if (tunnelPeerCopy) tunnelPeerCopy.addEventListener("click", copyTunnelPeerBlock);
   if (tunnelCheckNow) tunnelCheckNow.addEventListener("click", checkTunnelStatus);
   if (tunnelUseIp) {
     tunnelUseIp.addEventListener("click", function () {

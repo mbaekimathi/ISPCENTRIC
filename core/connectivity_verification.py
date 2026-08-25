@@ -16,7 +16,7 @@ from billing.models import Customer
 
 def _tunnel_unreachable_hint(router) -> str:
     from core.mikrotik_connect import _router_uses_dedicated_tunnel, on_router_lan
-    from core.wireguard import configured, server_on_tunnel
+    from core.wireguard import configured, inspect_server_peer, server_on_tunnel
 
     if not _router_uses_dedicated_tunnel(router):
         if on_router_lan():
@@ -37,9 +37,24 @@ def _tunnel_unreachable_hint(router) -> str:
             f"({getattr(router, 'api_host', '') or router.host}) is only reachable "
             "from the VPS or after pasting the tunnel script on the MikroTik."
         )
+
+    public_key = (getattr(router, "vpn_public_key", None) or "").strip()
+    if public_key:
+        peer = inspect_server_peer(public_key)
+        if peer.get("checked") and not peer.get("present"):
+            return (
+                "Tunnel peer is missing on VPS wg0 — run "
+                "`manage.py wireguard_peer --sync-server`, then MikroTik → Reconnect."
+            )
+        if peer.get("checked") and peer.get("present") and peer.get("handshake_age_sec") is None:
+            return (
+                "VPS has the WireGuard peer but there is no handshake — paste the "
+                "tunnel script on the MikroTik and open UDP to WIREGUARD_ENDPOINT."
+            )
+
     return (
         "Tunnel router unreachable — paste the WireGuard script on the MikroTik, "
-        "add the peer on the VPS wg0, and restart WireGuard."
+        "confirm the peer is on VPS wg0 (`wg show`), and restart WireGuard if needed."
     )
 
 
