@@ -311,10 +311,10 @@ def _ros_nat_add(rule: str, comment: str) -> str:
 
 def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
     """
-    Bring up WAN (DHCP on ether1) and wait for a default route / reachable probe.
+    Bring up WAN (DHCP on ether1) and loop until ping or default route works.
 
-    ICMP to 8.8.8.8 is often "packet rejected" on ISP networks even when WAN works,
-    so we treat a default route OR a successful ping to the billing VPS IP as OK.
+    Stops early on first success. ICMP to public DNS is often "packet rejected"
+    on ISP networks, so a default route OR ping to the billing VPS IP counts.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
     return [
@@ -329,18 +329,21 @@ def _wan_wait_lines(probe_host: str = "8.8.8.8") -> list[str]:
             "add-default-route=yes use-peer-dns=yes } on-error={}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
-        ":delay 5s",
-        f':if ([/ping {probe_host} count=2] > 0) do={{{_ros_ok(f"Internet ready (ping {probe_host})")}}}',
-        ":delay 5s",
-        f':if ([/ping {probe_host} count=2] > 0) do={{{_ros_ok(f"Internet ready (ping {probe_host})")}}}',
-        ":delay 5s",
-        f':if ([/ping {probe_host} count=2] > 0) do={{{_ros_ok(f"Internet ready (ping {probe_host})")}}}',
-        ":delay 5s",
+        ":local IspWan 0",
+        ":for IspTry from=1 to=12 do={",
+        "  :if ($IspWan = 0) do={",
         (
-            f':if (([/ping {probe_host} count=2] > 0) || '
-            f'([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{'
-            f'{_ros_ok("WAN path ready (ping or default route)")}}} else={{'
-            f'{_ros_fail("No internet - plug ISP into ether1, wait for DHCP, re-paste")}}}'
+            f"    :if (([/ping {probe_host} count=1] > 0) || "
+            f"([:len [/ip route find where dst-address=0.0.0.0/0]] > 0)) do={{ "
+            f":set IspWan 1 ; {_ros_ok('WAN path ready (ping or default route)')} }} "
+            f"else={{ :put (\"[ISPCENTRIC] WAN try \" . $IspTry . \"/12 - waiting...\"); "
+            f":delay 3s }}"
+        ),
+        "  }",
+        "}",
+        (
+            f":if ($IspWan = 0) do="
+            f"{{{_ros_fail('No internet - plug ISP into ether1, wait for DHCP, re-paste')}}}"
         ),
     ]
 
@@ -1364,9 +1367,10 @@ def verify_rsc_download_mac(address: str, mac: str) -> bool:
 
 def short_rsc_url(address: str, kind: str) -> tuple[str, str]:
     """
-    Return (url, http_host) for /app/m/<addr>/<mac>/<i|p>.
+    Return (url, http_host) for /app/m/<addr>/<mac>/<i|p>/.
 
-    Short enough that Winbox paste does not wrap mid-token.
+    Trailing slash is required — without it Django returns 301 and MikroTik
+    /tool fetch fails. Keep the path short; paste builds it in pieces.
     """
     fetch_base, http_host = _script_fetch_target()
     if not fetch_base:
@@ -1374,7 +1378,72 @@ def short_rsc_url(address: str, kind: str) -> tuple[str, str]:
     address = (address or "").strip()
     kind = "p" if (kind or "").strip().lower() in {"p", "post-reset", "reset", "post_reset"} else "i"
     mac = rsc_download_mac(address)
-    return f"{fetch_base}/app/m/{address}/{mac}/{kind}", http_host
+    return f"{fetch_base}/app/m/{address}/{mac}/{kind}/", http_host
+
+
+def _fetch_rsc_parts(url: str) -> tuple[str, str, str]:
+    """Split http://host/path into (origin, path_prefix, path_tail) for short paste lines."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path or "/"
+    # Keep each RouterOS string literal well under typical Winbox wrap width.
+    if len(path) <= 40:
+        return origin, path, ""
+    cut = path.rfind("/", 0, max(len(path) // 2, 1))
+    if cut <= 0:
+        cut = len(path) // 2
+    return origin, path[:cut], path[cut:]
+
+
+def _fetch_rsc_retry_lines(
+    url: str,
+    host_header: str,
+    dst: str,
+    ok_msg: str,
+    fail_msg: str,
+    *,
+    attempts: int = 8,
+) -> list[str]:
+    """
+    Build URL from short pieces, then retry /tool fetch until success.
+
+    MikroTik often fails once on flaky WAN; 301 (missing slash) also fails hard —
+    callers must pass a trailing-slash URL. Variable names are unique per dst so
+    install.rsc can fetch flash + root without :local redeclare errors.
+    """
+    origin, mid, tail = _fetch_rsc_parts(url)
+    header = ""
+    if host_header and host_header not in url:
+        header = f' http-header-field="Host:{host_header}"'
+    tag = "Flash" if "flash/" in dst else ("Inst" if "install" in dst else "Root")
+    url_var = f"IspUrl{tag}"
+    got_var = f"IspGot{tag}"
+    lines = [
+        f':local {url_var} "{origin}"',
+        f':set {url_var} (${url_var} . "{mid}")',
+    ]
+    if tail:
+        lines.append(f':set {url_var} (${url_var} . "{tail}")')
+    lines += [
+        f":local {got_var} 0",
+        f":for IspTry from=1 to={attempts} do={{",
+        f"  :if (${got_var} = 0) do={{",
+        (
+            f'    :do {{ /tool fetch url=${url_var}{header} dst-path={dst} mode=http ; '
+            f":set {got_var} 1 ; {_ros_ok(ok_msg)} }} on-error={{ "
+            f':put ("[ISPCENTRIC] Fetch try " . $IspTry . "/{attempts} failed - retrying..."); '
+            f":delay 3s }}"
+        ),
+        "  }",
+        "}",
+        (
+            f":if (${got_var} = 0) do={{{_ros_fail(fail_msg)}}} "
+            f"else={{{_ros_ok(f'File ready: {dst}')}}}"
+        ),
+    ]
+    return lines
 
 
 def install_rsc_body(address: str, private_key: str) -> str:
@@ -1385,22 +1454,24 @@ def install_rsc_body(address: str, private_key: str) -> str:
     reset_url, http_host = short_rsc_url(address, "p")
     if reset_url:
         lines += [
-            "# Download post-reset .rsc before any factory reset (runs inside /import — no Winbox wrap).",
+            "# Download post-reset .rsc before any factory reset (inside /import — no Winbox wrap).",
             ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
             ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
-            _fetch_rsc_line(
+            *_fetch_rsc_retry_lines(
                 reset_url,
                 http_host,
                 "flash/ispcentric-post-reset.rsc",
                 "Downloaded flash/ispcentric-post-reset.rsc",
-                "Fetch post-reset.rsc to flash failed",
+                "Fetch post-reset.rsc to flash failed after retries",
+                attempts=5,
             ),
-            _fetch_rsc_line(
+            *_fetch_rsc_retry_lines(
                 reset_url,
                 http_host,
                 "ispcentric-post-reset.rsc",
                 "Downloaded ispcentric-post-reset.rsc (root fallback)",
-                "Fetch post-reset.rsc to root failed",
+                "Fetch post-reset.rsc to root failed after retries",
+                attempts=5,
             ),
         ]
     lines += [
@@ -1417,7 +1488,7 @@ def post_reset_rsc_body(address: str, private_key: str) -> str:
 
 
 def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg: str) -> str:
-    """One paste-safe /tool fetch line (IP URL + Host header when needed)."""
+    """One /tool fetch line (prefer _fetch_rsc_retry_lines for paste)."""
     header = ""
     if host_header and host_header not in url:
         header = f' http-header-field="Host:{host_header}"'
@@ -1429,10 +1500,10 @@ def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg:
 
 def _routeros_smart_install_script(address: str, private_key: str) -> str:
     """
-    Ultra-short Winbox paste: WAN wait, one short-URL fetch, import.
+    Ultra-short Winbox paste: WAN wait loop, fetch retry loop, import.
 
-    Long signed query tokens wrap in Winbox and break the next line (e.g. 'P-Ds5p1...').
-    Post-reset download + smart reset live inside install.rsc.
+    URL is assembled from short pieces (no mid-line wrap). Path ends with / so
+    Django does not 301 (MikroTik /tool fetch fails on redirect).
     """
     address = (address or "").strip()
     private_key = (private_key or "").strip()
@@ -1454,17 +1525,18 @@ def _routeros_smart_install_script(address: str, private_key: str) -> str:
     return "\n".join(
         [
             "# ISPCENTRIC one-paste bootstrap - Winbox -> New Terminal.",
-            "# Short URL only (no long token) so Winbox does not wrap mid-command.",
+            "# Loops: wait for WAN, retry .rsc download, then import.",
             "# Plug ISP into ether1 before or during the wait loops.",
             _ros_info("ISPCENTRIC one-paste: waiting for internet, then downloading install..."),
             *_wan_wait_lines(endpoint_host),
             ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
-            _fetch_rsc_line(
+            *_fetch_rsc_retry_lines(
                 install_url,
                 http_host,
                 "ispcentric-install.rsc",
                 "Downloaded ispcentric-install.rsc",
-                "Fetch install.rsc failed - check ether1 WAN / VPS HTTP",
+                "Fetch install.rsc failed after retries - check ether1 WAN / VPS HTTP",
+                attempts=8,
             ),
             (
                 ':if ([:len [/file find where name="ispcentric-install.rsc"]] > 0) do={'
