@@ -370,6 +370,19 @@ class ClientRouterProxyTests(TestCase):
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
     @patch("core.views.customer_cpe_web_proxy", _proxy)
+    def test_token_cached_cpe_host_skips_per_asset_resolve(self):
+        # Open stamps cpe_host into the signed token; subsequent asset GETs must
+        # not re-resolve the PPPoE session on the NAS for every image/AJAX call.
+        proxy_url = self._start_url()
+        with patch(
+            "core.views.resolve_customer_cpe_target",
+            side_effect=AssertionError("resolve must not run when token has cpe_host"),
+        ):
+            response = self.client.get(proxy_url + "status.asp")
+        self.assertEqual(response.status_code, 200)
+
+    @patch("core.views.http.client.HTTPConnection", _FakeConnection)
+    @patch("core.views.customer_cpe_web_proxy", _proxy)
     def test_active_requests_keep_the_session_alive(self):
         # Repeated traffic within the idle window must keep succeeding; the
         # sliding window is refreshed on every proxied request.
@@ -725,12 +738,18 @@ class CpeWebLoginLockoutTests(TestCase):
 
 class CustomerCpeWebProxyCacheTests(TestCase):
     def setUp(self):
+        from django.core.cache import cache
+
         mikrotik_connect._CPE_WEB_PROXY_CACHE.clear()
         mikrotik_connect._CPE_WEB_PROXY_LOCKS.clear()
+        cache.delete("cpe-web-proxy:v1:10.9.0.2|customer1|80")
 
     def tearDown(self):
+        from django.core.cache import cache
+
         mikrotik_connect._CPE_WEB_PROXY_CACHE.clear()
         mikrotik_connect._CPE_WEB_PROXY_LOCKS.clear()
+        cache.delete("cpe-web-proxy:v1:10.9.0.2|customer1|80")
 
     def test_repeated_calls_reuse_one_installed_proxy(self):
         @contextmanager
@@ -772,6 +791,56 @@ class CustomerCpeWebProxyCacheTests(TestCase):
         self.assertEqual(resolve.call_count, 1)
         self.assertEqual(len(set(first_ports)), 1)
         self.assertEqual(proxy["cpe_host"], "10.20.0.11")
+
+    def test_proxy_cache_ttl_matches_idle_window(self):
+        self.assertGreaterEqual(mikrotik_connect._CPE_WEB_PROXY_TTL, 15 * 60)
+
+    def test_proxy_cache_hit_slides_expiry(self):
+        @contextmanager
+        def _fake_api_session(*args, **kwargs):
+            class _Sock:
+                def getsockname(self):
+                    return ("192.168.88.253", 0)
+
+            yield _Sock()
+
+        with (
+            patch.object(
+                mikrotik_connect,
+                "resolve_customer_cpe_session",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "address": "10.20.0.11",
+                },
+            ),
+            patch.object(mikrotik_connect, "_api_session", _fake_api_session),
+            patch.object(mikrotik_connect, "_install_cpe_proxy", return_value=None),
+        ):
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_port=80,
+            ) as first:
+                key = ("10.9.0.2", "customer1|80")
+                entry = mikrotik_connect._CPE_WEB_PROXY_CACHE[key]
+                first_expiry = entry["expires_at"]
+            # Force an almost-expired L1 entry; a hit must slide TTL forward.
+            mikrotik_connect._CPE_WEB_PROXY_CACHE[key]["expires_at"] = (
+                __import__("time").monotonic() + 2.0
+            )
+            with mikrotik_connect.customer_cpe_web_proxy(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_port=80,
+            ) as second:
+                slid = mikrotik_connect._CPE_WEB_PROXY_CACHE[key]["expires_at"]
+        self.assertEqual(first["port"], second["port"])
+        self.assertGreater(slid, first_expiry - 1)
 
 
 class CustomerCpeAccessModeTests(TestCase):
@@ -853,12 +922,16 @@ class CustomerCpeAccessModeTests(TestCase):
             "_nas_lan_gateway_ip",
             return_value="192.168.88.1",
         ):
-            target = mikrotik_connect.resolve_customer_cpe_target(
-                self.nas.host,
-                self.nas.username,
-                self.nas.password,
-                customer,
-            )
+            with patch(
+                "core.mikrotik_connect._nas_ping_host",
+                return_value={"ok": True, "reachable": True, "received": 1, "error": ""},
+            ):
+                target = mikrotik_connect.resolve_customer_cpe_target(
+                    self.nas.host,
+                    self.nas.username,
+                    self.nas.password,
+                    customer,
+                )
         self.assertTrue(target["ok"])
         self.assertTrue(target["session_active"])
         self.assertEqual(target["address"], "192.168.88.60")

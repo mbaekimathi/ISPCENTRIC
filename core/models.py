@@ -246,6 +246,8 @@ class MikroTikStatusSample(models.Model):
     status = models.CharField(max_length=32, default="disconnected")
     score = models.PositiveSmallIntegerField(default=0)
     online = models.BooleanField(default=False)
+    # Short probe/login detail for “Why it dropped” history (not free-form logs).
+    error = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         db_table = "core_mikrotik_status_sample"

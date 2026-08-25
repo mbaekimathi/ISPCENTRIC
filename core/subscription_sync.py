@@ -68,14 +68,21 @@ def enqueue_customer_subscription_sync(
                     reauthenticate=reauthenticate,
                     quick=False,
                 )
-                if not sync_result.get("allowed"):
-                    break
-                if sync_result.get("ok") and not sync_result.get(
-                    "cpe_renew_clear_pending"
-                ):
-                    break
-                if not cpe_renew_clear_is_pending(cust) and sync_result.get("ok"):
-                    break
+                # Restore path: keep retrying while CPE renew clear is pending.
+                if sync_result.get("allowed"):
+                    if sync_result.get("ok") and not sync_result.get(
+                        "cpe_renew_clear_pending"
+                    ):
+                        break
+                    if not cpe_renew_clear_is_pending(cust) and sync_result.get("ok"):
+                        break
+                else:
+                    # Pause / expiry block: retry when NAS or CPE portal still failed.
+                    portal = sync_result.get("portal") or {}
+                    if sync_result.get("ok") and (
+                        portal.get("ok") or portal.get("skipped")
+                    ):
+                        break
                 if attempt < len(delays):
                     time.sleep(delay)
                 cust = Customer.objects.select_related(

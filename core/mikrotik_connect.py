@@ -299,6 +299,30 @@ BOND_MODES = (
 )
 
 
+def _nas_socket_source_address(sock: socket.socket) -> str:
+    """Return the local address the NAS sees for this API session."""
+    try:
+        return str(sock.getsockname()[0]).strip()
+    except (AttributeError, OSError, IndexError):
+        return ""
+
+
+def _cpe_mgmt_allowed_from(gateway_ip: str = "") -> str:
+    """CIDR allowed to reach CPE management services (matches ISP src-nat source)."""
+    gateway = (gateway_ip or PPPOE_LOCAL_ADDRESS).strip() or PPPOE_LOCAL_ADDRESS
+    try:
+        addr = ipaddress.ip_address(gateway)
+        if addr in _PPPOE_POOL_NET:
+            return PPPOE_POOL_NETWORK
+        if isinstance(addr, ipaddress.IPv4Address):
+            octets = gateway.split(".")
+            if len(octets) == 4:
+                return f"{octets[0]}.{octets[1]}.{octets[2]}.0/24"
+    except ValueError:
+        pass
+    return f"{gateway}/32"
+
+
 def _trap_message(terminal: dict[str, str], fallback: str) -> str:
     return (terminal.get("message") or "").strip() or fallback
 
@@ -1580,6 +1604,14 @@ def _install_cpe_proxy(
     gateway_ip: str = "",
 ) -> str | None:
     """Forward a NAS TCP port to a CPE management port."""
+    from django.conf import settings
+
+    if not (allowed_source or "").strip():
+        if getattr(settings, "HOSTED", False):
+            return (
+                "Cannot install CPE proxy without a source address — "
+                "the billing server must reach the NAS over a known path."
+            )
     comment = _cpe_proxy_comment(proxy_port)
     gateway = (gateway_ip or PPPOE_LOCAL_ADDRESS).strip() or PPPOE_LOCAL_ADDRESS
     _remove_comment_tagged(sock, "/ip/firewall/nat", comment)
@@ -1695,8 +1727,10 @@ def _uninstall_cpe_proxy(sock: socket.socket, proxy_port: int) -> None:
 # A browser session against one CPE web UI fires dozens of asset requests plus
 # steady AJAX polling. Installing/removing NAS NAT per request melts the router
 # API and produces intermittent 502s, so a single proxy per (NAS, client) is
-# installed once and reused for a short TTL. Idempotent installs refresh it.
-_CPE_WEB_PROXY_TTL = 90.0
+# installed once and reused. TTL matches the browser idle window; hits slide the
+# expiry so an in-use page does not lose its NAT mid-session. Metadata is also
+# stored in Django cache so multi-worker Gunicorn shares the same tunnel.
+_CPE_WEB_PROXY_TTL = float(15 * 60)
 _CPE_WEB_PROXY_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 _CPE_WEB_PROXY_LOCKS: dict[tuple[str, str], threading.Lock] = {}
 _CPE_WEB_PROXY_REGISTRY_LOCK = threading.Lock()
@@ -1709,6 +1743,119 @@ def _cpe_web_proxy_lock(key: tuple[str, str]) -> threading.Lock:
             lock = threading.Lock()
             _CPE_WEB_PROXY_LOCKS[key] = lock
         return lock
+
+
+def _cpe_web_proxy_django_key(key: tuple[str, str]) -> str:
+    return f"cpe-web-proxy:v1:{key[0]}|{key[1]}"
+
+
+def _cpe_web_proxy_entry_payload(
+    host: str,
+    port: int,
+    cpe_host: str,
+    source_address: str = "",
+) -> dict[str, Any]:
+    now_mono = time.monotonic()
+    now_wall = time.time()
+    return {
+        "host": host,
+        "port": int(port),
+        "cpe_host": (cpe_host or "").strip(),
+        "source_address": (source_address or "").strip(),
+        "expires_at": now_mono + _CPE_WEB_PROXY_TTL,
+        "expires_wall": now_wall + _CPE_WEB_PROXY_TTL,
+    }
+
+
+def _store_cpe_web_proxy_entry(key: tuple[str, str], entry: dict[str, Any]) -> None:
+    _CPE_WEB_PROXY_CACHE[key] = entry
+    try:
+        from django.core.cache import cache
+
+        ttl = max(1, int(float(entry.get("expires_wall") or 0) - time.time()))
+        cache.set(
+            _cpe_web_proxy_django_key(key),
+            {
+                "host": entry["host"],
+                "port": int(entry["port"]),
+                "cpe_host": entry.get("cpe_host") or "",
+                "source_address": entry.get("source_address") or "",
+                "expires_wall": float(
+                    entry.get("expires_wall") or (time.time() + _CPE_WEB_PROXY_TTL)
+                ),
+            },
+            ttl,
+        )
+    except Exception:
+        pass
+
+
+def _load_cpe_web_proxy_entry(key: tuple[str, str]) -> dict[str, Any] | None:
+    now_mono = time.monotonic()
+    cached = _CPE_WEB_PROXY_CACHE.get(key)
+    if cached and float(cached.get("expires_at") or 0) > now_mono:
+        return cached
+
+    shared = None
+    try:
+        from django.core.cache import cache
+
+        shared = cache.get(_cpe_web_proxy_django_key(key))
+    except Exception:
+        shared = None
+    if not shared:
+        if cached:
+            _CPE_WEB_PROXY_CACHE.pop(key, None)
+        return None
+
+    expires_wall = float(shared.get("expires_wall") or 0)
+    if expires_wall <= time.time():
+        return None
+    remaining = max(1.0, expires_wall - time.time())
+    entry = {
+        "host": shared["host"],
+        "port": int(shared["port"]),
+        "cpe_host": shared.get("cpe_host") or "",
+        "source_address": shared.get("source_address") or "",
+        "expires_at": now_mono + remaining,
+        "expires_wall": expires_wall,
+    }
+    _CPE_WEB_PROXY_CACHE[key] = entry
+    return entry
+
+
+def _touch_cpe_web_proxy_entry(
+    key: tuple[str, str], entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Sliding TTL — keep NAT alive while the browser session is active."""
+    refreshed = _cpe_web_proxy_entry_payload(
+        entry["host"],
+        entry["port"],
+        entry.get("cpe_host") or "",
+        entry.get("source_address") or "",
+    )
+    _store_cpe_web_proxy_entry(key, refreshed)
+    return refreshed
+
+
+def _forget_cpe_web_proxy_entry(key: tuple[str, str]) -> dict[str, Any] | None:
+    entry = _CPE_WEB_PROXY_CACHE.pop(key, None)
+    try:
+        from django.core.cache import cache
+
+        django_key = _cpe_web_proxy_django_key(key)
+        shared = cache.get(django_key)
+        cache.delete(django_key)
+        if entry is None and shared:
+            entry = {
+                "host": shared["host"],
+                "port": int(shared["port"]),
+                "cpe_host": shared.get("cpe_host") or "",
+                "source_address": shared.get("source_address") or "",
+            }
+    except Exception:
+        pass
+    return entry
 
 
 @contextmanager
@@ -1729,19 +1876,18 @@ def customer_cpe_web_proxy(
     Expose one active CPE web port to this app, reusing a cached tunnel.
 
     A stable proxy port per (NAS, client, cpe_port) is installed once and kept
-    for `_CPE_WEB_PROXY_TTL`. Concurrent requests for the same client reuse it
-    behind a per-key lock instead of reinstalling NAT, which is what caused
-    intermittent 502s under the router UI's rapid polling. The dst-nat rule is
-    source-restricted to the app's address as seen by the NAS.
+    for `_CPE_WEB_PROXY_TTL` (aligned with the browser idle window). Concurrent
+    requests reuse it behind a per-key lock; metadata is shared via Django cache
+    across workers. Each hit slides the TTL so an in-use page does not drop NAT.
     """
     scope = (cpe_scope or pppoe_username or "").strip()
     if not scope:
         raise ConnectionError("Missing client scope for CPE web proxy.")
     key = (dial_host(nas_host), f"{scope}|{cpe_port}")
-    now = time.monotonic()
 
-    cached = _CPE_WEB_PROXY_CACHE.get(key)
-    if cached and cached.get("expires_at", 0) > now:
+    cached = _load_cpe_web_proxy_entry(key)
+    if cached:
+        cached = _touch_cpe_web_proxy_entry(key, cached)
         yield {
             "host": cached["host"],
             "port": cached["port"],
@@ -1752,10 +1898,10 @@ def customer_cpe_web_proxy(
 
     lock = _cpe_web_proxy_lock(key)
     with lock:
-        # Another thread may have installed it while we waited on the lock.
-        cached = _CPE_WEB_PROXY_CACHE.get(key)
-        now = time.monotonic()
-        if cached and cached.get("expires_at", 0) > now:
+        # Another thread / worker may have installed it while we waited.
+        cached = _load_cpe_web_proxy_entry(key)
+        if cached:
+            cached = _touch_cpe_web_proxy_entry(key, cached)
             yield {
                 "host": cached["host"],
                 "port": cached["port"],
@@ -1800,10 +1946,7 @@ def customer_cpe_web_proxy(
             port=nas_port,
             timeout=timeout,
         ) as nas_sock:
-            try:
-                source_address = str(nas_sock.getsockname()[0]).strip()
-            except (AttributeError, OSError, IndexError):
-                source_address = ""
+            source_address = _nas_socket_source_address(nas_sock)
             error = _install_cpe_proxy(
                 nas_sock,
                 proxy_port,
@@ -1815,14 +1958,13 @@ def customer_cpe_web_proxy(
             if error:
                 raise ConnectionError(error)
 
-        entry = {
-            "host": dial_host(nas_host),
-            "port": proxy_port,
-            "cpe_host": cpe_host,
-            "source_address": source_address,
-            "expires_at": time.monotonic() + _CPE_WEB_PROXY_TTL,
-        }
-        _CPE_WEB_PROXY_CACHE[key] = entry
+        entry = _cpe_web_proxy_entry_payload(
+            dial_host(nas_host),
+            proxy_port,
+            cpe_host,
+            source_address,
+        )
+        _store_cpe_web_proxy_entry(key, entry)
 
     yield {
         "host": entry["host"],
@@ -1842,13 +1984,13 @@ def _remember_cpe_web_proxy(
 ) -> None:
     """Keep a just-probed NAS→CPE web forward so the browser can reuse it."""
     key = (dial_host(nas_host), f"{scope}|{int(cpe_port)}")
-    _CPE_WEB_PROXY_CACHE[key] = {
-        "host": dial_host(nas_host),
-        "port": int(proxy_port),
-        "cpe_host": (cpe_host or "").strip(),
-        "source_address": (source_address or "").strip(),
-        "expires_at": time.monotonic() + _CPE_WEB_PROXY_TTL,
-    }
+    entry = _cpe_web_proxy_entry_payload(
+        dial_host(nas_host),
+        int(proxy_port),
+        cpe_host,
+        source_address,
+    )
+    _store_cpe_web_proxy_entry(key, entry)
 
 
 def release_customer_cpe_web_proxy(
@@ -1864,7 +2006,7 @@ def release_customer_cpe_web_proxy(
     """Tear down a cached CPE web proxy and forget it (best-effort)."""
     key = (dial_host(nas_host), f"{pppoe_username}|{cpe_port}")
     with _cpe_web_proxy_lock(key):
-        entry = _CPE_WEB_PROXY_CACHE.pop(key, None)
+        entry = _forget_cpe_web_proxy_entry(key)
     if not entry:
         return
     try:
@@ -3095,6 +3237,7 @@ def probe_customer_cpe_web(
         "mode": "",
         "api_ok": False,
         "www_enabled": False,
+        "prep_attempted": False,
         "steps": [],
     }
 
@@ -3169,10 +3312,7 @@ def probe_customer_cpe_web(
             port=nas_port,
             timeout=timeout,
         ) as nas_sock:
-            try:
-                source_address = str(nas_sock.getsockname()[0]).strip()
-            except (AttributeError, OSError, IndexError):
-                source_address = ""
+            source_address = _nas_socket_source_address(nas_sock)
             _ensure_hotspot_bypass(nas_sock, source_address)
             ping = _nas_ping_host(nas_sock, address, count=1)
             result["ping_ok"] = bool(ping.get("reachable"))
@@ -3212,6 +3352,7 @@ def probe_customer_cpe_web(
 
     if auto_enable_www and (cpe_password or pppoe_password or (cpe_username or "").strip()):
         steps.append("web ports closed — enabling MikroTik WebFig")
+        result["prep_attempted"] = True
         prep = prepare_customer_cpe_access(
             nas_host,
             nas_username,
@@ -3248,7 +3389,9 @@ def probe_customer_cpe_web(
                     pppoe_password=pppoe_password,
                     auto_prepare=False,
                 ) as cpe_sock:
-                    www_notes, discovered = _ensure_cpe_www_ready_on_session(cpe_sock)
+                    www_notes, discovered = _ensure_cpe_www_ready_on_session(
+                        cpe_sock, gateway_ip=result["gateway"]
+                    )
                     steps.extend(www_notes)
                     result["www_enabled"] = bool(www_notes)
             except Exception as exc:
@@ -3419,8 +3562,10 @@ def cpe_firewall_unlock_script() -> str:
     fails on telnet/www and applies to nothing.
 
     Guards against pasting into the ISP NAS (both often identity "MikroTik").
+    Prefer ISP PPPoE pool only — never open management to the whole internet.
     """
     tag = CPE_API_AUTO_TAG
+    allowed = PPPOE_POOL_NETWORK
     return (
         ":local ppp [/ip address find where interface~\"pppoe\" and address~\"10.20.\"]\n"
         ":if ([:len $ppp] = 0) do={\n"
@@ -3430,42 +3575,46 @@ def cpe_firewall_unlock_script() -> str:
         "  :error \"not-cpe\"\n"
         "}\n"
         ":put (\"CPE OK - \" . [/ip address get ($ppp->0) address])\n"
-        "/ip service set [find name=api] disabled=no port=8728 address=0.0.0.0/0\n"
-        "/ip service set [find name=ssh] disabled=no port=22 address=0.0.0.0/0\n"
-        "/ip service set [find name=winbox] disabled=no address=0.0.0.0/0\n"
-        "/ip service set [find name=www] disabled=no address=0.0.0.0/0\n"
+        f"/ip service set [find name=api] disabled=no port=8728 address={allowed}\n"
+        f"/ip service set [find name=ssh] disabled=no port=22 address={allowed}\n"
+        f"/ip service set [find name=winbox] disabled=no address={allowed}\n"
+        f"/ip service set [find name=www] disabled=no address={allowed}\n"
         f'/ip firewall filter remove [find comment~"{tag}"]\n'
-        "/ip firewall filter disable [find where chain=input]\n"
-        "/ip firewall raw disable [find]\n"
         "/ip firewall filter add chain=input action=accept protocol=tcp "
-        f'dst-port=8728,22,8291,80,8080,8081 comment="{tag}"\n'
+        f'dst-port=8728,22,8291,80,8080,8081 src-address={allowed} '
+        f'comment="{tag}" place-before=0\n'
         ':put "ispcentric unlock ok - retry Connect in ISPCENTRIC"'
     )
 
 
-def _cpe_auto_enable_commands() -> str:
-    """RouterOS script to enable API and allow it from the ISP PPPoE network."""
+def _cpe_auto_enable_commands(gateway_ip: str = "") -> str:
+    """RouterOS script to enable API and allow it from the ISP gateway subnet."""
+    allowed = _cpe_mgmt_allowed_from(gateway_ip)
     tag = CPE_API_AUTO_TAG
     return (
-        ":do { /ip service set [find where name=api] disabled=no port=8728 "
-        "address=0.0.0.0/0 } on-error={}; "
-        ":do { /ip service set [find where name=ssh] disabled=no port=22 "
-        "address=0.0.0.0/0 } on-error={}; "
-        ":do { /ip service set [find where name=winbox] disabled=no "
-        "address=0.0.0.0/0 } on-error={}; "
-        ":do { /ip service set [find where name=www] disabled=no "
-        "address=0.0.0.0/0 } on-error={}; "
+        f":do {{ /ip service set [find where name=api] disabled=no port=8728 "
+        f"address={allowed} }} on-error={{}}; "
+        f":do {{ /ip service set [find where name=ssh] disabled=no port=22 "
+        f"address={allowed} }} on-error={{}}; "
+        f":do {{ /ip service set [find where name=winbox] disabled=no "
+        f"address={allowed} }} on-error={{}}; "
+        f":do {{ /ip service set [find where name=www] disabled=no "
+        f"address={allowed} }} on-error={{}}; "
         f':do {{ /ip firewall filter remove [find where comment~"{tag}"] }} on-error={{}}; '
-        ":do { /ip firewall filter disable [find where chain=input] } on-error={}; "
-        ":do { /ip firewall raw disable [find] } on-error={}; "
-        ":do { /ip firewall filter add chain=input action=accept protocol=tcp "
-        f'dst-port=8728,22,8291,80,8080,8081 comment="{tag}" }} on-error={{}}; '
+        f":do {{ /ip firewall filter add chain=input action=accept protocol=tcp "
+        f'dst-port=8728,22,8291,80,8080,8081 src-address={allowed} comment="{tag}" '
+        f"place-before=0 }} on-error={{}}; "
         ":put ispcentric-api-ready"
     )
 
 
-def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
-    """Once API is open, make sure api service stays enabled and firewall allows it."""
+def _ensure_cpe_api_ready_on_session(
+    sock: socket.socket,
+    *,
+    gateway_ip: str = "",
+) -> list[str]:
+    """Once API is open, ensure api service + firewall allow ISP gateway access."""
+    allowed_from = _cpe_mgmt_allowed_from(gateway_ip)
     notes: list[str] = []
     try:
         for row in _print(sock, "/ip/service", props=".id,name,port,disabled,address"):
@@ -3477,36 +3626,12 @@ def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
             props: dict[str, str] = {
                 "disabled": "no",
                 "port": "8728",
-                "address": "0.0.0.0/0",
+                "address": allowed_from,
             }
             terminal = _set(sock, "/ip/service", item_id, **props)
             if terminal.get("_reply") not in {"!trap", "!fatal"}:
                 notes.append("ensured CPE API service enabled")
             break
-    except Exception:
-        pass
-
-    try:
-        disabled_drops = 0
-        for row in _print(
-            sock,
-            "/ip/firewall/filter",
-            props=".id,chain,action,disabled",
-        ):
-            if (row.get("chain") or "") != "input":
-                continue
-            if (row.get("action") or "") != "drop":
-                continue
-            if str(row.get("disabled") or "").lower() in {"true", "yes"}:
-                continue
-            item_id = (row.get(".id") or "").strip()
-            if not item_id:
-                continue
-            terminal = _set(sock, "/ip/firewall/filter", item_id, disabled="yes")
-            if terminal.get("_reply") not in {"!trap", "!fatal"}:
-                disabled_drops += 1
-        if disabled_drops:
-            notes.append(f"disabled {disabled_drops} CPE input drop rule(s)")
     except Exception:
         pass
 
@@ -3523,8 +3648,10 @@ def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
                 chain="input",
                 protocol="tcp",
                 **{"dst-port": "8728,22,8291"},
+                **{"src-address": allowed_from},
                 action="accept",
                 comment=CPE_API_AUTO_TAG,
+                **{"place-before": "0"},
             )
             if terminal.get("_reply") not in {"!trap", "!fatal"}:
                 notes.append("opened CPE firewall for API")
@@ -3533,8 +3660,13 @@ def _ensure_cpe_api_ready_on_session(sock: socket.socket) -> list[str]:
     return notes
 
 
-def _ensure_cpe_www_ready_on_session(sock: socket.socket) -> tuple[list[str], list[int]]:
+def _ensure_cpe_www_ready_on_session(
+    sock: socket.socket,
+    *,
+    gateway_ip: str = "",
+) -> tuple[list[str], list[int]]:
     """Enable RouterOS WebFig from the ISP side and return listening www ports."""
+    allowed_from = _cpe_mgmt_allowed_from(gateway_ip)
     notes: list[str] = []
     ports: list[int] = []
     try:
@@ -3559,7 +3691,7 @@ def _ensure_cpe_www_ready_on_session(sock: socket.socket) -> tuple[list[str], li
                 "/ip/service",
                 item_id,
                 disabled="no",
-                address="0.0.0.0/0",
+                address=allowed_from,
             )
             if terminal.get("_reply") in {"!trap", "!fatal"}:
                 continue
@@ -3582,6 +3714,7 @@ def _ensure_cpe_www_ready_on_session(sock: socket.socket) -> tuple[list[str], li
                 chain="input",
                 protocol="tcp",
                 **{"dst-port": "80,8080,8081,443,8443"},
+                **{"src-address": allowed_from},
                 action="accept",
                 comment=CPE_WWW_AUTO_TAG,
                 **{"place-before": "0"},
@@ -3591,6 +3724,7 @@ def _ensure_cpe_www_ready_on_session(sock: socket.socket) -> tuple[list[str], li
     except Exception:
         pass
     return notes, ports
+
 
 
 def prepare_customer_cpe_access(
@@ -3713,11 +3847,13 @@ def prepare_customer_cpe_access(
                 steps.append(ping.get("error") or "NAS cannot ping CPE yet")
                 # Still install proxy — some boards block ICMP but accept TCP.
 
+            source_address = _nas_socket_source_address(nas_sock)
             proxy_error = _install_cpe_proxy(
                 nas_sock,
                 proxy_port,
                 cpe_host,
                 cpe_port,
+                allowed_source=source_address,
                 gateway_ip=resolved_gateway,
             )
             if proxy_error:
@@ -3738,7 +3874,9 @@ def prepare_customer_cpe_access(
                         port=proxy_port,
                         timeout=api_timeout,
                     ) as cpe_sock:
-                        notes = _ensure_cpe_api_ready_on_session(cpe_sock)
+                        notes = _ensure_cpe_api_ready_on_session(
+                            cpe_sock, gateway_ip=resolved_gateway
+                        )
                         steps.extend(notes)
                     result.update(
                         {
@@ -3793,7 +3931,7 @@ def prepare_customer_cpe_access(
             steps.append("API not reachable yet — enabling via NAS SSH")
             ssh_ok = False
             ssh_last = ""
-            enable_cmd = _cpe_auto_enable_commands()
+            enable_cmd = _cpe_auto_enable_commands(resolved_gateway)
             for user, password in candidates:
                 ssh = _nas_ssh_exec(
                     nas_sock,
@@ -3833,10 +3971,11 @@ def prepare_customer_cpe_access(
                         "CPE is reachable but API is not accepting ISP connections "
                         "(service address still limited to LAN, or API off)."
                     )
+                    allowed = _cpe_mgmt_allowed_from(resolved_gateway)
                     result["hint"] = (
                         "In Winbox New Terminal run:\n"
-                        "/ip service set [find name=api] disabled=no port=8728 address=0.0.0.0/0\n"
-                        "/ip service set [find name=ssh] disabled=no port=22 address=0.0.0.0/0\n"
+                        f"/ip service set [find name=api] disabled=no port=8728 address={allowed}\n"
+                        f"/ip service set [find name=ssh] disabled=no port=22 address={allowed}\n"
                         "Then retry Connect."
                     )
                     result["firewall_blocked"] = True
@@ -3865,7 +4004,9 @@ def prepare_customer_cpe_access(
                     port=proxy_port,
                     timeout=min(timeout, 8.0),
                 ) as cpe_sock:
-                    notes = _ensure_cpe_api_ready_on_session(cpe_sock)
+                    notes = _ensure_cpe_api_ready_on_session(
+                        cpe_sock, gateway_ip=resolved_gateway
+                    )
                     steps.extend(notes)
                 result.update(
                     {
@@ -3946,7 +4087,7 @@ def _cpe_api_session(
             port=cpe_port,
             timeout=min(timeout, 2.5),
         ) as sock:
-            _ensure_cpe_api_ready_on_session(sock)
+            _ensure_cpe_api_ready_on_session(sock, gateway_ip=PPPOE_LOCAL_ADDRESS)
             yield sock
             return
     except (TimeoutError, OSError, ConnectionError):
@@ -3981,7 +4122,15 @@ def _cpe_api_session(
         port=nas_port,
         timeout=timeout,
     ) as nas_sock:
-        proxy_error = _install_cpe_proxy(nas_sock, proxy_port, cpe_host, cpe_port)
+        source_address = _nas_socket_source_address(nas_sock)
+        proxy_error = _install_cpe_proxy(
+            nas_sock,
+            proxy_port,
+            cpe_host,
+            cpe_port,
+            allowed_source=source_address,
+            gateway_ip=PPPOE_LOCAL_ADDRESS,
+        )
         if proxy_error:
             raise ConnectionError(proxy_error)
 
@@ -3993,7 +4142,7 @@ def _cpe_api_session(
             port=proxy_port,
             timeout=timeout,
         ) as sock:
-            _ensure_cpe_api_ready_on_session(sock)
+            _ensure_cpe_api_ready_on_session(sock, gateway_ip=PPPOE_LOCAL_ADDRESS)
             yield sock
     except TimeoutError as exc:
         raise ConnectionError(
@@ -4826,20 +4975,36 @@ def check_mikrotik_reachable(
             "port": best_port,
         }
 
+    # ICMP / offline confirm — short WireGuard jitter often times out the
+    # parallel 1.2s probes once, then succeeds on a slightly longer dial.
+    confirm_timeout = min(2.5, max(timeout, 1.5) + 0.6)
+
+    def _confirm_api() -> dict[str, Any] | None:
+        try:
+            with socket.create_connection(
+                (dial_host(check_host), api_port), timeout=confirm_timeout
+            ):
+                return {
+                    "online": True,
+                    "via": "api",
+                    "port": api_port,
+                    "confirmed": True,
+                }
+        except OSError:
+            return None
+
     # ICMP fallback — device may be up with management ports firewalled.
+    # Confirm :8728 once before calling it "ping only" (false limited drops).
     if _icmp_ping(check_host, timeout=timeout):
+        confirmed = _confirm_api()
+        if confirmed:
+            return confirmed
         return {"online": True, "via": "ping", "port": 0}
 
-    # One confirm pass before declaring Offline. Short WireGuard / WAN jitter
-    # often times out the parallel 1.2s probes once, then succeeds immediately.
-    confirm_timeout = min(2.5, max(timeout, 1.5) + 0.6)
-    try:
-        with socket.create_connection(
-            (dial_host(check_host), api_port), timeout=confirm_timeout
-        ):
-            return {"online": True, "via": "api", "port": api_port, "confirmed": True}
-    except OSError:
-        pass
+    # One confirm pass before declaring Offline.
+    confirmed = _confirm_api()
+    if confirmed:
+        return confirmed
     if _icmp_ping(check_host, timeout=confirm_timeout):
         return {"online": True, "via": "ping", "port": 0, "confirmed": True}
 
@@ -9030,6 +9195,165 @@ def _rate_limit_string(upload_mbps: int, download_mbps: int) -> str:
     return f"{upload}M/{download}M"
 
 
+def _parse_rate_limit_mbps(rate_limit: str) -> tuple[int, int]:
+    """Parse RouterOS rate-limit to (upload_mbps, download_mbps)."""
+    rate_limit = (rate_limit or "").strip()
+    if not rate_limit or "/" not in rate_limit:
+        return 0, 0
+
+    def _part_to_mbps(part: str) -> int:
+        part = (part or "").strip()
+        if not part:
+            return 0
+        unit = part[-1].lower()
+        if unit in {"k", "m", "g"}:
+            num_s = part[:-1].strip()
+        else:
+            unit = "m"
+            num_s = part
+        try:
+            value = float(num_s)
+        except ValueError:
+            return 0
+        if unit == "k":
+            return max(0, int(round(value / 1000)))
+        if unit == "g":
+            return max(0, int(round(value * 1000)))
+        return max(0, int(round(value)))
+
+    upload_s, _, download_s = rate_limit.partition("/")
+    return _part_to_mbps(upload_s), _part_to_mbps(download_s)
+
+
+def _normalize_rate_limit_string(rate_limit: str) -> str:
+    """Canonicalize RouterOS rate-limit strings for strict comparison."""
+    upload, download = _parse_rate_limit_mbps(rate_limit)
+    return _rate_limit_string(upload, download)
+
+
+def _rate_limits_match(expected: str, actual: str) -> bool:
+    expected_norm = _normalize_rate_limit_string(expected)
+    actual_norm = _normalize_rate_limit_string(actual)
+    if not expected_norm:
+        return not actual_norm
+    return expected_norm == actual_norm
+
+
+def _read_profile_rate_limit(
+    sock: socket.socket,
+    path: str,
+    profile_name: str,
+) -> str:
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        return ""
+    rows = _print(sock, path, props="name,rate-limit", query={"name": profile_name})
+    if not rows:
+        rows = _print(sock, path, props="name,rate-limit")
+    for row in rows:
+        if (row.get("name") or "").strip() == profile_name:
+            return (row.get("rate-limit") or "").strip()
+    return ""
+
+
+def _verify_profile_rate_limit(
+    sock: socket.socket,
+    *,
+    path: str,
+    profile_name: str,
+    expected_rate_limit: str,
+) -> None:
+    """Raise when a NAS profile exists but its rate-limit does not match."""
+    expected = _normalize_rate_limit_string(expected_rate_limit)
+    if not expected or not (profile_name or "").strip():
+        return
+    actual = _read_profile_rate_limit(sock, path, profile_name)
+    if not actual:
+        raise ConnectionError(
+            f"MikroTik profile “{profile_name}” has no rate-limit — "
+            f"expected {expected}."
+        )
+    if not _rate_limits_match(expected, actual):
+        raise ConnectionError(
+            f"MikroTik profile “{profile_name}” rate-limit is {actual!r}, "
+            f"expected {expected!r}."
+        )
+
+
+def _read_hotspot_profile_shared_users(sock: socket.socket, profile_name: str) -> str:
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        return ""
+    rows = _print(
+        sock,
+        "/ip/hotspot/user/profile",
+        props="name,shared-users",
+        query={"name": profile_name},
+    )
+    if not rows:
+        rows = _print(sock, "/ip/hotspot/user/profile", props="name,shared-users")
+    for row in rows:
+        if (row.get("name") or "").strip() == profile_name:
+            return (row.get("shared-users") or "").strip()
+    return ""
+
+
+def _ensure_hotspot_profile_shared_users(
+    sock: socket.socket,
+    *,
+    profile_name: str,
+) -> None:
+    """
+    Force shared-users=1 so one Hotspot MAC user cannot host many concurrent logins.
+
+    Device caps are enforced by authorizing N MAC users; each must be single-session.
+    """
+    profile_name = (profile_name or "").strip()
+    if not profile_name:
+        return
+    current = _read_hotspot_profile_shared_users(sock, profile_name)
+    if current in {"1", "01"}:
+        return
+    profile_id = ""
+    for row in _print(
+        sock, "/ip/hotspot/user/profile", props=".id,name", query={"name": profile_name}
+    ):
+        if (row.get("name") or "").strip() == profile_name:
+            profile_id = (row.get(".id") or "").strip()
+            break
+    if not profile_id:
+        for row in _print(sock, "/ip/hotspot/user/profile", props=".id,name"):
+            if (row.get("name") or "").strip() == profile_name:
+                profile_id = (row.get(".id") or "").strip()
+                break
+    if not profile_id:
+        raise ConnectionError(
+            f"MikroTik Hotspot profile “{profile_name}” missing after write."
+        )
+    terminal = _set(sock, "/ip/hotspot/user/profile", profile_id, **{"shared-users": "1"})
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                f"Could not set shared-users=1 on Hotspot profile “{profile_name}”.",
+            )
+        )
+    again = _read_hotspot_profile_shared_users(sock, profile_name)
+    if again not in {"1", "01"}:
+        raise ConnectionError(
+            f"MikroTik Hotspot profile “{profile_name}” shared-users is "
+            f"{again or 'empty'!r}, expected '1'."
+        )
+
+
+def _expected_hotspot_profile_for_customer(customer, organization=None) -> str:
+    org = organization or getattr(customer, "organization", None)
+    upload, download = _hotspot_speeds_for_customer(customer, org)
+    if upload >= 1 and download >= 1:
+        return _hotspot_speed_profile_name(upload, download)
+    return ISP_HOTSPOT_USER_PROFILE
+
+
 def _pppoe_speeds_for_customer(customer) -> tuple[int, int]:
     return _plan_speeds_mbps(getattr(customer, "plan", None))
 
@@ -9096,24 +9420,11 @@ def _ensure_pppoe_rate_profile(
         "rate-limit": rate_limit,
         "comment": f"{PPP_SECRET_TAG} {rate_limit}",
     }
-    # Last resort: profile without rate-limit still lets dial work; secret /
-    # simple-queue paths below then carry the shaping.
-    bare = {
-        "name": name,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        "dns-server": "8.8.8.8,1.1.1.1",
-        "use-encryption": "no",
-        "only-one": "yes",
-        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
-    }
 
     if profile_id:
         terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
         if terminal.get("_reply") == "!trap":
             terminal = _set(sock, "/ppp/profile", profile_id, **soft)
-        if terminal.get("_reply") == "!trap":
-            terminal = _set(sock, "/ppp/profile", profile_id, **bare)
         if terminal.get("_reply") == "!trap":
             raise ConnectionError(
                 _trap_message(
@@ -9126,14 +9437,18 @@ def _ensure_pppoe_rate_profile(
         if terminal.get("_reply") == "!trap":
             terminal = _add(sock, "/ppp/profile", **soft)
         if terminal.get("_reply") == "!trap":
-            terminal = _add(sock, "/ppp/profile", **bare)
-        if terminal.get("_reply") == "!trap":
             raise ConnectionError(
                 _trap_message(
                     terminal,
                     f"Could not create PPPoE speed profile “{name}” on the MikroTik.",
                 )
             )
+    _verify_profile_rate_limit(
+        sock,
+        path="/ppp/profile",
+        profile_name=name,
+        expected_rate_limit=rate_limit,
+    )
     return name
 
 
@@ -9194,18 +9509,27 @@ def _ensure_pppoe_simple_queue(
     if item_id:
         terminal = _set(sock, "/queue/simple", item_id, **props)
         if terminal.get("_reply") == "!trap":
-            # Older builds use limit-at / differently named fields — best-effort.
             soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
             terminal = _set(sock, "/queue/simple", item_id, **soft)
         if terminal.get("_reply") == "!trap":
-            return
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not update PPPoE speed queue for “{username}”.",
+                )
+            )
     else:
         terminal = _add(sock, "/queue/simple", **props)
         if terminal.get("_reply") == "!trap":
             soft = {"name": queue_name, "target": target, "max-limit": rate_limit}
             terminal = _add(sock, "/queue/simple", **soft)
         if terminal.get("_reply") == "!trap":
-            return
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not create PPPoE speed queue for “{username}”.",
+                )
+            )
 
 
 def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
@@ -9259,6 +9583,16 @@ def _customer_internet_allowed(customer) -> bool:
         return bool(customer_receives_internet(customer))
     except Exception:
         return getattr(customer, "status", "") == "active"
+
+
+def _customer_package_is_paused(customer) -> bool:
+    """True when staff froze the package clock (surfing must stay blocked)."""
+    try:
+        from billing.services import customer_package_is_paused
+
+        return bool(customer_package_is_paused(customer))
+    except Exception:
+        return getattr(customer, "package_paused_at", None) is not None
 
 
 def _customer_pppoe_secret_disabled(customer) -> bool:
@@ -9315,17 +9649,22 @@ def _pppoe_has_active_session(sock: socket.socket, username: str) -> bool:
     )
 
 
-def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool:
-    """Whether this user's current session IP still carries the blocked tag."""
+def _active_pppoe_session_addresses(sock: socket.socket, username: str) -> set[str]:
+    """Remote IPs for this username's live /ppp/active rows."""
     username = (username or "").strip().lower()
     if not username:
-        return False
-    active_addresses = {
+        return set()
+    return {
         (row.get("address") or "").strip()
         for row in _print(sock, "/ppp/active", props="name,address")
         if (row.get("name") or "").strip().lower() == username
+        and (row.get("address") or "").strip()
     }
-    active_addresses.discard("")
+
+
+def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool:
+    """Whether this user's current session IP still carries the blocked tag."""
+    active_addresses = _active_pppoe_session_addresses(sock, username)
     if not active_addresses:
         return False
     return any(
@@ -9333,6 +9672,39 @@ def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool
         and (row.get("address") or "").strip() in active_addresses
         for row in _print(sock, "/ip/firewall/address-list", props="list,address")
     )
+
+
+def _clear_pppoe_blocked_address_list(
+    sock: socket.socket, username: str
+) -> list[str]:
+    """
+    Remove leftover ispcentric-blocked address-list rows for this session.
+
+    Changing /ppp/secret to a paid profile does not rewrite an already-up
+    PPP session. If a kick races or a static list entry sticks, the CPE stays
+    dialed while WAN forward is still dropped — classic “PPPoE active, no surf”.
+    """
+    active_addresses = _active_pppoe_session_addresses(sock, username)
+    if not active_addresses:
+        return []
+    removed: list[str] = []
+    for row in _print(
+        sock,
+        "/ip/firewall/address-list",
+        props=".id,list,address",
+    ):
+        if (row.get("list") or "").strip() != PPPOE_BLOCKED_ADDRESS_LIST:
+            continue
+        address = (row.get("address") or "").strip()
+        if address not in active_addresses:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, "/ip/firewall/address-list", item_id)
+        if terminal.get("_reply") != "!trap":
+            removed.append(address)
+    return removed
 
 
 def _ensure_ppp_secret(
@@ -9372,9 +9744,7 @@ def _ensure_ppp_secret(
         and profile.startswith("ispcentric-pppoe-")
     ):
         try:
-            upload_s, _, download_s = rate_limit.partition("/")
-            upload_mbps = int((upload_s or "").rstrip("MmKk").strip() or 0)
-            download_mbps = int((download_s or "").rstrip("MmKk").strip() or 0)
+            upload_mbps, download_mbps = _parse_rate_limit_mbps(rate_limit)
             if upload_mbps >= 1 and download_mbps >= 1:
                 profile = _ensure_pppoe_rate_profile(
                     sock,
@@ -9388,6 +9758,7 @@ def _ensure_ppp_secret(
     previous_profile = ""
     previous_disabled = ""
     previous_password = ""
+    previous_rate_limit = ""
     rows = _print(
         sock,
         "/ppp/secret",
@@ -9407,6 +9778,11 @@ def _ensure_ppp_secret(
             previous_disabled = (row.get("disabled") or "").strip().lower()
             previous_password = row.get("password") or ""
             break
+
+    if previous_profile and previous_profile.startswith("ispcentric-pppoe-"):
+        previous_rate_limit = _read_profile_rate_limit(
+            sock, "/ppp/profile", previous_profile
+        )
 
     # service=any: accept dial-in regardless of CPE service-name quirks.
     # only-one=yes: per-secret guard so a second device cannot dial while the
@@ -9535,11 +9911,20 @@ def _ensure_ppp_secret(
     prev_disabled_yes = previous_disabled in {"true", "yes", "y"}
     profile_changed = (not created) and previous_profile != profile
     disabled_changed = (not created) and prev_disabled_yes != bool(disabled)
+    rate_limit_changed = bool(
+        rate_limit
+        and previous_rate_limit
+        and not _rate_limits_match(rate_limit, previous_rate_limit)
+    )
     # Kick only when access actually changes. Sweeping already-blocked clients
     # every two minutes was tearing down the redialed session that powers the
     # pay page / STK status polls.
     should_kick = bool(
-        created or profile_changed or disabled_changed or password_changed
+        created
+        or profile_changed
+        or disabled_changed
+        or password_changed
+        or rate_limit_changed
     )
 
     if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME and not disabled:
@@ -9947,6 +10332,8 @@ def provision_customer_pppoe(
     action = ""
     notes: list[str] = []
     kicked = 0
+    session_blocked_after = False
+    session_active_after = False
     probe_timeout = 1.5 if ensure_stack else 0.8
 
     for candidate in hosts:
@@ -9988,7 +10375,8 @@ def provision_customer_pppoe(
                     notes.extend(stack_notes)
                 previous_profile = _current_ppp_secret_profile(sock, username)
                 session_was_blocked = False
-                if ensure_stack or previous_profile:
+                session_active_before = _pppoe_has_active_session(sock, username)
+                if ensure_stack or previous_profile or session_active_before:
                     session_was_blocked = _active_pppoe_session_is_blocked(
                         sock, username
                     )
@@ -10010,24 +10398,43 @@ def provision_customer_pppoe(
                     rate_limit=rate_limit,
                 )
                 # Kick when profile changes so the blocked address-list (or restore)
-                # takes effect immediately — otherwise established TCP keeps surfing.
+                # takes effect immediately — otherwise established TCP keeps surfing
+                # OR (on restore) stays dialed with the blocked address-list / captive DNS.
                 # Also kick/nudge when a paid restore still has CPE renew pending:
                 # the CPE may be stuck offline until it redials the restored secret.
                 # Also kick when the secret is already blocked but the live session
                 # is still on a paid address-list (first kick failed / race).
-                needs_redial_nudge = bool(
+                restoring_surf = bool(
                     internet_allowed
+                    and not disabled
                     and profile != PPPOE_BLOCKED_PROFILE_NAME
-                    and cpe_renew_clear_is_pending(customer)
+                )
+                needs_redial_nudge = bool(
+                    restoring_surf and cpe_renew_clear_is_pending(customer)
                 )
                 stuck_unblocked_session = bool(
                     profile == PPPOE_BLOCKED_PROFILE_NAME
                     and not session_was_blocked
                     and _pppoe_has_active_session(sock, username)
                 )
+                # Paid secret + live session that dialed while blocked (or after a
+                # failed kick): must redial onto the paid profile. Secret profile
+                # alone is not enough — /ppp/active keeps the old address-list/DNS.
                 should_kick = (previous_profile or "") != profile or (
                     internet_allowed and session_was_blocked
-                ) or needs_redial_nudge or stuck_unblocked_session
+                ) or needs_redial_nudge or stuck_unblocked_session or (
+                    restoring_surf
+                    and session_active_before
+                    and (previous_profile or "") == PPPOE_BLOCKED_PROFILE_NAME
+                )
+                if restoring_surf and session_was_blocked:
+                    cleared = _clear_pppoe_blocked_address_list(sock, username)
+                    if cleared:
+                        notes.append(
+                            "cleared blocked address-list for "
+                            + ", ".join(cleared)
+                            + " (active session was still WAN-dropped)"
+                        )
                 if should_kick:
                     kicked = _disconnect_pppoe_sessions(sock, username)
                     if kicked:
@@ -10069,6 +10476,41 @@ def provision_customer_pppoe(
                             "nudged PPPoE secret to force CPE redial "
                             "(renew Hotspot still pending clear)"
                         )
+                # Post-restore verify: if the CPE stayed up and is still tagged
+                # blocked, clear + kick once more before we report success.
+                if restoring_surf:
+                    session_blocked_after = _active_pppoe_session_is_blocked(
+                        sock, username
+                    )
+                    if session_blocked_after:
+                        cleared = _clear_pppoe_blocked_address_list(sock, username)
+                        re_kicked = _disconnect_pppoe_sessions(sock, username)
+                        kicked += re_kicked
+                        if cleared:
+                            notes.append(
+                                "re-cleared blocked address-list "
+                                + ", ".join(cleared)
+                            )
+                        if re_kicked:
+                            notes.append(
+                                f"re-disconnected {re_kicked} session(s) still "
+                                "carrying blocked WAN drop after paid restore"
+                            )
+                        session_blocked_after = _active_pppoe_session_is_blocked(
+                            sock, username
+                        )
+                        if session_blocked_after:
+                            notes.append(
+                                "WARNING: PPPoE still active on blocked "
+                                "address-list after restore — user dialed but "
+                                "cannot surf until CPE redials"
+                            )
+                    session_active_after = _pppoe_has_active_session(sock, username)
+                elif profile == PPPOE_BLOCKED_PROFILE_NAME:
+                    session_blocked_after = _active_pppoe_session_is_blocked(
+                        sock, username
+                    )
+                    session_active_after = _pppoe_has_active_session(sock, username)
             working_host = candidate
             break
         except TimeoutError:
@@ -10119,6 +10561,11 @@ def provision_customer_pppoe(
         access_note = (
             " (dial-in kept on, surfing blocked at NAS — outside subscription period)."
         )
+    elif session_blocked_after:
+        access_note = (
+            " (secret restored, but live PPPoE session still WAN-blocked — "
+            "awaiting CPE redial)."
+        )
     else:
         access_note = ". The client router can dial with this username and password."
     return {
@@ -10131,7 +10578,10 @@ def provision_customer_pppoe(
         "disabled": disabled,
         "internet_allowed": internet_allowed and not disabled,
         "profile": profile,
+        "rate_limit": rate_limit,
         "kicked": kicked,
+        "session_active": session_active_after,
+        "session_blocked": bool(session_blocked_after),
         "notes": notes,
         "message": (
             f"PPPoE secret “{username}” {verb} on {router_name or working_host}"
@@ -10915,7 +11365,12 @@ def _ensure_cpe_wan_block(sock: socket.socket) -> list[str]:
     return notes
 
 
-def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> list[str]:
+def _enable_cpe_renew_hotspot(
+    sock: socket.socket,
+    *,
+    portal_url: str = "",
+    identity_name: str = "Renew subscription",
+) -> list[str]:
     """
     Turn on a local Hotspot + pay redirect on the CPE for instant Wi‑Fi renew.
 
@@ -11108,8 +11563,10 @@ def _enable_cpe_renew_hotspot(sock: socket.socket, *, portal_url: str = "") -> l
     notes.extend(_bounce_cpe_wifi_clients(sock))
 
     try:
-        _command(sock, ["/system/identity/set", "=name=Renew subscription"])
-        notes.append("CPE identity set for renew popup")
+        name = (identity_name or "Renew subscription").strip() or "Renew subscription"
+        # RouterOS identity is short; keep captive status readable on phones.
+        _command(sock, [f"/system/identity/set", f"=name={name[:48]}"])
+        notes.append(f"CPE identity set to “{name[:48]}”")
     except Exception:
         pass
 
@@ -11317,7 +11774,15 @@ def apply_cpe_renew_portal(
                 proxy_scope=pppoe_username,
             ) as sock:
                 notes = (
-                    _enable_cpe_renew_hotspot(sock, portal_url=portal_url)
+                    _enable_cpe_renew_hotspot(
+                        sock,
+                        portal_url=portal_url,
+                        identity_name=(
+                            "Internet paused"
+                            if _customer_package_is_paused(customer)
+                            else "Renew subscription"
+                        ),
+                    )
                     if enabled
                     else _disable_cpe_renew_hotspot(sock)
                 )
@@ -12337,6 +12802,9 @@ def sync_customer_subscription_access(
             overall_ok = False
     else:
         provision_ok = bool(provision_result.get("ok") or not provision)
+        session_still_blocked = bool(
+            allowed and provision and provision_result.get("session_blocked")
+        )
         # Paid restore is incomplete while the CPE renew Hotspot still traps Wi‑Fi.
         if (
             allowed
@@ -12347,10 +12815,18 @@ def sync_customer_subscription_access(
             and not quick
         ):
             overall_ok = False
+        elif session_still_blocked:
+            # PPPoE dialed but WAN still dropped via address-list — not surfing yet.
+            overall_ok = False
         else:
             overall_ok = bool(provision_ok or portal_ok)
     if allowed:
-        if portal_ok:
+        if provision_result.get("session_blocked"):
+            message = (
+                "PPPoE is active but still on the blocked address-list after "
+                "restore — CPE must redial onto the paid profile before surfing works."
+            )
+        elif portal_ok:
             message = "Internet allowed for subscription period."
         elif portal_result.get("skipped") or cpe_renew_clear_is_pending(customer):
             message = (
@@ -13415,8 +13891,19 @@ def _ensure_hotspot_rate_profile(
         sock, "/ip/hotspot/user/profile", profile_id, attempts
     )
     if terminal.get("_reply") == "!trap":
-        # Fall back to the org default profile rather than failing authorize.
-        return ISP_HOTSPOT_USER_PROFILE
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                f"Could not create Hotspot speed profile “{name}” on the MikroTik.",
+            )
+        )
+    _verify_profile_rate_limit(
+        sock,
+        path="/ip/hotspot/user/profile",
+        profile_name=name,
+        expected_rate_limit=rate_limit,
+    )
+    _ensure_hotspot_profile_shared_users(sock, profile_name=name)
     return name
 
 
@@ -13850,12 +14337,17 @@ def _apply_hotspot_customer_on_socket(
     now=None,
     active_rows: list[dict[str, str]] | None = None,
     host_rows: list[dict[str, str]] | None = None,
-) -> bool:
+) -> dict[str, Any]:
     """Create/update Hotspot MAC users for this customer and expire stale sessions."""
-    from billing.devices import customer_max_devices, hotspot_macs_for_customer
+    from billing.devices import (
+        customer_max_devices,
+        hotspot_macs_for_customer,
+        prune_over_cap_hotspot_devices,
+    )
 
     # Heal routers that still have the old tunnel-script LAN-wide bypasses.
     _remove_lan_wide_hotspot_bypasses(sock)
+    pruned = prune_over_cap_hotspot_devices(customer)
     primary, disabled, limit_uptime, comment = _hotspot_customer_access_fields(
         customer, now=now
     )
@@ -13863,7 +14355,16 @@ def _apply_hotspot_customer_on_socket(
     if not macs and primary:
         macs = [_normalize_hotspot_mac(primary)]
     if not macs:
-        return False
+        return {
+            "ok": False,
+            "profile": "",
+            "rate_limit": "",
+            "max_devices": customer_max_devices(customer),
+            "allowed_count": 0,
+            "over_cap_count": 0,
+            "over_cap_macs": [],
+            "pruned_macs": pruned,
+        }
     cap = customer_max_devices(customer)
     if cap > 0:
         allowed = macs[:cap]
@@ -13873,6 +14374,7 @@ def _apply_hotspot_customer_on_socket(
         extra = []
     org = getattr(customer, "organization", None)
     upload, download = _hotspot_speeds_for_customer(customer, org)
+    rate_limit = _rate_limit_string(upload, download)
     profile = _ensure_hotspot_rate_profile(
         sock,
         organization=org,
@@ -13920,7 +14422,16 @@ def _apply_hotspot_customer_on_socket(
             host_rows=host_rows,
         )
         _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
-    return True
+    return {
+        "ok": True,
+        "profile": profile,
+        "rate_limit": rate_limit,
+        "max_devices": cap,
+        "allowed_count": len(allowed),
+        "over_cap_count": len(extra),
+        "over_cap_macs": list(extra),
+        "pruned_macs": pruned,
+    }
 
 
 def _sync_organization_hotspot_users_on_socket(
@@ -13952,14 +14463,15 @@ def _sync_organization_hotspot_users_on_socket(
     host_rows = _print(sock, "/ip/hotspot/host", props=".id,mac-address,authorized")
     synced = 0
     for customer in _hotspot_customers_for_router(router):
-        if _apply_hotspot_customer_on_socket(
+        applied = _apply_hotspot_customer_on_socket(
             sock,
             customer,
             reauthenticate=reauthenticate,
             now=now,
             active_rows=active_rows,
             host_rows=host_rows,
-        ):
+        )
+        if applied.get("ok"):
             synced += 1
     notes = _block_orphan_hotspot_users_on_socket(sock, router)
     if notes:
@@ -14069,7 +14581,7 @@ def authorize_hotspot_customer(
                 applied = _apply_hotspot_customer_on_socket(
                     sock, customer, reauthenticate=reauthenticate
                 )
-            if not applied:
+            if not applied.get("ok"):
                 return {
                     "ok": False,
                     "skipped": False,
@@ -14085,6 +14597,12 @@ def authorize_hotspot_customer(
                 "host": candidate,
                 "users_synced": 1,
                 "fast_path": True,
+                "profile": applied.get("profile") or "",
+                "rate_limit": applied.get("rate_limit") or "",
+                "max_devices": applied.get("max_devices"),
+                "allowed_count": applied.get("allowed_count"),
+                "over_cap_count": applied.get("over_cap_count") or 0,
+                "over_cap_macs": list(applied.get("over_cap_macs") or []),
                 "notes": ["authorized single Hotspot MAC (stack skipped)"],
                 "message": "Paid device authorized automatically.",
             }

@@ -506,6 +506,98 @@ def customer_receives_internet(customer, organization=None, *, today: date | Non
     )
 
 
+def customer_portal_access_context(customer, *, preview: str = "") -> dict:
+    """
+    Captive portal copy when a subscriber is paused, expired, or can renew.
+
+    Paused packages must not offer payment — staff must resume the subscription.
+
+    ``preview`` is for staff Wi‑Fi preview only (``paused`` / ``renew``) and does
+    not change billing state.
+    """
+    preview = (preview or "").strip().lower()
+    if preview == "paused" and customer:
+        remaining_label = ""
+        remaining = package_remaining_seconds(customer)
+        if remaining is not None and remaining > 0:
+            hours, rem = divmod(remaining, 3600)
+            minutes, _ = divmod(rem, 60)
+            if hours:
+                remaining_label = f"{hours}h {minutes}m left when resumed"
+            elif minutes:
+                remaining_label = f"{minutes} minutes left when resumed"
+            else:
+                remaining_label = "Less than a minute left when resumed"
+        return {
+            "subscription_paused": True,
+            "subscription_expired": False,
+            "access_banner_title": "Internet paused",
+            "access_banner_message": (
+                "Your provider paused this subscription. Internet stays off "
+                "until they resume your package."
+                + (f" {remaining_label}." if remaining_label else "")
+            ),
+            "show_renew_payment": False,
+        }
+    if preview == "renew" and customer:
+        return {
+            "subscription_paused": False,
+            "subscription_expired": True,
+            "access_banner_title": "Subscription ended",
+            "access_banner_message": (
+                "Choose a package below and pay with M-Pesa to restore internet."
+            ),
+            "show_renew_payment": True,
+        }
+
+    paused = bool(customer and customer_package_is_paused(customer))
+    expired = bool(customer and customer_subscription_expired(customer))
+    receives = bool(customer and customer_receives_internet(customer))
+
+    ctx = {
+        "subscription_paused": paused,
+        "subscription_expired": expired,
+        "access_banner_title": "",
+        "access_banner_message": "",
+        "show_renew_payment": True,
+    }
+    if paused:
+        remaining_label = ""
+        if customer:
+            remaining = package_remaining_seconds(customer)
+            if remaining is not None and remaining > 0:
+                hours, rem = divmod(remaining, 3600)
+                minutes, _ = divmod(rem, 60)
+                if hours:
+                    remaining_label = f"{hours}h {minutes}m left when resumed"
+                elif minutes:
+                    remaining_label = f"{minutes} minutes left when resumed"
+                else:
+                    remaining_label = "Less than a minute left when resumed"
+        ctx.update(
+            {
+                "access_banner_title": "Internet paused",
+                "access_banner_message": (
+                    "Your provider paused this subscription. Internet stays off "
+                    "until they resume your package."
+                    + (f" {remaining_label}." if remaining_label else "")
+                ),
+                "show_renew_payment": False,
+            }
+        )
+    elif customer and (expired or not receives):
+        ctx.update(
+            {
+                "access_banner_title": "Subscription ended",
+                "access_banner_message": (
+                    "Choose a package below and pay with M-Pesa to restore internet."
+                ),
+                "show_renew_payment": True,
+            }
+        )
+    return ctx
+
+
 def customer_pppoe_secret_disabled(customer, *, today: date | None = None) -> bool:
     """
     Whether the NAS /ppp/secret should be disabled.
@@ -599,6 +691,145 @@ PHONE_ALREADY_REGISTERED = (
 )
 
 
+def plan_billing_unit_seconds(plan, *, reference: datetime | date | None = None) -> float:
+    """Length of one billed plan unit in seconds (for proration)."""
+    if plan is None:
+        raise ValueError("Select a package.")
+    duration_key = (getattr(plan, "duration", None) or "").strip().lower()
+    if duration_key == BillingPlan.Duration.HOURLY:
+        return 3600.0
+    if duration_key == BillingPlan.Duration.SIX_HOURS:
+        return 6 * 3600.0
+    if duration_key == BillingPlan.Duration.DAILY:
+        return 86400.0
+    if duration_key == BillingPlan.Duration.WEEKLY:
+        return 7 * 86400.0
+    ref = reference or timezone.localtime()
+    if isinstance(ref, datetime):
+        ref_day = timezone.localtime(ref).date() if timezone.is_aware(ref) else ref.date()
+    else:
+        ref_day = ref
+    if duration_key == BillingPlan.Duration.MONTHLY:
+        return float(monthrange(ref_day.year, ref_day.month)[1] * 86400)
+    if duration_key == BillingPlan.Duration.QUARTERLY:
+        total = 0
+        cursor = ref_day
+        for _ in range(3):
+            days = monthrange(cursor.year, cursor.month)[1]
+            total += days
+            cursor = _add_months(cursor.replace(day=1), 1)
+        return float(total * 86400)
+    if duration_key == BillingPlan.Duration.SEMI_ANNUAL:
+        total = 0
+        cursor = ref_day
+        for _ in range(6):
+            days = monthrange(cursor.year, cursor.month)[1]
+            total += days
+            cursor = _add_months(cursor.replace(day=1), 1)
+        return float(total * 86400)
+    if duration_key == BillingPlan.Duration.YEARLY:
+        total = 0
+        cursor = ref_day
+        for _ in range(12):
+            days = monthrange(cursor.year, cursor.month)[1]
+            total += days
+            cursor = _add_months(cursor.replace(day=1), 1)
+        return float(total * 86400)
+    raise ValueError("Unsupported package duration for partial recharge.")
+
+
+def partial_recharge_window(
+    from_date: date,
+    to_date: date,
+    plan,
+) -> tuple[datetime, datetime]:
+    """
+    Build package_start / package_end for a partial recharge date range.
+
+    Both dates are inclusive calendar days. Clock-time packages use an exclusive
+    end at local midnight after ``to_date``. Calendar packages store ``to_date``
+    as package_end (end day stays inclusive via subscription_access_deadline).
+    """
+    if from_date is None or to_date is None:
+        raise ValueError("Select both the from and to dates.")
+    if to_date < from_date:
+        raise ValueError("The to date must be on or after the from date.")
+    tz = timezone.get_current_timezone()
+    start = timezone.make_aware(datetime.combine(from_date, time.min), tz)
+    if plan_uses_clock_time(plan):
+        end = timezone.make_aware(
+            datetime.combine(to_date + timedelta(days=1), time.min),
+            tz,
+        )
+    else:
+        end = timezone.make_aware(datetime.combine(to_date, time.min), tz)
+    return start, end
+
+
+def partial_recharge_billed_seconds(start: datetime, end: datetime, plan) -> float:
+    """Seconds used to prorate amount for a partial window."""
+    start_dt = _as_local_datetime(start)
+    end_dt = _as_local_datetime(end)
+    if start_dt is None or end_dt is None:
+        raise ValueError("Invalid partial recharge window.")
+    if plan_uses_clock_time(plan):
+        seconds = (end_dt - start_dt).total_seconds()
+    else:
+        end_day = timezone.localtime(end_dt).date()
+        deadline = timezone.make_aware(
+            datetime.combine(end_day + timedelta(days=1), time.min),
+            timezone.get_current_timezone(),
+        )
+        seconds = (deadline - start_dt).total_seconds()
+    if seconds <= 0:
+        raise ValueError("Partial recharge period must be greater than zero.")
+    return seconds
+
+
+def compute_partial_recharge_amount(plan, start: datetime, end: datetime) -> Decimal:
+    """Prorate plan price across the selected partial window."""
+    if plan is None:
+        raise ValueError("Select a package.")
+    try:
+        price = Decimal(plan.price)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Package price is invalid.") from exc
+    if price < 0:
+        raise ValueError("Package price must not be negative.")
+    seconds = partial_recharge_billed_seconds(start, end, plan)
+    unit = plan_billing_unit_seconds(plan, reference=start)
+    if unit <= 0:
+        raise ValueError("Could not determine the package billing unit.")
+    units = Decimal(str(seconds)) / Decimal(str(unit))
+    amount = (price * units).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if amount <= 0:
+        # Tiny windows on cheap hourly plans still record a minimum charge.
+        amount = Decimal("0.01")
+    return amount
+
+
+def apply_subscription_period(customer, *, plan=None, start=None, end=None):
+    """Set an explicit prepaid surfing window (partial recharge)."""
+    plan = plan or getattr(customer, "plan", None)
+    if plan is None:
+        raise ValueError("Customer has no billing plan to renew.")
+    start_dt = _as_local_datetime(start)
+    end_dt = _as_local_datetime(end)
+    if start_dt is None or end_dt is None:
+        raise ValueError("Partial recharge requires both from and to dates.")
+    if end_dt <= start_dt and plan_uses_clock_time(plan):
+        raise ValueError("The to date must be after the from date.")
+    if timezone.localtime(end_dt).date() < timezone.localtime(start_dt).date():
+        raise ValueError("The to date must be on or after the from date.")
+    customer.package_start = start_dt
+    customer.package_end = end_dt
+    update_fields = ["package_start", "package_end"]
+    if clear_customer_package_pause(customer, save=False):
+        update_fields.append("package_paused_at")
+    customer.save(update_fields=update_fields)
+    return customer
+
+
 def apply_subscription_renewal(customer, *, plan=None):
     """
     Extend the customer's package period after a successful payment.
@@ -686,7 +917,9 @@ def customer_needs_nas_provision(customer) -> bool:
     if mac:
         return True
     username = (getattr(customer, "pppoe_username", None) or "").strip()
-    return bool(username and getattr(customer, "router_id", None))
+    # Username alone is enough: provision_customer_pppoe can resolve an org NAS
+    # when router_id is missing.
+    return bool(username)
 
 
 def recharge_customer_cash(
@@ -698,12 +931,17 @@ def recharge_customer_cash(
     reference: str = "",
     recorded_by=None,
     notes: str = "Cash subscription recharge",
+    period_start=None,
+    period_end=None,
 ):
     """
     Record a cash payment and immediately extend the customer's prepaid package.
 
     Unlike M-Pesa STK (which issues a voucher), staff cash recharges activate
     access right away and sync to the router afterward.
+
+    When ``period_start`` and ``period_end`` are provided, the surfing window is
+    set to that range (partial recharge) instead of stacking a full plan unit.
     """
     from django.db import transaction
 
@@ -718,19 +956,24 @@ def recharge_customer_cash(
     if amount <= 0:
         raise ValueError("Recharge amount must be greater than zero.")
 
+    partial = period_start is not None or period_end is not None
+    if partial and (period_start is None or period_end is None):
+        raise ValueError("Partial recharge requires both from and to dates.")
+
     with transaction.atomic():
         update_fields: list[str] = []
         if customer.plan_id != plan.pk:
             customer.plan = plan
             update_fields.append("plan")
-        if customer.status in {
-            Customer.Status.SUSPENDED,
-            Customer.Status.INACTIVE,
-        }:
+        if customer.status != Customer.Status.ACTIVE:
             customer.status = Customer.Status.ACTIVE
             update_fields.append("status")
         if update_fields:
             customer.save(update_fields=update_fields)
+
+        note_text = notes or "Cash subscription recharge"
+        if partial and not notes:
+            note_text = "Cash partial subscription recharge"
 
         invoice, payment = create_renewal_invoice_and_payment(
             customer=customer,
@@ -738,17 +981,28 @@ def recharge_customer_cash(
             amount=amount,
             reference=reference,
             recorded_by=recorded_by,
-            notes=notes or "Cash subscription recharge",
+            notes=note_text,
             invoice_prefix="CASH",
             method=Payment.Method.CASH,
         )
-        apply_subscription_renewal(customer, plan=plan)
+        if partial:
+            apply_subscription_period(
+                customer,
+                plan=plan,
+                start=period_start,
+                end=period_end,
+            )
+        else:
+            from billing.package_offers import apply_paid_subscription_with_offer
+
+            apply_paid_subscription_with_offer(customer, plan=plan)
         customer.refresh_from_db()
 
     return {
         "customer": customer,
         "invoice": invoice,
         "payment": payment,
+        "partial": partial,
     }
 
 

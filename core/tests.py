@@ -1229,7 +1229,11 @@ class HotspotAuthorizeFastPathTests(TestCase):
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
-                return_value=True,
+                return_value={
+                    "ok": True,
+                    "profile": "ispcentric-hs-5u-10d",
+                    "rate_limit": "5M/10M",
+                },
             ) as apply_one,
             patch("core.mikrotik_connect.apply_hotspot_on_router") as full_push,
         ):
@@ -1259,7 +1263,11 @@ class HotspotAuthorizeFastPathTests(TestCase):
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
-                return_value=True,
+                return_value={
+                    "ok": True,
+                    "profile": "ispcentric-hs-5u-10d",
+                    "rate_limit": "5M/10M",
+                },
             ),
         ):
             authorize_hotspot_customer(
@@ -3364,17 +3372,23 @@ class PppoeOnlyOneSessionTests(SimpleTestCase):
         )
 
         adds: list[tuple] = []
+        state = {"/ppp/profile": []}
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_add(sock, path, **props):
+            adds.append((path, dict(props)))
+            item_id = f"*{len(adds)}"
+            row = {".id": item_id, **props}
+            state.setdefault(path, []).append(row)
+            return {"_reply": "!done", "ret": item_id}
 
         with (
-            patch("core.mikrotik_connect._print", return_value=[]),
-            patch(
-                "core.mikrotik_connect._add",
-                side_effect=lambda sock, path, **props: (
-                    adds.append((path, dict(props)))
-                    or {"_reply": "!done", "ret": f"*{len(adds)}"}
-                ),
-            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
             patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
+            patch("core.mikrotik_connect._verify_profile_rate_limit"),
         ):
             _ensure_pppoe_blocked_profile(object())
             speed_name = _ensure_pppoe_rate_profile(
@@ -3602,6 +3616,106 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertEqual(queue_adds[0]["max-limit"], "5M/10M")
         self.assertEqual(queue_adds[0]["target"], "10.20.0.50")
 
+    def test_rate_limit_helpers_normalize_and_match(self):
+        from core.mikrotik_connect import (
+            _normalize_rate_limit_string,
+            _parse_rate_limit_mbps,
+            _rate_limits_match,
+        )
+
+        self.assertEqual(_parse_rate_limit_mbps("5M/10M"), (5, 10))
+        self.assertEqual(_parse_rate_limit_mbps("5000k/10m"), (5, 10))
+        self.assertEqual(_normalize_rate_limit_string("5m/10M"), "5M/10M")
+        self.assertTrue(_rate_limits_match("5M/10M", "5m/10m"))
+        self.assertFalse(_rate_limits_match("5M/10M", "8M/25M"))
+
+    def test_ensure_pppoe_rate_profile_rejects_bare_profile(self):
+        from core.mikrotik_connect import (
+            _ensure_pppoe_rate_profile,
+            _pppoe_speed_profile_name,
+        )
+
+        name = _pppoe_speed_profile_name(10, 20)
+        adds: list[dict] = []
+
+        def fake_add(sock, path, **props):
+            adds.append(props)
+            # Simulate RouterOS accepting only a bare profile (no rate-limit).
+            if "rate-limit" in props:
+                return {"_reply": "!trap", "message": "unknown parameter"}
+            return {"_reply": "!done", "ret": "*1"}
+
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!trap"}),
+        ):
+            with self.assertRaises(ConnectionError):
+                _ensure_pppoe_rate_profile(
+                    object(), upload_mbps=10, download_mbps=20
+                )
+
+        self.assertTrue(any("rate-limit" in props for props in adds))
+
+    def test_ensure_pppoe_rate_profile_verifies_written_rate(self):
+        from core.mikrotik_connect import (
+            _ensure_pppoe_rate_profile,
+            _pppoe_speed_profile_name,
+        )
+
+        name = _pppoe_speed_profile_name(10, 20)
+        state = {"/ppp/profile": []}
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_add(sock, path, **props):
+            row = {".id": "*9", **props}
+            state.setdefault(path, []).append(row)
+            return {"_reply": "!done", "ret": "*9"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", return_value={"_reply": "!trap"}),
+        ):
+            result = _ensure_pppoe_rate_profile(
+                object(), upload_mbps=10, download_mbps=20
+            )
+
+        self.assertEqual(result, name)
+        self.assertEqual(state["/ppp/profile"][0]["rate-limit"], "10M/20M")
+
+    def test_ensure_hotspot_rate_profile_does_not_fallback_to_default(self):
+        from core.mikrotik_connect import (
+            ISP_HOTSPOT_USER_PROFILE,
+            _ensure_hotspot_rate_profile,
+            _hotspot_speed_profile_name,
+        )
+
+        org = type(
+            "Org",
+            (),
+            {
+                "hotspot_idle_timeout_minutes": 15,
+                "hotspot_voucher_validity_hours": 24,
+            },
+        )()
+        with (
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                return_value=({"_reply": "!trap", "message": "fail"}, ""),
+            ),
+        ):
+            with self.assertRaises(ConnectionError):
+                _ensure_hotspot_rate_profile(
+                    object(),
+                    organization=org,
+                    upload_mbps=3,
+                    download_mbps=12,
+                )
+
     def test_ensure_pppoe_rate_profile_updates_existing(self):
         from core.mikrotik_connect import (
             _ensure_pppoe_rate_profile,
@@ -3616,17 +3730,20 @@ class PackageSpeedLimitTests(SimpleTestCase):
         }
         sets: list[dict] = []
 
+        def fake_set(sock, path, item_id, **props):
+            sets.append(props)
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+                    break
+            return {"_reply": "!done"}
+
         with (
             patch(
                 "core.mikrotik_connect._print",
                 side_effect=lambda sock, path, **kw: list(state.get(path, [])),
             ),
-            patch(
-                "core.mikrotik_connect._set",
-                side_effect=lambda sock, path, item_id, **props: (
-                    sets.append(props) or {"_reply": "!done"}
-                ),
-            ),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
             patch("core.mikrotik_connect._add", return_value={"_reply": "!trap"}),
         ):
             result = _ensure_pppoe_rate_profile(
@@ -3659,13 +3776,22 @@ class PackageSpeedLimitTests(SimpleTestCase):
         self.assertEqual(_hotspot_rate_limit_for_customer(customer, org), "3M/12M")
 
         adds: list[dict] = []
+        state = {"/ip/hotspot/user/profile": []}
+
+        def fake_add_or_set(sock, path, item_id, attempts):
+            adds.append(attempts[0])
+            row = {".id": "*1", **attempts[0]}
+            state.setdefault(path, []).append(row)
+            return {"_reply": "!done"}, "*1"
+
         with (
-            patch("core.mikrotik_connect._print", return_value=[]),
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
             patch(
                 "core.mikrotik_connect._add_or_set_attempts",
-                side_effect=lambda sock, path, item_id, attempts: (
-                    adds.append(attempts[0]) or ({"_reply": "!done"}, "*1")
-                ),
+                side_effect=fake_add_or_set,
             ),
         ):
             profile = _ensure_hotspot_rate_profile(
@@ -3745,6 +3871,10 @@ class PackageSpeedLimitTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._customer_pppoe_secret_disabled",
                 return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
+                return_value=[],
             ),
         ):
             synced = _sync_organization_pppoe_secrets_on_socket(object(), router)
@@ -5664,7 +5794,11 @@ class DynamicAccessEnforcementLoopTests(TestCase):
             patch("core.mikrotik_connect._api_session"),
             patch(
                 "core.mikrotik_connect._apply_hotspot_customer_on_socket",
-                return_value=True,
+                return_value={
+                    "ok": True,
+                    "profile": "ispcentric-hs-5u-10d",
+                    "rate_limit": "5M/10M",
+                },
             ) as apply_one,
         ):
             result = authorize_hotspot_customer(
@@ -6237,6 +6371,110 @@ class LayeredRouterHealthLoopTests(TestCase):
         self.assertEqual(result["failing_layer"], "api_auth")
         self.assertTrue(result["details"]["layers"]["tcp_8728"])
         self.assertFalse(result["details"]["layers"]["api_auth"])
+
+    def test_layered_maps_api_timeout_to_reachable_not_auth_failed(self):
+        """Port 8728 open then login timeout must not say wrong password."""
+        from core.connectivity_verification import evaluate_layered_health
+
+        def fake_tcp(host, port, timeout):
+            return (port == 8728, "" if port == 8728 else f"{port}: closed")
+
+        with (
+            patch("core.mikrotik_connect._icmp_ping", return_value=True),
+            patch(
+                "core.connectivity_verification._tcp_open",
+                side_effect=fake_tcp,
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={
+                    "ok": False,
+                    "error": "Connection timed out. Is the router reachable on API port 8728?",
+                },
+            ),
+        ):
+            result = evaluate_layered_health(self.router, timeout=0.5)
+        self.assertEqual(result["status"], "reachable")
+        self.assertEqual(result["score"], 70)
+        self.assertEqual(result["failing_layer"], "api_auth")
+        self.assertNotIn("password", (result.get("reason") or "").lower())
+        self.assertIn("timed out", (result.get("error") or "").lower())
+
+    def test_status_after_api_probe_classifies_timeouts(self):
+        from core.mikrotik_status_samples import (
+            is_credential_login_failure,
+            status_after_api_probe,
+            status_reason,
+        )
+
+        self.assertTrue(is_credential_login_failure("invalid user name or password"))
+        self.assertFalse(
+            is_credential_login_failure(
+                "Connection timed out. Is the router reachable on API port 8728?"
+            )
+        )
+        self.assertFalse(is_credential_login_failure(""))
+        status, auth_ok, error = status_after_api_probe(
+            {"ok": False, "error": "Could not reach 10.9.0.50:8728."},
+            via="api",
+        )
+        self.assertEqual(status, "reachable")
+        self.assertFalse(auth_ok)
+        self.assertIn("8728", error)
+        empty_status, _, _ = status_after_api_probe({"ok": False, "error": ""}, via="api")
+        self.assertEqual(empty_status, "reachable")
+        reason = status_reason("auth_failed")
+        self.assertIn("username/password", reason.lower())
+        limited = status_reason("limited")
+        self.assertIn("8728", limited)
+        self.assertIn("api", limited.lower())
+
+    def test_outage_sample_requires_two_consecutive_failures(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            _last_status_cache_key,
+            record_mikrotik_status_samples,
+        )
+        from core.models import MikroTikStatusSample
+
+        cache.clear()
+        org_id = self.org.pk
+        rid = self.router.pk
+        cache.set(_last_status_cache_key(org_id, rid), "connected", 3600)
+        row = {
+            "id": rid,
+            "status": "limited",
+            "online": False,
+            "error": "API :8728 closed",
+        }
+        first = record_mikrotik_status_samples(self.org, [row])
+        self.assertEqual(first, 0)
+        self.assertEqual(MikroTikStatusSample.objects.filter(router=self.router).count(), 0)
+        second = record_mikrotik_status_samples(self.org, [row])
+        self.assertEqual(second, 1)
+        sample = MikroTikStatusSample.objects.get(router=self.router)
+        self.assertEqual(sample.status, "limited")
+        self.assertEqual(sample.score, 55)
+        self.assertIn("8728", sample.error)
+
+    def test_ping_probe_confirms_api_before_limited(self):
+        from core.mikrotik_connect import check_mikrotik_reachable
+
+        def fake_connection(addr, timeout=None):
+            # Parallel probes use the short timeout; confirm uses a longer one.
+            if timeout is not None and float(timeout) > 0.5:
+                return __import__("socket").socket()
+            raise TimeoutError("timed out")
+
+        with (
+            patch("core.mikrotik_connect.socket.create_connection", side_effect=fake_connection),
+            patch("core.mikrotik_connect._icmp_ping", return_value=True),
+        ):
+            result = check_mikrotik_reachable("10.9.0.50", timeout=0.1)
+        self.assertTrue(result.get("online"))
+        self.assertEqual(result.get("via"), "api")
+        self.assertTrue(result.get("confirmed"))
 
     def test_layered_loop_detects_flaky_status(self):
         from core.connectivity_verification import run_layered_health_loop

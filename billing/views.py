@@ -1,5 +1,6 @@
 from calendar import monthrange
 from datetime import date, datetime, time, timedelta
+import logging
 import threading
 
 from django.contrib import messages
@@ -19,6 +20,7 @@ from .services import customers_needing_renewal_attention
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
 _REVENUE_RANGE_CHOICES = ("day", "period", "month", "year")
+logger = logging.getLogger(__name__)
 
 
 def _require_client_workspace(request):
@@ -222,9 +224,14 @@ def _schedule_reprovision_customers_for_plan_speeds(plan_id: int) -> None:
         try:
             plan = BillingPlan.objects.filter(pk=pk).first()
             if plan is not None:
-                _reprovision_customers_for_plan_speeds(plan)
+                updated = _reprovision_customers_for_plan_speeds(plan)
+                logger.info(
+                    "Package speed reprovision plan_id=%s synced=%s",
+                    pk,
+                    updated,
+                )
         except Exception:
-            pass
+            logger.exception("Package speed reprovision failed for plan_id=%s", pk)
         finally:
             connection.close()
 
@@ -242,6 +249,7 @@ def _reprovision_customers_for_plan_speeds(plan) -> int:
 
         from core.mikrotik_connect import sync_customer_subscription_access
     except Exception:
+        logger.exception("Could not import speed reprovision dependencies")
         return 0
 
     customers = list(
@@ -260,7 +268,16 @@ def _reprovision_customers_for_plan_speeds(plan) -> int:
             )
             if isinstance(result, dict) and result.get("ok"):
                 return 1
+            logger.warning(
+                "Speed reprovision failed for account=%s result=%s",
+                getattr(customer, "account_number", ""),
+                result,
+            )
         except Exception:
+            logger.exception(
+                "Speed reprovision error for account=%s",
+                getattr(customer, "account_number", ""),
+            )
             return 0
         finally:
             close_old_connections()
@@ -274,6 +291,7 @@ def _reprovision_customers_for_plan_speeds(plan) -> int:
             try:
                 updated += int(future.result() or 0)
             except Exception:
+                logger.exception("Speed reprovision worker failed")
                 continue
     return updated
 
@@ -283,6 +301,57 @@ def _get_posted_package(request, org):
     if not org or not package_id.isdigit():
         return None
     return BillingPlan.objects.filter(pk=int(package_id), organization=org).first()
+
+
+def _handle_package_offer(request, org, *, success_url_name: str):
+    """Enable, disable, or update a package loyalty offer. Returns response_or_none."""
+    if request.method != "POST":
+        return None
+
+    action = (request.POST.get("action") or "").strip()
+    if action != "update_package_offer":
+        return None
+
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect(success_url_name)
+
+    plan = _get_posted_package(request, org)
+    if not plan:
+        messages.error(request, "Choose a package to update.")
+        return redirect(success_url_name)
+
+    enabled_raw = (request.POST.get("offer_enabled") or "").strip().lower()
+    offer_enabled = enabled_raw in {"1", "on", "true", "yes"}
+    pay_count_raw = (request.POST.get("offer_pay_count") or "").strip()
+    try:
+        offer_pay_count = int(pay_count_raw) if pay_count_raw else int(plan.offer_pay_count or 5)
+    except (TypeError, ValueError):
+        messages.error(request, "Enter a valid number of paid sessions for the offer.")
+        return redirect(success_url_name)
+
+    if offer_enabled and offer_pay_count < 1:
+        messages.error(request, "Enter at least 1 paid session before the free one.")
+        return redirect(success_url_name)
+    if offer_pay_count > 100:
+        messages.error(request, "Offer pay count cannot exceed 100.")
+        return redirect(success_url_name)
+
+    plan.offer_enabled = offer_enabled
+    plan.offer_pay_count = offer_pay_count if offer_pay_count >= 1 else 5
+    plan.save(update_fields=["offer_enabled", "offer_pay_count"])
+
+    if offer_enabled:
+        messages.success(
+            request,
+            f"Offer enabled on “{plan.name}”: buy {plan.offer_pay_count} get 1 free.",
+        )
+    else:
+        messages.success(
+            request,
+            f"Offer disabled on “{plan.name}”. Customers will no longer earn free sessions.",
+        )
+    return redirect(success_url_name)
 
 
 def _handle_suspend_package(request, org, *, success_url_name: str):
@@ -577,6 +646,10 @@ def packages(request):
         return early
     if edit_modal:
         open_modal = edit_modal
+
+    early = _handle_package_offer(request, org, success_url_name="billing:packages")
+    if early:
+        return early
 
     early = _handle_suspend_package(request, org, success_url_name="billing:packages")
     if early:

@@ -1,0 +1,10 @@
+{% if plan.offer_enabled and plan.offer_label %}
+  <span class="plan-offer-badge">{{ plan.offer_label }}</span>
+  {% if plan.offer_payments_remaining is not None %}
+    {% if plan.offer_payments_remaining == 1 %}
+      <span class="plan-offer-progress">1 more payment until a free session</span>
+    {% elif plan.offer_payments_remaining > 1 %}
+      <span class="plan-offer-progress">{{ plan.offer_payments_remaining }} more payments until a free session</span>
+    {% endif %}
+  {% endif %}
+{% endif %}

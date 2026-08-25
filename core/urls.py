@@ -102,6 +102,16 @@ urlpatterns = [
         name="clients_general_usage_trends",
     ),
     path("app/clients/<int:customer_id>/", views.client_detail, name="client_detail"),
+    path(
+        "app/clients/<int:customer_id>/delete/",
+        views.client_delete,
+        name="client_delete",
+    ),
+    path(
+        "app/clients/<int:customer_id>/wifi-preview/",
+        views.client_wifi_preview,
+        name="client_wifi_preview",
+    ),
     path("app/clients/<int:customer_id>/usage/", views.client_usage, name="client_usage"),
     path(
         "app/clients/<int:customer_id>/usage-analysis/",

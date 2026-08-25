@@ -20,11 +20,11 @@
     <div class="packages-hero-actions">
       <a class="btn btn-ghost packages-hero-btn" href="{% url 'billing:dashboard' %}">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
-        Billing overview
+        <span>Billing overview</span>
       </a>
       <button type="button" class="btn btn-primary packages-hero-btn" data-open-modal="billing-package-modal">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-        Register package
+        <span>Register package</span>
       </button>
     </div>
   </header>
@@ -47,6 +47,7 @@
         <p class="packages-stat-label">PPPoE</p>
         <p class="packages-stat-value">{{ pppoe_package_count|default:0 }}</p>
       </div>
+      <span class="packages-stat-jump" aria-hidden="true">↓</span>
     </a>
     <a class="packages-stat tone-hotspot" href="#packages-hotspot" style="--i:2">
       <span class="packages-stat-ico" aria-hidden="true">
@@ -56,8 +57,14 @@
         <p class="packages-stat-label">Hotspot</p>
         <p class="packages-stat-value">{{ hotspot_package_count|default:0 }}</p>
       </div>
+      <span class="packages-stat-jump" aria-hidden="true">↓</span>
     </a>
   </div>
+
+  <nav class="packages-jump" aria-label="Jump to package type">
+    <a class="packages-jump-link tone-pppoe" href="#packages-pppoe">PPPoE</a>
+    <a class="packages-jump-link tone-hotspot" href="#packages-hotspot">Hotspot</a>
+  </nav>
 
   <div class="packages-groups">
     <section class="panel staff-panel staff-panel-solid packages-group tone-pppoe" id="packages-pppoe">
@@ -66,7 +73,7 @@
           <span class="packages-group-ico" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
           </span>
-          <div>
+          <div class="packages-group-copy">
             <h2>PPPoE packages{% if pppoe_package_count %} <span class="packages-group-count">{{ pppoe_package_count }}</span>{% endif %}</h2>
             <p class="panel-sub">Assigned to home and office PPPoE clients.</p>
           </div>
@@ -81,7 +88,7 @@
           <span class="packages-group-ico" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
           </span>
-          <div>
+          <div class="packages-group-copy">
             <h2>Hotspot packages{% if hotspot_package_count %} <span class="packages-group-count">{{ hotspot_package_count }}</span>{% endif %}</h2>
             <p class="panel-sub">Shown on captive Hotspot payment portals.</p>
           </div>

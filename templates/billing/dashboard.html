@@ -148,13 +148,13 @@
           <tbody>
             {% for row in attention_customers %}
               <tr class="{% if row.attention == 'expired' %}is-expired{% else %}is-due{% endif %}">
-                <td>
+                <td data-label="Client">
                   <a class="billing-dash-client" href="{% url 'core:client_detail' row.customer.pk %}">
                     <strong>{{ row.customer.full_name }}</strong>
                     <small>{{ row.customer.account_number }}</small>
                   </a>
                 </td>
-                <td>
+                <td data-label="Package">
                   {% if row.customer.plan %}
                     <span class="billing-dash-plan">{{ row.customer.plan.name }}</span>
                     {% if row.customer.plan.price %}
@@ -164,7 +164,7 @@
                     —
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Period">
                   {% if row.customer.package_start and row.customer.package_end %}
                     <span class="billing-dash-period">
                       {{ row.customer.package_start|date:"M j" }}
@@ -177,7 +177,7 @@
                     —
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Used">
                   {% if row.progress %}
                     <div class="billing-dash-progress" title="{{ row.progress.percent }}% used">
                       <div class="billing-dash-progress-track">
@@ -192,14 +192,14 @@
                     —
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Status">
                   {% if row.attention == "expired" %}
                     <span class="badge badge-warn">Expired</span>
                   {% else %}
                     <span class="badge billing-dash-badge-due">¾ used</span>
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Action">
                   {% if row.customer.plan and row.customer.plan.price %}
                     <button
                       type="button"
@@ -263,8 +263,8 @@
           <tbody>
             {% for pay in payments %}
               <tr>
-                <td>{{ pay.received_at|date:"M j, Y g:i A" }}</td>
-                <td>
+                <td data-label="Date">{{ pay.received_at|date:"M j, Y g:i A" }}</td>
+                <td data-label="Customer">
                   {% if pay.invoice and pay.invoice.customer %}
                     <a class="billing-dash-client" href="{% url 'core:client_detail' pay.invoice.customer.pk %}">
                       <strong>{{ pay.invoice.customer.full_name }}</strong>
@@ -274,7 +274,7 @@
                     —
                   {% endif %}
                 </td>
-                <td>
+                <td data-label="Service">
                   {% if pay.invoice and pay.invoice.customer %}
                     <span class="billing-service-pill billing-service-{{ pay.invoice.customer.service_type }}">
                       {{ pay.invoice.customer.get_service_type_display }}
@@ -283,9 +283,9 @@
                     —
                   {% endif %}
                 </td>
-                <td><strong>KES {{ pay.amount }}</strong></td>
-                <td>{{ pay.get_method_display }}</td>
-                <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
+                <td data-label="Amount"><strong>KES {{ pay.amount }}</strong></td>
+                <td data-label="Method">{{ pay.get_method_display }}</td>
+                <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
               </tr>
             {% endfor %}
           </tbody>

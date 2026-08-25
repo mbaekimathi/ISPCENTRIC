@@ -17,6 +17,9 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
+_CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
+_CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
+_CLIENT_SAMPLE_CAP = 1200  # max rows scanned per client trend request
 _NETWORK_TREND_TTL = 20
 _NETWORK_TREND_COLORS = [
     "#2ecc71",
@@ -150,7 +153,13 @@ def record_customer_usage_sample(customer: Customer, payload: dict[str, Any]) ->
     cache.set(throttle_key, 1, interval)
     if session_active:
         cache.set(f"usage_sample_offline:{customer.pk}", 1, _OFFLINE_SAMPLE_MIN_INTERVAL)
+    _invalidate_client_usage_trend_cache(customer.pk)
     return True
+
+
+def _invalidate_client_usage_trend_cache(customer_id: int) -> None:
+    for hours in _USAGE_RANGE_CACHE_HOURS:
+        cache.delete(f"client_usage_trend:{customer_id}:{hours}")
 
 
 def sample_organization_usage(organization, *, force: bool = False) -> dict[str, Any]:
@@ -266,7 +275,13 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
 
     # Invalidate payload caches so the next read includes fresh samples.
     for hours in _USAGE_RANGE_CACHE_HOURS:
-        cache.delete(f"org_usage_payload:{organization.pk}:{hours}")
+        for top_n in (0, 25, 100, 200, 300):
+            for service in ("all", "pppoe", "hotspot"):
+                cache.delete(
+                    f"org_usage_payload:v3:{organization.pk}:{hours}:{top_n}:{service}"
+                )
+            cache.delete(f"org_usage_payload:v2:{organization.pk}:{hours}:{top_n}")
+            cache.delete(f"org_usage_payload:{organization.pk}:{hours}")
         cache.delete(f"router_network_trend:{organization.pk}:{hours}")
 
     return {
@@ -277,13 +292,60 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     }
 
 
-def usage_trend_payload(customer: Customer, *, hours: int = 24) -> dict[str, Any]:
-    """Build chart-ready series for uptime, throughput and data used."""
+def _usage_point(
+    stamp, hours: int, *, download_bps: int = 0, upload_bps: int = 0, index: int | None = None
+) -> dict[str, Any]:
+    down = max(0, int(download_bps or 0))
+    up = max(0, int(upload_bps or 0))
+    return {
+        "at_label": timezone.localtime(stamp).strftime(_chart_label_format(hours)),
+        "download_bps": down,
+        "upload_bps": up,
+        "combined_bps": down + up,
+        "index": index,
+    }
+
+
+def _client_bucket_seconds(hours: int) -> int:
+    """Bucket size that spans the filter without exceeding the chart point cap."""
+    base = _bucket_seconds(hours)
+    window = max(1, hours) * 3600
+    needed = max(base, int((window + _CLIENT_TREND_MAX_POINTS - 1) // _CLIENT_TREND_MAX_POINTS))
+    return max(60, needed)
+
+
+def usage_trend_payload(
+    customer: Customer, *, hours: int = 24, use_cache: bool = True
+) -> dict[str, Any]:
+    """
+    Build chart-ready series for one client.
+
+    Bucketed across the selected filter (capped point count), with a short
+    cache so refreshes stay cheap.
+    """
     hours = clamp_usage_hours(hours, default=24)
-    since = timezone.now() - timedelta(hours=hours)
+    cache_key = f"client_usage_trend:{customer.pk}:{hours}"
+    if use_cache:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _client_bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    chart_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not chart_keys:
+        chart_keys = [window_start]
+    # Hard safety if clock skew or tiny buckets slip through.
+    if len(chart_keys) > _CLIENT_TREND_MAX_POINTS:
+        step = max(1, len(chart_keys) // _CLIENT_TREND_MAX_POINTS)
+        chart_keys = chart_keys[::step][:_CLIENT_TREND_MAX_POINTS]
+
     samples = list(
         CustomerUsageSample.objects.filter(customer=customer, sampled_at__gte=since)
-        .order_by("sampled_at")
+        .order_by("-sampled_at")
         .values(
             "sampled_at",
             "session_active",
@@ -292,50 +354,61 @@ def usage_trend_payload(customer: Customer, *, hours: int = 24) -> dict[str, Any
             "upload_bps",
             "bytes_in",
             "bytes_out",
-        )
+        )[:_CLIENT_SAMPLE_CAP]
     )
+    samples.reverse()  # chronological for byte-delta math
 
-    labels: list[str] = []
-    uptime: list[float | None] = []
-    download_kbps: list[float | None] = []
-    upload_kbps: list[float | None] = []
-    data_used_mb: list[float | None] = []
+    online_by_bucket: dict[int, bool] = {}
+    seen_by_bucket: dict[int, bool] = {}
+    down_by_bucket: dict[int, float] = {}
+    up_by_bucket: dict[int, float] = {}
+    data_by_bucket: dict[int, float] = {}
 
     previous_total = None
     previous_bi = None
     previous_bo = None
     previous_at = None
+    previous_active: bool | None = None
     total_bytes_delta = 0
     online_samples = 0
     peak_down = 0
     peak_up = 0
-    max_uptime = 0
+    prime_sample: dict[str, Any] | None = None
+    lowest_sample: dict[str, Any] | None = None
+    prime_bucket: int | None = None
+    lowest_bucket: int | None = None
+    stop_buckets: set[int] = set()
+    last_stopped_stamp = None
+    stopped_count = 0
 
     for row in samples:
-        stamp = timezone.localtime(row["sampled_at"])
-        labels.append(stamp.strftime(_chart_label_format(hours)))
+        stamp = row["sampled_at"]
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        elif bucket > window_end:
+            bucket = window_end
+
         active = bool(row["session_active"])
         bi = int(row["bytes_in"] or 0)
         bo = int(row["bytes_out"] or 0)
         total = bi + bo
         down = int(row["download_bps"] or 0)
         up = int(row["upload_bps"] or 0)
+        seen_by_bucket[bucket] = True
 
-        # Offline zeros are presence noise — keep counter continuity.
+        if previous_active is True and not active:
+            stopped_count += 1
+            last_stopped_stamp = stamp
+            stop_buckets.add(bucket)
+
         if not active and total == 0:
-            uptime.append(0)
-            download_kbps.append(0)
-            upload_kbps.append(0)
-            data_used_mb.append(0)
+            previous_active = False
             continue
 
-        delta = 0
-        if previous_total is not None and total >= previous_total:
-            delta = total - previous_total
-        elif previous_total is not None and total < previous_total:
-            delta = total
-        if previous_at is not None and delta >= 0:
-            dt = max(0.0, (row["sampled_at"] - previous_at).total_seconds())
+        delta = _bytes_delta(previous_total, total)
+        if previous_at is not None:
+            dt = max(0.0, (stamp - previous_at).total_seconds())
             if dt >= 1 and down <= 0 and previous_bo is not None and bo >= previous_bo:
                 down = int(((bo - previous_bo) * 8) / dt)
             if dt >= 1 and up <= 0 and previous_bi is not None and bi >= previous_bi:
@@ -344,22 +417,74 @@ def usage_trend_payload(customer: Customer, *, hours: int = 24) -> dict[str, Any
         previous_total = total
         previous_bi = bi
         previous_bo = bo
-        previous_at = row["sampled_at"]
+        previous_at = stamp
         total_bytes_delta += delta
-        data_used_mb.append(round(delta / (1024 * 1024), 3) if delta else 0)
+        if delta:
+            data_by_bucket[bucket] = data_by_bucket.get(bucket, 0.0) + float(delta)
 
         if active:
+            previous_active = True
             online_samples += 1
-            max_uptime = max(max_uptime, int(row["uptime_seconds"] or 0))
+            online_by_bucket[bucket] = True
             peak_down = max(peak_down, down)
             peak_up = max(peak_up, up)
-            uptime.append(round((row["uptime_seconds"] or 0) / 60.0, 2))
-            download_kbps.append(round(down / 1000.0, 2))
-            upload_kbps.append(round(up / 1000.0, 2))
+            down_by_bucket[bucket] = max(down_by_bucket.get(bucket, 0.0), float(down))
+            up_by_bucket[bucket] = max(up_by_bucket.get(bucket, 0.0), float(up))
+            combined = down + up
+            candidate = {
+                "stamp": stamp,
+                "download_bps": down,
+                "upload_bps": up,
+                "combined_bps": combined,
+            }
+            if prime_sample is None or combined > int(prime_sample["combined_bps"]):
+                prime_sample = candidate
+                prime_bucket = bucket
+            if lowest_sample is None or combined < int(lowest_sample["combined_bps"]):
+                lowest_sample = candidate
+                lowest_bucket = bucket
         else:
-            uptime.append(0)
-            download_kbps.append(0)
-            upload_kbps.append(0)
+            previous_active = False
+
+    labels: list[str] = []
+    download_kbps: list[float | None] = []
+    upload_kbps: list[float | None] = []
+    data_used_mb: list[float | None] = []
+    online_flags: list[int | None] = []
+    prime_index: int | None = None
+    lowest_index: int | None = None
+    stop_indexes: list[int] = []
+    fmt = _chart_label_format(hours)
+
+    for idx, key in enumerate(chart_keys):
+        labels.append(
+            timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc)).strftime(
+                fmt
+            )
+        )
+        has_signal = key in seen_by_bucket or key in data_by_bucket
+        if not has_signal:
+            online_flags.append(None)
+            download_kbps.append(None)
+            upload_kbps.append(None)
+            data_used_mb.append(None)
+            continue
+
+        is_online = bool(online_by_bucket.get(key))
+        online_flags.append(1 if is_online else 0)
+        download_kbps.append(
+            round(down_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
+        )
+        upload_kbps.append(
+            round(up_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
+        )
+        data_used_mb.append(round(data_by_bucket.get(key, 0.0) / (1024 * 1024), 3))
+        if prime_bucket == key:
+            prime_index = idx
+        if lowest_bucket == key:
+            lowest_index = idx
+        if key in stop_buckets and idx > 0 and online_flags[idx - 1] == 1:
+            stop_indexes.append(idx)
 
     latest = samples[-1] if samples else None
     current_session_bytes = 0
@@ -368,27 +493,65 @@ def usage_trend_payload(customer: Customer, *, hours: int = 24) -> dict[str, Any
             latest.get("bytes_out") or 0
         )
 
-    return {
+    payload = {
         "ok": True,
         "hours": hours,
+        "range_label": usage_range_label(hours),
         "sample_count": len(samples),
         "labels": labels,
         "series": {
-            "uptime_minutes": uptime,
             "download_kbps": download_kbps,
             "upload_kbps": upload_kbps,
             "data_used_mb": data_used_mb,
+            "online": online_flags,
+        },
+        "markers": {
+            "peak_index": prime_index,
+            "low_index": lowest_index,
+            "stop_indexes": stop_indexes[:6],
         },
         "summary": {
-            "online_ratio": round((online_samples / len(samples)) * 100, 1) if samples else 0,
-            "max_uptime_seconds": max_uptime,
+            "online_ratio": (
+                round((online_samples / len(samples)) * 100, 1) if samples else 0
+            ),
             "peak_download_bps": peak_down,
             "peak_upload_bps": peak_up,
             "data_used_bytes": total_bytes_delta,
             "current_session_bytes": current_session_bytes,
             "latest_active": bool(latest and latest.get("session_active")),
+            "prime_point": (
+                _usage_point(
+                    prime_sample["stamp"],
+                    hours,
+                    download_bps=prime_sample["download_bps"],
+                    upload_bps=prime_sample["upload_bps"],
+                    index=prime_index,
+                )
+                if prime_sample
+                else None
+            ),
+            "lowest_point": (
+                _usage_point(
+                    lowest_sample["stamp"],
+                    hours,
+                    download_bps=lowest_sample["download_bps"],
+                    upload_bps=lowest_sample["upload_bps"],
+                    index=lowest_index,
+                )
+                if lowest_sample
+                else None
+            ),
+            "last_stopped": (
+                _usage_point(last_stopped_stamp, hours)
+                if last_stopped_stamp is not None
+                else None
+            ),
+            "stopped_count": stopped_count,
         },
     }
+    if use_cache:
+        cache.set(cache_key, payload, _CLIENT_TREND_TTL)
+    return payload
 
 
 def _bucket_seconds(hours: int) -> int:
@@ -413,12 +576,13 @@ def _bytes_delta(previous_total: int | None, total: int) -> int:
     return total
 
 
-def _empty_org_payload(hours: int, *, error: str = "") -> dict[str, Any]:
+def _empty_org_payload(hours: int, *, error: str = "", service: str = "") -> dict[str, Any]:
     return {
         "ok": not bool(error),
         "hours": hours,
         "requested_hours": hours,
         "auto_widened": False,
+        "service": service or "all",
         "sample_count": 0,
         "labels": [],
         "series": {
@@ -434,11 +598,31 @@ def _empty_org_payload(hours: int, *, error: str = "") -> dict[str, Any]:
     }
 
 
+def _normalize_usage_service(service) -> str:
+    value = (service or "").strip().lower()
+    if value in {Customer.ServiceType.PPPOE, "pppoe"}:
+        return Customer.ServiceType.PPPOE
+    if value in {Customer.ServiceType.HOTSPOT, "hotspot"}:
+        return Customer.ServiceType.HOTSPOT
+    return ""
+
+
+def _usage_level_label(*, data_used_bytes: int, peak_download_bps: int, latest_active: bool) -> str:
+    if data_used_bytes >= 500 * 1024 * 1024 or peak_download_bps >= 5_000_000:
+        return "High"
+    if data_used_bytes >= 50 * 1024 * 1024 or peak_download_bps >= 1_000_000:
+        return "Medium"
+    if data_used_bytes > 0 or peak_download_bps > 0 or latest_active:
+        return "Low"
+    return "Idle"
+
+
 def _build_org_usage_payload(
-    organization, *, hours: int = 24, top_n: int = 25
+    organization, *, hours: int = 24, top_n: int = 0, service: str = ""
 ) -> dict[str, Any]:
     hours = clamp_usage_hours(hours)
-    top_n = max(1, min(int(top_n or 25), 100))
+    top_n = max(0, min(int(top_n if top_n is not None else 0), 5000))
+    service = _normalize_usage_service(service)
     now = timezone.now()
     since = now - timedelta(hours=hours)
     bucket_secs = _bucket_seconds(hours)
@@ -447,15 +631,32 @@ def _build_org_usage_payload(
     bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
     if not bucket_keys:
         bucket_keys = [window_start]
+    label_fmt = _chart_label_format(hours)
+
+    customers_qs = Customer.objects.filter(organization=organization).exclude(
+        service_type=Customer.ServiceType.STATIC
+    )
+    if service:
+        customers_qs = customers_qs.filter(service_type=service)
+    customers = {
+        c.pk: c
+        for c in customers_qs.select_related("plan", "router").order_by(
+            "full_name", "account_number"
+        )
+    }
+    customer_ids = list(customers.keys())
 
     sample_cap = 8000 if hours <= 168 else (16000 if hours <= 720 else 24000)
+    samples_qs = CustomerUsageSample.objects.filter(
+        organization=organization,
+        sampled_at__gte=since,
+    )
+    if customer_ids:
+        samples_qs = samples_qs.filter(customer_id__in=customer_ids)
+    elif service:
+        samples_qs = samples_qs.none()
     samples = list(
-        CustomerUsageSample.objects.filter(
-            organization=organization,
-            sampled_at__gte=since,
-        )
-        .order_by("customer_id", "sampled_at")
-        .values(
+        samples_qs.order_by("customer_id", "sampled_at").values(
             "customer_id",
             "sampled_at",
             "session_active",
@@ -467,7 +668,6 @@ def _build_org_usage_payload(
     )
 
     online_by_bucket: dict[int, set[int]] = {k: set() for k in bucket_keys}
-    # Per bucket, keep max rate seen per customer, then sum across customers.
     down_by_bucket: dict[int, dict[int, float]] = {k: {} for k in bucket_keys}
     up_by_bucket: dict[int, dict[int, float]] = {k: {} for k in bucket_keys}
     data_sum: dict[int, float] = {k: 0.0 for k in bucket_keys}
@@ -477,6 +677,7 @@ def _build_org_usage_payload(
     previous_bi: dict[int, int] = {}
     previous_bo: dict[int, int] = {}
     previous_at: dict[int, Any] = {}
+    previous_active: dict[int, bool] = {}
     total_bytes_delta = 0
     online_samples = 0
     meaningful_samples = 0
@@ -503,6 +704,15 @@ def _build_org_usage_payload(
                 "peak_upload_bps": 0,
                 "peak_session_bytes": 0,
                 "latest_active": False,
+                "downtime_count": 0,
+                "prime_combined": -1,
+                "prime_at": None,
+                "prime_download_bps": 0,
+                "prime_upload_bps": 0,
+                "lowest_combined": None,
+                "lowest_at": None,
+                "lowest_download_bps": 0,
+                "lowest_upload_bps": 0,
             },
         )
         stats["sample_count"] += 1
@@ -514,6 +724,12 @@ def _build_org_usage_payload(
         down = int(row["download_bps"] or 0)
         up = int(row["upload_bps"] or 0)
 
+        was_active = previous_active.get(cid)
+        if was_active is True and not active:
+            stats["downtime_count"] += 1
+        previous_active[cid] = active
+
+        # Offline zeros are presence noise — keep counter continuity.
         if not active and total == 0:
             continue
 
@@ -526,7 +742,6 @@ def _build_org_usage_payload(
             if dt >= 1:
                 prev_bo = previous_bo.get(cid)
                 prev_bi = previous_bi.get(cid)
-                # PPPoE server iface: tx ≈ download to client, rx ≈ upload from client.
                 if down <= 0 and prev_bo is not None and bo >= prev_bo:
                     down = int(((bo - prev_bo) * 8) / dt)
                 if up <= 0 and prev_bi is not None and bi >= prev_bi:
@@ -556,37 +771,80 @@ def _build_org_usage_payload(
             down_map[cid] = max(down_map.get(cid, 0.0), float(down))
             up_map[cid] = max(up_map.get(cid, 0.0), float(up))
 
-    customers = {
-        c.pk: c
-        for c in Customer.objects.filter(
-            organization=organization, pk__in=per_customer.keys()
-        ).select_related("plan", "router")
-    }
+            combined = down + up
+            if combined > int(stats["prime_combined"]):
+                stats["prime_combined"] = combined
+                stats["prime_at"] = stamp
+                stats["prime_download_bps"] = down
+                stats["prime_upload_bps"] = up
+            if stats["lowest_combined"] is None or combined < int(stats["lowest_combined"]):
+                stats["lowest_combined"] = combined
+                stats["lowest_at"] = stamp
+                stats["lowest_download_bps"] = down
+                stats["lowest_upload_bps"] = up
+
+    # Recently seen Hotspot gadgets (no live MikroTik fan-out).
+    gadget_counts: dict[int, int] = {}
+    if customers:
+        from django.db.models import Count
+
+        from billing.models import CustomerDevice
+
+        recent_cut = now - timedelta(minutes=15)
+        for row in (
+            CustomerDevice.objects.filter(
+                organization=organization,
+                customer_id__in=customers.keys(),
+                last_seen_at__gte=recent_cut,
+            )
+            .values("customer_id")
+            .annotate(n=Count("id"))
+        ):
+            gadget_counts[int(row["customer_id"])] = int(row["n"] or 0)
+
+    def _empty_stats(customer_id: int) -> dict[str, Any]:
+        return {
+            "customer_id": customer_id,
+            "sample_count": 0,
+            "online_samples": 0,
+            "data_used_bytes": 0,
+            "peak_download_bps": 0,
+            "peak_upload_bps": 0,
+            "peak_session_bytes": 0,
+            "latest_active": False,
+            "downtime_count": 0,
+            "prime_at": None,
+            "prime_download_bps": 0,
+            "lowest_at": None,
+            "lowest_download_bps": 0,
+        }
 
     ranked = sorted(
-        per_customer.values(),
+        (
+            per_customer.get(cid) or _empty_stats(cid)
+            for cid in customers.keys()
+        ),
         key=lambda item: (
             item["data_used_bytes"],
             item["peak_session_bytes"],
             item["peak_download_bps"],
             item["online_samples"],
+            customers.get(item["customer_id"]).full_name if customers.get(item["customer_id"]) else "",
         ),
         reverse=True,
     )
     top_users: list[dict[str, Any]] = []
-    for item in ranked[:top_n]:
+    user_limit = len(ranked) if top_n <= 0 else min(top_n, len(ranked))
+    for item in ranked[:user_limit]:
         customer = customers.get(item["customer_id"])
         if not customer:
             continue
-        # Skip pure offline-noise rows with no traffic signal.
-        if (
-            item["data_used_bytes"] <= 0
-            and item["peak_session_bytes"] <= 0
-            and item["peak_download_bps"] <= 0
-            and item["online_samples"] <= 0
-        ):
-            continue
         sample_count = item["sample_count"] or 1
+        gadgets = gadget_counts.get(item["customer_id"], 0)
+        if gadgets <= 0 and item["latest_active"]:
+            gadgets = 1
+        prime_at = item.get("prime_at")
+        lowest_at = item.get("lowest_at")
         top_users.append(
             {
                 "rank": len(top_users) + 1,
@@ -605,6 +863,21 @@ def _build_org_usage_payload(
                 "online_ratio": round((item["online_samples"] / sample_count) * 100, 1),
                 "sample_count": item["sample_count"],
                 "latest_active": item["latest_active"],
+                "usage_level": _usage_level_label(
+                    data_used_bytes=item["data_used_bytes"],
+                    peak_download_bps=item["peak_download_bps"],
+                    latest_active=item["latest_active"],
+                ),
+                "prime_at_label": (
+                    timezone.localtime(prime_at).strftime(label_fmt) if prime_at else ""
+                ),
+                "prime_download_bps": item.get("prime_download_bps") or 0,
+                "lowest_at_label": (
+                    timezone.localtime(lowest_at).strftime(label_fmt) if lowest_at else ""
+                ),
+                "lowest_download_bps": item.get("lowest_download_bps") or 0,
+                "downtime_count": int(item.get("downtime_count") or 0),
+                "gadgets_connected": gadgets,
             }
         )
 
@@ -616,11 +889,9 @@ def _build_org_usage_payload(
         or down_by_bucket.get(key)
         or up_by_bucket.get(key)
     ]
-    # Prefer a dense chart when most buckets are empty.
     if active_keys and len(active_keys) < max(4, int(len(bucket_keys) * 0.2)):
         chart_keys = active_keys
     else:
-        # Trim empty leading / trailing buckets.
         chart_keys = list(bucket_keys)
         while chart_keys and chart_keys[0] not in active_keys and active_keys:
             chart_keys.pop(0)
@@ -636,7 +907,7 @@ def _build_org_usage_payload(
     data_used_mb: list[float] = []
     for key in chart_keys:
         stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
-        labels.append(stamp.strftime(_chart_label_format(hours)))
+        labels.append(stamp.strftime(label_fmt))
         online_series.append(len(online_by_bucket.get(key, set())))
         download_kbps.append(
             round(sum((down_by_bucket.get(key) or {}).values()) / 1000.0, 2)
@@ -647,12 +918,15 @@ def _build_org_usage_payload(
         data_used_mb.append(round(data_sum.get(key, 0.0) / (1024 * 1024), 3))
 
     clients_with_samples = len(per_customer)
+    clients_total = len(customers)
     online_now = sum(1 for item in per_customer.values() if item["latest_active"])
+    gadgets_online = sum(int(u.get("gadgets_connected") or 0) for u in top_users)
     return {
         "ok": True,
         "hours": hours,
         "requested_hours": hours,
         "auto_widened": False,
+        "service": service or "all",
         "sample_count": len(samples),
         "meaningful_samples": meaningful_samples,
         "labels": labels,
@@ -680,7 +954,9 @@ def _build_org_usage_payload(
         },
         "summary": {
             "clients_tracked": clients_with_samples,
+            "clients_total": clients_total,
             "clients_online": online_now,
+            "gadgets_online": gadgets_online,
             "online_ratio": (
                 round((online_samples / meaningful_samples) * 100, 1)
                 if meaningful_samples
@@ -1055,22 +1331,29 @@ def org_usage_payload(
     organization,
     *,
     hours: int = 24,
-    top_n: int = 25,
+    top_n: int = 0,
+    service: str = "",
     auto_widen: bool = True,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """Build org-wide usage charts and a highest-users ranking."""
+    """Build org-wide usage charts and a per-user ranking."""
     if not organization:
         return _empty_org_payload(hours, error="No organization.")
 
     hours = clamp_usage_hours(hours, default=24)
-    cache_key = f"org_usage_payload:{organization.pk}:{hours}"
+    top_n = max(0, min(int(top_n or 0), 5000))
+    service = _normalize_usage_service(service)
+    cache_key = (
+        f"org_usage_payload:v3:{organization.pk}:{hours}:{top_n}:{service or 'all'}"
+    )
     if use_cache:
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
-    payload = _build_org_usage_payload(organization, hours=hours, top_n=top_n)
+    payload = _build_org_usage_payload(
+        organization, hours=hours, top_n=top_n, service=service
+    )
     has_signal = bool(
         payload.get("summary", {}).get("data_used_bytes")
         or payload.get("summary", {}).get("peak_download_bps")
@@ -1082,7 +1365,7 @@ def org_usage_payload(
             if candidate <= hours:
                 continue
             wider = _build_org_usage_payload(
-                organization, hours=candidate, top_n=top_n
+                organization, hours=candidate, top_n=top_n, service=service
             )
             wider_signal = bool(
                 wider.get("summary", {}).get("data_used_bytes")
@@ -1099,6 +1382,7 @@ def org_usage_payload(
     payload["requested_range_label"] = usage_range_label(
         payload.get("requested_hours") or hours
     )
+    payload["service"] = service or "all"
 
     if use_cache:
         cache.set(cache_key, payload, _ORG_PAYLOAD_TTL)

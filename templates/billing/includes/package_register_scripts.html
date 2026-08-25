@@ -151,6 +151,25 @@
     "edit-package-max-devices-hint"
   );
 
+  function wireOfferFields(formSelector) {
+    var form = document.querySelector(formSelector);
+    if (!form) return;
+    var toggle = form.querySelector('input[name="offer_enabled"]');
+    var countField = form.querySelector("[data-offer-count-field]");
+    function update() {
+      if (!countField) return;
+      var enabled = toggle && toggle.checked;
+      countField.hidden = !enabled;
+      countField.querySelectorAll("input").forEach(function (input) {
+        input.disabled = !enabled;
+      });
+    }
+    if (toggle) toggle.addEventListener("change", update);
+    update();
+  }
+  wireOfferFields("#billing-package-register-form");
+  wireOfferFields("#billing-package-edit-form");
+
   function setFieldValue(id, value) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -168,6 +187,16 @@
       setFieldValue("id_edit_package_upload_speed", btn.getAttribute("data-package-upload") || "");
       var maxDevices = btn.getAttribute("data-package-max-devices") || "";
       setFieldValue("id_edit_package_max_devices", maxDevices === "0" ? "" : maxDevices);
+
+      var offerEnabled = document.getElementById("id_edit_package_offer_enabled");
+      if (offerEnabled) {
+        offerEnabled.checked = btn.getAttribute("data-package-offer-enabled") === "1";
+      }
+      setFieldValue(
+        "id_edit_package_offer_pay_count",
+        btn.getAttribute("data-package-offer-pay-count") || "5"
+      );
+      wireOfferFields("#billing-package-edit-form");
 
       var serviceType = btn.getAttribute("data-package-service-type") || "pppoe";
       document.querySelectorAll('#billing-package-edit-form input[name="service_type"]').forEach(function (radio) {
@@ -203,6 +232,70 @@
       if (nameInput) nameInput.focus();
     });
   });
+
+  var offerModal = document.getElementById("billing-package-offer-modal");
+  var offerForm = document.getElementById("billing-package-offer-form");
+  if (offerModal && offerForm) {
+    var offerId = document.getElementById("id_package_offer_id");
+    var offerName = document.getElementById("billing-package-offer-name");
+    var offerEnabled = document.getElementById("id_package_offer_enabled");
+    var offerPayCount = document.getElementById("id_package_offer_pay_count");
+    var offerCountWrap = offerForm.querySelector("[data-offer-modal-count]");
+    var offerPreview = document.getElementById("billing-package-offer-preview");
+
+    function updateOfferPreview() {
+      var count = 5;
+      if (offerPayCount && offerPayCount.value) {
+        count = parseInt(offerPayCount.value, 10) || 5;
+      }
+      if (count < 1) count = 1;
+      if (offerPreview) offerPreview.textContent = "Buy " + count + " get 1 free";
+    }
+
+    function syncOfferModalFields() {
+      var on = offerEnabled && offerEnabled.checked;
+      if (offerCountWrap) offerCountWrap.hidden = !on;
+      if (offerPayCount) offerPayCount.disabled = !on;
+      offerModal.classList.toggle("is-offer-on", !!on);
+      updateOfferPreview();
+    }
+
+    if (offerEnabled) offerEnabled.addEventListener("change", syncOfferModalFields);
+    if (offerPayCount) {
+      offerPayCount.addEventListener("input", updateOfferPreview);
+      offerPayCount.addEventListener("change", updateOfferPreview);
+    }
+
+    offerForm.querySelectorAll("[data-offer-step]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (!offerPayCount || offerPayCount.disabled) return;
+        var delta = parseInt(btn.getAttribute("data-offer-step") || "0", 10) || 0;
+        var next = (parseInt(offerPayCount.value, 10) || 5) + delta;
+        if (next < 1) next = 1;
+        if (next > 100) next = 100;
+        offerPayCount.value = String(next);
+        updateOfferPreview();
+      });
+    });
+
+    document.querySelectorAll("[data-package-offer]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var name = btn.getAttribute("data-package-name") || "this package";
+        var enabled = btn.getAttribute("data-package-offer-enabled") === "1";
+        var count = btn.getAttribute("data-package-offer-pay-count") || "5";
+        if (offerId) offerId.value = btn.getAttribute("data-package-id") || "";
+        if (offerName) offerName.textContent = name;
+        if (offerEnabled) offerEnabled.checked = enabled;
+        if (offerPayCount) {
+          offerPayCount.value = count === "0" ? "5" : count;
+          offerPayCount.disabled = !enabled;
+        }
+        syncOfferModalFields();
+        openModal("billing-package-offer-modal");
+        if (offerEnabled) offerEnabled.focus();
+      });
+    });
+  }
 
   var suspendModal = document.getElementById("billing-package-suspend-modal");
   var suspendForm = document.getElementById("billing-package-suspend-form");

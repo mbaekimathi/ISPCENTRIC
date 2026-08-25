@@ -2596,15 +2596,21 @@
     var label = el.querySelector(".mikrotik-link-label");
     if (label) {
       if (state === "limited") label.textContent = "Ping only (API blocked)";
-      else if (state === "auth_failed") label.textContent = "Online — wrong password";
-      else if (state === "reachable") label.textContent = "Reachable";
+      else if (state === "auth_failed") label.textContent = "API login rejected";
+      else if (state === "reachable") label.textContent = "Reachable (API unconfirmed)";
+      else if (state === "wrong_host") label.textContent = "Wrong host";
       else label.textContent = online ? "Connected" : "Disconnected";
     }
     var row = el.closest("[data-router-row]");
     if (!row) return;
     var btn = row.querySelector("[data-reconnect-router]");
     if (btn && !btn.classList.contains("is-busy")) {
-      var needsReconnect = state === "disconnected" || state === "limited" || state === "auth_failed";
+      var needsReconnect =
+        state === "disconnected" ||
+        state === "limited" ||
+        state === "auth_failed" ||
+        state === "reachable" ||
+        state === "wrong_host";
       btn.classList.toggle("is-needed", needsReconnect);
       btn.classList.toggle("is-compact", !needsReconnect);
       btn.dataset.authFailed = state === "auth_failed" ? "1" : "0";

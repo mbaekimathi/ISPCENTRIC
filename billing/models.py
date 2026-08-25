@@ -69,10 +69,21 @@ class BillingPlan(models.Model):
         default=0,
         validators=[MinValueValidator(0), MaxValueValidator(50)],
         help_text=(
-            "How many devices this package allows. 0 / blank = unlimited. "
-            "Hotspot: phones/laptops on one paid account. PPPoE: CPEs that may dial "
-            "this username (LAN behind one CPE is already unlimited)."
+            "How many Hotspot devices this package allows. 0 / blank = unlimited. "
+            "Hotspot: phones/laptops on one paid account. "
+            "PPPoE always enforces 1 concurrent dial (one CPE); LAN behind it is unlimited."
         ),
+    )
+    offer_enabled = models.BooleanField(
+        "Package offer enabled",
+        default=False,
+        help_text="When enabled, repeat payers earn a free session after the set number of payments.",
+    )
+    offer_pay_count = models.PositiveSmallIntegerField(
+        "Payments before free session",
+        default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text="Buy X get 1 free — e.g. 5 means every 5 paid sessions grants one extra session.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -101,6 +112,9 @@ class BillingPlan(models.Model):
     @property
     def max_devices_label(self) -> str:
         n = int(self.max_devices or 0)
+        if self.service_type == self.ServiceType.PPPOE:
+            # MikroTik only-one=yes — one CPE dial; LAN behind it is unlimited.
+            return "1 CPE · unlimited LAN"
         if n <= 0:
             return "Unlimited devices"
         if self.service_type == self.ServiceType.HOTSPOT:
@@ -108,6 +122,16 @@ class BillingPlan(models.Model):
                 return "1 device · 1 voucher"
             return f"{n} devices · {n} vouchers"
         return "1 device" if n == 1 else f"{n} devices"
+
+    @property
+    def offer_display_label(self) -> str:
+        """Short label for admin tables and pay portals."""
+        if not self.offer_enabled:
+            return ""
+        count = int(self.offer_pay_count or 0)
+        if count < 1:
+            return ""
+        return f"Buy {count} get 1 free"
 
     @property
     def router_scope_label(self) -> str:
@@ -692,6 +716,35 @@ class CustomerUsageSample(models.Model):
 
     def __str__(self):
         return f"Usage sample {self.customer_id} @ {self.sampled_at}"
+
+
+class PackageOfferProgress(models.Model):
+    """Tracks paid renewals toward a package buy-X-get-1-free offer."""
+
+    customer = models.ForeignKey(
+        "Customer",
+        on_delete=models.CASCADE,
+        related_name="package_offer_progress",
+    )
+    plan = models.ForeignKey(
+        BillingPlan,
+        on_delete=models.CASCADE,
+        related_name="offer_progress",
+    )
+    paid_count = models.PositiveSmallIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "billing_package_offer_progress"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["customer", "plan"],
+                name="billing_offer_progress_customer_plan_uniq",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Offer progress {self.customer_id}/{self.plan_id}: {self.paid_count}"
 
 
 class AccessVoucher(models.Model):

@@ -386,6 +386,28 @@
       letter-spacing: 0.02em;
     }
 
+    .plan-offer-badge {
+      display: inline-block;
+      margin-top: 0.25rem;
+      padding: 0.14rem 0.45rem;
+      border-radius: 999px;
+      background: rgba(46, 230, 199, 0.14);
+      border: 1px solid rgba(46, 230, 199, 0.45);
+      color: #8ef5e0;
+      font-size: 0.58rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .plan-offer-progress {
+      display: block;
+      margin-top: 0.2rem;
+      color: #9eb0c8;
+      font-size: 0.62rem;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+
     .plan-copy strong {
       display: block;
       color: #fff;
@@ -434,6 +456,34 @@
       box-shadow:
         0 0 0 1px rgba(0, 0, 0, 0.55),
         0 14px 34px rgba(0, 0, 0, 0.42);
+    }
+
+    .access-banner {
+      display: grid;
+      gap: 0.35rem;
+      margin: 0 0 1rem;
+      padding: 0.95rem 1rem;
+      border-radius: 1.1rem;
+      border: 1px solid rgba(255, 176, 32, 0.45);
+      background: linear-gradient(135deg, rgba(255, 176, 32, 0.16), rgba(16, 22, 34, 0.7));
+    }
+
+    .access-banner.is-paused {
+      border-color: rgba(255, 107, 107, 0.5);
+      background: linear-gradient(135deg, rgba(255, 107, 107, 0.18), rgba(16, 22, 34, 0.75));
+    }
+
+    .access-banner strong {
+      font-size: 1.05rem;
+      letter-spacing: -0.03em;
+    }
+
+    .access-banner p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      font-weight: 650;
     }
 
     .field label {
@@ -943,7 +993,7 @@
 
   <div class="shell">
     <header class="hero">
-      <p class="kicker">Live Wi‑Fi</p>
+      <p class="kicker">{% if subscription_paused %}Internet paused{% else %}Live Wi‑Fi{% endif %}</p>
       <h1 class="brand">{{ org_name }}</h1>
       {% if organization.phone %}
         <a class="org-phone" href="tel:{{ organization.phone }}"><span>Call</span> {{ organization.phone }}</a>
@@ -953,7 +1003,21 @@
     <main class="stage" id="panel-hotspot" data-pay-panel="hotspot">
       {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
-      {% if has_payable_plans %}
+      {% if access_banner_title %}
+        <div class="access-banner{% if subscription_paused %} is-paused{% endif %}" role="status">
+          <strong>{{ access_banner_title }}</strong>
+          {% if access_banner_message %}<p>{{ access_banner_message }}</p>{% endif %}
+        </div>
+      {% elif page_message %}
+        <p class="meta">{{ page_message }}</p>
+      {% endif %}
+
+      {% if subscription_paused %}
+        <p class="meta">
+          Ask {{ org_name }}{% if organization.phone %} ({{ organization.phone }}){% endif %} to resume your subscription.
+          Your remaining package time is preserved until they resume it.
+        </p>
+      {% elif has_payable_plans and show_payment_form %}
         <form
           class="login"
           data-payment-form
@@ -998,6 +1062,7 @@
                   </span>
                   <strong>{{ plan.name }}</strong>
                   <span class="plan-price"><small>KES</small> {{ plan.price|floatformat:"0" }}</span>
+                  {% include "billing/includes/plan_offer_badge.html" %}
                 </span>
               </label>
             {% endfor %}

@@ -795,6 +795,27 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
         )
     nav.append(
         {
+            "key": "wifi_preview",
+            "label": "Preview Wi‑Fi screen",
+            "href": reverse(
+                "core:client_wifi_preview",
+                kwargs={"customer_id": customer.pk},
+            ),
+        }
+    )
+    nav.append(
+        {
+            "key": "delete",
+            "label": "Delete client",
+            "href": reverse(
+                "core:client_delete",
+                kwargs={"customer_id": customer.pk},
+            ),
+            "danger": True,
+        }
+    )
+    nav.append(
+        {
             "key": "clients",
             "label": "All clients",
             "href": f"{reverse('core:my_clients')}?tab={customer.service_type}",
@@ -1207,12 +1228,14 @@ def workspace(request):
         from core.mikrotik_status_samples import (
             mikrotik_performance_drops,
             mikrotik_performance_trend,
+            status_catalog,
         )
 
         snapshot["mikrotik_trend"] = mikrotik_performance_trend(org, hours=24)
         snapshot["mikrotik_drops"] = mikrotik_performance_drops(
             org, hours=24, live_routers=live_routers or []
         )
+        snapshot["mikrotik_status_catalog"] = status_catalog()
     except Exception:
         snapshot["mikrotik_trend"] = {
             "ok": False,
@@ -1221,6 +1244,7 @@ def workspace(request):
             "routers": [],
         }
         snapshot["mikrotik_drops"] = {"ok": False, "events": [], "current_count": 0}
+        snapshot["mikrotik_status_catalog"] = {}
     try:
         from billing.usage_samples import (
             network_performance_drops,
@@ -1516,25 +1540,21 @@ def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
             "outages": [],
         }
 
-    from core.mikrotik_status_samples import status_reason
+    from core.mikrotik_status_samples import (
+        _OUTAGE_STATUSES,
+        _STATUS_SCORE,
+        status_reason,
+    )
 
-    score_map = {
-        "connected": 100,
-        "reachable": 70,
-        "limited": 55,
-        "auth_failed": 25,
-        "wrong_host": 10,
-        "disconnected": 0,
-    }
     scores = []
     connected = 0
     outages = []
     for row in routers:
         status = (row.get("status") or "disconnected").strip().lower()
-        scores.append(score_map.get(status, 0))
+        scores.append(int(_STATUS_SCORE.get(status, 0)))
         if status == "connected":
             connected += 1
-        if status in {"disconnected", "auth_failed", "wrong_host", "limited"}:
+        if status in _OUTAGE_STATUSES:
             outages.append(
                 {
                     "id": row.get("id"),
@@ -1602,6 +1622,7 @@ def workspace_analytics(request):
         from core.mikrotik_status_samples import (
             mikrotik_performance_drops,
             mikrotik_performance_trend,
+            status_catalog,
         )
 
         snapshot["mikrotik_trend"] = mikrotik_performance_trend(
@@ -1610,6 +1631,7 @@ def workspace_analytics(request):
         snapshot["mikrotik_drops"] = mikrotik_performance_drops(
             org, hours=hours, live_routers=routers or []
         )
+        snapshot["mikrotik_status_catalog"] = status_catalog()
     except Exception:
         snapshot["mikrotik_trend"] = {
             "ok": False,
@@ -1618,6 +1640,7 @@ def workspace_analytics(request):
             "routers": [],
         }
         snapshot["mikrotik_drops"] = {"ok": False, "events": [], "current_count": 0}
+        snapshot["mikrotik_status_catalog"] = {}
 
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     try:
@@ -1627,8 +1650,11 @@ def workspace_analytics(request):
             sample_organization_usage,
         )
 
+        # Never force the org-wide MikroTik usage sweep from the dashboard poll —
+        # refresh=1 already re-probes router health elsewhere. Sampling stays
+        # gated so back/focus navigation does not stall the previous page.
         try:
-            sample_organization_usage(org, force=force)
+            sample_organization_usage(org, force=False)
         except Exception:
             pass
         snapshot["network_trend"] = router_network_performance_trend(
@@ -4327,6 +4353,11 @@ def mikrotik_status(request):
     """Live online/offline status for onboarded MikroTik routers."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    from core.mikrotik_status_samples import (
+        _HOSTED_AUTH_CACHE_TTL,
+        classify_mikrotik_probe,
+    )
+
     org = resolve_organization(request.user, request)
     routers = (
         list(
@@ -4385,81 +4416,47 @@ def mikrotik_status(request):
 
     def _check(router):
         host = (router.api_host or "").strip()
-        probe = probe_by_host.get(host) or {"online": False, "via": "", "error": "Unreachable."}
-        via = probe.get("via") or ""
-        online = bool(probe.get("online"))
-        auth_ok = None
-        status = "disconnected"
-        error = ""
-        serial_number = (router.serial_number or "").strip()
-        software_id = (router.software_id or "").strip()
+        probe = probe_by_host.get(host) or {
+            "online": False,
+            "via": "",
+            "error": "Unreachable.",
+        }
+        via = (probe.get("via") or "").strip()
+        auth_cache_key = f"mikrotik_auth_ok:{org.pk}:{router.id}"
+        skip_login = (
+            via == "api"
+            and not force_refresh
+            and getattr(settings, "HOSTED", False)
+            and bool(cache.get(auth_cache_key))
+        )
+        classified = classify_mikrotik_probe(
+            probe,
+            host=host,
+            username=router.username or "",
+            password=router.password or "",
+            serial_number=(router.serial_number or "").strip(),
+            software_id=(router.software_id or "").strip(),
+            skip_login=skip_login,
+        )
         backfill = {}
-        if online and via == "api":
-            auth_cache_key = f"mikrotik_auth_ok:{org.pk}:{router.id}"
-            cached_auth = (
-                not force_refresh
-                and getattr(settings, "HOSTED", False)
-                and cache.get(auth_cache_key)
-            )
-            if cached_auth:
-                auth_ok = True
-                status = "connected"
-            else:
-                # Port 8728 is open — verify saved credentials so "Connected" means usable.
-                # Skip Wi‑Fi reads: status only needs auth + hardware IDs.
-                login = test_mikrotik_api_login(
-                    host,
-                    router.username,
-                    router.password or "",
-                    timeout=2.0,
-                    include_wifi=False,
-                )
-                if login.get("ok"):
-                    auth_ok = True
-                    status = "connected"
-                    if getattr(settings, "HOSTED", False):
-                        cache.set(auth_cache_key, True, 60)
-                    live_serial = (login.get("serial_number") or "").strip()
-                    live_soft = (login.get("software_id") or "").strip()
-                    if live_serial:
-                        serial_number = live_serial
-                        if live_serial != (router.serial_number or "").strip():
-                            backfill["serial_number"] = live_serial
-                    if live_soft:
-                        software_id = live_soft
-                        if live_soft != (router.software_id or "").strip():
-                            backfill["software_id"] = live_soft
-                else:
-                    auth_ok = False
-                    status = "auth_failed"
-                    error = login.get("error") or "Login failed"
-                    if getattr(settings, "HOSTED", False):
-                        cache.delete(auth_cache_key)
-        elif online and via == "ping":
-            status = "limited"
-        elif online:
-            # Winbox/HTTP up, but don't claim API credentials work.
-            status = "reachable"
-        elif probe.get("foreign_http"):
-            # Saved address now belongs to a different device entirely.
-            status = "wrong_host"
-            error = probe.get("error") or "Another device answers on this address."
-        elif probe.get("error"):
-            error = probe["error"]
+        if classified.get("auth_ok"):
+            if getattr(settings, "HOSTED", False) and not skip_login:
+                cache.set(auth_cache_key, True, _HOSTED_AUTH_CACHE_TTL)
+            live_serial = (classified.get("serial_number") or "").strip()
+            live_soft = (classified.get("software_id") or "").strip()
+            if live_serial and live_serial != (router.serial_number or "").strip():
+                backfill["serial_number"] = live_serial
+            if live_soft and live_soft != (router.software_id or "").strip():
+                backfill["software_id"] = live_soft
+        elif via == "api" and getattr(settings, "HOSTED", False):
+            cache.delete(auth_cache_key)
 
+        classified.pop("_login", None)
         return router.id, {
             "id": router.id,
             "host": router.host,
             "name": router.name,
-            "online": bool(auth_ok) if via == "api" else online and via != "ping",
-            "reachable": online,
-            "auth_ok": auth_ok,
-            "manageable": bool(auth_ok),
-            "status": status,
-            "via": via,
-            "error": error,
-            "serial_number": serial_number,
-            "software_id": software_id,
+            **classified,
             "_backfill": backfill,
         }
 
@@ -4972,6 +4969,8 @@ def client_detail(request, customer_id: int):
                         amount=recharge_form.cleaned_data["amount"],
                         reference=recharge_form.cleaned_data.get("reference") or "",
                         recorded_by=request.user,
+                        period_start=recharge_form.cleaned_data.get("period_start"),
+                        period_end=recharge_form.cleaned_data.get("period_end"),
                     )
                 except ValueError as exc:
                     if is_ajax:
@@ -4992,10 +4991,22 @@ def client_detail(request, customer_id: int):
                     if customer.package_end
                     else "—"
                 )
-                msg = (
-                    f"Cash recharge of KES {amount_label} recorded "
-                    f"({invoice.invoice_number}). Package active until {end_label}."
-                )
+                if result.get("partial"):
+                    start_label = (
+                        customer.package_start.isoformat()
+                        if customer.package_start
+                        else "—"
+                    )
+                    msg = (
+                        f"Partial cash recharge of KES {amount_label} recorded "
+                        f"({invoice.invoice_number}). Surfing window "
+                        f"{start_label} → {end_label}."
+                    )
+                else:
+                    msg = (
+                        f"Cash recharge of KES {amount_label} recorded "
+                        f"({invoice.invoice_number}). Package active until {end_label}."
+                    )
                 if is_ajax:
                     return _package_json_response(
                         customer,
@@ -5031,7 +5042,8 @@ def client_detail(request, customer_id: int):
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             customer.refresh_from_db()
-            provision = customer_needs_nas_provision(customer)
+            # Always attempt NAS sync on pause/resume — surfing must stop/start now.
+            provision = True
             enqueue_customer_subscription_sync(
                 customer.pk, provision, wait_first=True, quick=True
             )
@@ -5090,12 +5102,8 @@ def client_detail(request, customer_id: int):
         package_duration_label=(
             customer.plan.get_duration_display() if customer.plan_id else ""
         ),
-        plan_durations_json=json.dumps(
-            {str(p.pk): p.duration for p in client_plans}
-        ),
-        plan_prices_json=json.dumps(
-            {str(p.pk): str(p.price) for p in client_plans}
-        ),
+        plan_durations_map={str(p.pk): p.duration for p in client_plans},
+        plan_prices_map={str(p.pk): str(p.price) for p in client_plans},
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),
         subscription_paused=customer_package_is_paused(customer),
@@ -5129,6 +5137,170 @@ def client_detail(request, customer_id: int):
     return render(request, "core/client_detail.html", ctx)
 
 
+@client_workspace_required
+@require_http_methods(["GET", "POST"])
+def client_delete(request, customer_id: int):
+    """Confirm and permanently delete one subscriber (Customer)."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    can_access_wifi = customer_can_access_router(customer, org)
+    list_url = f"{reverse('core:my_clients')}?tab={customer.service_type}"
+
+    if request.method == "POST":
+        name = customer.full_name
+        service_tab = customer.service_type
+        # Best-effort: disable PPPoE secret so the CPE cannot reconnect after delete.
+        if (
+            customer.service_type == Customer.ServiceType.PPPOE
+            and (customer.pppoe_username or "").strip()
+            and customer.router_id
+        ):
+            try:
+                provision_customer_pppoe(
+                    customer, ensure_stack=False, force_disabled=True
+                )
+            except Exception:
+                pass
+        customer.delete()
+        messages.success(request, f"Deleted client {name}.")
+        return redirect(f"{reverse('core:my_clients')}?tab={service_tab}")
+
+    invoice_count = Invoice.objects.filter(customer=customer).count()
+    payment_count = Payment.objects.filter(invoice__customer=customer).count()
+    voucher_count = AccessVoucher.objects.filter(customer=customer).count()
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="delete",
+        page_title=f"Delete · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=can_access_wifi,
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        clients_list_url=list_url,
+        invoice_count=invoice_count,
+        payment_count=payment_count,
+        voucher_count=voucher_count,
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
+    return render(request, "core/client_delete.html", ctx)
+
+
+@client_workspace_required
+@require_GET
+def client_wifi_preview(request, customer_id: int):
+    """Staff preview of the captive Wi‑Fi screens a subscriber sees."""
+    from urllib.parse import urlencode
+
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("plan", "router", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    can_access_wifi = customer_can_access_router(customer, org)
+    join_code = (getattr(org, "join_code", None) or "").strip()
+    token = ""
+    if join_code and customer.service_type == Customer.ServiceType.PPPOE:
+        token = _make_pppoe_customer_token(org, customer)
+
+    def _pppoe_url(preview: str) -> str:
+        if not join_code:
+            return ""
+        params = {"preview": preview}
+        if token:
+            params["t"] = token
+        if customer.account_number:
+            params["account"] = customer.account_number
+        return (
+            reverse("core:pppoe_pay", kwargs={"join_code": join_code})
+            + "?"
+            + urlencode(params)
+        )
+
+    def _hotspot_url(preview: str) -> str:
+        if not join_code:
+            return ""
+        params = {"preview": preview}
+        if customer.account_number:
+            params["account"] = customer.account_number
+        return (
+            reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+            + "?"
+            + urlencode(params)
+        )
+
+    mode = (request.GET.get("mode") or "pppoe_paused").strip().lower()
+    previews = {
+        "pppoe_paused": {
+            "label": "Home Wi‑Fi · paused",
+            "blurb": (
+                "What phones see on the CPE Wi‑Fi captive popup when this "
+                "PPPoE subscription is paused."
+            ),
+            "url": _pppoe_url("paused"),
+        },
+        "pppoe_renew": {
+            "label": "Home Wi‑Fi · expired / renew",
+            "blurb": (
+                "What phones see when the package has ended and they must pay "
+                "to restore surfing."
+            ),
+            "url": _pppoe_url("renew"),
+        },
+        "hotspot_paused": {
+            "label": "Hotspot Wi‑Fi · paused",
+            "blurb": (
+                "What Hotspot gadgets see when this account is paused "
+                "(same org captive page)."
+            ),
+            "url": _hotspot_url("paused"),
+        },
+        "hotspot_renew": {
+            "label": "Hotspot Wi‑Fi · pay to connect",
+            "blurb": "What new Hotspot visitors see when they join the public Wi‑Fi.",
+            "url": _hotspot_url("renew"),
+        },
+    }
+    if mode not in previews:
+        mode = "pppoe_paused"
+    active = previews[mode]
+
+    ctx = client_page_context(
+        request,
+        active_nav="client_detail",
+        sidebar_active="wifi_preview",
+        page_title=f"Wi‑Fi preview · {customer.full_name}",
+        customer=customer,
+        can_access_wifi=can_access_wifi,
+        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        preview_mode=mode,
+        preview_tabs=[
+            {"key": key, "label": item["label"], "url": item["url"]}
+            for key, item in previews.items()
+        ],
+        preview_blurb=active["blurb"],
+        preview_frame_url=active["url"],
+        preview_open_url=active["url"],
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
+    ]
+    ctx["sidebar_label"] = "Client"
+    apply_client_shared_forms(ctx, customer, org)
+    return render(request, "core/client_wifi_preview.html", ctx)
+
+
 _CPE_PROXY_SALT = "core.client-cpe-web.v1"
 # The signed token carries a generous absolute lifetime; the effective session
 # length is governed by a sliding idle window enforced server-side (below), so
@@ -5152,13 +5324,33 @@ _CPE_HOP_HEADERS = {
 }
 
 
-def _cpe_proxy_token(request, customer: Customer, cpe_port: int = 80) -> str:
+def _cpe_proxy_token(
+    request,
+    customer: Customer,
+    cpe_port: int = 80,
+    *,
+    cpe_host: str = "",
+    gateway: str = "",
+    scope: str = "",
+    mode: str = "",
+) -> str:
+    payload = {
+        "customer_id": customer.pk,
+        "user_id": request.user.pk,
+        "cpe_port": int(cpe_port or 80),
+    }
+    # Cache the live CPE target in the signed token so each proxied asset does
+    # not re-login to the NAS just to look up the same PPPoE/DHCP address.
+    if (cpe_host or "").strip():
+        payload["cpe_host"] = cpe_host.strip()
+    if (gateway or "").strip():
+        payload["gateway"] = gateway.strip()
+    if (scope or "").strip():
+        payload["scope"] = scope.strip()
+    if (mode or "").strip():
+        payload["mode"] = mode.strip()
     return signing.dumps(
-        {
-            "customer_id": customer.pk,
-            "user_id": request.user.pk,
-            "cpe_port": int(cpe_port or 80),
-        },
+        payload,
         salt=_CPE_PROXY_SALT,
         compress=True,
     )
@@ -5363,8 +5555,9 @@ def client_router_login_start(request, customer_id: int):
             cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
 
     nas = customer.router
+    nas_host = _router_api_host(nas)
     probe = probe_customer_cpe_web(
-        nas.host,
+        nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
@@ -5393,7 +5586,15 @@ def client_router_login_start(request, customer_id: int):
             }
         )
 
-    token = _cpe_proxy_token(request, customer, probe.get("port") or 80)
+    token = _cpe_proxy_token(
+        request,
+        customer,
+        probe.get("port") or 80,
+        cpe_host=probe.get("cpe_host") or "",
+        gateway=probe.get("gateway") or MK_PPPOE_LOCAL_ADDRESS,
+        scope=customer_cpe_proxy_scope(customer),
+        mode=probe.get("mode") or "",
+    )
     proxy_url = reverse(
         "core:client_router_proxy_root",
         kwargs={"customer_id": customer.pk, "token": token},
@@ -5405,7 +5606,7 @@ def client_router_login_start(request, customer_id: int):
     cookie_key = "cpe-web:" + token_hash
     existing = cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {}
     login = login_customer_cpe_web_session(
-        nas.host,
+        nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
@@ -5519,20 +5720,34 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
         )
 
     nas = customer.router
-    cpe_target = resolve_customer_cpe_target(
-        nas.host,
-        nas.username,
-        nas.password or "",
-        customer,
-        timeout=8.0,
+    nas_host = _router_api_host(nas)
+    cpe_host = (token_payload.get("cpe_host") or "").strip()
+    gateway = (token_payload.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
+    cpe_scope = (token_payload.get("scope") or "").strip() or customer_cpe_proxy_scope(
+        customer
     )
-    if not cpe_target.get("ok") or not cpe_target.get("session_active"):
-        return HttpResponse(
-            cpe_target.get("hint")
-            or cpe_target.get("error")
-            or "The client router is offline.",
-            status=409,
-            content_type="text/plain",
+    used_token_host = bool(cpe_host)
+
+    if not cpe_host:
+        cpe_target = resolve_customer_cpe_target(
+            nas_host,
+            nas.username,
+            nas.password or "",
+            customer,
+            timeout=8.0,
+        )
+        if not cpe_target.get("ok") or not cpe_target.get("session_active"):
+            return HttpResponse(
+                cpe_target.get("hint")
+                or cpe_target.get("error")
+                or "The client router is offline.",
+                status=409,
+                content_type="text/plain",
+            )
+        cpe_host = (cpe_target.get("address") or "").strip()
+        gateway = (cpe_target.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
+        cpe_scope = (
+            (cpe_target.get("scope") or "").strip() or customer_cpe_proxy_scope(customer)
         )
 
     prefix = reverse(
@@ -5547,19 +5762,18 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
         target += "?" + query
     cookie_key = "cpe-web:" + hashlib.sha256(token.encode()).hexdigest()
     router_cookies = dict(cache.get(cookie_key) or {})
-    gateway = cpe_target.get("gateway") or MK_PPPOE_LOCAL_ADDRESS
 
-    try:
+    def _open_upstream(address: str, gw: str, scope: str):
         with customer_cpe_web_proxy(
-            nas.host,
+            nas_host,
             nas.username,
             nas.password or "",
-            cpe_scope=cpe_target.get("scope") or customer_cpe_proxy_scope(customer),
-            cpe_address=cpe_target.get("address") or "",
-            gateway_ip=gateway,
+            cpe_scope=scope,
+            cpe_address=address,
+            gateway_ip=gw,
             cpe_port=cpe_port,
             timeout=10.0,
-        ) as proxy:
+        ) as proxy_ctx:
             headers = {}
             for name, value in request.headers.items():
                 lower = name.lower()
@@ -5572,7 +5786,7 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
                 }:
                     continue
                 headers[name] = value
-            headers["Host"] = proxy["cpe_host"]
+            headers["Host"] = proxy_ctx["cpe_host"]
             headers["Accept-Encoding"] = "identity"
             if router_cookies:
                 headers["Cookie"] = "; ".join(
@@ -5586,15 +5800,15 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
 
             if cpe_is_tls:
                 connection = http.client.HTTPSConnection(
-                    proxy["host"],
-                    proxy["port"],
+                    proxy_ctx["host"],
+                    proxy_ctx["port"],
                     timeout=10.0,
                     context=ssl._create_unverified_context(),
                 )
             else:
                 connection = http.client.HTTPConnection(
-                    proxy["host"],
-                    proxy["port"],
+                    proxy_ctx["host"],
+                    proxy_ctx["port"],
                     timeout=10.0,
                 )
             try:
@@ -5605,27 +5819,69 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
                     headers=headers,
                 )
                 upstream = connection.getresponse()
-                body = upstream.read(_CPE_PROXY_MAX_BODY + 1)
-                upstream_headers = upstream.getheaders()
-                status = upstream.status
+                resp_body = upstream.read(_CPE_PROXY_MAX_BODY + 1)
+                resp_headers = upstream.getheaders()
+                resp_status = upstream.status
             finally:
                 connection.close()
+            return proxy_ctx, resp_body, resp_headers, resp_status
+
+    try:
+        proxy, body, upstream_headers, status = _open_upstream(
+            cpe_host, gateway, cpe_scope
+        )
     except (ConnectionError, OSError, TimeoutError, http.client.HTTPException) as exc:
-        detail = str(exc) or exc.__class__.__name__
-        timed_out = "timed out" in detail.lower() or isinstance(exc, TimeoutError)
-        hint = (
-            f" The client router did not answer on port {cpe_port} through the ISP "
-            "MikroTik. Enable Remote / WAN Web Management on the client's router "
-            f"(limit it to the ISP gateway {gateway}), confirm the client is online, "
-            "then try again."
-            if timed_out
-            else ""
-        )
-        return HttpResponse(
-            f"Could not open the client router: {detail}.{hint}",
-            status=502,
-            content_type="text/plain",
-        )
+        # Token may hold a stale PPPoE IP after renumber — one live re-resolve.
+        if used_token_host:
+            cpe_target = resolve_customer_cpe_target(
+                nas_host,
+                nas.username,
+                nas.password or "",
+                customer,
+                timeout=8.0,
+            )
+            if cpe_target.get("ok") and cpe_target.get("session_active"):
+                live_host = (cpe_target.get("address") or "").strip()
+                live_gateway = (
+                    (cpe_target.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
+                )
+                live_scope = (
+                    (cpe_target.get("scope") or "").strip()
+                    or customer_cpe_proxy_scope(customer)
+                )
+                if live_host and live_host != cpe_host:
+                    try:
+                        proxy, body, upstream_headers, status = _open_upstream(
+                            live_host, live_gateway, live_scope
+                        )
+                        cpe_host = live_host
+                        gateway = live_gateway
+                    except (
+                        ConnectionError,
+                        OSError,
+                        TimeoutError,
+                        http.client.HTTPException,
+                    ) as retry_exc:
+                        exc = retry_exc
+                    else:
+                        exc = None
+        if exc is not None:
+            detail = str(exc) or exc.__class__.__name__
+            timed_out = "timed out" in detail.lower() or isinstance(exc, TimeoutError)
+            hint = (
+                f" The client router did not answer on port {cpe_port} through the ISP "
+                "MikroTik. Enable Remote / WAN Web Management on the client's router "
+                f"(limit it to the ISP gateway {gateway}), confirm the client is online, "
+                "then try again."
+                if timed_out
+                else ""
+            )
+            return HttpResponse(
+                f"Could not open the client router: {detail}.{hint}",
+                status=502,
+                content_type="text/plain",
+            )
+
     if len(body) > _CPE_PROXY_MAX_BODY:
         return HttpResponse(
             "The client router response was too large.",
@@ -5766,8 +6022,9 @@ def client_cpe_wifi(request, customer_id: int):
 
     # Prefer the consumer CPE web API (Tenda, etc.) — this is where most
     # subscriber routers expose the live SSID/password/radio settings.
+    nas_host = _router_api_host(nas)
     probe = probe_customer_cpe_web(
-        nas.host,
+        nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
@@ -5777,7 +6034,7 @@ def client_cpe_wifi(request, customer_id: int):
     cpe_host = (probe.get("cpe_host") or "").strip()
     if probe.get("reachable") and probe.get("port"):
         web = fetch_customer_cpe_web_data(
-            nas.host,
+            nas_host,
             nas.username,
             nas.password or "",
             customer=customer,
@@ -5809,7 +6066,7 @@ def client_cpe_wifi(request, customer_id: int):
     # Fallback: RouterOS API on MikroTik CPEs (or when the web UI is locked).
     if not auth_ok:
         live = access_customer_cpe_wifi(
-            nas.host,
+            nas_host,
             nas.username,
             nas.password or "",
             customer=customer,
@@ -5930,8 +6187,9 @@ def client_wifi_settings(request, customer_id: int):
             apply_password = bool(new_password)
             result: dict = {"ok": False, "error": "Could not reach the client router."}
 
+            nas_host = _router_api_host(nas)
             probe = probe_customer_cpe_web(
-                nas.host,
+                nas_host,
                 nas.username,
                 nas.password or "",
                 customer=customer,
@@ -5939,7 +6197,7 @@ def client_wifi_settings(request, customer_id: int):
             )
             if probe.get("reachable") and probe.get("port"):
                 result = configure_customer_cpe_web_wifi(
-                    nas.host,
+                    nas_host,
                     nas.username,
                     nas.password or "",
                     customer=customer,
@@ -5955,7 +6213,7 @@ def client_wifi_settings(request, customer_id: int):
             elif not result.get("ok"):
                 # MikroTik CPE path: prepare API access, then configure Wi‑Fi.
                 prep = access_customer_cpe_wifi(
-                    nas.host,
+                    nas_host,
                     nas.username,
                     nas.password or "",
                     customer=customer,
@@ -5976,7 +6234,7 @@ def client_wifi_settings(request, customer_id: int):
                         wifi_password=new_password,
                         apply_ssid=apply_ssid,
                         apply_password=apply_password,
-                        nas_host=nas.host,
+                        nas_host=nas_host,
                         nas_username=nas.username,
                         nas_password=nas.password or "",
                         timeout=20.0,
@@ -6077,8 +6335,9 @@ def client_cpe_router_data(request, customer_id: int):
             return JsonResponse(cached)
 
     nas = customer.router
+    nas_host = _router_api_host(nas)
     probe = probe_customer_cpe_web(
-        nas.host,
+        nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
@@ -6095,7 +6354,7 @@ def client_cpe_router_data(request, customer_id: int):
         return JsonResponse(payload)
 
     payload = fetch_customer_cpe_web_data(
-        nas.host,
+        nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
@@ -6383,19 +6642,25 @@ def clients_general_usage(request):
     )
 
     hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
+    tab = (request.GET.get("tab") or "pppoe").strip().lower()
+    if tab not in {"pppoe", "hotspot"}:
+        tab = "pppoe"
 
     if org:
         try:
             sample_organization_usage(org, force=False)
         except Exception:
             pass
-        trends = org_usage_payload(org, hours=hours, auto_widen=True)
+        trends = org_usage_payload(
+            org, hours=hours, auto_widen=True, top_n=0, service=tab
+        )
     else:
         trends = {
             "ok": False,
             "hours": hours,
             "requested_hours": hours,
             "auto_widened": False,
+            "service": tab,
             "sample_count": 0,
             "labels": [],
             "series": {
@@ -6423,7 +6688,8 @@ def clients_general_usage(request):
             sidebar_active="general_usage",
             page_title="General usage",
             page_kicker="Subscribers",
-            page_subtitle="Organization-wide usage trends and highest data users.",
+            page_subtitle="PPPoE and Hotspot usage analytics by service.",
+            active_tab=tab,
             trend_hours=effective_hours,
             requested_hours=requested,
             auto_widened=bool(trends.get("auto_widened")),
@@ -6452,6 +6718,9 @@ def clients_general_usage_trends(request):
     )
 
     hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
+    tab = (request.GET.get("tab") or request.GET.get("service") or "pppoe").strip().lower()
+    if tab not in {"pppoe", "hotspot"}:
+        tab = "pppoe"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
 
     try:
@@ -6459,7 +6728,14 @@ def clients_general_usage_trends(request):
     except Exception:
         pass
     return JsonResponse(
-        org_usage_payload(org, hours=hours, auto_widen=True, use_cache=not force)
+        org_usage_payload(
+            org,
+            hours=hours,
+            auto_widen=True,
+            use_cache=not force,
+            top_n=0,
+            service=tab,
+        )
     )
 
 
@@ -6479,13 +6755,9 @@ def client_usage_analysis(request, customer_id: int):
         and usage_router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
     )
     can_access_wifi = customer_can_access_router(customer, org)
-    hours = 24
-    try:
-        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-    except (TypeError, ValueError):
-        hours = 24
+    from billing.usage_samples import clamp_usage_hours, usage_range_label, usage_trend_payload
 
-    from billing.usage_samples import usage_trend_payload
+    hours = clamp_usage_hours(request.GET.get("hours"), default=24)
 
     if can_live:
         trends = usage_trend_payload(customer, hours=hours)
@@ -6501,14 +6773,16 @@ def client_usage_analysis(request, customer_id: int):
         trends = {
             "ok": False,
             "hours": hours,
+            "range_label": usage_range_label(hours),
             "sample_count": 0,
             "labels": [],
             "series": {
-                "uptime_minutes": [],
                 "download_kbps": [],
                 "upload_kbps": [],
                 "data_used_mb": [],
+                "online": [],
             },
+            "markers": {"peak_index": None, "low_index": None, "stop_indexes": []},
             "summary": {},
             "error": error,
         }
@@ -6522,6 +6796,7 @@ def client_usage_analysis(request, customer_id: int):
         can_live_usage=can_live,
         can_access_wifi=can_access_wifi,
         trend_hours=hours,
+        range_label=trends.get("range_label") or usage_range_label(hours),
         trends=trends,
         trends_json=json.dumps(trends),
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
@@ -6634,12 +6909,9 @@ def client_usage_trends(request, customer_id: int):
             {"ok": False, "error": "No MikroTik router is available for this client."},
             status=400,
         )
-    try:
-        hours = max(1, min(int(request.GET.get("hours") or 24), 168))
-    except (TypeError, ValueError):
-        hours = 24
-    from billing.usage_samples import usage_trend_payload
+    from billing.usage_samples import clamp_usage_hours, usage_trend_payload
 
+    hours = clamp_usage_hours(request.GET.get("hours"), default=24)
     return JsonResponse(usage_trend_payload(customer, hours=hours))
 
 
@@ -7562,6 +7834,12 @@ def _attach_plan_portal_images(plans, request=None):
     return plans
 
 
+def _attach_plan_offer_progress(plans, customer=None):
+    from billing.package_offers import attach_offer_progress_to_plans
+
+    return attach_offer_progress_to_plans(plans, customer)
+
+
 def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
     """
     Load a plan the customer may pay for.
@@ -7643,6 +7921,28 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         getattr(hotspot_customer, "phone", "") if hotspot_customer else ""
     )
     _attach_plan_portal_images(hotspot_plans, request)
+    _attach_plan_offer_progress(hotspot_plans, hotspot_customer)
+    preview_mode = ""
+    if request is not None:
+        preview_mode = (request.GET.get("preview") or "").strip().lower()
+    # Staff Wi‑Fi preview can force FRANCIS-style account even without a MAC.
+    if preview_mode and hotspot_customer is None and request is not None:
+        account = (request.GET.get("account") or "").strip()
+        if account:
+            hotspot_customer = (
+                Customer.objects.filter(
+                    organization=org,
+                    account_number__iexact=account,
+                )
+                .select_related("plan", "router")
+                .first()
+            )
+    access_ctx = customer_portal_access_context(
+        hotspot_customer, preview=preview_mode
+    )
+    if access_ctx["subscription_paused"]:
+        title = f"{org.name} — Internet paused"
+        message = access_ctx["access_banner_message"]
     return {
         "organization": org,
         "org_name": org.name,
@@ -7658,7 +7958,10 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "pppoe_plans": [],
         "has_payable_plans": has_payable_plans,
         "portal_mode": portal_mode,
-        "show_payment_form": bool(hotspot_mac) or (stk_ready and bool(hotspot_plans)),
+        "show_payment_form": (
+            (bool(hotspot_mac) or (stk_ready and bool(hotspot_plans)))
+            and access_ctx["show_renew_payment"]
+        ),
         "mikrotik_login": mikrotik_login,
         "link_login": link_login,
         "link_orig": link_orig or urls["welcome_url"],
@@ -7702,6 +8005,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "dual_access_tabs": False,
         "hotspot_phone_value": hotspot_phone,
         "hotspot_selected_plan_id": hotspot_selected_plan_id,
+        **access_ctx,
     }
 
 
@@ -7979,6 +8283,18 @@ def hotspot_payment_start(request, join_code: str):
             status=int(resolved.get("status") or 400),
         )
     customer = resolved["customer"]
+
+    if customer_package_is_paused(customer):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": (
+                    "This subscription is paused. Contact your internet provider "
+                    "to resume service before paying."
+                ),
+            },
+            status=403,
+        )
 
     from billing.devices import customer_owns_hotspot_mac
     from billing.vouchers import customer_unused_voucher_count
@@ -8360,6 +8676,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
                 )[:8]
             )
         _attach_plan_portal_images(hotspot_plans, request)
+        _attach_plan_offer_progress(hotspot_plans, customer)
     # Identified home customers renew PPPoE only; unidentified CPE visitors
     # also see Hotspot packages on this page.
     show_inline_hotspot = hotspot_enabled and bool(hotspot_plans) and customer is None
@@ -8370,8 +8687,20 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     customer_token = ""
     if customer is not None:
         customer_token = _make_pppoe_customer_token(org, customer)
-    show_payment_form = has_payable_plans
-    stk_payment_available = stk_ready
+    preview_mode = ""
+    if request is not None:
+        preview_mode = (request.GET.get("preview") or "").strip().lower()
+    access_ctx = customer_portal_access_context(customer, preview=preview_mode)
+    page_title = f"{org.name} renew"
+    page_message = (
+        "Your subscription has ended. Choose a package and pay with M-Pesa "
+        "to restore internet on this connection."
+    )
+    if access_ctx["subscription_paused"]:
+        page_title = f"{org.name} — Internet paused"
+        page_message = access_ctx["access_banner_message"]
+    show_payment_form = has_payable_plans and access_ctx["show_renew_payment"]
+    stk_payment_available = stk_ready and access_ctx["show_renew_payment"]
     pppoe_start = public_absolute_url(
         reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
         request,
@@ -8392,11 +8721,8 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     return {
         "organization": org,
         "org_name": org.name,
-        "page_title": f"{org.name} renew",
-        "page_message": (
-            "Your subscription has ended. Choose a package and pay with M-Pesa "
-            "to restore internet on this connection."
-        ),
+        "page_title": page_title,
+        "page_message": page_message,
         "has_mpesa": has_mpesa,
         "stk_ready": stk_ready,
         "mpesa_type": org.mpesa_payment_type,
@@ -8450,6 +8776,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "dual_access_tabs": False,
         "hotspot_phone_value": phone_value,
         "hotspot_selected_plan_id": None,
+        **access_ctx,
     }
 
 
@@ -8653,6 +8980,17 @@ def pppoe_payment_start(request, join_code: str):
                 "error": (
                     "This PPPoE account is suspended. Contact your internet "
                     "provider before making a payment."
+                ),
+            },
+            status=403,
+        )
+    if customer_package_is_paused(customer):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": (
+                    "This subscription is paused. Contact your internet provider "
+                    "to resume service before paying."
                 ),
             },
             status=403,
@@ -9042,6 +9380,7 @@ def my_account_payments(request):
     from billing.views import (
         _handle_delete_package,
         _handle_edit_package,
+        _handle_package_offer,
         _handle_register_package,
         _handle_suspend_package,
     )
@@ -9063,6 +9402,10 @@ def my_account_payments(request):
         return early
     if edit_modal:
         open_modal = edit_modal
+
+    early = _handle_package_offer(request, org, success_url_name=success_url)
+    if early:
+        return early
 
     early = _handle_suspend_package(request, org, success_url_name=success_url)
     if early:

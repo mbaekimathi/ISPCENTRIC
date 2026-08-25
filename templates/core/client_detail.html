@@ -540,9 +540,9 @@
   {% if open_client_modal != "client-recharge-modal" %}hidden{% endif %}
   aria-hidden="{% if open_client_modal == "client-recharge-modal" %}false{% else %}true{% endif %}"
   data-package-duration="{{ package_duration|default:'' }}"
-  data-plan-durations="{{ plan_durations_json }}"
-  data-plan-prices="{{ plan_prices_json }}"
 >
+{{ plan_prices_map|json_script:"recharge-plan-prices" }}
+{{ plan_durations_map|json_script:"recharge-plan-durations" }}
   <div class="role-modal-backdrop" data-close-client-modal></div>
   <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-recharge-title">
     <header class="role-modal-head pppoe-head">
@@ -575,17 +575,42 @@
               Currently on <strong data-package-current-plan>{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% if package_duration_label %} · {{ package_duration_label }}{% endif %}</strong>
             </p>
           {% endif %}
+          <div class="field field-span-2" style="margin-bottom: 0.85rem;">
+            <span class="package-service-type-label">{{ recharge_form.recharge_mode.label }}</span>
+            <div class="package-service-type-toggle" data-recharge-mode-toggle>
+              <div>
+                {% for radio in recharge_form.recharge_mode %}
+                  <label>{{ radio.tag }} <span>{{ radio.choice_label }}</span></label>
+                {% endfor %}
+              </div>
+            </div>
+            {% if recharge_form.recharge_mode.errors %}<div class="field-error">{{ recharge_form.recharge_mode.errors|striptags }}</div>{% endif %}
+          </div>
           <div class="pppoe-grid">
             <div class="field field-span-2">
               <label for="{{ recharge_form.plan.id_for_label }}">{{ recharge_form.plan.label }}</label>
               <div class="pppoe-select">{{ recharge_form.plan }}</div>
               {% if recharge_form.plan.errors %}<div class="field-error">{{ recharge_form.plan.errors|striptags }}</div>{% endif %}
             </div>
+            <div class="field" data-recharge-partial-field hidden>
+              <label for="{{ recharge_form.period_from.id_for_label }}">{{ recharge_form.period_from.label }}</label>
+              {{ recharge_form.period_from }}
+              {% if recharge_form.period_from.errors %}<div class="field-error">{{ recharge_form.period_from.errors|striptags }}</div>{% endif %}
+              {% if recharge_form.period_from.help_text %}<p class="field-hint">{{ recharge_form.period_from.help_text }}</p>{% endif %}
+            </div>
+            <div class="field" data-recharge-partial-field hidden>
+              <label for="{{ recharge_form.period_to.id_for_label }}">{{ recharge_form.period_to.label }}</label>
+              {{ recharge_form.period_to }}
+              {% if recharge_form.period_to.errors %}<div class="field-error">{{ recharge_form.period_to.errors|striptags }}</div>{% endif %}
+              {% if recharge_form.period_to.help_text %}<p class="field-hint">{{ recharge_form.period_to.help_text }}</p>{% endif %}
+            </div>
             <div class="field">
               <label for="{{ recharge_form.amount.id_for_label }}">{{ recharge_form.amount.label }}</label>
               {{ recharge_form.amount }}
               {% if recharge_form.amount.errors %}<div class="field-error">{{ recharge_form.amount.errors|striptags }}</div>{% endif %}
-              {% if recharge_form.amount.help_text %}<p class="field-hint">{{ recharge_form.amount.help_text }}</p>{% endif %}
+              <p class="field-hint" data-recharge-amount-hint-full>{% if recharge_form.amount.help_text %}{{ recharge_form.amount.help_text }}{% endif %}</p>
+              <p class="field-hint" data-recharge-amount-hint-partial hidden>Calculated from the package rate × selected days.</p>
+              <p class="field-hint" data-recharge-days-summary hidden style="font-weight: 700; color: var(--sea, #0e7c86);"></p>
             </div>
             <div class="field">
               <label for="{{ recharge_form.reference.id_for_label }}">{{ recharge_form.reference.label }}</label>
@@ -594,8 +619,11 @@
               {% if recharge_form.reference.help_text %}<p class="field-hint">{{ recharge_form.reference.help_text }}</p>{% endif %}
             </div>
           </div>
-          <p class="field-hint" style="margin: 0.85rem 0 0;">
+          <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-full>
             Payment method is recorded as <strong>Cash</strong>. The package period stacks onto any remaining time and MikroTik access syncs in the background.
+          </p>
+          <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-partial hidden>
+            Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates (inclusive) and MikroTik access syncs in the background.
           </p>
         </section>
       </div>
@@ -972,22 +1000,163 @@
 
   (function setupRechargeAmountSync() {
     var modal = document.getElementById("client-recharge-modal");
+    var form = document.getElementById("client-recharge-form");
     var planSelect = document.getElementById("id_recharge_plan");
     var amountInput = document.getElementById("id_recharge_amount");
+    var fromInput = document.getElementById("id_recharge_period_from");
+    var toInput = document.getElementById("id_recharge_period_to");
     var sub = modal && modal.querySelector("[data-recharge-modal-sub]");
-    if (!modal || !planSelect || !amountInput) return;
+    if (!modal || !form || !planSelect || !amountInput) return;
 
-    var planPrices = {};
-    try {
-      planPrices = JSON.parse(modal.getAttribute("data-plan-prices") || "{}") || {};
-    } catch (err) {
-      planPrices = {};
+    function readJsonScript(id) {
+      var el = document.getElementById(id);
+      if (!el || !el.textContent) return {};
+      try {
+        return JSON.parse(el.textContent) || {};
+      } catch (err) {
+        return {};
+      }
+    }
+
+    var planPrices = readJsonScript("recharge-plan-prices");
+    var planDurations = readJsonScript("recharge-plan-durations");
+    var partialFields = modal.querySelectorAll("[data-recharge-partial-field]");
+    var hintFull = modal.querySelector("[data-recharge-amount-hint-full]");
+    var hintPartial = modal.querySelector("[data-recharge-amount-hint-partial]");
+    var daysSummary = modal.querySelector("[data-recharge-days-summary]");
+    var noteFull = modal.querySelector("[data-recharge-hint-full]");
+    var notePartial = modal.querySelector("[data-recharge-hint-partial]");
+
+    function selectedMode() {
+      var checked = form.querySelector('input[name="recharge_mode"]:checked');
+      return checked ? checked.value : "full";
+    }
+
+    function isPartialMode() {
+      return selectedMode() === "partial";
+    }
+
+    function planMeta(planId) {
+      var key = String(planId || "");
+      return {
+        price: Number(planPrices[key]),
+        duration: (planDurations[key] || "").toLowerCase(),
+      };
+    }
+
+    function daysInMonth(year, month) {
+      return new Date(year, month, 0).getDate();
+    }
+
+    function billingUnitSeconds(durationKey, refDate) {
+      if (durationKey === "hourly") return 3600;
+      if (durationKey === "six_hours") return 6 * 3600;
+      if (durationKey === "daily") return 86400;
+      if (durationKey === "weekly") return 7 * 86400;
+      var y = refDate.getFullYear();
+      var m = refDate.getMonth() + 1;
+      if (durationKey === "monthly") return daysInMonth(y, m) * 86400;
+      if (durationKey === "quarterly") {
+        var total = 0;
+        var cursor = new Date(y, m - 1, 1);
+        for (var i = 0; i < 3; i += 1) {
+          total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
+          cursor.setMonth(cursor.getMonth() + 1);
+        }
+        return total * 86400;
+      }
+      if (durationKey === "semi_annual") {
+        var totalSemi = 0;
+        var cursorSemi = new Date(y, m - 1, 1);
+        for (var j = 0; j < 6; j += 1) {
+          totalSemi += daysInMonth(cursorSemi.getFullYear(), cursorSemi.getMonth() + 1);
+          cursorSemi.setMonth(cursorSemi.getMonth() + 1);
+        }
+        return totalSemi * 86400;
+      }
+      if (durationKey === "yearly") {
+        var totalYear = 0;
+        var cursorYear = new Date(y, m - 1, 1);
+        for (var k = 0; k < 12; k += 1) {
+          totalYear += daysInMonth(cursorYear.getFullYear(), cursorYear.getMonth() + 1);
+          cursorYear.setMonth(cursorYear.getMonth() + 1);
+        }
+        return totalYear * 86400;
+      }
+      return 0;
+    }
+
+    function parseDateInput(value) {
+      if (!value) return null;
+      var parts = String(value).split("-");
+      if (parts.length !== 3) return null;
+      var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    function inclusiveDays(fromDate, toDate) {
+      if (!fromDate || !toDate || toDate < fromDate) return 0;
+      return Math.floor((toDate - fromDate) / 86400000) + 1;
+    }
+
+    function partialBilledSeconds(fromDate, toDate) {
+      var days = inclusiveDays(fromDate, toDate);
+      if (!days) return 0;
+      return days * 86400;
+    }
+
+    function formatAmount(value) {
+      var n = Number(value);
+      if (isNaN(n) || n <= 0) return "";
+      return n.toFixed(2);
+    }
+
+    function ensureDefaultDates() {
+      var today = new Date();
+      var y = today.getFullYear();
+      var m = String(today.getMonth() + 1).padStart(2, "0");
+      var d = String(today.getDate()).padStart(2, "0");
+      var stamp = y + "-" + m + "-" + d;
+      if (fromInput && !fromInput.value) fromInput.value = stamp;
+      if (toInput && !toInput.value) toInput.value = stamp;
+    }
+
+    function syncPartialAmount() {
+      ensureDefaultDates();
+      var meta = planMeta(planSelect.value);
+      if (!planSelect.value || isNaN(meta.price)) return;
+      var fromDate = parseDateInput(fromInput && fromInput.value);
+      var toDate = parseDateInput(toInput && toInput.value);
+      if (!fromDate || !toDate) return;
+      var days = inclusiveDays(fromDate, toDate);
+      if (!days) {
+        if (daysSummary) {
+          daysSummary.hidden = false;
+          daysSummary.textContent = "To date must be on or after from date.";
+        }
+        return;
+      }
+      var seconds = partialBilledSeconds(fromDate, toDate);
+      var unit = billingUnitSeconds(meta.duration, fromDate);
+      if (!seconds || !unit) return;
+      var amount = meta.price * (seconds / unit);
+      if (amount > 0 && amount < 0.01) amount = 0.01;
+      amountInput.value = formatAmount(amount);
+      if (daysSummary) {
+        daysSummary.hidden = false;
+        daysSummary.textContent = days + (days === 1 ? " day" : " days") + " selected · KES " + formatAmount(amount);
+      }
     }
 
     function syncAmountFromPlan() {
-      var planId = planSelect.value;
-      if (!planId || planPrices[planId] == null) return;
-      amountInput.value = planPrices[planId];
+      var meta = planMeta(planSelect.value);
+      if (!planSelect.value || isNaN(meta.price)) return;
+      if (isPartialMode()) {
+        syncPartialAmount();
+      } else {
+        amountInput.value = formatAmount(meta.price);
+        if (daysSummary) daysSummary.hidden = true;
+      }
       var selected = planSelect.options[planSelect.selectedIndex];
       var planLabel = selected && selected.value ? selected.textContent.trim() : "";
       if (sub && planLabel) {
@@ -1002,7 +1171,55 @@
       }
     }
 
-    planSelect.addEventListener("change", syncAmountFromPlan);
+    function syncRechargeFormUi() {
+      var partial = isPartialMode();
+      partialFields.forEach(function (el) { el.hidden = !partial; });
+      if (hintFull) hintFull.hidden = partial;
+      if (hintPartial) hintPartial.hidden = !partial;
+      if (noteFull) noteFull.hidden = partial;
+      if (notePartial) notePartial.hidden = !partial;
+      amountInput.readOnly = partial;
+      if (partial) {
+        ensureDefaultDates();
+      } else if (daysSummary) {
+        daysSummary.hidden = true;
+      }
+      syncAmountFromPlan();
+    }
+
+    form.addEventListener("input", function (e) {
+      var target = e.target;
+      if (!target) return;
+      if (
+        target.name === "recharge_mode" ||
+        target.id === "id_recharge_plan" ||
+        target.id === "id_recharge_period_from" ||
+        target.id === "id_recharge_period_to"
+      ) {
+        syncRechargeFormUi();
+      }
+    });
+    form.addEventListener("change", function (e) {
+      var target = e.target;
+      if (!target) return;
+      if (
+        target.name === "recharge_mode" ||
+        target.id === "id_recharge_plan" ||
+        target.id === "id_recharge_period_from" ||
+        target.id === "id_recharge_period_to"
+      ) {
+        syncRechargeFormUi();
+      }
+    });
+
+    modal.querySelectorAll("[data-recharge-mode-toggle] label").forEach(function (label) {
+      label.addEventListener("click", function () {
+        setTimeout(syncRechargeFormUi, 0);
+      });
+    });
+
+    window.syncRechargeFormUi = syncRechargeFormUi;
+    syncRechargeFormUi();
   })();
 })();
 </script>

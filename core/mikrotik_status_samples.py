@@ -20,17 +20,64 @@ _STATUS_SCORE = {
 }
 _STATUS_REASON = {
     "connected": "Router is online and API login succeeded.",
-    "reachable": "Host is reachable over HTTP/Winbox, but API login was not confirmed.",
-    "limited": "Router replies to ping only. API port 8728 is not reachable.",
-    "auth_failed": "API is reachable but login failed. Check saved username and password.",
+    "reachable": (
+        "Management ports answer, but API login was not confirmed "
+        "(API flaky, timed out, or not fully verified)."
+    ),
+    "limited": (
+        "Router answers ping, but API port 8728 is closed. "
+        "Enable IP → Services → api (Allowed From empty) or re-paste the ISPCENTRIC tunnel script."
+    ),
+    "auth_failed": (
+        "API port 8728 is open, but RouterOS rejected the saved username/password. "
+        "Update credentials on the router detail page, then Reconnect."
+    ),
     "wrong_host": "A different device now answers on this address.",
     "disconnected": "Router is offline or unreachable on the management tunnel or IP.",
 }
+# After TCP :8728 opens, classify login errors so timeouts are not blamed on passwords.
+_AUTH_FAILURE_TOKENS = (
+    "invalid user",
+    "cannot log in",
+    "bad name",
+    "wrong password",
+    "authentication failed",
+    "check username",
+    "check the saved",
+    "check saved",
+    "login failed",
+)
+_CONNECTIVITY_FAILURE_TOKENS = (
+    "timed out",
+    "timeout",
+    "could not reach",
+    "connection timed out",
+    "connection failed",
+    "refused",
+    "unreachable",
+    "no route",
+    "forcibly closed",
+    "reset by peer",
+    "network is unreachable",
+    "broken pipe",
+    "unexpected reply",
+)
+_LIMITED_HINT = (
+    "API :8728 closed — enable RouterOS API (IP → Services → api, Allowed From empty) "
+    "or re-paste the ISPCENTRIC tunnel script."
+)
+_REACHABLE_HINT = (
+    "API :8728 closed or login not confirmed — Winbox/HTTP may still answer. "
+    "Enable IP → Services → api, or check tunnel stability."
+)
+# Includes soft degradation (reachable) so flaky API still bypasses the healthy gate.
 _OUTAGE_STATUSES = frozenset(
-    {"disconnected", "auth_failed", "wrong_host", "limited"}
+    {"disconnected", "auth_failed", "wrong_host", "limited", "reachable"}
 )
 _SAMPLE_GATE_TTL = 55  # seconds between org-wide status sample writes
 _OUTAGE_SAMPLE_GATE_TTL = 12  # allow outage transitions through sooner
+_OUTAGE_CONFIRM_TTL = 90  # pending first-fail before chart drop is persisted
+_HOSTED_AUTH_CACHE_TTL = 20  # seconds; short so password changes surface quickly
 _TREND_CACHE_TTL = 20
 # Do not pretend the last score held across silent gaps longer than this.
 _MAX_FORWARD_FILL_BUCKETS = 2
@@ -53,18 +100,213 @@ def status_score(status: str | None) -> int:
     return int(_STATUS_SCORE.get(key, 0))
 
 
+def status_catalog() -> dict[str, Any]:
+    """Scores + reasons for dashboard JS (single source of truth)."""
+    return {
+        "scores": dict(_STATUS_SCORE),
+        "reasons": dict(_STATUS_REASON),
+        "outage_statuses": sorted(_OUTAGE_STATUSES),
+    }
+
+
+def is_credential_login_failure(error: str | None) -> bool:
+    """
+    True when an API login failure is a bad username/password.
+
+    Timeouts, empty detail, and socket errors after a brief :8728 accept must
+    not be reported as credential failures (Health → 25% with \"check password\").
+    """
+    text = (error or "").strip().lower()
+    if not text:
+        return False
+    if any(token in text for token in _CONNECTIVITY_FAILURE_TOKENS):
+        return False
+    if any(token in text for token in _AUTH_FAILURE_TOKENS):
+        return True
+    return True
+
+
+def status_after_api_probe(
+    login: dict[str, Any] | None,
+    *,
+    via: str = "api",
+) -> tuple[str, bool, str]:
+    """
+    Map an API-port probe + login attempt to (status, auth_ok, error).
+
+    via=api and a connectivity-style / empty login error → reachable (not auth_failed).
+    """
+    login = login or {}
+    if login.get("ok"):
+        return "connected", True, ""
+    error = (login.get("error") or "").strip()
+    if not error:
+        return "reachable", False, "API login was not confirmed."
+    if is_credential_login_failure(error):
+        return "auth_failed", False, error
+    # Port looked open, then dial/login failed for network reasons.
+    if via == "api":
+        return "reachable", False, error
+    return "limited", False, error
+
+
 def status_reason(status: str | None, error: str | None = None) -> str:
     """Human-readable explanation for a MikroTik health status."""
     key = (status or "disconnected").strip().lower()
     reason = _STATUS_REASON.get(key, "Router health is degraded.")
     extra = (error or "").strip()
-    if extra and key != "connected" and extra.lower() not in reason.lower():
+    if not extra or key == "connected":
+        return reason
+    # Prefer the specific probe error when it already explains the drop.
+    extra_l = extra.lower()
+    reason_l = reason.lower()
+    if extra_l in reason_l or reason_l in extra_l:
+        return reason if len(reason) >= len(extra) else extra
+    # Avoid stacking \"check password\" on top of a timeout/reachability error.
+    if key == "auth_failed" and not is_credential_login_failure(extra):
+        return extra
+    if key in {"limited", "reachable", "disconnected"} and any(
+        token in extra_l for token in _CONNECTIVITY_FAILURE_TOKENS
+    ):
+        return extra if len(extra) >= 24 else f"{reason} {extra}"
+    if extra_l not in reason_l:
         return f"{reason} {extra}"
     return reason
 
 
+def classify_mikrotik_probe(
+    probe: dict[str, Any] | None,
+    *,
+    host: str,
+    username: str,
+    password: str,
+    serial_number: str = "",
+    software_id: str = "",
+    login: dict[str, Any] | None = None,
+    skip_login: bool = False,
+) -> dict[str, Any]:
+    """
+    Map a reachability probe (+ optional login) to a status row.
+
+    Shared by the live status endpoint and the background sampler.
+    """
+    from core.mikrotik_connect import test_mikrotik_api_login
+
+    probe = probe or {"online": False, "via": "", "error": ""}
+    online = bool(probe.get("online"))
+    via = (probe.get("via") or "").strip()
+    status = "disconnected"
+    auth_ok = False
+    error = ""
+    serial_number = (serial_number or "").strip()
+    software_id = (software_id or "").strip()
+    identity_login: dict[str, Any] | None = None
+
+    if online and via == "api":
+        if skip_login:
+            auth_ok = True
+            status = "connected"
+        else:
+            if login is None:
+                login = test_mikrotik_api_login(
+                    host,
+                    username,
+                    password or "",
+                    timeout=2.0,
+                    include_wifi=False,
+                )
+            status, auth_ok, error = status_after_api_probe(login, via=via)
+            if auth_ok:
+                identity_login = login
+                live_serial = (login.get("serial_number") or "").strip()
+                live_soft = (login.get("software_id") or "").strip()
+                if live_serial:
+                    serial_number = live_serial
+                if live_soft:
+                    software_id = live_soft
+    elif online and via == "ping":
+        status = "limited"
+        error = _LIMITED_HINT
+    elif online:
+        status = "reachable"
+        error = (probe.get("error") or "").strip() or _REACHABLE_HINT
+    elif probe.get("foreign_http"):
+        status = "wrong_host"
+        error = probe.get("error") or "Another device answers on this address."
+    elif probe.get("error"):
+        error = probe["error"]
+
+    return {
+        "online": bool(auth_ok) if via == "api" else online and via != "ping",
+        "reachable": online,
+        "auth_ok": auth_ok,
+        "manageable": bool(auth_ok),
+        "status": status,
+        "via": via,
+        "error": error,
+        "serial_number": serial_number,
+        "software_id": software_id,
+        "_login": identity_login,
+    }
+
+
 def _last_status_cache_key(organization_id: int, router_id: int) -> str:
     return f"mikrotik_status_last:{organization_id}:{router_id}"
+
+
+def _last_score_cache_key(organization_id: int, router_id: int) -> str:
+    return f"mikrotik_status_last_score:{organization_id}:{router_id}"
+
+
+def _pending_outage_cache_key(organization_id: int, router_id: int) -> str:
+    return f"mikrotik_status_pending_outage:{organization_id}:{router_id}"
+
+
+def last_recorded_score(organization_id: int, router_id: int) -> int:
+    """Last persisted health score for live “Why it dropped” from→to lines."""
+    cached = cache.get(_last_score_cache_key(organization_id, router_id))
+    if cached is not None:
+        try:
+            return int(cached)
+        except (TypeError, ValueError):
+            pass
+    previous = cache.get(_last_status_cache_key(organization_id, router_id))
+    if previous:
+        return status_score(previous)
+    return 100
+
+
+def _confirmed_status_for_sample(
+    organization_id: int,
+    router_id: int,
+    status: str,
+    previous_status: str | None,
+) -> str | None:
+    """
+    Debounce connected→degraded chart drops: require two consecutive failing
+    observations before persisting. Live UI still shows the first fail.
+    Returns None to skip writing this router on this tick.
+    """
+    pending_key = _pending_outage_cache_key(organization_id, router_id)
+    score = status_score(status)
+
+    if status == "connected" or score >= 100:
+        cache.delete(pending_key)
+        return status
+
+    prev = (previous_status or "").strip().lower() or None
+    if prev and prev != "connected" and status_score(prev) < 100:
+        # Already degraded in the last recorded sample — record freely.
+        cache.delete(pending_key)
+        return status
+
+    pending = cache.get(pending_key)
+    if isinstance(pending, dict) and pending.get("status"):
+        cache.delete(pending_key)
+        return status
+
+    cache.set(pending_key, {"status": status}, _OUTAGE_CONFIRM_TTL)
+    return None
 
 
 def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) -> int:
@@ -73,7 +315,8 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
 
     Gated so dashboard polling cannot flood the database. Outages and
     per-router status transitions always bypass the healthy gate so the
-    trend drops (and recovers) immediately.
+    trend drops (and recovers) immediately. Connected→outage transitions
+    require two consecutive fails before a sample is written.
     """
     if not organization or not routers:
         return 0
@@ -81,16 +324,26 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     org_id = organization.pk
     has_outage = False
     has_transition = False
+    confirmed_rows: list[tuple[dict[str, Any], str]] = []
+
     for row in routers:
-        status = (row.get("status") or "disconnected").strip().lower()
-        if status in _OUTAGE_STATUSES:
-            has_outage = True
         rid = row.get("id")
         if rid is None:
             continue
-        previous = cache.get(_last_status_cache_key(org_id, int(rid)))
-        if previous is not None and previous != status:
+        rid_int = int(rid)
+        status = (row.get("status") or "disconnected").strip().lower()
+        previous = cache.get(_last_status_cache_key(org_id, rid_int))
+        confirmed = _confirmed_status_for_sample(org_id, rid_int, status, previous)
+        if confirmed is None:
+            continue
+        if confirmed in _OUTAGE_STATUSES:
+            has_outage = True
+        if previous is not None and previous != confirmed:
             has_transition = True
+        confirmed_rows.append((row, confirmed))
+
+    if not confirmed_rows:
+        return 0
 
     gate = f"mikrotik_status_sample_gate:{org_id}"
     # Healthy steady-state polls stay gated; outages / transitions bypass so
@@ -104,11 +357,7 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     )
 
     now = timezone.now()
-    router_ids = {
-        int(row["id"])
-        for row in routers
-        if row.get("id") is not None
-    }
+    router_ids = {int(row["id"]) for row, _ in confirmed_rows if row.get("id") is not None}
     if not router_ids:
         return 0
     known = set(
@@ -117,23 +366,26 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
         ).values_list("id", flat=True)
     )
     rows = []
-    for row in routers:
+    for row, status in confirmed_rows:
         rid = row.get("id")
         if rid is None or int(rid) not in known:
             continue
-        status = (row.get("status") or "disconnected").strip().lower()
         rid_int = int(rid)
+        error = (row.get("error") or "").strip()[:255]
+        score = status_score(status)
         rows.append(
             MikroTikStatusSample(
                 organization=organization,
                 router_id=rid_int,
                 sampled_at=now,
                 status=status[:32],
-                score=status_score(status),
+                score=score,
                 online=bool(row.get("online")) or status == "connected",
+                error=error,
             )
         )
         cache.set(_last_status_cache_key(org_id, rid_int), status, 60 * 60 * 6)
+        cache.set(_last_score_cache_key(org_id, rid_int), score, 60 * 60 * 6)
     if not rows:
         return 0
     MikroTikStatusSample.objects.bulk_create(rows, batch_size=100)
@@ -156,7 +408,7 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from core.mikrotik_connect import check_mikrotik_reachable, test_mikrotik_api_login
+    from core.mikrotik_connect import check_mikrotik_reachable
 
     routers = list(
         MikroTikRouter.objects.filter(
@@ -201,57 +453,20 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     def _check(router: MikroTikRouter):
         host = (router.api_host or "").strip()
         probe = probe_by_host.get(host) or {"online": False, "via": "", "error": ""}
-        online = bool(probe.get("online"))
-        via = (probe.get("via") or "").strip()
-        status = "disconnected"
-        auth_ok = False
-        error = ""
-        serial_number = (router.serial_number or "").strip()
-        software_id = (router.software_id or "").strip()
-        if online and via == "api":
-            login = test_mikrotik_api_login(
-                host,
-                router.username,
-                router.password or "",
-                timeout=2.0,
-                include_wifi=False,
-            )
-            if login.get("ok"):
-                auth_ok = True
-                status = "connected"
-                live_serial = (login.get("serial_number") or "").strip()
-                live_soft = (login.get("software_id") or "").strip()
-                if live_serial:
-                    serial_number = live_serial
-                if live_soft:
-                    software_id = live_soft
-            else:
-                auth_ok = False
-                status = "auth_failed"
-                error = login.get("error") or "Login failed"
-        elif online and via == "ping":
-            status = "limited"
-        elif online:
-            status = "reachable"
-        elif probe.get("foreign_http"):
-            status = "wrong_host"
-            error = probe.get("error") or "Another device answers on this address."
-        elif probe.get("error"):
-            error = probe["error"]
-
+        classified = classify_mikrotik_probe(
+            probe,
+            host=host,
+            username=router.username or "",
+            password=router.password or "",
+            serial_number=(router.serial_number or "").strip(),
+            software_id=(router.software_id or "").strip(),
+        )
+        classified.pop("_login", None)
         return router.id, {
             "id": router.id,
             "host": router.host,
             "name": router.name,
-            "online": bool(auth_ok) if via == "api" else online and via != "ping",
-            "reachable": online,
-            "auth_ok": auth_ok,
-            "manageable": bool(auth_ok),
-            "status": status,
-            "via": via,
-            "error": error,
-            "serial_number": serial_number,
-            "software_id": software_id,
+            **classified,
         }
 
     workers = min(8, max(1, len(routers)))
@@ -502,7 +717,7 @@ def mikrotik_performance_drops(
             sampled_at__gte=since,
         )
         .order_by("router_id", "sampled_at")
-        .values("router_id", "sampled_at", "score", "status")[:12000]
+        .values("router_id", "sampled_at", "score", "status", "error")[:12000]
     )
 
     previous: dict[int, dict[str, Any]] = {}
@@ -513,6 +728,7 @@ def mikrotik_performance_drops(
             continue
         score = int(row["score"] or 0)
         status = (row["status"] or "disconnected").strip().lower()
+        error = (row.get("error") or "").strip()
         prev = previous.get(rid)
         if prev and score < int(prev["score"]):
             stamp = row["sampled_at"]
@@ -525,6 +741,8 @@ def mikrotik_performance_drops(
                 historical[-1]["to_score"] = score
                 historical[-1]["at"] = timezone.localtime(stamp).strftime("%H:%M")
                 historical[-1]["at_iso"] = stamp.isoformat()
+                if error:
+                    historical[-1]["reason"] = status_reason(status, error)
             else:
                 historical.append(
                     {
@@ -536,7 +754,7 @@ def mikrotik_performance_drops(
                         "from_score": int(prev["score"]),
                         "to_score": score,
                         "status": status,
-                        "reason": status_reason(status),
+                        "reason": status_reason(status, error),
                         "current": False,
                     }
                 )
@@ -544,6 +762,7 @@ def mikrotik_performance_drops(
 
     current: list[dict[str, Any]] = []
     seen_current: set[int] = set()
+    org_id = organization.pk
     for row in live_routers or []:
         rid = row.get("id")
         if rid is None:
@@ -556,6 +775,9 @@ def mikrotik_performance_drops(
         if score >= 100:
             continue
         seen_current.add(rid)
+        from_score = last_recorded_score(org_id, rid)
+        if from_score <= score:
+            from_score = 100
         current.append(
             {
                 "router_id": rid,
@@ -563,7 +785,7 @@ def mikrotik_performance_drops(
                 "host": routers[rid]["host"],
                 "at": "Now",
                 "at_iso": now.isoformat(),
-                "from_score": 100,
+                "from_score": from_score,
                 "to_score": score,
                 "status": status,
                 "reason": status_reason(status, row.get("error")),

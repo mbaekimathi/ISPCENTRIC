@@ -3,15 +3,26 @@
 {% block title %}General usage — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page client-usage-analysis-page clients-general-usage-page">
+<div class="client-detail-page client-usage-analysis-page clients-general-usage-page" data-active-tab="{{ active_tab|default:'pppoe' }}">
+
+<nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
+  <a
+    class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
+    href="?tab=pppoe&amp;hours={{ trend_hours }}"
+  >PPPoE</a>
+  <a
+    class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
+    href="?tab=hotspot&amp;hours={{ trend_hours }}"
+  >Hotspot</a>
+</nav>
 
 <nav class="client-cat-nav" aria-label="Usage ranges">
-  <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?hours=6">6 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">24 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?hours=72">3 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?hours=168">7 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?hours=720">30 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?hours=8760">1 year</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=6">6 hours</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=24">24 hours</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=72">3 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=168">7 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=720">30 days</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=8760">1 year</a>
 </nav>
 
 {% if auto_widened %}
@@ -25,12 +36,15 @@
     <div class="mikrotik-detail-toolbar-copy">
       <p class="client-cat client-cat-live">
         <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
-        General usage
+        {% if active_tab == 'hotspot' %}Hotspot usage{% else %}PPPoE usage{% endif %}
       </p>
-      <h2>All clients</h2>
+      <h2>{% if active_tab == 'hotspot' %}Hotspot clients{% else %}PPPoE clients{% endif %}</h2>
       <p class="panel-sub" data-usage-summary-copy>
-        Organization-wide trends for the last {{ range_label|default:trend_hours }}.
-        Live sessions are sampled from each MikroTik in one pass (cached so refreshes stay light).
+        {% if active_tab == 'hotspot' %}
+          Hotspot analytics for the last {{ range_label|default:trend_hours }}.
+        {% else %}
+          PPPoE analytics for the last {{ range_label|default:trend_hours }}.
+        {% endif %}
       </p>
     </div>
     <div class="mikrotik-detail-actions">
@@ -41,8 +55,8 @@
 
   <dl class="client-kv-row client-usage-stats" id="usage-summary">
     <div class="client-kv client-usage-stat" data-ico="clients">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients tracked</dt>
-      <dd><strong data-sum="clients">—</strong><span>With samples in this window</span></dd>
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients</dt>
+      <dd><strong data-sum="clients">—</strong><span><span data-sum="clients-tracked">—</span> with samples in this window</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="uptime">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online now</dt>
@@ -60,6 +74,12 @@
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Highest user</dt>
       <dd><strong data-sum="top-user">—</strong><span data-sum="top-user-data">Most data transferred</span></dd>
     </div>
+    {% if active_tab == 'hotspot' %}
+    <div class="client-kv client-usage-stat" data-ico="gadgets">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets online</dt>
+      <dd><strong data-sum="gadgets">—</strong><span>Connected right now</span></dd>
+    </div>
+    {% endif %}
   </dl>
 </section>
 
@@ -69,13 +89,14 @@
   data-cat="live"
   data-trends-url="{{ trends_url }}"
   data-hours="{{ trend_hours }}"
+  data-tab="{{ active_tab|default:'pppoe' }}"
 >
   <div class="client-usage-chart-grid">
     <article class="client-usage-chart-card">
       <header>
         <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
         <h3>Online clients</h3>
-        <p>How many clients had an active session in each interval.</p>
+        <p>How many {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients had an active session in each interval.</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-online" height="220"></canvas>
@@ -86,7 +107,7 @@
       <header>
         <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
         <h3>Aggregate download &amp; upload</h3>
-        <p>Combined live speed samples across all clients (kbps).</p>
+        <p>Combined live speed samples for this service (kbps).</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-throughput" height="220"></canvas>
@@ -108,7 +129,7 @@
       <header>
         <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Top users</p>
         <h3>Highest data users</h3>
-        <p>Top 10 clients by data transferred in this window.</p>
+        <p>Top 10 {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients by data transferred.</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-top" height="220"></canvas>
@@ -120,54 +141,64 @@
 <section class="panel staff-panel staff-panel-solid clients-general-usage-table-panel">
   <div class="panel-head-row">
     <div>
-      <h2>Highest users</h2>
-      <p class="panel-sub">Ranked by data transferred in the selected window.</p>
+      <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %}</h2>
+      <p class="panel-sub">Usage level, peak/low times, downtimes{% if active_tab == 'hotspot' %}, and gadgets currently connected{% endif %}.</p>
     </div>
   </div>
 
-  {% if top_users %}
-    <div class="org-table-shell">
-      <table class="org-table clients-general-usage-table">
-        <thead>
+  <div class="org-table-shell">
+    <table class="org-table clients-general-usage-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Client</th>
+          <th>Level</th>
+          <th>Data used</th>
+          <th>Highest</th>
+          <th>Lowest</th>
+          <th>Downtimes</th>
+          {% if active_tab == 'hotspot' %}<th>Gadgets</th>{% endif %}
+          <th></th>
+        </tr>
+      </thead>
+      <tbody data-top-users-body data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
+        {% for user in top_users %}
           <tr>
-            <th>#</th>
-            <th>Client</th>
-            <th>Service</th>
-            <th>Package</th>
-            <th>Data used</th>
-            <th>Peak down</th>
-            <th>Online</th>
-            <th></th>
+            <td class="clients-general-usage-rank">{{ user.rank }}</td>
+            <td>
+              <a class="billing-dash-client" href="{% url 'core:client_detail' user.customer_id %}">
+                <strong>{{ user.full_name }}</strong>
+                <small>{{ user.account_number }}</small>
+              </a>
+            </td>
+            <td><span class="clients-usage-level is-{{ user.usage_level|default:'Idle'|lower }}">{{ user.usage_level|default:"Idle" }}</span></td>
+            <td data-bytes="{% if user.data_used_bytes %}{{ user.data_used_bytes }}{% else %}{{ user.peak_session_bytes|default:0 }}{% endif %}">—</td>
+            <td>
+              <strong>{% if user.prime_at_label %}{{ user.prime_at_label }}{% else %}—{% endif %}</strong>
+              <small data-bps="{{ user.prime_download_bps|default:0 }}">—</small>
+            </td>
+            <td>
+              <strong>{% if user.lowest_at_label %}{{ user.lowest_at_label }}{% else %}—{% endif %}</strong>
+              <small data-bps="{{ user.lowest_download_bps|default:0 }}">—</small>
+            </td>
+            <td>{{ user.downtime_count|default:0 }}</td>
+            {% if active_tab == 'hotspot' %}<td>{{ user.gadgets_connected|default:0 }}</td>{% endif %}
+            <td>
+              <a class="btn btn-ghost" href="{% url 'core:client_usage_analysis' user.customer_id %}">Usage</a>
+            </td>
           </tr>
-        </thead>
-        <tbody data-top-users-body>
-          {% for user in top_users %}
-            <tr>
-              <td class="clients-general-usage-rank">{{ user.rank }}</td>
-              <td>
-                <a class="billing-dash-client" href="{% url 'core:client_detail' user.customer_id %}">
-                  <strong>{{ user.full_name }}</strong>
-                  <small>{{ user.account_number }}</small>
-                </a>
-              </td>
-              <td>{{ user.service_type_label }}</td>
-              <td>{% if user.plan_name %}<span class="billing-dash-plan">{{ user.plan_name }}</span>{% else %}<span class="billing-dash-muted">—</span>{% endif %}</td>
-              <td data-bytes="{% if user.data_used_bytes %}{{ user.data_used_bytes }}{% else %}{{ user.peak_session_bytes|default:0 }}{% endif %}">—</td>
-              <td data-bps="{{ user.peak_download_bps }}">—</td>
-              <td>{{ user.online_ratio }}%</td>
-              <td>
-                <a class="btn btn-ghost" href="{% url 'core:client_usage_analysis' user.customer_id %}">Usage</a>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="client-live-empty-text">
-      No usage yet for this window. Click Refresh to sample live sessions from your MikroTiks, or open a client usage page.
-    </p>
-  {% endif %}
+        {% empty %}
+          <tr data-empty-row>
+            <td colspan="{% if active_tab == 'hotspot' %}9{% else %}8{% endif %}">
+              <p class="client-live-empty-text">
+                No {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} usage yet for this window. Click Refresh to sample live sessions.
+              </p>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </section>
 
 </div>
@@ -181,6 +212,8 @@
   if (!root) return;
   var trendsUrl = root.getAttribute("data-trends-url");
   var hours = root.getAttribute("data-hours") || "24";
+  var tab = root.getAttribute("data-tab") || "pppoe";
+  var showGadgets = tab === "hotspot";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var initial = {{ trends_json|safe }};
@@ -207,22 +240,75 @@
     if (el) el.textContent = value;
   }
 
+  function esc(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderUsers(users) {
+    var body = document.querySelector("[data-top-users-body]");
+    if (!body) return;
+    users = users || [];
+    var cols = showGadgets ? 9 : 8;
+    if (!users.length) {
+      body.innerHTML =
+        '<tr data-empty-row><td colspan="' + cols + '"><p class="client-live-empty-text">' +
+        "No " + (showGadgets ? "Hotspot" : "PPPoE") +
+        " usage yet for this window. Click Refresh to sample live sessions." +
+        "</p></td></tr>";
+      return;
+    }
+    body.innerHTML = users.map(function (user) {
+      var bytes = user.data_used_bytes || user.peak_session_bytes || 0;
+      var level = user.usage_level || "Idle";
+      var detail = "/app/clients/" + user.customer_id + "/";
+      var usage = "/app/clients/" + user.customer_id + "/usage-analysis/";
+      return (
+        "<tr>" +
+          '<td class="clients-general-usage-rank">' + esc(user.rank) + "</td>" +
+          "<td><a class=\"billing-dash-client\" href=\"" + detail + "\">" +
+            "<strong>" + esc(user.full_name) + "</strong>" +
+            "<small>" + esc(user.account_number) + "</small>" +
+          "</a></td>" +
+          '<td><span class="clients-usage-level is-' + esc(String(level).toLowerCase()) + '">' + esc(level) + "</span></td>" +
+          '<td data-bytes="' + esc(bytes) + '">—</td>' +
+          "<td><strong>" + esc(user.prime_at_label || "—") + "</strong>" +
+            '<small data-bps="' + esc(user.prime_download_bps || 0) + '">—</small></td>' +
+          "<td><strong>" + esc(user.lowest_at_label || "—") + "</strong>" +
+            '<small data-bps="' + esc(user.lowest_download_bps || 0) + '">—</small></td>' +
+          "<td>" + esc(user.downtime_count || 0) + "</td>" +
+          (showGadgets ? ("<td>" + esc(user.gadgets_connected || 0) + "</td>") : "") +
+          '<td><a class="btn btn-ghost" href="' + usage + '">Usage</a></td>' +
+        "</tr>"
+      );
+    }).join("");
+    formatTableCells();
+  }
+
   function formatTableCells() {
     document.querySelectorAll("[data-bytes]").forEach(function (el) {
       el.textContent = fmtBytes(el.getAttribute("data-bytes"));
     });
     document.querySelectorAll("[data-bps]").forEach(function (el) {
-      el.textContent = fmtBps(el.getAttribute("data-bps"));
+      var n = Number(el.getAttribute("data-bps")) || 0;
+      el.textContent = n > 0 ? fmtBps(n) : "";
     });
   }
 
   function applySummary(data) {
     var summary = (data && data.summary) || {};
-    setSum("clients", summary.clients_tracked != null ? summary.clients_tracked : "0");
+    setSum("clients", summary.clients_total != null ? summary.clients_total : (summary.clients_tracked || "0"));
+    setSum("clients-tracked", summary.clients_tracked != null ? summary.clients_tracked : "0");
     setSum("online-now", summary.clients_online != null ? summary.clients_online : "0");
     setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
     setSum("peak-down", fmtBps(summary.peak_download_bps));
     setSum("data", fmtBytes(summary.data_used_bytes));
+    if (showGadgets) {
+      setSum("gadgets", summary.gadgets_online != null ? summary.gadgets_online : "0");
+    }
     setSum("top-user", summary.top_user_name || "—");
     setSum("top-user-data", summary.top_user_name
       ? fmtBytes(summary.top_user_bytes) + " transferred"
@@ -239,6 +325,7 @@
     return {
       responsive: true,
       maintainAspectRatio: false,
+      animation: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: {
@@ -362,12 +449,15 @@
     charts.data.update("none");
     charts.top.update("none");
     applySummary(data);
+    renderUsers(data && data.top_users);
   }
 
   function loadTrends(forceRefresh) {
     if (!trendsUrl || inFlight) return Promise.resolve();
     inFlight = true;
-    var url = trendsUrl + "?hours=" + encodeURIComponent(hours);
+    var url = trendsUrl +
+      "?hours=" + encodeURIComponent(hours) +
+      "&tab=" + encodeURIComponent(tab);
     if (forceRefresh) url += "&refresh=1";
     return fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },

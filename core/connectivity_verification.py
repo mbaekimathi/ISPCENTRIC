@@ -592,7 +592,11 @@ def evaluate_layered_health(router, *, timeout: float = 2.0) -> dict:
     so operators can see *which layer* failed instead of only the final label.
     """
     from core.mikrotik_connect import _icmp_ping, sweep_log_text, test_mikrotik_api_login
-    from core.mikrotik_status_samples import status_reason, status_score
+    from core.mikrotik_status_samples import (
+        is_credential_login_failure,
+        status_reason,
+        status_score,
+    )
 
     host = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
     username = (getattr(router, "username", None) or "").strip()
@@ -663,27 +667,44 @@ def evaluate_layered_health(router, *, timeout: float = 2.0) -> dict:
                 failing = ""
                 error = ""
                 hint = ""
-            else:
+            elif is_credential_login_failure(login.get("error")):
                 layer_errors["api_auth"] = sweep_log_text(
                     login.get("error") or "API login failed."
                 )
                 status = "auth_failed"
                 failing = "api_auth"
                 error = layer_errors["api_auth"]
-                hint = "Update saved API username/password, then MikroTik -> Reconnect."
+                hint = "Update saved API username/password, then MikroTik → Reconnect."
+            else:
+                # :8728 accepted briefly then dial/login timed out — not a password issue.
+                layers["api_auth"] = False
+                layer_errors["api_auth"] = sweep_log_text(
+                    login.get("error") or "API login timed out."
+                )
+                status = "reachable"
+                failing = "api_auth"
+                error = layer_errors["api_auth"]
+                hint = (
+                    "API port flickered or timed out during login. "
+                    "Check WireGuard/tunnel stability and firewall, then retry."
+                )
     elif layers["tcp_8291"] or layers["tcp_80"] or layers["tcp_8080"]:
         status = "reachable"
         failing = "tcp_8728"
         error = f"{host}: HTTP/Winbox open but RouterOS API (8728) is closed."
         hint = (
-            "Enable IP -> Services -> api on port 8728 with Allowed From empty, "
+            "Enable IP → Services → api on port 8728 with Allowed From empty, "
             "or re-paste the ISPCENTRIC tunnel script."
         )
         layer_errors.setdefault("tcp_8728", "API port closed")
     elif layers["ping"]:
         status = "limited"
         failing = "tcp_8728"
-        error = f"{host}: replies to ping only; management ports closed."
+        error = (
+            f"{host}: answers ping only — API port 8728 is closed. "
+            "Enable IP → Services → api (Allowed From empty) or re-paste the "
+            "ISPCENTRIC tunnel script."
+        )
         hint = (
             "Firewall or IP services blocking 8728/80 — open API from the tunnel "
             "subnet, or re-paste the ISPCENTRIC tunnel script."
@@ -983,30 +1004,10 @@ def evaluate_layered_cpe_access(
                 "details": details,
             }
 
-        prep = prepare_customer_cpe_access(
-            nas_host,
-            router.username,
-            router.password or "",
-            customer=customer,
-            cpe_username=getattr(customer, "cpe_username", "") or "",
-            cpe_password=getattr(customer, "cpe_password", "") or "",
-            pppoe_password=getattr(customer, "pppoe_password", "") or "",
-            timeout=timeout,
-            auto_enable=auto_enable,
-        )
-        details["cpe_prep"] = {
-            "ok": prep.get("ok"),
-            "auth_ok": prep.get("auth_ok"),
-            "firewall_blocked": bool(prep.get("firewall_blocked")),
-            "proxy_used": prep.get("proxy_used"),
-            "steps": prep.get("steps") or [],
-            "error": prep.get("error") or "",
-        }
-        details["steps"].extend(prep.get("steps") or [])
-        layers["api_ok"] = bool(prep.get("ok") and prep.get("auth_ok"))
-        layers["ping_ok"] = layers["ping_ok"] or bool(prep.get("reachable"))
-
-        if layers["api_ok"]:
+        # probe_customer_cpe_web(auto_enable_www=True) already ran prepare when
+        # ports were closed — reuse that outcome instead of a second NAS walk.
+        if probe.get("api_ok"):
+            layers["api_ok"] = True
             return {
                 "ok": True,
                 "skipped": False,
@@ -1016,6 +1017,60 @@ def evaluate_layered_cpe_access(
                 "hint": "",
                 "details": details,
             }
+
+        prep: dict = {}
+        if probe.get("prep_attempted"):
+            prep = {
+                "ok": False,
+                "auth_ok": False,
+                "firewall_blocked": "firewall" in (probe.get("error") or "").lower(),
+                "proxy_used": True,
+                "steps": list(probe.get("steps") or []),
+                "error": probe.get("error") or "CPE API login failed.",
+            }
+            details["cpe_prep"] = {
+                "ok": False,
+                "auth_ok": False,
+                "firewall_blocked": bool(prep.get("firewall_blocked")),
+                "proxy_used": True,
+                "steps": prep.get("steps") or [],
+                "error": prep.get("error") or "",
+                "reused_probe": True,
+            }
+        else:
+            prep = prepare_customer_cpe_access(
+                nas_host,
+                router.username,
+                router.password or "",
+                customer=customer,
+                cpe_username=getattr(customer, "cpe_username", "") or "",
+                cpe_password=getattr(customer, "cpe_password", "") or "",
+                pppoe_password=getattr(customer, "pppoe_password", "") or "",
+                timeout=timeout,
+                auto_enable=auto_enable,
+            )
+            details["cpe_prep"] = {
+                "ok": prep.get("ok"),
+                "auth_ok": prep.get("auth_ok"),
+                "firewall_blocked": bool(prep.get("firewall_blocked")),
+                "proxy_used": prep.get("proxy_used"),
+                "steps": prep.get("steps") or [],
+                "error": prep.get("error") or "",
+            }
+            details["steps"].extend(prep.get("steps") or [])
+            layers["api_ok"] = bool(prep.get("ok") and prep.get("auth_ok"))
+            layers["ping_ok"] = layers["ping_ok"] or bool(prep.get("reachable"))
+
+            if layers["api_ok"]:
+                return {
+                    "ok": True,
+                    "skipped": False,
+                    "failure_class": "ok",
+                    "failing_layer": "",
+                    "error": "",
+                    "hint": "",
+                    "details": details,
+                }
 
         # Web works — Open client router can still succeed even if API login fails.
         failure = "web_ok_api_failed"

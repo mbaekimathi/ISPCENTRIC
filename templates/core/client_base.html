@@ -50,7 +50,7 @@
             </form>
           {% elif item.href %}
             <a
-              class="client-sidebar-link{% if sidebar_active == item.key %} active{% endif %}"
+              class="client-sidebar-link{% if item.danger %} is-danger{% endif %}{% if sidebar_active == item.key %} active{% endif %}"
               href="{{ item.href }}"
               {% if item.external %}target="_blank" rel="noopener"{% endif %}
             >
@@ -609,6 +609,9 @@
       modal.setAttribute("aria-hidden", "false");
       document.body.classList.add("role-modal-open");
       syncEditClientForm(modal);
+      if (id === "client-recharge-modal" && typeof window.syncRechargeFormUi === "function") {
+        window.syncRechargeFormUi();
+      }
       var focusEl = null;
       var firstError = modal.querySelector(".field-error");
       if (firstError) {

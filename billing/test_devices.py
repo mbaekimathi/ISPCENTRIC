@@ -362,7 +362,7 @@ class HotspotNasMultiMacTests(TestCase):
         ):
             applied = _apply_hotspot_customer_on_socket(object(), self.customer)
 
-        self.assertTrue(applied)
+        self.assertTrue(applied.get("ok"))
         names = [row["username"] for row in users]
         self.assertEqual(names, ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"])
         self.assertTrue(all(not row["disabled"] for row in users))
@@ -392,7 +392,7 @@ class HotspotNasMultiMacTests(TestCase):
         ):
             applied = _apply_hotspot_customer_on_socket(object(), self.customer)
 
-        self.assertTrue(applied)
+        self.assertTrue(applied.get("ok"))
         self.assertEqual(
             [row["username"] for row in users],
             ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
@@ -405,3 +405,48 @@ class HotspotNasMultiMacTests(TestCase):
         )
         self.assertTrue(all(disabled for _mac, disabled, _kick in expired))
         self.assertTrue(all(kick for _mac, _disabled, kick in expired))
+
+    def test_apply_disables_over_cap_macs(self):
+        from core.mikrotik_connect import _apply_hotspot_customer_on_socket
+
+        # Bypass attach cap to simulate a lowered package limit with leftover rows.
+        from billing.devices import ensure_customer_device
+
+        ensure_customer_device(self.customer, "AA:AA:AA:AA:AA:03")
+        users = []
+
+        def fake_ensure(sock, **kwargs):
+            users.append(kwargs)
+            return "updated"
+
+        with (
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._ensure_hotspot_rate_profile", return_value="hs-profile"),
+            patch("core.mikrotik_connect._ensure_hotspot_user", side_effect=fake_ensure),
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions"),
+            patch("core.mikrotik_connect._purge_hotspot_ok_list_for_mac", return_value=1),
+        ):
+            applied = _apply_hotspot_customer_on_socket(object(), self.customer)
+
+        self.assertTrue(applied.get("ok"))
+        self.assertEqual(applied.get("max_devices"), 2)
+        self.assertEqual(applied.get("allowed_count"), 2)
+        # Prune removes the third CustomerDevice before NAS write.
+        self.assertEqual(applied.get("over_cap_count"), 0)
+        self.assertIn("AA:AA:AA:AA:AA:03", applied.get("pruned_macs") or [])
+        enabled = [row for row in users if not row["disabled"]]
+        disabled = [row for row in users if row["disabled"]]
+        self.assertEqual(len(enabled), 2)
+        self.assertEqual(len(disabled), 0)
+
+    def test_prune_over_cap_keeps_primary(self):
+        from billing.devices import ensure_customer_device, prune_over_cap_hotspot_devices
+
+        ensure_customer_device(self.customer, "AA:AA:AA:AA:AA:03")
+        ensure_customer_device(self.customer, "AA:AA:AA:AA:AA:04")
+        removed = prune_over_cap_hotspot_devices(self.customer)
+        self.assertEqual(sorted(removed), ["AA:AA:AA:AA:AA:03", "AA:AA:AA:AA:AA:04"])
+        self.assertEqual(
+            hotspot_macs_for_customer(self.customer),
+            ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"],
+        )

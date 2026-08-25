@@ -1,0 +1,51 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Delete {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<section class="client-detail-page client-detail-simple">
+  <div class="panel client-simple-panel org-delete-box">
+    <header class="client-simple-head">
+      <div>
+        <p class="client-simple-kicker">Remove subscriber</p>
+        <h2 class="client-simple-section-title">Delete {{ customer.full_name }}</h2>
+        <p class="client-simple-meta">
+          Account {{ customer.account_number }} · {{ customer.get_service_type_display }}
+        </p>
+      </div>
+    </header>
+
+    <p class="org-delete-warn" role="alert">
+      <strong>This cannot be undone.</strong>
+      Billing history, vouchers, and related records for this client will be removed permanently.
+    </p>
+
+    <ul class="cc-delete-list">
+      <li class="cc-delete-item">
+        <div class="cc-delete-item-head">
+          <span>Invoices</span>
+          <strong>{{ invoice_count }}</strong>
+        </div>
+      </li>
+      <li class="cc-delete-item">
+        <div class="cc-delete-item-head">
+          <span>Payments</span>
+          <strong>{{ payment_count }}</strong>
+        </div>
+      </li>
+      <li class="cc-delete-item">
+        <div class="cc-delete-item-head">
+          <span>Access vouchers</span>
+          <strong>{{ voucher_count }}</strong>
+        </div>
+      </li>
+    </ul>
+
+    <form method="post" class="org-delete-actions">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger">Delete client</button>
+      <a class="btn btn-ghost" href="{{ back_url }}">Cancel</a>
+    </form>
+  </div>
+</section>
+{% endblock %}

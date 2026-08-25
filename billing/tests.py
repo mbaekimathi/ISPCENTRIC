@@ -1,4 +1,5 @@
 from datetime import timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -9,6 +10,7 @@ from accounts.models import Organization
 from billing.models import BillingPlan, Customer
 from billing.services import (
     apply_subscription_renewal,
+    compute_partial_recharge_amount,
     customer_can_surf_via_hotspot,
     customer_can_surf_via_pppoe,
     customer_needs_nas_provision,
@@ -19,6 +21,7 @@ from billing.services import (
     generate_account_number_from_phone,
     organization_uses_dynamic_access,
     package_remaining_seconds,
+    partial_recharge_window,
     pause_customer_package,
     recharge_customer_cash,
     resume_customer_package,
@@ -546,11 +549,36 @@ class AccessAccountLoopTests(TestCase):
         sync = {
             "ok": True,
             "allowed": True,
-            "provision": {"ok": True, "profile": "ispcentric-5u-10d", "disabled": False},
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-pppoe-5u-10d",
+                "rate_limit": "5M/10M",
+                "disabled": False,
+            },
             "portal": {"ok": True},
         }
         result = evaluate_nas_policy(self.pppoe_active, sync)
         self.assertTrue(result["policy_match"])
+        self.assertEqual(
+            result["details"]["expected_profile"], "ispcentric-pppoe-5u-10d"
+        )
+
+    def test_evaluate_pppoe_active_wrong_speed_fails(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-pppoe",
+                "disabled": False,
+            },
+            "portal": {"ok": True},
+        }
+        result = evaluate_nas_policy(self.pppoe_active, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "wrong_speed_profile")
 
     def test_evaluate_pppoe_active_cpe_offline_nas_ready(self):
         from billing.access_verification import evaluate_nas_policy
@@ -559,7 +587,12 @@ class AccessAccountLoopTests(TestCase):
             "ok": False,
             "allowed": True,
             "cpe_renew_clear_pending": True,
-            "provision": {"ok": True, "profile": "ispcentric-5u-10d", "disabled": False},
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-pppoe-5u-10d",
+                "rate_limit": "5M/10M",
+                "disabled": False,
+            },
             "portal": {"ok": False, "skipped": True, "error": "CPE offline"},
         }
         result = evaluate_nas_policy(self.pppoe_active, sync)
@@ -608,12 +641,43 @@ class AccessAccountLoopTests(TestCase):
         sync = {
             "ok": True,
             "allowed": True,
-            "provision": {"ok": True},
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-hs-5u-10d",
+                "rate_limit": "5M/10M",
+                "max_devices": 2,
+                "allowed_count": 1,
+                "over_cap_count": 0,
+            },
         }
         result = evaluate_nas_policy(self.hotspot_paid, sync)
         self.assertTrue(result["policy_match"])
         self.assertFalse(result["details"]["hotspot_disabled"])
         self.assertTrue(result["details"]["hotspot_limit_uptime"].endswith("s"))
+
+    def test_evaluate_hotspot_device_cap_exceeded_fails(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        self.plan.max_devices = 2
+        self.plan.save(update_fields=["max_devices"])
+        self.hotspot_paid.plan = self.plan
+        self.hotspot_paid.save(update_fields=["plan"])
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-hs-5u-10d",
+                "rate_limit": "5M/10M",
+                "max_devices": 2,
+                "allowed_count": 5,
+                "over_cap_count": 0,
+            },
+        }
+        result = evaluate_nas_policy(self.hotspot_paid, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "device_cap_exceeded")
 
     def test_run_correction_loop_retries_until_match(self):
         from billing.access_verification import run_access_correction_loop
@@ -631,7 +695,12 @@ class AccessAccountLoopTests(TestCase):
             return {
                 "ok": True,
                 "allowed": True,
-                "provision": {"ok": True, "profile": "ispcentric", "disabled": False},
+                "provision": {
+                    "ok": True,
+                    "profile": "ispcentric-pppoe-5u-10d",
+                    "rate_limit": "5M/10M",
+                    "disabled": False,
+                },
                 "portal": {"ok": True},
             }
 
@@ -709,7 +778,7 @@ class AccessAccountLoopTests(TestCase):
             service="pppoe",
         )
         self.assertTrue(all(c.service_type == Customer.ServiceType.PPPOE for c in pppoe_only))
-        self.assertEqual(len(pppoe_only), 2)
+        self.assertEqual(len(pppoe_only), 3)
 
         hotspot_only = customers_for_access_verification(
             organization_id=self.org.pk,
@@ -762,6 +831,68 @@ class PackagePauseResumeTests(TestCase):
         later = now + timedelta(minutes=20)
         remaining_while_paused = package_remaining_seconds(customer, now=later)
         self.assertEqual(remaining_while_paused, remaining_before)
+
+    def test_pause_sync_moves_secret_to_blocked_profile(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            sync_customer_subscription_access,
+        )
+
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Pause Sync",
+            phone="254700000033",
+            account_number="PPP-PAUSE-SYNC",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="pausesync",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=5),
+            package_end=now + timedelta(hours=1),
+        )
+        pause_customer_package(customer, now=now)
+        customer.refresh_from_db()
+
+        order = []
+
+        def portal_side_effect(customer, *, enabled, portal_url="", timeout=8.0):
+            order.append(("portal", enabled))
+            return {"ok": True, "enabled": enabled, "notes": ["paused portal"]}
+
+        def provision_side_effect(customer, **kwargs):
+            order.append(("provision", kwargs.get("force_disabled")))
+            return {"ok": True, "profile": PPPOE_BLOCKED_PROFILE_NAME}
+
+        with (
+            patch(
+                "core.mikrotik_connect.apply_cpe_renew_portal",
+                side_effect=portal_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect.provision_customer_pppoe",
+                side_effect=provision_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_pay_portal_url",
+                return_value="http://billing.example/pppoe/998877/pay/?t=x",
+            ),
+        ):
+            result = sync_customer_subscription_access(customer, provision=True)
+
+        self.assertFalse(result["allowed"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(order[0], ("portal", True))
+        self.assertEqual(order[1], ("provision", False))
+        self.assertEqual(result["provision"]["profile"], PPPOE_BLOCKED_PROFILE_NAME)
+
+        from billing.services import customer_portal_access_context
+
+        portal = customer_portal_access_context(customer)
+        self.assertTrue(portal["subscription_paused"])
+        self.assertFalse(portal["show_renew_payment"])
+        self.assertEqual(portal["access_banner_title"], "Internet paused")
 
     def test_resume_extends_end_by_pause_duration(self):
         now = timezone.localtime()
@@ -1903,6 +2034,128 @@ class CashRechargeTests(TestCase):
         self.assertEqual(invoice.status, Invoice.Status.PAID)
         self.assertTrue(invoice.invoice_number.startswith("CASH-"))
         self.assertTrue(customer_receives_internet(self.customer))
+
+
+class PartialRechargeTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-partial", password="x")
+        self.org = Organization.objects.create(
+            name="Partial ISP",
+            owner=self.owner,
+            join_code="333444",
+        )
+        self.hourly_plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Per hour",
+            price="1.00",
+            duration=BillingPlan.Duration.HOURLY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        self.daily_plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Partial Client",
+            phone="254700000060",
+            account_number="PART-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="partial1",
+            pppoe_password="secret",
+            status=Customer.Status.ALLOCATED_OPEN,
+            plan=self.hourly_plan,
+        )
+
+    def test_partial_window_single_day_hourly(self):
+        day = timezone.localdate()
+        start, end = partial_recharge_window(day, day, self.hourly_plan)
+        self.assertEqual(timezone.localtime(start).date(), day)
+        self.assertEqual(timezone.localtime(end).date(), day + timedelta(days=1))
+
+    def test_partial_amount_prorates_daily_plan(self):
+        day = timezone.localdate()
+        start, end = partial_recharge_window(day, day + timedelta(days=2), self.daily_plan)
+        amount = compute_partial_recharge_amount(self.daily_plan, start, end)
+        self.assertEqual(amount, Decimal("300.00"))
+
+    def test_partial_cash_recharge_sets_window_and_activates(self):
+        from billing.models import Payment
+
+        day = timezone.localdate()
+        start, end = partial_recharge_window(day, day, self.hourly_plan)
+        amount = compute_partial_recharge_amount(self.hourly_plan, start, end)
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.hourly_plan,
+            amount=amount,
+            reference="PART-1",
+            recorded_by=self.owner,
+            period_start=start,
+            period_end=end,
+        )
+        self.customer.refresh_from_db()
+        self.assertTrue(result["partial"])
+        self.assertEqual(self.customer.status, Customer.Status.ACTIVE)
+        self.assertEqual(self.customer.package_start, start)
+        self.assertEqual(self.customer.package_end, end)
+        self.assertEqual(result["payment"].method, Payment.Method.CASH)
+        self.assertEqual(result["payment"].amount, amount)
+
+
+class CustomerCashRechargeFormTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-form", password="x")
+        self.org = Organization.objects.create(
+            name="Form ISP",
+            owner=self.owner,
+            join_code="555666",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Form Client",
+            phone="254700000070",
+            account_number="FORM-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="form1",
+            pppoe_password="secret",
+            plan=self.plan,
+        )
+
+    def test_partial_form_calculates_amount(self):
+        from billing.forms import CustomerCashRechargeForm
+
+        day = timezone.localdate()
+        form = CustomerCashRechargeForm(
+            {
+                "recharge_mode": CustomerCashRechargeForm.MODE_PARTIAL,
+                "plan": str(self.plan.pk),
+                "period_from": day.isoformat(),
+                "period_to": (day + timedelta(days=1)).isoformat(),
+                "amount": "999.00",
+                "reference": "",
+            },
+            organization=self.org,
+            customer=self.customer,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["amount"], Decimal("200.00"))
+        self.assertIsNotNone(form.cleaned_data["period_start"])
+        self.assertIsNotNone(form.cleaned_data["period_end"])
 
 
 class CustomerNeedsNasProvisionTests(SimpleTestCase):

@@ -12,7 +12,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from billing.models import AccessVoucher, Customer, StkPushRequest
-from billing.services import apply_subscription_renewal
+from billing.package_offers import apply_paid_subscription_with_offer
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ def redeem_access_voucher(
     # Auto-connect may already have applied this payment; don't double-extend.
     if stk is None or not stk.subscription_applied:
         try:
-            apply_subscription_renewal(target, plan=paid_plan)
+            apply_paid_subscription_with_offer(target, plan=paid_plan)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -409,7 +409,7 @@ def activate_paid_subscription_stk(
             customer.plan = paid_plan
             customer.save(update_fields=["plan"])
         try:
-            apply_subscription_renewal(customer, plan=paid_plan)
+            apply_paid_subscription_with_offer(customer, plan=paid_plan)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         stk.subscription_applied = True
@@ -477,7 +477,7 @@ def _apply_package_while_burning(voucher: AccessVoucher) -> None:
         if paid_plan is not None and customer.plan_id != paid_plan.pk:
             customer.plan = paid_plan
             customer.save(update_fields=["plan"])
-        apply_subscription_renewal(customer, plan=paid_plan)
+        apply_paid_subscription_with_offer(customer, plan=paid_plan)
         if stk is not None and not stk.subscription_applied:
             stk.subscription_applied = True
             stk.save(update_fields=["subscription_applied"])

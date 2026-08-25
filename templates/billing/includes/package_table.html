@@ -10,6 +10,7 @@
           <th>Speed</th>
           <th>Devices</th>
           <th>Price</th>
+          <th>Offer</th>
           <th>Period</th>
           <th>MikroTik</th>
           <th>Status</th>
@@ -58,7 +59,32 @@
               <span class="package-period">{{ plan.max_devices_label }}</span>
             </td>
             <td data-label="Price">
-              <strong class="package-price">{{ plan.price }}</strong>
+              <strong class="package-price"><span class="package-price-currency">KES</span> {{ plan.price|floatformat:"0" }}</strong>
+            </td>
+            <td data-label="Offer">
+              {% if plan.offer_enabled and plan.offer_display_label %}
+                <button
+                  type="button"
+                  class="package-offer-link is-on"
+                  data-package-offer
+                  data-package-id="{{ plan.id }}"
+                  data-package-name="{{ plan.name }}"
+                  data-package-offer-enabled="1"
+                  data-package-offer-pay-count="{{ plan.offer_pay_count }}"
+                  title="Edit loyalty offer for {{ plan.name }}"
+                >{{ plan.offer_display_label }}</button>
+              {% else %}
+                <button
+                  type="button"
+                  class="package-offer-link is-off"
+                  data-package-offer
+                  data-package-id="{{ plan.id }}"
+                  data-package-name="{{ plan.name }}"
+                  data-package-offer-enabled="0"
+                  data-package-offer-pay-count="{{ plan.offer_pay_count|default:5 }}"
+                  title="Set loyalty offer for {{ plan.name }}"
+                >Set offer</button>
+              {% endif %}
             </td>
             <td data-label="Period">
               <span class="package-period">{{ plan.get_duration_display }}</span>
@@ -89,11 +115,24 @@
                     data-package-download="{{ plan.download_speed_mbps }}"
                     data-package-upload="{{ plan.upload_speed_mbps }}"
                     data-package-max-devices="{{ plan.max_devices }}"
+                    data-package-offer-enabled="{% if plan.offer_enabled %}1{% else %}0{% endif %}"
+                    data-package-offer-pay-count="{{ plan.offer_pay_count }}"
                     data-package-active="{% if plan.is_active %}1{% else %}0{% endif %}"
                     data-package-image="{% if plan.image %}{{ plan.image.url }}{% endif %}"
                     data-package-routers="{% for r in plan.routers.all %}{{ r.id }}{% if not forloop.last %},{% endif %}{% endfor %}"
                     aria-label="Edit {{ plan.name }}"
                   >Edit</button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    data-package-offer
+                    data-package-id="{{ plan.id }}"
+                    data-package-name="{{ plan.name }}"
+                    data-package-offer-enabled="{% if plan.offer_enabled %}1{% else %}0{% endif %}"
+                    data-package-offer-pay-count="{{ plan.offer_pay_count|default:5 }}"
+                    aria-label="Offer for {{ plan.name }}"
+                    title="Enable, disable, or update loyalty offer"
+                  >Offer</button>
                   <button
                     type="button"
                     class="btn btn-ghost btn-sm"
@@ -125,7 +164,13 @@
   </div>
 {% else %}
   <div class="packages-empty">
+    <span class="packages-empty-ico" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Zm8 1.1L7.2 6.1 12 3.4l4.8 2.7L12 8.6Z"/></svg>
+    </span>
     <p class="packages-empty-title">{{ empty_text|default:"No packages yet." }}</p>
     <p class="packages-empty-copy">{{ empty_hint|default:"Use Register package to add one." }}</p>
+    <button type="button" class="btn btn-primary btn-sm packages-empty-btn" data-open-modal="billing-package-modal">
+      Register package
+    </button>
   </div>
 {% endif %}

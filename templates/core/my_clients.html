@@ -857,8 +857,10 @@
   function startPolling() {
     if (started) return;
     started = true;
-    refreshStatus(true);
+    // Soft first paint from cache; forced probe only when status is stale.
+    refreshStatus(false);
     timer = setInterval(function () { refreshStatus(false); }, 30000);
+    setTimeout(function () { refreshStatus(true); }, 2000);
   }
 
   if (window.requestIdleCallback) {
@@ -866,8 +868,16 @@
   } else {
     setTimeout(startPolling, 400);
   }
+  var lastRouterForceAt = 0;
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) refreshStatus(true);
+    if (document.hidden) return;
+    var now = Date.now();
+    var force = now - lastRouterForceAt > 45000;
+    if (force) lastRouterForceAt = now;
+    refreshStatus(force);
+  });
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) refreshStatus(false);
   });
   window.addEventListener("beforeunload", function () {
     if (timer) clearInterval(timer);
@@ -971,10 +981,19 @@
   }
 
   window.__clientsRefreshSurf = refreshSurf;
-  refreshSurf(true);
+  refreshSurf(false);
+  setTimeout(function () { refreshSurf(true); }, 2500);
   timer = setInterval(function () { refreshSurf(false); }, 10000);
+  var lastSurfForceAt = 0;
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) refreshSurf(true);
+    if (document.hidden) return;
+    var now = Date.now();
+    var force = now - lastSurfForceAt > 45000;
+    if (force) lastSurfForceAt = now;
+    refreshSurf(force);
+  });
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) refreshSurf(false);
   });
   window.addEventListener("beforeunload", function () {
     if (timer) clearInterval(timer);

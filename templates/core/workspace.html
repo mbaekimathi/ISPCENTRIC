@@ -36,7 +36,7 @@
     <article class="workspace-dash-kpi" data-offline-surf-card style="--i:4">
       <p class="workspace-dash-kpi-label">Not surfing</p>
       <p class="workspace-dash-kpi-value" data-stat="not-surfing">—</p>
-      <p class="workspace-dash-kpi-meta">Paid, no live session</p>
+      <p class="workspace-dash-kpi-meta">Subscribed, not surfing</p>
     </article>
     <article class="workspace-dash-kpi{% if analytics.expired_count %} is-hot{% endif %}" data-expired-metric style="--i:5">
       <p class="workspace-dash-kpi-label">Expired</p>
@@ -75,11 +75,31 @@
   </section>
 
   <div class="workspace-dash-grid">
-    <section class="workspace-dash-panel workspace-dash-panel-chart-compact">
+    <section class="workspace-dash-panel">
       <div class="workspace-dash-panel-head">
         <div>
           <p class="workspace-dash-panel-kicker">Wi‑Fi</p>
           <h2>Wi‑Fi / network</h2>
+          <p class="panel-sub">Clients on an active subscription who are not surfing yet — package OK, router reachable, no live internet session.</p>
+        </div>
+        <div class="workspace-dash-perf-summary">
+          <span class="workspace-dash-chip"><strong data-stat="not-surfing">—</strong> not surfing</span>
+          <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
+        </div>
+      </div>
+      <div data-not-surfing-body>
+        <div class="workspace-dash-empty is-loading">
+          <p class="workspace-dash-empty-title">Checking clients…</p>
+          <p class="workspace-dash-empty-copy">Live PPPoE and Hotspot sessions load in the background.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace-dash-panel workspace-dash-panel-chart-compact">
+      <div class="workspace-dash-panel-head">
+        <div>
+          <p class="workspace-dash-panel-kicker">Usage</p>
+          <h2>Clients online</h2>
           <p class="panel-sub">Online PPPoE and Wi‑Fi clients per router over 24 hours. Drop reasons appear below.</p>
         </div>
         <div class="workspace-dash-perf-summary">
@@ -99,23 +119,6 @@
       <p class="workspace-dash-muted workspace-dash-more">
         <a href="{% url 'core:clients_general_usage' %}?hours=24">Open full usage analytics</a>
       </p>
-    </section>
-
-    <section class="workspace-dash-panel">
-      <div class="workspace-dash-panel-head">
-        <div>
-          <p class="workspace-dash-panel-kicker">Alerts</p>
-          <h2>Not surfing</h2>
-          <p class="panel-sub">Paid PPPoE clients whose MikroTik is up, but they have no live session.</p>
-        </div>
-        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
-      </div>
-      <div data-not-surfing-body>
-        <div class="workspace-dash-empty is-loading">
-          <p class="workspace-dash-empty-title">Checking clients…</p>
-          <p class="workspace-dash-empty-copy">Live PPPoE and Hotspot sessions load in the background.</p>
-        </div>
-      </div>
     </section>
   </div>
 
@@ -229,12 +232,40 @@
   var lastRouters = null;
   var lastMikrotikDrops = (initial && initial.mikrotik_drops) || { events: [] };
   var lastNetworkDrops = (initial && initial.network_drops) || { events: [] };
+  var statusCatalog = (initial && initial.mikrotik_status_catalog) || {};
+  var scoreMap = Object.assign({
+    connected: 100,
+    reachable: 70,
+    limited: 55,
+    auth_failed: 25,
+    wrong_host: 10,
+    disconnected: 0
+  }, statusCatalog.scores || {});
+  var outageStatuses = statusCatalog.outage_statuses || [
+    "disconnected", "auth_failed", "wrong_host", "limited", "reachable"
+  ];
+  var lastScoreByRouter = {};
+  (lastMikrotikDrops.events || []).forEach(function (ev) {
+    if (ev.router_id == null || ev.to_score == null) return;
+    lastScoreByRouter[ev.router_id] = ev.to_score;
+  });
   var lastExpired = Array.isArray(initial && initial.expired) ? initial.expired : [];
   var lastExpiredMeta = {
     expired_pppoe_count: initial && initial.expired_pppoe_count,
     expired_hotspot_count: initial && initial.expired_hotspot_count
   };
   var expiredTab = "pppoe";
+  // Avoid hammering MikroTik on every back/focus — force probes at most this often.
+  var FORCE_MIN_MS = 45000;
+  var lastForceAt = 0;
+
+  function shouldForceLive(force) {
+    if (!force) return false;
+    var now = Date.now();
+    if (now - lastForceAt < FORCE_MIN_MS) return false;
+    lastForceAt = now;
+    return true;
+  }
 
   function filterExpiredByTab(rows, tab) {
     return (rows || []).filter(function (row) {
@@ -348,27 +379,36 @@
   }
 
   function statusReason(status, error) {
-    var map = {
+    var map = Object.assign({
       connected: "Router is online and API login succeeded.",
-      reachable: "Host is reachable over HTTP/Winbox, but API login was not confirmed.",
-      limited: "Router replies to ping only. API port 8728 is not reachable.",
-      auth_failed: "API is reachable but login failed. Check saved username and password.",
+      reachable: "Management ports answer, but API login was not confirmed (API flaky, timed out, or not fully verified).",
+      limited: "Router answers ping, but API port 8728 is closed. Enable IP → Services → api (Allowed From empty) or re-paste the ISPCENTRIC tunnel script.",
+      auth_failed: "API port 8728 is open, but RouterOS rejected the saved username/password. Update credentials on the router detail page, then Reconnect.",
       wrong_host: "A different device now answers on this address.",
       disconnected: "Router is offline or unreachable on the management tunnel or IP."
-    };
+    }, statusCatalog.reasons || {});
     var reason = map[status] || "Router health is degraded.";
     var extra = String(error || "").trim();
-    if (extra && status !== "connected" && reason.toLowerCase().indexOf(extra.toLowerCase()) < 0) {
-      return reason + " " + extra;
+    if (!extra || status === "connected") return reason;
+    var extraL = extra.toLowerCase();
+    var reasonL = reason.toLowerCase();
+    if (extraL.indexOf(reasonL) >= 0 || reasonL.indexOf(extraL) >= 0) {
+      return reason.length >= extra.length ? reason : extra;
     }
+    var connectivity = /timed out|timeout|could not reach|refused|unreachable|reset by peer|forcibly closed|broken pipe|unexpected reply/i;
+    if (status === "auth_failed" && connectivity.test(extra)) return extra;
+    if ((status === "limited" || status === "reachable" || status === "disconnected") && connectivity.test(extra)) {
+      return extra.length >= 24 ? extra : (reason + " " + extra);
+    }
+    if (reasonL.indexOf(extraL) < 0) return reason + " " + extra;
     return reason;
   }
 
   function scoreReason(score) {
     if (score == null || score >= 100) return "";
-    if (score >= 70) return "Host reachable, API login not confirmed.";
-    if (score >= 45) return "Ping only — API port 8728 not reachable.";
-    if (score >= 20) return "API login failed.";
+    if (score >= 70) return "Management up — API login not confirmed.";
+    if (score >= 45) return "Ping only — enable API on port 8728.";
+    if (score >= 20) return "API rejected saved username/password.";
     if (score >= 5) return "A different device answers on this address.";
     return "Router is offline or unreachable.";
   }
@@ -543,19 +583,12 @@
 
   function patchTrendWithRouters(trend, routers) {
     if (!trend || !trend.datasets || !routers || !routers.length) return trend;
-    var scoreMap = {
-      connected: 100,
-      reachable: 70,
-      limited: 55,
-      auth_failed: 25,
-      wrong_host: 10,
-      disconnected: 0
-    };
     var byId = {};
     routers.forEach(function (row) {
       if (row.id == null) return;
       var status = (row.status || "disconnected").toLowerCase();
       byId[row.id] = scoreMap[status] != null ? scoreMap[status] : 0;
+      lastScoreByRouter[row.id] = byId[row.id];
     });
     var datasets = trend.datasets.map(function (ds) {
       var data = (ds.data || []).slice();
@@ -601,14 +634,6 @@
         routers: []
       };
     }
-    var scoreMap = {
-      connected: 100,
-      reachable: 70,
-      limited: 55,
-      auth_failed: 25,
-      wrong_host: 10,
-      disconnected: 0
-    };
     var scores = [];
     var connected = 0;
     var outages = [];
@@ -618,7 +643,7 @@
       var score = scoreMap[status] != null ? scoreMap[status] : 0;
       scores.push(score);
       if (status === "connected") connected += 1;
-      if (["disconnected", "auth_failed", "wrong_host", "limited"].indexOf(status) >= 0) {
+      if (outageStatuses.indexOf(status) >= 0) {
         outages.push(row);
       }
       perRouter.push({
@@ -631,6 +656,7 @@
         score: score,
         label: scoreLabel(score)
       });
+      if (row.id != null) lastScoreByRouter[row.id] = score;
     });
     perRouter.sort(function (a, b) {
       if (a.score !== b.score) return a.score - b.score;
@@ -666,14 +692,14 @@
     if (!rows || !rows.length) {
       body.innerHTML =
         '<div class="workspace-dash-empty">' +
-        '<p class="workspace-dash-empty-title">All paid PPPoE clients are surfing</p>' +
-        '<p class="workspace-dash-empty-copy">No in-period PPPoE clients are offline while their MikroTik is connected.</p>' +
+        '<p class="workspace-dash-empty-title">All subscribed clients are surfing</p>' +
+        '<p class="workspace-dash-empty-copy">No in-period PPPoE or Hotspot clients are offline while their MikroTik is connected.</p>' +
         "</div>";
       return;
     }
     var html =
       '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack">' +
-      '<thead><tr><th class="workspace-dash-name-col">Client</th><th>Package</th><th>Status</th><th></th></tr></thead><tbody>';
+      '<thead><tr><th class="workspace-dash-name-col">Client</th><th>Package</th><th>Service</th><th>Status</th><th></th></tr></thead><tbody>';
     rows.slice(0, 12).forEach(function (row) {
       var url = row.url || ("/app/clients/" + row.id + "/");
       var service = (row.service_type || "").toLowerCase() === "hotspot" ? "Hotspot" : "PPPoE";
@@ -682,13 +708,14 @@
         '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' + escapeHtml(url) + '"><strong>' +
         escapeHtml(row.full_name || "Client") +
         "</strong><small>" +
-        escapeHtml(row.account_number || service) +
+        escapeHtml(row.account_number || "—") +
         "</small></a></td>" +
         '<td data-label="Package">' +
         (row.plan_name
           ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
           : "—") +
         "</td>" +
+        '<td data-label="Service">' + escapeHtml(service) + "</td>" +
         '<td data-label="Status"><span class="workspace-dash-badge is-warn" title="' +
         escapeHtml(row.reason || "") +
         '">' +
@@ -711,8 +738,36 @@
 
   function filterNotSurfing(clients) {
     return (clients || []).filter(function (row) {
+      // Active subscription (internet allowed) but not surfing, while router is up.
       return !!row.internet_allowed && !row.surfing && !!row.router_reachable;
     });
+  }
+
+  function fetchSurfingService(service, force) {
+    var suffix = force ? "&refresh=1" : "";
+    return fetch(surfingUrl + "?service=" + encodeURIComponent(service) + suffix, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    }).then(function (r) { return r.json(); });
+  }
+
+  function mergeNotSurfingRows(parts) {
+    var rows = [];
+    var seen = {};
+    (parts || []).forEach(function (data) {
+      if (!data || data.ok === false || !Array.isArray(data.clients)) return;
+      filterNotSurfing(data.clients).forEach(function (row) {
+        var key = String(row.id || "") + ":" + String(row.service_type || "");
+        if (seen[key]) return;
+        seen[key] = true;
+        rows.push(row);
+      });
+    });
+    rows.sort(function (a, b) {
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""));
+    });
+    return rows;
   }
 
   function loadNotSurfing(force) {
@@ -720,23 +775,16 @@
       renderNotSurfing([]);
       return Promise.resolve([]);
     }
-    var suffix = force ? "&refresh=1" : "";
-    return fetch(surfingUrl + "?service=pppoe" + suffix, {
-      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin",
-      cache: "no-store"
-    })
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var rows = [];
-        if (data && data.ok !== false && Array.isArray(data.clients)) {
-          rows = filterNotSurfing(data.clients);
-        }
-        rows.sort(function (a, b) {
-          return String(a.full_name || "").localeCompare(String(b.full_name || ""));
-        });
+    // Paint PPPoE first (usually what ops care about), then merge Hotspot.
+    return fetchSurfingService("pppoe", force)
+      .then(function (pppoeData) {
+        var rows = mergeNotSurfingRows([pppoeData]);
         renderNotSurfing(rows);
-        return rows;
+        return fetchSurfingService("hotspot", force).then(function (hotspotData) {
+          rows = mergeNotSurfingRows([pppoeData, hotspotData]);
+          renderNotSurfing(rows);
+          return rows;
+        });
       })
       .catch(function () {
         renderNotSurfing([]);
@@ -822,20 +870,16 @@
       return status && status !== "connected";
     }).map(function (row) {
       var status = String(row.status || "disconnected").toLowerCase();
-      var scoreMap = {
-        connected: 100,
-        reachable: 70,
-        limited: 55,
-        auth_failed: 25,
-        wrong_host: 10,
-        disconnected: 0
-      };
+      var toScore = scoreMap[status] != null ? scoreMap[status] : 0;
+      var fromScore = lastScoreByRouter[row.id];
+      if (fromScore == null || fromScore <= toScore) fromScore = 100;
+      lastScoreByRouter[row.id] = toScore;
       return {
         router_id: row.id,
         router_name: row.name || "MikroTik",
         at: "Now",
-        from_score: 100,
-        to_score: scoreMap[status] != null ? scoreMap[status] : 0,
+        from_score: fromScore,
+        to_score: toScore,
         status: status,
         reason: statusReason(status, row.error),
         current: true
@@ -869,6 +913,13 @@
     if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
     if (data.network_trend) paintNetworkTrend(data.network_trend);
     lastMikrotikDrops = data.mikrotik_drops || lastMikrotikDrops;
+    if (data.mikrotik_status_catalog) {
+      statusCatalog = data.mikrotik_status_catalog;
+      Object.assign(scoreMap, statusCatalog.scores || {});
+      if (statusCatalog.outage_statuses && statusCatalog.outage_statuses.length) {
+        outageStatuses = statusCatalog.outage_statuses;
+      }
+    }
     lastNetworkDrops = data.network_drops || lastNetworkDrops;
     renderDrops(
       "[data-mikrotik-drops]",
@@ -920,9 +971,10 @@
     );
   }
 
-  function loadLive(force) {
+  function loadLive(wantForce) {
     if (inFlight) return Promise.resolve();
     inFlight = true;
+    var force = shouldForceLive(!!wantForce);
     var analyticsReq = analyticsUrl
       ? fetch(analyticsUrl + (force ? "?refresh=1" : ""), {
           headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
@@ -971,8 +1023,10 @@
   }
 
   function boot() {
+    // Server already embedded a snapshot — paint immediately, then soft-refresh
+    // from cache. Hard probes run on the poll cadence, not on every back/nav.
     applyAnalytics(initial);
-    loadLive(true);
+    loadLive(false);
   }
 
   if (window.Chart) boot();
@@ -996,7 +1050,11 @@
     loadLive(pollTick % 4 === 0);
   }, 15000);
   document.addEventListener("visibilitychange", function () {
+    // Returning to the tab / previous page: prefer cache; force only if stale.
     if (!document.hidden) loadLive(true);
+  });
+  window.addEventListener("pageshow", function (event) {
+    if (event.persisted) loadLive(false);
   });
 })();
 </script>

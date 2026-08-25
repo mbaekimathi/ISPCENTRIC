@@ -1,0 +1,20 @@
+{# —— Package offer settings (register + edit) —— #}
+<section class="pppoe-section package-offer-section">
+  <h3 class="pppoe-section-title">Loyalty offer <span class="pppoe-optional">optional</span></h3>
+  <div class="pppoe-grid">
+    <div class="field field-span-2">
+      <label class="mikrotik-confirm-check package-active-check" for="{{ offer_form.offer_enabled.id_for_label }}">
+        {{ offer_form.offer_enabled }}
+        <span>{{ offer_form.offer_enabled.label }}</span>
+      </label>
+      {% if offer_form.offer_enabled.errors %}<div class="field-error">{{ offer_form.offer_enabled.errors|striptags }}</div>{% endif %}
+      <p class="field-hint">Reward repeat payers with a free session — e.g. buy 5, get 1 free. Works on Hotspot and PPPoE pay pages.</p>
+    </div>
+    <div class="field package-offer-count-field" data-offer-count-field>
+      <label for="{{ offer_form.offer_pay_count.id_for_label }}">{{ offer_form.offer_pay_count.label }}</label>
+      {{ offer_form.offer_pay_count }}
+      {% if offer_form.offer_pay_count.errors %}<div class="field-error">{{ offer_form.offer_pay_count.errors|striptags }}</div>{% endif %}
+      <p class="field-hint">{{ offer_form.offer_pay_count.help_text }}</p>
+    </div>
+  </div>
+</section>

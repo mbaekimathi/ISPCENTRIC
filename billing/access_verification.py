@@ -28,6 +28,16 @@ def billing_allows_surf(customer) -> bool:
     return customer_receives_internet(customer)
 
 
+def _expected_pppoe_speed_profile(customer) -> str:
+    from billing.services import customer_pppoe_secret_disabled
+    from core.mikrotik_connect import _ppp_secret_profile_for_customer
+
+    return _ppp_secret_profile_for_customer(
+        customer,
+        disabled=customer_pppoe_secret_disabled(customer),
+    )
+
+
 def evaluate_nas_policy(
     customer,
     sync_result: dict | None = None,
@@ -38,6 +48,7 @@ def evaluate_nas_policy(
     Compare billing policy to NAS-side expectations.
 
     Returns dict with billing_ok, policy_match, details, sync_result.
+    Paid clients must use the package Mbps profile (strict download/upload).
     """
     billing_ok = billing_allows_surf(customer)
     service_type = getattr(customer, "service_type", "")
@@ -45,21 +56,34 @@ def evaluate_nas_policy(
 
     if dry_run or sync_result is None:
         if service_type == Customer.ServiceType.HOTSPOT:
-            from core.mikrotik_connect import _hotspot_customer_access_fields
+            from billing.devices import customer_device_cap_snapshot
+            from core.mikrotik_connect import (
+                _expected_hotspot_profile_for_customer,
+                _hotspot_customer_access_fields,
+            )
 
             _mac, disabled, limit_uptime, _comment = _hotspot_customer_access_fields(
                 customer
             )
+            cap_snap = customer_device_cap_snapshot(customer)
             nas_ok = (not disabled) == billing_ok
             details.update(
                 {
                     "hotspot_disabled": disabled,
                     "hotspot_limit_uptime": limit_uptime,
+                    "expected_profile": _expected_hotspot_profile_for_customer(
+                        customer
+                    ),
+                    "max_devices": cap_snap["cap"],
+                    "linked_devices": cap_snap["linked_count"],
+                    "over_cap_macs": cap_snap["over_cap_macs"],
                 }
             )
         else:
             nas_ok = True
             details["dry_run_pppoe"] = True
+            details["expected_profile"] = _expected_pppoe_speed_profile(customer)
+            details["max_devices"] = 1
         return {
             "billing_ok": billing_ok,
             "policy_match": nas_ok,
@@ -68,29 +92,63 @@ def evaluate_nas_policy(
         }
 
     if service_type == Customer.ServiceType.HOTSPOT:
-        from core.mikrotik_connect import _hotspot_customer_access_fields
+        from billing.devices import customer_device_cap_snapshot
+        from core.mikrotik_connect import (
+            _expected_hotspot_profile_for_customer,
+            _hotspot_customer_access_fields,
+        )
 
         _mac, disabled, limit_uptime, _comment = _hotspot_customer_access_fields(
             customer
         )
+        provision = sync_result.get("provision") or {}
+        expected_profile = _expected_hotspot_profile_for_customer(customer)
+        actual_profile = (provision.get("profile") or "").strip()
+        cap_snap = customer_device_cap_snapshot(customer)
+        allowed_count = provision.get("allowed_count")
+        if allowed_count is None:
+            allowed_count = len(cap_snap["allowed_macs"])
+        over_cap_count = int(provision.get("over_cap_count") or 0)
         details.update(
             {
                 "hotspot_disabled": disabled,
                 "hotspot_limit_uptime": limit_uptime,
                 "sync_ok": sync_result.get("ok"),
+                "expected_profile": expected_profile,
+                "profile": actual_profile,
+                "rate_limit": (provision.get("rate_limit") or "").strip(),
+                "max_devices": cap_snap["cap"],
+                "linked_devices": cap_snap["linked_count"],
+                "allowed_count": allowed_count,
+                "over_cap_count": over_cap_count,
+                "over_cap_macs": list(
+                    provision.get("over_cap_macs") or cap_snap["over_cap_macs"]
+                ),
             }
         )
         if billing_ok:
+            speed_ok = (not actual_profile) or actual_profile == expected_profile
+            if not speed_ok:
+                details["surf_gap"] = "wrong_speed_profile"
+            # Cap: NAS must authorize at most N MACs; extras must be reported disabled.
+            devices_ok = True
+            cap = int(cap_snap["cap"] or 0)
+            if cap > 0:
+                devices_ok = int(allowed_count or 0) <= cap
+                if not devices_ok:
+                    details["surf_gap"] = "device_cap_exceeded"
             policy_match = (
                 not disabled
                 and bool(limit_uptime)
                 and bool(sync_result.get("ok"))
-                and bool((sync_result.get("provision") or {}).get("ok"))
+                and bool(provision.get("ok"))
+                and speed_ok
+                and devices_ok
             )
         else:
             policy_match = disabled and (
                 bool(sync_result.get("ok"))
-                or bool((sync_result.get("provision") or {}).get("skipped"))
+                or bool(provision.get("skipped"))
             )
         return {
             "billing_ok": billing_ok,
@@ -102,17 +160,25 @@ def evaluate_nas_policy(
     from core.mikrotik_connect import (
         PPPOE_BLOCKED_PROFILE_NAME,
         cpe_renew_clear_is_pending,
+        _pppoe_rate_limit_for_customer,
+        _rate_limits_match,
     )
     from billing.services import customer_pppoe_secret_disabled
 
     provision = sync_result.get("provision") or {}
     portal = sync_result.get("portal") or {}
     profile = (provision.get("profile") or "").strip()
+    rate_limit = (provision.get("rate_limit") or "").strip()
+    expected_profile = _expected_pppoe_speed_profile(customer)
+    expected_rate = _pppoe_rate_limit_for_customer(customer)
     details.update(
         {
             "sync_ok": sync_result.get("ok"),
             "sync_allowed": sync_result.get("allowed"),
             "profile": profile,
+            "expected_profile": expected_profile,
+            "rate_limit": rate_limit,
+            "expected_rate_limit": expected_rate,
             "secret_disabled": provision.get("disabled"),
             "cpe_renew_pending": bool(sync_result.get("cpe_renew_clear_pending")),
         }
@@ -125,6 +191,22 @@ def evaluate_nas_policy(
             and not provision.get("disabled")
             and profile != PPPOE_BLOCKED_PROFILE_NAME
         )
+        speed_ok = True
+        if expected_profile and expected_profile not in {
+            PPPOE_BLOCKED_PROFILE_NAME,
+            "",
+        }:
+            if profile:
+                speed_ok = profile == expected_profile
+            elif expected_rate and rate_limit:
+                speed_ok = _rate_limits_match(expected_rate, rate_limit)
+        if not speed_ok:
+            details["surf_gap"] = "wrong_speed_profile"
+
+        session_blocked = bool(provision.get("session_blocked"))
+        details["session_blocked"] = session_blocked
+        details["session_active"] = bool(provision.get("session_active"))
+
         cpe_pending = bool(
             sync_result.get("cpe_renew_clear_pending")
             or (
@@ -133,12 +215,15 @@ def evaluate_nas_policy(
                 and cpe_renew_clear_is_pending(customer)
             )
         )
-        if cpe_pending and portal.get("skipped"):
+        if session_blocked:
+            policy_match = False
+            details["surf_gap"] = "active_session_still_blocked"
+        elif cpe_pending and portal.get("skipped"):
             # NAS restore is done; CPE Wi-Fi popup clears when the CPE redials.
-            policy_match = nas_ready
+            policy_match = nas_ready and speed_ok
             details["cpe_clear_pending"] = True
         else:
-            policy_match = nas_ready and not cpe_pending
+            policy_match = nas_ready and speed_ok and not cpe_pending
     else:
         if customer_pppoe_secret_disabled(customer):
             policy_match = bool(

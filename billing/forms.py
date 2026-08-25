@@ -1399,6 +1399,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "upload_speed_mbps",
             "duration",
             "max_devices",
+            "offer_enabled",
+            "offer_pay_count",
             "image",
             "is_active",
             "routers",
@@ -1466,6 +1468,21 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "id": "id_package_max_devices",
                 }
             ),
+            "offer_enabled": forms.CheckboxInput(
+                attrs={
+                    "id": "id_package_offer_enabled",
+                    "class": "package-offer-toggle",
+                }
+            ),
+            "offer_pay_count": forms.NumberInput(
+                attrs={
+                    "class": "form-control",
+                    "placeholder": "5",
+                    "min": "1",
+                    "max": "100",
+                    "id": "id_package_offer_pay_count",
+                }
+            ),
             "image": forms.FileInput(
                 attrs={
                     "class": "org-edit-file-input",
@@ -1488,6 +1505,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "upload_speed_mbps": "Upload speed (Mbps)",
             "duration": "Billing period",
             "max_devices": "Max devices",
+            "offer_enabled": "Enable buy-X-get-1-free offer",
+            "offer_pay_count": "Paid sessions before free one",
             "image": "Package image",
             "is_active": "Active package",
             "routers": "MikroTik routers",
@@ -1504,9 +1523,15 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["service_type"].required = True
         self.fields["max_devices"].required = False
         self.fields["max_devices"].help_text = (
-            "Leave blank for unlimited devices. "
-            "Hotspot: number of devices; payment creates one one-time voucher per device. "
-            "PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited)."
+            "Leave blank for unlimited Hotspot devices. "
+            "Hotspot: number of phones/laptops; payment creates one one-time voucher per device. "
+            "PPPoE: always 1 concurrent dial (one CPE). Devices on Wi‑Fi/LAN behind that CPE "
+            "are already unlimited — this field does not add extra PPPoE sessions."
+        )
+        self.fields["offer_enabled"].required = False
+        self.fields["offer_pay_count"].required = False
+        self.fields["offer_pay_count"].help_text = (
+            "Example: 5 means after every 5 paid sessions the customer gets one extra session free."
         )
         self.fields["duration"].choices = BillingPlan.Duration.choices
         # Default Active only for new packages — keep the saved value when editing.
@@ -1530,6 +1555,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
             "duration": f"id_{self.id_prefix}_duration",
             "max_devices": f"id_{self.id_prefix}_max_devices",
+            "offer_enabled": f"id_{self.id_prefix}_offer_enabled",
+            "offer_pay_count": f"id_{self.id_prefix}_offer_pay_count",
             "image": f"id_{self.id_prefix}_image",
             "is_active": f"id_{self.id_prefix}_is_active",
             "routers": f"id_{self.id_prefix}_routers",
@@ -1564,6 +1591,23 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "name",
                     "A package with that name already exists for this service type.",
                 )
+        offer_enabled = bool(cleaned.get("offer_enabled"))
+        offer_pay_count = cleaned.get("offer_pay_count")
+        if offer_enabled:
+            if offer_pay_count in (None, ""):
+                self.add_error(
+                    "offer_pay_count",
+                    "Enter how many paid sessions unlock a free one.",
+                )
+            elif int(offer_pay_count) < 1:
+                self.add_error(
+                    "offer_pay_count",
+                    "Enter at least 1 paid session before the free one.",
+                )
+        else:
+            cleaned["offer_pay_count"] = int(
+                offer_pay_count or getattr(self.instance, "offer_pay_count", None) or 5
+            )
         return cleaned
 
     def clean_description(self):
@@ -1642,6 +1686,23 @@ class BillingPackageRegisterForm(forms.ModelForm):
 class CustomerCashRechargeForm(forms.Form):
     """Staff cash recharge: pick a plan, record cash, extend the package."""
 
+    MODE_FULL = "full"
+    MODE_PARTIAL = "partial"
+    MODE_CHOICES = (
+        (MODE_FULL, "Full recharge"),
+        (MODE_PARTIAL, "Partial recharge"),
+    )
+
+    recharge_mode = forms.ChoiceField(
+        label="Recharge type",
+        choices=MODE_CHOICES,
+        initial=MODE_FULL,
+        widget=forms.RadioSelect(
+            attrs={
+                "class": "package-service-type-radios",
+            },
+        ),
+    )
     plan = forms.ModelChoiceField(
         label="Package / plan",
         queryset=BillingPlan.objects.none(),
@@ -1652,6 +1713,34 @@ class CustomerCashRechargeForm(forms.Form):
                 "id": "id_recharge_plan",
             },
         ),
+    )
+    period_from = forms.DateField(
+        label="From date",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_recharge_period_from",
+            },
+        ),
+        help_text="First day the client can surf under this partial recharge.",
+    )
+    period_to = forms.DateField(
+        label="To date",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_recharge_period_to",
+            },
+        ),
+        help_text="Last day included. Amount is calculated from the package rate.",
     )
     amount = forms.DecimalField(
         label="Amount (KES)",
@@ -1713,6 +1802,10 @@ class CustomerCashRechargeForm(forms.Form):
             ).order_by("price", "name")
 
         self.fields["plan"].queryset = qs
+        self.fields["recharge_mode"].initial = self.MODE_FULL
+        today = timezone.localdate()
+        self.fields["period_from"].initial = today
+        self.fields["period_to"].initial = today
         current_plan = getattr(self.customer, "plan", None) if self.customer else None
         if current_plan and qs.filter(pk=current_plan.pk).exists():
             self.fields["plan"].initial = current_plan.pk
@@ -1742,3 +1835,41 @@ class CustomerCashRechargeForm(forms.Form):
         if self.organization and plan.organization_id != self.organization.pk:
             raise forms.ValidationError("Choose a plan from this organization.")
         return plan
+
+    def clean(self):
+        from billing.services import (
+            compute_partial_recharge_amount,
+            partial_recharge_window,
+        )
+
+        cleaned = super().clean()
+        mode = (cleaned.get("recharge_mode") or self.MODE_FULL).strip().lower()
+        cleaned["recharge_mode"] = mode
+        plan = cleaned.get("plan")
+        if mode != self.MODE_PARTIAL:
+            cleaned["period_start"] = None
+            cleaned["period_end"] = None
+            return cleaned
+
+        period_from = cleaned.get("period_from")
+        period_to = cleaned.get("period_to")
+        if period_from is None:
+            self.add_error("period_from", "Select the from date.")
+        if period_to is None:
+            self.add_error("period_to", "Select the to date.")
+        if period_from is None or period_to is None or plan is None:
+            return cleaned
+        if period_to < period_from:
+            self.add_error("period_to", "To date must be on or after from date.")
+            return cleaned
+        try:
+            start, end = partial_recharge_window(period_from, period_to, plan)
+            expected = compute_partial_recharge_amount(plan, start, end)
+        except ValueError as exc:
+            self.add_error(None, str(exc))
+            return cleaned
+        cleaned["period_start"] = start
+        cleaned["period_end"] = end
+        # Always bill the prorated package amount for partial windows.
+        cleaned["amount"] = expected
+        return cleaned

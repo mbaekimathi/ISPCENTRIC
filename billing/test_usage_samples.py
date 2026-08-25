@@ -56,12 +56,75 @@ class UsageTrendPayloadTests(TestCase):
             bytes_in=5000,
             bytes_out=700,
         )
-        payload = usage_trend_payload(self.customer, hours=24)
+        payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["sample_count"], 2)
         self.assertEqual(payload["summary"]["peak_download_bps"], 2000)
         self.assertEqual(payload["summary"]["data_used_bytes"], 4500)
-        self.assertEqual(len(payload["series"]["uptime_minutes"]), 2)
+        self.assertGreaterEqual(len(payload["series"]["download_kbps"]), 1)
+        self.assertEqual(len(payload["labels"]), len(payload["series"]["download_kbps"]))
+        prime = payload["summary"]["prime_point"]
+        self.assertIsNotNone(prime)
+        self.assertEqual(prime["download_bps"], 2000)
+        self.assertEqual(prime["upload_bps"], 800)
+        lowest = payload["summary"]["lowest_point"]
+        self.assertIsNotNone(lowest)
+        self.assertEqual(lowest["download_bps"], 1000)
+
+    def test_marks_stopped_surfing_and_filter_window(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=3),
+            session_active=True,
+            uptime_seconds=600,
+            download_bps=500000,
+            upload_bps=100000,
+            bytes_in=10_000,
+            bytes_out=2_000,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=2),
+            session_active=False,
+            uptime_seconds=0,
+            download_bps=0,
+            upload_bps=0,
+            bytes_in=0,
+            bytes_out=0,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=1),
+            session_active=True,
+            uptime_seconds=120,
+            download_bps=50_000,
+            upload_bps=10_000,
+            bytes_in=12_000,
+            bytes_out=2_500,
+        )
+        payload = usage_trend_payload(self.customer, hours=6, use_cache=False)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["hours"], 6)
+        self.assertGreaterEqual(payload["summary"]["stopped_count"], 1)
+        self.assertTrue(payload["summary"]["latest_active"])
+        self.assertIsNotNone(payload["summary"]["last_stopped"])
+        self.assertGreaterEqual(payload["summary"]["prime_point"]["combined_bps"], 500000)
+        self.assertLessEqual(
+            payload["summary"]["lowest_point"]["combined_bps"],
+            payload["summary"]["prime_point"]["combined_bps"],
+        )
+        # Presence series should span the filter window without excess points.
+        self.assertGreaterEqual(len(payload["labels"]), 20)
+        self.assertLessEqual(len(payload["labels"]), 48)
+        self.assertIn(0, payload["series"]["online"])
+        self.assertIn(1, payload["series"]["online"])
+        self.assertEqual(
+            len(payload["labels"]), len(payload["series"]["download_kbps"])
+        )
 
 
 class RouterNetworkPerformanceTrendTests(TestCase):

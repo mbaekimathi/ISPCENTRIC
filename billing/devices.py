@@ -34,6 +34,67 @@ def customer_devices_unlimited(customer) -> bool:
     return plan_devices_unlimited(getattr(customer, "plan", None))
 
 
+def customer_device_cap_snapshot(customer) -> dict:
+    """
+    Compare linked Hotspot MACs to the package device cap.
+
+    Returns cap (0=unlimited), linked_count, allowed_macs, over_cap_macs.
+    """
+    macs = hotspot_macs_for_customer(customer)
+    cap = customer_max_devices(customer)
+    if cap <= 0:
+        return {
+            "cap": 0,
+            "linked_count": len(macs),
+            "allowed_macs": list(macs),
+            "over_cap_macs": [],
+            "at_or_over_cap": False,
+        }
+    return {
+        "cap": cap,
+        "linked_count": len(macs),
+        "allowed_macs": list(macs[:cap]),
+        "over_cap_macs": list(macs[cap:]),
+        "at_or_over_cap": len(macs) >= cap,
+    }
+
+
+def prune_over_cap_hotspot_devices(customer) -> list[str]:
+    """
+    Drop excess CustomerDevice rows when the package cap was lowered.
+
+    Keeps the primary hotspot_mac and the earliest remaining device rows so
+    the first N MACs stay authorized. Returns removed MAC list.
+    """
+    from billing.models import CustomerDevice
+
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+    cap = customer_max_devices(customer)
+    if cap <= 0:
+        return []
+
+    macs = hotspot_macs_for_customer(customer)
+    if len(macs) <= cap:
+        return []
+
+    keep = set(macs[:cap])
+    primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    if primary:
+        keep.add(primary)
+        # Prefer primary + earliest extras within the remaining slots.
+        extras = [m for m in macs if m != primary]
+        keep = {primary, *extras[: max(0, cap - 1)]}
+
+    removed: list[str] = []
+    for row in CustomerDevice.objects.filter(customer_id=customer.pk):
+        mac = normalize_device_mac(getattr(row, "mac", "") or "")
+        if mac and mac not in keep:
+            removed.append(mac)
+            row.delete()
+    return removed
+
+
 def normalize_device_mac(mac: str) -> str:
     """Uppercase AA:BB:CC:DD:EE:FF."""
     mac = (mac or "").strip().upper().replace("-", ":")
@@ -244,58 +305,76 @@ def attach_hotspot_device(customer, mac: str, *, enforce_cap: bool = True) -> di
     if customer is None:
         return {"ok": False, "error": "No customer account."}
 
-    existing = CustomerDevice.objects.filter(
-        organization_id=customer.organization_id, mac=mac
-    ).first()
-    if existing is not None:
-        if existing.customer_id != customer.pk:
+    def _attach() -> dict:
+        locked = customer
+        if enforce_cap and getattr(customer, "pk", None):
+            locked = (
+                Customer.objects.select_for_update()
+                .select_related("plan")
+                .filter(pk=customer.pk)
+                .first()
+            ) or customer
+
+        existing = CustomerDevice.objects.filter(
+            organization_id=locked.organization_id, mac=mac
+        ).first()
+        if existing is not None:
+            if existing.customer_id != locked.pk:
+                return {
+                    "ok": False,
+                    "error": "This device is already linked to another account.",
+                }
+            CustomerDevice.objects.filter(pk=existing.pk).update(
+                last_seen_at=timezone.now()
+            )
+            _ensure_primary_mac(locked, mac)
+            return {"ok": True, "created": False, "device": existing}
+
+        other = (
+            Customer.objects.filter(
+                organization_id=locked.organization_id,
+                hotspot_mac__iexact=mac,
+            )
+            .exclude(pk=locked.pk)
+            .first()
+        )
+        if other is not None:
             return {
                 "ok": False,
                 "error": "This device is already linked to another account.",
             }
-        CustomerDevice.objects.filter(pk=existing.pk).update(last_seen_at=timezone.now())
-        _ensure_primary_mac(customer, mac)
-        return {"ok": True, "created": False, "device": existing}
 
-    other = (
-        Customer.objects.filter(
-            organization_id=customer.organization_id,
-            hotspot_mac__iexact=mac,
-        )
-        .exclude(pk=customer.pk)
-        .first()
-    )
-    if other is not None:
-        return {
-            "ok": False,
-            "error": "This device is already linked to another account.",
-        }
+        current = hotspot_macs_for_customer(locked)
+        if mac not in current and enforce_cap:
+            cap = customer_max_devices(locked)
+            if cap > 0 and len(current) >= cap:
+                label = "1 device" if cap == 1 else f"{cap} devices"
+                return {
+                    "ok": False,
+                    "at_cap": True,
+                    "max_devices": cap,
+                    "error": (
+                        f"This package allows {label}. "
+                        "Remove a device or choose a package with a higher device limit."
+                    ),
+                }
 
-    current = hotspot_macs_for_customer(customer)
-    if mac not in current and enforce_cap:
-        cap = customer_max_devices(customer)
-        if cap > 0 and len(current) >= cap:
-            label = "1 device" if cap == 1 else f"{cap} devices"
+        device = ensure_customer_device(locked, mac)
+        if device is None:
+            return {"ok": False, "error": "Could not link this device."}
+        if device.customer_id != locked.pk:
             return {
                 "ok": False,
-                "at_cap": True,
-                "max_devices": cap,
-                "error": (
-                    f"This package allows {label}. "
-                    "Remove a device or choose a package with a higher device limit."
-                ),
+                "error": "This device is already linked to another account.",
             }
+        _ensure_primary_mac(locked, mac)
+        return {"ok": True, "created": True, "device": device}
 
-    device = ensure_customer_device(customer, mac)
-    if device is None:
-        return {"ok": False, "error": "Could not link this device."}
-    if device.customer_id != customer.pk:
-        return {
-            "ok": False,
-            "error": "This device is already linked to another account.",
-        }
-    _ensure_primary_mac(customer, mac)
-    return {"ok": True, "created": True, "device": device}
+    # Cap checks must be atomic so two phones cannot race past max_devices.
+    if enforce_cap and getattr(customer, "pk", None):
+        with transaction.atomic():
+            return _attach()
+    return _attach()
 
 
 def maybe_set_customer_phone(customer, phone: str) -> None:
