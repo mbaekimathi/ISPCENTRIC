@@ -145,8 +145,8 @@ class WireGuardKeyTests(SimpleTestCase):
             '/ip firewall filter remove [find where comment~"ispcentric-vpn-"]',
             script,
         )
-        # Avoid :local / multi-line foreach so paste works cleanly in New Terminal.
-        self.assertNotIn(":local ", script)
+        # Avoid foreach so paste works cleanly; :local is OK for WAN wait loops.
+        self.assertIn(":local IspWan 0", script)
         self.assertNotIn(":foreach ", script)
         ping_checks = [
             line
