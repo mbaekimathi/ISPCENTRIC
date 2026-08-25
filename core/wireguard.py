@@ -353,24 +353,31 @@ def _wan_wait_lines(
     delay: str = "4s",
 ) -> list[str]:
     """
-    Bring up WAN (DHCP on ether1) and wait until ping to probe_host succeeds.
+    Ensure WAN works, then require a real ping to probe_host.
 
-    Default route alone is NOT enough — MikroTik can show a route while ping
-    is \"packet rejected\" and /tool fetch then hangs. Require a real ping.
+    Many boards already have defconf DHCP on bridgeLocal (not ether1). Forcing
+    only ether1 breaks those. A hotspot IP (e.g. 10.50.50.1) on the same
+    bridge as WAN often makes /ping show \"packet rejected\" — disable it
+    before probing.
     """
     probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
     attempts = max(1, int(attempts))
     ping_ok = f"([/ping {probe_host} count=1] > 0)"
     lines = [
-        _ros_info(f"ether1 = ISP - DHCP, then ping {probe_host}..."),
+        _ros_info(f"WAN: keep bound DHCP (or add ether1), ping {probe_host}..."),
+        # Hotspot LAN IP on the WAN bridge causes \"packet rejected\" to the VPS.
+        ':do { /ip address disable [find where comment~"ispcentric-hotspot"] } on-error={}',
         (
+            ":if ([:len [/ip dhcp-client find where status=bound]] = 0) do={"
             ":do { /ip dhcp-client add interface=ether1 disabled=no "
             "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } "
-            "on-error={}"
+            "on-error={}; "
+            ":do { /ip dhcp-client set [find where interface=ether1] disabled=no "
+            "add-default-route=yes use-peer-dns=yes } on-error={}}"
         ),
         (
-            ":do { /ip dhcp-client set [find where interface=ether1] disabled=no "
-            "add-default-route=yes use-peer-dns=yes } on-error={}"
+            ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes "
+            "use-peer-dns=yes } on-error={}"
         ),
         ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
         ":global IspWanOk",
@@ -381,10 +388,10 @@ def _wan_wait_lines(
             f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
             f'{_ros_ok(f"WAN ready (ping {probe_host})")}}} else={{'
             f':put "[ISPCENTRIC] WAN {try_n}/{attempts} - no ping to {probe_host} '
-            f'(need ISP on ether1)"; :delay {delay}}}}}'
+            f'(check ISP / DHCP bound)"; :delay {delay}}}}}'
         )
     lines.append(
-        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - plug ISP into ether1, wait for DHCP, re-paste')}}}"
+        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping to {probe_host} - fix WAN DHCP, then re-paste')}}}"
     )
     return lines
 
@@ -1570,8 +1577,8 @@ def _routeros_smart_install_script(address: str, private_key: str) -> str:
 
     return "\n".join(
         [
-            "# ISPCENTRIC - Winbox -> New Terminal. Plug ISP into ether1, paste once.",
-            "# 1) open API on LAN  2) wait WAN  3) download install.rsc  4) import",
+            "# ISPCENTRIC - Winbox -> New Terminal. Paste once (ISP already online OK).",
+            "# 1) open API  2) wait WAN ping  3) download install.rsc  4) import",
             *_api_lan_ready_lines(),
             _ros_info("Waiting for internet, then downloading install..."),
             *_wan_wait_lines(endpoint_host),

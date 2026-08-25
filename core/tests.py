@@ -129,6 +129,8 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("WAN 1/8 - no ping", script)
         self.assertIn(":global IspWanOk", script)
         self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
+        self.assertIn('comment~"ispcentric-hotspot"', script)
+        self.assertIn("status=bound", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
