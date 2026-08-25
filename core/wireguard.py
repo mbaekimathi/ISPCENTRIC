@@ -1296,28 +1296,144 @@ def _escape_ros_file_contents(text: str) -> str:
     )
 
 
-def _routeros_customized_condition() -> str:
+def _routeros_customized_flag_lines() -> list[str]:
     """
-    RouterOS expression: true when the router has real ISP customer config worth
-    wiping (Hotspot, PPPoE secrets/servers, foreign WireGuard).
+    Short one-line checks that set :global IspCentricCustom.
 
-    Do NOT treat default RouterOS firewall rules as customized — stock L009 images
-    often have >8 filter rows and that wrongly forced factory reset.
+    Kept as separate lines so Winbox paste never wraps mid-command (e.g. /queue -> ueue).
+    Used inside downloaded .rsc files only — not in the bootstrap paste.
     """
-    checks = [
-        "[:len [/ip hotspot find]] > 0",
-        "[:len [/ppp secret find]] > 0",
-        "[:len [/interface pppoe-server server find]] > 0",
-        "[:len [/ip hotspot user find]] > 0",
-        "[:len [/queue simple find]] > 0",
-        '[:len [/system script find where name!~"ispcentric"]] > 0',
-        "[:len [/interface wireguard find]] > 1",
+    return [
+        ":global IspCentricCustom 0",
+        ":if ([:len [/ip hotspot find]] > 0) do={:set IspCentricCustom 1}",
+        ":if ([:len [/ip hotspot user find]] > 0) do={:set IspCentricCustom 1}",
+        ":if ([:len [/ppp secret find]] > 0) do={:set IspCentricCustom 1}",
         (
-            "([:len [/interface wireguard find]] > 0 && "
-            "[:len [/interface wireguard find where name=ispcentric-vpn]] = 0)"
+            ":if ([:len [/interface pppoe-server server find]] > 0) do="
+            "{:set IspCentricCustom 1}"
+        ),
+        ":if ([:len [/interface wireguard find]] > 1) do={:set IspCentricCustom 1}",
+        (
+            ":if ([:len [/interface wireguard find]] > 0) do={"
+            ":if ([:len [/interface wireguard find where name=ispcentric-vpn]] = 0) do="
+            "{:set IspCentricCustom 1}}"
         ),
     ]
-    return "(" + ") || (".join(checks) + ")"
+
+
+def _routeros_maybe_reset_lines() -> list[str]:
+    """If IspCentricCustom=1, factory-reset using downloaded .rsc; else continue."""
+    return [
+        (
+            ":if ($IspCentricCustom = 1) do={"
+            ':put "[ISPCENTRIC WARN] Custom config - factory reset in 5s (passwords kept)"; '
+            ":delay 5s; "
+            ':if ([:len [/file find where name="flash/ispcentric-post-reset.rsc"]] > 0) do={'
+            "/system reset-configuration keep-users=yes skip-backup=yes "
+            "run-after-reset=flash/ispcentric-post-reset.rsc}; "
+            ':if ([:len [/file find where name="ispcentric-post-reset.rsc"]] > 0) do={'
+            "/system reset-configuration keep-users=yes skip-backup=yes "
+            "run-after-reset=ispcentric-post-reset.rsc}; "
+            ':error "ISPCENTRIC: reset scheduled or post-reset.rsc missing"}'
+        ),
+        _ros_ok("Clean router - continuing tunnel install (no reset)"),
+    ]
+
+
+def install_rsc_body(address: str, private_key: str) -> str:
+    """Full install .rsc: decide reset vs install, then configure tunnel."""
+    return "\n".join(
+        [
+            "# ISPCENTRIC install.rsc",
+            *_routeros_customized_flag_lines(),
+            *_routeros_maybe_reset_lines(),
+            *_routeros_install_lines(address, private_key, include_cleanup=True),
+        ]
+    )
+
+
+def post_reset_rsc_body(address: str, private_key: str) -> str:
+    """Compact post-reset .rsc body."""
+    return _routeros_post_reset_rsc_body(address, private_key)
+
+
+def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg: str) -> str:
+    """One paste-safe /tool fetch line (IP URL + Host header when needed)."""
+    header = ""
+    if host_header and host_header not in url:
+        header = f' http-header-field="Host:{host_header}"'
+    return (
+        f':do {{ /tool fetch url="{url}"{header} dst-path={dst} mode=http ; '
+        f'{_ros_ok(ok_msg)} }} on-error={{{_ros_fail(fail_msg)}}}'
+    )
+
+
+def _routeros_smart_install_script(address: str, private_key: str) -> str:
+    """
+    Ultra-short Winbox paste: WAN wait, fetch .rsc by VPS IP, import.
+
+    Smart reset lives inside install.rsc (no long :if in the paste — Winbox wraps
+    long lines and breaks commands like /queue into 'ueue').
+    """
+    address = (address or "").strip()
+    private_key = (private_key or "").strip()
+    fetch_base, http_host = _script_fetch_target()
+    endpoint_host = _resolved_endpoint_host(_endpoint().partition(":")[0])
+
+    if not fetch_base:
+        return "\n".join(
+            [
+                "# ISPCENTRIC billing tunnel - paste into Winbox -> New Terminal.",
+                "# PUBLIC_BASE_URL unset - using inline install (no remote .rsc fetch).",
+                _ros_info("Starting inline ISPCENTRIC tunnel install..."),
+                *_routeros_customized_flag_lines(),
+                *_routeros_maybe_reset_lines(),
+                *_routeros_install_lines(address, private_key, include_cleanup=True),
+            ]
+        )
+
+    token = rsc_access_token(address)
+    install_url = f"{fetch_base}/app/mikrotik/tunnel-rsc/?token={token}&kind=install"
+    reset_url = f"{fetch_base}/app/mikrotik/tunnel-rsc/?token={token}&kind=post-reset"
+
+    return "\n".join(
+        [
+            "# ISPCENTRIC one-paste bootstrap - Winbox -> New Terminal.",
+            "# Short paste only: wait for WAN, download .rsc, import. Reset logic is inside .rsc.",
+            "# Plug ISP into ether1 before or during the wait loops.",
+            _ros_info("ISPCENTRIC one-paste: waiting for internet, then downloading install..."),
+            *_wan_wait_lines(endpoint_host),
+            ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
+            ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
+            ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
+            _fetch_rsc_line(
+                install_url,
+                http_host,
+                "ispcentric-install.rsc",
+                "Downloaded ispcentric-install.rsc",
+                "Fetch install.rsc failed - check ether1 WAN / VPS HTTP",
+            ),
+            _fetch_rsc_line(
+                reset_url,
+                http_host,
+                "flash/ispcentric-post-reset.rsc",
+                "Downloaded flash/ispcentric-post-reset.rsc",
+                "Fetch post-reset.rsc to flash failed",
+            ),
+            _fetch_rsc_line(
+                reset_url,
+                http_host,
+                "ispcentric-post-reset.rsc",
+                "Downloaded ispcentric-post-reset.rsc (root fallback)",
+                "Fetch post-reset.rsc to root failed",
+            ),
+            (
+                ':if ([:len [/file find where name="ispcentric-install.rsc"]] > 0) do={'
+                "/import file-name=ispcentric-install.rsc} else={"
+                ':put "[ISPCENTRIC FAIL] ispcentric-install.rsc missing - fix WAN and re-paste"}'
+            ),
+        ]
+    )
 
 
 def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
@@ -1447,110 +1563,6 @@ def rsc_access_token(address: str) -> str:
         {"address": (address or "").strip()},
         salt="mikrotik-tunnel-rsc",
         compress=True,
-    )
-
-
-def install_rsc_body(address: str, private_key: str) -> str:
-    """Full in-place install as an .rsc file body."""
-    return "\n".join(
-        _routeros_install_lines(address, private_key, include_cleanup=True)
-    )
-
-
-def post_reset_rsc_body(address: str, private_key: str) -> str:
-    """Compact post-reset .rsc body."""
-    return _routeros_post_reset_rsc_body(address, private_key)
-
-
-def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg: str) -> str:
-    """One paste-safe /tool fetch line (IP URL + Host header when needed)."""
-    header = ""
-    if host_header and host_header not in url:
-        header = f' http-header-field="Host:{host_header}"'
-    return (
-        f':do {{ /tool fetch url="{url}"{header} dst-path={dst} mode=http ; '
-        f'{_ros_ok(ok_msg)} }} on-error={{{_ros_fail(fail_msg)}}}'
-    )
-
-
-def _routeros_smart_install_script(address: str, private_key: str) -> str:
-    """
-    Short one-paste bootstrap: wait for WAN, fetch .rsc by VPS IP (no DNS),
-    then import (clean) or factory-reset only when Hotspot/PPPoE exists.
-
-    Never calls reset-configuration unless the post-reset .rsc file is present.
-    """
-    address = (address or "").strip()
-    private_key = (private_key or "").strip()
-    fetch_base, http_host = _script_fetch_target()
-    endpoint_host = _resolved_endpoint_host(_endpoint().partition(":")[0])
-    customized = _routeros_customized_condition()
-    warn_reset = _ros_warn("Custom config detected - factory reset in 5s (passwords kept)")
-    ok_clean = _ros_ok("Clean router - importing tunnel install (no reset)")
-
-    if not fetch_base:
-        return "\n".join(
-            [
-                "# ISPCENTRIC billing tunnel - paste into Winbox -> New Terminal.",
-                "# PUBLIC_BASE_URL unset - using inline install (no remote .rsc fetch).",
-                _ros_info("Starting inline ISPCENTRIC tunnel install..."),
-                *_routeros_install_lines(address, private_key, include_cleanup=True),
-            ]
-        )
-
-    token = rsc_access_token(address)
-    install_url = f"{fetch_base}/app/mikrotik/tunnel-rsc/?token={token}&kind=install"
-    reset_url = f"{fetch_base}/app/mikrotik/tunnel-rsc/?token={token}&kind=post-reset"
-
-    return "\n".join(
-        [
-            "# ISPCENTRIC one-paste bootstrap - Winbox -> New Terminal.",
-            "# 1) Wait for WAN  2) Download .rsc via VPS IP  3) Import (or reset if Hotspot/PPPoE).",
-            "# Plug ISP into ether1 before or during the wait loops.",
-            _ros_info("ISPCENTRIC one-paste: waiting for internet, then downloading install..."),
-            *_wan_wait_lines(endpoint_host),
-            ':do { /file remove [find where name="ispcentric-install.rsc"] } on-error={}',
-            ':do { /file remove [find where name="flash/ispcentric-install.rsc"] } on-error={}',
-            ':do { /file remove [find where name="ispcentric-post-reset.rsc"] } on-error={}',
-            ':do { /file remove [find where name="flash/ispcentric-post-reset.rsc"] } on-error={}',
-            _fetch_rsc_line(
-                install_url,
-                http_host,
-                "ispcentric-install.rsc",
-                "Downloaded ispcentric-install.rsc",
-                "Fetch install.rsc failed - check ether1 WAN / VPS HTTP",
-            ),
-            _fetch_rsc_line(
-                reset_url,
-                http_host,
-                "flash/ispcentric-post-reset.rsc",
-                "Downloaded flash/ispcentric-post-reset.rsc",
-                "Fetch post-reset.rsc to flash failed",
-            ),
-            _fetch_rsc_line(
-                reset_url,
-                http_host,
-                "ispcentric-post-reset.rsc",
-                "Downloaded ispcentric-post-reset.rsc (root fallback)",
-                "Fetch post-reset.rsc to root failed",
-            ),
-            f":if ({customized}) do={{{warn_reset}}} else={{{ok_clean}}}",
-            (
-                f":if ({customized}) do={{ "
-                f':if (([:len [/file find where name="flash/ispcentric-post-reset.rsc"]] > 0) || '
-                f'([:len [/file find where name="ispcentric-post-reset.rsc"]] > 0)) do={{ :delay 5s ; '
-                f':if ([:len [/file find where name="flash/ispcentric-post-reset.rsc"]] > 0) do={{ '
-                f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset=flash/ispcentric-post-reset.rsc }} else={{ "
-                f"/system reset-configuration keep-users=yes skip-backup=yes "
-                f"run-after-reset=ispcentric-post-reset.rsc }} }} else={{ "
-                f'{_ros_fail("Reset skipped - post-reset.rsc missing (fetch failed); fix WAN and re-paste")} }} }} '
-                f"else={{ "
-                f':if ([:len [/file find where name="ispcentric-install.rsc"]] > 0) do={{ '
-                f"/import file-name=ispcentric-install.rsc }} else={{ "
-                f'{_ros_fail("Install skipped - ispcentric-install.rsc missing; fix WAN and re-paste")} }} }}'
-            ),
-        ]
     )
 
 

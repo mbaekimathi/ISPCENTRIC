@@ -180,6 +180,8 @@ class WireGuardKeyTests(SimpleTestCase):
             ),
         ):
             script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
+            install = wireguard.install_rsc_body("10.9.0.12", private_key)
+        # Bootstrap paste stays short (no mega :if — Winbox wraps /queue into 'ueue').
         self.assertIn("one-paste bootstrap", script)
         self.assertIn("/tool fetch url=", script)
         self.assertIn("tunnel-rsc/", script)
@@ -187,15 +189,20 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("kind=post-reset", script)
         self.assertIn("http-header-field=\"Host:isp.richcom.co.ke\"", script)
         self.assertIn("/import file-name=ispcentric-install.rsc", script)
-        self.assertIn("[:len [/ip hotspot find]] > 0", script)
-        self.assertNotIn("comment!~\"ispcentric\"]] > 8", script)
-        self.assertIn("keep-users=yes", script)
-        self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", script)
-        self.assertIn("Clean router - importing tunnel install (no reset)", script)
-        self.assertIn("Custom config detected", script)
         self.assertIn("dhcp-client add interface=ether1", script)
         self.assertIn("WAN path ready", script)
         self.assertNotIn("/file add name=", script)
+        self.assertNotIn("/queue simple", script)
+        self.assertNotIn("IspCentricCustom", script)
+        # Smart reset lives in downloaded install.rsc (short flag lines).
+        self.assertIn(":global IspCentricCustom 0", install)
+        self.assertIn("[:len [/ip hotspot find]] > 0", install)
+        self.assertNotIn("/queue simple", install)
+        self.assertNotIn("comment!~\"ispcentric\"]] > 8", install)
+        self.assertIn("keep-users=yes", install)
+        self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", install)
+        self.assertIn("Clean router - continuing tunnel install (no reset)", install)
+        self.assertIn("Custom config - factory reset", install)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
