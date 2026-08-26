@@ -33,6 +33,249 @@ class MikroTikModelDetectionTests(SimpleTestCase):
         )
 
 
+class MikroTikFactoryDefaultIpTests(SimpleTestCase):
+    def test_factory_default_detection(self):
+        self.assertTrue(mikrotik_connect.is_factory_default_mikrotik_ip("192.168.88.1"))
+        self.assertTrue(mikrotik_connect.is_factory_default_mikrotik_ip(" 192.168.88.1:8728 "))
+        self.assertFalse(mikrotik_connect.is_factory_default_mikrotik_ip("192.168.10.1"))
+        self.assertFalse(mikrotik_connect.is_factory_default_mikrotik_ip("10.9.0.4"))
+
+    def test_onboard_form_rejects_factory_default_host(self):
+        from core.forms import MikroTikOnboardForm
+
+        form = MikroTikOnboardForm(
+            data={
+                "name": "Site Router",
+                "model": "other",
+                "location": "Nairobi",
+                "location_lat": "-1.286389",
+                "location_lng": "36.817223",
+                "host": "192.168.88.1",
+                "username": "admin",
+                "password": "secret",
+                "wifi_ssid": "",
+                "wifi_password": "",
+                "default_cpe_username": "admin",
+                "default_cpe_password": "",
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("host", form.errors)
+        self.assertIn("192.168.88.1", form.errors["host"][0])
+
+    def test_change_lan_ip_rejects_factory_default_target(self):
+        result = mikrotik_connect.change_mikrotik_lan_ip(
+            "192.168.88.1",
+            "admin",
+            "secret",
+            "192.168.88.1",
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("factory default", result["error"].lower())
+
+    def test_change_lan_ip_updates_address_and_verifies(self):
+        fake_sock = object()
+
+        class _Session:
+            def __enter__(self):
+                return fake_sock
+
+            def __exit__(self, *args):
+                return False
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_session",
+                return_value=_Session(),
+            ),
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=[
+                    [
+                        {
+                            ".id": "*1",
+                            "address": "192.168.88.1/24",
+                            "interface": "bridge",
+                            "comment": "",
+                        }
+                    ],
+                    [
+                        {
+                            ".id": "*2",
+                            "address": "192.168.88.0/24",
+                            "gateway": "192.168.88.1",
+                            "dns-server": "192.168.88.1",
+                        }
+                    ],
+                    [
+                        {
+                            ".id": "*3",
+                            "name": "default-dhcp",
+                            "ranges": "192.168.88.10-192.168.88.254",
+                        }
+                    ],
+                ],
+            ),
+            patch(
+                "core.mikrotik_connect._add",
+                return_value={"_reply": "!done"},
+            ) as add_mock,
+            patch(
+                "core.mikrotik_connect._set",
+                return_value={"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                return_value={"_reply": "!done"},
+            ) as remove_mock,
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True},
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+        ):
+            result = mikrotik_connect.change_mikrotik_lan_ip(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                "192.168.10.1",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["host"], "192.168.10.1")
+        add_mock.assert_called()
+        # Old LAN is kept when the API session is via that same address.
+        remove_mock.assert_not_called()
+
+    def test_change_lan_ip_removes_old_when_using_tunnel(self):
+        fake_sock = object()
+
+        class _Session:
+            def __enter__(self):
+                return fake_sock
+
+            def __exit__(self, *args):
+                return False
+
+        def print_side_effect(*args, **kwargs):
+            path = args[1] if len(args) > 1 else ""
+            if path == "/ip/address":
+                return [
+                    {
+                        ".id": "*1",
+                        "address": "192.168.88.1/24",
+                        "interface": "bridge",
+                        "comment": "",
+                    }
+                ]
+            return []
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_session",
+                return_value=_Session(),
+            ),
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=print_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._add",
+                return_value={"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect._remove",
+                return_value={"_reply": "!done"},
+            ) as remove_mock,
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True},
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+        ):
+            result = mikrotik_connect.change_mikrotik_lan_ip(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                "192.168.10.1",
+                api_hosts=["10.9.0.20"],
+            )
+
+        self.assertTrue(result["ok"])
+        remove_mock.assert_called()
+        self.assertEqual(remove_mock.call_args.args[2], "*1")
+
+    def test_change_lan_ip_treats_session_drop_after_add_as_success(self):
+        fake_sock = object()
+        calls = {"n": 0}
+
+        class _Session:
+            def __enter__(self):
+                calls["n"] += 1
+                return fake_sock
+
+            def __exit__(self, *args):
+                return False
+
+        def print_side_effect(*args, **kwargs):
+            path = args[1] if len(args) > 1 else ""
+            if path == "/ip/address":
+                return [
+                    {
+                        ".id": "*1",
+                        "address": "192.168.88.1/24",
+                        "interface": "bridge",
+                        "comment": "",
+                    }
+                ]
+            return []
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_session",
+                return_value=_Session(),
+            ),
+            patch(
+                "core.mikrotik_connect._resolve_lan_interface",
+                return_value="bridge",
+            ),
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=print_side_effect,
+            ),
+            patch(
+                "core.mikrotik_connect._add",
+                return_value={"_reply": "!done"},
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True},
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+        ):
+            result = mikrotik_connect.change_mikrotik_lan_ip(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                "192.168.10.1",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["host"], "192.168.10.1")
+        self.assertEqual(result.get("management_host"), "192.168.88.1")
+        self.assertTrue(
+            any("kept old LAN" in note for note in result.get("notes") or [])
+        )
+
+
 class WireGuardKeyTests(SimpleTestCase):
     def test_public_key_is_derivable_from_private_key(self):
         private_key, public_key = wireguard.generate_keypair()
@@ -81,6 +324,10 @@ class WireGuardKeyTests(SimpleTestCase):
         script = wireguard.routeros_script("10.9.0.3", private_key, factory_reset=False)
 
         # Compulsory API enable — Connect dials 8728 over the tunnel / LAN.
+        # Step 2/8 management runs BEFORE WireGuard so LAN Reconnect works.
+        self.assertIn("Step 2/8 management", script)
+        self.assertIn("Step 3/8 wireguard", script)
+        self.assertLess(script.find("Step 2/8 management"), script.find("Step 3/8 wireguard"))
         self.assertIn(
             ':do { /ip service set [find where name=api] disabled=no port=8728 '
             'address=0.0.0.0/0 } on-error={}',
@@ -94,7 +341,10 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn(":do { /ip service enable [find where name=api] } on-error={}", script)
         self.assertIn("[ISPCENTRIC OK] RouterOS API enabled on port 8728", script)
         self.assertIn("name=api and disabled=no and port=8728", script)
-        # Hotspot bypass is tunnel-subnet only — never whole customer LAN ranges.
+        # Hotspot: allow mgmt ports on hs-input (no free internet); bypass tunnel only.
+        self.assertIn('comment="ispcentric-vpn-hs-input"', script)
+        self.assertIn("chain=hs-input", script)
+        self.assertIn("dst-port=8728,8291,22", script)
         self.assertIn('comment="ispcentric-vpn-hotspot-bypass"', script)
         self.assertIn("type=bypassed address=10.9.0.0/24", script)
         self.assertNotIn("type=bypassed address=192.168.0.0/16", script)
@@ -125,13 +375,9 @@ class WireGuardKeyTests(SimpleTestCase):
         # Prove reachability to the VPS tunnel address (retried, one line per paste).
         self.assertIn("/ping 10.9.0.1 count=2", script)
         self.assertIn(":delay 5s", script)
-        self.assertIn("/ping 178.162.241.99 count=1", script)
-        self.assertIn("WAN 1/6...", script)
-        self.assertIn(":global IspWanOk", script)
-        self.assertIn("[ISPCENTRIC OK] WAN ready (ping", script)
-        self.assertIn('comment~"ispcentric-hotspot"', script)
-        self.assertIn("status=bound", script)
-        self.assertIn("bridge port remove", script)
+        self.assertNotIn(":global IspWanOk", script)
+        self.assertNotIn("/tool fetch url=$IspUrlInst", script)
+        self.assertNotIn("ispcentric-install.rsc", script)
         self.assertNotIn(":delay 3s :delay 5s", script)
         self.assertIn("[ISPCENTRIC OK] Tunnel 10.9.0.3 reaches billing server", script)
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", script)
@@ -166,184 +412,81 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("[ISPCENTRIC FAIL] No ping from 10.9.0.1", ping_checks[-1])
         for line in ping_checks:
             self.assertEqual(line.count("{"), line.count("}"))
+        self.assertEqual(wireguard.validate_inline_install_steps(script), [])
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
         WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
         WIREGUARD_SUBNET="10.9.0.0/24",
     )
-    def test_routeros_script_smart_install_resets_only_when_customized(self):
+    def test_routeros_script_connect_paste_is_full_inline_tunnel_install(self):
+        """Connect paste is the full inline script (no remote .rsc bootstrap)."""
         private_key, _ = wireguard.generate_keypair()
-        with (
-            patch(
-                "core.wireguard.socket.getaddrinfo",
-                return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
-            ),
-            patch(
-                "core.wireguard._script_public_base_url",
-                return_value="http://isp.richcom.co.ke",
-            ),
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
         ):
-            script = wireguard.routeros_script("10.9.0.12", private_key, factory_reset=True)
-            install = wireguard.install_rsc_body("10.9.0.12", private_key)
-            mac = wireguard.rsc_download_mac("10.9.0.12")
-            install_url, _ = wireguard.short_rsc_url("10.9.0.12", "i")
-        self.assertIn("new site", script)
-        self.assertTrue(install_url.endswith("/i/"), "trailing slash required (Django 301 breaks fetch)")
-        self.assertIn(f"/app/m/10.9.0.12/{mac}/i/", install_url)
-        self.assertIn(":global IspUrlInst", script)
-        self.assertIn("/tool fetch url=$IspUrlInst", script)
-        self.assertIn("Download 1/3 failed", script)
-        self.assertIn("Download 3/3 failed", script)
-        self.assertNotIn("Download 5/5 failed", script)
-        self.assertIn("$IspWanOk = 1", script)
-        self.assertNotIn(":for IspTry", script)
-        self.assertNotIn(":local Isp", script)
-        self.assertIn("[ISPCENTRIC OK] WAN ready", script)
-        self.assertIn("WAN 1/4...", script)
-        self.assertIn("1/4 API", script)
-        self.assertIn("2/4 WAN", script)
-        self.assertIn("3/4 Download", script)
-        self.assertLess(
-            script.index("1/4 API"),
-            script.index("2/4 WAN"),
-        )
-        self.assertIn("API open - Check now can use LAN", script)
-        self.assertIn('comment="ispcentric-api-boot"', script)
-        self.assertIn("place-before=0", script)
-        self.assertIn("bridge port remove", script)
-        self.assertNotIn("tunnel-rsc/?token=", script)
-        self.assertIn("IspFetchHost", script)
-        self.assertIn("http-header-field=$IspFetchHost", script)
-        self.assertIn("/import file-name=ispcentric-install.rsc", script)
-        self.assertIn("dhcp-client add interface=ether1", script)
-        # Heavy logic stays in downloaded install.rsc — not in the paste.
-        self.assertNotIn("IspCentricCustom", script)
-        problems = wireguard.validate_new_site_paste(script, expect_fetch=True)
-        self.assertEqual(problems, [], msg=problems)
-        self.assertNotIn("/file add name=", script)
-        self.assertNotIn("/queue simple", script)
-        self.assertIn(f"/app/m/10.9.0.12/{mac}/p/", install)
-        self.assertIn(":global IspCentricCustom 0", install)
-        self.assertIn("[:len [/ip hotspot find]] > 0", install)
-        self.assertIn("keep-users=yes", install)
-        self.assertIn("run-after-reset=flash/ispcentric-post-reset.rsc", install)
-        self.assertIn("Clean router - continuing tunnel install (no reset)", install)
-        self.assertIn("Custom config - factory reset", install)
-        self.assertTrue(wireguard.verify_rsc_download_mac("10.9.0.12", mac))
-        self.assertFalse(wireguard.verify_rsc_download_mac("10.9.0.12", "deadbeefdead"))
+            script_default = wireguard.routeros_script("10.9.0.12", private_key)
+            script_flag = wireguard.routeros_script(
+                "10.9.0.12", private_key, factory_reset=True
+            )
+        for script in (script_default, script_flag):
+            self.assertIn("ispcentric-vpn", script)
+            self.assertIn(f'private-key="{private_key}"', script)
+            self.assertIn("endpoint-address=203.0.113.50", script)
+            self.assertIn("RouterOS API enabled on port 8728", script)
+            self.assertIn("/ping 10.9.0.1 count=2", script)
+            self.assertNotIn("ispcentric-install.rsc", script)
+            self.assertNotIn("/tool fetch url=$IspUrlInst", script)
+            self.assertNotIn("new site", script)
+            self.assertNotIn("1/4 API", script)
+            self.assertEqual(wireguard.validate_inline_install_steps(script), [])
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
         WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
         WIREGUARD_SUBNET="10.9.0.0/24",
     )
-    def test_new_site_bootstrap_local_and_hosted_matrix(self):
-        """
-        Loop local + hosted Connect pastes and assert shared invariants.
-
-        Hosted = public hostname (fetch via resolved IP + Host header).
-        Local LAN = PRIVATE_BASE style URL on the LAN.
-        Inline = no PUBLIC_BASE_URL (dev laptop without a portal base).
-        """
-        private_key, _ = wireguard.generate_keypair()
-        address = "10.9.0.21"
-        mac = wireguard.rsc_download_mac(address)
-        scenarios = [
-            {
-                "name": "hosted",
-                "base": "http://isp.richcom.co.ke",
-                "resolve_to": "178.162.241.99",
-                "expect_fetch": True,
-                "expect_host_header": True,
-                "expect_in_url": f"/app/m/{address}/{mac}/i/",
-            },
-            {
-                "name": "local_lan",
-                "base": "http://192.168.100.79:8000",
-                "resolve_to": "192.168.100.79",
-                "expect_fetch": True,
-                "expect_host_header": False,
-                "expect_in_url": f"/app/m/{address}/{mac}/i/",
-            },
-            {
-                "name": "inline",
-                "base": "",
-                "resolve_to": "178.162.241.99",
-                "expect_fetch": False,
-                "expect_host_header": False,
-                "expect_in_url": "",
-            },
+    def test_inline_install_step_matrix_first_to_last(self):
+        """Loop addresses/keys: every Connect paste must pass the 1→8 step matrix."""
+        cases = [
+            "10.9.0.2",
+            "10.9.0.3",
+            "10.9.0.12",
+            "10.9.0.50",
+            "10.9.0.254",
         ]
-
-        for scenario in scenarios:
-            with self.subTest(scenario=scenario["name"]):
-                resolve_ip = scenario["resolve_to"]
-                with (
-                    patch(
-                        "core.wireguard.socket.getaddrinfo",
-                        return_value=[
-                            (socket.AF_INET, socket.SOCK_DGRAM, 17, "", (resolve_ip, 0))
-                        ],
-                    ),
-                    patch(
-                        "core.wireguard._script_public_base_url",
-                        return_value=scenario["base"],
-                    ),
-                ):
-                    script = wireguard.routeros_script(
-                        address, private_key, factory_reset=True
-                    )
-                    install_url, http_host = wireguard.short_rsc_url(address, "i")
-
-                problems = wireguard.validate_new_site_paste(
-                    script, expect_fetch=scenario["expect_fetch"]
-                )
-                self.assertEqual(
-                    problems,
-                    [],
-                    msg=f"{scenario['name']} paste problems: {problems}\n---\n{script[:800]}",
-                )
-                self.assertIn("new site", script)
-                self.assertIn("Already-joined MikroTiks are not changed", script)
-                self.assertIn("1/4 API", script)
-                self.assertIn("2/4 WAN", script)
-                self.assertIn("bridge port remove", script)
-                self.assertIn(":global IspWanOk", script)
-                self.assertNotIn(":for ", script)
-                self.assertNotIn(":foreach ", script)
-
-                if scenario["expect_fetch"]:
-                    self.assertTrue(install_url.endswith("/i/"))
-                    self.assertIn(scenario["expect_in_url"], install_url)
-                    self.assertIn(scenario["expect_in_url"], script)
-                    self.assertIn("/tool fetch url=$IspUrlInst", script)
-                    self.assertIn("Download 1/3 failed", script)
-                    self.assertIn("/import file-name=ispcentric-install.rsc", script)
-                    self.assertNotIn("IspCentricCustom", script)
-                    if scenario["expect_host_header"]:
-                        self.assertIn("IspFetchHost", script)
-                        self.assertIn(f"Host:{http_host}", script)
-                        self.assertIn("http-header-field=$IspFetchHost", script)
-                    else:
-                        # LAN base already uses the IP in the URL - no Host override.
-                        self.assertNotIn("IspFetchHost", script)
-                else:
-                    self.assertEqual(install_url, "")
-                    self.assertIn("public_base_url", script.lower())
-                    self.assertNotIn("IspCentricCustom", script)
-                    self.assertNotIn("/tool fetch url=$IspUrlInst", script)
-                    self.assertNotIn("ispcentric-vpn", script)
-
-                # Every command line must be brace-balanced (Winbox paste).
-                for line in script.splitlines():
-                    if not line.strip() or line.lstrip().startswith("#"):
-                        continue
-                    self.assertEqual(
-                        line.count("{"),
-                        line.count("}"),
-                        msg=f"{scenario['name']} unbalanced: {line}",
-                    )
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        ):
+            for address in cases:
+                private_key, _ = wireguard.generate_keypair()
+                for factory_reset in (False, True):
+                    with self.subTest(address=address, factory_reset=factory_reset):
+                        script = wireguard.routeros_script(
+                            address, private_key, factory_reset=factory_reset
+                        )
+                        problems = wireguard.validate_inline_install_steps(script)
+                        self.assertEqual(problems, [], problems)
+                        # Management before WireGuard (index check).
+                        self.assertLess(
+                            script.find("Step 2/8 management"),
+                            script.find("/interface wireguard add "),
+                        )
+                        # Balanced braces on every non-comment line (Winbox paste).
+                        for line in script.splitlines():
+                            if line.lstrip().startswith("#"):
+                                continue
+                            self.assertEqual(
+                                line.count("{"),
+                                line.count("}"),
+                                msg=f"unbalanced braces: {line[:120]}",
+                            )
+                        self.assertIn(f"address={address}/24", script)
+                        self.assertIn('comment="ispcentric-vpn-hs-input"', script)
+                        self.assertIn("Step 7/8 handshake", script)
+                        self.assertIn("Step 8/8 backup", script)
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -596,6 +739,37 @@ class RouterDialTargetTests(SimpleTestCase):
         self.assertEqual(hosts, ["10.9.0.8"])
         self.assertNotIn("192.168.88.1", hosts)
 
+    @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_local_prefers_lan_host_over_unreachable_vpn(self):
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter(
+            id=9,
+            name="Site",
+            host="192.168.10.2",
+            vpn_address="10.9.0.28",
+        )
+        hosts = _router_api_host_candidates(router, discover=False)
+
+        self.assertEqual(hosts[0], "192.168.10.2")
+        self.assertIn("10.9.0.28", hosts)
+        self.assertEqual(router.api_host, "192.168.10.2")
+
+    @override_settings(HOSTED=True, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_hosted_api_host_prefers_vpn(self):
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter(
+            id=9,
+            name="Site",
+            host="192.168.10.2",
+            vpn_address="10.9.0.28",
+        )
+        hosts = _router_api_host_candidates(router, discover=False)
+
+        self.assertEqual(hosts[0], "10.9.0.28")
+        self.assertEqual(router.api_host, "10.9.0.28")
+
     @override_settings(HOSTED=False)
     def test_on_lan_dials_the_saved_address_untouched(self):
         self._set_tunnel_map({"192.168.1.104": "10.9.0.3"})
@@ -781,6 +955,10 @@ class HotspotCaptiveLockoutTests(SimpleTestCase):
                 "core.mikrotik_connect._serves_hotspot_portal",
                 return_value=True,
             ),
+            patch(
+                "core.mikrotik_connect._hotspot_login_this_pc",
+                return_value=[],
+            ),
         ):
             result = recover_mikrotik_connection(
                 "192.168.88.1",
@@ -793,9 +971,66 @@ class HotspotCaptiveLockoutTests(SimpleTestCase):
         self.assertTrue(result["hotspot_lockout"])
         self.assertIn("not logged in", result["error"])
         self.assertIn("connect by MAC", result["error"])
-        self.assertIn("ip-binding", result["error"])
         # The old advice was misleading: the PC is already on the LAN.
         self.assertNotIn("Plug this PC into MikroTik ether2", result["error"])
+
+    def test_hotspot_http_login_unlocks_api_for_auto_reconnect(self):
+        from core.mikrotik_connect import recover_mikrotik_connection
+        from unittest.mock import MagicMock
+
+        sock = MagicMock()
+        calls = {"n": 0}
+
+        def fake_session(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionRefusedError("refused")
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return sock
+
+                def __exit__(self_inner, *exc):
+                    return False
+
+            return _Ctx()
+
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "http", "port": 80},
+            ),
+            patch("core.mikrotik_connect._api_session", side_effect=fake_session),
+            patch(
+                "core.mikrotik_connect._serves_hotspot_portal",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._hotspot_login_this_pc",
+                side_effect=[[], ["192.168.88.1"]],
+            ),
+            patch("core.mikrotik_connect._print", return_value=[{"name": "fsf"}]),
+            patch("core.mikrotik_connect._remove_tagged", return_value=0),
+            patch(
+                "core.mikrotik_connect.ensure_mikrotik_lan_passthrough",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_hotspot_management_access",
+                return_value=["Hotspot management ready"],
+            ),
+        ):
+            result = recover_mikrotik_connection(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                timeout=0.1,
+                remove_clean_rules=False,
+                restore_bridge=False,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["host"], "192.168.88.1")
 
     def test_refused_api_without_a_portal_still_reports_api_disabled(self):
         from core.mikrotik_connect import recover_mikrotik_connection
@@ -2622,6 +2857,10 @@ class TunnelStatusTests(TestCase):
                 "core.views.check_mikrotik_reachable",
                 return_value={"online": True, "via": "api"},
             ) as probe,
+            patch(
+                "core.wireguard.lan_tunnel_script_installed",
+                return_value={"installed": False, "via": "udp", "error": "missing"},
+            ),
         ):
             response = self.client.get(
                 "/app/mikrotik/tunnel-status/", {"token": self._token()}
@@ -2630,13 +2869,54 @@ class TunnelStatusTests(TestCase):
         data = response.json()
         probe.assert_called_once_with("192.168.88.1", timeout=0.8)
         self.assertTrue(data["local_mode"])
-        self.assertTrue(data["ready"])
         self.assertTrue(data["api_enabled"])
         self.assertEqual(data["lan_address"], "192.168.88.1")
         self.assertEqual(
             [item["status"] for item in data["checks"] if item["key"] == "api"],
             ["ok"],
         )
+        self.assertFalse(data["ready"])
+        self.assertFalse(data.get("script_installed"))
+        self.assertIn("script", data["message"].lower())
+        self.assertEqual(
+            [item["status"] for item in data["checks"] if item["key"] == "firewall"],
+            ["ok"],
+        )
+        self.assertIn(
+            "API reachable",
+            next(item["label"] for item in data["checks"] if item["key"] == "firewall"),
+        )
+        wg = next(item for item in data["checks"] if item["key"] == "wireguard")
+        self.assertEqual(wg["status"], "waiting")
+        self.assertIn("paste", wg["message"].lower())
+
+    def test_local_server_ready_only_after_script_detected(self):
+        device = {
+            "host": "192.168.88.1",
+            "name": "ispcentric.10.9.0.4",
+            "identity": "ispcentric.10.9.0.4",
+            "onboarded": False,
+        }
+        with (
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+            patch("core.views.discover_mikrotik_devices", return_value=[device]),
+            patch(
+                "core.views.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+        ):
+            response = self.client.post(
+                "/app/mikrotik/tunnel-status/",
+                {"token": self._token()},
+            )
+
+        data = response.json()
+        self.assertTrue(data["ready"])
+        self.assertTrue(data["script_installed"])
+        self.assertEqual(data.get("script_via"), "mndp")
+        self.assertIn("username and password", data["message"].lower())
+        wg = next(item for item in data["checks"] if item["key"] == "wireguard")
+        self.assertEqual(wg["status"], "ok")
 
     def test_local_server_flags_subnet_mismatch_when_api_unreachable(self):
         device = {
@@ -2684,13 +2964,38 @@ class TunnelStatusTests(TestCase):
         data = response.json()
         self.assertTrue(data["ready"])
         self.assertFalse(data["no_tunnel_route"])
+        self.assertFalse(data.get("local_mode"))
         self.assertTrue(data["api_enabled"])
+        self.assertTrue(data.get("script_installed"))
         self.assertIn("checks", data)
         self.assertTrue(
             any(item["key"] == "tunnel" and item["status"] == "ok" for item in data["checks"])
         )
         self.assertTrue(
             any(item["key"] == "api" and item["status"] == "ok" for item in data["checks"])
+        )
+
+    @override_settings(HOSTED=True)
+    def test_hosted_vps_without_wg_does_not_use_lan_discovery(self):
+        with (
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+            patch("core.views.discover_mikrotik_devices") as discover,
+            patch("core.views.check_mikrotik_reachable") as probe,
+        ):
+            response = self.client.get(
+                "/app/mikrotik/tunnel-status/", {"token": self._token()}
+            )
+
+        data = response.json()
+        discover.assert_not_called()
+        probe.assert_not_called()
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["ready"])
+        self.assertTrue(data["hosted_wg_down"])
+        self.assertFalse(data["local_mode"])
+        self.assertIn("WireGuard server address", data["message"])
+        self.assertTrue(
+            any(item["key"] == "tunnel" and item["status"] == "fail" for item in data["checks"])
         )
 
     def test_tunnel_server_address_is_not_bindable_on_a_plain_host(self):
@@ -2753,6 +3058,75 @@ class TunnelStatusTests(TestCase):
             api_enabled=True,
         )
         self.assertTrue(all(item["status"] == "ok" for item in ready))
+
+    def test_tunnel_verification_checks_local_mode_marks_wireguard_unverified(self):
+        checks = wireguard.tunnel_verification_checks(
+            local_mode=True,
+            address="10.9.0.15",
+            tunnel_reachable=False,
+            api_enabled=True,
+            lan_address="192.168.88.1",
+            script_installed=False,
+        )
+        by_key = {item["key"]: item for item in checks}
+        self.assertEqual(
+            list(by_key),
+            ["lan", "subnet", "api", "firewall", "wireguard"],
+        )
+        self.assertEqual(by_key["firewall"]["label"], "API reachable")
+        self.assertEqual(by_key["firewall"]["status"], "ok")
+        self.assertEqual(by_key["wireguard"]["status"], "waiting")
+        self.assertIn("paste", by_key["wireguard"]["message"].lower())
+
+        installed = wireguard.tunnel_verification_checks(
+            local_mode=True,
+            address="10.9.0.15",
+            tunnel_reachable=False,
+            api_enabled=True,
+            lan_address="192.168.88.1",
+            script_installed=True,
+        )
+        self.assertEqual(
+            next(item["status"] for item in installed if item["key"] == "wireguard"),
+            "ok",
+        )
+
+    def test_wg_listen_probe_treats_timeout_as_inconclusive(self):
+        with patch("core.wireguard.socket.socket") as sock_cls:
+            sock = sock_cls.return_value
+            sock.recvfrom.side_effect = TimeoutError
+            self.assertIsNone(
+                wireguard.probe_router_wg_listen("192.168.88.1", "10.9.0.19")
+            )
+
+    def test_lan_script_installed_requires_api_not_udp_timeout(self):
+        result = wireguard.lan_tunnel_script_installed(
+            "192.168.88.1",
+            "10.9.0.19",
+            identity="MikroTik",
+        )
+        self.assertFalse(result["installed"])
+        self.assertIn("ispcentric.10.9.0.19", result["error"])
+
+    def test_lan_script_installed_detects_mndp_identity_marker(self):
+        result = wireguard.lan_tunnel_script_installed(
+            "192.168.100.50",
+            "10.9.0.19",
+            identity="ispcentric.10.9.0.19",
+        )
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["via"], "mndp")
+
+    def test_routeros_script_sets_identity_marker_for_lan_check(self):
+        private_key, _ = wireguard.generate_keypair()
+        with override_settings(
+            WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+            WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+            WIREGUARD_SUBNET="10.9.0.0/24",
+        ):
+            script = wireguard.routeros_script("10.9.0.19", private_key, factory_reset=False)
+        self.assertIn('identity set name="ispcentric.10.9.0.19"', script)
+        self.assertEqual(wireguard.validate_inline_install_steps(script), [])
 
     def test_peer_sync_report_marks_hosted_skip_as_required(self):
         with override_settings(HOSTED=True):

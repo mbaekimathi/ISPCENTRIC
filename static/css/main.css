@@ -1768,6 +1768,19 @@ a {
   word-break: break-all;
 }
 
+.mikrotik-tunnel-address-block {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.mikrotik-tunnel-address-note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: rgba(148, 163, 184, 0.95);
+}
+
 .mikrotik-tunnel-copy {
   flex: 0 0 auto;
   white-space: nowrap;
@@ -2307,6 +2320,19 @@ a {
   color: rgba(232, 242, 244, 0.55);
 }
 
+.mikrotik-section-hint.is-warning {
+  color: #f0c674;
+}
+
+.mikrotik-required-mark {
+  color: #f07178;
+  font-weight: 700;
+}
+
+#id_mikrotik_host_onboard.is-required-ip {
+  border-color: rgba(240, 198, 116, 0.65);
+}
+
 .mikrotik-wifi-block {
   padding-top: 0.35rem;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
@@ -2327,6 +2353,14 @@ a {
 
 [data-theme="light"] .mikrotik-section-hint {
   color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-section-hint.is-warning {
+  color: #9a6b00;
+}
+
+[data-theme="light"] #id_mikrotik_host_onboard.is-required-ip {
+  border-color: rgba(154, 107, 0, 0.55);
 }
 
 [data-theme="light"] .mikrotik-wifi-block {
@@ -2909,6 +2943,10 @@ a {
 [data-theme="light"] .mikrotik-tunnel-tip.is-ok,
 [data-theme="light"] .mikrotik-tunnel-address {
   color: #1b7a45;
+}
+
+[data-theme="light"] .mikrotik-tunnel-address-note {
+  color: #64748b;
 }
 
 [data-theme="light"] .mikrotik-tunnel-status.is-ok,
@@ -13488,6 +13526,57 @@ a.packages-stat:focus-visible {
 
 .mikrotik-reconnect-hint.is-error {
   color: #f87171;
+}
+
+.mikrotik-unlock-box {
+  margin: 0.75rem 0 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 10px;
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.mikrotik-unlock-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fecaca;
+}
+
+.mikrotik-unlock-copy {
+  margin: 0.55rem 0 0.65rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #fecaca;
+  opacity: 0.92;
+}
+
+.mikrotik-unlock-commands {
+  margin: 0 0 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fef2f2;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+[data-theme="light"] .mikrotik-unlock-box {
+  background: #fff1f2;
+  border-color: #fecdd3;
+}
+
+[data-theme="light"] .mikrotik-unlock-title,
+[data-theme="light"] .mikrotik-unlock-copy {
+  color: #9f1239;
+}
+
+[data-theme="light"] .mikrotik-unlock-commands {
+  background: #fff;
+  color: #881337;
+  border: 1px solid #fecdd3;
 }
 
 [data-theme="dark"] .org-actions-icons .mikrotik-reconnect-btn.is-needed,

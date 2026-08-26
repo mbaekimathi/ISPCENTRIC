@@ -1269,8 +1269,7 @@ def recover_mikrotik_connection(
 
     if not username:
         return {"ok": False, "error": "Router username is required."}
-    if not password:
-        return {"ok": False, "error": "Router password is required."}
+    # Empty password is valid on many factory / freshly reset MikroTiks.
 
     hosts: list[str] = []
     if router is not None:
@@ -1295,11 +1294,28 @@ def recover_mikrotik_connection(
             "error": "No router IP to try. Plug your PC into a LAN port and scan again.",
         }
 
+    # Prefer non-Hotspot gateway IPs when we already have better LAN candidates.
+    def _hotspot_gateway_ip(value: str) -> bool:
+        return (value or "").strip() in {"10.50.50.1", "192.168.88.1"}
+
+    if any(not _hotspot_gateway_ip(h) for h in hosts):
+        hosts = [h for h in hosts if not _hotspot_gateway_ip(h)] + [
+            h for h in hosts if _hotspot_gateway_ip(h)
+        ]
+
+    # If this PC is already captive, HTTP-login first so API 8728 can open
+    # without Winbox MAC. Uses ispcentric-mgmt / router credentials when present.
+    try:
+        _hotspot_login_this_pc(hosts, username, password)
+    except Exception:
+        pass
+
     last_error = "Could not reach the MikroTik API on any candidate IP."
     working_host = ""
     pingable_hosts: list[str] = []
     manageable_hosts: list[str] = []
     api_refused_hosts: list[str] = []
+    api_timeout_hosts: list[str] = []
     _auth_tokens = (
         "invalid user",
         "password",
@@ -1320,145 +1336,208 @@ def recover_mikrotik_connection(
         "reset by peer",
     )
 
-    for candidate in hosts:
-        probe = check_mikrotik_reachable(candidate, timeout=min(2.0, timeout))
-        via = (probe.get("via") or "").strip()
-        if probe.get("online") and via == "ping":
-            pingable_hosts.append(candidate)
-        if probe.get("online") and via in {"api", "winbox", "http"}:
-            manageable_hosts.append(candidate)
+    def _try_api_on_hosts(candidates: list[str]) -> dict[str, Any] | None:
+        nonlocal last_error, working_host
+        for candidate in candidates:
+            probe = check_mikrotik_reachable(candidate, timeout=min(2.0, timeout))
+            via = (probe.get("via") or "").strip()
+            if probe.get("online") and via == "ping":
+                pingable_hosts.append(candidate)
+            if probe.get("online") and via in {"api", "winbox", "http"}:
+                manageable_hosts.append(candidate)
 
-        # Don't burn long timeouts on ping-only hosts — API is almost certainly firewalled.
-        attempt_timeout = 2.5 if via == "ping" else timeout
+            # Don't burn long timeouts on ping-only hosts — API is almost certainly firewalled.
+            attempt_timeout = 2.5 if via == "ping" else timeout
 
-        try:
-            with _api_session(
-                candidate, username, password, port=port, timeout=attempt_timeout
-            ) as sock:
-                # Prove the session is usable.
-                _print(sock, "/system/identity", props="name")
-                working_host = candidate
+            try:
+                with _api_session(
+                    candidate, username, password, port=port, timeout=attempt_timeout
+                ) as sock:
+                    # Prove the session is usable.
+                    _print(sock, "/system/identity", props="name")
+                    working_host = candidate
 
-                repaired: list[str] = []
-                if remove_clean_rules:
-                    removed_filter = _remove_tagged(sock, "/ip/firewall/filter")
-                    removed_nat = _remove_tagged(sock, "/ip/firewall/nat")
-                    removed_dhcp = _remove_tagged(sock, "/ip/dhcp-client")
-                    removed_members = _remove_tagged(sock, "/interface/list/member")
-                    if removed_filter or removed_nat or removed_dhcp or removed_members:
-                        repaired.append("removed clean-uplink rules")
+                    repaired: list[str] = []
+                    if remove_clean_rules:
+                        removed_filter = _remove_tagged(sock, "/ip/firewall/filter")
+                        removed_nat = _remove_tagged(sock, "/ip/firewall/nat")
+                        removed_dhcp = _remove_tagged(sock, "/ip/dhcp-client")
+                        removed_members = _remove_tagged(sock, "/interface/list/member")
+                        if (
+                            removed_filter
+                            or removed_nat
+                            or removed_dhcp
+                            or removed_members
+                        ):
+                            repaired.append("removed clean-uplink rules")
 
-                if restore_bridge and wan_interface and lan_bridge:
-                    iface_names = {
-                        (row.get("name") or "").strip()
-                        for row in _print(sock, "/interface", props="name")
-                    }
-                    if wan_interface in iface_names and lan_bridge in iface_names:
-                        if not _bridge_port_id(sock, wan_interface):
-                            # Do NOT put WAN back in the bridge — that breaks routing.
-                            # Instead ensure proper LAN/WAN passthrough.
-                            pass
+                    if restore_bridge and wan_interface and lan_bridge:
+                        iface_names = {
+                            (row.get("name") or "").strip()
+                            for row in _print(sock, "/interface", props="name")
+                        }
+                        if wan_interface in iface_names and lan_bridge in iface_names:
+                            if not _bridge_port_id(sock, wan_interface):
+                                # Do NOT put WAN back in the bridge — that breaks routing.
+                                pass
 
-                try:
-                    repaired.extend(
-                        ensure_mikrotik_lan_passthrough(
-                            sock,
-                            wan_interface=wan_interface,
-                            lan_bridge=lan_bridge,
+                    try:
+                        repaired.extend(
+                            ensure_mikrotik_lan_passthrough(
+                                sock,
+                                wan_interface=wan_interface,
+                                lan_bridge=lan_bridge,
+                            )
                         )
-                    )
-                except Exception as exc:
-                    repaired.append(f"passthrough warning: {exc}")
+                    except Exception as exc:
+                        repaired.append(f"passthrough warning: {exc}")
 
-                identity = ""
-                for row in _print(sock, "/system/identity", props="name"):
-                    identity = (row.get("name") or "").strip() or identity
+                    try:
+                        repaired.extend(
+                            _ensure_hotspot_management_access(
+                                sock,
+                                username=username,
+                                password=password,
+                            )
+                        )
+                    except Exception as exc:
+                        repaired.append(f"hotspot management warning: {exc}")
 
-            note = "; ".join(repaired) if repaired else "API login verified"
-            host_note = (
-                f" (updated IP to {working_host})"
-                if working_host != host and host
-                else ""
-            )
-            return {
-                "ok": True,
-                "host": working_host,
-                "host_changed": bool(host and working_host != host),
-                "identity": identity,
-                "repaired": repaired,
-                "message": (
-                    f"MikroTik is back online{host_note}. {note}. "
-                    "Clients must use ether2–ether5 and get a 10.10.0.x address."
-                ),
-            }
-        except ConnectionRefusedError:
-            api_refused_hosts.append(candidate)
-            last_error = (
-                f"{candidate}: API port {port} refused "
-                "(RouterOS API service may be disabled)"
-            )
-            continue
-        except ConnectionError as exc:
-            message = str(exc) or "Login failed."
-            low = message.lower()
-            # socket.create_connection failures are ConnectionError subclasses on
-            # some platforms; never treat those as wrong-password auth errors.
-            if any(token in low for token in _network_tokens):
-                if "refused" in low or "10061" in low:
-                    api_refused_hosts.append(candidate)
+                    identity = ""
+                    for row in _print(sock, "/system/identity", props="name"):
+                        identity = (row.get("name") or "").strip() or identity
+
+                note = "; ".join(repaired) if repaired else "API login verified"
+                host_note = (
+                    f" (updated IP to {working_host})"
+                    if working_host != host and host
+                    else ""
+                )
+                return {
+                    "ok": True,
+                    "host": working_host,
+                    "host_changed": bool(host and working_host != host),
+                    "identity": identity,
+                    "repaired": repaired,
+                    "message": f"MikroTik is back online{host_note}. {note}.",
+                }
+            except ConnectionRefusedError:
+                api_refused_hosts.append(candidate)
+                last_error = (
+                    f"{candidate}: API port {port} refused "
+                    "(RouterOS API service may be disabled)"
+                )
+                continue
+            except ConnectionError as exc:
+                message = str(exc) or "Login failed."
+                low = message.lower()
+                # socket.create_connection failures are ConnectionError subclasses on
+                # some platforms; never treat those as wrong-password auth errors.
+                if any(token in low for token in _network_tokens):
+                    if "refused" in low or "10061" in low:
+                        api_refused_hosts.append(candidate)
+                    if "timed out" in low or "10060" in low:
+                        api_timeout_hosts.append(candidate)
+                    last_error = f"{candidate}: {message}"
+                    continue
+                # Wrong password after TCP connected — stop trying other IPs.
+                if any(token in low for token in _auth_tokens):
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"{message} Update Login credentials on this router "
+                            "(sidebar) with the same username/password used in Winbox, "
+                            "then click Reconnect again."
+                        ),
+                        "auth_error": True,
+                        "host": candidate,
+                    }
                 last_error = f"{candidate}: {message}"
                 continue
-            # Wrong password after TCP connected — stop trying other IPs.
-            if any(token in low for token in _auth_tokens):
-                return {
-                    "ok": False,
-                    "error": (
-                        f"{message} Update Login credentials on this router "
-                        "(sidebar) with the same username/password used in Winbox, "
-                        "then click Reconnect again."
-                    ),
-                    "auth_error": True,
-                    "host": candidate,
-                }
-            last_error = f"{candidate}: {message}"
-            continue
-        except TimeoutError:
-            last_error = f"{candidate}: API timed out"
-            continue
-        except OSError as exc:
-            message = str(exc) or "OS error"
-            low = message.lower()
-            if "refused" in low or "10061" in low:
-                api_refused_hosts.append(candidate)
-            last_error = f"{candidate}: {exc}"
-            continue
-        except Exception as exc:
-            last_error = f"{candidate}: {exc}"
-            continue
+            except TimeoutError:
+                api_timeout_hosts.append(candidate)
+                last_error = f"{candidate}: API timed out"
+                continue
+            except OSError as exc:
+                message = str(exc) or "OS error"
+                low = message.lower()
+                if "refused" in low or "10061" in low:
+                    api_refused_hosts.append(candidate)
+                if "timed out" in low or "10060" in low:
+                    api_timeout_hosts.append(candidate)
+                last_error = f"{candidate}: {exc}"
+                continue
+            except Exception as exc:
+                last_error = f"{candidate}: {exc}"
+                continue
+        return None
 
-    # Hotspot rejects every service port for a client that has not logged in,
-    # so "refused" here means this PC is captive — not that API is disabled.
+    result = _try_api_on_hosts(hosts)
+    if result is not None:
+        return result
+
+    # Hotspot rejects every service port for a client that has not logged in.
+    # Some RouterOS builds REJECT (refused); others DROP (timeout). Both + a
+    # Hotspot portal on that IP mean this PC is captive.
+    blocked_for_portal = sorted(set(api_refused_hosts) | set(api_timeout_hosts))
     hotspot_hosts = [
         candidate
-        for candidate in sorted(set(api_refused_hosts))
+        for candidate in blocked_for_portal
         if _serves_hotspot_portal(dial_host(candidate))
     ]
+    if not hotspot_hosts:
+        # Portal often answers on 10.50.50.1 / saved host even when API target differs.
+        for probe_host in list(dict.fromkeys([*hosts, "10.50.50.1", "192.168.88.1"])):
+            if _serves_hotspot_portal(dial_host(probe_host)) and blocked_for_portal:
+                hotspot_hosts = blocked_for_portal[:3]
+                break
     if hotspot_hosts:
+        # One more auto attempt: HTTP-login then retry API on captive gateways.
+        unlocked: list[str] = []
+        try:
+            unlocked = _hotspot_login_this_pc(hotspot_hosts, username, password)
+        except Exception:
+            unlocked = []
+        if unlocked:
+            api_refused_hosts.clear()
+            api_timeout_hosts.clear()
+            retry = _try_api_on_hosts(list(dict.fromkeys([*unlocked, *hotspot_hosts])))
+            if retry is not None:
+                return retry
+            blocked_for_portal = sorted(
+                set(api_refused_hosts) | set(api_timeout_hosts)
+            )
+            hotspot_hosts = [
+                candidate
+                for candidate in blocked_for_portal
+                if _serves_hotspot_portal(dial_host(candidate))
+            ] or hotspot_hosts
+
         shown = ", ".join(hotspot_hosts[:3])
+        unlock = hotspot_unlock_commands()
+        preferred = unlock.get("preferred_ip") or ""
+        commands = (unlock.get("commands") or "").strip()
+        hint = ""
+        if preferred:
+            hint = (
+                f" Your PC is {preferred}. In Winbox (MAC) → New Terminal paste the "
+                "unlock lines, then click Reconnect."
+            )
         return {
             "ok": False,
             "error": (
                 f"Router {shown} is running Hotspot and this PC is not logged in, "
-                f"so RouterOS rejects API {port}, Winbox 8291 and SSH 22. "
-                "Open Winbox → Neighbors and connect by MAC address (that works "
-                "without an IP), then run: /ip hotspot ip-binding add "
-                "address=<this PC's IP> type=bypassed comment=\"ispcentric\" — "
-                "or paste the ISPCENTRIC tunnel script, which allows API from the "
-                "LAN. Then click Reconnect again."
+                f"so RouterOS blocks API {port}, Winbox 8291 and SSH 22. "
+                "Open Winbox → Neighbors → connect by MAC, paste the unlock commands, "
+                "then Reconnect — after that ISPCENTRIC stays auto-connected."
+                f"{hint}"
             ),
             "hotspot_lockout": True,
             "host": hotspot_hosts[0],
             "pingable_hosts": sorted(set(pingable_hosts)),
+            "unlock_commands": commands,
+            "unlock_ip": preferred,
+            "local_ips": unlock.get("local_ips") or [],
         }
 
     # Device answers WebFig/Winbox but API TCP is refused → enable api service.
@@ -1502,6 +1581,7 @@ def recover_mikrotik_connection(
             f"{last_error}. Plug this PC into MikroTik ether2–ether5 (LAN), "
             "wait a few seconds, then click Reconnect again."
         ),
+        "pingable_hosts": sorted(set(pingable_hosts)),
     }
 
 
@@ -1593,6 +1673,377 @@ def _ensure_hotspot_bypass(sock: socket.socket, address: str) -> None:
         )
     except Exception:
         pass
+
+
+HS_MGMT_PORTS = "8728,8291,22"
+HS_MGMT_INPUT_TAG = "ispcentric-vpn-hs-input"
+HS_MGMT_UNAUTH_TAG = "ispcentric-vpn-hs-unauth"
+HS_MGMT_USER = "ispcentric-mgmt"
+HS_MGMT_USER_TAG = "ispcentric-mgmt-user"
+
+
+def _management_source_ipv4s() -> list[str]:
+    """Private IPv4s on this host that Hotspot may treat as captive clients."""
+    try:
+        from core.hotspot_portal import local_ipv4_addresses
+    except Exception:
+        return []
+    out: list[str] = []
+    for raw in local_ipv4_addresses():
+        try:
+            local = ipaddress.IPv4Address(raw)
+        except ValueError:
+            continue
+        if local.is_loopback or local.is_link_local or not local.is_private:
+            continue
+        out.append(str(local))
+    return list(dict.fromkeys(out))
+
+
+def _ensure_hotspot_management_access(
+    sock: socket.socket,
+    *,
+    username: str = "",
+    password: str = "",
+) -> list[str]:
+    """
+    Keep Connect/Reconnect working after ISP Hotspot is enabled.
+
+    Hotspot inserts a dynamic ``input → hs-input → hs-unauth → reject`` path
+    above normal LAN accepts, so unpaid clients never reach API 8728. Install:
+      1) accept management ports on ``input`` *before* the Hotspot jump
+      2) accept on ``hs-unauth`` / ``hs-input`` *before* the reject
+      3) ip-binding bypass for this PC's LAN addresses
+      4) dedicated Hotspot user for HTTP login rescue
+    """
+    notes: list[str] = []
+
+    def _rows() -> list[dict[str, str]]:
+        try:
+            return _print(
+                sock,
+                "/ip/firewall/filter",
+                props=".id,chain,action,jump-target,comment,dst-port,hotspot",
+            )
+        except Exception:
+            return []
+
+    def _place_before(chain: str) -> str:
+        for row in _rows():
+            if (row.get("chain") or "").strip() != chain:
+                continue
+            action = (row.get("action") or "").strip()
+            jump = (row.get("jump-target") or "").strip()
+            comment = (row.get("comment") or "").strip().lower()
+            if chain == "input" and jump == "hs-input":
+                return (row.get(".id") or "").strip()
+            if chain == "input" and "place hotspot rules here" in comment:
+                return (row.get(".id") or "").strip()
+            if chain in {"hs-input", "hs-unauth"} and action == "reject":
+                return (row.get(".id") or "").strip()
+            if chain == "hs-input" and jump == "hs-unauth":
+                return (row.get(".id") or "").strip()
+        return ""
+
+    def _ensure_accept(chain: str, comment: str) -> None:
+        # Drop stale copies so we can re-insert in the correct place.
+        for row in _rows():
+            if (row.get("comment") or "").strip() != comment:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                try:
+                    _remove(sock, "/ip/firewall/filter", item_id)
+                except Exception:
+                    pass
+        rule = {
+            "chain": chain,
+            "action": "accept",
+            "protocol": "tcp",
+            "dst-port": HS_MGMT_PORTS,
+            "comment": comment,
+        }
+        place = _place_before(chain)
+        try:
+            terminal = _add_filter_rule(sock, rule, place_before=place)
+            if terminal.get("_reply") == "!trap" and place:
+                terminal = _add_filter_rule(sock, rule)
+            if terminal.get("_reply") != "!trap":
+                notes.append(f"Hotspot {chain} management ports open")
+        except Exception:
+            pass
+
+    _ensure_accept("input", "ispcentric-vpn-api-mgmt-input")
+    _ensure_accept("hs-input", HS_MGMT_INPUT_TAG)
+    _ensure_accept("hs-unauth", HS_MGMT_UNAUTH_TAG)
+
+    bypassed = 0
+    for address in _management_source_ipv4s():
+        try:
+            _ensure_hotspot_bypass(sock, address)
+            bypassed += 1
+        except Exception:
+            pass
+    if bypassed:
+        notes.append(f"Hotspot bypass for {bypassed} local management IP(s)")
+
+    user = (username or "").strip() or HS_MGMT_USER
+    # Prefer a dedicated Hotspot login so Winbox "admin" is not also a Wi‑Fi user.
+    hs_user = HS_MGMT_USER
+    hs_pass = password if password is not None else ""
+    try:
+        user_rows = _print(
+            sock,
+            "/ip/hotspot/user",
+            props=".id,name,comment",
+        )
+    except Exception:
+        user_rows = []
+    user_id = ""
+    for row in user_rows:
+        name = (row.get("name") or "").strip()
+        comment = (row.get("comment") or "").strip()
+        if name == hs_user or HS_MGMT_USER_TAG in comment:
+            user_id = (row.get(".id") or "").strip()
+            break
+    profile = ISP_HOTSPOT_PROFILE
+    try:
+        profiles = {
+            (row.get("name") or "").strip()
+            for row in _print(sock, "/ip/hotspot/user/profile", props="name")
+        }
+        if profile not in profiles:
+            profile = "default"
+    except Exception:
+        profile = "default"
+    attempts = [
+        {
+            "name": hs_user,
+            "password": hs_pass,
+            "profile": profile,
+            "comment": HS_MGMT_USER_TAG,
+        },
+        {
+            "name": hs_user,
+            "password": hs_pass,
+            "comment": HS_MGMT_USER_TAG,
+        },
+    ]
+    if user and user != hs_user:
+        attempts.extend(
+            [
+                {
+                    "name": user,
+                    "password": hs_pass,
+                    "profile": profile,
+                    "comment": HS_MGMT_USER_TAG,
+                },
+                {
+                    "name": user,
+                    "password": hs_pass,
+                    "comment": HS_MGMT_USER_TAG,
+                },
+            ]
+        )
+    try:
+        if user_id:
+            terminal, _ = _add_or_set_attempts(
+                sock, "/ip/hotspot/user", user_id, attempts[:2]
+            )
+        else:
+            terminal, user_id = _add_or_set_attempts(
+                sock, "/ip/hotspot/user", "", attempts[:2]
+            )
+        if terminal.get("_reply") != "!trap":
+            notes.append("Hotspot management login ready for auto-reconnect")
+        if user and user != hs_user:
+            other_id = ""
+            for row in user_rows:
+                if (row.get("name") or "").strip() == user:
+                    other_id = (row.get(".id") or "").strip()
+                    break
+            _add_or_set_attempts(sock, "/ip/hotspot/user", other_id, attempts[2:4])
+    except Exception:
+        pass
+    return notes
+
+
+def hotspot_unlock_commands() -> dict[str, Any]:
+    """One-shot Winbox Terminal lines that free this PC for API reconnect."""
+    locals_ = _management_source_ipv4s()
+    # Prefer the address that shares a subnet with common MikroTik LANs.
+    preferred = ""
+    for ip in locals_:
+        if ip.startswith("192.168.88.") or ip.startswith("10.50.50."):
+            preferred = ip
+            break
+    if not preferred and locals_:
+        preferred = locals_[0]
+    lines = [
+        "/ip firewall filter",
+        (
+            "add chain=input action=accept protocol=tcp "
+            f'dst-port={HS_MGMT_PORTS} comment="ispcentric-vpn-api-mgmt-input" '
+            "place-before=[find where chain=input and jump-target=hs-input]"
+        ),
+        (
+            "add chain=hs-unauth action=accept protocol=tcp "
+            f'dst-port={HS_MGMT_PORTS} comment="{HS_MGMT_UNAUTH_TAG}" '
+            "place-before=[find where chain=hs-unauth and action=reject]"
+        ),
+    ]
+    if preferred:
+        lines.append(
+            "/ip hotspot ip-binding add "
+            f'address={preferred} type=bypassed comment="ispcentric-mgmt-bypass"'
+        )
+    return {
+        "local_ips": locals_,
+        "preferred_ip": preferred,
+        "commands": "\n".join(lines),
+    }
+
+
+def _hotspot_http_login(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    """
+    Authenticate this machine as a Hotspot client via HTTP login.
+
+    Used when API 8728 is refused because the PC is captive. After a successful
+    login, RouterOS allows management TCP again for this source IP.
+    """
+    host = dial_host((host or "").strip())
+    username = (username or "").strip()
+    if not host or not username:
+        return False
+    password = password or ""
+    paths = (
+        f"/login?username={quote(username)}&password={quote(password)}",
+        f"/login?user={quote(username)}&password={quote(password)}",
+    )
+    bodies: list[bytes] = [
+        urlencode({"username": username, "password": password}).encode("utf-8"),
+        urlencode({"user": username, "password": password}).encode("utf-8"),
+    ]
+    success_markers = (
+        "alogin",
+        "logged in",
+        "you are logged",
+        "status.html",
+        "logout",
+        "welcome",
+    )
+    # Do not match bare "error=" — ISPCENTRIC pay redirects always include it.
+    fail_markers = (
+        "invalid username",
+        "invalid password",
+        "invalid+username",
+        "login failed",
+        "wrong password",
+    )
+
+    def _looks_ok(text: str) -> bool | None:
+        low = (text or "").lower()
+        if any(m in low for m in success_markers):
+            return True
+        if any(m in low for m in fail_markers):
+            return False
+        return None
+
+    for path in paths:
+        try:
+            conn = http.client.HTTPConnection(host, 80, timeout=timeout)
+            try:
+                conn.request(
+                    "GET",
+                    path,
+                    headers={"User-Agent": "ispcentric-reconnect", "Connection": "close"},
+                )
+                resp = conn.getresponse()
+                raw = resp.read(4096).decode("utf-8", "replace")
+                verdict = _looks_ok(raw)
+                if verdict is True:
+                    return True
+                if verdict is False:
+                    continue
+                # Ambiguous body — treat non-error HTTP as worth an API retry.
+                if 200 <= int(resp.status) < 400:
+                    return True
+            finally:
+                conn.close()
+        except Exception:
+            continue
+
+    for body in bodies:
+        try:
+            conn = http.client.HTTPConnection(host, 80, timeout=timeout)
+            try:
+                conn.request(
+                    "POST",
+                    "/login",
+                    body=body,
+                    headers={
+                        "User-Agent": "ispcentric-reconnect",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Connection": "close",
+                    },
+                )
+                resp = conn.getresponse()
+                raw = resp.read(4096).decode("utf-8", "replace")
+                verdict = _looks_ok(raw)
+                if verdict is True:
+                    return True
+                if verdict is False:
+                    continue
+                if 200 <= int(resp.status) < 400:
+                    return True
+            finally:
+                conn.close()
+        except Exception:
+            continue
+    return False
+
+
+def _hotspot_login_this_pc(
+    hosts: list[str],
+    username: str,
+    password: str,
+) -> list[str]:
+    """Try Hotspot HTTP login via each captive gateway; return gateways that accepted."""
+    unlocked: list[str] = []
+    users = []
+    user = (username or "").strip()
+    if user:
+        users.append(user)
+    if HS_MGMT_USER not in users:
+        users.append(HS_MGMT_USER)
+    # Custom login.html on LAN IPs redirects to the pay portal; RouterOS auth
+    # still lives on the Hotspot address (10.50.50.1).
+    ordered = list(
+        dict.fromkeys(
+            [
+                "10.50.50.1",
+                *[h for h in hosts if (h or "").strip()],
+            ]
+        )
+    )
+    for host in ordered:
+        target = dial_host((host or "").strip())
+        if not target or target in unlocked:
+            continue
+        # Always try the dedicated Hotspot address even when portal probe is flaky.
+        if target != "10.50.50.1" and not _serves_hotspot_portal(target):
+            continue
+        for candidate_user in users:
+            if _hotspot_http_login(target, candidate_user, password):
+                unlocked.append(target)
+                break
+    return unlocked
 
 
 def _install_cpe_proxy(
@@ -7873,6 +8324,400 @@ def apply_mikrotik_access_changes(
     }
 
 
+# Factory MikroTik LAN gateway — keeping it on every site causes ARP/management collisions.
+FACTORY_DEFAULT_MIKROTIK_IPS = frozenset({"192.168.88.1"})
+
+
+def normalize_mikrotik_host(value: str) -> str:
+    """Strip whitespace and an optional :port from an IPv4/hostname management address."""
+    host = (value or "").strip()
+    if not host:
+        return ""
+    if host.count(":") == 1 and not host.startswith("["):
+        # host:port (avoid splitting IPv6)
+        left, right = host.rsplit(":", 1)
+        if right.isdigit():
+            host = left.strip()
+    return host
+
+
+def is_factory_default_mikrotik_ip(value: str) -> bool:
+    """True when value is the stock MikroTik LAN IP (192.168.88.1)."""
+    return normalize_mikrotik_host(value) in FACTORY_DEFAULT_MIKROTIK_IPS
+
+
+def _dhcp_pool_ranges_for_gateway(gateway: str, prefixlen: int = 24) -> str:
+    """Build a conservative DHCP pool on the same /24 as the LAN gateway."""
+    try:
+        net = ipaddress.ip_network(f"{gateway}/{prefixlen}", strict=False)
+        gateway_ip = ipaddress.IPv4Address(gateway)
+    except ValueError:
+        return ""
+    hosts = list(net.hosts())
+    if len(hosts) < 20:
+        return ""
+    # Prefer .10–.200 when the gateway is .1 on a /24.
+    start = net.network_address + 10
+    end = net.network_address + 200
+    if start not in net or end not in net or start <= gateway_ip <= end:
+        # Fall back to a slice of usable hosts that skips the gateway.
+        usable = [ip for ip in hosts if ip != gateway_ip]
+        if len(usable) < 10:
+            return ""
+        start = usable[9]
+        end = usable[min(len(usable) - 1, 199)]
+    return f"{start}-{end}"
+
+
+def change_mikrotik_lan_ip(
+    current_host: str,
+    username: str,
+    password: str,
+    new_ip: str,
+    *,
+    port: int = 8728,
+    timeout: float = 12.0,
+    api_hosts: list[str] | None = None,
+) -> dict[str, Any]:
+    """Readdress the MikroTik LAN bridge away from the current management IP.
+
+    Adds the new LAN address first (keeps the old one), updates DHCP, then removes
+    the factory/old address. Changing the IP you are connected through drops the
+    API socket — that disconnect is treated as expected once the new address was
+    added. Prefer a WireGuard tunnel host in ``api_hosts`` so the session survives.
+    """
+    current_host = normalize_mikrotik_host(current_host)
+    new_ip = normalize_mikrotik_host(new_ip)
+    username = (username or "").strip()
+    password = password or ""
+
+    if not current_host or not username:
+        return {"ok": False, "error": "Router credentials are required to change the LAN IP."}
+    if not new_ip:
+        return {
+            "ok": False,
+            "error": "Enter a new MikroTik LAN IP (not the factory default 192.168.88.1).",
+        }
+    if is_factory_default_mikrotik_ip(new_ip):
+        return {
+            "ok": False,
+            "error": "Choose a LAN IP other than the factory default 192.168.88.1 to avoid collisions.",
+        }
+    if new_ip == current_host:
+        return {
+            "ok": False,
+            "error": "Enter a different LAN IP than the one used to connect.",
+        }
+    try:
+        new_addr = ipaddress.IPv4Address(new_ip)
+    except ValueError:
+        return {"ok": False, "error": "Enter a valid IPv4 address for the new MikroTik LAN IP."}
+
+    notes: list[str] = []
+    api_timeout = timeout if timeout > 0 else 12.0
+    # Prefer alternate management paths (WireGuard) so replacing LAN does not kill the session.
+    dial_hosts: list[str] = []
+    for candidate in [*(api_hosts or []), current_host]:
+        host = normalize_mikrotik_host(candidate)
+        if host and host not in dial_hosts and host != new_ip:
+            dial_hosts.append(host)
+    if not dial_hosts:
+        dial_hosts = [current_host]
+
+    session_host = ""
+    last_login_error = ""
+    for host in dial_hosts:
+        try:
+            with _api_session(
+                host, username, password, port=port, timeout=min(api_timeout, 8.0)
+            ) as _sock:
+                session_host = host
+                break
+        except TimeoutError:
+            last_login_error = f"{host}: timed out on API port {port}"
+        except (ConnectionError, OSError) as exc:
+            last_login_error = str(exc) or last_login_error
+
+    if not session_host:
+        return {
+            "ok": False,
+            "error": last_login_error
+            or "Could not sign in to the MikroTik to change the LAN IP.",
+        }
+
+    added_new = False
+    new_already = False
+    removed_old = False
+    connection_dropped_after_change = False
+
+    try:
+        with _api_session(
+            session_host, username, password, port=port, timeout=api_timeout
+        ) as sock:
+            lan = _resolve_lan_interface(sock)
+            if not lan:
+                return {"ok": False, "error": "Could not find the LAN bridge on this MikroTik."}
+
+            address_rows = _print(
+                sock, "/ip/address", props=".id,address,interface,comment"
+            )
+            old_id = ""
+            old_cidr = ""
+            old_prefix = 24
+            for row in address_rows:
+                if (row.get("interface") or "").strip() != lan:
+                    continue
+                cidr = (row.get("address") or "").strip()
+                if not cidr:
+                    continue
+                try:
+                    iface = ipaddress.ip_interface(cidr)
+                except ValueError:
+                    continue
+                ip_text = str(iface.ip)
+                if ip_text == new_ip:
+                    new_already = True
+                    old_prefix = int(iface.network.prefixlen)
+                    continue
+                # Prefer the address we connected through / factory default.
+                if ip_text == current_host or is_factory_default_mikrotik_ip(ip_text):
+                    old_id = (row.get(".id") or "").strip()
+                    old_cidr = cidr
+                    old_prefix = int(iface.network.prefixlen)
+                elif (
+                    not old_id
+                    and ip_text not in {"10.50.50.1", "192.168.189.1"}
+                    and not ip_text.startswith("10.9.0.")
+                    and not ip_text.startswith("10.20.0.")
+                ):
+                    old_id = (row.get(".id") or "").strip()
+                    old_cidr = cidr
+                    old_prefix = int(iface.network.prefixlen)
+
+            try:
+                new_net = ipaddress.ip_network(f"{new_ip}/{old_prefix}", strict=False)
+            except ValueError:
+                new_net = ipaddress.ip_network(f"{new_ip}/24", strict=False)
+                old_prefix = 24
+
+            old_net: ipaddress.IPv4Network | None = None
+            if old_cidr:
+                try:
+                    old_net = ipaddress.ip_interface(old_cidr).network
+                except ValueError:
+                    old_net = None
+
+            # 1) ADD new address first — never replace in-place while using that IP.
+            if not new_already:
+                new_cidr = f"{new_ip}/{old_prefix}"
+                terminal = _add(
+                    sock,
+                    "/ip/address",
+                    address=new_cidr,
+                    interface=lan,
+                    comment="ispcentric-lan",
+                )
+                if terminal.get("_reply") == "!trap":
+                    return {
+                        "ok": False,
+                        "error": _trap_message(
+                            terminal, "Could not add the new LAN IP on the MikroTik."
+                        ),
+                    }
+                added_new = True
+                notes.append(f"added LAN {new_cidr} on {lan}")
+            else:
+                notes.append(f"LAN {new_ip}/{old_prefix} already present on {lan}")
+
+            # 2) Align DHCP while the old management IP (or tunnel) still answers.
+            for row in _print(
+                sock,
+                "/ip/dhcp-server/network",
+                props=".id,address,gateway,dns-server",
+            ):
+                item_id = (row.get(".id") or "").strip()
+                if not item_id:
+                    continue
+                row_net = _ip_network_from_cidr(row.get("address") or "")
+                row_gw = (row.get("gateway") or "").strip()
+                matches_old = bool(
+                    (old_net and row_net == old_net)
+                    or row_gw == current_host
+                    or (old_cidr and row_gw == old_cidr.split("/", 1)[0])
+                    or is_factory_default_mikrotik_ip(row_gw)
+                )
+                if not matches_old and row_net != new_net:
+                    continue
+                _set(
+                    sock,
+                    "/ip/dhcp-server/network",
+                    item_id,
+                    address=str(new_net),
+                    gateway=str(new_addr),
+                    **{"dns-server": str(new_addr)},
+                )
+                notes.append(f"updated DHCP network to {new_net} gw {new_addr}")
+
+            pool_ranges = _dhcp_pool_ranges_for_gateway(str(new_addr), new_net.prefixlen)
+            if pool_ranges and old_net and old_net != new_net:
+                for row in _print(sock, "/ip/pool", props=".id,name,ranges"):
+                    item_id = (row.get(".id") or "").strip()
+                    ranges = (row.get("ranges") or "").strip()
+                    if not item_id or not ranges:
+                        continue
+                    if str(old_net.network_address).rsplit(".", 1)[0] not in ranges:
+                        continue
+                    _set(sock, "/ip/pool", item_id, ranges=pool_ranges)
+                    notes.append(f"updated DHCP pool ranges to {pool_ranges}")
+
+            # 3) Remove the old/factory address only when this API session is not
+            # using that address (e.g. WireGuard). Otherwise keep it so onboard can
+            # still reach the router from this PC on the old LAN.
+            old_ip_text = old_cidr.split("/", 1)[0] if old_cidr else ""
+            session_is_via_old = bool(
+                old_ip_text
+                and (
+                    session_host == old_ip_text
+                    or is_factory_default_mikrotik_ip(session_host)
+                )
+            )
+            if (
+                old_id
+                and old_cidr
+                and old_ip_text != new_ip
+                and not session_is_via_old
+            ):
+                try:
+                    previous = getattr(sock, "gettimeout", lambda: None)()
+                    set_timeout = getattr(sock, "settimeout", None)
+                    if callable(set_timeout):
+                        set_timeout(min(3.0, api_timeout))
+                    try:
+                        terminal = _remove(sock, "/ip/address", old_id)
+                    finally:
+                        if callable(set_timeout):
+                            try:
+                                set_timeout(previous)
+                            except Exception:
+                                pass
+                    if terminal.get("_reply") == "!trap":
+                        notes.append(
+                            _trap_message(
+                                terminal,
+                                f"could not remove old LAN {old_cidr}",
+                            )
+                        )
+                    else:
+                        removed_old = True
+                        notes.append(f"removed old LAN {old_cidr}")
+                except (TimeoutError, ConnectionError, OSError):
+                    connection_dropped_after_change = True
+                    removed_old = True
+                    notes.append(
+                        f"removed old LAN {old_cidr} (API session dropped as expected)"
+                    )
+            elif old_id and old_cidr and old_ip_text != new_ip and session_is_via_old:
+                notes.append(
+                    f"kept old LAN {old_cidr} for management — remove it in Winbox "
+                    f"after this PC is on {new_net}"
+                )
+
+    except TimeoutError:
+        # Session died mid-change after the new address was added — common when
+        # management was only reachable via the old LAN IP.
+        if added_new or connection_dropped_after_change:
+            connection_dropped_after_change = True
+            notes.append("API session dropped after LAN change (expected on local IP move)")
+        else:
+            return {
+                "ok": False,
+                "error": "Timed out while changing the MikroTik LAN IP.",
+            }
+    except (ConnectionError, OSError) as exc:
+        if added_new or connection_dropped_after_change:
+            connection_dropped_after_change = True
+            notes.append(
+                f"API session closed after LAN change: {exc or 'connection reset'}"
+            )
+        else:
+            return {
+                "ok": False,
+                "error": str(exc) or "Could not change the MikroTik LAN IP.",
+            }
+
+    # Prefer surviving management paths first — the new LAN subnet is often
+    # unreachable from this PC until DHCP renews.
+    verify_hosts: list[str] = []
+    for host in [*dial_hosts, current_host, session_host, new_ip]:
+        host = normalize_mikrotik_host(host)
+        if host and host not in verify_hosts:
+            verify_hosts.append(host)
+
+    verify: dict[str, Any] = {"ok": False}
+    verified_host = ""
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.6)
+        for host in verify_hosts:
+            verify = test_mikrotik_api_login(
+                host,
+                username,
+                password,
+                timeout=min(api_timeout, 4.0),
+                port=port,
+                include_wifi=False,
+            )
+            if verify.get("ok"):
+                verified_host = host
+                break
+        if verified_host:
+            break
+
+    management_host = verified_host or session_host or current_host
+
+    if not verify.get("ok"):
+        # New address was applied but this PC cannot reach it yet (common after a
+        # subnet change until DHCP renews). Still succeed when we know the add ran.
+        if added_new or new_already or connection_dropped_after_change or removed_old:
+            notes.append(
+                f"LAN {new_ip} is set — keep managing via {management_host} until "
+                "this PC renews DHCP or you use the WireGuard tunnel"
+            )
+            return {
+                "ok": True,
+                "host": new_ip,
+                "management_host": management_host,
+                "message": "; ".join(notes) + ".",
+                "notes": notes,
+                "verified": False,
+            }
+        return {
+            "ok": False,
+            "error": (
+                verify.get("error")
+                or f"LAN IP may have changed, but API login on {new_ip} could not be verified."
+            ),
+            "host": new_ip,
+            "management_host": management_host,
+            "notes": notes,
+        }
+
+    if verified_host and verified_host != new_ip:
+        notes.append(f"API verified via {verified_host}")
+    else:
+        notes.append(f"API verified on {new_ip}")
+
+    return {
+        "ok": True,
+        "host": new_ip,
+        "management_host": management_host,
+        "message": "; ".join(notes) + "." if notes else f"LAN IP set to {new_ip}.",
+        "notes": notes,
+        "verified": True,
+        "verified_host": verified_host or new_ip,
+    }
+
+
 PPP_SECRET_TAG = "ispcentric-pppoe"
 PPPOE_PROFILE_NAME = "ispcentric-pppoe"
 # Out-of-period clients stay dialed in (CPE online) but this profile + firewall
@@ -10149,11 +10994,17 @@ def _router_uses_dedicated_tunnel(router) -> bool:
 
     Skips LAN guesses (192.168.88.1) and neighbour scans that would hit a
     different on-site MikroTik when a remote peer is saved as 10.9.0.x.
+
+    On a LAN/dev billing PC, a saved vpn_address alone is not enough — the
+    WireGuard peer is often unreachable here, so keep using the LAN host.
     """
+    host = (getattr(router, "host", None) or "").strip()
+    if on_router_lan():
+        # Local: only treat as tunnel-only when the primary host is the tunnel.
+        return _is_wireguard_tunnel_host(host)
     tunnel = (getattr(router, "vpn_address", None) or "").strip()
     if tunnel:
         return True
-    host = (getattr(router, "host", None) or "").strip()
     return _is_wireguard_tunnel_host(host)
 
 
@@ -10171,9 +11022,15 @@ def _router_api_host_candidates(
         if dedicated_tunnel
         else (["192.168.88.1"] if on_router_lan() else [])
     )
+    # Hosted: tunnel first. LAN/dev: LAN host first so a reserved vpn_address
+    # does not make every status/live poll time out on an unreachable peer.
+    if on_router_lan():
+        preferred = [host, tunnel]
+    else:
+        preferred = [tunnel, host]
     hosts: list[str] = []
     dialled: set[str] = set()
-    for candidate in [tunnel, host, *lan_only, *(candidate_hosts or [])]:
+    for candidate in [*preferred, *lan_only, *(candidate_hosts or [])]:
         value = (candidate or "").strip()
         # Two candidates that dial the same address are one attempt, not two.
         target = dial_host(value)
@@ -15391,6 +16248,15 @@ def apply_hotspot_on_router(
                         pay_url=pay_url,
                         welcome_url=welcome_url or redirect_url,
                         wifi_ssid=(getattr(router, "wifi_ssid", None) or "").strip(),
+                    )
+                    # Keep this billing PC able to Reconnect after Hotspot locks
+                    # unauthenticated clients off API/Winbox/SSH.
+                    notes.extend(
+                        _ensure_hotspot_management_access(
+                            sock,
+                            username=username,
+                            password=password,
+                        )
                     )
                     users_synced = _sync_organization_hotspot_users_on_socket(
                         sock,

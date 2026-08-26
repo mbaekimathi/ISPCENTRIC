@@ -211,8 +211,21 @@ class MikroTikRouter(models.Model):
 
     @property
     def api_host(self) -> str:
-        """Address the billing server should dial for the API."""
-        return (self.vpn_address or "").strip() or (self.host or "").strip()
+        """Address the billing server should dial for the API.
+
+        Hosted servers must use the WireGuard tunnel. On a LAN/dev machine the
+        tunnel peer is often unreachable, so prefer the saved LAN ``host``.
+        """
+        host = (self.host or "").strip()
+        tunnel = (self.vpn_address or "").strip()
+        try:
+            from django.conf import settings
+
+            if not bool(getattr(settings, "HOSTED", False)):
+                return host or tunnel
+        except Exception:
+            return host or tunnel
+        return tunnel or host
 
     class Meta:
         db_table = "core_mikrotik_router"

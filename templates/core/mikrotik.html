@@ -204,6 +204,16 @@
         </table>
       </div>
       <p class="mikrotik-reconnect-hint" id="mikrotik-reconnect-hint" hidden></p>
+      <div class="mikrotik-unlock-box" id="mikrotik-unlock-box" hidden>
+        <p class="mikrotik-unlock-title" id="mikrotik-unlock-title">Hotspot lockout unlock</p>
+        <p class="mikrotik-unlock-copy">
+          Winbox → Neighbors → connect by <strong>MAC</strong> → New Terminal → paste → Reconnect.
+          After that, this router stays auto-connected.
+        </p>
+        <pre class="mikrotik-unlock-commands" id="mikrotik-unlock-commands"></pre>
+        <button type="button" class="btn btn-secondary" id="mikrotik-unlock-copy">Copy commands</button>
+      </div>
+      {{ hotspot_unlock|json_script:"mikrotik-hotspot-unlock" }}
     {% else %}
       <div class="mikrotik-empty">
         <span class="mikrotik-empty-ico" aria-hidden="true">
@@ -567,9 +577,9 @@
                     <div class="mikrotik-tunnel-step-head">
                       <h3 class="mikrotik-tunnel-step-title">Paste in Winbox</h3>
                       <p class="mikrotik-tunnel-step-desc">
-                        Plug ISP into <strong>ether1</strong>, Winbox → New Terminal → paste once.
-                        Short new-site script: API → WAN → download → import
-                        (factory-resets only if Hotspot/PPPoE/custom config exists). Already-joined routers are unchanged.
+                        Winbox → New Terminal → paste the full tunnel script once.
+                        Eight steps: cleanup → open API/Hotspot management → WireGuard →
+                        firewall → handshake → backup. Watch for [ISPCENTRIC OK] lines.
                       </p>
                     </div>
                     <div class="mikrotik-tunnel-script-bar">
@@ -632,11 +642,14 @@
                   <span class="mikrotik-tunnel-step-num" aria-hidden="true">4</span>
                   <div class="mikrotik-tunnel-step-body">
                     <div class="mikrotik-tunnel-step-head">
-                      <h3 class="mikrotik-tunnel-step-title">Use the tunnel IP</h3>
-                      <p class="mikrotik-tunnel-step-desc">All checks passed — use this IP below and Connect.</p>
+                      <h3 class="mikrotik-tunnel-step-title" id="mikrotik-tunnel-step-ip-title">Use the tunnel IP</h3>
+                      <p class="mikrotik-tunnel-step-desc" id="mikrotik-tunnel-step-ip-desc">All checks passed — use this IP below and Connect.</p>
                     </div>
                     <div class="mikrotik-tunnel-ip-row">
-                      <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
+                      <div class="mikrotik-tunnel-address-block">
+                        <p class="mikrotik-tunnel-address" id="mikrotik-tunnel-address"></p>
+                        <p class="mikrotik-tunnel-address-note" id="mikrotik-tunnel-address-note" hidden></p>
+                      </div>
                       <button type="button" class="btn btn-primary" id="mikrotik-tunnel-use-ip" disabled>Use this IP to Connect</button>
                     </div>
                   </div>
@@ -676,21 +689,28 @@
               <p class="mikrotik-host-hint" id="mikrotik-host-hint">Select a found router, type a LAN IP, or use the tunnel IP from the script above.</p>
               {% if onboard_form.host.errors %}<div class="field-error">{{ onboard_form.host.errors|striptags }}</div>{% endif %}
             </div>
-            <div class="field">
-              <label for="id_mikrotik_username">Username</label>
-              {{ onboard_form.username }}
-              {% if onboard_form.username.errors %}<div class="field-error">{{ onboard_form.username.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="id_mikrotik_password">Password</label>
-              <div class="password-field">
-                {{ onboard_form.password }}
-                <button type="button" class="password-toggle" data-toggle-password="id_mikrotik_password" aria-label="Show password">
-                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-                </button>
+            <div id="mikrotik-connect-credentials" class="mikrotik-connect-credentials field-span-2" hidden>
+              <p class="mikrotik-section-hint" id="mikrotik-credentials-hint">
+                Checks passed — enter the router login to Connect.
+              </p>
+              <div class="form-grid mikrotik-simple-grid">
+                <div class="field">
+                  <label for="id_mikrotik_username">Username</label>
+                  {{ onboard_form.username }}
+                  {% if onboard_form.username.errors %}<div class="field-error">{{ onboard_form.username.errors|striptags }}</div>{% endif %}
+                </div>
+                <div class="field">
+                  <label for="id_mikrotik_password">Password</label>
+                  <div class="password-field">
+                    {{ onboard_form.password }}
+                    <button type="button" class="password-toggle" data-toggle-password="id_mikrotik_password" aria-label="Show password">
+                      <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                      <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                    </button>
+                  </div>
+                  {% if onboard_form.password.errors %}<div class="field-error">{{ onboard_form.password.errors|striptags }}</div>{% endif %}
+                </div>
               </div>
-              {% if onboard_form.password.errors %}<div class="field-error">{{ onboard_form.password.errors|striptags }}</div>{% endif %}
             </div>
           </div>
           <p class="mikrotik-connect-status" id="mikrotik-connect-status" hidden></p>
@@ -758,8 +778,14 @@
               {% if onboard_form.location.errors %}<div class="field-error">{{ onboard_form.location.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field field-span-2">
-              <label for="id_mikrotik_host_onboard">Change IP</label>
-              <input type="text" class="form-control" id="id_mikrotik_host_onboard" autocomplete="off" placeholder="192.168.88.1">
+              <label for="id_mikrotik_host_onboard">Change IP <span class="mikrotik-required-mark" id="mikrotik-host-required-mark" hidden>*</span></label>
+              <input type="hidden" name="host_original" id="id_mikrotik_host_original" value="{{ request.POST.host_original|default:'' }}">
+              <input type="hidden" name="tunnel_address" id="id_mikrotik_tunnel_address" value="{{ request.POST.tunnel_address|default:'' }}">
+              <input type="text" class="form-control" id="id_mikrotik_host_onboard" autocomplete="off" placeholder="e.g. 192.168.10.1" value="{% if request.POST.host_original %}{{ onboard_form.host.value|default:'' }}{% endif %}">
+              <p class="mikrotik-section-hint" id="mikrotik-host-change-hint">
+                If this MikroTik still uses the factory IP <strong>192.168.88.1</strong>, you must set a unique LAN IP here before onboarding — otherwise routers will collide.
+              </p>
+              {% if onboard_form.host.errors %}<div class="field-error" id="mikrotik-host-onboard-error">{{ onboard_form.host.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field">
               <label for="id_mikrotik_username_onboard">Username</label>
@@ -847,6 +873,7 @@
   var subEl = document.getElementById("mikrotik-onboard-sub");
   var kickerEl = document.getElementById("mikrotik-step-kicker");
   var connectBtn = document.getElementById("mikrotik-connect-btn");
+  var connectCredentials = document.getElementById("mikrotik-connect-credentials");
   var backBtn = document.getElementById("mikrotik-back-btn");
   var connectStatus = document.getElementById("mikrotik-connect-status");
   var connectedTitle = document.getElementById("mikrotik-connected-title");
@@ -882,6 +909,10 @@
   var tunnelGenerate = document.getElementById("mikrotik-tunnel-generate");
   var tunnelCopy = document.getElementById("mikrotik-tunnel-copy");
   var tunnelUseIp = document.getElementById("mikrotik-tunnel-use-ip");
+  var tunnelStepIpTitle = document.getElementById("mikrotik-tunnel-step-ip-title");
+  var tunnelStepIpDesc = document.getElementById("mikrotik-tunnel-step-ip-desc");
+  var tunnelAddressNote = document.getElementById("mikrotik-tunnel-address-note");
+  var localModeReady = false;
   var tunnelStatus = document.getElementById("mikrotik-tunnel-status");
   var tunnelStatusEarly = document.getElementById("mikrotik-tunnel-status-early");
   var tunnelScript = document.getElementById("mikrotik-tunnel-script");
@@ -967,6 +998,10 @@
   var usernameInput = document.getElementById("id_mikrotik_username");
   var passwordInput = document.getElementById("id_mikrotik_password");
   var hostOnboard = document.getElementById("id_mikrotik_host_onboard");
+  var hostOriginalInput = document.getElementById("id_mikrotik_host_original");
+  var tunnelAddressInput = document.getElementById("id_mikrotik_tunnel_address");
+  var hostChangeHint = document.getElementById("mikrotik-host-change-hint");
+  var hostRequiredMark = document.getElementById("mikrotik-host-required-mark");
   var usernameOnboard = document.getElementById("id_mikrotik_username_onboard");
   var passwordOnboard = document.getElementById("id_mikrotik_password_onboard");
   var wifiSsidInput = document.getElementById("id_mikrotik_wifi_ssid");
@@ -976,6 +1011,8 @@
   var wifiModeInput = document.getElementById("id_mikrotik_wifi_mode");
   var wifiHint = document.getElementById("mikrotik-wifi-hint");
   var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
+  var FACTORY_DEFAULT_IP = "192.168.88.1";
+  var requiresIpChange = false;
 
   function escapeHtml(value) {
     return String(value || "")
@@ -1007,7 +1044,8 @@
     lan: "Router on LAN",
     subnet: "Same network",
     api: "API port 8728",
-    firewall: "Firewall rule",
+    firewall: "API reachable",
+    wireguard: "Winbox script",
     tunnel: "WireGuard tunnel",
     vps_peer: "VPS peer",
     billing_ping: "Billing server"
@@ -1017,7 +1055,8 @@
     lan: "Connect this PC to the router network",
     subnet: "Put this PC on the same subnet as the router",
     api: "Enable api on 8728, or re-paste (opens firewall for LAN/WAN-side PC)",
-    firewall: "Finish the Winbox script (adds API firewall rules at top of input)",
+    firewall: "Finish the Winbox script so API 8728 accepts this PC",
+    wireguard: "Paste the Winbox script, then Check now (login comes after)",
     tunnel: "Paste the script and wait for OK lines",
     vps_peer: "On the VPS run manage.py wireguard_peer --sync-server, then Check now",
     billing_ping: "Fix VPS peer / handshake, then Check now"
@@ -1058,15 +1097,15 @@
         hint: CHECK_FAIL_HINTS[failed[0].key] || failed[0].message || "Fix red items, then Check now"
       };
     }
-    if (warned.length && !waiting.length && okCount + warned.length === checks.length) {
-      return {
-        state: "warn",
-        title: "Almost ready",
-        sub: okCount + " passed · " + warned.length + " warning",
-        hint: "Review yellow items, then Check now"
-      };
-    }
-    if (okCount === checks.length) {
+    if (!waiting.length && okCount + warned.length === checks.length) {
+      if (warned.length) {
+        return {
+          state: "warn",
+          title: "Almost ready",
+          sub: okCount + " passed · " + warned.length + " warning",
+          hint: "Review yellow items, then Check now"
+        };
+      }
       return {
         state: "ready",
         title: "All checks passed",
@@ -1080,6 +1119,104 @@
       sub: okCount + " of " + checks.length + " passed",
       hint: waiting.length ? "Finish the Winbox script, then Check now" : ""
     };
+  }
+
+  function setCheckNowSecondary(ready) {
+    if (!tunnelCheckNow) return;
+    if (ready) {
+      tunnelCheckNow.classList.remove("btn-primary");
+      tunnelCheckNow.classList.add("btn-ghost");
+    } else {
+      tunnelCheckNow.classList.add("btn-primary");
+      tunnelCheckNow.classList.remove("btn-ghost");
+    }
+  }
+
+  function setConnectCredentialsVisible(show) {
+    if (connectCredentials) connectCredentials.hidden = !show;
+    if (connectBtn && wireguardReady && tunnelStatusToken) {
+      connectBtn.disabled = !show;
+    } else if (connectBtn && !wireguardReady) {
+      connectBtn.disabled = false;
+    }
+  }
+
+  function focusConnectCredentials() {
+    setConnectCredentialsVisible(true);
+    if (usernameInput && !usernameInput.value.trim()) {
+      try { usernameInput.focus(); } catch (err) {}
+      return;
+    }
+    if (passwordInput && !passwordInput.value) {
+      try { passwordInput.focus(); } catch (err) {}
+      return;
+    }
+    if (connectBtn) {
+      try { connectBtn.focus(); } catch (err) {}
+    }
+  }
+
+  function setStep4IpCopy(mode, lanAddress, tunnelIp) {
+    localModeReady = mode === "lan";
+    var lan = (lanAddress || "").trim();
+    var tip = (tunnelIp || tunnelReadyAddress || "").trim();
+    if (mode === "lan") {
+      if (tunnelStepIpTitle) tunnelStepIpTitle.textContent = "Connect with LAN IP";
+      if (tunnelStepIpDesc) {
+        tunnelStepIpDesc.textContent =
+          "LAN checks passed — Connect uses the router LAN IP. Tunnel IP is for remote later.";
+      }
+      if (tunnelAddress) {
+        tunnelAddress.textContent = lan ? ("LAN IP: " + lan) : "LAN IP selected";
+      }
+      if (tunnelAddressNote) {
+        if (tip) {
+          tunnelAddressNote.hidden = false;
+          tunnelAddressNote.textContent =
+            "Tunnel IP " + tip + " reserved — not verified from this PC (remote via VPS).";
+        } else {
+          tunnelAddressNote.hidden = true;
+          tunnelAddressNote.textContent = "";
+        }
+      }
+      if (tunnelUseIp) {
+        tunnelUseIp.disabled = false;
+        tunnelUseIp.textContent = "Continue to login";
+      }
+      return;
+    }
+    if (tunnelStepIpTitle) tunnelStepIpTitle.textContent = "Use the tunnel IP";
+    if (tunnelStepIpDesc) {
+      tunnelStepIpDesc.textContent = "All checks passed — use this IP below and Connect.";
+    }
+    if (tunnelAddress) {
+      tunnelAddress.textContent = tip ? ("Tunnel IP: " + tip) : "";
+    }
+    if (tunnelAddressNote) {
+      tunnelAddressNote.hidden = true;
+      tunnelAddressNote.textContent = "";
+    }
+    if (tunnelUseIp) {
+      tunnelUseIp.disabled = !tunnelApiReady;
+      tunnelUseIp.textContent = "Use this IP to Connect";
+    }
+  }
+
+  function resetStep4IpCopy() {
+    localModeReady = false;
+    setCheckNowSecondary(false);
+    if (tunnelStepIpTitle) tunnelStepIpTitle.textContent = "Use the tunnel IP";
+    if (tunnelStepIpDesc) {
+      tunnelStepIpDesc.textContent = "All checks passed — use this IP below and Connect.";
+    }
+    if (tunnelAddressNote) {
+      tunnelAddressNote.hidden = true;
+      tunnelAddressNote.textContent = "";
+    }
+    if (tunnelUseIp) {
+      tunnelUseIp.disabled = true;
+      tunnelUseIp.textContent = "Use this IP to Connect";
+    }
   }
 
   function renderTunnelChecks(checks) {
@@ -1149,6 +1286,9 @@
     }
     if (/Script ready|Copied\. Paste|Waiting for MikroTik|\[ISPCENTRIC OK\]/i.test(raw)) {
       return { tone: "ok", title: "Paste script", lead: "Winbox → New Terminal → paste.", steps: ["Wait for green OK lines", "Check now"] };
+    }
+    if (/LAN ready|Local mode ready/i.test(raw)) {
+      return { tone: "ok", title: "LAN ready", lead: "Enter login details and Connect.", steps: null };
     }
     if (/Success — tunnel is online|Tunnel connected|Tunnel IP filled/i.test(raw)) {
       return { tone: "ok", title: "Ready to connect", lead: "Press Connect below.", steps: null };
@@ -1278,6 +1418,9 @@
       wifiPasswordOriginal: wifiPasswordOriginal ? wifiPasswordOriginal.value : "",
       wifiMode: wifiModeInput ? wifiModeInput.value : "",
       hostOnboard: hostOnboard ? hostOnboard.value : "",
+      hostOriginal: hostOriginalInput ? hostOriginalInput.value : "",
+      tunnelAddress: tunnelAddressInput ? tunnelAddressInput.value : (tunnelReadyAddress || ""),
+      requiresIpChange: !!requiresIpChange,
       usernameOnboard: usernameOnboard ? usernameOnboard.value : "",
       passwordOnboard: passwordOnboard ? passwordOnboard.value : ""
     };
@@ -1350,6 +1493,15 @@
     }
     if (wifiModeInput && data.wifiMode != null) wifiModeInput.value = data.wifiMode;
     if (hostOnboard && data.hostOnboard != null) hostOnboard.value = data.hostOnboard;
+    if (hostOriginalInput && data.hostOriginal != null) hostOriginalInput.value = data.hostOriginal;
+    if (tunnelAddressInput && data.tunnelAddress != null) tunnelAddressInput.value = data.tunnelAddress;
+    else syncTunnelAddressField();
+    if (data.requiresIpChange || isFactoryDefaultIp(data.hostOriginal || data.host)) {
+      setRequiresIpChange(true, data.hostOriginal || data.host || "");
+      if (hostOnboard && data.hostOnboard != null) hostOnboard.value = data.hostOnboard;
+    } else {
+      setRequiresIpChange(false, data.hostOriginal || data.host || "");
+    }
     if (usernameOnboard && data.usernameOnboard != null) usernameOnboard.value = data.usernameOnboard;
     if (passwordOnboard && data.passwordOnboard != null) passwordOnboard.value = data.passwordOnboard;
 
@@ -1450,16 +1602,19 @@
     tunnelScriptText = (data && data.script) || "";
     tunnelReadyAddress = (data && data.address) || "";
     tunnelStatusToken = (data && data.status_token) || "";
+    syncTunnelAddressField();
     if (!options.resume) tunnelApiReady = false;
     if (tunnelScript) tunnelScript.textContent = tunnelScriptText;
     if (tunnelStepScript) tunnelStepScript.hidden = !tunnelScriptText;
     if (tunnelStepCheck) tunnelStepCheck.hidden = !tunnelScriptText;
     if (tunnelStepIp) tunnelStepIp.hidden = !tunnelReadyAddress;
-    if (tunnelUseIp && !options.resume) {
-      tunnelUseIp.disabled = true;
-      tunnelUseIp.textContent = "Use this IP to Connect";
-    }
-    if (tunnelAddress && tunnelReadyAddress) {
+    if (!options.resume) {
+      resetStep4IpCopy();
+      setConnectCredentialsVisible(false);
+      if (tunnelAddress && tunnelReadyAddress) {
+        tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
+      }
+    } else if (tunnelAddress && tunnelReadyAddress && !localModeReady) {
       tunnelAddress.textContent = "Tunnel IP: " + tunnelReadyAddress;
     }
     if (!options.resume) {
@@ -1571,20 +1726,26 @@
   }
 
   function checkTunnelStatus() {
-    if (!tunnelStatusToken || tunnelStatusInFlight || tunnelApiReady) return;
+    if (!tunnelStatusToken || tunnelStatusInFlight) return;
     tunnelStatusInFlight = true;
     if (tunnelCheckNow) tunnelCheckNow.disabled = true;
+    setCheckNowSecondary(false);
     markTunnelStep(2, "done");
     markTunnelStep(3, "active");
     setVerifyBanner("checking", "Checking connection…", "Tunnel and API");
     setTunnelCheckState("checking", "Checking tunnel and RouterOS API…", false, false);
-    var statusCheckUrl = tunnelStatusUrl + "?token=" + encodeURIComponent(tunnelStatusToken);
+    var body = new FormData();
+    body.append("token", tunnelStatusToken);
+    body.append("csrfmiddlewaretoken", csrfToken());
     if (hostInput && hostInput.value.trim()) {
-      statusCheckUrl += "&lan_host=" + encodeURIComponent(hostInput.value.trim());
+      body.append("lan_host", hostInput.value.trim());
     }
-    fetch(statusCheckUrl, {
+    // Do not send login during Check — credentials appear only after all checks pass.
+    fetch(tunnelStatusUrl, {
+      method: "POST",
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin"
+      credentials: "same-origin",
+      body: body
     })
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
@@ -1592,6 +1753,7 @@
         if (!result.ok || !data.ok) {
           setTunnelCheckState("error", data.error || "Could not check the tunnel.", false, false);
           renderTunnelChecks([]);
+          setCheckNowSecondary(false);
           return;
         }
         renderTunnelChecks(data.checks || []);
@@ -1600,12 +1762,19 @@
             hostInput.value = data.lan_address;
             scheduleSaveOnboardDraft();
           }
+          // Factory reset / missing script must clear a previous false "ready".
+          if (!data.ready && tunnelApiReady) {
+            tunnelApiReady = false;
+            localModeReady = false;
+            resetStep4IpCopy();
+            setConnectCredentialsVisible(false);
+          }
           if (data.ready) {
             tunnelApiReady = true;
             stopTunnelStatusPolling();
-            setTunnelCheckState("ready", "Local MikroTik connected · API enabled", true, true);
-            setVerifyBanner("ready", "All checks passed", "Ready to Connect");
-            setVerifyHint("Enter router login and press Connect");
+            setTunnelCheckState("ready", "LAN connected · script confirmed", true, true);
+            setStep4IpCopy("lan", data.lan_address, data.address || tunnelReadyAddress);
+            setCheckNowSecondary(true);
             setTunnelMeters(
               data.lan_address ? data.lan_address : "Online",
               "Enabled · Ready",
@@ -1613,16 +1782,19 @@
               "ready",
               { lanMode: true }
             );
-            setHostHint("Local MikroTik selected at " + data.lan_address + ". Enter its login and press Connect.");
+            setHostHint(
+              "Script confirmed on " + data.lan_address +
+              ". Enter username and password below, then Connect."
+            );
             setTunnelStatus(data.message, false);
             markTunnelStep(2, "done");
             markTunnelStep(3, "done");
             markTunnelStep(4, "done");
-            if (tunnelUseIp) {
-              tunnelUseIp.disabled = true;
-              tunnelUseIp.textContent = "LAN IP selected";
-            }
+            setConnectCredentialsVisible(true);
+            focusConnectCredentials();
           } else if (data.subnet_mismatch) {
+            setCheckNowSecondary(false);
+            setConnectCredentialsVisible(false);
             setTunnelCheckState(
               "error",
               "Different subnet — API cannot open from this PC",
@@ -1642,7 +1814,39 @@
                 (data.lan_address || "the MikroTik") +
                 " before Connect can save the router."
             );
+          } else if (data.api_enabled && !data.script_installed) {
+            setCheckNowSecondary(false);
+            setConnectCredentialsVisible(false);
+            resetStep4IpCopy();
+            if (tunnelAddress && (data.address || tunnelReadyAddress)) {
+              tunnelAddress.textContent =
+                "Tunnel IP: " + (data.address || tunnelReadyAddress) + " (paste script first)";
+            }
+            var marker = data.script_marker || ("ispcentric." + (data.address || tunnelReadyAddress || ""));
+            setTunnelCheckState(
+              "waiting",
+              "API open · paste Winbox script (identity " + marker + ")",
+              true,
+              false
+            );
+            setTunnelMeters(
+              data.lan_address ? data.lan_address : "Online",
+              "Enabled · waiting for script",
+              "ready",
+              "waiting",
+              { lanMode: true }
+            );
+            setTunnelStatus(data.message, false);
+            setHostHint(
+              "Paste the script in Winbox. When identity becomes " + marker +
+              ", Check now. Username/password appear only after all checks pass."
+            );
+            markTunnelStep(2, "active");
+            markTunnelStep(3, "active");
+            markTunnelStep(4, "");
           } else {
+            setCheckNowSecondary(false);
+            setConnectCredentialsVisible(false);
             setTunnelCheckState(
               "checking",
               data.lan_address ? "Local MikroTik found · waiting for API 8728…" : "Searching for local MikroTik…",
@@ -1668,20 +1872,43 @@
         if (data.ready) {
           tunnelApiReady = true;
           tunnelPeerSyncRequired = false;
+          localModeReady = false;
           if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
           stopTunnelStatusPolling();
-          setVerifyBanner("ready", "All checks passed", "Ready to Connect");
-          setVerifyHint("Use the tunnel IP below");
+          setStep4IpCopy("tunnel", "", data.address || tunnelReadyAddress);
+          setCheckNowSecondary(true);
           setTunnelCheckState("ready", "Tunnel connected · API enabled", true, true);
           setTunnelStatus(data.message, false);
           markTunnelStep(2, "done");
           markTunnelStep(3, "done");
-          markTunnelStep(4, "active");
-          if (tunnelUseIp) tunnelUseIp.disabled = false;
+          // On the VPS, Connect must use the tunnel IP — fill it automatically.
+          if (data.address || tunnelReadyAddress) {
+            applyTunnelIp(data.address || tunnelReadyAddress);
+            markTunnelStep(4, "done");
+            if (tunnelUseIp) {
+              tunnelUseIp.disabled = true;
+              tunnelUseIp.textContent = "Tunnel IP selected";
+            }
+          } else {
+            markTunnelStep(4, "active");
+          }
+          setConnectCredentialsVisible(true);
+          focusConnectCredentials();
+          return;
+        }
+        setCheckNowSecondary(false);
+        if (data.hosted_wg_down) {
+          stopTunnelStatusPolling();
+          setTunnelCheckState("error", "VPS WireGuard is down", false, false);
+          setTunnelMeters("wg0 down", "Fix VPS first", "error", "waiting");
+          setTunnelStatus(data.message, true);
+          setHostHint(
+            "On the VPS: bring up WireGuard (wg-quick@wg0), confirm 10.9.0.1 is bound, then Check now. Do not use LAN IP from the hosted panel."
+          );
           return;
         }
         if (data.no_tunnel_route) {
-          // Polling cannot succeed from a server that is not on the tunnel.
+          // Local laptop: not on wg0 — LAN discovery path (or misclassified).
           stopTunnelStatusPolling();
           setTunnelCheckState("error", "This server is not on the tunnel", false, false);
           setTunnelMeters("Unreachable here", "Use LAN IP", "error", "waiting");
@@ -1721,6 +1948,7 @@
         setTunnelCheckState("error", "Live check failed — retrying…", false, false);
         renderTunnelChecks([]);
         setVerifyBanner("error", "Check failed", "Retrying automatically…");
+        setCheckNowSecondary(false);
       })
       .finally(function () {
         tunnelStatusInFlight = false;
@@ -1959,7 +2187,7 @@
       markTunnelStep(2, "done");
       markTunnelStep(3, "active");
       if (!tunnelPeerSyncRequired) {
-        setTunnelStatus("Copied. New-site paste only — plug ISP into ether1, paste in Winbox once.", false);
+        setTunnelStatus("Copied. Paste the script in Winbox → New Terminal, then Check now.", false);
       }
       startTunnelStatusPolling();
     };
@@ -2026,7 +2254,9 @@
     if (titleEl) titleEl.textContent = onboard ? "Onboard MikroTik" : "Connect to a New MikroTik";
     if (subEl) {
       subEl.textContent = onboard
-        ? "Name the router, set its location, Wi‑Fi, and adjust IP or credentials if needed."
+        ? (requiresIpChange
+          ? "Name the router, set location, and change the factory LAN IP before saving."
+          : "Name the router, set its location, Wi‑Fi, and adjust IP or credentials if needed.")
         : (wireguardReady
           ? "Generate the Winbox script if this server is remote, then sign in to the router."
           : "Enter the router IP and login. Tunnel setup is optional on a local network.");
@@ -2039,8 +2269,61 @@
     scheduleSaveOnboardDraft();
   }
 
+  function syncTunnelAddressField() {
+    if (!tunnelAddressInput) return;
+    var tip = (tunnelReadyAddress || "").trim();
+    if (tip) tunnelAddressInput.value = tip;
+  }
+
+  function isFactoryDefaultIp(value) {
+    return String(value || "").trim().toLowerCase() === FACTORY_DEFAULT_IP;
+  }
+
+  function setRequiresIpChange(required, connectHost) {
+    requiresIpChange = !!required;
+    if (hostRequiredMark) hostRequiredMark.hidden = !requiresIpChange;
+    if (hostOnboard) {
+      hostOnboard.required = requiresIpChange;
+      hostOnboard.classList.toggle("is-required-ip", requiresIpChange);
+      if (requiresIpChange) {
+        hostOnboard.value = "";
+        hostOnboard.placeholder = "e.g. 192.168.10.1 (required)";
+      } else {
+        hostOnboard.placeholder = "e.g. 192.168.10.1";
+      }
+    }
+    if (hostChangeHint) {
+      if (requiresIpChange) {
+        hostChangeHint.innerHTML =
+          "This MikroTik is still on the factory IP <strong>" +
+          FACTORY_DEFAULT_IP +
+          "</strong>. Enter a unique LAN IP (for example 192.168.10.1) — onboarding is blocked until you change it, to avoid collisions with other routers.";
+        hostChangeHint.classList.add("is-warning");
+      } else {
+        hostChangeHint.innerHTML =
+          "Optionally set a unique LAN IP here. Avoid the factory default <strong>" +
+          FACTORY_DEFAULT_IP +
+          "</strong> so routers do not collide.";
+        hostChangeHint.classList.remove("is-warning");
+      }
+    }
+    if (hostOriginalInput) {
+      hostOriginalInput.value = connectHost || hostOriginalInput.value || "";
+    }
+    syncTunnelAddressField();
+  }
+
   function syncOnboardCredentialsFromConnect() {
-    if (hostOnboard && hostInput) hostOnboard.value = hostInput.value;
+    var connectHost = hostInput ? hostInput.value.trim() : "";
+    if (hostOriginalInput) hostOriginalInput.value = connectHost;
+    if (hostOnboard && hostInput) {
+      if (isFactoryDefaultIp(connectHost)) {
+        setRequiresIpChange(true, connectHost);
+      } else {
+        hostOnboard.value = connectHost;
+        setRequiresIpChange(false, connectHost);
+      }
+    }
     if (usernameOnboard && usernameInput) usernameOnboard.value = usernameInput.value;
     if (passwordOnboard && passwordInput) passwordOnboard.value = passwordInput.value;
   }
@@ -2320,6 +2603,8 @@
     setStep((draft && draft.step === "onboard") ? "onboard" : "connect");
     showConnectStatus("");
     startLiveDiscovery();
+    if (wireguardReady && !tunnelApiReady) setConnectCredentialsVisible(false);
+    else setConnectCredentialsVisible(true);
     if (tunnelStatusToken && !tunnelApiReady) startTunnelStatusPolling();
     if (wireguardReady && tunnelLabel && currentOnboardStep() === "connect" && !tunnelScriptText) {
       setTimeout(function () { tunnelLabel.focus(); }, 40);
@@ -2352,6 +2637,16 @@
     if (!username) {
       showConnectStatus("Enter the router username.", true);
       usernameInput.focus();
+      return;
+    }
+    if (wireguardReady && tunnelStatusToken && !tunnelApiReady) {
+      showConnectStatus(
+        "Paste the ISPCENTRIC script in Winbox first, wait for [ISPCENTRIC OK], then Check now.",
+        true
+      );
+      if (tunnelCheckNow) {
+        try { tunnelCheckNow.focus(); } catch (err) {}
+      }
       return;
     }
 
@@ -2396,7 +2691,11 @@
           }
         }
         if (data.model) setSelectedModel(data.model, false);
+        if (data.factory_default_ip) FACTORY_DEFAULT_IP = String(data.factory_default_ip);
         syncOnboardCredentialsFromConnect();
+        if (data.requires_ip_change) {
+          setRequiresIpChange(true, data.host || host);
+        }
         fillWifiFromRouter(data);
         if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || host);
         if (connectedMeta) {
@@ -2433,6 +2732,21 @@
   if (tunnelCheckNow) tunnelCheckNow.addEventListener("click", checkTunnelStatus);
   if (tunnelUseIp) {
     tunnelUseIp.addEventListener("click", function () {
+      if (localModeReady) {
+        markTunnelStep(4, "done");
+        focusConnectCredentials();
+        setTunnelStatus(
+          "LAN IP is selected. Enter the MikroTik login below, then press Connect.",
+          false
+        );
+        if (hostInput && hostInput.value.trim()) {
+          setHostHint(
+            "Connecting via LAN IP " + hostInput.value.trim() +
+            ". Tunnel IP stays reserved for remote access."
+          );
+        }
+        return;
+      }
       if (!tunnelReadyAddress) return;
       if (!tunnelApiReady) {
         setTunnelStatus("Wait until the tunnel and API checks are successful.", true);
@@ -2441,6 +2755,7 @@
       applyTunnelIp(tunnelReadyAddress);
       markTunnelStep(4, "done");
       setTunnelStatus("Tunnel IP filled in. Enter the MikroTik login below, then press Connect.", false);
+      focusConnectCredentials();
     });
   }
   if (tunnelLabel) {
@@ -2529,7 +2844,15 @@
       !!(wifiPasswordInput && wifiPasswordInput.value) ||
       !!modal.querySelector("#mikrotik-step-onboard .field-error");
     if (reopenOnboard) {
-      syncOnboardCredentialsFromConnect();
+      var postedOriginal = hostOriginalInput ? hostOriginalInput.value.trim() : "";
+      if (postedOriginal && isFactoryDefaultIp(postedOriginal)) {
+        setRequiresIpChange(true, postedOriginal);
+        if (hostOnboard && hostInput && hostInput.value.trim() && !isFactoryDefaultIp(hostInput.value)) {
+          hostOnboard.value = hostInput.value.trim();
+        }
+      } else {
+        syncOnboardCredentialsFromConnect();
+      }
       setStep("onboard");
     } else {
       setStep("connect");
@@ -2732,6 +3055,32 @@
         return;
       }
       syncConnectCredentialsFromOnboard();
+      syncTunnelAddressField();
+
+      var newHost = hostOnboard ? hostOnboard.value.trim() : "";
+      var originalHost = hostOriginalInput
+        ? hostOriginalInput.value.trim()
+        : (hostInput ? hostInput.value.trim() : "");
+      if (requiresIpChange || isFactoryDefaultIp(originalHost) || isFactoryDefaultIp(newHost)) {
+        if (!newHost) {
+          e.preventDefault();
+          alert("Enter a new MikroTik LAN IP — the factory default 192.168.88.1 cannot be used.");
+          if (hostOnboard) hostOnboard.focus();
+          return;
+        }
+        if (isFactoryDefaultIp(newHost)) {
+          e.preventDefault();
+          alert("Choose a LAN IP other than the factory default 192.168.88.1 to avoid collisions.");
+          if (hostOnboard) hostOnboard.focus();
+          return;
+        }
+        if (newHost === originalHost) {
+          e.preventDefault();
+          alert("Enter a different LAN IP than " + originalHost + " before onboarding.");
+          if (hostOnboard) hostOnboard.focus();
+          return;
+        }
+      }
 
       var locationValue = locationInput ? locationInput.value.trim() : "";
       var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
@@ -2781,6 +3130,7 @@
   var passwordSubmit = document.getElementById("mikrotik-password-submit");
   var activeReconnectBtn = null;
   var authPrompted = {};
+  var autoReconnectTried = {};
 
   function csrfToken() {
     var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
@@ -2829,6 +3179,57 @@
     hint.textContent = text || "";
     hint.classList.toggle("is-error", !!isError);
     hint.classList.toggle("is-ok", !!text && !isError);
+  }
+
+  function pageUnlockDefaults() {
+    var el = document.getElementById("mikrotik-hotspot-unlock");
+    if (!el) return { commands: "", preferred_ip: "" };
+    try {
+      return JSON.parse(el.textContent || "{}") || {};
+    } catch (e) {
+      return { commands: "", preferred_ip: "" };
+    }
+  }
+
+  function showUnlockCommands(commands, unlockIp) {
+    var box = document.getElementById("mikrotik-unlock-box");
+    var pre = document.getElementById("mikrotik-unlock-commands");
+    var title = document.getElementById("mikrotik-unlock-title");
+    if (!box || !pre) return;
+    var defaults = pageUnlockDefaults();
+    var text = commands || defaults.commands || "";
+    var ip = unlockIp || defaults.preferred_ip || "";
+    if (!text) {
+      box.hidden = true;
+      return;
+    }
+    pre.textContent = text;
+    if (title) {
+      title.textContent = ip
+        ? "Hotspot lockout unlock — PC " + ip
+        : "Hotspot lockout unlock";
+    }
+    box.hidden = false;
+  }
+
+  function hideUnlockCommands() {
+    var box = document.getElementById("mikrotik-unlock-box");
+    if (box) box.hidden = true;
+  }
+
+  var unlockCopy = document.getElementById("mikrotik-unlock-copy");
+  if (unlockCopy) {
+    unlockCopy.addEventListener("click", function () {
+      var pre = document.getElementById("mikrotik-unlock-commands");
+      var text = pre ? pre.textContent : "";
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          unlockCopy.textContent = "Copied";
+          setTimeout(function () { unlockCopy.textContent = "Copy commands"; }, 1500);
+        });
+      }
+    });
   }
 
   function openPasswordModal(opts) {
@@ -2906,6 +3307,16 @@
                 error: item.error || "Saved password does not match this MikroTik."
               });
               activeReconnectBtn = btn;
+            }
+          } else if (
+            (item.status === "reachable" || item.status === "limited") &&
+            !autoReconnectTried[item.id]
+          ) {
+            autoReconnectTried[item.id] = true;
+            var autoBtn = document.querySelector('[data-reconnect-router="' + item.id + '"]');
+            if (autoBtn && !autoBtn.disabled && !autoBtn.classList.contains("is-busy")) {
+              showHint("Auto-reconnecting " + (item.name || "MikroTik") + "…", false);
+              reconnectRouter(autoBtn);
             }
           }
         });
@@ -2988,10 +3399,16 @@
             showHint("Enter the correct Winbox password in the popup.", true);
           } else {
             showHint(data.error || "Could not reconnect to this MikroTik.", true);
+            if (data.hotspot_lockout) {
+              showUnlockCommands(data.unlock_commands || "", data.unlock_ip || "");
+            } else {
+              hideUnlockCommands();
+            }
           }
           return;
         }
         closePasswordModal();
+        hideUnlockCommands();
         authPrompted[id] = false;
         btn.dataset.authFailed = "0";
         showHint(data.message || "MikroTik is back online.", false);

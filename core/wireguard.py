@@ -185,6 +185,162 @@ def _router_listen_port(address: str) -> int:
     return 13200 + max(1, min(last, 254))
 
 
+def probe_router_wg_listen(
+    host: str,
+    address: str,
+    *,
+    timeout: float = 0.55,
+) -> bool | None:
+    """
+    Credential-free guess for the ISPCENTRIC WireGuard listen-port.
+
+    Returns:
+      False — port clearly closed (ICMP unreachable / connection reset)
+      None  — inconclusive (timeouts are common for both open and filtered-closed)
+      True  — only if the peer sends any UDP reply (rare for WireGuard junk)
+
+    Never treat a bare timeout as installed — factory-reset routers often time out
+    the same way and would false-pass the Winbox-script check.
+    """
+    host = (host or "").strip()
+    address = (address or "").strip()
+    if not host or not address:
+        return None
+    port = _router_listen_port(address)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        sock.sendto(b"\x01" + b"\x00" * 15, (host, port))
+        try:
+            sock.recvfrom(64)
+            return True
+        except TimeoutError:
+            return None
+        except ConnectionRefusedError:
+            return False
+        except OSError as exc:
+            # Windows: WSAECONNRESET (10054) when ICMP port unreachable.
+            if getattr(exc, "winerror", None) == 10054 or getattr(exc, "errno", None) in {
+                10054,
+                111,
+                61,
+            }:
+                return False
+            return None
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
+def script_ready_identity(address: str) -> str:
+    """RouterOS identity set by the Winbox paste so LAN Check can see it via MNDP (no login)."""
+    address = (address or "").strip()
+    return f"ispcentric.{address}" if address else "ispcentric"
+
+
+def identity_marks_script_ready(identity: str, address: str = "") -> bool:
+    """True when a discovered MikroTik identity proves the ISPCENTRIC paste ran."""
+    text = (identity or "").strip().lower()
+    if not text.startswith("ispcentric."):
+        return False
+    address = (address or "").strip().lower()
+    if not address:
+        return True
+    return address in text
+
+
+def lan_tunnel_script_installed(
+    host: str,
+    address: str,
+    *,
+    username: str = "",
+    password: str = "",
+    identity: str = "",
+    devices: list | None = None,
+    timeout: float = 1.2,
+) -> dict[str, object]:
+    """
+    Detect whether the Connect paste ran on a LAN router — without requiring login.
+
+    Primary proof: MNDP / discovery identity ``ispcentric.<tunnel-ip>`` (set by the script).
+    Optional: RouterOS API when credentials are already known.
+    """
+    host = (host or "").strip()
+    address = (address or "").strip()
+    username = (username or "").strip()
+    marker = script_ready_identity(address)
+    result: dict[str, object] = {
+        "installed": False,
+        "via": "",
+        "listen_port": _router_listen_port(address) if address else 0,
+        "marker": marker,
+        "error": "",
+        "needs_login": False,
+    }
+    if not address:
+        result["error"] = "missing tunnel address"
+        return result
+
+    # 1) Identity from the candidate host / discovery list (no credentials).
+    identities: list[str] = []
+    if identity:
+        identities.append(identity)
+    for device in devices or []:
+        if host and (device.get("host") or "").strip() != host:
+            continue
+        for key in ("identity", "name"):
+            value = (device.get(key) or "").strip()
+            if value:
+                identities.append(value)
+    for value in identities:
+        if identity_marks_script_ready(value, address):
+            result["installed"] = True
+            result["via"] = "mndp"
+            return result
+
+    # Any discovered router advertising this paste marker (host may still be resolving).
+    if not host:
+        for device in devices or []:
+            for key in ("identity", "name"):
+                if identity_marks_script_ready(device.get(key) or "", address):
+                    result["installed"] = True
+                    result["via"] = "mndp"
+                    return result
+
+    # 2) Optional API confirmation when the user already typed a login (not required).
+    if username and host:
+        try:
+            from core.mikrotik_connect import _api_session, _print
+
+            with _api_session(
+                host, username, password or "", timeout=timeout
+            ) as sock:
+                rows = [
+                    row
+                    for row in _print(sock, "/interface/wireguard", props=".id,name")
+                    if (row.get("name") or "").strip() == "ispcentric-vpn"
+                ]
+                if rows:
+                    result["installed"] = True
+                    result["via"] = "api"
+                    return result
+                result["via"] = "api"
+                result["error"] = (
+                    "Logged in, but ispcentric-vpn is missing — paste the Winbox script"
+                )
+                return result
+        except Exception as exc:
+            result["error"] = str(exc)[:180]
+            result["via"] = "api"
+
+    result["error"] = (
+        f"Paste the Winbox script and wait until identity becomes {marker} "
+        "(then Check now). Login is only needed after all checks pass."
+    )
+    return result
+
+
 def _server_public_key() -> str:
     key = (getattr(settings, "WIREGUARD_SERVER_PUBLIC_KEY", "") or "").strip()
     if not looks_like_wg_key(key):
@@ -284,17 +440,20 @@ def _ros_check(condition: str, ok_message: str, fail_message: str) -> str:
     )
 
 
-def _ros_filter_add(rule: str, comment: str) -> str:
+def _ros_filter_add(rule: str, comment: str, *, chain: str = "input") -> str:
     """
-    Insert an input-chain filter rule near the top when the chain has rules.
+    Insert a filter rule near the top of ``chain`` when that chain has rules.
 
     ``place-before=0`` fails with "no such item" when the filter list is empty
     (common on cleaned or CHR configs). Fall back to append in that case.
+
+    Relative ``add``/``find`` — caller must be under ``/ip firewall filter``.
     """
-    body = f'add chain=input {rule} comment="{comment}"'
+    chain = (chain or "input").strip() or "input"
+    body = f'add chain={chain} {rule} comment="{comment}"'
     return (
-        f":do {{ {body} place-before=([find where chain=input and dynamic=no]->0) }} "
-        f"on-error={{ :do {{ {body} place-before=([find where chain=input]->0) }} "
+        f":do {{ {body} place-before=([find where chain={chain} and dynamic=no]->0) }} "
+        f"on-error={{ :do {{ {body} place-before=([find where chain={chain}]->0) }} "
         f"on-error={{ {body} }} }}"
     )
 
@@ -307,130 +466,6 @@ def _ros_nat_add(rule: str, comment: str) -> str:
         f"on-error={{ :do {{ {body} place-before=([find where chain=srcnat]->0) }} "
         f"on-error={{ {body} }} }}"
     )
-
-
-def _ros_filter_add_abs(rule: str, comment: str) -> str:
-    """Paste-safe input filter add. Prefer place-before=0; caller adds fallback line."""
-    return (
-        f':do {{ /ip firewall filter add chain=input {rule} comment="{comment}" '
-        f"place-before=0 }} on-error={{}}"
-    )
-
-
-def _api_lan_ready_lines() -> list[str]:
-    """Enable API 8728 + top input accept (new-site paste). Short Winbox-safe lines."""
-    return [
-        _ros_info("1/4 API on 8728..."),
-        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service enable [find where name=api] } on-error={}",
-        ':do { /ip firewall filter remove [find where comment="ispcentric-api-boot"] } on-error={}',
-        _ros_filter_add_abs(
-            "action=accept protocol=tcp dst-port=8728",
-            "ispcentric-api-boot",
-        ),
-        (
-            ':do { :if ([:len [/ip firewall filter find where comment="ispcentric-api-boot"]] = 0) do={'
-            '/ip firewall filter add chain=input action=accept protocol=tcp dst-port=8728 '
-            'comment="ispcentric-api-boot" }} on-error={}'
-        ),
-        _ros_check(
-            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-            "API open - Check now can use LAN",
-            "API still closed - enable IP > Services > api",
-        ),
-    ]
-
-
-def _bootstrap_wan_lines(probe_host: str, *, attempts: int = 4, delay: str = "5s") -> list[str]:
-    """
-    New-site paste WAN prep. Prefer bound DHCP; else unbridge ether1 + DHCP.
-    Split into short lines for Winbox.
-    """
-    probe_host = (probe_host or "8.8.8.8").strip() or "8.8.8.8"
-    attempts = max(1, int(attempts))
-    ping_ok = f"([/ping {probe_host} count=1] > 0)"
-    lines = [
-        _ros_info(f"2/4 WAN - ping {probe_host}..."),
-        ':do { /ip address disable [find where comment~"ispcentric-hotspot"] } on-error={}',
-        ":do { /ip dhcp-client set [find] disabled=no add-default-route=yes use-peer-dns=yes } on-error={}",
-        ":global IspNeedWan",
-        ":set IspNeedWan 1",
-        ":if ([:len [/ip dhcp-client find where status=bound]] > 0) do={:set IspNeedWan 0}",
-        ':if ($IspNeedWan = 1) do={:put "[ISPCENTRIC] No DHCP lease - unbridging ether1..."}',
-        ':if ($IspNeedWan = 1) do={:do { /interface bridge port remove [find where interface=ether1] } on-error={}}',
-        ':if ($IspNeedWan = 1) do={:do { /ip dhcp-client remove [find where interface=ether1] } on-error={}}',
-        (
-            ":if ($IspNeedWan = 1) do={:do { /ip dhcp-client add interface=ether1 disabled=no "
-            "add-default-route=yes use-peer-dns=yes comment=\"ispcentric-wan\" } on-error={}}"
-        ),
-        ":do { /ip dns set servers=8.8.8.8,1.1.1.1 allow-remote-requests=no } on-error={}",
-        ":global IspWanOk",
-        ":set IspWanOk 0",
-    ]
-    for try_n in range(1, attempts + 1):
-        lines.append(
-            f":if ($IspWanOk = 0) do={{:if ({ping_ok}) do={{:set IspWanOk 1; "
-            f'{_ros_ok(f"WAN ready")} }} else={{'
-            f':put "[ISPCENTRIC] WAN {try_n}/{attempts}..."; :delay {delay}}}}}'
-        )
-    lines.append(
-        f":if ($IspWanOk = 0) do={{{_ros_fail(f'No ping {probe_host} - ISP on ether1, re-paste')}}}"
-    )
-    return lines
-
-
-def _bootstrap_fetch_import_lines(
-    install_url: str,
-    http_host: str,
-    *,
-    attempts: int = 3,
-) -> list[str]:
-    """New-site paste: short URL pieces, few fetch tries, import."""
-    origin, mid, tail = _fetch_rsc_parts(install_url)
-    attempts = max(1, int(attempts))
-    dst = "ispcentric-install.rsc"
-    lines = [
-        _ros_info("3/4 Download install.rsc..."),
-        f':do {{ /file remove [find where name="{dst}"] }} on-error={{}}',
-        ":global IspUrlInst",
-        f':set IspUrlInst "{origin}"',
-        f':set IspUrlInst ($IspUrlInst . "{mid}")',
-    ]
-    if tail:
-        lines.append(f':set IspUrlInst ($IspUrlInst . "{tail}")')
-    if http_host and http_host not in install_url:
-        lines += [
-            ":global IspFetchHost",
-            f':set IspFetchHost "Host:{http_host}"',
-        ]
-        fetch_cmd = (
-            f"/tool fetch url=$IspUrlInst http-header-field=$IspFetchHost "
-            f"dst-path={dst} mode=http"
-        )
-    else:
-        fetch_cmd = f"/tool fetch url=$IspUrlInst dst-path={dst} mode=http"
-    lines += [
-        f':if ($IspWanOk = 0) do={{{_ros_fail("Skip download - WAN failed")}}}',
-        ":global IspGot",
-        ":set IspGot 0",
-    ]
-    for try_n in range(1, attempts + 1):
-        lines.append(
-            f':if ([:len [/file find where name="{dst}"]] > 0) do={{:set IspGot 1}}'
-        )
-        lines.append(
-            f":if (($IspWanOk = 1) && ($IspGot = 0)) do={{:do {{ {fetch_cmd} }} "
-            f'on-error={{:put "[ISPCENTRIC] Download {try_n}/{attempts} failed"; :delay 3s}}}}'
-        )
-    lines += [
-        f':if ([:len [/file find where name="{dst}"]] > 0) do={{:set IspGot 1}}',
-        f':if ($IspGot = 0) do={{{_ros_fail("Download failed - check WAN / HTTP")}}} '
-        f"else={{{_ros_ok('Downloaded install.rsc')}}}",
-        _ros_info("4/4 Importing install.rsc..."),
-        f':if ($IspGot = 1) do={{/import file-name={dst}}} else={{{_ros_fail(f"{dst} missing")}}}',
-    ]
-    return lines
 
 
 def _wan_wait_lines(
@@ -1001,12 +1036,14 @@ def tunnel_verification_checks(
     subnet_mismatch: bool = False,
     multiple_devices: bool = False,
     peer_state: str = "",
+    script_installed: bool = False,
 ) -> list[dict[str, str]]:
     """
     Structured pass/fail rows for the Connect modal (mirrors Winbox script summary).
 
     Each item: key, status (ok|fail|warn|waiting), label, message.
     peer_state (hosted only): ok | missing | no_handshake | waiting_router | unknown
+    script_installed (local only): True when ispcentric-vpn / WG listen-port is present.
     """
     server = str(server_address())
     checks: list[dict[str, str]] = []
@@ -1075,19 +1112,51 @@ def tunnel_verification_checks(
             }
         )
 
+        # TCP success ≠ confirmed ispcentric filter rows — label honestly.
         if lan_address and not subnet_mismatch:
             checks.append(
                 {
                     "key": "firewall",
                     "status": "ok" if api_enabled else "waiting",
-                    "label": "Firewall API rule",
+                    "label": "API reachable",
                     "message": (
-                        "Input filter accepts API from this LAN"
+                        f"TCP 8728 accepts connections from this PC at {lan_address}"
                         if api_enabled
-                        else "Script adds ispcentric-vpn-api rules — finish paste in Winbox"
+                        else "Waiting for API — finish Winbox paste (opens LAN management)"
                     ),
                 }
             )
+
+        # Script paste is required — API alone (common on stock routers) is not enough.
+        if script_installed:
+            wg_status, wg_msg = (
+                "ok",
+                f"ISPCENTRIC script applied — ispcentric-vpn ready for tunnel IP {address}",
+            )
+        elif lan_address and not subnet_mismatch:
+            wg_status, wg_msg = (
+                "waiting",
+                (
+                    f"Paste the Winbox script — identity should become "
+                    f"{script_ready_identity(address)}, then Check now "
+                    "(login is only after all checks pass)"
+                    if api_enabled
+                    else f"Paste the script for tunnel IP {address}, then Check now"
+                ),
+            )
+        else:
+            wg_status, wg_msg = (
+                "waiting",
+                f"Tunnel IP {address} — paste script after the router is on LAN",
+            )
+        checks.append(
+            {
+                "key": "wireguard",
+                "status": wg_status,
+                "label": "Winbox script / WireGuard",
+                "message": wg_msg,
+            }
+        )
         return checks
 
     state = (peer_state or "").strip() or (
@@ -1234,13 +1303,64 @@ def peer_payload(label: str, address: str, private_key: str, public_key: str) ->
     }
 
 
+# Ordered markers for Connect paste / unit step-matrix. Keep in install order.
+INLINE_INSTALL_STEPS: tuple[str, ...] = (
+    "1/8 cleanup",
+    "2/8 management",
+    "3/8 wireguard",
+    "4/8 tunnel-firewall",
+    "5/8 hotspot-tunnel",
+    "6/8 nat",
+    "7/8 handshake",
+    "8/8 backup",
+)
+
+
+def validate_inline_install_steps(script: str) -> list[str]:
+    """
+    Return missing/out-of-order step problems for the Connect paste script.
+
+    Used by tests to lock first→last install order (management before WireGuard).
+    """
+    text = script or ""
+    problems: list[str] = []
+    positions: list[tuple[str, int]] = []
+    for step in INLINE_INSTALL_STEPS:
+        needle = f"Step {step}"
+        idx = text.find(needle)
+        if idx < 0:
+            problems.append(f"missing {needle}")
+        else:
+            positions.append((step, idx))
+    for earlier, later in zip(positions, positions[1:]):
+        if earlier[1] >= later[1]:
+            problems.append(f"order: Step {earlier[0]} must precede Step {later[0]}")
+    # Management must open API before WireGuard so LAN Reconnect works mid-paste.
+    mgmt = text.find("Step 2/8 management")
+    wg = text.find("Step 3/8 wireguard")
+    if mgmt >= 0 and wg >= 0 and mgmt > wg:
+        problems.append("management must run before wireguard")
+    if "chain=hs-input" not in text and 'comment="ispcentric-vpn-hs-input"' not in text:
+        problems.append("missing Hotspot hs-input management allow")
+    if 'identity set name="ispcentric.' not in text:
+        problems.append("missing ispcentric identity marker for LAN Check")
+    return problems
+
+
 def _routeros_install_lines(
     address: str,
     private_key: str,
     *,
     include_cleanup: bool,
 ) -> list[str]:
-    """RouterOS commands that install the billing tunnel (paste-safe, one line each)."""
+    """
+    RouterOS commands that install the billing tunnel (paste-safe, one line each).
+
+    Order (first → last):
+      1 cleanup → 2 open management (API + LAN + Hotspot hs-input) →
+      3 WireGuard → 4 tunnel firewall → 5 Hotspot bypass (tunnel subnet only) →
+      6 NAT → 7 handshake → 8 backup/summary
+    """
     host, _, port = _endpoint().partition(":")
     port = port or "51820"
     network = tunnel_network()
@@ -1256,14 +1376,17 @@ def _routeros_install_lines(
         if endpoint_host != host
         else f"{host}:{port}"
     )
+    # API / Winbox / SSH — allow through Hotspot without full LAN bypass.
+    mgmt_ports = "8728,8291,22"
 
     lines: list[str] = [
-        _ros_info("ISPCENTRIC tunnel install running..."),
-        *_wan_wait_lines(endpoint_host),
+        _ros_info("ISPCENTRIC tunnel install running (8 steps)..."),
     ]
 
+    # --- Step 1: cleanup -------------------------------------------------
     if include_cleanup:
         lines += [
+            _ros_info("Step 1/8 cleanup — remove previous ISPCENTRIC tunnel"),
             "# Remove any previous ISPCENTRIC tunnel before replacing it.",
             ':do { /system script remove [find where name~"ispcentric"] ; '
             f'/system script remove [find where comment~"ispcentric"] ; '
@@ -1282,8 +1405,83 @@ def _routeros_install_lines(
             "/interface wireguard remove [find where name=ispcentric-vpn]",
             _ros_ok("Previous ISPCENTRIC tunnel and rules removed"),
         ]
+    else:
+        lines.append(_ros_info("Step 1/8 cleanup — skipped (fresh install body)"))
 
+    # --- Step 2: management BEFORE WireGuard (LAN Reconnect / Hotspot) ----
     lines += [
+        _ros_info(
+            "Step 2/8 management — enable API 8728 + LAN/Hotspot management ports"
+        ),
+        "# Compulsory: RouterOS API on 8728 - Connect/Reconnect cannot work without it.",
+        ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
+        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service enable [find where name=api] } on-error={}",
+        _ros_check(
+            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+            "RouterOS API enabled on port 8728",
+            "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
+        ),
+        (
+            ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
+            '[/ip service get [find where name=api] address]) } on-error={'
+            f'{_ros_warn("Could not read API allowed-from list")}'
+            "}"
+        ),
+        "/ip firewall filter",
+        # LAN RFC1918 → API (firewall only; never whole-LAN Hotspot bypass).
+        # Must sit above the dynamic Hotspot jump on input, or captive PCs never
+        # reach these accepts.
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
+            "ispcentric-vpn-api-lan-10",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
+            "ispcentric-vpn-api-lan-172",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
+            "ispcentric-vpn-api-lan-192",
+        ),
+        # Before Hotspot jump: management ports for any client (no free internet).
+        (
+            ':do { /ip firewall filter add chain=input action=accept protocol=tcp '
+            f'dst-port={mgmt_ports} comment="ispcentric-vpn-api-mgmt-input" '
+            "place-before=([find where chain=input and jump-target=hs-input]->0) } "
+            "on-error={ :do { /ip firewall filter add chain=input action=accept "
+            f'protocol=tcp dst-port={mgmt_ports} comment="ispcentric-vpn-api-mgmt-input" '
+            "} on-error={} }"
+        ),
+        # Hotspot captive portal: allow mgmt to the router without free internet.
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port={mgmt_ports}",
+            "ispcentric-vpn-hs-input",
+            chain="hs-input",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port={mgmt_ports}",
+            "ispcentric-vpn-hs-unauth",
+            chain="hs-unauth",
+        ),
+        (
+            ':do { /ip firewall filter add chain=hs-unauth action=accept protocol=tcp '
+            f'dst-port={mgmt_ports} comment="ispcentric-vpn-hs-unauth" '
+            "place-before=([find where chain=hs-unauth and action=reject]->0) } "
+            "on-error={}"
+        ),
+        _ros_check(
+            '[:len [find where comment="ispcentric-vpn-api-lan-192"]] > 0',
+            "LAN API firewall rules installed",
+            "LAN API firewall rule missing - run: /ip firewall filter print",
+        ),
+        _ros_ok("Management path open (API + Hotspot-safe ports) — Reconnect can use LAN"),
+    ]
+
+    # --- Step 3: WireGuard ------------------------------------------------
+    lines += [
+        _ros_info("Step 3/8 wireguard — create ispcentric-vpn + peer"),
         "# >>> Required: creates ispcentric-vpn (do not skip) <<<",
         (
             f':do {{ /interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
@@ -1315,28 +1513,17 @@ def _routeros_install_lines(
             "Verify: VPS peer row exists",
             "Verify: VPS peer row missing",
         ),
-        "# Compulsory: RouterOS API on 8728 - Connect cannot work without it.",
-        ":do { /ip service set [find where name=api] disabled=no port=8728 address=\"\" } on-error={}",
-        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service enable [find where name=api] } on-error={}",
-        _ros_check(
-            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-            "RouterOS API enabled on port 8728",
-            "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
-        ),
+        # MNDP-visible marker so LAN Check can confirm paste without login.
         (
-            ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
-            '[/ip service get [find where name=api] address]) } on-error={'
-            f'{_ros_warn("Could not read API allowed-from list")}'
-            "}"
+            f':do {{ /system identity set name="{script_ready_identity(address)}" ; '
+            f'{_ros_ok(f"Identity set to {script_ready_identity(address)} (for Check now)")} }} '
+            f"on-error={{{_ros_warn('Could not set identity marker')}}}"
         ),
-        (
-            f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
-            f'comment="ispcentric-vpn-hotspot-bypass" ; '
-            f'{_ros_ok(f"Hotspot bypass for billing subnet {network}")} }} '
-            f"on-error={{{_ros_warn('Hotspot bypass skipped (Hotspot may not be running)')}}}"
-        ),
+    ]
+
+    # --- Step 4: tunnel firewall (needs WG interface) ---------------------
+    lines += [
+        _ros_info("Step 4/8 tunnel-firewall — accept API/ICMP from billing tunnel"),
         "/ip firewall filter",
         _ros_filter_add(
             "action=accept protocol=tcp dst-port=8728 in-interface=ispcentric-vpn",
@@ -1354,23 +1541,29 @@ def _routeros_install_lines(
             f"action=accept protocol=icmp src-address={network}",
             "ispcentric-vpn-icmp-net",
         ),
-        _ros_filter_add(
-            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
-            "ispcentric-vpn-api-lan-10",
-        ),
-        _ros_filter_add(
-            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
-            "ispcentric-vpn-api-lan-172",
-        ),
-        _ros_filter_add(
-            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
-            "ispcentric-vpn-api-lan-192",
-        ),
         _ros_check(
             '[:len [find where comment="ispcentric-vpn-api"]] > 0',
             "Input firewall rules for API and ICMP installed",
             "API firewall rule missing - run: /ip firewall filter print",
         ),
+    ]
+
+    # --- Step 5: Hotspot bypass for tunnel subnet only --------------------
+    lines += [
+        _ros_info(
+            f"Step 5/8 hotspot-tunnel — bypass Hotspot for billing subnet {network} only"
+        ),
+        (
+            f":do {{ /ip hotspot ip-binding add type=bypassed address={network} "
+            f'comment="ispcentric-vpn-hotspot-bypass" ; '
+            f'{_ros_ok(f"Hotspot bypass for billing subnet {network}")} }} '
+            f"on-error={{{_ros_warn('Hotspot bypass skipped (Hotspot may not be running)')}}}"
+        ),
+    ]
+
+    # --- Step 6: NAT ------------------------------------------------------
+    lines += [
+        _ros_info("Step 6/8 nat — do not masquerade traffic to billing tunnel"),
         "/ip firewall nat",
         _ros_nat_add(f"action=accept dst-address={network}", "ispcentric-vpn-no-nat"),
         _ros_check(
@@ -1378,7 +1571,17 @@ def _routeros_install_lines(
             "Srcnat bypass for billing tunnel installed",
             "No-nat rule missing - run: /ip firewall nat print",
         ),
+    ]
+
+    # --- Step 7: handshake ------------------------------------------------
+    lines += [
+        _ros_info("Step 7/8 handshake — ping billing server over WireGuard"),
         *_handshake_wait_lines(server, address),
+    ]
+
+    # --- Step 8: backup + summary -----------------------------------------
+    lines += [
+        _ros_info("Step 8/8 backup — save config and print summary"),
         ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
         "/system backup",
         "save name=ispcentric-tunnel dont-encrypt=yes",
@@ -1403,6 +1606,11 @@ def _routeros_install_lines(
             '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0',
             "Summary: Firewall API rule",
             "Summary: Firewall API rule",
+        ),
+        _ros_check(
+            '[:len [/ip firewall filter find where comment="ispcentric-vpn-hs-input"]] > 0',
+            "Summary: Hotspot management allow (hs-input)",
+            "Summary: Hotspot hs-input rule missing (ok if no Hotspot package)",
         ),
         _ros_check(
             f'[/ping {server} count=1] > 0',
@@ -1633,120 +1841,6 @@ def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg:
     )
 
 
-def validate_new_site_paste(script: str, *, expect_fetch: bool) -> list[str]:
-    """
-    Static checks for the Connect Winbox paste (local + hosted).
-
-    Returns human-readable problems (empty list = OK). Used by tests and can
-    be called before showing the script in the UI.
-    """
-    text = script or ""
-    problems: list[str] = []
-    if not text.strip():
-        return ["script is empty"]
-
-    # Winbox New Terminal: each physical line is one command.
-    # Fetch pastes must stay short; inline install may include longer tunnel lines.
-    max_len = 220 if expect_fetch else 560
-    for index, line in enumerate(text.splitlines(), 1):
-        if line.count("{") != line.count("}"):
-            problems.append(f"line {index}: unbalanced braces")
-        if len(line) > max_len:
-            problems.append(f"line {index}: too long for Winbox ({len(line)} chars)")
-        if any(ord(ch) > 127 for ch in line) and not line.lstrip().startswith("#"):
-            # Comments may be edited later; keep runtime commands ASCII-safe.
-            problems.append(f"line {index}: non-ASCII in a command line")
-
-    lowered = text.lower()
-    if ":for " in lowered or ":foreach " in lowered:
-        problems.append("contains :for/:foreach (Winbox paste breaks multi-line blocks)")
-    if ":local " in lowered:
-        problems.append("uses :local (does not persist across paste lines; use :global)")
-
-    if "1/4 api" not in lowered:
-        problems.append("missing API step (1/4)")
-    if "2/4 wan" not in lowered and "wan:" not in lowered:
-        problems.append("missing WAN step")
-    if "ispcentric-api-boot" not in text:
-        problems.append("missing ispcentric-api-boot firewall rule")
-    if "bridge port remove" not in text and "status=bound" not in text:
-        problems.append("missing DHCP bound / ether1 unbridge WAN prep")
-    if ":global IspWanOk" not in text:
-        problems.append("missing IspWanOk gate")
-
-    api_at = text.find("1/4 API")
-    wan_at = text.find("2/4 WAN")
-    if api_at < 0:
-        api_at = text.find("Enabling RouterOS API")
-    if wan_at < 0:
-        wan_at = text.find("WAN:")
-    if api_at >= 0 and wan_at >= 0 and api_at > wan_at:
-        problems.append("API step must run before WAN step")
-
-    if expect_fetch:
-        if "3/4 Download" not in text and "/tool fetch" not in text:
-            problems.append("expected remote install.rsc fetch")
-        if "/import file-name=ispcentric-install.rsc" not in text:
-            problems.append("missing /import install.rsc")
-        if "IspCentricCustom" in text:
-            problems.append("reset/custom logic must stay in install.rsc, not the paste")
-        if "/app/m/" not in text:
-            problems.append("missing short /app/m/ fetch path")
-    else:
-        if "public_base_url" not in lowered and "no install.rsc url" not in lowered:
-            problems.append("empty-base paste should explain missing PUBLIC_BASE_URL")
-        if "ispcentric-vpn" in text and "IspCentricCustom" in text:
-            problems.append("full inline install is too long for Winbox - require .rsc fetch")
-
-    return problems
-
-
-def _routeros_smart_install_script(address: str, private_key: str) -> str:
-    """
-    New-site Winbox paste only (Connect onboarding).
-
-    Does not run on already-onboarded routers unless someone pastes again.
-    Hosted/local with PUBLIC_BASE_URL: API → WAN → fetch install.rsc → import.
-    Local with no public base: API → WAN → inline install (same reset rules).
-    """
-    address = (address or "").strip()
-    private_key = (private_key or "").strip()
-    endpoint_host = _resolved_endpoint_host(_endpoint().partition(":")[0])
-    install_url, http_host = short_rsc_url(address, "i")
-
-    header = [
-        "# ISPCENTRIC new site - Winbox -> New Terminal - paste once.",
-        "# New onboards only. Already-joined MikroTiks are not changed by this file.",
-    ]
-
-    if not install_url:
-        # Full inline install is too long for Winbox paste. Local/hosted Connect
-        # should always expose a PUBLIC_BASE_URL (or auto LAN IP) so .rsc fetch works.
-        return "\n".join(
-            [
-                *header,
-                "# Mode: no fetch URL - set PUBLIC_BASE_URL on the billing app, then regenerate.",
-                "# 1) API  2) WAN  3) stop (need HTTP base to download install.rsc)",
-                *_api_lan_ready_lines(),
-                *_bootstrap_wan_lines(endpoint_host),
-                _ros_info("3/4 No install.rsc URL..."),
-                _ros_fail(
-                    "Set PUBLIC_BASE_URL (or hosted portal URL), regenerate, re-paste"
-                ),
-            ]
-        )
-
-    return "\n".join(
-        [
-            *header,
-            "# 1) API  2) WAN  3) download install.rsc  4) import (tunnel / reset inside)",
-            *_api_lan_ready_lines(),
-            *_bootstrap_wan_lines(endpoint_host),
-            *_bootstrap_fetch_import_lines(install_url, http_host),
-        ]
-    )
-
-
 def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
     """
     Compact .rsc run after factory reset (must stay small for /file contents=).
@@ -1879,23 +1973,15 @@ def rsc_access_token(address: str) -> str:
 
 def routeros_script(address: str, private_key: str, *, factory_reset: bool = True) -> str:
     """
-    Commands to paste into the MikroTik terminal to join the tunnel.
+    Full inline Winbox paste to join the billing WireGuard tunnel.
 
-    When factory_reset is True (default for Connect onboarding), the paste
-    checks the router first:
-    - Clean / ISPCENTRIC-only → install in place (no reboot)
-    - Hotspot, PPPoE, or other custom config → factory reset (keep-users), then
-      auto-install from ispcentric-post-reset.rsc after reboot
-
-    When factory_reset is False, always replaces previous ISPCENTRIC components
-    in-place without any reset check.
+    Install order (see ``INLINE_INSTALL_STEPS``): cleanup → management (API +
+    Hotspot-safe ports) → WireGuard → tunnel firewall → Hotspot tunnel bypass →
+    NAT → handshake → backup. ``factory_reset`` is accepted for call-site
+    compatibility but ignored — Connect always pastes this full inline script.
     """
-    # Validate server settings up front (also used by downloaded .rsc bodies).
     _endpoint()
     _server_public_key()
-    if factory_reset:
-        return _routeros_smart_install_script(address, private_key)
-
     install = _routeros_install_lines(
         address,
         private_key,
@@ -1905,7 +1991,7 @@ def routeros_script(address: str, private_key: str, *, factory_reset: bool = Tru
         [
             "# ISPCENTRIC billing tunnel - paste into the MikroTik terminal.",
             "# Requires RouterOS 7. Safe to re-run: replaces previous ISPCENTRIC config only.",
-            _ros_info("Starting ISPCENTRIC tunnel install (no factory reset)..."),
+            _ros_info("Starting ISPCENTRIC tunnel install..."),
             _ros_info("Look for [ISPCENTRIC OK] or [ISPCENTRIC FAIL] on each line below"),
             *install,
         ]
