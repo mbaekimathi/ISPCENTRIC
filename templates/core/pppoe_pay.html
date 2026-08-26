@@ -1379,8 +1379,12 @@
         </p>
       {% elif not pppoe_plans and not show_inline_hotspot %}
         <p class="meta">
-          {% if identify_error %}{{ identify_error }}
-          {% else %}No PPPoE packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.
+          {% if portal_setup_hint %}
+            {{ portal_setup_hint }}
+          {% elif identify_error %}
+            {{ identify_error }}
+          {% else %}
+            No PPPoE packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.
           {% endif %}
           {% if hotspot_option_available and hotspot_pay_url %}
             <br>Or <a href="{{ hotspot_pay_url }}">Pay for Hotspot instead</a>.

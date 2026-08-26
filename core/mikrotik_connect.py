@@ -1575,6 +1575,29 @@ def recover_mikrotik_connection(
             "pingable_hosts": sorted(set(pingable_hosts)),
         }
 
+    # Local PC + only WireGuard peer IPs saved → "plug into LAN" is useless;
+    # the tunnel is on the VPS, not this machine.
+    if (
+        on_router_lan()
+        and hosts
+        and all(_is_wireguard_tunnel_host(h) for h in hosts)
+        and not pingable_hosts
+        and not manageable_hosts
+    ):
+        shown = hosts[0]
+        return {
+            "ok": False,
+            "error": (
+                f"{last_error}. {shown} is a WireGuard tunnel address and this "
+                "PC cannot reach it. In Winbox (Neighbors → MAC) open "
+                "IP → Addresses, copy the LAN IP on bridge/bridgeLocal "
+                "(e.g. 192.168.10.2), edit this router in ISPCENTRIC and set "
+                "Host to that LAN IP, then click Reconnect."
+            ),
+            "pingable_hosts": sorted(set(pingable_hosts)),
+            "needs_lan_host": True,
+        }
+
     return {
         "ok": False,
         "error": (
@@ -11024,13 +11047,18 @@ def _router_api_host_candidates(
     )
     # Hosted: tunnel first. LAN/dev: LAN host first so a reserved vpn_address
     # does not make every status/live poll time out on an unreachable peer.
-    if on_router_lan():
-        preferred = [host, tunnel]
+    # When the saved host itself is only a tunnel peer (common after hosted
+    # onboard), prefer discovered LAN candidates before burning timeouts on
+    # 10.9.0.x that this PC cannot route.
+    if on_router_lan() and _is_wireguard_tunnel_host(host):
+        ordered = [*(candidate_hosts or []), host, tunnel, *lan_only]
+    elif on_router_lan():
+        ordered = [host, tunnel, *lan_only, *(candidate_hosts or [])]
     else:
-        preferred = [tunnel, host]
+        ordered = [tunnel, host, *lan_only, *(candidate_hosts or [])]
     hosts: list[str] = []
     dialled: set[str] = set()
-    for candidate in [*preferred, *lan_only, *(candidate_hosts or [])]:
+    for candidate in ordered:
         value = (candidate or "").strip()
         # Two candidates that dial the same address are one attempt, not two.
         target = dial_host(value)

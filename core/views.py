@@ -64,6 +64,7 @@ from billing.models import AccessVoucher, BillingPlan, Customer, Invoice, Paymen
 from billing.services import (
     customer_needs_nas_provision,
     customer_package_is_paused,
+    customer_portal_access_context,
     customer_receives_internet,
     customer_subscription_expired,
     customers_needing_renewal_attention,
@@ -8685,6 +8686,28 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     if access_ctx["subscription_paused"]:
         title = f"{org.name} — Internet paused"
         message = access_ctx["access_banner_message"]
+    setup_hint = ""
+    if not has_payable_plans:
+        if not bool(getattr(org, "hotspot_enabled", True)):
+            setup_hint = (
+                f"{org.name} has Hotspot turned off in System settings. "
+                "Turn it on and add Hotspot packages so clients can pay here."
+            )
+        else:
+            setup_hint = (
+                f"No Hotspot packages are available yet. Ask {org.name}"
+                + (
+                    f" ({org.phone})"
+                    if getattr(org, "phone", None)
+                    else ""
+                )
+                + " to add packages, or open Billing → Plans."
+            )
+    elif not stk_ready and not has_mpesa:
+        setup_hint = (
+            f"M-Pesa is not set up for {org.name} yet. "
+            "Configure Paybill/Till or Daraja STK under System settings."
+        )
     return {
         "organization": org,
         "org_name": org.name,
@@ -8700,6 +8723,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "pppoe_plans": [],
         "has_payable_plans": has_payable_plans,
         "portal_mode": portal_mode,
+        "portal_setup_hint": setup_hint,
         "show_payment_form": (
             (bool(hotspot_mac) or (stk_ready and bool(hotspot_plans)))
             and access_ctx["show_renew_payment"]
@@ -9403,6 +9427,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         org, pppoe_plans, customer
     )
     _attach_plan_portal_images(pppoe_plans, request)
+    _attach_plan_offer_progress(pppoe_plans, customer)
     hotspot_enabled = bool(getattr(org, "hotspot_enabled", False))
     hotspot_plans: list = []
     if hotspot_enabled:
@@ -9443,6 +9468,26 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         page_message = access_ctx["access_banner_message"]
     show_payment_form = has_payable_plans and access_ctx["show_renew_payment"]
     stk_payment_available = stk_ready and access_ctx["show_renew_payment"]
+    # Prefer a clear ISP-setup hint over a look-up error when nothing is payable.
+    setup_hint = ""
+    if not pppoe_plans and not show_inline_hotspot:
+        setup_hint = (
+            f"No PPPoE packages are available yet. Ask {org.name}"
+            + (f" ({org.phone})" if getattr(org, "phone", None) else "")
+            + " to add packages under Billing → Plans."
+        )
+        if not stk_ready and not has_mpesa:
+            setup_hint += (
+                " M-Pesa / Daraja STK is also not set up for this ISP yet."
+            )
+    elif pppoe_plans and not stk_ready and not has_mpesa:
+        setup_hint = (
+            f"M-Pesa is not set up for {org.name} yet. "
+            "Configure Paybill/Till or Daraja STK under System settings."
+        )
+    # Don't scold the client for a missing match when the ISP has nothing to sell.
+    if setup_hint and not pppoe_plans:
+        identify_error = ""
     pppoe_start = public_absolute_url(
         reverse("core:pppoe_payment_start", kwargs={"join_code": org.join_code}),
         request,
@@ -9476,6 +9521,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "has_payable_plans": has_payable_plans,
         "show_inline_hotspot": show_inline_hotspot,
         "portal_mode": portal_mode,
+        "portal_setup_hint": setup_hint,
         "show_payment_form": show_payment_form,
         "stk_payment_available": stk_payment_available,
         "require_account_lookup": customer is None,

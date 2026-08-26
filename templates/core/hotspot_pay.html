@@ -1131,7 +1131,13 @@
           <p class="meta" data-voucher-status role="status" aria-live="polite" hidden></p>
         </div>
       {% else %}
-        <p class="meta">No Hotspot packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.</p>
+        <p class="meta">
+          {% if portal_setup_hint %}
+            {{ portal_setup_hint }}
+          {% else %}
+            No Hotspot packages are available yet. Contact {{ org_name }}{% if organization.phone %} on {{ organization.phone }}{% endif %}.
+          {% endif %}
+        </p>
       {% endif %}
     </main>
   </div>

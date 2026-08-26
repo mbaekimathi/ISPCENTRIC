@@ -1060,6 +1060,50 @@ class HotspotCaptiveLockoutTests(SimpleTestCase):
         self.assertTrue(result["api_disabled"])
         self.assertIn("IP → Services", result["error"])
 
+    @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_tunnel_only_host_on_local_pc_asks_for_lan_ip(self):
+        from core.mikrotik_connect import recover_mikrotik_connection
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter(
+            id=13,
+            name="N",
+            host="10.9.0.8",
+            vpn_address="10.9.0.8",
+            username="admin",
+        )
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": False, "via": ""},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                side_effect=TimeoutError(),
+            ),
+            patch(
+                "core.mikrotik_connect._serves_hotspot_portal",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._hotspot_login_this_pc",
+                return_value=[],
+            ),
+        ):
+            result = recover_mikrotik_connection(
+                "10.9.0.8",
+                "admin",
+                "secret",
+                router=router,
+                timeout=0.1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result.get("needs_lan_host"))
+        self.assertIn("WireGuard", result["error"])
+        self.assertIn("set Host to that LAN IP", result["error"])
+        self.assertNotIn("Plug this PC into MikroTik ether2", result["error"])
+
 
 class PppoeSecretProfileSyncTests(SimpleTestCase):
     def test_bulk_sync_uses_blocked_profile_for_unpaid_clients(self):
@@ -1949,6 +1993,122 @@ class HotspotPortalContextTests(SimpleTestCase):
         self.assertTrue(ctx["show_payment_form"])
         self.assertEqual(ctx["hotspot_mac"], "AA:BB:CC:DD:EE:FF")
         self.assertEqual(ctx["portal_mode"], "hotspot")
+        self.assertTrue(ctx["show_renew_payment"])
+        self.assertFalse(ctx["subscription_paused"])
+
+    def test_hotspot_portal_context_handles_anonymous_client(self):
+        """Captive open with no MAC must still render (no NameError / 500)."""
+        from django.test import RequestFactory
+
+        from core.views import _hotspot_portal_context
+
+        org = type(
+            "Org",
+            (),
+            {
+                "name": "Second ISP",
+                "join_code": "008727",
+                "hotspot_portal_title": "",
+                "hotspot_login_message": "",
+                "mpesa_payment_type": "",
+                "mpesa_number": "",
+                "mpesa_account": "",
+                "pppoe_compulsory": False,
+                "effective_daraja_credentials": lambda self: {"ready": False},
+                "pk": 2,
+            },
+        )()
+        request = RequestFactory().get("/hotspot/008727/pay/")
+        with (
+            patch("billing.services.plans_for_router", return_value=[]),
+            patch("core.views._find_hotspot_customer_for_mac", return_value=None),
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=None,
+            ),
+        ):
+            ctx = _hotspot_portal_context(org, mikrotik_login=False, request=request)
+        self.assertEqual(ctx["org_name"], "Second ISP")
+        self.assertEqual(ctx["portal_mode"], "hotspot")
+        self.assertFalse(ctx["show_payment_form"])
+        self.assertIn("show_renew_payment", ctx)
+
+
+class PppoePortalContextTests(SimpleTestCase):
+    def test_pppoe_portal_context_handles_anonymous_client(self):
+        """Captive PPPoE open with no matched account must still render (no 500)."""
+        from django.test import RequestFactory
+
+        from core.views import _pppoe_portal_context
+
+        org = type(
+            "Org",
+            (),
+            {
+                "name": "Second ISP",
+                "join_code": "008727",
+                "phone": "+254700000000",
+                "hotspot_enabled": False,
+                "mpesa_payment_type": "",
+                "mpesa_number": "",
+                "mpesa_account": "",
+                "effective_daraja_credentials": lambda self: {"ready": False},
+                "pk": 2,
+            },
+        )()
+        request = RequestFactory().get("/pppoe/008727/pay/")
+        with patch("billing.services.plans_for_router", return_value=[]):
+            ctx = _pppoe_portal_context(
+                org,
+                request,
+                customer=None,
+                identify_error="Could not auto-match this connection.",
+            )
+        self.assertEqual(ctx["portal_mode"], "pppoe")
+        self.assertTrue(ctx["require_account_lookup"])
+        self.assertIn("show_renew_payment", ctx)
+        self.assertTrue(ctx["portal_setup_hint"])
+        # ISP has nothing to sell — don't blame the client lookup.
+        self.assertEqual(ctx["identify_error"], "")
+        self.assertEqual(ctx["pppoe_identify_error"], "")
+
+    def test_pppoe_portal_keeps_identify_error_when_plans_exist(self):
+        from django.test import RequestFactory
+
+        from core.views import _pppoe_portal_context
+
+        plan = type("Plan", (), {"pk": 1, "name": "Home", "price": "1000"})()
+        org = type(
+            "Org",
+            (),
+            {
+                "name": "Ready ISP",
+                "join_code": "823444",
+                "phone": "",
+                "hotspot_enabled": False,
+                "mpesa_payment_type": "paybill",
+                "mpesa_number": "123456",
+                "mpesa_account": "",
+                "effective_daraja_credentials": lambda self: {"ready": True},
+                "pk": 1,
+            },
+        )()
+        request = RequestFactory().get("/pppoe/823444/pay/")
+        with (
+            patch("billing.services.plans_for_router", return_value=[plan]),
+            patch("core.views._plans_with_customer_default", return_value=([plan], None)),
+            patch("core.views._attach_plan_portal_images", side_effect=lambda plans, req=None: plans),
+            patch("core.views._attach_plan_offer_progress", side_effect=lambda plans, c=None: plans),
+        ):
+            ctx = _pppoe_portal_context(
+                org,
+                request,
+                customer=None,
+                identify_error="Could not auto-match this connection.",
+            )
+        self.assertTrue(ctx["has_payable_plans"])
+        self.assertEqual(ctx["identify_error"], "Could not auto-match this connection.")
+        self.assertFalse(ctx["portal_setup_hint"])
 
 
 class PppoeRouterFallbackTests(TestCase):
