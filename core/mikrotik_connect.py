@@ -15189,6 +15189,198 @@ def block_hotspot_mac_until_paid(
         return {"ok": False, "error": str(exc) or "Could not block Hotspot MAC."}
 
 
+def disconnect_hotspot_customer(customer, *, router=None) -> dict[str, Any]:
+    """
+    Force-disable Hotspot MAC users and kick live sessions immediately.
+
+    Used when deleting a subscriber so they lose internet right away, even if
+    their package would still be considered paid. Hotspot MAC users are synced
+    onto every org AP, so this best-effort kicks across all active routers
+    unless a single ``router`` is passed.
+    """
+    from billing.devices import hotspot_macs_for_customer
+    from core.models import MikroTikRouter
+
+    if customer is None:
+        return {"ok": False, "error": "No customer provided.", "skipped": False}
+
+    macs = [
+        _normalize_hotspot_mac(mac)
+        for mac in hotspot_macs_for_customer(customer)
+        if _normalize_hotspot_mac(mac)
+    ]
+    if not macs:
+        primary = _normalize_hotspot_mac(getattr(customer, "hotspot_mac", "") or "")
+        if primary:
+            macs = [primary]
+    if not macs:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "No Hotspot device MAC to disconnect.",
+        }
+
+    org = getattr(customer, "organization", None)
+    targets: list = []
+    if router is not None:
+        targets = [router]
+    else:
+        bound = getattr(customer, "router", None)
+        if bound is not None:
+            targets.append(bound)
+        if org is not None:
+            for row in MikroTikRouter.objects.filter(
+                organization_id=org.pk,
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            ).order_by("id"):
+                if all(getattr(row, "pk", None) != getattr(t, "pk", None) for t in targets):
+                    targets.append(row)
+        if not targets and bound is not None:
+            targets = [bound]
+
+    if not targets:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": "No Hotspot router available to disconnect the client.",
+        }
+
+    results: list[dict[str, Any]] = []
+    kicked = 0
+    for target in targets:
+        host = (getattr(target, "host", None) or "").strip()
+        username = (getattr(target, "username", None) or "").strip()
+        password = getattr(target, "password", None) or ""
+        router_name = getattr(target, "name", "") or host
+        if not host or not username:
+            results.append(
+                {
+                    "ok": False,
+                    "router_id": getattr(target, "pk", None),
+                    "router_name": router_name,
+                    "error": "Router host or username is missing.",
+                }
+            )
+            continue
+
+        probe = check_mikrotik_reachable(host, timeout=1.5)
+        if not probe.get("online"):
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "timeout": True,
+                    "router_id": getattr(target, "pk", None),
+                    "router_name": router_name,
+                    "message": "Router offline — disconnect deferred.",
+                }
+            )
+            continue
+
+        try:
+            with _api_session(host, username, password, timeout=8.0) as sock:
+                _remove_lan_wide_hotspot_bypasses(sock)
+                active_rows = _print(
+                    sock,
+                    "/ip/hotspot/active",
+                    props=".id,mac-address,address,authorized",
+                )
+                host_rows = _print(
+                    sock,
+                    "/ip/hotspot/host",
+                    props=".id,mac-address,authorized",
+                )
+                purged_total = 0
+                for mac in macs:
+                    _ensure_hotspot_user(
+                        sock,
+                        username=mac,
+                        password="",
+                        comment=f"{ISP_HOTSPOT_TAG} deleted",
+                        disabled=True,
+                        limit_uptime="0s",
+                    )
+                    _expire_hotspot_mac_sessions(
+                        sock,
+                        mac,
+                        disabled=True,
+                        reauthenticate=True,
+                        active_rows=active_rows,
+                        host_rows=host_rows,
+                    )
+                    purged_total += _purge_hotspot_ok_list_for_mac(
+                        sock, mac, active_rows=active_rows
+                    )
+                    # Drop the NAS user row so the MAC cannot silently reconnect.
+                    user_rows = _print(
+                        sock,
+                        "/ip/hotspot/user",
+                        props=".id,name",
+                        query={"name": mac},
+                    )
+                    if not user_rows:
+                        user_rows = _print(
+                            sock, "/ip/hotspot/user", props=".id,name"
+                        )
+                    for row in user_rows:
+                        if (row.get("name") or "").strip().upper() != mac:
+                            continue
+                        item_id = (row.get(".id") or "").strip()
+                        if item_id:
+                            _remove(sock, "/ip/hotspot/user", item_id)
+                            break
+            kicked += 1
+            results.append(
+                {
+                    "ok": True,
+                    "skipped": False,
+                    "router_id": getattr(target, "pk", None),
+                    "router_name": router_name,
+                    "macs": list(macs),
+                    "purged_ok_list": purged_total,
+                    "message": "Hotspot MAC disabled and live session kicked.",
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            results.append(
+                {
+                    "ok": False,
+                    "router_id": getattr(target, "pk", None),
+                    "router_name": router_name,
+                    "error": str(exc) or "Could not disconnect Hotspot client.",
+                }
+            )
+
+    if kicked:
+        return {
+            "ok": True,
+            "skipped": False,
+            "macs": list(macs),
+            "routers": results,
+            "message": (
+                f"Disconnected {len(macs)} Hotspot MAC(s) on "
+                f"{kicked} router(s)."
+            ),
+        }
+    first_error = next(
+        (item.get("error") for item in results if item.get("error")),
+        "Could not reach any organization MikroTik.",
+    )
+    any_deferred = any(item.get("timeout") for item in results)
+    return {
+        "ok": bool(any_deferred and not first_error),
+        "skipped": bool(any_deferred),
+        "error": None if any_deferred else first_error,
+        "macs": list(macs),
+        "routers": results,
+        "message": (
+            "Router offline — disconnect deferred."
+            if any_deferred
+            else first_error
+        ),
+    }
+
+
 def _expire_hotspot_mac_sessions(
     sock: socket.socket,
     mac: str,

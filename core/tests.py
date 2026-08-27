@@ -1914,6 +1914,119 @@ class HotspotAuthorizeFastPathTests(TestCase):
         self.assertTrue(result.get("portal", {}).get("ok"))
 
 
+class HotspotDisconnectOnDeleteTests(TestCase):
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        self.owner = User.objects.create_user("hs-del-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Delete Hotspot ISP",
+            owner=self.owner,
+            join_code="889900",
+            hotspot_enabled=True,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Delete NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.50",
+            username="admin",
+            password="secret",
+        )
+        now = timezone.now()
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Delete Me",
+            phone="0700111222",
+            account_number="HOT-DEL-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:11:22:33",
+            status=Customer.Status.ACTIVE,
+            router=self.router,
+            package_start=now,
+            package_end=now + timedelta(hours=2),
+        )
+        self.client.force_login(self.owner)
+
+    def test_disconnect_hotspot_customer_disables_and_kicks(self):
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import disconnect_hotspot_customer
+
+        sock = MagicMock()
+        with (
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True},
+            ),
+            patch(
+                "core.mikrotik_connect._api_session",
+                return_value=MagicMock(
+                    __enter__=MagicMock(return_value=sock),
+                    __exit__=MagicMock(return_value=False),
+                ),
+            ),
+            patch("core.mikrotik_connect._remove_lan_wide_hotspot_bypasses"),
+            patch("core.mikrotik_connect._print", return_value=[]),
+            patch("core.mikrotik_connect._ensure_hotspot_user") as ensure_user,
+            patch("core.mikrotik_connect._expire_hotspot_mac_sessions") as expire,
+            patch(
+                "core.mikrotik_connect._purge_hotspot_ok_list_for_mac",
+                return_value=0,
+            ) as purge,
+            patch("core.mikrotik_connect._remove") as remove,
+        ):
+            result = disconnect_hotspot_customer(self.customer)
+
+        self.assertTrue(result.get("ok"))
+        self.assertFalse(result.get("skipped"))
+        ensure_user.assert_called()
+        kwargs = ensure_user.call_args.kwargs
+        self.assertEqual(kwargs.get("username"), "AA:BB:CC:11:22:33")
+        self.assertTrue(kwargs.get("disabled"))
+        self.assertIn("deleted", kwargs.get("comment") or "")
+        expire.assert_called()
+        self.assertTrue(expire.call_args.kwargs.get("disabled"))
+        self.assertTrue(expire.call_args.kwargs.get("reauthenticate"))
+        purge.assert_called()
+        remove.assert_not_called()  # no user rows returned by _print
+
+    def test_client_delete_kicks_hotspot_before_db_delete(self):
+        from unittest.mock import patch
+
+        from billing.models import Customer
+
+        order = []
+
+        def disconnect_side_effect(customer):
+            order.append(("disconnect", customer.pk))
+            self.assertTrue(
+                Customer.objects.filter(pk=customer.pk).exists(),
+                "disconnect must run before customer.delete()",
+            )
+            return {"ok": True}
+
+        with patch(
+            "core.views.disconnect_hotspot_customer",
+            side_effect=disconnect_side_effect,
+        ) as disconnect:
+            response = self.client.post(
+                f"/app/clients/{self.customer.pk}/delete/"
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("tab=hotspot", response.url)
+        disconnect.assert_called_once()
+        self.assertEqual(order, [("disconnect", self.customer.pk)])
+        self.assertFalse(Customer.objects.filter(pk=self.customer.pk).exists())
+
+
 class CaptiveGatewayHostTests(TestCase):
     """Opening the router IP must show the portal, not a 400 error page."""
 

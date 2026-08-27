@@ -125,6 +125,7 @@ from core.mikrotik_connect import (
     PPPOE_LOCAL_ADDRESS as MK_PPPOE_LOCAL_ADDRESS,
     configure_customer_cpe_web_wifi,
     configure_mikrotik_wifi,
+    disconnect_hotspot_customer,
     fetch_active_pppoe_usernames,
     fetch_customer_cpe_web_data,
     fetch_customer_cpe_live_usage,
@@ -5765,6 +5766,13 @@ def client_delete(request, customer_id: int):
                 provision_customer_pppoe(
                     customer, ensure_stack=False, force_disabled=True
                 )
+            except Exception:
+                pass
+        # Best-effort: disable Hotspot MAC users and kick live sessions now,
+        # before the customer (and device MACs) are removed from billing.
+        elif customer.service_type == Customer.ServiceType.HOTSPOT:
+            try:
+                disconnect_hotspot_customer(customer)
             except Exception:
                 pass
         customer.delete()
