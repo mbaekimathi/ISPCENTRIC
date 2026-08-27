@@ -8593,36 +8593,49 @@ def _ensure_customer_plan_in_list(org, plans, customer):
     return plans
 
 
+_DURATION_ORDER = {
+    value: index for index, (value, _label) in enumerate(BillingPlan.Duration.choices)
+}
+
+
+def _sort_plans_by_duration(plans):
+    """Stable order for pay-page category rows (duration, then price, then name)."""
+    return sorted(
+        list(plans or []),
+        key=lambda plan: (
+            _DURATION_ORDER.get(getattr(plan, "duration", "") or "", 99),
+            getattr(plan, "price", 0) or 0,
+            (getattr(plan, "name", "") or "").lower(),
+        ),
+    )
+
+
 def _plans_with_customer_default(org, plans, customer):
     """
-    Put the customer's previous package first and report which id to pre-select.
+    Resolve which previous package to pre-select.
 
     Inactive previous packages stay available for renew when no active twin
     exists; otherwise the matching active twin is preferred so payment works.
+    Plans are returned sorted by duration for category rows on the pay page.
     """
     plans = list(plans or [])
     if customer is None:
-        return plans, None
+        return _sort_plans_by_duration(plans), None
     current_plan_id = getattr(customer, "plan_id", None)
     if not current_plan_id:
-        return plans, None
+        return _sort_plans_by_duration(plans), None
 
-    def _move_front(plan_id: int) -> bool:
-        for index, plan in enumerate(plans):
-            if plan.pk == plan_id:
-                if index:
-                    plans.insert(0, plans.pop(index))
-                return True
-        return False
+    def _ensure_present(plan_id: int) -> bool:
+        return any(plan.pk == plan_id for plan in plans)
 
-    if _move_front(current_plan_id):
-        return plans, current_plan_id
+    if _ensure_present(current_plan_id):
+        return _sort_plans_by_duration(plans), current_plan_id
 
     current = BillingPlan.objects.filter(
         pk=current_plan_id, organization=org
     ).first()
     if current is None:
-        return plans, None
+        return _sort_plans_by_duration(plans), None
 
     chosen = current
     if not current.is_active:
@@ -8652,10 +8665,9 @@ def _plans_with_customer_default(org, plans, customer):
         if twin is not None:
             chosen = twin
 
-    if _move_front(chosen.pk):
-        return plans, chosen.pk
-    plans.insert(0, chosen)
-    return plans, chosen.pk
+    if not _ensure_present(chosen.pk):
+        plans.append(chosen)
+    return _sort_plans_by_duration(plans), chosen.pk
 
 
 def _attach_plan_portal_images(plans, request=None):
@@ -8751,7 +8763,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     hotspot_plans = list(
         plans_for_router(
             org, portal_router, service_type=BillingPlan.ServiceType.HOTSPOT
-        )[:8]
+        )[:40]
     )
     hotspot_plans, hotspot_selected_plan_id = _plans_with_customer_default(
         org, hotspot_plans, hotspot_customer
@@ -9518,7 +9530,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     pppoe_plans = list(
         plans_for_router(
             org, customer_router, service_type=BillingPlan.ServiceType.PPPOE
-        )[:8]
+        )[:40]
     )
     # Router-scoped plans with no links match every NAS; when a customer is tied
     # to one router but every plan is scoped elsewhere, still show org packages.
@@ -9526,7 +9538,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         pppoe_plans = list(
             plans_for_router(
                 org, None, service_type=BillingPlan.ServiceType.PPPOE
-            )[:8]
+            )[:40]
         )
     pppoe_plans, pppoe_selected_plan_id = _plans_with_customer_default(
         org, pppoe_plans, customer
@@ -9539,14 +9551,15 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         hotspot_plans = list(
             plans_for_router(
                 org, customer_router, service_type=BillingPlan.ServiceType.HOTSPOT
-            )[:8]
+            )[:40]
         )
         if not hotspot_plans and customer_router is not None:
             hotspot_plans = list(
                 plans_for_router(
                     org, None, service_type=BillingPlan.ServiceType.HOTSPOT
-                )[:8]
+                )[:40]
             )
+        hotspot_plans = _sort_plans_by_duration(hotspot_plans)
         _attach_plan_portal_images(hotspot_plans, request)
         _attach_plan_offer_progress(hotspot_plans, customer)
     # Identified home customers renew PPPoE only; unidentified CPE visitors

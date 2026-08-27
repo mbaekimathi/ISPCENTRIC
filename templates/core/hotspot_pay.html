@@ -186,11 +186,48 @@
       text-transform: uppercase;
     }
 
-    .plan-grid {
+    .plan-categories {
+      display: grid;
+      gap: 0.85rem;
+      min-width: 0;
+    }
+
+    .plan-category {
+      display: grid;
+      gap: 0.4rem;
+      min-width: 0;
+    }
+
+    .category-label {
+      margin: 0;
+      color: #c5d0de;
+      font-size: 0.78rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+
+    .plan-scroll {
       display: flex;
-      flex-wrap: wrap;
-      justify-content: flex-start;
-      gap: 0.7rem;
+      flex-wrap: nowrap;
+      gap: 0.5rem;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-x: contain;
+      padding: 0.15rem 0.15rem 0.45rem;
+      margin-inline: -0.15rem;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+    }
+
+    .plan-scroll::-webkit-scrollbar {
+      height: 0.35rem;
+    }
+
+    .plan-scroll::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.28);
     }
 
     .plan-card {
@@ -199,17 +236,18 @@
       display: grid;
       grid-template-rows: auto 1fr;
       margin: 0;
-      width: min(9.6rem, calc(50% - 0.35rem));
-      max-width: 9.6rem;
-      flex: 0 1 9.6rem;
+      flex: 0 0 7rem;
+      width: 7rem;
+      max-width: 7rem;
+      scroll-snap-align: start;
       overflow: hidden;
       cursor: pointer;
-      border-radius: 1rem;
+      border-radius: 0.85rem;
       border: 2px solid rgba(210, 224, 240, 0.42);
       background: #182234;
       box-shadow:
         0 0 0 1px rgba(0, 0, 0, 0.55),
-        0 10px 24px rgba(0, 0, 0, 0.4);
+        0 8px 18px rgba(0, 0, 0, 0.38);
       transition: transform 0.2s var(--ease), border-color 0.2s ease, box-shadow 0.2s ease;
     }
 
@@ -238,7 +276,7 @@
       border-color: var(--card-accent);
       box-shadow:
         0 0 0 1px var(--card-accent),
-        0 10px 24px rgba(0, 0, 0, 0.32);
+        0 8px 18px rgba(0, 0, 0, 0.32);
     }
 
     .plan-media {
@@ -246,7 +284,7 @@
       display: block;
       overflow: hidden;
       isolation: isolate;
-      aspect-ratio: 16 / 10;
+      aspect-ratio: 1 / 1;
       border: 0;
       border-bottom: 1px solid rgba(255, 255, 255, 0.12);
       background: #0d1420;
@@ -319,10 +357,10 @@
 
     .plan-mono {
       position: absolute;
-      left: 0.6rem;
-      top: 0.55rem;
+      left: 0.45rem;
+      top: 0.4rem;
       z-index: 1;
-      font-size: 1.35rem;
+      font-size: 1.05rem;
       font-weight: 800;
       letter-spacing: -0.08em;
       color: rgba(255, 255, 255, 0.88);
@@ -333,11 +371,11 @@
 
     .plan-check {
       position: absolute;
-      top: 0.45rem;
-      right: 0.45rem;
+      top: 0.35rem;
+      right: 0.35rem;
       z-index: 2;
-      width: 1.05rem;
-      height: 1.05rem;
+      width: 0.9rem;
+      height: 0.9rem;
       border-radius: 50%;
       border: 1.5px solid rgba(255, 255, 255, 0.45);
       background: rgba(8, 12, 20, 0.35);
@@ -353,10 +391,10 @@
     .plan-card.is-selected .plan-check::after {
       content: "";
       position: absolute;
-      left: 0.28rem;
-      top: 0.16rem;
-      width: 0.26rem;
-      height: 0.46rem;
+      left: 0.24rem;
+      top: 0.12rem;
+      width: 0.22rem;
+      height: 0.4rem;
       border: solid #06221c;
       border-width: 0 2px 2px 0;
       transform: rotate(45deg);
@@ -365,57 +403,57 @@
     .plan-copy {
       display: grid;
       align-content: start;
-      gap: 0.32rem;
-      padding: 0.55rem 0.6rem 0.65rem;
+      gap: 0.22rem;
+      padding: 0.4rem 0.45rem 0.5rem;
       background: #182234;
     }
 
     .plan-chips {
       display: flex;
       flex-wrap: wrap;
-      gap: 0.25rem;
+      gap: 0.2rem;
     }
 
     .plan-chips span {
-      padding: 0.12rem 0.35rem;
+      padding: 0.08rem 0.28rem;
       border-radius: 999px;
       background: rgba(255, 255, 255, 0.06);
       border: 1px solid rgba(255, 255, 255, 0.14);
       color: #d5deea;
-      font-size: 0.56rem;
+      font-size: 0.5rem;
       font-weight: 800;
       letter-spacing: 0.02em;
     }
 
     .plan-offer-badge {
       display: inline-block;
-      margin-top: 0.25rem;
-      padding: 0.14rem 0.45rem;
+      margin-top: 0.15rem;
+      padding: 0.1rem 0.35rem;
       border-radius: 999px;
       background: rgba(46, 230, 199, 0.14);
       border: 1px solid rgba(46, 230, 199, 0.45);
       color: #8ef5e0;
-      font-size: 0.58rem;
+      font-size: 0.5rem;
       font-weight: 800;
       letter-spacing: 0.02em;
     }
 
     .plan-offer-progress {
       display: block;
-      margin-top: 0.2rem;
+      margin-top: 0.15rem;
       color: #9eb0c8;
-      font-size: 0.62rem;
+      font-size: 0.52rem;
       font-weight: 600;
-      line-height: 1.35;
+      line-height: 1.3;
     }
 
     .plan-copy strong {
       display: block;
       color: #fff;
-      font-size: 0.8rem;
+      font-size: 0.68rem;
       font-weight: 800;
       letter-spacing: -0.03em;
-      line-height: 1.2;
+      line-height: 1.15;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -424,19 +462,20 @@
     .plan-price {
       display: inline-flex;
       align-items: baseline;
-      gap: 0.2rem;
+      gap: 0.15rem;
       width: max-content;
-      padding: 0.22rem 0.45rem;
-      border-radius: 0.45rem;
+      max-width: 100%;
+      padding: 0.16rem 0.35rem;
+      border-radius: 0.4rem;
       background: var(--card-accent);
       color: #06221c;
-      font-size: 0.78rem;
+      font-size: 0.68rem;
       font-weight: 800;
       letter-spacing: -0.03em;
     }
 
     .plan-price small {
-      font-size: 0.52rem;
+      font-size: 0.46rem;
       font-weight: 800;
       letter-spacing: 0.06em;
       text-transform: uppercase;
@@ -942,11 +981,10 @@
     @media (max-width: 22rem) {
       .brand { max-width: none; font-size: clamp(1.55rem, 11vw, 2.1rem); }
       .plan-card {
-        width: 100%;
-        max-width: 14rem;
-        flex-basis: 100%;
+        flex-basis: 6.4rem;
+        width: 6.4rem;
+        max-width: 6.4rem;
       }
-      .plan-copy strong { white-space: normal; }
     }
 
     @media (min-width: 22.5rem) {
@@ -967,7 +1005,7 @@
     @media (max-height: 28rem) and (orientation: landscape) {
       .hero { margin-bottom: 0.7rem; }
       .brand { font-size: clamp(1.4rem, 5vw, 2rem); }
-      .plan-media { aspect-ratio: 16 / 9; }
+      .plan-media { aspect-ratio: 5 / 4; }
       .pay-overlay { align-items: start; }
       .pay-overlay-card { max-height: 92dvh; }
     }
@@ -1029,48 +1067,55 @@
           <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">
 
           <p class="section-label">Choose your access</p>
-          <div class="plan-grid" data-plan-select>
+          <div class="plan-categories" data-plan-select>
             {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
-            {% for plan in hotspot_plans %}
-              <label class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.first %} is-selected{% endif %}">
-                <input
-                  type="radio"
-                  name="plan_id"
-                  value="{{ plan.pk }}"
-                  data-price="{{ plan.price }}"
-                  {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.first %}checked{% endif %}
-                  required
-                >
-                <span class="plan-media{% if plan.image or plan.portal_image_url %} has-photo{% endif %}">
-                  {% if plan.image %}
-                    <img class="plan-image" src="{{ plan.image.url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
-                  {% elif plan.portal_image_url %}
-                    <img class="plan-image" src="{{ plan.portal_image_url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
-                  {% endif %}
-                  <span class="plan-art" aria-hidden="true"></span>
-                  <span class="plan-mono" aria-hidden="true">{{ plan.name|slice:":1"|upper }}</span>
-                  <span class="plan-check" aria-hidden="true"></span>
-                </span>
-                <span class="plan-copy">
-                  <span class="plan-chips">
-                    {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
-                    {% if plan.get_duration_display %}<span>{{ plan.get_duration_display }}</span>{% endif %}
-                    {% if plan.max_devices %}
-                      <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
-                    {% else %}
-                      <span>Unlimited</span>
-                    {% endif %}
-                  </span>
-                  <strong>{{ plan.name }}</strong>
-                  <span class="plan-price"><small>KES</small> {{ plan.price|floatformat:"0" }}</span>
-                  {% include "billing/includes/plan_offer_badge.html" %}
-                </span>
-              </label>
+            {% regroup hotspot_plans by duration as plan_groups %}
+            {% for group in plan_groups %}
+              <section class="plan-category">
+                <h2 class="category-label">{{ group.list.0.get_duration_display }}</h2>
+                <div class="plan-scroll">
+                  {% for plan in group.list %}
+                    <label class="plan-card{% if hsel and hsel|stringformat:'s' == plan.pk|stringformat:'s' %} is-selected{% elif not hsel and forloop.parentloop.first and forloop.first %} is-selected{% endif %}">
+                      <input
+                        type="radio"
+                        name="plan_id"
+                        value="{{ plan.pk }}"
+                        data-price="{{ plan.price }}"
+                        {% if hsel and hsel|stringformat:"s" == plan.pk|stringformat:"s" %}checked{% elif not hsel and forloop.parentloop.first and forloop.first %}checked{% endif %}
+                        required
+                      >
+                      <span class="plan-media{% if plan.image or plan.portal_image_url %} has-photo{% endif %}">
+                        {% if plan.image %}
+                          <img class="plan-image" src="{{ plan.image.url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
+                        {% elif plan.portal_image_url %}
+                          <img class="plan-image" src="{{ plan.portal_image_url }}" alt="{{ plan.name }}" loading="lazy" decoding="async" onerror="var m=this.parentElement; this.remove(); if(m) m.classList.remove('has-photo')">
+                        {% endif %}
+                        <span class="plan-art" aria-hidden="true"></span>
+                        <span class="plan-mono" aria-hidden="true">{{ plan.name|slice:":1"|upper }}</span>
+                        <span class="plan-check" aria-hidden="true"></span>
+                      </span>
+                      <span class="plan-copy">
+                        <span class="plan-chips">
+                          {% if plan.speed_label %}<span>{{ plan.speed_label }}</span>{% endif %}
+                          {% if plan.max_devices %}
+                            <span>{% if plan.max_devices == 1 %}1 device{% else %}{{ plan.max_devices }} devices{% endif %}</span>
+                          {% else %}
+                            <span>Unlimited</span>
+                          {% endif %}
+                        </span>
+                        <strong>{{ plan.name }}</strong>
+                        <span class="plan-price"><small>KES</small> {{ plan.price|floatformat:"0" }}</span>
+                        {% include "billing/includes/plan_offer_badge.html" %}
+                      </span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </section>
             {% endfor %}
             {% endwith %}
           </div>
 
-          <div class="checkout">
+          <div class="checkout" data-checkout id="checkout-fields">
             <div class="field">
               <label for="hotspot-phone">M-Pesa number</label>
               <input
@@ -1446,6 +1491,23 @@
         });
       }
 
+      function scrollToCheckout() {
+        var checkout = form.querySelector("[data-checkout]") || form.querySelector(".checkout");
+        if (!checkout) return;
+        try {
+          checkout.scrollIntoView({ behavior: "smooth", block: "center" });
+        } catch (err) {
+          try { checkout.scrollIntoView(true); } catch (err2) {}
+        }
+        var phone = checkout.querySelector('input[name="phone"], input[type="tel"]');
+        if (!phone || phone.readOnly) return;
+        window.setTimeout(function () {
+          try { phone.focus({ preventScroll: true }); } catch (err3) {
+            try { phone.focus(); } catch (err4) {}
+          }
+        }, 280);
+      }
+
       function offerRetry(message) {
         activeCtx = ctx;
         setWaiting(true, "Payment not completed", message || "The payment was not completed.", true);
@@ -1620,12 +1682,17 @@
       });
 
       planInputs.forEach(function (input) {
-        input.addEventListener("change", updatePayButton);
+        input.addEventListener("change", function () {
+          updatePayButton();
+          scrollToCheckout();
+        });
         var card = input.closest(".plan-card");
         if (card) {
           card.addEventListener("click", function () {
+            var wasChecked = input.checked;
             input.checked = true;
             updatePayButton();
+            if (!wasChecked) scrollToCheckout();
           });
         }
       });
