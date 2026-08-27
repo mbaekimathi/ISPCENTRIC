@@ -197,10 +197,11 @@ def redeem_access_voucher(
     quick: bool = True,
 ) -> dict:
     """
-    Redeem a VALID voucher once: apply the paid package and authorize this device.
+    Redeem a VALID voucher once: link the device, apply the paid package, authorize.
 
-    Marks the voucher INVALID (used). Returns provision details for the pay page.
-    ``provision=False`` applies the package only (no MikroTik call).
+    Device attach runs before package renewal so a failed link (at-cap / MAC clash)
+    leaves the voucher VALID with no subscription extension. Marks the voucher
+    INVALID (used) only after a successful path. ``provision=False`` skips MikroTik.
     """
     compact = normalize_voucher_code(code)
     if len(compact) < 5:
@@ -251,14 +252,8 @@ def redeem_access_voucher(
         target.plan = paid_plan
         target.save(update_fields=["plan"])
 
-    stk = voucher.stk_request
-    # Auto-connect may already have applied this payment; don't double-extend.
-    if stk is None or not stk.subscription_applied:
-        try:
-            apply_paid_subscription_with_offer(target, plan=paid_plan)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-
+    # Link the device before applying the package so a failed attach
+    # (at cap / MAC clash) cannot leave a renewal committed for retry.
     if mac:
         from billing.devices import (
             attach_hotspot_device,
@@ -276,6 +271,15 @@ def redeem_access_voucher(
                     "error": attach.get("error") or "Could not link this device.",
                     "at_cap": bool(attach.get("at_cap")),
                 }
+
+    stk = voucher.stk_request
+    # Auto-connect may already have applied this payment; don't double-extend.
+    if stk is None or not stk.subscription_applied:
+        try:
+            apply_paid_subscription_with_offer(target, plan=paid_plan)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+
     _mark_voucher_used(voucher, mac=mac)
 
     if stk is not None and not stk.subscription_applied:

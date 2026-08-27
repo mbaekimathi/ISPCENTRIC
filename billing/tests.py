@@ -1406,6 +1406,74 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertFalse(second["ok"])
         self.assertEqual(second.get("voucher_status"), AccessVoucher.Status.INVALID)
 
+    def test_redeem_attach_failure_does_not_extend_package(self):
+        """At-cap attach must not renew; retry with a free MAC applies once."""
+        from billing.devices import attach_hotspot_device
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import redeem_access_voucher
+
+        self.plan.max_devices = 1
+        self.plan.save(update_fields=["max_devices"])
+        attach_hotspot_device(
+            self.customer, self.customer.hotspot_mac, enforce_cap=False
+        )
+
+        stk = self._stk(checkout_request_id="ws_CO_TEST_ATTACH_FAIL")
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="RCVATTACH1"
+        )
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+
+        blocked = redeem_access_voucher(
+            organization=self.org,
+            code=voucher.code,
+            customer=self.customer,
+            mac="AA:BB:CC:DD:EE:99",
+            provision=False,
+        )
+        voucher.refresh_from_db()
+        stk.refresh_from_db()
+        self.customer.refresh_from_db()
+
+        self.assertFalse(blocked["ok"])
+        self.assertTrue(blocked.get("at_cap"))
+        self.assertIsNone(self.customer.package_end)
+        self.assertFalse(stk.subscription_applied)
+        self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            return_value={"ok": True, "allowed": True},
+        ):
+            ok = redeem_access_voucher(
+                organization=self.org,
+                code=voucher.code,
+                customer=self.customer,
+                mac=self.customer.hotspot_mac,
+            )
+
+        voucher.refresh_from_db()
+        stk.refresh_from_db()
+        self.customer.refresh_from_db()
+        self.assertTrue(ok["ok"])
+        self.assertIsNotNone(self.customer.package_end)
+        self.assertTrue(stk.subscription_applied)
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
+        package_end = self.customer.package_end
+
+        # Burned voucher cannot be reused to stack another renewal.
+        again = redeem_access_voucher(
+            organization=self.org,
+            code=voucher.code,
+            customer=self.customer,
+            mac=self.customer.hotspot_mac,
+            provision=False,
+        )
+        self.customer.refresh_from_db()
+        self.assertFalse(again["ok"])
+        self.assertEqual(self.customer.package_end, package_end)
+
     def test_surfing_after_redeem_keeps_voucher_invalid(self):
         from billing.models import AccessVoucher
         from billing.stk import fulfill_successful_stk
