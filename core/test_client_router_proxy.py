@@ -141,16 +141,24 @@ class ClientRouterProxyTests(TestCase):
     def test_client_page_has_router_login_link(self):
         response = self.client.get(f"/app/clients/{self.customer.pk}/")
 
-        self.assertContains(response, "Open client router")
-        self.assertContains(
-            response,
-            f"/app/clients/{self.customer.pk}/router-login/",
-        )
+        self.assertContains(response, f"/app/clients/{self.customer.pk}/wifi-settings/")
+        self.assertContains(response, "Wi‑Fi")
         html = response.content.decode()
         self.assertNotRegex(
             html,
-            r'href="/app/clients/%s/router-login/"[^>]*target="_blank"'
+            r'href="/app/clients/%s/wifi-settings/"[^>]*target="_blank"'
             % self.customer.pk,
+        )
+
+    def test_router_login_url_redirects_to_combined_page(self):
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/router-login/",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
         )
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
@@ -181,14 +189,14 @@ class ClientRouterProxyTests(TestCase):
     def test_router_login_page_loads_without_blocking_on_probe(self):
         with patch("core.views.probe_customer_cpe_web") as probe:
             response = self.client.get(
-                f"/app/clients/{self.customer.pk}/router-login/",
+                f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
             )
 
         probe.assert_not_called()
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "core/client_router_access.html")
+        self.assertTemplateUsed(response, "core/client_cpe_access.html")
         self.assertContains(response, "Opening the client router")
-        self.assertContains(response, "Remote client router")
+        self.assertContains(response, "Router admin")
         self.assertContains(
             response,
             f"/app/clients/{self.customer.pk}/router-login/start/",

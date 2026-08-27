@@ -1,0 +1,869 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}Router &amp; Wi‑Fi — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div
+  class="client-detail-page client-cpe-access-page client-wifi-settings-page client-router-access-page"
+  id="client-cpe-access"
+  data-wifi-url="{{ wifi_url }}"
+  data-start-url="{{ start_url }}"
+  data-cpe-user="{{ cpe_username }}"
+  data-cpe-pass="{{ cpe_password }}"
+  data-detail-url="{{ back_url }}"
+  data-nas-url="{{ nas_url }}"
+  data-via-tunnel="{% if via_tunnel %}1{% else %}0{% endif %}"
+  data-has-password="{% if has_cpe_password %}1{% else %}0{% endif %}"
+  data-active-tab="{{ active_tab|default:'wifi' }}"
+>
+<section class="panel client-hero client-cpe-hero" id="cpe-access-head" data-cat="access">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-access">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Z"/></svg></span>
+        <span class="client-live-pulse" aria-hidden="true"></span>
+        Router &amp; Wi‑Fi
+      </p>
+      <h2>{{ customer.full_name }}</h2>
+      <p class="panel-sub">View live Wi‑Fi settings or open the client router admin UI remotely.</p>
+    </div>
+    <div class="mikrotik-detail-actions client-cpe-toolbar-actions">
+      <a class="btn btn-ghost" href="{{ back_url }}">Back to client</a>
+      {% if nas_url %}
+      <a class="btn btn-ghost" href="{{ nas_url }}">Open NAS</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if can_access_wifi %}
+  <nav class="client-cat-nav client-cpe-tab-nav" role="tablist" aria-label="Router and Wi‑Fi">
+    <button
+      type="button"
+      role="tab"
+      class="client-cat-nav-item is-access{% if active_tab != 'router' %} is-active{% endif %}"
+      data-cpe-tab="wifi"
+      aria-selected="{% if active_tab != 'router' %}true{% else %}false{% endif %}"
+      aria-controls="cpe-tab-wifi"
+      id="cpe-tab-btn-wifi"
+    >
+      <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Z"/></svg></span>
+      Wi‑Fi settings
+    </button>
+    <button
+      type="button"
+      role="tab"
+      class="client-cat-nav-item is-router{% if active_tab == 'router' %} is-active{% endif %}"
+      data-cpe-tab="router"
+      aria-selected="{% if active_tab == 'router' %}true{% else %}false{% endif %}"
+      aria-controls="cpe-tab-router"
+      id="cpe-tab-btn-router"
+    >
+      <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg></span>
+      Router admin
+    </button>
+  </nav>
+  {% endif %}
+</section>
+
+<div
+  data-client-tab-panel="wifi"
+  id="cpe-tab-wifi"
+  role="tabpanel"
+  aria-labelledby="cpe-tab-btn-wifi"
+  {% if active_tab == 'router' %}hidden{% endif %}
+>
+<section class="panel client-hero" id="wifi-overview" data-cat="access">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="panel-sub" data-wifi-status>
+        {% if can_access_wifi %}
+          Loading live Wi‑Fi settings from the client router…
+        {% else %}
+          Wi‑Fi settings are available for active PPPoE clients with an assigned router.
+        {% endif %}
+      </p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <span class="mikrotik-live-stamp" data-wifi-stamp>—</span>
+      {% if can_access_wifi %}
+        <button type="button" class="btn btn-ghost" data-wifi-refresh>Refresh</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <dl class="client-kv-list" id="wifi-live">
+    <div class="client-kv" data-ico="wifi">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Z"/></svg></span>Wi‑Fi name</dt>
+      <dd>
+        <strong data-wifi-value="ssid">{{ wifi_ssid_display|default:"—" }}</strong>
+        <span data-wifi-value="ssid-hint">Live from client CPE</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="lock">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-6 0V7a2 2 0 0 1 4 0v2Z"/></svg></span>Wi‑Fi password</dt>
+      <dd>
+        <strong data-wifi-password-wrap>
+          <span class="mikrotik-secret" data-wifi-secret {% if not wifi_password_display %}hidden{% endif %}>
+            <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+            <span class="mikrotik-secret-value" data-secret-value data-wifi-value="password" hidden>{{ wifi_password_display }}</span>
+            <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">
+              <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+              <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+            </button>
+          </span>
+          <span data-wifi-value="password-empty" {% if wifi_password_display %}hidden{% endif %}>—</span>
+        </strong>
+        <span>Tap the eye icon to reveal</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="radio">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a3 3 0 1 0 3 3 3 3 0 0 0-3-3Zm8.7-2.7-1.4 1.4A8 8 0 0 0 4.7 10.7L3.3 9.3a10 10 0 0 1 17.4 0ZM16.9 12.5l-1.4 1.4a4 4 0 0 0-6.9 0l-1.4-1.4a6 6 0 0 1 9.7 0Z"/></svg></span>Radio</dt>
+      <dd>
+        <strong data-wifi-value="state">—</strong>
+        <span data-wifi-value="radio">Mode · channel</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="shield">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg></span>Security</dt>
+      <dd>
+        <strong data-wifi-value="security">—</strong>
+        <span data-wifi-value="power">Transmit power</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="nas" data-wifi-5g-row hidden>
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 18.5a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5ZM12 3C7 3 2.7 5 0 8.1l1.8 1.8C4.1 7.5 7.8 6 12 6s7.9 1.5 10.2 3.9L24 8.1C21.3 5 17 3 12 3Z"/></svg></span>5 GHz name</dt>
+      <dd>
+        <strong data-wifi-value="ssid-5g">—</strong>
+        <span>Second radio on the client CPE</span>
+      </dd>
+    </div>
+  </dl>
+
+  <form class="client-router-password-form" data-wifi-password-form method="post" hidden>
+    {% csrf_token %}
+    <input type="hidden" name="action" value="update_router_password">
+    <label for="wifi-router-password">Client router admin password</label>
+    <div class="client-router-password-row">
+      <input
+        type="password"
+        id="wifi-router-password"
+        name="cpe_password"
+        class="form-control"
+        autocomplete="off"
+        placeholder="Password used to sign in to the client router"
+      >
+      <button type="submit" class="btn btn-primary">Save &amp; fetch</button>
+    </div>
+    <p class="field-hint">
+      This is the client router’s own admin password, not the PPPoE password.
+    </p>
+  </form>
+</section>
+
+{% if can_access_wifi %}
+<section class="panel" id="wifi-edit" data-cat="access">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-access">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 17.3V21h3.7l11-11L14 6.3 3 17.3ZM20.7 7a1 1 0 0 0 0-1.4l-2.3-2.3a1 1 0 0 0-1.4 0l-1.8 1.8L19 8.9 20.7 7Z"/></svg></span>
+        Update Wi‑Fi
+      </p>
+      <h2>Change name or password</h2>
+      <p class="panel-sub">Applies directly on the client CPE. Leave the password blank to keep the current one.</p>
+    </div>
+  </div>
+
+  <form method="post" class="client-wifi-edit-form" novalidate>
+    {% csrf_token %}
+    <input type="hidden" name="action" value="update_wifi">
+    {% if wifi_form.non_field_errors %}
+      <div class="field-error mikrotik-form-banner">{{ wifi_form.non_field_errors|striptags }}</div>
+    {% endif %}
+    <div class="form-grid client-wifi-form-grid">
+      <div class="form-field">
+        <label for="{{ wifi_form.wifi_ssid.id_for_label }}">{{ wifi_form.wifi_ssid.label }}</label>
+        {{ wifi_form.wifi_ssid }}
+        {% if wifi_form.wifi_ssid.errors %}
+          <div class="field-error">{{ wifi_form.wifi_ssid.errors|striptags }}</div>
+        {% endif %}
+      </div>
+      <div class="form-field">
+        <label for="{{ wifi_form.wifi_password.id_for_label }}">{{ wifi_form.wifi_password.label }}</label>
+        <div class="password-field">
+          {{ wifi_form.wifi_password }}
+          <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
+            <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+            <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+          </button>
+        </div>
+        {% if wifi_form.wifi_password.errors %}
+          <div class="field-error">{{ wifi_form.wifi_password.errors|striptags }}</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="mikrotik-detail-actions" style="margin-top:1rem">
+      <button type="submit" class="btn btn-primary" data-loading-label="Saving Wi‑Fi on client router…">Save Wi‑Fi settings</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+</div>
+
+{% if can_access_wifi %}
+<div
+  data-client-tab-panel="router"
+  id="cpe-tab-router"
+  role="tabpanel"
+  aria-labelledby="cpe-tab-btn-router"
+  {% if active_tab != 'router' %}hidden{% endif %}
+>
+<section class="panel client-hero client-router-hero" id="router-access-head" data-cat="access">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="panel-sub" data-router-status>
+        {% if via_tunnel %}
+          Connecting through {{ nas_name|default:"the ISP MikroTik" }} over WireGuard…
+        {% else %}
+          Connecting through {{ nas_name|default:"the ISP MikroTik" }}…
+        {% endif %}
+      </p>
+    </div>
+    <div class="mikrotik-detail-actions">
+      <span class="mikrotik-live-stamp" data-router-stamp>Starting</span>
+      <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
+      <a class="btn btn-primary" data-router-newtab hidden target="_blank" rel="noopener">Open in new tab</a>
+    </div>
+  </div>
+
+  <dl class="client-kv-list" id="router-access-facts">
+    <div class="client-kv" data-ico="nas">
+      <dt>Router IP</dt>
+      <dd>
+        <strong data-router-host>—</strong>
+        <span data-router-port-hint>Detected after connect</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="lock">
+      <dt>Admin login</dt>
+      <dd>
+        <strong data-router-user>{{ cpe_username|default:"admin" }}</strong>
+        <span>Saved on this client</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="wifi">
+      <dt>Admin password</dt>
+      <dd>
+        <strong class="mikrotik-secret" data-router-secret {% if not has_cpe_password %}hidden{% endif %}>
+          <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+          <span class="mikrotik-secret-value" data-secret-value data-router-password hidden>{{ cpe_password }}</span>
+          <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
+          <button type="button" class="pppoe-mini-btn" data-copy-password>Copy</button>
+        </strong>
+        <span data-router-password-empty {% if has_cpe_password %}hidden{% endif %}>Not saved — enter it below if connect fails</span>
+      </dd>
+    </div>
+    <div class="client-kv" data-ico="shield">
+      <dt>Path</dt>
+      <dd>
+        <strong>{{ nas_name|default:"—" }}</strong>
+        <span>
+          {% if via_tunnel %}WireGuard {{ nas_dial|default:"" }}{% else %}LAN {{ nas_dial|default:"" }}{% endif %}
+          · {{ access_mode|default:"remote" }} · gateway {{ gateway }}
+        </span>
+      </dd>
+    </div>
+  </dl>
+</section>
+
+<section class="panel client-router-stage" id="router-access-stage" data-router-stage>
+  <div class="client-router-connecting" data-router-connecting>
+    <p class="client-router-connecting-title">Opening the client router</p>
+    <p class="panel-sub">
+      Reach the ISP MikroTik{% if via_tunnel %} over the billing tunnel{% endif %},
+      find the live client IP, open its admin UI, and sign in when the router allows it.
+    </p>
+    <ol class="client-router-steps" data-router-steps>
+      <li data-step="nas" class="is-active">Reach {{ nas_name|default:"the ISP MikroTik" }}{% if via_tunnel %} via WireGuard{% endif %}</li>
+      <li data-step="session">Find the client session</li>
+      <li data-step="web">Probe web ports {{ checked_ports }}</li>
+      <li data-step="login">Sign in and open the admin UI</li>
+    </ol>
+  </div>
+
+  <div class="client-router-error" data-router-error hidden>
+    <div class="client-subscription-banner is-blocked" data-router-error-banner></div>
+    <ol class="mikrotik-tunnel-steps" data-router-guidance hidden></ol>
+    <div class="client-router-error-actions" data-router-error-actions hidden>
+      {% if nas_url %}
+      <a class="btn btn-primary" href="{{ nas_url }}" data-router-fix-nas>Fix NAS / tunnel</a>
+      {% endif %}
+      <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
+    </div>
+    <form class="client-router-password-form" data-router-password-form method="post" hidden>
+      {% csrf_token %}
+      <label for="router-access-password">Client router admin password</label>
+      <div class="client-router-password-row">
+        <input
+          type="password"
+          id="router-access-password"
+          name="cpe_password"
+          class="form-control"
+          autocomplete="off"
+          placeholder="Password used to sign in to the client router"
+        >
+        <button type="submit" class="btn btn-primary">Save &amp; connect</button>
+      </div>
+      <p class="field-hint">This is the router’s own admin password, not the PPPoE password.</p>
+    </form>
+    <p class="panel-sub" data-router-error-detail style="opacity:.8;"></p>
+  </div>
+
+  <iframe
+    class="client-router-frame"
+    data-router-frame
+    title="Client router admin"
+    hidden
+  ></iframe>
+</section>
+</div>
+{% endif %}
+
+</div>
+{% endblock %}
+
+{% block client_extra_js %}
+<script>
+(function () {
+  var root = document.getElementById("client-cpe-access");
+  if (!root) return;
+
+  var activeTab = root.getAttribute("data-active-tab") || "wifi";
+  var tabButtons = root.querySelectorAll("[data-cpe-tab]");
+  var tabPanels = root.querySelectorAll("[data-client-tab-panel]");
+
+  function setTab(name, updateUrl) {
+    activeTab = name === "router" ? "router" : "wifi";
+    root.setAttribute("data-active-tab", activeTab);
+    root.classList.toggle("is-router-tab", activeTab === "router");
+    tabButtons.forEach(function (btn) {
+      var isActive = btn.getAttribute("data-cpe-tab") === activeTab;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-selected", isActive ? "true" : "false");
+    });
+    tabPanels.forEach(function (panel) {
+      var show = panel.getAttribute("data-client-tab-panel") === activeTab;
+      panel.hidden = !show;
+    });
+    if (updateUrl !== false && window.history && window.history.replaceState) {
+      var url = new URL(window.location.href);
+      if (activeTab === "router") url.searchParams.set("tab", "router");
+      else url.searchParams.delete("tab");
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    }
+    if (activeTab === "router" && window.__clientCpeRouterConnect) {
+      window.__clientCpeRouterConnect();
+    }
+    if (activeTab === "wifi" && window.__clientCpeWifiLoad) {
+      window.__clientCpeWifiLoad(true);
+    }
+  }
+
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setTab(btn.getAttribute("data-cpe-tab") || "wifi", true);
+    });
+  });
+  setTab(activeTab, false);
+
+  root.querySelectorAll("[data-toggle-secret]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var wrap = btn.closest(".mikrotik-secret");
+      if (!wrap) return;
+      var mask = wrap.querySelector("[data-secret-mask]");
+      var value = wrap.querySelector("[data-secret-value]");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      var showing = value && !value.hidden;
+      if (mask) mask.hidden = !showing;
+      if (value) value.hidden = showing;
+      if (eye) eye.hidden = !showing;
+      if (eyeOff) eyeOff.hidden = showing;
+      if (btn.classList.contains("mikrotik-secret-toggle")) {
+        btn.textContent = showing ? "Show" : "Hide";
+      } else {
+        btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+      }
+    });
+  });
+
+  root.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var field = btn.closest(".password-field");
+      var input = field && field.querySelector("input");
+      if (!input) return;
+      var showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye) eye.hidden = !showing;
+      if (eyeOff) eyeOff.hidden = showing;
+    });
+  });
+})();
+</script>
+<script>
+(function () {
+  var root = document.getElementById("client-cpe-access");
+  if (!root) return;
+  var url = root.getAttribute("data-wifi-url");
+  if (!url) return;
+
+  var status = root.querySelector("[data-wifi-status]");
+  var stamp = root.querySelector("[data-wifi-stamp]");
+  var refreshBtn = root.querySelector("[data-wifi-refresh]");
+  var passwordForm = root.querySelector("[data-wifi-password-form]");
+  var secretWrap = root.querySelector("[data-wifi-secret]");
+  var emptyPassword = root.querySelector('[data-wifi-value="password-empty"]');
+  var passwordValue = root.querySelector('[data-wifi-value="password"]');
+  var row5g = root.querySelector("[data-wifi-5g-row]");
+  var ssidInput = document.getElementById("id_client_wifi_ssid");
+  var passwordInput = document.getElementById("id_client_wifi_password");
+  var timer = null;
+  var inFlight = false;
+  var started = false;
+
+  function setText(key, value) {
+    var el = root.querySelector('[data-wifi-value="' + key + '"]');
+    if (el) el.textContent = value || "—";
+  }
+
+  function apply(data) {
+    if (!data || !data.ok) {
+      if (status) status.textContent = (data && data.error) || "Could not load Wi‑Fi settings.";
+      if (stamp) stamp.textContent = "Fetch failed";
+      if (passwordForm) passwordForm.hidden = !(data && data.needs_password);
+      return;
+    }
+
+    if (!data.auth_ok) {
+      if (status) {
+        status.textContent = data.error || data.hint || "Could not sign in to the client router.";
+      }
+      if (stamp) stamp.textContent = data.session_active ? "Online · auth failed" : "Offline";
+      if (passwordForm) passwordForm.hidden = !data.needs_password;
+      return;
+    }
+
+    if (passwordForm) passwordForm.hidden = true;
+    var ssid = data.wifi_ssid || "—";
+    var password = data.wifi_password || "";
+    setText("ssid", ssid);
+    setText(
+      "ssid-hint",
+      (data.cpe_host ? "Live at " + data.cpe_host : "Live from client CPE") +
+        (data.source ? " · " + data.source : "")
+    );
+    if (passwordValue) passwordValue.textContent = password;
+    if (secretWrap) secretWrap.hidden = !password;
+    if (emptyPassword) emptyPassword.hidden = !!password;
+
+    setText(
+      "state",
+      (data.wifi_enabled ? "Enabled" : "Disabled") + (data.wifi_hidden ? " · hidden SSID" : "")
+    );
+    setText(
+      "radio",
+      [
+        data.wifi_mode ? String(data.wifi_mode).toUpperCase() : null,
+        data.wifi_channel ? "Channel " + data.wifi_channel : null,
+        data.wifi_bandwidth_mhz ? data.wifi_bandwidth_mhz + " MHz" : null
+      ].filter(Boolean).join(" · ") || "Mode · channel"
+    );
+    setText("security", data.wifi_security || "—");
+    setText("power", data.wifi_power ? "Power " + data.wifi_power : "Transmit power");
+
+    if (row5g) {
+      row5g.hidden = !data.wifi_ssid_5g;
+      setText("ssid-5g", data.wifi_ssid_5g || "—");
+    }
+
+    if (ssidInput && data.wifi_ssid && !ssidInput.matches(":focus")) {
+      ssidInput.value = data.wifi_ssid;
+    }
+    if (passwordInput && password && !passwordInput.matches(":focus") && !passwordInput.value) {
+      passwordInput.value = password;
+    }
+
+    if (status) {
+      status.textContent = "Live Wi‑Fi settings from the client router" +
+        (data.cpe_host ? " at " + data.cpe_host : "") + ".";
+    }
+    if (stamp) {
+      stamp.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+  }
+
+  function load(force) {
+    if (inFlight || !url) return;
+    if (root.getAttribute("data-active-tab") !== "wifi") return;
+    inFlight = true;
+    if (status && force) status.textContent = "Refreshing live Wi‑Fi settings…";
+    var endpoint = url + (force ? (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1" : "");
+    fetch(endpoint, { headers: { "X-Requested-With": "XMLHttpRequest" }, credentials: "same-origin" })
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+      .then(function (result) { apply(result.data); })
+      .catch(function () {
+        if (status) status.textContent = "Could not load Wi‑Fi settings.";
+        if (stamp) stamp.textContent = "Fetch failed";
+      })
+      .finally(function () { inFlight = false; });
+  }
+
+  window.__clientCpeWifiLoad = function (force) {
+    if (!started) started = true;
+    load(force);
+  };
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () { load(true); });
+  }
+
+  if (root.getAttribute("data-active-tab") === "wifi") {
+    window.__clientCpeWifiLoad(true);
+    timer = window.setInterval(function () { load(false); }, 15000);
+    window.addEventListener("beforeunload", function () {
+      if (timer) window.clearInterval(timer);
+    });
+  }
+})();
+</script>
+<script>
+(function () {
+  var root = document.getElementById("client-cpe-access");
+  if (!root) return;
+
+  var startUrl = root.getAttribute("data-start-url") || "";
+  if (!startUrl) return;
+
+  var cpeUser = root.getAttribute("data-cpe-user") || "admin";
+  var cpePass = root.getAttribute("data-cpe-pass") || "";
+  var viaTunnel = root.getAttribute("data-via-tunnel") === "1";
+  var statusEl = root.querySelector("[data-router-status]");
+  var stampEl = root.querySelector("[data-router-stamp]");
+  var hostEl = root.querySelector("[data-router-host]");
+  var portHint = root.querySelector("[data-router-port-hint]");
+  var connecting = root.querySelector("[data-router-connecting]");
+  var stepsEl = root.querySelector("[data-router-steps]");
+  var errorBox = root.querySelector("[data-router-error]");
+  var errorBanner = root.querySelector("[data-router-error-banner]");
+  var errorDetail = root.querySelector("[data-router-error-detail]");
+  var guidance = root.querySelector("[data-router-guidance]");
+  var errorActions = root.querySelector("[data-router-error-actions]");
+  var passwordForm = root.querySelector("[data-router-password-form]");
+  var frame = root.querySelector("[data-router-frame]");
+  var stage = root.querySelector("[data-router-stage]");
+  var newTab = root.querySelector("[data-router-newtab]");
+  var copyBtn = root.querySelector("[data-copy-password]");
+  var csrfInput = root.querySelector("[data-router-password-form] input[name=csrfmiddlewaretoken]");
+  var inFlight = false;
+  var fillTimer = null;
+  var routerStarted = false;
+
+  function showConnecting(message) {
+    root.classList.remove("is-connected", "is-failed");
+    if (stage) stage.classList.remove("is-live");
+    if (statusEl) statusEl.textContent = message || "Connecting…";
+    if (stampEl) stampEl.textContent = "Connecting";
+    if (connecting) connecting.hidden = false;
+    if (errorBox) errorBox.hidden = true;
+    if (frame) {
+      frame.hidden = true;
+      frame.removeAttribute("src");
+    }
+    if (newTab) newTab.hidden = true;
+    setStepState("nas", "active");
+  }
+
+  function setStepState(key, state) {
+    if (!stepsEl) return;
+    var order = ["nas", "session", "web", "login"];
+    var idx = order.indexOf(key);
+    order.forEach(function (name, i) {
+      var li = stepsEl.querySelector('[data-step="' + name + '"]');
+      if (!li) return;
+      li.classList.remove("is-active", "is-done", "is-fail");
+      if (state === "active" && name === key) li.classList.add("is-active");
+      else if (state === "fail" && name === key) li.classList.add("is-fail");
+      else if (i < idx || (state === "done" && name === key)) li.classList.add("is-done");
+      else if (state === "done" && i <= idx) li.classList.add("is-done");
+    });
+  }
+
+  function markStepsFromData(data) {
+    var fc = (data && data.failure_class) || "";
+    if (data && data.ok) {
+      setStepState("login", "done");
+      return;
+    }
+    if (fc === "nas_down") {
+      setStepState("nas", "fail");
+      return;
+    }
+    if (fc === "offline") {
+      setStepState("session", "fail");
+      return;
+    }
+    if (fc === "wan_mgmt_blocked" || fc === "web_blocked" || fc === "unreachable") {
+      setStepState("web", "fail");
+      return;
+    }
+    setStepState("web", "fail");
+  }
+
+  function fillLogin(doc) {
+    if (!doc) return false;
+    var pass = doc.querySelector("input[type='password']");
+    if (!pass) return false;
+    var user = doc.querySelector(
+      "input[name='username'], input[name='user'], input[name='name'], input[name='login'], input[type='text'], input:not([type])"
+    );
+    try {
+      if (user && cpeUser && !user.value) {
+        user.focus();
+        user.value = cpeUser;
+        user.dispatchEvent(new Event("input", { bubbles: true }));
+        user.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      if (cpePass && !pass.value) {
+        pass.focus();
+        pass.value = cpePass;
+        pass.dispatchEvent(new Event("input", { bubbles: true }));
+        pass.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    } catch (err) {
+      return false;
+    }
+    return true;
+  }
+
+  function watchFrame() {
+    if (!frame || !cpePass) return;
+    var tries = 0;
+    if (fillTimer) clearInterval(fillTimer);
+    fillTimer = setInterval(function () {
+      tries += 1;
+      try {
+        if (fillLogin(frame.contentDocument)) {
+          clearInterval(fillTimer);
+          fillTimer = null;
+        }
+      } catch (err) {}
+      if (tries >= 20) {
+        clearInterval(fillTimer);
+        fillTimer = null;
+      }
+    }, 400);
+  }
+
+  function showProxy(url, data) {
+    root.classList.add("is-connected");
+    root.classList.remove("is-failed");
+    if (stage) stage.classList.add("is-live");
+    if (hostEl) hostEl.textContent = data.cpe_host || "—";
+    if (portHint) portHint.textContent = data.port ? ("Port " + data.port) : "Live web UI";
+    if (statusEl) {
+      if (data.authenticated) {
+        statusEl.textContent = "Signed in automatically. You can manage the client router from here.";
+      } else if (data.login_error) {
+        statusEl.textContent = data.login_error;
+      } else if (data.www_enabled) {
+        statusEl.textContent = "WebFig enabled from the ISP side. Sign in if the router asks.";
+      } else {
+        statusEl.textContent = "Router UI is open. Credentials below fill when the login form appears.";
+      }
+    }
+    if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
+    if (connecting) connecting.hidden = true;
+    if (errorBox) errorBox.hidden = true;
+    if (newTab) {
+      newTab.href = url;
+      newTab.hidden = false;
+    }
+    setStepState("login", "done");
+    if (frame) {
+      frame.hidden = false;
+      frame.src = url;
+      if (!data.authenticated) {
+        frame.addEventListener("load", watchFrame, { once: true });
+      }
+    }
+  }
+
+  function showError(data) {
+    data = data || {};
+    root.classList.add("is-failed");
+    root.classList.remove("is-connected");
+    if (stage) stage.classList.remove("is-live");
+    var fc = data.failure_class || "";
+    if (statusEl) statusEl.textContent = data.detail || data.error || "Could not open the client router.";
+    if (stampEl) {
+      if (fc === "nas_down") stampEl.textContent = viaTunnel ? "Tunnel down" : "NAS down";
+      else if (fc === "offline") stampEl.textContent = "Offline";
+      else if (data.session_active && data.ping_ok) stampEl.textContent = "Blocked";
+      else stampEl.textContent = "Failed";
+    }
+    if (hostEl) hostEl.textContent = data.cpe_host || "—";
+    if (portHint) {
+      portHint.textContent = fc === "nas_down"
+        ? (viaTunnel ? "Cannot reach NAS over WireGuard" : "Cannot reach ISP MikroTik")
+        : "No web port answered";
+    }
+    if (connecting) connecting.hidden = true;
+    if (frame) {
+      frame.hidden = true;
+      frame.removeAttribute("src");
+    }
+    if (newTab) newTab.hidden = true;
+    if (errorBox) errorBox.hidden = false;
+    if (errorBanner) {
+      errorBanner.textContent = data.detail || data.error || "Could not open the client router.";
+    }
+    if (errorDetail) {
+      var ports = data.checked_ports || [];
+      errorDetail.textContent = ports.length ? ("Checked ports: " + ports.join(", ") + ".") : "";
+    }
+    if (guidance) {
+      var items = data.guidance || [];
+      guidance.innerHTML = "";
+      items.forEach(function (item) {
+        var li = document.createElement("li");
+        li.textContent = item;
+        guidance.appendChild(li);
+      });
+      guidance.hidden = !items.length;
+    }
+    if (errorActions) {
+      errorActions.hidden = fc !== "nas_down";
+    }
+    if (passwordForm) {
+      passwordForm.hidden = !(data.needs_password && fc !== "nas_down" && fc !== "offline");
+    }
+    markStepsFromData(data);
+  }
+
+  function connect(body) {
+    if (!startUrl || inFlight) return;
+    if (root.getAttribute("data-active-tab") !== "router") return;
+    inFlight = true;
+    showConnecting(
+      viaTunnel
+        ? "Connecting through the ISP MikroTik over WireGuard…"
+        : "Connecting through the ISP MikroTik…"
+    );
+    var options = {
+      method: body ? "POST" : "GET",
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+    };
+    if (body) {
+      options.headers["X-CSRFToken"] = csrfInput ? csrfInput.value : "";
+      options.body = body;
+    }
+    fetch(startUrl, options)
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return { okHttp: response.ok, data: data || {} };
+        });
+      })
+      .then(function (result) {
+        var data = result.data || {};
+        if (data.cpe_username) {
+          cpeUser = data.cpe_username;
+          var userEl = root.querySelector("[data-router-user]");
+          if (userEl) userEl.textContent = cpeUser;
+        }
+        if (data.ok && data.proxy_url) {
+          showProxy(data.proxy_url, data);
+          return;
+        }
+        showError(data);
+      })
+      .catch(function () {
+        showError({
+          failure_class: "unreachable",
+          detail: "Could not reach the billing server to start router access.",
+          guidance: ["Check that the billing app is running, then retry."],
+          steps: [],
+        });
+      })
+      .finally(function () {
+        inFlight = false;
+      });
+  }
+
+  window.__clientCpeRouterConnect = function () {
+    if (routerStarted) return;
+    routerStarted = true;
+    connect();
+  };
+
+  root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      routerStarted = true;
+      connect();
+    });
+  });
+  if (passwordForm) {
+    passwordForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var input = passwordForm.querySelector("input[name=cpe_password]");
+      var value = input ? String(input.value || "").trim() : "";
+      if (!value) return;
+      cpePass = value;
+      root.setAttribute("data-cpe-pass", value);
+      var secret = root.querySelector("[data-router-secret]");
+      var empty = root.querySelector("[data-router-password-empty]");
+      var passNode = root.querySelector("[data-router-password]");
+      if (secret) secret.hidden = false;
+      if (empty) empty.hidden = true;
+      if (passNode) passNode.textContent = value;
+      routerStarted = true;
+      connect(new FormData(passwordForm));
+    });
+  }
+  if (copyBtn) {
+    copyBtn.addEventListener("click", function () {
+      if (!cpePass || !navigator.clipboard) return;
+      navigator.clipboard.writeText(cpePass).then(function () {
+        copyBtn.textContent = "Copied";
+        setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
+      });
+    });
+  }
+  if (frame) {
+    frame.addEventListener("load", function () {
+      try {
+        var doc = frame.contentDocument;
+        if (!doc || !doc.body) return;
+        var text = (doc.body.innerText || "").slice(0, 240).toLowerCase();
+        if (text.indexOf("timed out") >= 0 || text.indexOf("could not open") >= 0) {
+          showError({
+            failure_class: "unreachable",
+            detail: doc.body.innerText || "Router session ended.",
+            ping_ok: true,
+            session_active: true,
+            guidance: [
+              "The proxy session dropped. Retry — if it keeps failing, enable Remote Web Management on the client router.",
+            ],
+          });
+        }
+      } catch (err) {}
+    });
+  }
+
+  if (root.getAttribute("data-active-tab") === "router") {
+    window.__clientCpeRouterConnect();
+  }
+})();
+</script>
+{% endblock %}

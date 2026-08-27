@@ -180,6 +180,76 @@
     </div>
   </header>
 
+  <nav class="client-action-toolbar" aria-label="Client actions">
+    <div class="client-action-toolbar-group client-action-toolbar-group--primary">
+      <button type="button" class="client-action-btn is-primary" data-open-modal="client-recharge-modal">
+        <span class="client-action-btn-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+        </span>
+        <span class="client-action-btn-label">Recharge account</span>
+      </button>
+      <button type="button" class="client-action-btn" data-open-modal="client-details-modal">
+        <span class="client-action-btn-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </span>
+        <span class="client-action-btn-label" data-edit-details-label>Edit {{ customer.full_name }} details</span>
+      </button>
+      {% if can_access_wifi and customer.router %}
+      <a
+        class="client-action-btn"
+        href="{% url 'core:client_wifi_settings' customer.id %}?tab=router"
+        data-client-router-open
+      >
+        <span class="client-action-btn-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg>
+        </span>
+        <span class="client-action-btn-label">Open client router</span>
+      </a>
+      {% endif %}
+      <form
+        method="post"
+        action="{% url 'core:client_detail' customer.id %}"
+        class="client-package-pause-form"
+        data-package-pause-form
+        data-no-page-loader="1"
+      >
+        {% csrf_token %}
+        <input
+          type="hidden"
+          name="action"
+          value="{% if subscription_paused %}resume_package{% else %}pause_package{% endif %}"
+          data-package-pause-action
+        >
+        <button
+          type="submit"
+          class="client-action-btn is-pause{% if subscription_paused %} is-paused{% endif %}"
+          data-package-pause-btn
+          {% if not can_pause_package and not can_resume_package %}disabled aria-disabled="true"{% endif %}
+        >
+          <span class="client-action-btn-icon" aria-hidden="true">
+            {% if subscription_paused %}
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            {% else %}
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+            {% endif %}
+          </span>
+          <span class="client-action-btn-label" data-package-pause-label>
+            {% if subscription_paused %}Resume subscription{% else %}Pause subscription{% endif %}
+          </span>
+        </button>
+      </form>
+    </div>
+    <span class="client-action-toolbar-divider" aria-hidden="true"></span>
+    <div class="client-action-toolbar-group client-action-toolbar-group--danger">
+      <button type="button" class="client-action-btn is-danger" data-open-modal="client-delete-modal">
+        <span class="client-action-btn-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </span>
+        <span class="client-action-btn-label">Delete client</span>
+      </button>
+    </div>
+  </nav>
+
   <ul class="client-simple-status" aria-label="Live status">
     <li data-hero-chip="subscription">
       <span>Subscription</span>
@@ -265,6 +335,9 @@
         {% if customer.router %}
           <a href="{% url 'core:mikrotik_detail' customer.router.id %}" data-client-router-link>{{ customer.router.name }}</a>
           · <span data-client-router-host>{{ customer.router.host }}</span>
+          {% if can_access_wifi %}
+            · <a href="{% url 'core:client_wifi_settings' customer.id %}?tab=router" data-client-router-open>Open client router</a>
+          {% endif %}
         {% else %}
           —
         {% endif %}
@@ -641,6 +714,62 @@
         <button type="submit" class="btn btn-primary" data-save-label="Recharge account">Recharge account</button>
       </footer>
     </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal pppoe-modal client-delete-modal"
+  id="client-delete-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-delete-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Remove subscriber</p>
+        <h2 id="client-delete-title">Delete {{ customer.full_name }}</h2>
+        <p class="role-modal-sub pppoe-sub">
+          Account {{ customer.account_number }} · {{ customer.get_service_type_display }}
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="pppoe-body">
+      <p class="org-delete-warn cc-delete-banner" role="alert">
+        <strong>This cannot be undone.</strong>
+        Billing history, vouchers, and related records for this client will be removed permanently.
+      </p>
+      <ul class="cc-delete-list">
+        <li class="cc-delete-item">
+          <div class="cc-delete-item-head">
+            <span>Invoices</span>
+            <strong>{{ invoice_count }}</strong>
+          </div>
+        </li>
+        <li class="cc-delete-item">
+          <div class="cc-delete-item-head">
+            <span>Payments</span>
+            <strong>{{ payment_count }}</strong>
+          </div>
+        </li>
+        <li class="cc-delete-item">
+          <div class="cc-delete-item-head">
+            <span>Access vouchers</span>
+            <strong>{{ voucher_count }}</strong>
+          </div>
+        </li>
+      </ul>
+    </div>
+    <footer class="pppoe-foot">
+      <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+      <form method="post" action="{{ delete_url }}" class="client-delete-confirm-form">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Delete client permanently</button>
+      </form>
+    </footer>
   </div>
 </div>
 {% endblock %}

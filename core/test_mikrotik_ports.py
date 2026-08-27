@@ -13,16 +13,23 @@ from core.mikrotik_connect import (
     _ensure_failover_uplink,
     _resolve_wan_to_physical,
     apply_mikrotik_single_wan,
+    switch_mikrotik_single_wan,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
     assess_uplink_switch_risk,
+    build_single_wan_recovery_script,
     list_mikrotik_ports,
 )
 from core.models import MikroTikRouter
 from core.views import (
+    _allowed_roles_for_uplink_mode,
     _build_uplink_prompt,
+    _build_wan_switch_risks,
     _failover_ports_from_roles,
+    _normalize_port_roles_for_uplink_mode,
     _pick_auto_wan,
+    _role_allowed_for_uplink_mode,
+    _wan_switch_confirmed,
     apply_detected_uplink,
     suggest_port_roles,
 )
@@ -687,3 +694,191 @@ class ApplyDetectedUplinkTests(SimpleTestCase):
         self.assertEqual(router.wan_interface, "ether2")
         self.assertEqual(router.port_roles["ether2"], MikroTikRouter.PortRole.WAN)
         self.assertEqual(router.port_roles["ether1"], MikroTikRouter.PortRole.NONE)
+
+
+class UplinkModeRoleRulesTests(SimpleTestCase):
+    def test_single_mode_disallows_backup_and_bond(self):
+        allowed = _allowed_roles_for_uplink_mode(MikroTikRouter.UplinkMode.SINGLE)
+        self.assertIn(MikroTikRouter.PortRole.WAN, allowed)
+        self.assertNotIn(MikroTikRouter.PortRole.WAN_BACKUP, allowed)
+        self.assertNotIn(MikroTikRouter.PortRole.BOND, allowed)
+        self.assertTrue(
+            _role_allowed_for_uplink_mode(
+                MikroTikRouter.PortRole.WAN, MikroTikRouter.UplinkMode.SINGLE
+            )
+        )
+        self.assertFalse(
+            _role_allowed_for_uplink_mode(
+                MikroTikRouter.PortRole.WAN_BACKUP, MikroTikRouter.UplinkMode.SINGLE
+            )
+        )
+
+    def test_failover_mode_requires_dual_wan_roles(self):
+        allowed = _allowed_roles_for_uplink_mode(MikroTikRouter.UplinkMode.FAILOVER)
+        self.assertIn(MikroTikRouter.PortRole.WAN, allowed)
+        self.assertIn(MikroTikRouter.PortRole.WAN_BACKUP, allowed)
+        self.assertNotIn(MikroTikRouter.PortRole.BOND, allowed)
+
+    def test_normalize_single_mode_clears_backup_roles(self):
+        router = MikroTikRouter(
+            name="r",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            wan_interface="ether4",
+            uplink_mode=MikroTikRouter.UplinkMode.FAILOVER,
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN_BACKUP,
+                "ether4": MikroTikRouter.PortRole.WAN,
+            },
+        )
+        roles = _normalize_port_roles_for_uplink_mode(
+            router, MikroTikRouter.UplinkMode.SINGLE
+        )
+        self.assertEqual(roles["ether4"], MikroTikRouter.PortRole.WAN)
+        self.assertEqual(roles["ether1"], MikroTikRouter.PortRole.UNUSED)
+
+
+class SwitchSingleWanTests(SimpleTestCase):
+    def test_switch_unbridges_new_port_and_retires_old(self):
+        added: list[dict] = []
+        sets: list[dict] = []
+        removed: list[str] = []
+
+        def fake_print(sock, path, **kwargs):
+            if path == "/interface":
+                return [
+                    {"name": "ether1", "type": "ether"},
+                    {"name": "ether4", "type": "ether"},
+                ]
+            if path == "/interface/bridge/port":
+                return [{"interface": "ether4", "bridge": "bridgeLocal", ".id": "*bp1"}]
+            if path == "/interface/list/member":
+                return [
+                    {
+                        "list": "WAN",
+                        "interface": "ether1",
+                        ".id": "*lm1",
+                        "comment": "",
+                    }
+                ]
+            if path == "/ip/dhcp-client":
+                return [
+                    {
+                        "interface": "ether1",
+                        ".id": "*d1",
+                        "disabled": "false",
+                        "add-default-route": "yes",
+                    }
+                ]
+            if path == "/interface/pppoe-client":
+                return []
+            if path == "/ip/route":
+                return []
+            return []
+
+        def fake_add(sock, path, **props):
+            added.append({"path": path, **props})
+            return {"_reply": "!done"}
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append({"path": path, "id": item_id, **props})
+            return {"_reply": "!done"}
+
+        def fake_remove(sock, path, item_id):
+            removed.append(path)
+            return {"_reply": "!done"}
+
+        @contextmanager
+        def session(*args, **kwargs):
+            yield MagicMock()
+
+        with (
+            patch("core.mikrotik_connect._api_session", session),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._add", side_effect=fake_add),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._remove", side_effect=fake_remove),
+            patch(
+                "core.mikrotik_connect._ensure_failover_uplink",
+                return_value={"_reply": "!done", "_kind": "dhcp"},
+            ),
+        ):
+            result = switch_mikrotik_single_wan(
+                "10.9.0.3",
+                "admin",
+                "x",
+                wan_interface="ether4",
+                retire_ports=["ether1"],
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["wan_interface"], "ether4")
+        self.assertIn("/interface/bridge/port", removed)
+        dhcp_disables = [
+            s for s in sets if s.get("path") == "/ip/dhcp-client" and s.get("disabled") == "yes"
+        ]
+        self.assertTrue(dhcp_disables)
+        wan_members = [
+            a["interface"]
+            for a in added
+            if a.get("path") == "/interface/list/member" and a.get("interface")
+        ]
+        self.assertIn("ether4", wan_members)
+
+
+class WanSwitchRiskTests(SimpleTestCase):
+    def test_recovery_script_targets_wan_and_clears_uplink_tag(self):
+        script = build_single_wan_recovery_script(
+            "ether4",
+            retire_ports=["ether1"],
+        )
+        self.assertIn('ether4', script)
+        self.assertIn('ether1', script)
+        self.assertIn(UPLINK_TAG, script)
+        self.assertIn("Single Internet reset", script)
+
+    def test_wan_switch_confirmed_blocks_without_checkbox(self):
+        ok, err = _wan_switch_confirmed(
+            _FakeRequest(),
+            {"safe": False, "blocking": False, "risks": ["Brief outage likely."]},
+        )
+        self.assertFalse(ok)
+        self.assertIn("Confirm", err)
+
+    def test_wan_switch_confirmed_allows_with_checkbox(self):
+        ok, err = _wan_switch_confirmed(
+            _FakeRequest(confirm_risk="1"),
+            {"safe": False, "blocking": False, "risks": ["Brief outage likely."]},
+        )
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+
+    def test_build_wan_switch_risks_skips_current_wan(self):
+        router = MikroTikRouter(
+            name="r",
+            host="203.0.113.8",
+            username="admin",
+            password="x",
+            wan_interface="ether1",
+            uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+            port_roles={"ether1": MikroTikRouter.PortRole.WAN},
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp", running=True),
+        ]
+        risks = _build_wan_switch_risks(
+            router,
+            live_ports=ports,
+            management_iface_by_host={"203.0.113.8": "pppoe-out1"},
+            primary_wan_ports=["ether1"],
+        )
+        self.assertNotIn("ether1", risks)
+        self.assertIn("ether2", risks)
+        self.assertFalse(risks["ether2"].get("safe"))
+
+
+class _FakeRequest:
+    def __init__(self, confirm_risk: str = ""):
+        self.POST = {"confirm_risk": confirm_risk}

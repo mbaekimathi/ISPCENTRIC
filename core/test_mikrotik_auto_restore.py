@@ -92,3 +92,34 @@ class MikroTikAutoRestoreTests(SimpleTestCase):
         )
         mock_email.assert_not_called()
         mock_sms.assert_not_called()
+
+
+class MikroTikRebootTests(SimpleTestCase):
+    @patch("core.mikrotik_connect._command")
+    @patch("core.mikrotik_connect._api_session")
+    def test_reboot_sends_system_reboot(self, mock_session, mock_command):
+        from core.mikrotik_connect import reboot_mikrotik
+
+        sock = object()
+        mock_session.return_value.__enter__.return_value = sock
+        mock_command.return_value = ([], {"_reply": "!done"})
+
+        result = reboot_mikrotik("10.0.0.1", "admin", "secret")
+        self.assertTrue(result["ok"])
+        mock_command.assert_called_once_with(sock, ["/system/reboot"])
+
+    @patch("core.mikrotik_connect._command")
+    @patch("core.mikrotik_connect._api_session")
+    def test_reboot_trap_is_failure(self, mock_session, mock_command):
+        from core.mikrotik_connect import reboot_mikrotik
+
+        sock = object()
+        mock_session.return_value.__enter__.return_value = sock
+        mock_command.return_value = (
+            [],
+            {"_reply": "!trap", "message": "not allowed"},
+        )
+
+        result = reboot_mikrotik("10.0.0.1", "admin", "secret")
+        self.assertFalse(result["ok"])
+        self.assertIn("not allowed", result["error"])

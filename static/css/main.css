@@ -4577,6 +4577,43 @@ a.module-card:hover {
   50% { box-shadow: 0 0 0 8px transparent; }
 }
 
+.toast-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.toast-action-btn {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 80%, transparent);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  background: color-mix(in srgb, var(--surface-2, #f8fafc) 88%, transparent);
+  color: var(--text, #0f172a);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.toast-action-btn:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border-strong));
+  background: color-mix(in srgb, var(--sea) 8%, var(--surface));
+}
+
+.toast-error .toast-action-btn {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border-strong));
+  color: var(--danger);
+}
+
+.toast-success .toast-action-btn {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border-strong));
+  color: var(--success);
+}
+
 @media (max-width: 640px) {
   .toast-host {
     top: auto;
@@ -13862,6 +13899,27 @@ a.packages-stat:focus-visible {
   color: #f87171;
 }
 
+.mikrotik-restart-warning {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #f59e0b 35%, var(--border-strong, rgba(15, 23, 42, 0.12)));
+  background: color-mix(in srgb, #f59e0b 10%, transparent);
+  color: #92400e;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mikrotik-restart-btn {
+  border-color: color-mix(in srgb, #f59e0b 35%, var(--border-strong, rgba(15, 23, 42, 0.12)));
+  color: #92400e;
+}
+
+.mikrotik-restart-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #f59e0b 55%, var(--border-strong, rgba(15, 23, 42, 0.12)));
+  background: color-mix(in srgb, #f59e0b 8%, var(--surface-2, #fff));
+}
+
 .mikrotik-auto-restore-badge {
   display: inline-flex;
   align-items: center;
@@ -16657,6 +16715,40 @@ a.packages-stat:focus-visible {
   flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.85rem;
+}
+
+.mk-wan-recovery {
+  margin-top: 0.85rem;
+  padding: 0.75rem 0.8rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid var(--border);
+  background: var(--surface, #f8fafc);
+}
+
+.mk-wan-recovery-copy {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.55rem;
+}
+
+.mk-wan-recovery-script {
+  margin: 0;
+  max-height: 11rem;
+  overflow: auto;
+  padding: 0.65rem 0.7rem;
+  border-radius: calc(var(--radius) - 2px);
+  border: 1px solid var(--border);
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre;
+  user-select: all;
+}
+
+.mk-wan-recovery-dialog {
+  width: min(40rem, calc(100vw - 2rem));
 }
 
 .mk-banner[hidden],
@@ -21480,6 +21572,39 @@ a.packages-stat:focus-visible {
   font-size: 0.75rem;
 }
 
+/* Client router + Wi‑Fi (combined page) ---------------------------------- */
+
+.client-cpe-access-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.client-cpe-access-page .client-cpe-hero {
+  flex: 0 0 auto;
+}
+
+.client-cpe-access-page .client-cpe-tab-nav {
+  margin-top: 1rem;
+  margin-bottom: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.client-cpe-access-page.is-router-tab {
+  min-height: calc(100vh - 7rem);
+}
+
+.client-cpe-access-page .client-cpe-toolbar-actions {
+  flex-wrap: wrap;
+}
+
+.client-cpe-access-page.is-connected .client-router-hero .client-kv-list {
+  display: none;
+}
+
 /* Client Wi?Fi settings -------------------------------------------------- */
 
 .client-wifi-settings-page .client-wifi-form-grid {
@@ -21519,7 +21644,7 @@ a.packages-stat:focus-visible {
   transition: opacity 0.2s ease, max-height 0.25s ease;
 }
 
-.client-router-access-page.is-connected .client-hero .client-kv-list {
+.client-router-access-page.is-connected .client-router-hero .client-kv-list {
   display: none;
 }
 
@@ -21622,6 +21747,27 @@ a.packages-stat:focus-visible {
 }
 
 @media (max-width: 720px) {
+  .client-cpe-access-page .mikrotik-detail-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+  }
+
+  .client-cpe-access-page .client-cpe-toolbar-actions,
+  .client-cpe-access-page .mikrotik-detail-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .client-cpe-access-page .client-router-password-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .client-cpe-access-page .client-router-password-row .btn {
+    width: 100%;
+  }
+
   .client-router-access-page .mikrotik-detail-actions {
     flex-wrap: wrap;
   }
@@ -26878,97 +27024,6 @@ h1, h2, h3, h4,
   background: linear-gradient(180deg, #ffffff, #f4fafb);
 }
 
-.wifi-preview-page .wifi-preview-blurb {
-  margin: 0 0 1rem;
-  color: var(--ink-soft);
-  font-size: 0.95rem;
-  line-height: 1.5;
-}
-
-.wifi-preview-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  margin: 0 0 1.1rem;
-}
-
-.wifi-preview-tab {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.5rem 0.85rem;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-size: 0.82rem;
-  font-weight: 750;
-  text-decoration: none;
-}
-
-.wifi-preview-tab:hover {
-  border-color: color-mix(in srgb, var(--sea) 45%, var(--border));
-  color: var(--ink);
-}
-
-.wifi-preview-tab.is-active {
-  border-color: color-mix(in srgb, var(--sea) 55%, var(--border));
-  background: color-mix(in srgb, var(--sea) 14%, var(--surface));
-  color: var(--ink);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sea) 20%, transparent);
-}
-
-.wifi-preview-phone {
-  position: relative;
-  width: min(100%, 24rem);
-  margin: 0 auto;
-  padding: 0.85rem 0.7rem 1rem;
-  border-radius: 2rem;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, #000);
-  background:
-    linear-gradient(160deg, color-mix(in srgb, var(--ink) 8%, transparent), transparent 40%),
-    #0b1220;
-  box-shadow:
-    0 24px 48px color-mix(in srgb, #000 28%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, #fff 8%, transparent);
-}
-
-.wifi-preview-phone-notch {
-  width: 7rem;
-  height: 0.55rem;
-  margin: 0 auto 0.65rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, #000 55%, #1f2937);
-}
-
-.wifi-preview-frame {
-  display: block;
-  width: 100%;
-  height: min(72vh, 40rem);
-  border: 0;
-  border-radius: 1.15rem;
-  background: #070b14;
-}
-
-.wifi-preview-hint {
-  margin: 1rem 0 0;
-  color: var(--ink-soft);
-  font-size: 0.86rem;
-  line-height: 1.45;
-  text-align: center;
-}
-
-@media (max-width: 720px) {
-  .wifi-preview-phone {
-    width: 100%;
-    border-radius: 1.35rem;
-    padding: 0.65rem;
-  }
-
-  .wifi-preview-frame {
-    height: min(78vh, 36rem);
-  }
-}
-
 .client-simple-status span,
 .client-simple-status em {
   display: block;
@@ -27063,6 +27118,183 @@ h1, h2, h3, h4,
   gap: 0.5rem;
   margin-top: 1rem;
   align-items: center;
+}
+
+.client-action-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.65rem;
+  margin: 0 0 1.15rem;
+  padding: 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 1rem;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--sea) 6%, transparent), transparent 55%),
+    var(--surface-2, var(--surface));
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #fff 35%, transparent) inset,
+    0 10px 28px color-mix(in srgb, #0b1f2a 6%, transparent);
+}
+
+[data-theme="light"] .client-action-toolbar {
+  background: linear-gradient(135deg, #f0fafb 0%, #ffffff 48%, #f8fbfc 100%);
+}
+
+.client-action-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.client-action-toolbar-group--primary {
+  flex: 1 1 auto;
+}
+
+.client-action-toolbar-group--danger {
+  flex: 0 0 auto;
+}
+
+.client-action-toolbar-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 2.2rem;
+  margin: 0.15rem 0;
+  background: var(--border-strong);
+  opacity: 0.85;
+}
+
+.client-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.55rem;
+  padding: 0.45rem 0.95rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.72rem;
+  background: var(--surface-solid, var(--surface));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  cursor: pointer;
+  text-decoration: none;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.client-action-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border-strong));
+  box-shadow: 0 8px 18px color-mix(in srgb, #0b1f2a 8%, transparent);
+}
+
+.client-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.client-action-btn-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  opacity: 0.88;
+}
+
+.client-action-btn-label {
+  white-space: nowrap;
+}
+
+.client-action-btn.is-primary {
+  border-color: color-mix(in srgb, var(--sea) 45%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sea) 92%, #fff), var(--sea));
+  color: #fff;
+  box-shadow: 0 10px 22px color-mix(in srgb, var(--sea) 28%, transparent);
+}
+
+.client-action-btn.is-primary:hover:not(:disabled) {
+  filter: brightness(1.04);
+  border-color: color-mix(in srgb, var(--sea) 55%, var(--border));
+}
+
+.client-action-btn.is-primary .client-action-btn-icon {
+  opacity: 1;
+}
+
+.client-action-btn.is-pause {
+  border-color: color-mix(in srgb, var(--signal) 35%, var(--border));
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface));
+  color: color-mix(in srgb, var(--signal) 85%, var(--ink));
+}
+
+.client-action-btn.is-pause.is-paused {
+  border-color: color-mix(in srgb, var(--cat-live, #059669) 35%, var(--border));
+  background: color-mix(in srgb, var(--cat-live, #059669) 10%, var(--surface));
+  color: color-mix(in srgb, var(--cat-live, #059669) 90%, var(--ink));
+}
+
+.client-action-btn.is-danger {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+}
+
+.client-action-btn.is-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.client-action-toolbar .client-package-pause-form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.client-delete-modal .pppoe-body {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.client-delete-modal .cc-delete-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.client-delete-modal .pppoe-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.client-delete-modal .client-delete-confirm-form {
+  margin: 0;
+}
+
+.client-detail-simple > .panel.client-simple-panel {
+  border-radius: 1.15rem;
+  overflow: hidden;
+}
+
+.client-detail-simple > .panel.client-simple-panel::before {
+  content: "";
+  display: block;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--sea),
+    color-mix(in srgb, var(--sea) 55%, #6366f1),
+    color-mix(in srgb, var(--sea) 35%, transparent)
+  );
 }
 
 .client-simple-actions .client-package-pause-form {
@@ -27518,6 +27750,38 @@ h1, h2, h3, h4,
 
   .client-simple-actions {
     display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .client-action-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0.55rem;
+  }
+
+  .client-action-toolbar-divider {
+    width: 100%;
+    height: 1px;
+    min-height: 0;
+    margin: 0;
+  }
+
+  .client-action-toolbar-group {
+    width: 100%;
+  }
+
+  .client-action-toolbar-group--primary,
+  .client-action-toolbar-group--danger {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .client-action-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .client-delete-modal .cc-delete-list {
     grid-template-columns: 1fr;
   }
 

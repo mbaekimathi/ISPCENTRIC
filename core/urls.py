@@ -64,6 +64,11 @@ urlpatterns = [
         views.mikrotik_reconnect,
         name="mikrotik_reconnect",
     ),
+    path(
+        "app/mikrotik/<int:router_id>/reboot/",
+        views.mikrotik_reboot,
+        name="mikrotik_reboot",
+    ),
     path("app/mikrotik/discover/", views.mikrotik_discover, name="mikrotik_discover"),
     path("app/mikrotik/connect/", views.mikrotik_connect, name="mikrotik_connect"),
     path(
@@ -116,11 +121,6 @@ urlpatterns = [
         "app/clients/<int:customer_id>/delete/",
         views.client_delete,
         name="client_delete",
-    ),
-    path(
-        "app/clients/<int:customer_id>/wifi-preview/",
-        views.client_wifi_preview,
-        name="client_wifi_preview",
     ),
     path("app/clients/<int:customer_id>/usage/", views.client_usage, name="client_usage"),
     path(

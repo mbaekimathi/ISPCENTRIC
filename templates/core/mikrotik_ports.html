@@ -76,9 +76,44 @@
         <span>I understand — switch even if management may drop briefly</span>
       </label>
       <p class="mk-help-note is-warn" data-uplink-risk-blocking hidden></p>
+      <div class="mk-wan-recovery" data-wan-recovery-wrap hidden>
+        <p class="mk-stat-label">If connection drops — Winbox recovery</p>
+        <p class="mk-help-note">
+          Plug into a <strong>customer LAN port</strong>, open Winbox → <strong>New Terminal</strong>,
+          paste this to restore <strong>One internet link — single ISP cable</strong> on the chosen port:
+        </p>
+        <div class="mk-wan-recovery-copy">
+          <pre class="mk-wan-recovery-script" data-wan-recovery-script></pre>
+          <button type="button" class="btn btn-primary btn-sm" data-wan-recovery-copy>Copy commands</button>
+        </div>
+      </div>
       <div class="mk-uplink-risk-actions">
         <button type="button" class="btn btn-primary btn-sm" data-uplink-risk-proceed disabled>Switch Internet port</button>
         <button type="button" class="btn btn-ghost btn-sm" data-uplink-risk-cancel>Cancel</button>
+      </div>
+    </div>
+
+    <div class="mk-uplink-risk-backdrop" data-wan-recovery-backdrop hidden></div>
+    <div
+      class="mk-uplink-risk-dialog mk-wan-recovery-dialog"
+      data-wan-recovery-dialog
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mk-wan-recovery-title"
+    >
+      <h2 class="mk-uplink-risk-title" id="mk-wan-recovery-title">Router unreachable — on-site recovery</h2>
+      <p class="mk-help-note" data-wan-recovery-lead>
+        The billing server lost contact after the Internet port switch. Use Winbox on a LAN port to restore
+        <strong>One internet link — single ISP cable</strong>.
+      </p>
+      <p class="mk-help-note"><strong>Winbox → New Terminal</strong> — paste all lines, then press Enter:</p>
+      <div class="mk-wan-recovery-copy">
+        <pre class="mk-wan-recovery-script" data-wan-recovery-modal-script></pre>
+        <button type="button" class="btn btn-primary btn-sm" data-wan-recovery-modal-copy>Copy commands</button>
+      </div>
+      <div class="mk-uplink-risk-actions">
+        <button type="button" class="btn btn-ghost btn-sm" data-wan-recovery-dismiss>Close</button>
       </div>
     </div>
 
@@ -219,6 +254,12 @@
       </label>
       <p class="mk-help-note mk-goal-select-hint" data-goal-select-hint></p>
 
+      <form method="post" class="mk-inline-form" data-uplink-goal-form hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="set_uplink_goal">
+        <input type="hidden" name="goal" value="" data-uplink-goal-input>
+      </form>
+
       <div class="mk-goal-panel" data-goal-panel="single" hidden>
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
@@ -226,7 +267,7 @@
             <li>Set customer-facing ports to <strong>Customers</strong>.</li>
             <li>Leave spare ports as <strong>Unused</strong>.</li>
           </ol>
-          <p class="mk-help-note">No extra apply step — roles save as soon as you tap them.</p>
+          <p class="mk-help-note">One cable, one Internet port — switching applies immediately on the MikroTik.</p>
         </div>
       </div>
 
@@ -275,8 +316,8 @@
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
             <li>Set the main ISP to <strong>Internet</strong> (only one).</li>
-            <li>Set the standby ISP to <strong>Backup internet</strong>.</li>
-            <li>Apply when both show below.</li>
+            <li>Plug the second ISP into another port and set it to <strong>Backup internet</strong>.</li>
+            <li>Both links must show <strong>Link up</strong>, then apply failover.</li>
           </ol>
 
           <div class="mk-goal-role-grid">
@@ -295,7 +336,7 @@
 
           <div class="mk-goal-actions">
             <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
-            <p class="mk-help-note" data-failover-hint>Need 1 Internet + at least 1 Backup internet.</p>
+            <p class="mk-help-note" data-failover-hint>Need 2 live ISP links — 1 Internet + 1 Backup internet, both link up.</p>
           </div>
         </div>
       </form>
@@ -307,8 +348,8 @@
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
             <li>Set one ISP to <strong>Internet</strong> and the other to <strong>Backup internet</strong>.</li>
-            <li>Enter each link’s speed in Mbps — the stronger link gets more connections.</li>
-            <li>Both should already have DHCP or PPPoE working, then apply.</li>
+            <li>Both links must show <strong>Link up</strong>. Enter each link’s speed in Mbps.</li>
+            <li>Apply load balance when both ports are listed below.</li>
           </ol>
 
           <div class="mk-role-block">
@@ -334,7 +375,7 @@
 
           <div class="mk-goal-actions">
             <button type="submit" class="btn btn-primary" data-apply-balance disabled>Apply load balance</button>
-            <p class="mk-help-note" data-balance-hint>Need 1 Internet + at least 1 Backup internet.</p>
+            <p class="mk-help-note" data-balance-hint>Need 2 live ISP links — 1 Internet + 1 Backup internet, both link up.</p>
           </div>
         </div>
       </form>
@@ -373,58 +414,171 @@
   var pendingUplinkPrompt = null;
   var pendingUplinkForm = null;
   var pendingBackupPrompt = null;
+  var pendingFormRisk = null;
+  var wanRecoveryStorageKey = "mk-wan-recovery:" + routerId;
+  var wanSwitchPendingKey = "mk-wan-switch-pending:" + routerId;
+
+  function rememberWanSwitchAttempt(portName, script) {
+    try {
+      sessionStorage.setItem(
+        wanSwitchPendingKey,
+        JSON.stringify({ port: portName || "", at: Date.now() })
+      );
+      if (script) sessionStorage.setItem(wanRecoveryStorageKey, script);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function clearWanSwitchAttempt() {
+    try {
+      sessionStorage.removeItem(wanSwitchPendingKey);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
+  function readStoredWanRecoveryScript() {
+    try {
+      return sessionStorage.getItem(wanRecoveryStorageKey) || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function copyTextToClipboard(text, button) {
+    if (!text) return;
+    function done(ok) {
+      if (!button) return;
+      var prev = button.textContent;
+      button.textContent = ok ? "Copied" : "Copy failed";
+      window.setTimeout(function () {
+        button.textContent = prev;
+      }, 1600);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () { done(false); });
+      return;
+    }
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      done(document.execCommand("copy"));
+    } catch (e) {
+      done(false);
+    }
+    document.body.removeChild(area);
+  }
+
+  function setWanRecoveryScript(script) {
+    var inlinePre = root.querySelector("[data-wan-recovery-script]");
+    var modalPre = root.querySelector("[data-wan-recovery-modal-script]");
+    var wrap = root.querySelector("[data-wan-recovery-wrap]");
+    if (inlinePre) inlinePre.textContent = script || "";
+    if (modalPre) modalPre.textContent = script || "";
+    if (wrap) setHidden(wrap, !script);
+  }
+
+  function openWanRecoveryModal(script, portName) {
+    var text = script || readStoredWanRecoveryScript();
+    if (!text) return;
+    setWanRecoveryScript(text);
+    var lead = root.querySelector("[data-wan-recovery-lead]");
+    if (lead && portName) {
+      lead.innerHTML =
+        'The billing server lost contact after moving Internet to <strong>' +
+        esc(portName) +
+        "</strong>. Use Winbox on a LAN port to restore " +
+        "<strong>One internet link — single ISP cable</strong>.";
+    }
+    setHidden(root.querySelector("[data-wan-recovery-backdrop]"), false);
+    setHidden(root.querySelector("[data-wan-recovery-dialog]"), false);
+  }
+
+  function closeWanRecoveryModal() {
+    setHidden(root.querySelector("[data-wan-recovery-backdrop]"), true);
+    setHidden(root.querySelector("[data-wan-recovery-dialog]"), true);
+  }
+
+  function maybeShowWanRecoveryModal() {
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem(wanSwitchPendingKey);
+    } catch (e) {
+      raw = null;
+    }
+    if (!raw) return;
+    var pending = null;
+    try {
+      pending = JSON.parse(raw);
+    } catch (e) {
+      pending = null;
+    }
+    if (!pending || !pending.port) return;
+    if (Date.now() - (pending.at || 0) > 15 * 60 * 1000) {
+      clearWanSwitchAttempt();
+      return;
+    }
+    openWanRecoveryModal(readStoredWanRecoveryScript(), pending.port);
+  }
   if (!loading || !liveUrl) return;
 
   var goalHints = {
-    single: "Mark the ISP cable as Internet, customer ports as Customers, and spare ports as Unused.",
-    bond: "Set each same-ISP cable to Bonded internet, then apply bonding in Step 2.",
-    failover: "Set the main ISP to Internet and the standby to Backup internet, then apply failover.",
-    balance: "Set one ISP to Internet and the other to Backup internet, enter Mbps for each, then apply load balance."
+    single: "One ISP cable — mark it Internet. Backup and bonding roles are hidden.",
+    bond: "Two cables from the same ISP — mark each Bonded internet, then apply bonding.",
+    failover: "Two different ISPs — one Internet, one Backup internet, both link up, then apply.",
+    balance: "Two different ISPs sharing traffic — assign both links, enter Mbps, then apply."
   };
   var goalSelectHints = {
-    single: "Simplest setup — one ISP cable into this MikroTik.",
+    single: "Move one cable between ports anytime — tap Internet on the new port.",
     bond: "Same provider: two cables bonded together for more capacity or redundancy.",
-    failover: "Different providers: use the second link only when the first fails.",
+    failover: "Different providers: standby ISP takes over when the primary fails.",
     balance: "Different providers: both carry traffic, weighted by the Mbps you enter."
   };
 
-  function rolesForGoal(goal) {
+  var ROLE_LABELS = {
+    wan: "Internet",
+    wan_backup: "Backup internet",
+    bond: "Bonded internet",
+    lan: "Customers",
+    unused: "Unused",
+    none: "Unassigned"
+  };
+
+  function rolesForGoal(goal, allowedRoles) {
+    var allowed = allowedRoles && allowedRoles.length
+      ? allowedRoles
+      : null;
+    function canUse(value) {
+      return !allowed || allowed.indexOf(value) >= 0;
+    }
+    function pair(value) {
+      return [value, ROLE_LABELS[value] || value];
+    }
+    function pick(values) {
+      return values.filter(canUse).map(pair);
+    }
+
     if (goal === "bond") {
       return {
-        main: [
-          ["bond", "Bonded internet"],
-          ["lan", "Customers"],
-          ["unused", "Unused"]
-        ],
-        more: [
-          ["wan", "Internet"],
-          ["wan_backup", "Backup internet"],
-          ["none", "Unassigned"]
-        ]
+        main: pick(["bond", "lan", "unused"]),
+        more: pick(["none"])
       };
     }
     if (goal === "failover" || goal === "balance") {
       return {
-        main: [
-          ["wan", "Internet"],
-          ["wan_backup", "Backup internet"],
-          ["lan", "Customers"],
-          ["unused", "Unused"]
-        ],
-        more: [["bond", "Bonded internet"], ["none", "Unassigned"]]
+        main: pick(["wan", "wan_backup", "lan", "unused"]),
+        more: pick(["none"])
       };
     }
     return {
-      main: [
-        ["wan", "Internet"],
-        ["lan", "Customers"],
-        ["unused", "Unused"]
-      ],
-      more: [
-        ["wan_backup", "Backup internet"],
-        ["bond", "Bonded internet"],
-        ["none", "Unassigned"]
-      ]
+      main: pick(["wan", "lan", "unused"]),
+      more: pick(["none"])
     };
   }
 
@@ -1097,20 +1251,26 @@
       var value = pair[0];
       var label = pair[1];
       var active = role === value ? " is-active role-" + value : "";
+      var confirmField =
+        value === "wan"
+          ? '<input type="hidden" name="confirm_risk" value="">'
+          : "";
       return (
         '<form method="post" class="mk-role-form">' +
         '<input type="hidden" name="csrfmiddlewaretoken" value="' + esc(csrf) + '">' +
         '<input type="hidden" name="action" value="set_port_role">' +
         '<input type="hidden" name="port_name" value="' + esc(portName) + '">' +
         '<input type="hidden" name="role" value="' + esc(value) + '">' +
+        confirmField +
         '<button type="submit" class="mk-role-pick' + active + '"' +
+        (value === "wan" ? ' data-wan-role-pick="1"' : "") +
         (suspended ? " disabled" : "") +
         ">" + esc(label) + "</button></form>"
       );
     }).join("");
   }
 
-  function renderPortCard(port) {
+  function renderPortCard(port, allowedRoles) {
     var role = port.role || "none";
     var stateClass = port.disabled ? " is-disabled" : port.running ? " is-up" : " is-down";
     var bondClass = port.is_bond_iface ? " is-bond" : "";
@@ -1123,7 +1283,7 @@
     if (port.is_bond_iface) {
       body = '<p class="mk-help-note">Bond interface — managed by multi-uplink settings.</p>';
     } else {
-      var roles = rolesForGoal(selectedGoal || "single");
+      var roles = rolesForGoal(selectedGoal || "single", allowedRoles);
       var moreValues = roles.more.map(function (pair) { return pair[0]; });
       var advOpen = moreValues.indexOf(role) >= 0 ? " open" : "";
       body =
@@ -1167,11 +1327,14 @@
 
   function renderPortCards(data) {
     var allPorts = data.ports || [];
+    var allowedRoles = data.allowed_roles || [];
     var grid = root.querySelector("[data-ports-grid]");
     var assign = root.querySelector("[data-ports-assign]");
     if (!grid) return;
     if (allPorts.length) {
-      grid.innerHTML = allPorts.map(renderPortCard).join("");
+      grid.innerHTML = allPorts.map(function (port) {
+        return renderPortCard(port, allowedRoles);
+      }).join("");
       setHidden(grid, false);
       setHidden(assign, false);
       setHidden(root.querySelector("[data-ports-empty]"), true);
@@ -1233,6 +1396,7 @@
     pendingUplinkPrompt = null;
     pendingUplinkForm = null;
     pendingBackupPrompt = null;
+    pendingFormRisk = null;
     var checkbox = root.querySelector("[data-uplink-risk-checkbox]");
     if (checkbox) checkbox.checked = false;
     var proceed = root.querySelector("[data-uplink-risk-proceed]");
@@ -1268,6 +1432,7 @@
     pendingUplinkPrompt = prompt;
     pendingUplinkForm = form;
     pendingBackupPrompt = opts.backupPrompt || null;
+    pendingFormRisk = risk;
 
     var titleEl = root.querySelector("[data-uplink-risk-title]");
     if (titleEl) {
@@ -1307,9 +1472,16 @@
       setHidden(confirmWrap, blocking || risk.safe);
     }
     if (proceed) {
-      proceed.textContent = form ? "Continue and apply" : "Switch Internet port";
+      if (form && form.classList.contains("mk-role-form")) {
+        proceed.textContent = "Set Internet port";
+      } else {
+        proceed.textContent = form ? "Continue and apply" : "Switch Internet port";
+      }
       proceed.disabled = blocking || (!risk.safe && !blocking);
     }
+    setWanRecoveryScript(
+      opts.recoveryScript || risk.recovery_script || ""
+    );
     setHidden(root.querySelector("[data-uplink-risk-backdrop]"), false);
     setHidden(root.querySelector("[data-uplink-risk-dialog]"), false);
   }
@@ -1362,6 +1534,7 @@
       var errText = root.querySelector("[data-ports-error-text]");
       if (errText) errText.textContent = (data && data.error) || "Could not read ports.";
       setHidden(err, false);
+      maybeShowWanRecoveryModal();
       setHidden(root.querySelector("[data-ports-grid]"), true);
       setHidden(root.querySelector("[data-ports-empty]"), true);
       setHidden(root.querySelector("[data-ports-summary]"), true);
@@ -1374,6 +1547,10 @@
     }
 
     lastPortsData = data;
+
+    if (data.ok) {
+      clearWanSwitchAttempt();
+    }
 
     setHidden(root.querySelector("[data-ports-error]"), true);
     setHidden(root.querySelector("[data-ports-auto-form]"), suspended);
@@ -1520,10 +1697,9 @@
     renderFlow(data);
     renderFace(data);
 
-    var storedGoal = readStoredGoal();
-    var preferredGoal = storedGoal || mode || "single";
-    if (!selectedGoal) {
-      setSelectedGoal(preferredGoal, { skipRerender: true });
+    var serverGoal = data.uplink_mode || "single";
+    if (!selectedGoal || selectedGoal !== serverGoal) {
+      setSelectedGoal(serverGoal, { skipRerender: true });
     } else {
       setSelectedGoal(selectedGoal, { skipRerender: true });
     }
@@ -1591,6 +1767,7 @@
       .catch(function () {
         if (!silent) {
           apply({ ok: false, error: "Could not load ports from the MikroTik." });
+          maybeShowWanRecoveryModal();
         }
       });
   }
@@ -1618,7 +1795,15 @@
   root.addEventListener("change", function (event) {
     var select = event.target.closest("[data-uplink-goal-select]");
     if (!select || !root.contains(select)) return;
-    setSelectedGoal(select.value || "single");
+    var goal = select.value || "single";
+    setSelectedGoal(goal, { skipRerender: true });
+    var goalForm = root.querySelector("[data-uplink-goal-form]");
+    var goalInput = root.querySelector("[data-uplink-goal-input]");
+    if (goalForm && goalInput) {
+      goalInput.value = goal;
+      goalForm.submit();
+      return;
+    }
     var panel = root.querySelector('[data-goal-panel="' + (selectedGoal || "single") + '"]');
     if (panel) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
@@ -1670,14 +1855,48 @@
       if (!prompt) return;
       var risk = prompt.risk || {};
       if (risk.blocking) {
-        openUplinkRiskDialog({ prompt: prompt, title: "Before switching Internet port" });
+        openUplinkRiskDialog({
+          prompt: prompt,
+          title: "Before switching Internet port",
+          recoveryScript: prompt.recovery_script || "",
+        });
         return;
       }
       if (risk.safe) {
         submitUplinkAccept(prompt, false);
         return;
       }
-      openUplinkRiskDialog({ prompt: prompt, title: "Before switching Internet port" });
+      openUplinkRiskDialog({
+        prompt: prompt,
+        title: "Before switching Internet port",
+        recoveryScript: prompt.recovery_script || "",
+      });
+      return;
+    }
+    var recoveryCopy = event.target.closest("[data-wan-recovery-copy]");
+    if (recoveryCopy && root.contains(recoveryCopy)) {
+      event.preventDefault();
+      var inlineScript = root.querySelector("[data-wan-recovery-script]");
+      copyTextToClipboard(inlineScript ? inlineScript.textContent : "", recoveryCopy);
+      return;
+    }
+    var recoveryModalCopy = event.target.closest("[data-wan-recovery-modal-copy]");
+    if (recoveryModalCopy && root.contains(recoveryModalCopy)) {
+      event.preventDefault();
+      var modalScript = root.querySelector("[data-wan-recovery-modal-script]");
+      copyTextToClipboard(modalScript ? modalScript.textContent : "", recoveryModalCopy);
+      return;
+    }
+    var recoveryDismiss = event.target.closest("[data-wan-recovery-dismiss]");
+    if (recoveryDismiss && root.contains(recoveryDismiss)) {
+      event.preventDefault();
+      closeWanRecoveryModal();
+      return;
+    }
+    var recoveryBackdrop = event.target.closest("[data-wan-recovery-backdrop]");
+    if (recoveryBackdrop && root.contains(recoveryBackdrop)) {
+      event.preventDefault();
+      closeWanRecoveryModal();
       return;
     }
     var riskCancel = event.target.closest("[data-uplink-risk-cancel]");
@@ -1691,16 +1910,26 @@
       event.preventDefault();
       var needConfirm = false;
       if (pendingUplinkForm) {
+        var applyMode = pendingUplinkForm.getAttribute("data-uplink-risk-apply");
         var formRisk =
-          lastPortsData &&
-          lastPortsData.uplink_apply_risks &&
-          lastPortsData.uplink_apply_risks[pendingUplinkForm.getAttribute("data-uplink-risk-apply")];
+          pendingFormRisk ||
+          (lastPortsData &&
+            lastPortsData.uplink_apply_risks &&
+            applyMode &&
+            lastPortsData.uplink_apply_risks[applyMode]);
         if (formRisk && formRisk.blocking) return;
         needConfirm = formRisk && !formRisk.safe;
         var checkbox = root.querySelector("[data-uplink-risk-checkbox]");
         if (needConfirm && checkbox && !checkbox.checked) return;
         var confirmField = pendingUplinkForm.querySelector("[name='confirm_risk']");
         if (confirmField) confirmField.value = needConfirm ? "1" : "";
+        if (pendingUplinkForm.classList.contains("mk-role-form")) {
+          var switchPort = (pendingUplinkForm.querySelector('[name="port_name"]') || {}).value || "";
+          rememberWanSwitchAttempt(
+            switchPort,
+            (formRisk && formRisk.recovery_script) || readStoredWanRecoveryScript()
+          );
+        }
         pendingUplinkForm.submit();
         closeUplinkRiskDialog();
         return;
@@ -1719,6 +1948,10 @@
       needConfirm = pendingUplinkPrompt.risk && !pendingUplinkPrompt.risk.safe;
       var riskCheckbox = root.querySelector("[data-uplink-risk-checkbox]");
       if (needConfirm && riskCheckbox && !riskCheckbox.checked) return;
+      rememberWanSwitchAttempt(
+        pendingUplinkPrompt.port,
+        pendingUplinkPrompt.recovery_script || readStoredWanRecoveryScript()
+      );
       submitUplinkAccept(pendingUplinkPrompt, needConfirm);
       closeUplinkRiskDialog();
       return;
@@ -1738,6 +1971,29 @@
   root.addEventListener("submit", function (event) {
     var form = event.target;
     if (!form || !root.contains(form)) return;
+
+    if (form.classList && form.classList.contains("mk-role-form")) {
+      var roleInput = form.querySelector('input[name="role"]');
+      if (!roleInput || roleInput.value !== "wan") return;
+      if (!lastPortsData || (lastPortsData.uplink_mode || "single") !== "single") return;
+      var portInput = form.querySelector('input[name="port_name"]');
+      var portName = portInput ? (portInput.value || "").trim() : "";
+      var primary = ((lastPortsData.primary_wan_ports || [])[0] || "").trim();
+      if (!portName || portName === primary) return;
+      var risk = (lastPortsData.wan_switch_risks || {})[portName];
+      if (!risk || risk.safe) return;
+      event.preventDefault();
+      var fromLabel = primary || "current port";
+      openUplinkRiskDialog({
+        form: form,
+        risk: risk,
+        message: "Move Internet from " + fromLabel + " to " + portName + "?",
+        title: "Before switching Internet port",
+        recoveryScript: risk.recovery_script || "",
+      });
+      return;
+    }
+
     var mode = form.getAttribute("data-uplink-risk-apply");
     if (!mode) return;
     var risks = lastPortsData && lastPortsData.uplink_apply_risks;
@@ -1765,10 +2021,13 @@
       var proceed = root.querySelector("[data-uplink-risk-proceed]");
       if (!proceed) return;
       if (pendingUplinkForm) {
+        var applyMode = pendingUplinkForm.getAttribute("data-uplink-risk-apply");
         var formRisk =
-          lastPortsData &&
-          lastPortsData.uplink_apply_risks &&
-          lastPortsData.uplink_apply_risks[pendingUplinkForm.getAttribute("data-uplink-risk-apply")];
+          pendingFormRisk ||
+          (lastPortsData &&
+            lastPortsData.uplink_apply_risks &&
+            applyMode &&
+            lastPortsData.uplink_apply_risks[applyMode]);
         if (formRisk && !formRisk.blocking && !formRisk.safe) {
           proceed.disabled = !riskCheckbox.checked;
         }

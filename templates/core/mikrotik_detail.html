@@ -237,6 +237,13 @@
       <div class="mk-detail-hero-actions">
         <button
           type="button"
+          class="btn btn-ghost btn-sm mikrotik-restart-btn"
+          id="mikrotik-detail-restart"
+          data-reboot-url="{% url 'core:mikrotik_reboot' router.id %}"
+          {% if is_suspended %}disabled{% endif %}
+        >Restart</button>
+        <button
+          type="button"
           class="btn btn-primary btn-sm"
           id="mikrotik-detail-reconnect"
           data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
@@ -259,13 +266,13 @@
   </nav>
 
   <section
-    class="mk-surface mk-detail-surface mikrotik-live is-loading"
+    class="mk-surface mk-detail-surface mikrotik-live{% if not initial_live %} is-loading{% endif %}"
     id="mikrotik-live"
     aria-live="polite"
     data-live-url="{% url 'core:mikrotik_live' router.id %}"
     data-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
   >
-    <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended %}hidden{% endif %} role="status" aria-live="polite">
+    <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended or initial_live %}hidden{% endif %} role="status" aria-live="polite">
       <span class="mikrotik-page-spinner" aria-hidden="true"></span>
       <div>
         <p class="mikrotik-live-loading-title">Loading live data…</p>
@@ -277,7 +284,7 @@
       <div>
         <p class="mk-section-step">Live telemetry</p>
         <h2 class="mk-detail-section-title">Router health</h2>
-        <p class="mikrotik-live-sub" id="mikrotik-live-sub">{% if is_suspended %}Live access is paused while this account is suspended.{% else %}Reading the router…{% endif %}</p>
+        <p class="mikrotik-live-sub" id="mikrotik-live-sub">{% if is_suspended %}Live access is paused while this account is suspended.{% elif initial_live and initial_live.ok %}Live data from the router — refreshes automatically.{% else %}Reading the router…{% endif %}</p>
       </div>
       <span class="mikrotik-live-stamp mk-detail-stamp" id="mikrotik-live-stamp">—</span>
     </header>
@@ -402,31 +409,36 @@
   </section>
 </div>
 
-{# —— Access notice popup —— #}
-<div class="role-modal mikrotik-notice-modal" id="mikrotik-access-notice" hidden aria-hidden="true">
-  <div class="role-modal-backdrop" data-close-access-notice></div>
-  <div class="role-modal-panel mikrotik-notice-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-access-notice-title" aria-describedby="mikrotik-access-notice-text">
-    <div class="mikrotik-notice-glow" aria-hidden="true"></div>
-    <header class="mikrotik-notice-head">
-      <div class="mikrotik-notice-badge" aria-hidden="true">
-        <svg viewBox="0 0 48 48" width="28" height="28" fill="none">
-          <circle cx="24" cy="24" r="20" stroke="currentColor" stroke-width="2.2"/>
-          <path d="M24 14v14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
-          <circle cx="24" cy="34" r="1.8" fill="currentColor"/>
-        </svg>
+{% if initial_live %}{{ initial_live|json_script:"mikrotik-initial-live" }}{% endif %}
+
+<div class="role-modal mikrotik-action-modal pppoe-modal" id="mikrotik-restart-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-restart-modal></div>
+  <div class="role-modal-panel mikrotik-action-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-restart-title">
+    <header class="role-modal-head">
+      <div>
+        <p class="role-modal-kicker">Power cycle</p>
+        <h2 id="mikrotik-restart-title">Restart {{ router.name }}?</h2>
+        <p class="role-modal-sub">
+          This reboots the MikroTik like switching it off and on. PPPoE users, firewall rules,
+          Wi‑Fi settings, and uplink configuration are <strong>not</strong> reset.
+        </p>
       </div>
-      <button type="button" class="role-modal-close" data-close-access-notice aria-label="Close">×</button>
+      <button type="button" class="role-modal-close" data-close-restart-modal aria-label="Close">×</button>
     </header>
-    <div class="mikrotik-notice-body">
-      <p class="mikrotik-notice-kicker">Live access</p>
-      <h2 id="mikrotik-access-notice-title">Cannot access this MikroTik</h2>
-      <p id="mikrotik-access-notice-text" class="mikrotik-notice-text">Live data is unavailable right now.</p>
-      <p id="mikrotik-access-notice-reason" class="mikrotik-notice-reason"></p>
+    <div class="mikrotik-action-scroll">
+      <p class="mikrotik-restart-warning">
+        All clients on this router will lose internet for about 1–3 minutes while it boots.
+        Remote management may also drop until the router is back online.
+      </p>
+      <label class="mikrotik-confirm-check">
+        <input type="checkbox" id="mikrotik-restart-confirm">
+        <span>I understand clients will disconnect briefly during the restart.</span>
+      </label>
+      <div class="field-error mikrotik-form-banner" id="mikrotik-restart-error" hidden></div>
     </div>
-    <div class="role-modal-actions mikrotik-notice-actions">
-      <button type="button" class="btn btn-ghost" data-close-access-notice>Dismiss</button>
-      <button type="button" class="btn btn-ghost" id="mikrotik-access-notice-reconnect" data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}" {% if is_suspended %}disabled{% endif %}>Repair &amp; reconnect</button>
-      <button type="button" class="btn btn-primary" id="mikrotik-access-notice-retry">Try again</button>
+    <div class="role-modal-actions">
+      <button type="button" class="btn btn-ghost" data-close-restart-modal>Cancel</button>
+      <button type="button" class="btn btn-danger" id="mikrotik-restart-submit" disabled>Restart router</button>
     </div>
   </div>
 </div>
@@ -816,16 +828,22 @@
   var blockedTitle = document.getElementById("mikrotik-live-blocked-title");
   var blockedText = document.getElementById("mikrotik-live-blocked-text");
   var blockedWhy = document.getElementById("mikrotik-live-blocked-why");
-  var notice = document.getElementById("mikrotik-access-notice");
-  var noticeText = document.getElementById("mikrotik-access-notice-text");
-  var noticeReason = document.getElementById("mikrotik-access-notice-reason");
-  var noticeRetry = document.getElementById("mikrotik-access-notice-retry");
   var liveLoading = document.getElementById("mikrotik-live-loading");
   var timer = null;
   var inFlight = false;
   var lastReason = "";
   var noticeShownFor = "";
   var wasOnline = null;
+  var liveToastDismiss = null;
+  var initialLive = null;
+  var initialEl = document.getElementById("mikrotik-initial-live");
+  if (initialEl) {
+    try {
+      initialLive = JSON.parse(initialEl.textContent || "null");
+    } catch (e) {
+      initialLive = null;
+    }
+  }
 
   function formatAutoRestore(ar) {
     if (!ar || !ar.at || ar.skipped) return null;
@@ -927,27 +945,53 @@
     return "Live access to this MikroTik is unavailable right now.";
   }
 
-  function openNotice(reason) {
-    if (!notice) return;
+  function showLiveToast(reason, options) {
+    var opts = options || {};
     lastReason = reason || "Live access is unavailable right now.";
-    if (noticeText) {
-      noticeText.textContent = "You cannot access live data for this MikroTik right now.";
+    if (noticeShownFor === lastReason && liveToastDismiss) return;
+    var actions = [];
+    var detailReconnectEl = document.getElementById("mikrotik-detail-reconnect");
+    if (detailReconnectEl && !detailReconnectEl.disabled) {
+      actions.push({
+        label: "Reconnect",
+        onClick: function () {
+          runReconnect(detailReconnectEl, function (data) {
+            closeLiveToast();
+            if (subEl) {
+              subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
+            }
+            loadLive(true);
+          });
+        },
+        keepOpen: true,
+      });
     }
-    if (noticeReason) {
-      noticeReason.textContent = "Reason: " + lastReason;
+    actions.push({
+      label: "Try again",
+      onClick: function () {
+        loadLive(true);
+      },
+    });
+    if (typeof window.showToast === "function") {
+      closeLiveToast();
+      var result = window.showToast({
+        type: opts.type || "warning",
+        title: opts.title || "Cannot access this MikroTik",
+        text: lastReason,
+        ms: opts.sticky ? 0 : 9000,
+        actions: actions,
+      });
+      liveToastDismiss = result && result.dismiss;
     }
-    notice.hidden = false;
-    notice.setAttribute("aria-hidden", "false");
-    document.body.classList.add("role-modal-open");
     noticeShownFor = lastReason;
   }
 
-  function closeNotice() {
-    if (!notice) return;
-    notice.hidden = true;
-    notice.setAttribute("aria-hidden", "true");
-    if (!document.querySelector(".mikrotik-action-modal:not([hidden]), .mikrotik-notice-modal:not([hidden])")) {
-      document.body.classList.remove("role-modal-open");
+  function closeLiveToast() {
+    if (liveToastDismiss) {
+      try {
+        liveToastDismiss();
+      } catch (e) {}
+      liveToastDismiss = null;
     }
   }
 
@@ -966,7 +1010,7 @@
     if (subEl) subEl.textContent = "Live overview is paused until the router can be reached.";
     if (stampEl) stampEl.textContent = "Checked " + stampNow();
     lastReason = reason;
-    if (openPopup && noticeShownFor !== reason) openNotice(reason);
+    if (openPopup && noticeShownFor !== reason) showLiveToast(reason);
   }
 
   function showLiveLayout() {
@@ -989,7 +1033,7 @@
     }
     wasOnline = true;
     noticeShownFor = "";
-    closeNotice();
+    closeLiveToast();
     showLiveLayout();
     liveRoot.classList.add("is-online");
     liveRoot.classList.remove("is-offline");
@@ -1096,21 +1140,11 @@
       });
   }
 
-  document.querySelectorAll("[data-close-access-notice]").forEach(function (el) {
-    el.addEventListener("click", closeNotice);
-  });
   if (blockedWhy) {
     blockedWhy.addEventListener("click", function () {
-      openNotice(lastReason || "Live access is unavailable right now.");
+      showLiveToast(lastReason || "Live access is unavailable right now.");
     });
   }
-  if (noticeRetry) {
-    noticeRetry.addEventListener("click", function () {
-      closeNotice();
-      loadLive(true);
-    });
-  }
-  var noticeReconnect = document.getElementById("mikrotik-access-notice-reconnect");
   var detailReconnect = document.getElementById("mikrotik-detail-reconnect");
 
   function runReconnect(btn, onSuccess, credentials) {
@@ -1121,8 +1155,13 @@
     btn.disabled = true;
     var original = btn.textContent;
     btn.textContent = "Repairing…";
-    if (noticeReason) {
-      noticeReason.textContent = "Scanning LAN and restoring bridge/firewall access…";
+    if (typeof window.showToast === "function") {
+      window.showToast({
+        type: "info",
+        title: "Reconnecting",
+        text: "Scanning LAN and restoring bridge/firewall access…",
+        ms: 4000,
+      });
     }
     var body = new URLSearchParams();
     if (credentials) {
@@ -1156,7 +1195,7 @@
               pwErr.textContent = data.error || "Wrong username or password.";
             }
             if (pwModal) {
-              closeNotice();
+              closeLiveToast();
               pwModal.hidden = false;
               pwModal.setAttribute("aria-hidden", "false");
               document.body.classList.add("role-modal-open");
@@ -1165,12 +1204,10 @@
             }
             return;
           }
-          if (noticeReason) {
-            noticeReason.textContent = data.error || "Could not reconnect. Plug into ether2–ether5 and try again.";
-          }
-          if (!notice || notice.hidden) {
-            openNotice(data.error || "Could not reconnect to this MikroTik.");
-          }
+          showLiveToast(data.error || "Could not reconnect. Plug into ether2–ether5 and try again.", {
+            type: "error",
+            title: "Reconnect failed",
+          });
           return;
         }
         var pwModal = document.getElementById("mikrotik-password-modal");
@@ -1182,8 +1219,7 @@
       })
       .catch(function () {
         var msg = "Network error while repairing. Check the cable and try again.";
-        if (noticeReason) noticeReason.textContent = msg;
-        if (!notice || notice.hidden) openNotice(msg);
+        showLiveToast(msg, { type: "error", title: "Reconnect failed" });
       })
       .finally(function () {
         btn.disabled = false;
@@ -1196,24 +1232,153 @@
       });
   }
 
-  if (noticeReconnect) {
-    noticeReconnect.addEventListener("click", function () {
-      runReconnect(noticeReconnect, function (data) {
-        closeNotice();
-        if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
-        loadLive(true);
-      });
-    });
-  }
   if (detailReconnect) {
     detailReconnect.addEventListener("click", function () {
       runReconnect(detailReconnect, function (data) {
-        closeNotice();
+        closeLiveToast();
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "success",
+            text: data.message || "MikroTik reconnected. Loading live data…",
+          });
+        }
         if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
         loadLive(true);
       });
     });
   }
+
+  var restartBtn = document.getElementById("mikrotik-detail-restart");
+  var restartModal = document.getElementById("mikrotik-restart-modal");
+  var restartConfirm = document.getElementById("mikrotik-restart-confirm");
+  var restartSubmit = document.getElementById("mikrotik-restart-submit");
+  var restartError = document.getElementById("mikrotik-restart-error");
+
+  function openRestartModal() {
+    if (!restartModal || restartBtn && restartBtn.disabled) return;
+    if (restartConfirm) {
+      restartConfirm.checked = false;
+      restartConfirm.dispatchEvent(new Event("change"));
+    }
+    if (restartError) {
+      restartError.hidden = true;
+      restartError.textContent = "";
+    }
+    restartModal.hidden = false;
+    restartModal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeRestartModal() {
+    if (!restartModal) return;
+    closeModal(restartModal);
+  }
+
+  if (restartConfirm && restartSubmit) {
+    restartConfirm.addEventListener("change", function () {
+      restartSubmit.disabled = !restartConfirm.checked;
+    });
+  }
+
+  document.querySelectorAll("[data-close-restart-modal]").forEach(function (el) {
+    el.addEventListener("click", closeRestartModal);
+  });
+
+  if (restartBtn) {
+    restartBtn.addEventListener("click", openRestartModal);
+  }
+
+  if (restartSubmit && restartBtn) {
+    restartSubmit.addEventListener("click", function () {
+      var url = restartBtn.getAttribute("data-reboot-url");
+      if (!url || restartSubmit.disabled) return;
+      var match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+      var token = match ? decodeURIComponent(match[1]) : "";
+      restartSubmit.disabled = true;
+      restartSubmit.textContent = "Restarting…";
+      if (restartError) {
+        restartError.hidden = true;
+        restartError.textContent = "";
+      }
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-CSRFToken": token,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        credentials: "same-origin",
+        body: ""
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            return { okHttp: res.ok, data: data || {} };
+          });
+        })
+        .then(function (result) {
+          if (!result.okHttp || !result.data.ok) {
+            var err = result.data.error || "Could not restart this MikroTik.";
+            if (restartError) {
+              restartError.hidden = false;
+              restartError.textContent = err;
+            }
+            if (typeof window.showToast === "function") {
+              window.showToast({ type: "error", title: "Restart failed", text: err });
+            }
+            return;
+          }
+          closeRestartModal();
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "warning",
+              title: "Restarting router",
+              text: result.data.message || "Restart command sent. Clients may disconnect briefly.",
+              ms: 7000,
+            });
+          }
+          [hero, pageHero].forEach(function (el) {
+            if (!el) return;
+            el.classList.remove("is-connected", "is-disconnected");
+            el.classList.add("is-checking");
+            var label = el.querySelector(".mikrotik-link-label");
+            if (label) label.textContent = "Restarting…";
+          });
+          if (detailHero) {
+            detailHero.classList.remove("is-online");
+            detailHero.classList.add("is-offline");
+          }
+          if (subEl) {
+            subEl.textContent =
+              result.data.message ||
+              "Restart command sent. Waiting for the MikroTik to come back…";
+          }
+          if (stampEl) stampEl.textContent = "Restarting " + stampNow();
+          setTimeout(function () { loadLive(true); }, 45000);
+          setTimeout(function () { loadLive(true); }, 90000);
+          setTimeout(function () { loadLive(true); }, 150000);
+        })
+        .catch(function () {
+          if (restartError) {
+            restartError.hidden = false;
+            restartError.textContent = "Network error while sending restart command.";
+          }
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "error",
+              title: "Restart failed",
+              text: "Network error while sending restart command.",
+            });
+          }
+        })
+        .finally(function () {
+          if (restartConfirm) restartConfirm.checked = false;
+          restartSubmit.disabled = true;
+          restartSubmit.textContent = "Restart router";
+        });
+    });
+  }
+
   var passwordForm = document.getElementById("mikrotik-password-form");
   if (passwordForm) {
     passwordForm.addEventListener("submit", function (e) {
@@ -1228,7 +1393,7 @@
         }
         return;
       }
-      var btn = detailReconnect || noticeReconnect;
+      var btn = detailReconnect;
       if (!btn) return;
       var pwSubmit = document.getElementById("mikrotik-password-submit");
       if (pwSubmit) {
@@ -1236,7 +1401,13 @@
         pwSubmit.textContent = "Checking…";
       }
       runReconnect(btn, function (data) {
-        closeNotice();
+        closeLiveToast();
+        if (typeof window.showToast === "function") {
+          window.showToast({
+            type: "success",
+            text: data.message || "MikroTik reconnected. Loading live data…",
+          });
+        }
         if (subEl) subEl.textContent = data.message || "MikroTik reconnected. Loading live data…";
         loadLive(true);
       }, { username: username, password: password });
@@ -1253,16 +1424,19 @@
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () { loadLive(true); });
   }
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && notice && !notice.hidden) closeNotice();
-  });
 
-  loadLive(true);
+  if (initialLive) {
+    renderLive(initialLive);
+    if (initialLive.ok && initialLive.online) {
+      wasOnline = true;
+    }
+  }
+  loadLive(false);
   if (!suspended) {
     timer = setInterval(function () { loadLive(false); }, 10000);
   }
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadLive(true);
+    if (!document.hidden) loadLive(false);
   });
   window.addEventListener("beforeunload", function () {
     if (timer) clearInterval(timer);

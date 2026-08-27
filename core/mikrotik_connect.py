@@ -17365,6 +17365,262 @@ def list_mikrotik_ports(
         }
 
 
+def _remove_wan_list_members(sock: socket.socket, interfaces: list[str]) -> list[str]:
+    """Remove WAN list members for the given interfaces."""
+    wanted = {iface.strip() for iface in interfaces if (iface or "").strip()}
+    removed: list[str] = []
+    if not wanted:
+        return removed
+    for row in _print(sock, "/interface/list/member", props=".id,list,interface"):
+        iface = (row.get("interface") or "").strip()
+        if iface not in wanted:
+            continue
+        if (row.get("list") or "").strip() != "WAN":
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, "/interface/list/member", item_id).get("_reply") not in {
+            "!trap",
+            "!fatal",
+        }:
+            removed.append(iface)
+    return removed
+
+
+def _retire_wan_interface(sock: socket.socket, interface: str) -> list[str]:
+    """Stop a port from acting as WAN (DHCP/PPPoE default routes + WAN list)."""
+    interface = (interface or "").strip()
+    notes: list[str] = []
+    if not interface:
+        return notes
+
+    for row in _print(
+        sock,
+        "/ip/dhcp-client",
+        props=".id,interface,disabled,add-default-route",
+    ):
+        if (row.get("interface") or "").strip() != interface:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _set(
+            sock,
+            "/ip/dhcp-client",
+            item_id,
+            disabled="yes",
+            **{"add-default-route": "no"},
+        )
+        if terminal.get("_reply") not in {"!trap", "!fatal"}:
+            notes.append(f"disabled DHCP client on {interface}")
+
+    try:
+        for row in _print(
+            sock,
+            "/interface/pppoe-client",
+            props=".id,name,interface,disabled",
+        ):
+            if (row.get("interface") or "").strip() != interface:
+                continue
+            item_id = (row.get(".id") or "").strip()
+            pppoe_name = (row.get("name") or "").strip()
+            if not item_id:
+                continue
+            terminal = _set(
+                sock,
+                "/interface/pppoe-client",
+                item_id,
+                disabled="yes",
+                **{"add-default-route": "no"},
+            )
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append(f"disabled PPPoE {pppoe_name or interface}")
+    except Exception:
+        pass
+
+    for removed in _remove_wan_list_members(sock, [interface]):
+        notes.append(f"removed {removed} from WAN list")
+    return notes
+
+
+def build_single_wan_recovery_script(
+    wan_interface: str,
+    *,
+    retire_ports: list[str] | None = None,
+) -> str:
+    """
+    RouterOS terminal script for on-site Winbox recovery to single-ISP WAN.
+
+    Mirrors the billing app's single-WAN switch: clear ISPCENTRIC multi-uplink
+    leftovers, unbridge the WAN port, enable DHCP with default route distance 1,
+    and add the port to the WAN list.
+    """
+    wan_interface = (wan_interface or "").strip() or "ether1"
+    retire = [
+        p.strip()
+        for p in (retire_ports or [])
+        if (p or "").strip() and (p or "").strip() != wan_interface
+    ]
+    retire = list(dict.fromkeys(retire))
+
+    lines = [
+        f"# ISPCENTRIC — reset to single Internet on {wan_interface}",
+        "# Winbox → New Terminal → paste all lines, press Enter",
+        "",
+        f':local wan "{wan_interface}"',
+    ]
+    for old in retire:
+        lines.append(f':local oldWan{retire.index(old) + 1} "{old}"')
+
+    lines.extend(
+        [
+            "",
+            "# Clear ISPCENTRIC bonded / failover / balance leftovers",
+            f'/ip route remove [find comment~"{UPLINK_TAG}"]',
+            f'/ip dhcp-client remove [find comment~"{UPLINK_TAG}"]',
+            f'/interface list member remove [find comment~"{UPLINK_TAG}"]',
+            f'/interface bonding remove [find comment~"{UPLINK_TAG}"]',
+            f'/routing table remove [find comment~"{UPLINK_TAG}"]',
+            "",
+            "# Unbridge the Internet port and enable it",
+            "/interface bridge port remove [find interface=$wan]",
+            "/interface enable $wan",
+        ]
+    )
+
+    for index, old in enumerate(retire, start=1):
+        lines.extend(
+            [
+                "",
+                f"# Stop old Internet port {old}",
+                f":if ([:len [/ip dhcp-client find interface=oldWan{index}]] > 0) do={{",
+                f"  /ip dhcp-client set [find interface=oldWan{index}] disabled=yes add-default-route=no",
+                f"}}",
+                f":if ([:len [/interface pppoe-client find interface=oldWan{index}]] > 0) do={{",
+                f"  /interface pppoe-client set [find interface=oldWan{index}] disabled=yes add-default-route=no",
+                f"}}",
+                f":if ([:len [/interface list member find list=WAN interface=oldWan{index}]] > 0) do={{",
+                f"  /interface list member remove [find list=WAN interface=oldWan{index}]",
+                f"}}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "# DHCP Internet on the chosen port (edit if you use PPPoE instead)",
+            ":if ([:len [/ip dhcp-client find interface=$wan]] = 0) do={",
+            f'  /ip dhcp-client add interface=$wan disabled=no add-default-route=yes use-peer-dns=no default-route-distance=1 comment={UPLINK_TAG}',
+            "} else={",
+            "  /ip dhcp-client set [find interface=$wan] disabled=no add-default-route=yes use-peer-dns=no default-route-distance=1",
+            "}",
+            "",
+            "# WAN interface list",
+            ':if ([:len [/interface list find name=WAN]] = 0) do={ /interface list add name=WAN }',
+            ":if ([:len [/interface list member find list=WAN interface=$wan]] = 0) do={",
+            f'  /interface list member add list=WAN interface=$wan comment={UPLINK_TAG}',
+            "}",
+            "",
+            ':put ("Single Internet reset on " . $wan . " — check IP and default route.")',
+        ]
+    )
+    return "\n".join(lines)
+
+
+def switch_mikrotik_single_wan(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    wan_interface: str,
+    retire_ports: list[str] | None = None,
+    clear_multi_uplink: bool = False,
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> dict[str, Any]:
+    """
+    Full single-WAN move: unbridge the new port, configure DHCP/PPPoE with
+    default-route distance 1, retire old WAN ports, and sync the WAN list.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    wan_interface = (wan_interface or "").strip()
+    retire = [
+        p.strip()
+        for p in (retire_ports or [])
+        if (p or "").strip() and (p or "").strip() != wan_interface
+    ]
+    retire = list(dict.fromkeys(retire))
+
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+    if not wan_interface:
+        return {"ok": False, "error": "WAN interface is required."}
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            names = _iface_names(sock)
+            if wan_interface not in names:
+                return {
+                    "ok": False,
+                    "error": f"Port “{wan_interface}” was not found on the router.",
+                }
+
+            notes: list[str] = []
+            if clear_multi_uplink:
+                cleared = _clear_tagged_uplink(sock)
+                if any(cleared.values()):
+                    notes.append("cleared previous multi-uplink settings")
+
+            for old_port in retire:
+                notes.extend(_retire_wan_interface(sock, old_port))
+
+            _unbridge_interfaces(sock, [wan_interface])
+
+            uplink = _ensure_failover_uplink(sock, wan_interface, distance=1)
+            if uplink.get("_reply") in {"!trap", "!fatal"}:
+                return {
+                    "ok": False,
+                    "error": _trap_message(
+                        uplink,
+                        f"Could not configure Internet on {wan_interface}.",
+                    ),
+                }
+
+            _ensure_uplink_list_member(sock, wan_interface)
+            pppoe_name = (uplink.get("_pppoe") or "").strip() or _find_pppoe_client_for_wan(
+                sock, wan_interface
+            )
+            if pppoe_name and pppoe_name != wan_interface and pppoe_name in names:
+                _ensure_uplink_list_member(sock, pppoe_name)
+
+            kind = (uplink.get("_kind") or "").strip() or "dhcp_or_static"
+            return {
+                "ok": True,
+                "wan_interface": wan_interface,
+                "pppoe": pppoe_name or "",
+                "uplink_kind": "pppoe" if pppoe_name else kind,
+                "retired_ports": retire,
+                "notes": notes,
+                "message": (
+                    f"Internet switched to {wan_interface}"
+                    + (f" (via {pppoe_name})" if pppoe_name else "")
+                    + "."
+                ),
+            }
+    except TimeoutError:
+        return {"ok": False, "error": "Connection timed out while switching Internet port."}
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed. Check the saved username and password.",
+        }
+    except OSError as exc:
+        return {"ok": False, "error": f"Could not reach {host}:8728. ({exc})"}
+
+
 def apply_mikrotik_single_wan(
     host: str,
     username: str,
@@ -19196,6 +19452,68 @@ def restore_mikrotik_internet_uplink(
         }
     except OSError as exc:
         return {"ok": False, "error": f"Could not reach {host}:8728 during restore. ({exc})"}
+
+
+def reboot_mikrotik(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """
+    Reboot the MikroTik (power cycle) without resetting configuration.
+
+    Uses RouterOS /system/reboot — same as Winbox System → Reboot.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+
+    reboot_sent = False
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            _, done = _command(sock, ["/system/reboot"])
+            reboot_sent = True
+            if done.get("_reply") == "!trap":
+                message = (done.get("message") or "").strip()
+                return {
+                    "ok": False,
+                    "error": message or "Router rejected the reboot command.",
+                }
+            return {
+                "ok": True,
+                "message": (
+                    "Reboot command sent. "
+                    f"{host} will restart in a few seconds — settings are preserved."
+                ),
+            }
+    except TimeoutError:
+        if reboot_sent:
+            return {
+                "ok": True,
+                "message": "Reboot command sent. The MikroTik is restarting.",
+            }
+        return {"ok": False, "error": "Connection timed out before reboot could be sent."}
+    except ConnectionError as exc:
+        err = str(exc).lower()
+        if reboot_sent or "reset" in err or "closed" in err or "broken pipe" in err:
+            return {
+                "ok": True,
+                "message": "Reboot command sent. The MikroTik is restarting.",
+            }
+        return {"ok": False, "error": str(exc) or "Login failed."}
+    except OSError as exc:
+        err = str(exc).lower()
+        if reboot_sent or "reset" in err or "closed" in err or "broken pipe" in err:
+            return {
+                "ok": True,
+                "message": "Reboot command sent. The MikroTik is restarting.",
+            }
+        return {"ok": False, "error": f"Could not reach {host}:8728. ({exc})"}
 
 
 def attempt_mikrotik_auto_restore(

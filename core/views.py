@@ -109,6 +109,7 @@ from core.mikrotik_connect import (
     apply_mikrotik_uplink_failover,
     apply_mikrotik_uplink_balance,
     apply_mikrotik_single_wan,
+    switch_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
     apply_hotspot_on_router,
     check_mikrotik_reachable,
@@ -144,8 +145,10 @@ from core.mikrotik_connect import (
     provision_static_client_dhcp_lease,
     read_mikrotik_uplink_multi,
     build_wan_traffic_share,
+    build_single_wan_recovery_script,
     read_mikrotik_wifi,
     recover_mikrotik_connection,
+    reboot_mikrotik,
     set_mikrotik_clean_uplink,
     set_mikrotik_port_enabled,
     sync_customer_subscription_access,
@@ -574,11 +577,23 @@ def _cpe_router_guidance(
     return [detail] if detail else []
 
 
+def _mikrotik_live_cache_key(org_pk: int, router_pk: int) -> str:
+    return f"mikrotik_live:{org_pk}:{router_pk}"
+
+
+def _cached_mikrotik_live_snapshot(org_pk: int, router_pk: int) -> dict | None:
+    """Last live snapshot from cache — no RouterOS API call."""
+    cached = cache.get(_mikrotik_live_cache_key(org_pk, router_pk))
+    if cached is None:
+        return None
+    return dict(cached)
+
+
 def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
     cache.delete_many(
         [
             f"mikrotik_status:{org_pk}",
-            f"mikrotik_live:{org_pk}:{router_pk}",
+            _mikrotik_live_cache_key(org_pk, router_pk),
             _wifi_fields_cache_key(org_pk, router_pk),
             f"mikrotik_ports_live:{org_pk}:{router_pk}",
             f"mikrotik_discover:{org_pk}:quick",
@@ -849,22 +864,12 @@ def resolve_client_usage_router(customer, org=None):
 
 
 def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[dict]:
-    """Sidebar items for a single client (sections + cash recharge)."""
-    paused = customer_package_is_paused(customer)
-    can_pause = customer_can_pause_package(customer)
-    can_resume = customer_can_resume_package(customer)
-
+    """Sidebar items for a single client (navigation only — actions live on the detail page)."""
     nav: list[dict] = [
         {
             "key": "overview",
             "label": "Client overview",
             "href": reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
-        },
-        {
-            "key": "package",
-            "label": "Recharge account",
-            "action": "open_modal",
-            "modal": "client-recharge-modal",
         },
         {
             "key": "billing",
@@ -873,19 +878,6 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
                 "core:client_billing",
                 kwargs={"customer_id": customer.pk},
             ),
-        },
-        {
-            "key": "edit_details",
-            "label": f"Edit {customer.full_name} details",
-            "action": "open_modal",
-            "modal": "client-details-modal",
-        },
-        {
-            "key": "pause",
-            "label": "Resume subscription" if paused else "Pause subscription",
-            "action": "package_pause",
-            "package_action": "resume_package" if paused else "pause_package",
-            "disabled": not (can_pause or can_resume),
         },
     ]
     if customer_supports_live_usage(customer):
@@ -902,45 +894,14 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
     if can_access_wifi:
         nav.append(
             {
-                "key": "router",
-                "label": "Open client router",
-                "href": reverse(
-                    "core:client_router_login",
-                    kwargs={"customer_id": customer.pk},
-                ),
-            }
-        )
-        nav.append(
-            {
-                "key": "wifi",
-                "label": "Wi‑Fi settings",
+                "key": "router_wifi",
+                "label": "Router & Wi‑Fi",
                 "href": reverse(
                     "core:client_wifi_settings",
                     kwargs={"customer_id": customer.pk},
                 ),
             }
         )
-    nav.append(
-        {
-            "key": "wifi_preview",
-            "label": "Preview Wi‑Fi screen",
-            "href": reverse(
-                "core:client_wifi_preview",
-                kwargs={"customer_id": customer.pk},
-            ),
-        }
-    )
-    nav.append(
-        {
-            "key": "delete",
-            "label": "Delete client",
-            "href": reverse(
-                "core:client_delete",
-                kwargs={"customer_id": customer.pk},
-            ),
-            "danger": True,
-        }
-    )
     nav.append(
         {
             "key": "clients",
@@ -1075,6 +1036,125 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
             }
         )
     return ports
+
+
+def _allowed_roles_for_uplink_mode(mode: str) -> set[str]:
+    """Roles operators may assign for the selected internet setup."""
+    base = {
+        MikroTikRouter.PortRole.NONE,
+        MikroTikRouter.PortRole.LAN,
+        MikroTikRouter.PortRole.UNUSED,
+    }
+    mode = (mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    if mode == MikroTikRouter.UplinkMode.BOND:
+        return base | {MikroTikRouter.PortRole.BOND}
+    if mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        MikroTikRouter.UplinkMode.BALANCE,
+    }:
+        return base | {
+            MikroTikRouter.PortRole.WAN,
+            MikroTikRouter.PortRole.WAN_BACKUP,
+        }
+    return base | {MikroTikRouter.PortRole.WAN}
+
+
+def _role_allowed_for_uplink_mode(role: str, mode: str) -> bool:
+    return (role or "").strip().lower() in _allowed_roles_for_uplink_mode(mode)
+
+
+def _role_label_for_mode_error(role: str) -> str:
+    return dict(MikroTikRouter.PortRole.choices).get(
+        (role or "").strip().lower(), role or "role"
+    )
+
+
+def _normalize_port_roles_for_uplink_mode(
+    router: MikroTikRouter,
+    mode: str,
+    *,
+    live_ports: list[dict] | None = None,
+) -> dict[str, str]:
+    """Drop roles that do not belong on the chosen internet setup."""
+    roles = dict(router.port_roles) if isinstance(router.port_roles, dict) else {}
+    mode = (mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    allowed = _allowed_roles_for_uplink_mode(mode)
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in (live_ports or [])
+        if (p.get("name") or "").strip()
+    }
+    primary = ""
+    for name, value in roles.items():
+        if _is_primary_wan_role(value):
+            primary = (name or "").strip()
+            break
+    if not primary:
+        primary = _current_primary_wan_port(router)
+
+    for name, existing in list(roles.items()):
+        role = (existing or "").strip().lower()
+        if role in allowed:
+            continue
+        row = by_name.get(name) or {}
+        if role in {
+            MikroTikRouter.PortRole.WAN,
+            MikroTikRouter.PortRole.WAN_PRIMARY,
+            MikroTikRouter.PortRole.WAN_BACKUP,
+            MikroTikRouter.PortRole.BOND,
+        }:
+            if row.get("is_bridged") or row.get("running"):
+                roles[name] = MikroTikRouter.PortRole.LAN
+            else:
+                roles[name] = MikroTikRouter.PortRole.UNUSED
+        else:
+            roles[name] = MikroTikRouter.PortRole.NONE
+
+    if mode == MikroTikRouter.UplinkMode.SINGLE:
+        wan_names = [
+            name
+            for name, value in roles.items()
+            if _is_primary_wan_role(value)
+        ]
+        keep = primary or (wan_names[0] if wan_names else "")
+        for name in wan_names:
+            if name != keep:
+                roles[name] = MikroTikRouter.PortRole.UNUSED
+    return roles
+
+
+def _port_has_live_uplink(port_name: str, live_ports: list[dict]) -> bool:
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in live_ports
+        if (p.get("name") or "").strip()
+    }
+    row = by_name.get((port_name or "").strip()) or {}
+    return bool(row.get("running")) or bool((row.get("uplink_kind") or "").strip())
+
+
+def _apply_single_wan_on_router(
+    router: MikroTikRouter,
+    api_host: str,
+    *,
+    wan_interface: str,
+    retire_ports: list[str] | None = None,
+) -> dict:
+    """Push a full single-WAN switch to RouterOS."""
+    old_mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    clear_multi = old_mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.BOND,
+    }
+    return switch_mikrotik_single_wan(
+        api_host,
+        router.username,
+        router.password or "",
+        wan_interface=wan_interface,
+        retire_ports=retire_ports or [],
+        clear_multi_uplink=clear_multi,
+    )
 
 
 def _port_role_choices_for_ui() -> list[tuple[str, str]]:
@@ -1268,6 +1348,67 @@ def _build_uplink_apply_risks(
     return risks
 
 
+def _build_wan_switch_risks(
+    router: MikroTikRouter,
+    *,
+    live_ports: list[dict],
+    management_iface_by_host: dict[str, str] | None,
+    primary_wan_ports: list[str],
+) -> dict[str, dict]:
+    """Per-port risk when assigning Internet in single-WAN mode (for UI + POST guard)."""
+    mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    if mode != MikroTikRouter.UplinkMode.SINGLE:
+        return {}
+
+    current = (primary_wan_ports[0] if primary_wan_ports else "") or _current_primary_wan_port(
+        router
+    )
+    mgmt = management_iface_by_host or {}
+    risks: dict[str, dict] = {}
+    for row in live_ports:
+        if _is_bond_port_row(row):
+            continue
+        name = (row.get("name") or "").strip()
+        if not name or name == current:
+            continue
+        risk = assess_uplink_switch_risk(
+            new_wan=name,
+            old_wan=current,
+            ports=live_ports,
+            management_host=(router.host or "").strip(),
+            tunnel_address=(router.vpn_address or "").strip(),
+            management_iface_by_host=mgmt,
+            uses_tunnel=_router_uses_tunnel(router),
+        )
+        risk["recovery_script"] = build_single_wan_recovery_script(
+            name,
+            retire_ports=[current] if current else [],
+        )
+        risks[name] = risk
+    return risks
+
+
+def _wan_switch_confirmed(request, risk: dict) -> tuple[bool, str]:
+    """Return whether a single-WAN port switch may proceed."""
+    if risk.get("blocking"):
+        return (
+            False,
+            risk.get("summary")
+            or "Switching would likely drop management access to this MikroTik.",
+        )
+    confirm_risk = (request.POST.get("confirm_risk") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not risk.get("safe") and not confirm_risk:
+        return (
+            False,
+            "Confirm you understand the connection risk before switching the Internet port.",
+        )
+    return True, ""
+
+
 def _current_primary_wan_port(router: MikroTikRouter) -> str:
     wan = (router.wan_interface or "").strip()
     if wan:
@@ -1320,6 +1461,10 @@ def _build_uplink_prompt(
 
     kind = (new_row.get("uplink_kind") or "").strip()
     kind_label = {"pppoe": "PPPoE", "dhcp": "DHCP"}.get(kind, "link up")
+    recovery_script = build_single_wan_recovery_script(
+        suggested_wan,
+        retire_ports=[current] if current else [],
+    )
 
     return {
         "port": suggested_wan,
@@ -1328,6 +1473,7 @@ def _build_uplink_prompt(
         "uplink_kind_label": kind_label,
         "running": bool(new_row.get("running")),
         "risk": risk,
+        "recovery_script": recovery_script,
         "message": (
             f"Internet detected on {suggested_wan} ({kind_label}). "
             f"Current Internet port is {current}."
@@ -1344,7 +1490,6 @@ def _build_backup_uplink_prompt(
     """Prompt when a second live ISP port is detected for failover/balance setups."""
     mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
     if mode not in {
-        MikroTikRouter.UplinkMode.SINGLE,
         MikroTikRouter.UplinkMode.FAILOVER,
         MikroTikRouter.UplinkMode.BALANCE,
     }:
@@ -3102,6 +3247,12 @@ def mikrotik_detail(request, router_id: int):
     from core.mikrotik_auto_restore import get_auto_restore_record
 
     ctx["auto_restore"] = get_auto_restore_record(router.pk)
+    initial_live = None
+    if not is_suspended:
+        initial_live = _cached_mikrotik_live_snapshot(org.pk, router.pk)
+        if initial_live is not None:
+            initial_live["auto_restore"] = ctx["auto_restore"]
+    ctx["initial_live"] = initial_live
     return render(request, "core/mikrotik_detail.html", ctx)
 
 
@@ -3158,12 +3309,20 @@ def mikrotik_ports(request, router_id: int):
             # Best-effort: put the chosen Internet port on the router WAN list.
             wan_name = (result.get("wan") or "").strip()
             if wan_name:
-                apply_mikrotik_single_wan(
+                old_wan = _current_primary_wan_port(router)
+                retire = [old_wan] if old_wan and old_wan != wan_name else []
+                switch = _apply_single_wan_on_router(
+                    router,
                     api_host,
-                    router.username,
-                    router.password or "",
                     wan_interface=wan_name,
+                    retire_ports=retire,
                 )
+                if not switch.get("ok"):
+                    messages.warning(
+                        request,
+                        switch.get("error")
+                        or f"Saved {wan_name} as Internet, but could not configure it on the router.",
+                    )
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -3212,24 +3371,9 @@ def mikrotik_ports(request, router_id: int):
                 management_iface_by_host=listed.get("management_iface_by_host") or {},
                 uses_tunnel=_router_uses_tunnel(router),
             )
-            if risk.get("blocking"):
-                messages.error(
-                    request,
-                    risk.get("summary")
-                    or "Switching would likely drop management access to this MikroTik.",
-                )
-                return redirect("core:mikrotik_ports", router_id=router.pk)
-
-            confirm_risk = (request.POST.get("confirm_risk") or "").strip() in {
-                "1",
-                "true",
-                "yes",
-            }
-            if not risk.get("safe") and not confirm_risk:
-                messages.error(
-                    request,
-                    "Confirm you understand the connection risk before switching the Internet port.",
-                )
+            ok, err = _wan_switch_confirmed(request, risk)
+            if not ok:
+                messages.error(request, err)
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
             result = apply_detected_uplink(router, port_name, live_ports)
@@ -3240,22 +3384,27 @@ def mikrotik_ports(request, router_id: int):
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
-            sync = apply_mikrotik_single_wan(
+            old_wan = (result.get("old_wan") or current or "").strip()
+            retire = [old_wan] if old_wan and old_wan != port_name else []
+            sync = _apply_single_wan_on_router(
+                router,
                 api_host,
-                router.username,
-                router.password or "",
                 wan_interface=port_name,
+                retire_ports=retire,
             )
             if not sync.get("ok"):
                 messages.warning(
                     request,
                     sync.get("error")
                     or (
-                        f"Saved {port_name} as Internet, but could not sync the WAN list on the router."
+                        f"Saved {port_name} as Internet, but could not configure it on the router."
                     ),
                 )
             else:
-                messages.success(request, result.get("message") or "Internet port switched.")
+                messages.success(
+                    request,
+                    sync.get("message") or result.get("message") or "Internet port switched.",
+                )
 
             cache.delete_many(
                 [
@@ -3351,6 +3500,116 @@ def mikrotik_ports(request, router_id: int):
                 )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
+        if action == "set_uplink_goal":
+            goal = (request.POST.get("goal") or "").strip().lower()
+            valid_goals = {
+                MikroTikRouter.UplinkMode.SINGLE,
+                MikroTikRouter.UplinkMode.BOND,
+                MikroTikRouter.UplinkMode.FAILOVER,
+                MikroTikRouter.UplinkMode.BALANCE,
+            }
+            if goal not in valid_goals:
+                messages.error(request, "Choose a valid internet setup.")
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            old_mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+            listed = list_mikrotik_ports(
+                api_host,
+                router.username,
+                router.password or "",
+                timeout=6.0,
+                management_hosts=_management_hosts_for_router(router),
+            )
+            live_ports = (listed.get("ports") or []) if listed.get("ok") else []
+
+            router.uplink_mode = goal
+            roles = _normalize_port_roles_for_uplink_mode(
+                router, goal, live_ports=live_ports
+            )
+            router.port_roles = roles
+            primary = ""
+            for name, value in roles.items():
+                if _is_primary_wan_role(value):
+                    primary = (name or "").strip()
+                    break
+            update_fields = ["uplink_mode", "port_roles", "updated_at"]
+
+            if goal == MikroTikRouter.UplinkMode.SINGLE:
+                router.uplink_ports = [primary] if primary else []
+                router.uplink_weights = {}
+                router.wan_interface = primary or router.wan_interface
+                update_fields.extend(
+                    ["uplink_ports", "uplink_weights", "wan_interface"]
+                )
+            elif goal == MikroTikRouter.UplinkMode.BOND:
+                members = _bond_ports_from_roles(router)
+                router.uplink_ports = members
+                update_fields.append("uplink_ports")
+            else:
+                failover_primary, backups = _failover_ports_from_roles(router)
+                if failover_primary:
+                    router.wan_interface = failover_primary
+                    router.uplink_ports = [failover_primary, *backups]
+                    update_fields.extend(["wan_interface", "uplink_ports"])
+                else:
+                    router.uplink_ports = []
+                    update_fields.append("uplink_ports")
+
+            router.save(update_fields=update_fields)
+
+            if (
+                old_mode
+                in {
+                    MikroTikRouter.UplinkMode.FAILOVER,
+                    MikroTikRouter.UplinkMode.BALANCE,
+                    MikroTikRouter.UplinkMode.BOND,
+                }
+                and goal == MikroTikRouter.UplinkMode.SINGLE
+            ):
+                restore = (
+                    list(router.uplink_unbridged)
+                    if isinstance(router.uplink_unbridged, list)
+                    else []
+                )
+                cleared = clear_mikrotik_uplink_multi(
+                    api_host,
+                    router.username,
+                    router.password or "",
+                    restore_bridged=restore,
+                    lan_bridge=router.lan_bridge or "bridgeLocal",
+                )
+                router.uplink_unbridged = []
+                router.save(update_fields=["uplink_unbridged", "updated_at"])
+                if primary:
+                    switch = _apply_single_wan_on_router(
+                        router,
+                        api_host,
+                        wan_interface=primary,
+                        retire_ports=[],
+                    )
+                    if not switch.get("ok"):
+                        messages.warning(
+                            request,
+                            switch.get("error")
+                            or "Switched to single internet, but could not configure the WAN port.",
+                        )
+                if not cleared.get("ok"):
+                    messages.warning(
+                        request,
+                        cleared.get("error")
+                        or "Switched to single internet, but could not clear old multi-uplink settings.",
+                    )
+
+            cache.delete_many(
+                [
+                    f"mikrotik_live:{org.pk}:{router.pk}",
+                    f"mikrotik_ports_live:{org.pk}:{router.pk}",
+                ]
+            )
+            label = dict(MikroTikRouter.UplinkMode.choices).get(goal, goal)
+            messages.success(request, f"Internet setup changed to {label}.")
+            return redirect("core:mikrotik_ports", router_id=router.pk)
+
         if action == "set_port_role":
             port_name = (request.POST.get("port_name") or "").strip()
             role = (request.POST.get("role") or "").strip().lower()
@@ -3361,52 +3620,113 @@ def mikrotik_ports(request, router_id: int):
                 messages.error(request, "Choose a valid port role.")
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
+            uplink_mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+            if not _role_allowed_for_uplink_mode(role, uplink_mode):
+                mode_label = dict(MikroTikRouter.UplinkMode.choices).get(
+                    uplink_mode, uplink_mode
+                )
+                role_label = _role_label_for_mode_error(role)
+                messages.error(
+                    request,
+                    f"{role_label} is not available in “{mode_label}” mode. "
+                    "Change the internet setup in Step 2 first.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
             roles = dict(router.port_roles) if isinstance(router.port_roles, dict) else {}
             update_fields = ["port_roles", "updated_at"]
-            uplink_roles = {
-                MikroTikRouter.PortRole.WAN,
-                MikroTikRouter.PortRole.WAN_PRIMARY,
-                MikroTikRouter.PortRole.WAN_BACKUP,
-                MikroTikRouter.PortRole.BOND,
-            }
+            old_wan = _current_primary_wan_port(router)
+            retire_ports: list[str] = []
 
             if role == MikroTikRouter.PortRole.WAN:
+                if (
+                    uplink_mode == MikroTikRouter.UplinkMode.SINGLE
+                    and port_name != old_wan
+                ):
+                    listed = list_mikrotik_ports(
+                        api_host,
+                        router.username,
+                        router.password or "",
+                        timeout=6.0,
+                        management_hosts=_management_hosts_for_router(router),
+                    )
+                    live_ports = (listed.get("ports") or []) if listed.get("ok") else []
+                    risk = assess_uplink_switch_risk(
+                        new_wan=port_name,
+                        old_wan=old_wan,
+                        ports=live_ports,
+                        management_host=(router.host or "").strip(),
+                        tunnel_address=(router.vpn_address or "").strip(),
+                        management_iface_by_host=(
+                            listed.get("management_iface_by_host")
+                            if listed.get("ok")
+                            else {}
+                        ),
+                        uses_tunnel=_router_uses_tunnel(router),
+                    )
+                    ok, err = _wan_switch_confirmed(request, risk)
+                    if not ok:
+                        messages.error(request, err)
+                        return redirect("core:mikrotik_ports", router_id=router.pk)
+
                 for name, existing in list(roles.items()):
                     if name == port_name:
                         continue
-                    if _is_primary_wan_role(existing) or existing == MikroTikRouter.PortRole.BOND:
+                    if _is_primary_wan_role(existing):
+                        roles[name] = MikroTikRouter.PortRole.UNUSED
+                        retire_ports.append(name)
+                    elif existing == MikroTikRouter.PortRole.BOND:
                         roles[name] = MikroTikRouter.PortRole.NONE
+                    elif (
+                        existing == MikroTikRouter.PortRole.WAN_BACKUP
+                        and uplink_mode == MikroTikRouter.UplinkMode.SINGLE
+                    ):
+                        roles[name] = MikroTikRouter.PortRole.UNUSED
                 roles[port_name] = MikroTikRouter.PortRole.WAN
                 router.wan_interface = port_name
-                has_backups = any(
-                    (value or "").strip().lower() == MikroTikRouter.PortRole.WAN_BACKUP
-                    for key, value in roles.items()
-                    if key != port_name
-                )
-                if has_backups:
-                    router.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
+
+                if uplink_mode in {
+                    MikroTikRouter.UplinkMode.FAILOVER,
+                    MikroTikRouter.UplinkMode.BALANCE,
+                }:
                     backup_ports = [
                         key
                         for key, value in roles.items()
-                        if (value or "").strip().lower() == MikroTikRouter.PortRole.WAN_BACKUP
+                        if (value or "").strip().lower()
+                        == MikroTikRouter.PortRole.WAN_BACKUP
                     ]
                     router.uplink_ports = [port_name, *backup_ports]
                 else:
                     router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
                     router.uplink_ports = [port_name]
-                update_fields.extend(["wan_interface", "uplink_mode", "uplink_ports"])
-                # Best-effort push so RouterOS WAN list matches the chosen Internet port.
-                sync = apply_mikrotik_single_wan(
-                    api_host,
-                    router.username,
-                    router.password or "",
-                    wan_interface=port_name,
-                )
-                if not sync.get("ok"):
-                    messages.warning(
+                    update_fields.append("uplink_mode")
+                update_fields.extend(["wan_interface", "uplink_ports"])
+
+                if uplink_mode == MikroTikRouter.UplinkMode.SINGLE and port_name != old_wan:
+                    sync = _apply_single_wan_on_router(
+                        router,
+                        api_host,
+                        wan_interface=port_name,
+                        retire_ports=retire_ports or ([old_wan] if old_wan and old_wan != port_name else []),
+                    )
+                    if not sync.get("ok"):
+                        messages.warning(
+                            request,
+                            sync.get("error")
+                            or f"Saved {port_name} as Internet, but could not configure it on the router.",
+                        )
+                    else:
+                        messages.success(
+                            request,
+                            sync.get("message") or f"{port_name} is now the Internet port.",
+                        )
+                else:
+                    label = dict(MikroTikRouter.PortRole.choices).get(role, role)
+                    messages.success(
                         request,
-                        sync.get("error")
-                        or f"Saved {port_name} as Internet, but could not sync the WAN list on the router.",
+                        f"{port_name} role set to {label}. Apply "
+                        f"{'failover' if uplink_mode == MikroTikRouter.UplinkMode.FAILOVER else 'load balance'} "
+                        "when both ISP links are assigned.",
                     )
             elif role == MikroTikRouter.PortRole.WAN_BACKUP:
                 roles[port_name] = MikroTikRouter.PortRole.WAN_BACKUP
@@ -3418,16 +3738,21 @@ def mikrotik_ports(request, router_id: int):
                     ),
                     "",
                 )
-                if primary:
-                    router.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
-                    router.wan_interface = primary
-                    backup_ports = [
-                        name
-                        for name, existing in roles.items()
-                        if (existing or "").strip().lower() == MikroTikRouter.PortRole.WAN_BACKUP
-                    ]
-                    router.uplink_ports = [primary, *backup_ports]
-                    update_fields.extend(["uplink_mode", "wan_interface", "uplink_ports"])
+                if not primary:
+                    messages.error(
+                        request,
+                        "Assign Internet to the main ISP port before adding a backup.",
+                    )
+                    return redirect("core:mikrotik_ports", router_id=router.pk)
+                router.wan_interface = primary
+                backup_ports = [
+                    name
+                    for name, existing in roles.items()
+                    if (existing or "").strip().lower()
+                    == MikroTikRouter.PortRole.WAN_BACKUP
+                ]
+                router.uplink_ports = [primary, *backup_ports]
+                update_fields.extend(["uplink_mode", "wan_interface", "uplink_ports"])
             elif role == MikroTikRouter.PortRole.BOND:
                 roles[port_name] = MikroTikRouter.PortRole.BOND
             else:
@@ -3441,8 +3766,10 @@ def mikrotik_ports(request, router_id: int):
                     f"mikrotik_ports_live:{org.pk}:{router.pk}",
                 ]
             )
-            label = dict(MikroTikRouter.PortRole.choices).get(role, role)
-            messages.success(request, f"{port_name} role set to {label}.")
+            if role != MikroTikRouter.PortRole.WAN or uplink_mode != MikroTikRouter.UplinkMode.SINGLE:
+                label = dict(MikroTikRouter.PortRole.choices).get(role, role)
+                if role != MikroTikRouter.PortRole.WAN:
+                    messages.success(request, f"{port_name} role set to {label}.")
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
         if action == "apply_bond":
@@ -3607,6 +3934,12 @@ def mikrotik_ports(request, router_id: int):
                     "Assign WAN backup to at least one other port in the table above.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
+            if len(backups) != 1:
+                messages.error(
+                    request,
+                    "Failover needs exactly two ISP links — one Internet and one Backup internet.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
 
             listed = list_mikrotik_ports(
                 api_host,
@@ -3617,6 +3950,12 @@ def mikrotik_ports(request, router_id: int):
             )
             live_ports = (listed.get("ports") or []) if listed.get("ok") else []
             touch = [primary, *backups]
+            if not all(_port_has_live_uplink(port, live_ports) for port in touch):
+                messages.error(
+                    request,
+                    "Both ISP links must show link up before applying failover.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
             failover_risk = _assess_uplink_mode_apply(
                 router,
                 "failover",
@@ -3745,6 +4084,12 @@ def mikrotik_ports(request, router_id: int):
                     "Assign Backup internet to at least one other port for load balance.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
+            if len(backups) != 1:
+                messages.error(
+                    request,
+                    "Load balance needs exactly two ISP links — one Internet and one Backup internet.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
 
             ordered = [primary, *backups]
             weights: dict[str, int] = {}
@@ -3768,6 +4113,12 @@ def mikrotik_ports(request, router_id: int):
                 management_hosts=_management_hosts_for_router(router),
             )
             live_ports = (listed.get("ports") or []) if listed.get("ok") else []
+            if not all(_port_has_live_uplink(port, live_ports) for port in ordered):
+                messages.error(
+                    request,
+                    "Both ISP links must show link up before applying load balance.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
             balance_risk = _assess_uplink_mode_apply(
                 router,
                 "balance",
@@ -4370,6 +4721,25 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         backup_wan_ports=backup_wan_ports,
     )
 
+    dual_wan_ready = (
+        len(primary_wan_ports) == 1
+        and len(backup_wan_ports) == 1
+        and all(
+            _port_has_live_uplink(name, physical_ports)
+            for name in (primary_wan_ports + backup_wan_ports)
+        )
+    )
+    bond_ready = len(bond_member_ports) >= 2 and all(
+        _port_has_live_uplink(name, physical_ports) for name in bond_member_ports
+    )
+    allowed_roles = sorted(_allowed_roles_for_uplink_mode(uplink_mode))
+    wan_switch_risks = _build_wan_switch_risks(
+        router,
+        live_ports=live_ports,
+        management_iface_by_host=listed.get("management_iface_by_host") or {},
+        primary_wan_ports=primary_wan_ports,
+    )
+
     return {
         "ok": True,
         "ports": ports,
@@ -4389,9 +4759,17 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "lan_ports": lan_ports,
         "unused_ports": unused_ports,
         "unassigned_ports": unassigned_ports,
-        "can_apply_bond": len(bond_member_ports) >= 2,
-        "can_apply_failover": len(primary_wan_ports) == 1 and len(backup_wan_ports) >= 1,
-        "can_apply_balance": len(primary_wan_ports) == 1 and len(backup_wan_ports) >= 1,
+        "allowed_roles": allowed_roles,
+        "wan_switch_risks": wan_switch_risks,
+        "can_apply_bond": (
+            uplink_mode == MikroTikRouter.UplinkMode.BOND and bond_ready
+        ),
+        "can_apply_failover": (
+            uplink_mode == MikroTikRouter.UplinkMode.FAILOVER and dual_wan_ready
+        ),
+        "can_apply_balance": (
+            uplink_mode == MikroTikRouter.UplinkMode.BALANCE and dual_wan_ready
+        ),
         "uplink_mode": uplink_mode,
         "uplink_mode_label": dict(MikroTikRouter.UplinkMode.choices).get(
             uplink_mode, "Single WAN"
@@ -4637,6 +5015,68 @@ def mikrotik_reconnect(request, router_id: int):
 
 
 @client_workspace_required
+@require_POST
+def mikrotik_reboot(request, router_id: int):
+    """Reboot an onboarded MikroTik (configuration is preserved)."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse(
+            {"ok": False, "error": "No organization is linked to this workspace."},
+            status=400,
+        )
+
+    router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
+    if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Activate this MikroTik account before restarting it.",
+            },
+            status=400,
+        )
+
+    dial = (router.api_host or router.host or "").strip()
+    if not dial:
+        return JsonResponse(
+            {"ok": False, "error": "Router host is missing."},
+            status=400,
+        )
+
+    result = reboot_mikrotik(
+        dial,
+        router.username or "",
+        router.password or "",
+        timeout=8.0,
+    )
+    if not result.get("ok"):
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": result.get("error") or "Could not restart this MikroTik.",
+                "auth_error": "login" in (result.get("error") or "").lower(),
+            },
+            status=400,
+        )
+
+    cache.delete_many(
+        [
+            f"mikrotik_status:{org.pk}",
+            f"mikrotik_live:{org.pk}:{router.pk}",
+            f"mikrotik_auth_ok:{org.pk}:{router.id}",
+        ]
+    )
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "id": router.pk,
+            "message": result.get("message")
+            or "Reboot command sent. The MikroTik is restarting.",
+        }
+    )
+
+
+@client_workspace_required
 @require_GET
 def mikrotik_wifi(request, router_id: int):
     """JSON live Wi‑Fi fields for one router (async for mikrotik_detail)."""
@@ -4705,14 +5145,13 @@ def mikrotik_live(request, router_id: int):
             }
         )
 
-    cache_key = f"mikrotik_live:{org.pk}:{router.pk}"
+    cache_key = _mikrotik_live_cache_key(org.pk, router.pk)
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     if not force:
-        cached = cache.get(cache_key)
+        cached = _cached_mikrotik_live_snapshot(org.pk, router.pk)
         if cached is not None:
             from core.mikrotik_auto_restore import get_auto_restore_record
 
-            cached = dict(cached)
             cached["auto_restore"] = get_auto_restore_record(router.pk)
             return JsonResponse(cached)
 
@@ -4780,7 +5219,8 @@ def mikrotik_live(request, router_id: int):
     from core.mikrotik_auto_restore import get_auto_restore_record
 
     snapshot["auto_restore"] = get_auto_restore_record(router.pk)
-    cache.set(cache_key, snapshot, 5 if snapshot.get("ok") else 3)
+    # Align TTL with the detail-page poll interval so open tabs share one probe.
+    cache.set(cache_key, snapshot, 10 if snapshot.get("ok") else 4)
     return JsonResponse(snapshot)
 
 
@@ -6291,6 +6731,10 @@ def client_detail(request, customer_id: int):
         customer.service_type == Customer.ServiceType.HOTSPOT and plan_max_devices > 1
     )
 
+    invoice_count = Invoice.objects.filter(customer=customer).count()
+    payment_count = Payment.objects.filter(invoice__customer=customer).count()
+    voucher_count = AccessVoucher.objects.filter(customer=customer).count()
+
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -6338,6 +6782,10 @@ def client_detail(request, customer_id: int):
         voucher_billing_url=reverse(
             "core:client_billing", kwargs={"customer_id": customer.pk}
         ),
+        invoice_count=invoice_count,
+        payment_count=payment_count,
+        voucher_count=voucher_count,
+        delete_url=reverse("core:client_delete", kwargs={"customer_id": customer.pk}),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
@@ -6411,112 +6859,6 @@ def client_delete(request, customer_id: int):
     ctx["sidebar_label"] = "Client"
     apply_client_shared_forms(ctx, customer, org)
     return render(request, "core/client_delete.html", ctx)
-
-
-@client_workspace_required
-@require_GET
-def client_wifi_preview(request, customer_id: int):
-    """Staff preview of the captive Wi‑Fi screens a subscriber sees."""
-    from urllib.parse import urlencode
-
-    org = resolve_organization(request.user, request)
-    customer = get_object_or_404(
-        Customer.objects.select_related("plan", "router", "organization"),
-        pk=customer_id,
-        organization=org,
-    )
-    can_access_wifi = customer_can_access_router(customer, org)
-    join_code = (getattr(org, "join_code", None) or "").strip()
-    token = ""
-    if join_code and customer.service_type == Customer.ServiceType.PPPOE:
-        token = _make_pppoe_customer_token(org, customer)
-
-    def _pppoe_url(preview: str) -> str:
-        if not join_code:
-            return ""
-        params = {"preview": preview}
-        if token:
-            params["t"] = token
-        if customer.account_number:
-            params["account"] = customer.account_number
-        return (
-            reverse("core:pppoe_pay", kwargs={"join_code": join_code})
-            + "?"
-            + urlencode(params)
-        )
-
-    def _hotspot_url(preview: str) -> str:
-        if not join_code:
-            return ""
-        params = {"preview": preview}
-        if customer.account_number:
-            params["account"] = customer.account_number
-        return (
-            reverse("core:hotspot_pay", kwargs={"join_code": join_code})
-            + "?"
-            + urlencode(params)
-        )
-
-    mode = (request.GET.get("mode") or "pppoe_paused").strip().lower()
-    previews = {
-        "pppoe_paused": {
-            "label": "Home Wi‑Fi · paused",
-            "blurb": (
-                "What phones see on the CPE Wi‑Fi captive popup when this "
-                "PPPoE subscription is paused."
-            ),
-            "url": _pppoe_url("paused"),
-        },
-        "pppoe_renew": {
-            "label": "Home Wi‑Fi · expired / renew",
-            "blurb": (
-                "What phones see when the package has ended and they must pay "
-                "to restore surfing."
-            ),
-            "url": _pppoe_url("renew"),
-        },
-        "hotspot_paused": {
-            "label": "Hotspot Wi‑Fi · paused",
-            "blurb": (
-                "What Hotspot gadgets see when this account is paused "
-                "(same org captive page)."
-            ),
-            "url": _hotspot_url("paused"),
-        },
-        "hotspot_renew": {
-            "label": "Hotspot Wi‑Fi · pay to connect",
-            "blurb": "What new Hotspot visitors see when they join the public Wi‑Fi.",
-            "url": _hotspot_url("renew"),
-        },
-    }
-    if mode not in previews:
-        mode = "pppoe_paused"
-    active = previews[mode]
-
-    ctx = client_page_context(
-        request,
-        active_nav="client_detail",
-        sidebar_active="wifi_preview",
-        page_title=f"Wi‑Fi preview · {customer.full_name}",
-        customer=customer,
-        can_access_wifi=can_access_wifi,
-        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
-        preview_mode=mode,
-        preview_tabs=[
-            {"key": key, "label": item["label"], "url": item["url"]}
-            for key, item in previews.items()
-        ],
-        preview_blurb=active["blurb"],
-        preview_frame_url=active["url"],
-        preview_open_url=active["url"],
-    )
-    ctx["client_nav_main"] = [
-        *CLIENT_COMMON_NAV_START,
-        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
-    ]
-    ctx["sidebar_label"] = "Client"
-    apply_client_shared_forms(ctx, customer, org)
-    return render(request, "core/client_wifi_preview.html", ctx)
 
 
 _CPE_PROXY_SALT = "core.client-cpe-web.v1"
@@ -6696,24 +7038,21 @@ def _normalize_proxied_path(router_path: str, prefix: str) -> str:
     return "/" + path if path else "/"
 
 
-@client_workspace_required
-@require_GET
-def client_router_login(request, customer_id: int):
-    """In-app shell for remote access to a subscriber CPE web UI."""
-    org = resolve_organization(request.user, request)
-    customer = get_object_or_404(
-        Customer.objects.select_related("router", "plan", "organization"),
-        pk=customer_id,
-        organization=org,
-    )
-    can_access = customer_can_access_router(customer, org)
-    if not can_access:
-        messages.error(
-            request,
-            "Router login requires a configured client (PPPoE, static IP, or DHCP MAC) and NAS.",
-        )
-        return redirect("core:client_detail", customer_id=customer.pk)
+def _client_cpe_access_tab(request) -> str:
+    tab = (request.GET.get("tab") or "").strip().lower()
+    return "router" if tab == "router" else "wifi"
 
+
+def _client_cpe_access_context(
+    request,
+    customer,
+    org,
+    *,
+    can_access_wifi: bool,
+    wifi_form=None,
+    active_tab: str = "wifi",
+) -> dict:
+    """Shared template context for the combined router + Wi‑Fi page."""
     nas = customer.router
     via_tunnel = _router_uses_tunnel(nas) if nas else False
     dial = _router_api_host(nas) if nas else ""
@@ -6723,11 +7062,19 @@ def client_router_login(request, customer_id: int):
     ctx = client_page_context(
         request,
         active_nav="client_detail",
-        sidebar_active="router",
-        page_title=f"Router · {customer.full_name}",
+        sidebar_active="router_wifi",
+        page_title=f"Router & Wi‑Fi · {customer.full_name}",
         customer=customer,
-        can_access_wifi=True,
+        can_access_wifi=can_access_wifi,
+        active_tab=active_tab,
+        wifi_form=wifi_form,
+        wifi_ssid_display=(customer.cpe_wifi_ssid or "").strip(),
+        wifi_password_display=customer.cpe_wifi_password or "",
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        wifi_url=reverse("core:client_cpe_wifi", kwargs={"customer_id": customer.pk}),
+        router_data_url=reverse(
+            "core:client_cpe_router_data", kwargs={"customer_id": customer.pk}
+        ),
         start_url=reverse(
             "core:client_router_login_start", kwargs={"customer_id": customer.pk}
         ),
@@ -6744,11 +7091,32 @@ def client_router_login(request, customer_id: int):
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
-        *build_client_detail_nav(customer, can_access_wifi=True),
+        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
     ]
     ctx["sidebar_label"] = "Client"
     apply_client_shared_forms(ctx, customer, org)
-    return render(request, "core/client_router_access.html", ctx)
+    return ctx
+
+
+@client_workspace_required
+@require_GET
+def client_router_login(request, customer_id: int):
+    """Legacy URL — opens the combined router + Wi‑Fi page on the Router tab."""
+    org = resolve_organization(request.user, request)
+    customer = get_object_or_404(
+        Customer.objects.select_related("router", "plan", "organization"),
+        pk=customer_id,
+        organization=org,
+    )
+    if not customer_can_access_router(customer, org):
+        messages.error(
+            request,
+            "Router login requires a configured client (PPPoE, static IP, or DHCP MAC) and NAS.",
+        )
+        return redirect("core:client_detail", customer_id=customer.pk)
+
+    url = reverse("core:client_wifi_settings", kwargs={"customer_id": customer.pk})
+    return redirect(f"{url}?tab=router")
 
 
 @client_workspace_required
@@ -7603,29 +7971,15 @@ def client_wifi_settings(request, customer_id: int):
                 result.get("error") or "Could not apply Wi‑Fi settings on the client router.",
             )
 
-    ctx = client_page_context(
+    ctx = _client_cpe_access_context(
         request,
-        active_nav="client_detail",
-        sidebar_active="wifi",
-        page_title=f"Wi‑Fi · {customer.full_name}",
-        customer=customer,
+        customer,
+        org,
         can_access_wifi=can_access_wifi,
         wifi_form=wifi_form,
-        wifi_ssid_display=(customer.cpe_wifi_ssid or "").strip(),
-        wifi_password_display=customer.cpe_wifi_password or "",
-        back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
-        wifi_url=reverse("core:client_cpe_wifi", kwargs={"customer_id": customer.pk}),
-        router_data_url=reverse(
-            "core:client_cpe_router_data", kwargs={"customer_id": customer.pk}
-        ),
+        active_tab=_client_cpe_access_tab(request),
     )
-    ctx["client_nav_main"] = [
-        *CLIENT_COMMON_NAV_START,
-        *build_client_detail_nav(customer, can_access_wifi=can_access_wifi),
-    ]
-    ctx["sidebar_label"] = "Client"
-    apply_client_shared_forms(ctx, customer, org)
-    return render(request, "core/client_wifi_settings.html", ctx)
+    return render(request, "core/client_cpe_access.html", ctx)
 
 
 @client_workspace_required
