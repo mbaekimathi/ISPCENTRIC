@@ -340,6 +340,7 @@
     id="client-usage"
     data-usage-url="{% url 'core:client_usage' customer.id %}"
     data-can-live="1"
+    data-service="{{ customer.service_type }}"
     data-plan-down-mbps="{% if customer.plan %}{{ customer.plan.download_speed_mbps }}{% else %}0{% endif %}"
     data-plan-up-mbps="{% if customer.plan %}{{ customer.plan.upload_speed_mbps }}{% else %}0{% endif %}"
   >
@@ -1268,6 +1269,8 @@
   if (!root) return;
   var usageUrl = root.getAttribute("data-usage-url");
   var canLive = root.getAttribute("data-can-live") === "1";
+  var serviceType = (root.getAttribute("data-service") || "").toLowerCase();
+  var isHotspot = serviceType === "hotspot";
   var subEl = document.getElementById("client-usage-sub");
   var stampEl = document.getElementById("client-usage-stamp");
   var refreshBtn = document.getElementById("client-usage-refresh");
@@ -1308,9 +1311,16 @@
     stampEl.textContent = "Updated " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
-  function applyOffline(message) {
-    setText("session", "Offline");
-    setText("session-hint", message || "Not connected");
+  function routerWifiMeta(data, fallback) {
+    var name = ((data && data.router_name) || "").trim();
+    var wifi = ((data && data.wifi_ssid) || "").trim();
+    if (name && wifi) return name + " · " + wifi;
+    if (name) return name;
+    if (wifi) return wifi;
+    return fallback || "";
+  }
+
+  function clearTrafficMeters() {
     setText("download", "—");
     setText("upload", "—");
     setText("download-hint", "Speed CPE is receiving");
@@ -1326,10 +1336,63 @@
     setText("caller", "Caller / MAC");
     setMeter("download", 0, planDownBps);
     setMeter("upload", 0, planUpBps);
+    heroChip("throughput", "—", "No live traffic", "is-idle");
+  }
+
+  function applyOffline(message, data) {
+    if (isHotspot) {
+      applyHotspotSession(data || { connected: false, session_active: false, hint: message }, message);
+      return;
+    }
+    setText("session", "Offline");
+    setText("session-hint", message || "Not connected");
+    clearTrafficMeters();
     root.classList.remove("is-online");
     root.classList.add("is-offline");
     heroChip("session", "Offline", message || "Not connected", "is-bad");
-    heroChip("throughput", "—", "No live traffic", "is-idle");
+  }
+
+  function applyHotspotSession(data, fallbackMessage) {
+    var connected = !!(data && (data.connected || data.session_active));
+    var surfing = !!(data && data.surfing);
+    var state = (data && data.session_state) || "";
+    var label = (data && data.session_label) || "";
+    var hint = (data && data.hint) || fallbackMessage || "";
+    var meta = routerWifiMeta(data, "");
+
+    if (!state) {
+      if (surfing) state = "surfing";
+      else if (connected) state = "not_surfing";
+      else state = "disconnected";
+    }
+    if (!label) {
+      if (state === "surfing") label = "Surfing";
+      else if (state === "not_surfing") label = "Not surfing";
+      else label = "Disconnected";
+    }
+
+    setText("session", label);
+    if (connected && meta) {
+      setText("session-hint", meta);
+    } else {
+      setText("session-hint", hint || (connected ? meta : "Not connected to a router"));
+    }
+
+    if (state === "surfing") {
+      root.classList.add("is-online");
+      root.classList.remove("is-offline");
+      heroChip("session", label, meta || hint || "Hotspot", "is-good");
+    } else if (state === "not_surfing") {
+      root.classList.remove("is-online");
+      root.classList.add("is-offline");
+      clearTrafficMeters();
+      heroChip("session", label, meta || hint || "Connected, no internet", "is-idle");
+    } else {
+      root.classList.remove("is-online");
+      root.classList.add("is-offline");
+      clearTrafficMeters();
+      heroChip("session", "Disconnected", hint || "Not connected to a router", "is-bad");
+    }
   }
 
   function refresh(force) {
@@ -1347,8 +1410,56 @@
       .then(function (data) {
         if (!data) return;
         if (!data.ok && data.error) {
-          applyOffline(data.error);
+          applyOffline(data.error, data);
           if (subEl) subEl.textContent = data.error;
+          stampNow();
+          return;
+        }
+        if (isHotspot) {
+          applyHotspotSession(data);
+          if (data.session_active) {
+            root.classList.add("is-online");
+            root.classList.remove("is-offline");
+            setText(
+              "session-hint",
+              routerWifiMeta(data, "") ||
+                ((data.service || "Hotspot") + (data.interface ? " · " + data.interface : ""))
+            );
+            setText("download", data.download_label || "—");
+            setText("upload", data.upload_label || "—");
+            setText("download-hint", "From ISP MikroTik (Hotspot session)");
+            setText("upload-hint", "From ISP MikroTik (Hotspot session)");
+            setText("bytes-in-hint", "Traffic this Hotspot session");
+            setText("bytes-out-hint", "Traffic this Hotspot session");
+            setText("devices", data.devices_label != null ? data.devices_label : "—");
+            setText("devices-hint", data.devices_hint || "Hotspot gadget");
+            setText("uptime", data.uptime || "—");
+            setText("bytes-in", data.bytes_in_label || "—");
+            setText("bytes-out", data.bytes_out_label || "—");
+            setText("address", data.cpe_host || data.address || "—");
+            setText("caller", data.caller_id ? ("MAC " + data.caller_id) : "Caller / MAC");
+            setMeter("download", data.download_bps, planDownBps);
+            setMeter("upload", data.upload_bps, planUpBps);
+            heroChip(
+              "throughput",
+              (data.download_label || "—") + " ↓ " + (data.upload_label || "—") + " ↑",
+              "Measured on the ISP NAS",
+              "is-good"
+            );
+            if (subEl) {
+              subEl.textContent =
+                "Hotspot on " +
+                (data.router_name || "NAS") +
+                (data.wifi_ssid ? " · " + data.wifi_ssid : "") +
+                (data.address ? " · " + data.address : "");
+            }
+          } else if (subEl) {
+            subEl.textContent =
+              data.hint ||
+              (data.connected
+                ? routerWifiMeta(data, "Connected — not surfing")
+                : "Disconnected from router");
+          }
           stampNow();
           return;
         }
@@ -1412,7 +1523,7 @@
             }
           }
         } else {
-          applyOffline(data.hint || "Subscriber is not online right now.");
+          applyOffline(data.hint || "Subscriber is not online right now.", data);
           if (subEl) {
             subEl.textContent = data.hint ||
               ("Router reachable" + (data.online ? "" : " issue") + " — session idle.");

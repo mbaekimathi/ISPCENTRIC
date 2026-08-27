@@ -913,17 +913,35 @@
     el.title = reason || el.textContent;
   }
 
-  function applyConnectionBadge(el, connected, reason) {
+  function escapeConnText(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function applyConnectionBadge(el, connected, reason, routerName, wifiSsid) {
     if (!el) return;
     el.classList.remove("is-checking", "is-surfing", "is-not-surfing", "is-disconnected", "is-device-online", "is-device-offline");
     if (connected) {
       el.classList.add("is-device-online");
-      el.textContent = "Online";
+      var name = (routerName || "").trim() || "MikroTik";
+      var wifi = (wifiSsid || "").trim();
+      if (wifi) {
+        el.innerHTML =
+          '<span class="clients-conn-mikrotik">' + escapeConnText(name) + "</span>" +
+          '<span class="clients-conn-wifi">' + escapeConnText(wifi) + "</span>";
+        el.title = reason || (name + " · " + wifi);
+      } else {
+        el.textContent = name;
+        el.title = reason || (name + " — connected");
+      }
     } else {
       el.classList.add("is-device-offline");
-      el.textContent = "Offline";
+      el.textContent = "Disconnected";
+      el.title = reason || "Device is not connected to a router";
     }
-    el.title = reason || (connected ? "Device is connected to the Hotspot network" : "Device is not visible on the Hotspot network");
   }
 
   function refreshSurf(force) {
@@ -966,7 +984,13 @@
             applyConnectionBadge(el, false, "No live data");
             return;
           }
-          applyConnectionBadge(el, !!item.connected, item.connection_reason || "");
+          applyConnectionBadge(
+            el,
+            !!item.connected,
+            item.connection_reason || "",
+            item.connected_router_name || item.connection_label || "",
+            item.connected_wifi_ssid || ""
+          );
         });
       })
       .catch(function () {

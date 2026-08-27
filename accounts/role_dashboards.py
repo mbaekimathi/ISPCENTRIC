@@ -599,17 +599,25 @@ def manager_isp_clients(request):
         )
         .order_by("-created_at")
     )
+    suspended_count = sum(
+        1 for client in clients if client.status == Organization.Status.SUSPENDED
+    )
+    active_count = sum(
+        1 for client in clients if client.status == Organization.Status.ACTIVE
+    )
     return render(
         request,
         "accounts/customer_support_isp_clients.html",
         {
             "page_title": "ISP clients",
             "page_kicker": "Clients",
-            "page_subtitle": "ISP company accounts registered on ISPCENTRIC.",
+            "page_subtitle": "Open an ISP workspace to support billing, network, and subscribers.",
             "current_page": "isp_clients",
             "dashboard_url_name": "roles:customer_support",
             "clients": clients,
             "clients_count": len(clients),
+            "active_count": active_count,
+            "suspended_count": suspended_count,
             "empty_text": "No ISP clients are registered yet.",
         },
     )
@@ -1435,12 +1443,26 @@ def it_support_hr(request):
         Employee.objects.select_related("user", "organization")
         .order_by("-created_at")
     )
+    suspended_count = sum(
+        1 for member in employees if member.status == Employee.Status.SUSPENDED
+    )
+    pending_count = sum(
+        1
+        for member in employees
+        if member.status == Employee.Status.PENDING_APPROVAL
+    )
+    active_count = sum(
+        1 for member in employees if member.status == Employee.Status.ACTIVE
+    )
     return render(
         request,
         "accounts/it_support_hr.html",
         _it_support_hr_context(
             employees=employees,
             employees_count=len(employees),
+            active_count=active_count,
+            suspended_count=suspended_count,
+            pending_count=pending_count,
         ),
     )
 
@@ -1784,7 +1806,7 @@ def it_support_company_system_settings(request):
             "page_title": "Company System Settings",
             "page_kicker": "Settings",
             "page_subtitle": (
-                "Configure platform identity, communications, payment links, "
+                "Configure platform identity, communications, Company Payment Gateway, "
                 "and ISP onboarding from one place."
             ),
             "current_page": "company_system_settings",
@@ -1803,10 +1825,10 @@ def it_support_company_system_settings(request):
                     "url_name": "roles:it_support_company_communications",
                 },
                 {
-                    "key": "company_payment_links",
-                    "label": "Company payment links",
-                    "description": "Payment portal and collection links for company billing flows.",
-                    "url_name": "roles:it_support_company_payment_links",
+                    "key": "payment_gateway",
+                    "label": "Company Payment Gateway",
+                    "description": "Company Daraja STK Push credentials used as the default payment gateway.",
+                    "url_name": "roles:it_support_payment_gateway",
                 },
                 {
                     "key": "isp_onboarding_settings",
@@ -1826,7 +1848,7 @@ def it_support_system_settings_redirect(request):
 
 @role_required(Employee.Role.IT_SUPPORT)
 def it_support_settings_payments_redirect(request):
-    return redirect("roles:it_support_company_payment_links")
+    return redirect("roles:it_support_payment_gateway")
 
 
 @role_required(Employee.Role.IT_SUPPORT)

@@ -291,7 +291,7 @@ def page_key_from_path(path: str) -> str | None:
     if "/company-system-settings/communications/" in path or "/system-settings/communications/" in path:
         return "communications"
     if "/company-system-settings/payments/" in path or "/system-settings/payments/" in path:
-        return "company_payment_links"
+        return "payment_gateway"
     if "/company-system-settings/" in path or "/system-settings/" in path:
         return "company_system_settings"
     if "/installations/" in path:

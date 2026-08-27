@@ -60,6 +60,151 @@ def _callback_metadata_map(items) -> dict:
     return out
 
 
+def redact_stk_callback_for_log(payload) -> dict:
+    """Keep IDs/result codes for ops logs; drop phones, receipts, and raw dumps."""
+    if not isinstance(payload, dict):
+        return {"type": type(payload).__name__}
+    body = payload.get("Body") if isinstance(payload.get("Body"), dict) else {}
+    callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    meta_items = []
+    meta = callback.get("CallbackMetadata")
+    if isinstance(meta, dict) and isinstance(meta.get("Item"), list):
+        for item in meta["Item"]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or item.get("name") or "")
+            if name in {"Amount"}:
+                meta_items.append({"Name": name, "Value": item.get("Value")})
+            elif name:
+                meta_items.append({"Name": name, "Value": "[redacted]"})
+    return {
+        "CheckoutRequestID": (callback.get("CheckoutRequestID") or "")[:64],
+        "MerchantRequestID": (callback.get("MerchantRequestID") or "")[:64],
+        "ResultCode": callback.get("ResultCode"),
+        "ResultDesc": (callback.get("ResultDesc") or "")[:120],
+        "CallbackMetadata": meta_items,
+    }
+
+
+def _callback_amount_matches(stk: StkPushRequest, metadata: dict) -> tuple[bool, str]:
+    """
+    When Safaricom includes Amount, it must match the pending STK row.
+    Missing Amount is allowed — Daraja STK Query is the authenticity check.
+    """
+    raw = metadata.get("Amount")
+    if raw is None or raw == "":
+        return True, ""
+    try:
+        paid = Decimal(str(raw))
+    except Exception:
+        return False, "Invalid Amount in callback metadata."
+    expected = Decimal(stk.amount or 0)
+    if abs(paid - expected) > Decimal("0.01"):
+        return (
+            False,
+            f"Callback amount {paid} does not match STK amount {expected}.",
+        )
+    return True, ""
+
+
+def _confirm_stk_success_with_daraja(stk: StkPushRequest) -> dict:
+    """
+    Confirm a success callback with Safaricom STK Query before fulfillment.
+
+    Returns keys: success, pending, error, result_desc, data.
+    pending=True means leave the STK pending; pay-page polling will retry.
+    """
+    from django.conf import settings
+
+    if not getattr(settings, "STK_CALLBACK_REQUIRE_DARAJA_QUERY", True):
+        return {
+            "success": True,
+            "pending": False,
+            "error": "",
+            "result_desc": "",
+            "data": {},
+            "skipped": True,
+        }
+
+    checkout_id = (stk.checkout_request_id or "").strip()
+    if not checkout_id:
+        return {
+            "success": False,
+            "pending": False,
+            "error": "Missing CheckoutRequestID for Daraja confirmation.",
+            "result_desc": "",
+            "data": {},
+        }
+
+    org = stk.organization
+    creds = org.effective_daraja_credentials() if org is not None else {}
+    if not creds.get("ready"):
+        return {
+            "success": False,
+            "pending": True,
+            "error": "Daraja credentials not ready; waiting to confirm payment.",
+            "result_desc": "",
+            "data": {},
+        }
+
+    stored = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    query_env = (
+        stored.get("environment")
+        or creds.get("environment")
+        or PaymentGateway.Environment.SANDBOX
+    )
+    query = query_stk_push(
+        consumer_key=creds["consumer_key"],
+        consumer_secret=creds["consumer_secret"],
+        passkey=creds["passkey"],
+        shortcode=creds["shortcode"],
+        checkout_request_id=checkout_id,
+        environment=query_env,
+    )
+    if (
+        query.get("pending") is False
+        and not query.get("success")
+        and _is_invalid_access_token_error(query)
+        and str(query_env).lower() == PaymentGateway.Environment.SANDBOX
+    ):
+        query = query_stk_push(
+            consumer_key=creds["consumer_key"],
+            consumer_secret=creds["consumer_secret"],
+            passkey=creds["passkey"],
+            shortcode=creds["shortcode"],
+            checkout_request_id=checkout_id,
+            environment=PaymentGateway.Environment.PRODUCTION,
+        )
+
+    if query.get("pending"):
+        return {
+            "success": False,
+            "pending": True,
+            "error": query.get("error") or "Waiting for Daraja confirmation.",
+            "result_desc": query.get("result_desc") or "",
+            "data": query.get("data") or {},
+        }
+    if query.get("success"):
+        return {
+            "success": True,
+            "pending": False,
+            "error": "",
+            "result_desc": query.get("result_desc") or "",
+            "data": query.get("data") or {},
+        }
+    return {
+        "success": False,
+        "pending": False,
+        "error": query.get("error")
+        or query.get("result_desc")
+        or "Daraja did not confirm this payment.",
+        "result_desc": query.get("result_desc") or "",
+        "data": query.get("data") or {},
+        "result_code": query.get("result_code"),
+        "cancelled": bool(query.get("cancelled")),
+    }
+
+
 def resolve_stk_callback_url(
     creds: dict,
     request=None,
@@ -1083,7 +1228,12 @@ def mark_stk_failed(
 
 
 def process_stk_callback_payload(payload: dict) -> dict:
-    """Handle Daraja STK callback body and fulfill or fail the matching request."""
+    """Handle Daraja STK callback body and fulfill or fail the matching request.
+
+    Success callbacks must pass amount checks (when Amount is present) and a
+    Daraja STK Query confirmation before fulfillment. Unverified success is left
+    pending so captive pay-page polling can finish the job safely.
+    """
     body = payload.get("Body") if isinstance(payload, dict) else None
     callback = body.get("stkCallback") if isinstance(body, dict) else None
     if not isinstance(callback, dict):
@@ -1124,6 +1274,101 @@ def process_stk_callback_payload(payload: dict) -> dict:
             or metadata.get("MpesaReceiptNo")
             or ""
         ).strip()
+
+        amount_ok, amount_error = _callback_amount_matches(stk, metadata)
+        if not amount_ok:
+            logger.warning(
+                "Rejected STK callback amount mismatch stk_id=%s checkout=%s: %s",
+                stk.pk,
+                checkout_id,
+                amount_error,
+            )
+            stk.raw_callback = _merge_stk_raw_callback(
+                stk.raw_callback,
+                {"callback_rejected": payload, "reject_reason": amount_error},
+            )
+            stk.save(update_fields=["raw_callback"])
+            return {
+                "ok": False,
+                "error": amount_error,
+                "stk_id": stk.pk,
+                "checkout_request_id": checkout_id,
+            }
+
+        confirmed = _confirm_stk_success_with_daraja(stk)
+        if confirmed.get("pending"):
+            update_fields = ["raw_callback"]
+            stk.raw_callback = _merge_stk_raw_callback(
+                stk.raw_callback,
+                {
+                    "callback": payload,
+                    "awaiting_daraja_confirm": True,
+                    "callback_receipt": receipt,
+                },
+            )
+            stk.result_desc = (
+                result_desc or "Callback received; confirming with M-Pesa…"
+            )[:255]
+            update_fields.append("result_desc")
+            if receipt:
+                stk.mpesa_receipt = receipt[:64]
+                update_fields.append("mpesa_receipt")
+            stk.save(update_fields=update_fields)
+            logger.info(
+                "STK callback deferred pending Daraja confirm stk_id=%s checkout=%s",
+                stk.pk,
+                checkout_id,
+            )
+            return {
+                "ok": True,
+                "pending_verification": True,
+                "stk_id": stk.pk,
+                "checkout_request_id": checkout_id,
+            }
+
+        if not confirmed.get("success"):
+            logger.warning(
+                "Rejected STK success callback without Daraja confirm stk_id=%s: %s",
+                stk.pk,
+                confirmed.get("error") or confirmed.get("result_desc"),
+            )
+            # Query says payment did not succeed — treat like a failure callback.
+            if confirmed.get("result_code") is not None or confirmed.get("cancelled"):
+                mark_stk_failed(
+                    stk,
+                    result_code=confirmed.get("result_code"),
+                    result_desc=confirmed.get("result_desc")
+                    or confirmed.get("error")
+                    or "Daraja did not confirm payment.",
+                    cancelled=bool(confirmed.get("cancelled")),
+                    raw={"callback": payload, "query": confirmed.get("data") or {}},
+                )
+            else:
+                stk.raw_callback = _merge_stk_raw_callback(
+                    stk.raw_callback,
+                    {
+                        "callback_rejected": payload,
+                        "query": confirmed.get("data") or {},
+                        "reject_reason": confirmed.get("error") or "unconfirmed",
+                    },
+                )
+                stk.save(update_fields=["raw_callback"])
+            return {
+                "ok": False,
+                "error": confirmed.get("error")
+                or "Daraja did not confirm this payment.",
+                "stk_id": stk.pk,
+                "checkout_request_id": checkout_id,
+            }
+
+        if not receipt:
+            data = confirmed.get("data") or {}
+            receipt = str(
+                data.get("MpesaReceiptNumber")
+                or data.get("mpesa_receipt")
+                or ""
+            ).strip()
+
         result = fulfill_successful_stk(
             stk,
             result_code=0,

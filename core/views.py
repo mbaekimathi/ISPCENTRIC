@@ -7207,7 +7207,7 @@ def client_usage(request, customer_id: int):
             }
         )
 
-    cache_key = f"client_usage:{org.pk}:{customer.pk}"
+    cache_key = f"client_usage:v2:{org.pk}:{customer.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     if not force:
         cached = cache.get(cache_key)
@@ -7221,12 +7221,45 @@ def client_usage(request, customer_id: int):
             router.password or "",
             hotspot_mac=customer.hotspot_mac,
         )
-        payload["devices_connected"] = 1 if payload.get("session_active") else 0
-        payload["devices_label"] = "1 gadget" if payload.get("session_active") else "0"
-        payload["devices_hint"] = "Hotspot gadget session"
+        connected = bool(
+            payload.get("connected") or payload.get("session_active")
+        )
+        payload["connected"] = connected
+        payload["devices_connected"] = 1 if connected else 0
+        payload["devices_label"] = "1 gadget" if connected else "0"
+        payload["devices_hint"] = (
+            "Connected to Hotspot network"
+            if connected
+            else "Not seen on Hotspot network"
+        )
         payload["speed_source"] = "nas"
         payload["cpe_host"] = (payload.get("address") or "").strip()
         payload["cpe_auth_ok"] = False
+
+        from billing.services import customer_can_surf_via_hotspot
+
+        internet_allowed = customer_can_surf_via_hotspot(customer)
+        surfing = bool(payload.get("session_active") and internet_allowed)
+        if surfing:
+            session_state = "surfing"
+            session_label = "Surfing"
+            session_hint = "Online — internet OK"
+        elif connected:
+            session_state = "not_surfing"
+            session_label = "Not surfing"
+            session_hint = (
+                payload.get("hint")
+                or "Connected to Wi‑Fi — Hotspot session not active"
+            )
+        else:
+            session_state = "disconnected"
+            session_label = "Disconnected"
+            session_hint = payload.get("hint") or "Not connected to a router"
+        payload["internet_allowed"] = internet_allowed
+        payload["surfing"] = surfing
+        payload["session_state"] = session_state
+        payload["session_label"] = session_label
+        payload["hint"] = session_hint
     else:
         payload = fetch_customer_pppoe_usage(
             router.host,
@@ -7240,6 +7273,7 @@ def client_usage(request, customer_id: int):
         payload["devices_connected"] = None
         payload["devices_label"] = "—"
         payload["devices_hint"] = "Device count loads from CPE when reachable"
+        payload["connected"] = bool(payload.get("session_active"))
 
         # Optional short CPE enrichment — never block the account page / live session.
         want_cpe = (request.GET.get("cpe") or "").strip() in {"1", "true", "yes"}
@@ -7292,6 +7326,7 @@ def client_usage(request, customer_id: int):
     payload["customer_id"] = customer.pk
     payload["router_id"] = router.pk
     payload["router_name"] = router.name
+    payload["wifi_ssid"] = (router.wifi_ssid or "").strip()
 
     try:
         from billing.usage_samples import record_customer_usage_sample
@@ -7683,7 +7718,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v2"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v3"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -7784,6 +7819,20 @@ def clients_surfing_status(request):
             return "Subscription ended at midnight — no internet"
         return "Outside package period — no internet"
 
+    def _router_id_for_identity(
+        identity: str,
+        preferred_router_id: int | None,
+        by_router: dict[int, set[str]],
+    ) -> int | None:
+        if not identity:
+            return preferred_router_id
+        if preferred_router_id and identity in (by_router.get(preferred_router_id) or set()):
+            return preferred_router_id
+        for rid, identities in by_router.items():
+            if identity in identities:
+                return rid
+        return preferred_router_id
+
     for customer in customers:
         identity = (customer.pppoe_username or "").strip().lower()
         if service == "hotspot":
@@ -7794,6 +7843,7 @@ def clients_surfing_status(request):
         connected = False
         reason = ""
         connection_reason = ""
+        connected_router_id = None
         if not identity:
             reason = "No device MAC" if service == "hotspot" else "No PPPoE username"
             connection_reason = reason
@@ -7823,6 +7873,10 @@ def clients_surfing_status(request):
                 if service == "hotspot"
                 else session_online
             )
+            # Hotspot clients can roam onto another org router — still count as connected.
+            if service == "hotspot" and not connected:
+                session_online = session_online or identity in active_any_router
+                connected = identity in connected_any_router or session_online
             if not session_online:
                 reason = router_errors.get(customer.router_id) or (
                     "Router not dialed — no active PPPoE session"
@@ -7834,6 +7888,28 @@ def clients_surfing_status(request):
                     router_errors.get(customer.router_id)
                     or "Device not seen on the Hotspot network"
                 )
+
+        if service == "hotspot" and connected and identity:
+            connected_router_id = _router_id_for_identity(
+                identity,
+                customer.router_id,
+                connected_by_router,
+            )
+            if not connected_router_id:
+                connected_router_id = _router_id_for_identity(
+                    identity,
+                    customer.router_id,
+                    active_by_router,
+                )
+            # Prefer live active session router when present.
+            active_router_id = _router_id_for_identity(
+                identity,
+                customer.router_id,
+                active_by_router,
+            )
+            if active_router_id and identity in (active_by_router.get(active_router_id) or set()):
+                connected_router_id = active_router_id
+                session_online = True
 
         internet_allowed = False
         nas_blocked = (
@@ -7860,7 +7936,7 @@ def clients_surfing_status(request):
         surfing = False
         if customer.status != Customer.Status.ACTIVE:
             reason = customer.get_status_display()
-        elif router_unreachable and not session_online:
+        elif router_unreachable and not session_online and not connected:
             reason = router_error or "Router disconnected"
         else:
             from billing.services import (
@@ -7901,6 +7977,8 @@ def clients_surfing_status(request):
                         )
                     else:
                         reason = "Package active — router not dialed"
+                if service == "hotspot" and connected:
+                    reason = "Connected to Wi‑Fi — Hotspot session not active"
 
         subscription_expired = False
         try:
@@ -7913,6 +7991,20 @@ def clients_surfing_status(request):
             label = "Surfing"
             surfing_count += 1
             surfing_customers.append(customer)
+        elif service == "hotspot":
+            # Hotspot Session column: connected → Surfing/Not surfing, else Disconnected.
+            if connected:
+                state = "not_surfing"
+                label = "Not surfing"
+                if subscription_expired and (
+                    not reason or "subscription" not in reason.lower()
+                ):
+                    reason = _period_blocked_reason(customer)
+            else:
+                state = "disconnected"
+                label = "Disconnected"
+                if not reason:
+                    reason = router_error or "Device not seen on the Hotspot network"
         elif subscription_expired:
             # Package ended — Internet column shows Expired (even if still dialed).
             state = "expired"
@@ -7920,30 +8012,41 @@ def clients_surfing_status(request):
             if not reason or "subscription" not in reason.lower():
                 reason = _period_blocked_reason(customer)
         elif not session_online:
-            # No live PPPoE/Hotspot session — show Disconnected in the Internet column.
+            # No live PPPoE session — show Disconnected in the Internet column.
             state = "disconnected"
             label = "Disconnected"
             if not reason:
-                reason = (
-                    router_error
-                    or (
-                        "Router not dialed — no active PPPoE session"
-                        if service == "pppoe"
-                        else "No active Hotspot session"
-                    )
-                )
+                reason = router_error or "Router not dialed — no active PPPoE session"
         else:
-            # Dialed/connected on the NAS but not getting internet (blocked, outside period, …).
+            # Dialed on the NAS but not getting internet (blocked, outside period, …).
             state = "not_surfing"
             label = "Not surfing"
 
+        connected_router_name = ""
+        connected_wifi_ssid = ""
+        connection_label = "Disconnected" if service == "hotspot" else "Not connected"
         if connected:
             connected_count += 1
-            connection_reason = (
-                "Device connected to the Hotspot network"
-                if service == "hotspot"
-                else "Active PPPoE session"
+            live_router = (
+                routers_by_id.get(connected_router_id)
+                if connected_router_id
+                else None
             )
+            if live_router is None and customer.router_id:
+                live_router = routers_by_id.get(customer.router_id) or customer.router
+            connected_router_name = (
+                (getattr(live_router, "name", None) or "").strip() or "MikroTik"
+            )
+            connected_wifi_ssid = (getattr(live_router, "wifi_ssid", None) or "").strip()
+            if service == "hotspot":
+                connection_label = connected_router_name
+                connection_reason = (
+                    f"Connected to {connected_router_name}"
+                    + (f" · {connected_wifi_ssid}" if connected_wifi_ssid else "")
+                )
+            else:
+                connection_label = "Connected"
+                connection_reason = "Active PPPoE session"
         clients_payload.append(
             {
                 "id": customer.pk,
@@ -7962,8 +8065,10 @@ def clients_surfing_status(request):
                 "session_online": session_online,
                 "router_reachable": not router_unreachable,
                 "connected": connected,
-                "connection_label": "Connected" if connected else "Not connected",
+                "connection_label": connection_label,
                 "connection_reason": connection_reason,
+                "connected_router_name": connected_router_name,
+                "connected_wifi_ssid": connected_wifi_ssid,
             }
         )
 

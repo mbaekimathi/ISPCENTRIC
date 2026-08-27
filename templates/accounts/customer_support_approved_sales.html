@@ -8,110 +8,109 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Approved sales{% if sales %} ({{ sales|length }}){% endif %}</h2>
-      <p class="panel-sub">Tickets whose status is no longer New.</p>
+<section class="cs-list-page">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">{{ page_title }}</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-  </div>
+    <div class="cs-list-count">
+      <strong>{% if sales %}{{ sales|length }}{% else %}0{% endif %}</strong>
+      <span>{% if sales|length == 1 %}ticket{% else %}tickets{% endif %}</span>
+    </div>
+  </header>
 
   {% if sales %}
-    <div class="org-table-shell">
-      <table class="org-table org-table-leads">
-        <thead>
+  <div class="cs-list-shell">
+    <table class="cs-list-table">
+      <thead>
+        <tr>
+          <th>Ticket</th>
+          <th>Client</th>
+          <th>Sales by</th>
+          <th>Technician</th>
+          <th>Location</th>
+          <th>Phone</th>
+          <th>ISP</th>
+          <th>Service</th>
+          <th class="col-optional">Package</th>
+          <th>Status</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sale in sales %}
           <tr>
-            <th>Ticket</th>
-            <th>Client</th>
-            <th>Sales by</th>
-            <th>Technician</th>
-            <th>Location</th>
-            <th>Phone</th>
-            <th>ISP</th>
-            <th>Service</th>
-            <th class="col-optional">Package</th>
-            <th>Status</th>
-            <th>Created</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for sale in sales %}
-            <tr>
-              <td><span class="org-code">{{ sale.sales_ticket_number|default:sale.account_number }}</span></td>
-              <td>
+            <td class="is-primary-cell" data-label="Ticket">
+              <span class="org-code">{{ sale.sales_ticket_number|default:sale.account_number }}</span>
+            </td>
+            <td data-label="Client">
+              <div class="cs-list-primary">
                 <strong>{{ sale.full_name }}</strong>
                 {% if sale.building_name %}
-                  <small class="lead-location-line">{{ sale.building_name }}{% if sale.house_number %} · {{ sale.house_number }}{% endif %}</small>
+                  <small>{{ sale.building_name }}{% if sale.house_number %} · {{ sale.house_number }}{% endif %}</small>
                 {% endif %}
-              </td>
-              <td>
-                {% if sale.registered_by %}
-                  <strong>{{ sale.registered_by.get_full_name|default:sale.registered_by.username }}</strong>
+              </div>
+            </td>
+            <td data-label="Sales by">
+              {% if sale.registered_by %}
+                {{ sale.registered_by.get_full_name|default:sale.registered_by.username }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td data-label="Technician">
+              {% if sale.assigned_technician %}
+                {% if sale.assigned_technician.user.get_full_name %}
+                  {{ sale.assigned_technician.user.get_full_name }}
                 {% else %}
-                  —
+                  {{ sale.assigned_technician.user.username }}
                 {% endif %}
-              </td>
-              <td>
-                {% if sale.assigned_technician %}
-                  <strong>
-                    {% if sale.assigned_technician.user.get_full_name %}
-                      {{ sale.assigned_technician.user.get_full_name }}
-                    {% else %}
-                      {{ sale.assigned_technician.user.username }}
-                    {% endif %}
-                  </strong>
-                {% elif sale.status == "allocated_open" %}
-                  <span class="lead-action-muted">Open pool</span>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>
-                {% if sale.location_lat and sale.location_lng %}
-                  {% with maps_label=sale.building_name|default:sale.address %}
-                  <a
-                    class="lead-maps-link"
-                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ sale.location_lat }},{{ sale.location_lng }}&amp;z=18"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <span class="lead-maps-label">
-                      {% if sale.building_name %}{{ sale.building_name }}{% elif sale.address %}{{ sale.address }}{% else %}Open map{% endif %}
-                    </span>
-                    {% if sale.address %}
-                      <small class="lead-location-line">{{ sale.address }}</small>
-                    {% endif %}
-                  </a>
-                  {% endwith %}
-                {% elif sale.address or sale.building_name %}
-                  {{ sale.building_name|default:sale.address }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>
-                {% if sale.phone %}
-                  <a href="tel:{{ sale.phone }}">{{ sale.phone }}</a>
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>{% if sale.organization %}{{ sale.organization.name }}{% else %}—{% endif %}</td>
-              <td>{{ sale.get_service_type_display }}</td>
-              <td class="col-optional">{% if sale.plan %}{{ sale.plan.name }}{% else %}—{% endif %}</td>
-              <td>
-                <span class="org-status org-status-{{ sale.status }}">{{ sale.get_status_display }}</span>
-              </td>
-              <td class="org-date">{{ sale.created_at|date:"d M Y" }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+              {% elif sale.status == "allocated_open" %}
+                <span class="cs-list-muted">Open pool</span>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td data-label="Location">
+              {% if sale.location_lat and sale.location_lng %}
+                {% with maps_label=sale.building_name|default:sale.address %}
+                <a
+                  class="lead-maps-link"
+                  href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ sale.location_lat }},{{ sale.location_lng }}&amp;z=18"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {% if sale.building_name %}{{ sale.building_name }}{% elif sale.address %}{{ sale.address }}{% else %}Open map{% endif %}
+                </a>
+                {% endwith %}
+              {% elif sale.address or sale.building_name %}
+                {{ sale.building_name|default:sale.address }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td data-label="Phone">
+              {% if sale.phone %}<a href="tel:{{ sale.phone }}">{{ sale.phone }}</a>{% else %}—{% endif %}
+            </td>
+            <td data-label="ISP">{% if sale.organization %}{{ sale.organization.name }}{% else %}—{% endif %}</td>
+            <td data-label="Service">{{ sale.get_service_type_display }}</td>
+            <td class="col-optional" data-label="Package">{% if sale.plan %}{{ sale.plan.name }}{% else %}—{% endif %}</td>
+            <td data-label="Status">
+              <span class="org-status org-status-{{ sale.status }}">{{ sale.get_status_display }}</span>
+            </td>
+            <td data-label="Created">{{ sale.created_at|date:"d M Y" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-    <p class="empty">{{ empty_text }}</p>
+  <div class="cs-list-empty">
+    <strong>No approved sales</strong>
+    <p>{{ empty_text }}</p>
+  </div>
   {% endif %}
 </section>
 {% endblock %}

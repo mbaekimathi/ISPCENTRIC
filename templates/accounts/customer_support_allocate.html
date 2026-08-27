@@ -8,78 +8,93 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Employees{% if employees_count %} ({{ employees_count }}){% endif %}</h2>
-      <p class="panel-sub">Select an employee to open their allocate page.</p>
+<section class="cs-list-page">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">{{ page_title }}</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-  </div>
+    <div class="cs-list-count">
+      <strong>{% if employees_count %}{{ employees_count }}{% else %}0{% endif %}</strong>
+      <span>{% if employees_count == 1 %}employee{% else %}employees{% endif %}</span>
+    </div>
+  </header>
 
   {% if employees %}
-    <div class="org-search-bar">
-      <label class="visually-hidden" for="allocate-search">Search employees</label>
+  <div class="cs-list-toolbar">
+    <label class="visually-hidden" for="allocate-search">Search employees</label>
+    <div class="cs-list-search-wrap">
+      <span class="cs-list-search-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="6.5"/>
+          <path d="M16.2 16.2 20 20" stroke-linecap="round"/>
+        </svg>
+      </span>
       <input
         type="search"
         id="allocate-search"
-        class="org-search-input"
-        placeholder="Search by name, email, phone, role, or organization…"
+        class="cs-list-search"
+        placeholder="Search name, email, phone, role, or organization…"
         autocomplete="off"
         spellcheck="false"
       >
     </div>
+  </div>
 
-    <div class="org-table-shell">
-      <table class="org-table org-table-hr" id="allocate-table">
-        <thead>
-          <tr>
-            <th>Employee</th>
-            <th>Role</th>
-            <th class="col-optional">Organization</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for member in employees %}
-            <tr
-              data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {% if member.organization %}{{ member.organization.name }}{% endif %}"
-            >
-              <td>
-                <div class="org-identity">
-                  {% if member.profile_photo %}
-                    <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
-                  {% else %}
-                    <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
-                  {% endif %}
-                  <div class="org-owner">
-                    <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
-                    {% if member.user.email %}<small>{{ member.user.email }}</small>{% endif %}
-                  </div>
+  <div class="cs-list-shell">
+    <table class="cs-list-table cs-list-table--compact" id="allocate-table">
+      <thead>
+        <tr>
+          <th>Employee</th>
+          <th>Role</th>
+          <th class="col-optional">Organization</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for member in employees %}
+          <tr
+            data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {% if member.organization %}{{ member.organization.name }}{% endif %}"
+          >
+            <td class="is-primary-cell" data-label="Employee">
+              <div class="cs-list-identity">
+                {% if member.profile_photo %}
+                  <img src="{{ member.profile_photo.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
+                {% else %}
+                  <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
+                {% endif %}
+                <div class="cs-list-primary">
+                  <strong>{{ member.user.get_full_name|default:member.user.username }}</strong>
+                  {% if member.user.email %}<small>{{ member.user.email }}</small>{% endif %}
                 </div>
-              </td>
-              <td>{{ member.get_role_display }}</td>
-              <td class="col-optional">{% if member.organization %}{{ member.organization.name }}{% else %}—{% endif %}</td>
-              <td>
-                <span class="org-status org-status-{{ member.status }}">{{ member.get_status_display }}</span>
-              </td>
-              <td>
-                <a
-                  class="btn btn-primary btn-sm"
-                  href="{% url 'roles:customer_support_allocate_employee' member.pk %}"
-                >
+              </div>
+            </td>
+            <td data-label="Role">{{ member.get_role_display }}</td>
+            <td class="col-optional" data-label="Organization">
+              {% if member.organization %}{{ member.organization.name }}{% else %}—{% endif %}
+            </td>
+            <td data-label="Status">
+              <span class="org-status org-status-{{ member.status }}">{{ member.get_status_display }}</span>
+            </td>
+            <td class="is-actions-cell" data-label="">
+              <div class="cs-list-actions">
+                <a class="cs-list-btn is-primary" href="{% url 'roles:customer_support_allocate_employee' member.pk %}">
                   Allocate
                 </a>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}
-    <p class="empty">{{ empty_text }}</p>
+  <div class="cs-list-empty">
+    <strong>No employees</strong>
+    <p>{{ empty_text }}</p>
+  </div>
   {% endif %}
 </section>
 

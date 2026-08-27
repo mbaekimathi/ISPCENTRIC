@@ -6654,6 +6654,7 @@ def fetch_customer_hotspot_usage(
         "ok": False,
         "online": False,
         "session_active": False,
+        "connected": False,
         "hotspot_mac": mac_display,
         "pppoe_username": "",
         "address": "",
@@ -6710,13 +6711,44 @@ def fetch_customer_hotspot_usage(
                     break
 
             if not session:
+                host_rows = _print(
+                    sock,
+                    "/ip/hotspot/host",
+                    props="mac-address,address,authorized,server",
+                    query={"mac-address": mac_display},
+                )
+                if not host_rows:
+                    host_rows = _print(
+                        sock,
+                        "/ip/hotspot/host",
+                        props="mac-address,address,authorized,server",
+                    )
+                host_row = None
+                for row in host_rows:
+                    row_mac = _mac_compact(row.get("mac-address") or "")
+                    if row_mac == mac_compact:
+                        host_row = row
+                        break
+                if host_row:
+                    return {
+                        **empty,
+                        "ok": True,
+                        "online": True,
+                        "connected": True,
+                        "session_active": False,
+                        "address": (host_row.get("address") or "").strip(),
+                        "interface": (host_row.get("server") or "").strip(),
+                        "error": "",
+                        "hint": "Connected to Wi‑Fi — Hotspot session not active.",
+                    }
                 return {
                     **empty,
                     "ok": True,
                     "online": True,
+                    "connected": False,
                     "session_active": False,
                     "error": "",
-                    "hint": "This gadget is not in an active Hotspot session right now.",
+                    "hint": "Disconnected — not seen on this MikroTik Hotspot.",
                 }
 
             bytes_in = _parse_int(session.get("bytes-in"))
@@ -6725,6 +6757,7 @@ def fetch_customer_hotspot_usage(
             return {
                 "ok": True,
                 "online": True,
+                "connected": True,
                 "session_active": True,
                 "hotspot_mac": mac_display,
                 "pppoe_username": (session.get("user") or "").strip(),

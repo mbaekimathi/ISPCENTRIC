@@ -8,32 +8,42 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="org-page" id="org-clients">
-  <header class="org-page-header">
-    <div>
-      <h2>ISP clients</h2>
-      <p>Company / ISP accounts currently in ISPCENTRIC.</p>
+<section class="cs-list-page" id="org-clients">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">ISP clients</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <p class="org-page-count"><strong id="org-visible-count">{{ clients_count }}</strong> <span id="org-count-label">{% if clients_count == 1 %}client{% else %}clients{% endif %}</span></p>
+    <div class="cs-list-count">
+      <strong id="org-visible-count">{{ clients_count }}</strong>
+      <span id="org-count-label">{% if clients_count == 1 %}ISP{% else %}ISPs{% endif %}</span>
+    </div>
   </header>
 
   {% if clients %}
-  <div class="org-search-bar">
+  <div class="cs-list-toolbar">
     <label class="visually-hidden" for="org-search">Search ISP clients</label>
-    <input
-      type="search"
-      id="org-search"
-      class="org-search-input"
-      placeholder="Search by name, owner, email, phone, join code, or status…"
-      autocomplete="off"
-      spellcheck="false"
-    >
+    <div class="cs-list-search-wrap">
+      <span class="cs-list-search-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="6.5"/>
+          <path d="M16.2 16.2 20 20" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <input
+        type="search"
+        id="org-search"
+        class="cs-list-search"
+        placeholder="Search name, owner, email, phone, join code, or status…"
+        autocomplete="off"
+        spellcheck="false"
+      >
+    </div>
   </div>
 
-  <div class="org-table-shell">
-    <table class="org-table org-table-clients" id="org-table">
+  <div class="cs-list-shell" id="org-table-shell">
+    <table class="cs-list-table cs-list-table--compact" id="org-table">
       <thead>
         <tr>
           <th>Organization</th>
@@ -42,27 +52,31 @@
           <th>Join code</th>
           <th>Status</th>
           <th>Staff</th>
-          <th>Customers</th>
-          <th>Registered</th>
-          <th>Actions</th>
+          <th>Subscribers</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {% for client in clients %}
-        <tr data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}">
-          <td>
-            <div class="org-identity">
+        <tr
+          data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}"
+        >
+          <td class="is-primary-cell" data-label="Organization">
+            <div class="cs-list-identity">
               {% if client.profile_photo %}
-                <img src="{{ client.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+                <img src="{{ client.profile_photo.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
               {% else %}
                 <span aria-hidden="true">{{ client.name|slice:":1"|upper }}</span>
               {% endif %}
-              <strong>{{ client.name }}</strong>
+              <div class="cs-list-primary">
+                <strong>{{ client.name }}</strong>
+                <small>{{ client.created_at|date:"d M Y" }}</small>
+              </div>
             </div>
           </td>
-          <td>
+          <td data-label="Owner">
             {% if client.owner %}
-              <div class="org-owner">
+              <div class="cs-list-primary">
                 <strong>{{ client.owner.get_full_name|default:client.owner.username }}</strong>
                 {% if client.owner.email %}<small>{{ client.owner.email }}</small>{% endif %}
               </div>
@@ -70,32 +84,20 @@
               —
             {% endif %}
           </td>
-          <td>
-            {% if client.phone %}
-              <a href="tel:{{ client.phone }}">{{ client.phone }}</a>
-            {% else %}
-              —
-            {% endif %}
+          <td data-label="Contact">
+            {% if client.phone %}<a href="tel:{{ client.phone }}">{{ client.phone }}</a>{% else %}—{% endif %}
           </td>
-          <td><span class="org-code">{{ client.join_code|default:"—" }}</span></td>
-          <td>
+          <td data-label="Join code"><span class="org-code">{{ client.join_code|default:"—" }}</span></td>
+          <td data-label="Status">
             <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
           </td>
-          <td class="org-metric">{{ client.staff_count }}</td>
-          <td class="org-metric">{{ client.customer_count }}</td>
-          <td class="org-date">{{ client.created_at|date:"d M Y" }}</td>
-          <td>
-            <div class="org-actions lead-ticket-actions">
-              <form
-                method="post"
-                action="{% url 'roles:customer_support_open_client_portal' client.pk %}"
-              >
+          <td data-label="Staff">{{ client.staff_count }}</td>
+          <td data-label="Subscribers">{{ client.customer_count }}</td>
+          <td class="is-actions-cell" data-label="">
+            <div class="cs-list-actions">
+              <form method="post" action="{% url 'roles:customer_support_open_client_portal' client.pk %}">
                 {% csrf_token %}
-                <button
-                  type="submit"
-                  class="org-action-success"
-                  title="Open {{ client.name }} client portal"
-                >
+                <button type="submit" class="cs-list-btn is-primary" title="Open {{ client.name }} client portal">
                   Open portal
                 </button>
               </form>
@@ -106,9 +108,16 @@
       </tbody>
     </table>
   </div>
-  <p class="org-empty org-search-empty" id="org-search-empty" hidden>No ISP clients match your search.</p>
+
+  <div class="cs-list-empty" id="org-search-empty" hidden>
+    <strong>No matches</strong>
+    <p>No ISP clients match your search.</p>
+  </div>
   {% else %}
-  <p class="org-empty">{{ empty_text }}</p>
+  <div class="cs-list-empty">
+    <strong>No ISP clients yet</strong>
+    <p>{{ empty_text }}</p>
+  </div>
   {% endif %}
 </section>
 
@@ -120,7 +129,7 @@
   var countEl = document.getElementById("org-visible-count");
   var labelEl = document.getElementById("org-count-label");
   var emptyEl = document.getElementById("org-search-empty");
-  var shell = document.querySelector(".org-table-shell");
+  var shell = document.getElementById("org-table-shell");
 
   function applyFilter() {
     var q = (input.value || "").trim().toLowerCase();
@@ -132,14 +141,16 @@
       if (show) visible += 1;
     });
     countEl.textContent = String(visible);
-    labelEl.textContent = visible === 1 ? "client" : "clients";
+    labelEl.textContent = visible === 1 ? "ISP" : "ISPs";
     var none = visible === 0;
     emptyEl.hidden = !none;
     if (shell) shell.hidden = none;
   }
 
-  input.addEventListener("input", applyFilter);
-  input.addEventListener("search", applyFilter);
+  if (input) {
+    input.addEventListener("input", applyFilter);
+    input.addEventListener("search", applyFilter);
+  }
 })();
 </script>
 {% endif %}

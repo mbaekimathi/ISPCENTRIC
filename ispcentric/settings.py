@@ -71,18 +71,40 @@ def _hosts_from_public_base() -> list[str]:
     return [host] if host else []
 
 
+# Track whether the operator opted into a wildcard host list (risky with
+# AUTO_CSRF_ORIGINS). Captive probe hosts are appended below and are not "*".
+_ALLOWED_HOSTS_WILDCARD = False
+
 if HOSTED:
     if _hosts_raw and _hosts_raw.lower() not in ("auto",):
         if _hosts_raw.strip() == "*":
             # Explicit opt-in only — prefer a comma-separated host list.
             ALLOWED_HOSTS = ["*"]
+            _ALLOWED_HOSTS_WILDCARD = True
         else:
             ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
     else:
         ALLOWED_HOSTS = _hosts_from_public_base()
         if not ALLOWED_HOSTS:
-            # Legacy hosted installs without DJANGO_ALLOWED_HOSTS — pin hosts ASAP.
-            ALLOWED_HOSTS = ["*"]
+            # Legacy hosted installs without DJANGO_ALLOWED_HOSTS.
+            # Require DJANGO_ALLOW_WILDCARD_HOSTS=true to keep "*" — otherwise
+            # fall back to PUBLIC_BASE_URL host only when set, else "*" with a
+            # loud warning so existing VPS boxes keep booting.
+            if env_flag("DJANGO_ALLOW_WILDCARD_HOSTS", "false"):
+                ALLOWED_HOSTS = ["*"]
+                _ALLOWED_HOSTS_WILDCARD = True
+            else:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "Hosted install has no DJANGO_ALLOWED_HOSTS / PUBLIC_BASE_URL "
+                    "host. Using ALLOWED_HOSTS=['*'] temporarily — set "
+                    "DJANGO_ALLOWED_HOSTS to your domain (see .env.production.example). "
+                    "AUTO_CSRF_ORIGINS is disabled while '*' is active unless "
+                    "DJANGO_AUTO_CSRF_ORIGINS=true."
+                )
+                ALLOWED_HOSTS = ["*"]
+                _ALLOWED_HOSTS_WILDCARD = True
 elif _hosts_raw and _hosts_raw.lower() not in ("auto", "*"):
     ALLOWED_HOSTS = [h.strip() for h in _hosts_raw.split(",") if h.strip()]
 else:
@@ -121,8 +143,21 @@ CSRF_TRUSTED_ORIGINS = [
     for o in (os.getenv("DJANGO_CSRF_TRUSTED_ORIGINS") or "").split(",")
     if o.strip()
 ]
-# On hosted, middleware adds https://<current-host> per request
-AUTO_CSRF_ORIGINS = HOSTED or env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
+# On hosted with pinned hosts, middleware adds https://<current-host> per request.
+# With ALLOWED_HOSTS='*', auto-trusting the request Host enables CSRF origin
+# injection — require an explicit DJANGO_AUTO_CSRF_ORIGINS=true in that case.
+if _ALLOWED_HOSTS_WILDCARD:
+    AUTO_CSRF_ORIGINS = env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
+else:
+    AUTO_CSRF_ORIGINS = HOSTED or env_flag("DJANGO_AUTO_CSRF_ORIGINS", "false")
+
+# STK callback: confirm ResultCode=0 with Daraja STK Query before fulfillment.
+# Set false only for offline tests that mock fulfillment without Daraja.
+STK_CALLBACK_REQUIRE_DARAJA_QUERY = env_flag(
+    "STK_CALLBACK_REQUIRE_DARAJA_QUERY", "true"
+)
+# Optional comma-separated allowlist for /api/mpesa/stk-callback/ (empty = any IP).
+MPESA_CALLBACK_ALLOWED_IPS = (os.getenv("MPESA_CALLBACK_ALLOWED_IPS") or "").strip()
 
 # Public base URL for captive Hotspot / renew pages pushed to MikroTik.
 # Use a concrete URL on hosted (e.g. http://isp.richcom.co.ke), or "auto"/empty

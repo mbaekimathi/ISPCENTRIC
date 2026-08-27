@@ -8,34 +8,54 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<section class="cs-role-page">
+  <header class="cs-role-hero">
+    <div class="cs-role-hero-main">
+      <span class="cs-role-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="4" y="5" width="16" height="14" rx="2.2"/>
+          <path d="M8 9.5h8M8 12.5h5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div>
+        <p class="cs-role-kicker">{{ page_kicker }}</p>
+        <h2 class="cs-role-title">{{ page_title }}</h2>
+        <p class="cs-role-lead">{{ page_subtitle }}</p>
+      </div>
+    </div>
+  </header>
 
-{% if module_links %}
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>{{ page_title }} modules</h2>
-      <p class="panel-sub">{{ page_subtitle }}</p>
+  {% if module_links %}
+  <section class="cs-role-panel">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3>{{ page_title }} modules</h3>
+        <p>{{ page_subtitle }}</p>
+      </div>
+    </header>
+    <div class="cs-role-grid">
+      {% for link in module_links %}
+        <a class="cs-role-card" href="{% url link.url_name %}">
+          <span class="cs-role-card-index">{{ link.index }}</span>
+          <span class="cs-role-card-label">{{ link.label }}</span>
+          <span class="cs-role-card-cta">Open →</span>
+        </a>
+      {% endfor %}
     </div>
-  </div>
-  <div class="role-highlight-grid">
-    {% for link in module_links %}
-      <a class="role-highlight-card" href="{% url link.url_name %}">
-        <span class="role-highlight-index">{{ link.index }}</span>
-        <p>{{ link.label }}</p>
-      </a>
-    {% endfor %}
-  </div>
-</section>
-{% else %}
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>{{ page_title }}</h2>
-      <p class="panel-sub">{{ page_subtitle }}</p>
+  </section>
+  {% else %}
+  <section class="cs-role-panel">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3>{{ page_title }}</h3>
+        <p>{{ page_subtitle }}</p>
+      </div>
+    </header>
+    <div class="cs-role-empty">
+      <p class="cs-role-empty-title">Nothing here yet</p>
+      <p>{{ empty_text }}</p>
     </div>
-  </div>
-  <p class="empty">{{ empty_text }}</p>
+  </section>
+  {% endif %}
 </section>
-{% endif %}
 {% endblock %}

@@ -8,23 +8,31 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="cc-page" id="org-clients">
+<section class="cc-page cc-page--modern" id="org-clients">
   <header class="cc-hero">
-    <div class="cc-hero-copy">
-      <p class="cc-kicker">IT Support</p>
-      <h2>{{ list_heading }}</h2>
-      <p>{{ list_intro }}</p>
+    <div class="cc-hero-main">
+      <span class="cc-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M4.5 19.5V7.8A2.3 2.3 0 0 1 6.8 5.5h10.4a2.3 2.3 0 0 1 2.3 2.3v11.7"/>
+          <path d="M9 19.5V12h6v7.5M4.5 19.5h15" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="cc-hero-copy">
+        <p class="cc-kicker">IT Support · ISPs</p>
+        <h2>{{ list_heading }}</h2>
+        <p>{{ list_intro }}</p>
+      </div>
     </div>
     <div class="cc-hero-stats" aria-label="ISP summary">
-      <div class="cc-stat">
+      <div class="cc-stat tone-total">
         <strong id="org-visible-count">{{ clients_count }}</strong>
         <span id="org-count-label">{% if clients_count == 1 %}ISP{% else %}ISPs{% endif %}</span>
       </div>
-      <div class="cc-stat">
+      <div class="cc-stat tone-active">
         <strong>{{ active_count }}</strong>
         <span>Active</span>
       </div>
-      <div class="cc-stat">
+      <div class="cc-stat tone-suspended{% if suspended_count %} is-hot{% endif %}">
         <strong>{{ suspended_count }}</strong>
         <span>Suspended</span>
       </div>
@@ -34,20 +42,28 @@
   {% if clients %}
   <div class="cc-toolbar">
     <label class="visually-hidden" for="org-search">Search ISP accounts</label>
-    <input
-      type="search"
-      id="org-search"
-      class="cc-search"
-      placeholder="Search by name, owner, email, phone, join code, or status…"
-      autocomplete="off"
-      spellcheck="false"
-    >
+    <div class="cc-search-wrap">
+      <span class="cc-search-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="6.5"/>
+          <path d="M16.2 16.2 20 20" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <input
+        type="search"
+        id="org-search"
+        class="cc-search"
+        placeholder="Search by name, owner, email, phone, join code, or status…"
+        autocomplete="off"
+        spellcheck="false"
+      >
+    </div>
   </div>
 
   <div class="cc-grid cc-list" id="org-table">
     {% for client in clients %}
     <article
-      class="cc-card"
+      class="cc-card{% if client.status == 'suspended' %} is-suspended{% endif %}"
       data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}"
     >
       <div class="cc-card-top">
@@ -131,9 +147,15 @@
     </article>
     {% endfor %}
   </div>
-  <p class="cc-empty" id="org-search-empty" hidden>No ISP accounts match your search.</p>
+  <div class="cc-empty cc-empty-panel" id="org-search-empty" hidden>
+    <p class="cc-empty-title">No matches</p>
+    <p>No ISP accounts match your search.</p>
+  </div>
   {% else %}
-  <p class="cc-empty">No ISP accounts registered yet.</p>
+  <div class="cc-empty cc-empty-panel">
+    <p class="cc-empty-title">No ISP accounts yet</p>
+    <p>No ISP accounts registered yet.</p>
+  </div>
   {% endif %}
 </section>
 

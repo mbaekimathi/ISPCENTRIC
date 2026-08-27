@@ -7,179 +7,207 @@
   <h1 class="staff-topbar-heading">{{ page_title }}</h1>
 {% endblock %}
 
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
+{% endblock %}
+
 {% block staff_content %}
-<section class="org-edit org-edit--settings company-settings-page"
+<section class="pgw-page company-settings-page org-edit org-edit--settings"
          data-stk-live-root
          data-status-url="{% url 'roles:it_support_payment_gateway_status' %}">
-  <div class="org-edit-intro">
-    <div class="org-edit-hero">
-      <div class="company-settings-icon company-settings-icon--pay" aria-hidden="true">M</div>
-      <div class="org-edit-hero-copy">
-        <p class="org-edit-kicker">Company · M-Pesa · Daraja</p>
-        <h2>Company Payment Gateway</h2>
-        <div class="org-edit-meta">
-          {% if gateway.enabled %}
-            <span class="org-status org-status-active">Activated</span>
-          {% else %}
-            <span class="org-status org-status-suspended">Inactive</span>
-          {% endif %}
-          <span class="org-edit-meta-item">{{ gateway.get_environment_display }}</span>
-          {% if gateway.updated_at %}
-            <span class="org-edit-meta-item">Updated {{ gateway.updated_at|date:"d M Y H:i" }}</span>
-          {% endif %}
-        </div>
-        <p class="org-edit-owner">
-          This is the company Daraja app. It is the default STK gateway for ISPs that have not
-          set up their own Payment Gateway, and it is always used for platform fees such as
-          MikroTik onboarding. ISP-owned gateways never use these credentials.
-        </p>
+  <div class="pgw-shell">
+
+    <header class="pgw-hero">
+      <div class="pgw-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="3.5" y="6" width="17" height="12" rx="2.2"/>
+          <path d="M3.5 10h17M8 14.2h3.2" stroke-linecap="round"/>
+        </svg>
       </div>
-    </div>
-  </div>
-
-  <div class="stk-live-panel" data-stk-live-panel data-status="checking" aria-live="polite">
-    <div class="stk-live-panel-head">
-      <div>
-        <p class="org-edit-kicker">Live configuration check</p>
-        <h3 data-stk-live-summary>Checking Daraja configuration…</h3>
+      <p class="pgw-kicker">Company · M-Pesa · Daraja</p>
+      <h2 class="pgw-title">Company Payment Gateway</h2>
+      <p class="pgw-lead">
+        This is the company Daraja app. It is the default STK gateway for ISPs that have not
+        set up their own Payment Gateway, and it is always used for platform fees such as
+        MikroTik onboarding. ISP-owned gateways never use these credentials.
+      </p>
+      <div class="pgw-meta">
+        {% if gateway.enabled %}
+          <span class="pgw-chip is-live">Activated</span>
+        {% else %}
+          <span class="pgw-chip is-soft">Inactive</span>
+        {% endif %}
+        <span class="pgw-chip is-soft">{{ gateway.get_environment_display }}</span>
+        {% if gateway.updated_at %}
+          <span class="pgw-chip is-soft">Updated {{ gateway.updated_at|date:"d M Y H:i" }}</span>
+        {% endif %}
       </div>
-      <span class="mikrotik-wifi-pill is-off" data-stk-live-pill>Checking</span>
-    </div>
-    <p class="stk-live-meta" data-stk-live-meta>Contacting Safaricom Daraja…</p>
-    <ul class="stk-live-checks" data-stk-live-checks></ul>
-  </div>
+    </header>
 
-  <div class="settings-policy-banner" data-sandbox-banner {% if gateway.environment != "sandbox" and form.environment.value != "sandbox" %}hidden{% endif %}>
-    Sandbox accepts both local and hosted callbacks for testing.
-    {% if sandbox_local_callback_url %}
-      <strong>Local:</strong> <code>{{ sandbox_local_callback_url }}</code>
-    {% endif %}
-    {% if sandbox_hosted_callback_url %}
-      {% if sandbox_local_callback_url %} · {% endif %}
-      <strong>Hosted:</strong> <code>{{ sandbox_hosted_callback_url }}</code>
-    {% endif %}
-    Use local when developing on this PC; use hosted when Safaricom must reach your server.
-  </div>
-
-  <form method="post" class="org-edit-form" id="stk-push-form" novalidate
-        data-sandbox-callback="{{ sandbox_callback_url }}"
-        data-sandbox-local-callback="{{ sandbox_local_callback_url }}"
-        data-sandbox-hosted-callback="{{ sandbox_hosted_callback_url }}"
-        data-sandbox-base="{{ sandbox_base_url }}">
-    {% csrf_token %}
-
-    {% if form.non_field_errors %}
-      <div class="notice notice-error">{{ form.non_field_errors }}</div>
-    {% endif %}
-
-    <div class="org-edit-panel settings-policy-panel{% if gateway.enabled or form.enabled.value %} is-policy-on{% endif %}" data-stk-activate-panel>
-      <header class="org-edit-panel-head settings-policy-head">
-        <div>
-          <h3>Activate STK Push</h3>
-          <p>Turn on Safaricom Daraja Lipa Na M-Pesa Online so the platform can prompt phones to pay.</p>
+    <div class="stk-live-panel pgw-live" data-stk-live-panel data-status="checking" aria-live="polite">
+      <div class="stk-live-panel-head">
+        <div class="pgw-live-copy">
+          <p class="pgw-section-kicker">Live configuration check</p>
+          <h3 data-stk-live-summary>Checking Daraja configuration…</h3>
         </div>
-        <span class="mikrotik-wifi-pill{% if gateway.enabled or form.enabled.value %} is-on{% else %} is-off{% endif %}" data-stk-status-pill>
-          {% if gateway.enabled or form.enabled.value %}On{% else %}Off{% endif %}
-        </span>
-      </header>
-
-      <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.enabled.id_for_label }}">
-        {{ form.enabled }}
-        <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
-        <span class="mikrotik-wifi-switch-text" data-stk-switch-label>
-          {% if gateway.enabled or form.enabled.value %}Activated{% else %}Inactive{% endif %}
-        </span>
-      </label>
-      {% if form.enabled.help_text %}<p class="settings-policy-hint">{{ form.enabled.help_text }}</p>{% endif %}
-      {% if form.enabled.errors %}<div class="field-error">{{ form.enabled.errors|striptags }}</div>{% endif %}
+        <span class="mikrotik-wifi-pill is-off" data-stk-live-pill>Checking</span>
+      </div>
+      <p class="stk-live-meta" data-stk-live-meta>Contacting Safaricom Daraja…</p>
+      <ul class="stk-live-checks" data-stk-live-checks></ul>
     </div>
 
-    <div class="org-edit-panel" data-stk-credentials {% if not gateway.enabled and not form.enabled.value and not form.errors %}hidden{% endif %}>
-      <header class="org-edit-panel-head">
-        <h3>STK Push credentials</h3>
-        <p>Enter the Daraja app credentials used to set up and send STK Push requests.</p>
-      </header>
-
-      <div class="form-group">
-        <label for="{{ form.environment.id_for_label }}">{{ form.environment.label }}</label>
-        {{ form.environment }}
-        {% if form.environment.help_text %}<p class="field-hint">{{ form.environment.help_text }}</p>{% endif %}
-        {% if form.environment.errors %}<div class="field-error">{{ form.environment.errors|striptags }}</div>{% endif %}
-      </div>
-
-      <div class="org-edit-grid">
-        <div class="form-group">
-          <label for="{{ form.payment_type.id_for_label }}">{{ form.payment_type.label }}</label>
-          {{ form.payment_type }}
-          {% if form.payment_type.help_text %}<p class="field-hint">{{ form.payment_type.help_text }}</p>{% endif %}
-          {% if form.payment_type.errors %}<div class="field-error">{{ form.payment_type.errors|striptags }}</div>{% endif %}
-        </div>
-        <div class="form-group">
-          <label for="{{ form.shortcode.id_for_label }}" data-gateway-shortcode-label>{{ form.shortcode.label }}</label>
-          {{ form.shortcode }}
-          {% if form.shortcode.help_text %}<p class="field-hint">{{ form.shortcode.help_text }}</p>{% endif %}
-          {% if form.shortcode.errors %}<div class="field-error">{{ form.shortcode.errors|striptags }}</div>{% endif %}
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label>Account reference</label>
-        <p class="company-settings-readonly">Client account number</p>
-        <p class="field-hint">
-          STK Push <strong>AccountReference</strong> always uses the paying client’s account number
-          (for example <code>CLT-0001-A1B2C3</code>), not a fixed gateway value.
-        </p>
-      </div>
-
-      <div class="form-group">
-        <label for="{{ form.consumer_key.id_for_label }}">{{ form.consumer_key.label }}</label>
-        {{ form.consumer_key }}
-        {% if form.consumer_key.help_text %}<p class="field-hint">{{ form.consumer_key.help_text }}</p>{% endif %}
-        {% if form.consumer_key.errors %}<div class="field-error">{{ form.consumer_key.errors|striptags }}</div>{% endif %}
-      </div>
-
-      <div class="org-edit-grid">
-        <div class="form-group">
-          <label for="{{ form.consumer_secret.id_for_label }}">{{ form.consumer_secret.label }}</label>
-          {{ form.consumer_secret }}
-          {% if form.consumer_secret.help_text %}<p class="field-hint">{{ form.consumer_secret.help_text }}</p>{% endif %}
-          {% if form.consumer_secret.errors %}<div class="field-error">{{ form.consumer_secret.errors|striptags }}</div>{% endif %}
-        </div>
-        <div class="form-group">
-          <label for="{{ form.passkey.id_for_label }}">{{ form.passkey.label }}</label>
-          {{ form.passkey }}
-          {% if form.passkey.help_text %}<p class="field-hint">{{ form.passkey.help_text }}</p>{% endif %}
-          {% if form.passkey.errors %}<div class="field-error">{{ form.passkey.errors|striptags }}</div>{% endif %}
-        </div>
-      </div>
-
-      <div class="form-group">
-        <label for="{{ form.callback_url.id_for_label }}">{{ form.callback_url.label }}</label>
-        {{ form.callback_url }}
-        {% if form.callback_url.help_text %}<p class="field-hint">{{ form.callback_url.help_text }}</p>{% endif %}
-        {% if form.callback_url.errors %}<div class="field-error">{{ form.callback_url.errors|striptags }}</div>{% endif %}
-        <p class="field-hint company-settings-callback-hint" data-sandbox-callback-hint>
-          Sandbox callbacks:
+    <div class="settings-policy-banner pgw-banner" data-sandbox-banner {% if gateway.environment != "sandbox" and form.environment.value != "sandbox" %}hidden{% endif %}>
+      <span class="pgw-banner-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="8.5"/>
+          <path d="M12 8v5M12 15.5v.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="pgw-banner-body">
+        <strong>Sandbox mode</strong>
+        <p>
+          Sandbox accepts both local and hosted callbacks for testing.
           {% if sandbox_local_callback_url %}
-            <button type="button" class="btn btn-ghost company-settings-inline-btn" data-use-sandbox-local-callback>
-              Local {{ sandbox_local_callback_url }}
-            </button>
+            <span class="pgw-banner-line"><strong>Local:</strong> <code>{{ sandbox_local_callback_url }}</code></span>
           {% endif %}
           {% if sandbox_hosted_callback_url %}
-            <button type="button" class="btn btn-ghost company-settings-inline-btn" data-use-sandbox-hosted-callback>
-              Hosted {{ sandbox_hosted_callback_url }}
-            </button>
+            <span class="pgw-banner-line"><strong>Hosted:</strong> <code>{{ sandbox_hosted_callback_url }}</code></span>
           {% endif %}
+          Use local when developing on this PC; use hosted when Safaricom must reach your server.
         </p>
       </div>
     </div>
 
-    <div class="org-edit-actions">
-      <button type="submit" class="btn btn-primary">Save STK Push settings</button>
-      <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back to Company System Settings</a>
-      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Dashboard</a>
-    </div>
-  </form>
+    <form method="post" class="org-edit-form pgw-form" id="stk-push-form" novalidate
+          data-sandbox-callback="{{ sandbox_callback_url }}"
+          data-sandbox-local-callback="{{ sandbox_local_callback_url }}"
+          data-sandbox-hosted-callback="{{ sandbox_hosted_callback_url }}"
+          data-sandbox-base="{{ sandbox_base_url }}">
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <div class="notice notice-error">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="org-edit-panel settings-policy-panel pgw-card pgw-activate{% if gateway.enabled or form.enabled.value %} is-policy-on{% endif %}" data-stk-activate-panel>
+        <header class="org-edit-panel-head settings-policy-head pgw-card-head">
+          <div class="pgw-card-head-main">
+            <span class="pgw-step" aria-hidden="true">1</span>
+            <div>
+              <h3>Activate STK Push</h3>
+              <p>Turn on Safaricom Daraja Lipa Na M-Pesa Online so the platform can prompt phones to pay.</p>
+            </div>
+          </div>
+          <span class="mikrotik-wifi-pill{% if gateway.enabled or form.enabled.value %} is-on{% else %} is-off{% endif %}" data-stk-status-pill>
+            {% if gateway.enabled or form.enabled.value %}On{% else %}Off{% endif %}
+          </span>
+        </header>
+
+        <label class="mikrotik-wifi-switch settings-policy-switch pgw-switch" for="{{ form.enabled.id_for_label }}">
+          {{ form.enabled }}
+          <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+          <span class="mikrotik-wifi-switch-text" data-stk-switch-label>
+            {% if gateway.enabled or form.enabled.value %}Activated{% else %}Inactive{% endif %}
+          </span>
+        </label>
+        {% if form.enabled.help_text %}<p class="settings-policy-hint">{{ form.enabled.help_text }}</p>{% endif %}
+        {% if form.enabled.errors %}<div class="field-error">{{ form.enabled.errors|striptags }}</div>{% endif %}
+      </div>
+
+      <div class="org-edit-panel pgw-card pgw-credentials" data-stk-credentials {% if not gateway.enabled and not form.enabled.value and not form.errors %}hidden{% endif %}>
+        <header class="org-edit-panel-head pgw-card-head">
+          <div class="pgw-card-head-main">
+            <span class="pgw-step" aria-hidden="true">2</span>
+            <div>
+              <h3>STK Push credentials</h3>
+              <p>Enter the Daraja app credentials used to set up and send STK Push requests.</p>
+            </div>
+          </div>
+        </header>
+
+        <div class="pgw-fields">
+          <div class="form-group">
+            <label for="{{ form.environment.id_for_label }}">{{ form.environment.label }}</label>
+            {{ form.environment }}
+            {% if form.environment.help_text %}<p class="field-hint">{{ form.environment.help_text }}</p>{% endif %}
+            {% if form.environment.errors %}<div class="field-error">{{ form.environment.errors|striptags }}</div>{% endif %}
+          </div>
+
+          <div class="org-edit-grid">
+            <div class="form-group">
+              <label for="{{ form.payment_type.id_for_label }}">{{ form.payment_type.label }}</label>
+              {{ form.payment_type }}
+              {% if form.payment_type.help_text %}<p class="field-hint">{{ form.payment_type.help_text }}</p>{% endif %}
+              {% if form.payment_type.errors %}<div class="field-error">{{ form.payment_type.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="form-group">
+              <label for="{{ form.shortcode.id_for_label }}" data-gateway-shortcode-label>{{ form.shortcode.label }}</label>
+              {{ form.shortcode }}
+              {% if form.shortcode.help_text %}<p class="field-hint">{{ form.shortcode.help_text }}</p>{% endif %}
+              {% if form.shortcode.errors %}<div class="field-error">{{ form.shortcode.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+
+          <div class="form-group pgw-readonly-block">
+            <label>Account reference</label>
+            <p class="company-settings-readonly">Client account number</p>
+            <p class="field-hint">
+              STK Push <strong>AccountReference</strong> always uses the paying client’s account number
+              (for example <code>CLT-0001-A1B2C3</code>), not a fixed gateway value.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="{{ form.consumer_key.id_for_label }}">{{ form.consumer_key.label }}</label>
+            {{ form.consumer_key }}
+            {% if form.consumer_key.help_text %}<p class="field-hint">{{ form.consumer_key.help_text }}</p>{% endif %}
+            {% if form.consumer_key.errors %}<div class="field-error">{{ form.consumer_key.errors|striptags }}</div>{% endif %}
+          </div>
+
+          <div class="org-edit-grid">
+            <div class="form-group">
+              <label for="{{ form.consumer_secret.id_for_label }}">{{ form.consumer_secret.label }}</label>
+              {{ form.consumer_secret }}
+              {% if form.consumer_secret.help_text %}<p class="field-hint">{{ form.consumer_secret.help_text }}</p>{% endif %}
+              {% if form.consumer_secret.errors %}<div class="field-error">{{ form.consumer_secret.errors|striptags }}</div>{% endif %}
+            </div>
+            <div class="form-group">
+              <label for="{{ form.passkey.id_for_label }}">{{ form.passkey.label }}</label>
+              {{ form.passkey }}
+              {% if form.passkey.help_text %}<p class="field-hint">{{ form.passkey.help_text }}</p>{% endif %}
+              {% if form.passkey.errors %}<div class="field-error">{{ form.passkey.errors|striptags }}</div>{% endif %}
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="{{ form.callback_url.id_for_label }}">{{ form.callback_url.label }}</label>
+            {{ form.callback_url }}
+            {% if form.callback_url.help_text %}<p class="field-hint">{{ form.callback_url.help_text }}</p>{% endif %}
+            {% if form.callback_url.errors %}<div class="field-error">{{ form.callback_url.errors|striptags }}</div>{% endif %}
+            <p class="field-hint company-settings-callback-hint pgw-callback-hint" data-sandbox-callback-hint>
+              Sandbox callbacks:
+              {% if sandbox_local_callback_url %}
+                <button type="button" class="btn btn-ghost company-settings-inline-btn" data-use-sandbox-local-callback>
+                  Local {{ sandbox_local_callback_url }}
+                </button>
+              {% endif %}
+              {% if sandbox_hosted_callback_url %}
+                <button type="button" class="btn btn-ghost company-settings-inline-btn" data-use-sandbox-hosted-callback>
+                  Hosted {{ sandbox_hosted_callback_url }}
+                </button>
+              {% endif %}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="org-edit-actions pgw-actions">
+        <button type="submit" class="btn btn-primary">Save STK Push settings</button>
+        <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back to Company System Settings</a>
+        <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Dashboard</a>
+      </div>
+    </form>
+  </div>
 </section>
 <script>
 (function () {

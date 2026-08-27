@@ -15,6 +15,8 @@ from django.utils import timezone
 from billing.models import BillingPlan, Customer
 
 RENEW_TOKEN_SALT = "ispcentric-subscription-renew"
+# Long grace so SMS/bookmark renew links keep working; still bounds leaked URLs.
+RENEW_TOKEN_MAX_AGE_SECONDS = 90 * 24 * 60 * 60
 
 
 def plans_for_router(
@@ -620,9 +622,13 @@ def make_renew_token(customer) -> str:
 
 
 def resolve_customer_from_renew_token(token: str) -> Customer | None:
-    """Load a customer from a renew token, or None if invalid."""
+    """Load a customer from a renew token, or None if invalid/expired."""
     try:
-        payload = signing.loads(token, salt=RENEW_TOKEN_SALT, max_age=None)
+        payload = signing.loads(
+            token,
+            salt=RENEW_TOKEN_SALT,
+            max_age=RENEW_TOKEN_MAX_AGE_SECONDS,
+        )
     except signing.BadSignature:
         return None
     customer_id = payload.get("cid") if isinstance(payload, dict) else None

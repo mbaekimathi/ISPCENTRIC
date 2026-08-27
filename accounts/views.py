@@ -536,19 +536,35 @@ def mpesa_stk_callback(request):
 
     Sandbox accepts both local (http://localhost…) and hosted (https://…) callbacks.
     Always acknowledges so Safaricom treats the callback as received.
+    Success fulfillment is verified inside process_stk_callback_payload (amount +
+    Daraja STK Query) so a forged POST alone cannot activate service.
     """
     import json
     import logging
 
-    from billing.stk import process_stk_callback_payload
+    from django.conf import settings
+
+    from billing.stk import process_stk_callback_payload, redact_stk_callback_for_log
 
     logger = logging.getLogger(__name__)
+
+    allowed_raw = (getattr(settings, "MPESA_CALLBACK_ALLOWED_IPS", "") or "").strip()
+    if allowed_raw:
+        peer = (request.META.get("REMOTE_ADDR") or "").strip()
+        allowed = {ip.strip() for ip in allowed_raw.split(",") if ip.strip()}
+        if peer not in allowed:
+            logger.warning("Rejected M-Pesa STK callback from non-allowlisted IP %s", peer)
+            return JsonResponse({"ResultCode": 0, "ResultDesc": "Accepted"})
+
     try:
         payload = json.loads(request.body.decode("utf-8") or "{}")
     except (TypeError, ValueError, UnicodeDecodeError):
-        payload = {"raw": request.body.decode("utf-8", errors="replace")}
+        payload = {"raw": "[unparseable body]"}
 
-    logger.info("M-Pesa STK callback received: %s", payload)
+    logger.info(
+        "M-Pesa STK callback received: %s",
+        redact_stk_callback_for_log(payload if isinstance(payload, dict) else {}),
+    )
     try:
         process_stk_callback_payload(payload if isinstance(payload, dict) else {})
     except Exception:  # noqa: BLE001 — never fail the HTTP ack to Safaricom

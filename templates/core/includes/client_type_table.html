@@ -6,7 +6,7 @@
           <th>Client</th>
           <th>Account</th>
           {% if show_pppoe %}<th>PPPoE</th><th>Session</th>{% endif %}
-          {% if show_hotspot %}<th>Session</th><th>Device</th>{% endif %}
+          {% if show_hotspot %}<th>Session</th><th>Connected to</th>{% endif %}
           {% if show_router %}<th>Router</th>{% endif %}
           <th class="clients-list-table-actions-col"></th>
         </tr>
@@ -73,11 +73,11 @@
                   title="Checking active Hotspot internet session…"
                 >…</span>
               </td>
-              <td data-label="Device">
+              <td data-label="Connected to">
                 <span
-                  class="badge clients-surf-badge is-checking"
+                  class="badge clients-surf-badge clients-conn-badge is-checking"
                   data-hotspot-connected="{{ c.id }}"
-                  title="Checking device connection…"
+                  title="Checking which MikroTik / Wi‑Fi this device is on…"
                 >…</span>
               </td>
             {% endif %}

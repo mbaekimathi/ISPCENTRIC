@@ -8,135 +8,152 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<p class="client-page-lead">
-  <a href="{% url allocate_list_url_name %}">← Back to employees</a>
-</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>{{ member.user.get_full_name|default:member.user.username }}</h2>
-      <p class="panel-sub">
-        {{ member.get_role_display }}
-        {% if member.organization %} · {{ member.organization.name }}{% endif %}
-        · {{ member.get_status_display }}
-      </p>
+<section class="cs-role-page">
+  <header class="cs-role-hero">
+    <div class="cs-role-hero-main">
+      <span class="cs-role-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M16.5 7.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"/>
+          <path d="M4.5 19.2c.8-3.2 3.5-5.2 7.5-5.2s6.7 2 7.5 5.2" stroke-linecap="round"/>
+          <path d="M18 14v5M15.5 16.5H20.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div>
+        <p class="cs-role-kicker">{{ page_kicker }}</p>
+        <h2 class="cs-role-title">{{ member.user.get_full_name|default:member.user.username }}</h2>
+        <p class="cs-role-lead">
+          {{ member.get_role_display }}
+          {% if member.organization %} · {{ member.organization.name }}{% endif %}
+          · {{ member.get_status_display }}
+        </p>
+        <p class="cs-role-lead">
+          <a href="{% url allocate_list_url_name %}">← Back to employees</a>
+        </p>
+      </div>
     </div>
-  </div>
-</section>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Allocated to this employee{% if active_allocations %} ({{ active_allocations|length }}){% endif %}</h2>
-      <p class="panel-sub">Items currently issued to this employee. Return them to put stock back.</p>
+    <div class="cs-role-meta">
+      <span class="cs-role-chip is-live">{% if active_allocations %}{{ active_allocations|length }}{% else %}0{% endif %} issued</span>
+      <span class="cs-role-chip is-soft">{{ page_subtitle }}</span>
     </div>
-  </div>
+  </header>
 
-  {% if active_allocations %}
-    <div class="org-table-shell">
-      <table class="org-table">
-        <thead>
-          <tr>
-            <th>Equipment</th>
-            <th>Qty / Serial</th>
-            <th>Allocated</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in active_allocations %}
+  <section class="cs-role-panel">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3>Allocated to this employee{% if active_allocations %} ({{ active_allocations|length }}){% endif %}</h3>
+        <p>Items currently issued to this employee. Return them to put stock back.</p>
+      </div>
+    </header>
+
+    {% if active_allocations %}
+      <div class="org-table-shell">
+        <table class="org-table">
+          <thead>
             <tr>
-              <td>
-                <strong>{{ row.equipment.name }}</strong>
-                <small class="lead-location-line">{{ row.equipment.get_equipment_type_display }}</small>
-              </td>
-              <td>
-                {% if row.serial %}
-                  <code>{{ row.serial.serial_number }}</code>
-                {% else %}
-                  {{ row.quantity }}
-                {% endif %}
-              </td>
-              <td>{{ row.allocated_at|date:"M j, Y H:i" }}</td>
-              <td>
-                <form method="post" class="inline-form" onsubmit="return confirm('Return this item to stock?');">
-                  {% csrf_token %}
-                  <input type="hidden" name="action" value="return">
-                  <input type="hidden" name="allocation_id" value="{{ row.pk }}">
-                  <button type="submit" class="btn btn-ghost btn-sm">Return</button>
-                </form>
-              </td>
+              <th>Equipment</th>
+              <th>Qty / Serial</th>
+              <th>Allocated</th>
+              <th>Actions</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">Nothing allocated to this employee yet.</p>
-  {% endif %}
-</section>
+          </thead>
+          <tbody>
+            {% for row in active_allocations %}
+              <tr>
+                <td>
+                  <strong>{{ row.equipment.name }}</strong>
+                  <small class="lead-location-line">{{ row.equipment.get_equipment_type_display }}</small>
+                </td>
+                <td>
+                  {% if row.serial %}
+                    <code>{{ row.serial.serial_number }}</code>
+                  {% else %}
+                    {{ row.quantity }}
+                  {% endif %}
+                </td>
+                <td>{{ row.allocated_at|date:"M j, Y H:i" }}</td>
+                <td>
+                  <form method="post" class="inline-form" onsubmit="return confirm('Return this item to stock?');">
+                    {% csrf_token %}
+                    <input type="hidden" name="action" value="return">
+                    <input type="hidden" name="allocation_id" value="{{ row.pk }}">
+                    <button type="submit" class="btn btn-ghost btn-sm">Return</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-role-empty">
+        <p class="cs-role-empty-title">Nothing issued yet</p>
+        <p>Nothing allocated to this employee yet.</p>
+      </div>
+    {% endif %}
+  </section>
 
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Available stock{% if equipment_list %} ({{ equipment_list|length }}){% endif %}</h2>
-      <p class="panel-sub">Allocate units from warehouse stock to this employee.</p>
-    </div>
-  </div>
+  <section class="cs-role-panel">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3>Available stock{% if equipment_list %} ({{ equipment_list|length }}){% endif %}</h3>
+        <p>Allocate units from warehouse stock to this employee.</p>
+      </div>
+    </header>
 
-  {% if equipment_list %}
-    <div class="org-table-shell">
-      <table class="org-table" id="allocate-equipment-table">
-        <thead>
-          <tr>
-            <th>Equipment</th>
-            <th>On hand</th>
-            <th>Allocate</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in equipment_list %}
-            <tr
-              data-equipment-id="{{ item.pk }}"
-              data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
-              data-stock="{{ item.quantity }}"
-            >
-              <td>
-                <strong>{{ item.name }}</strong>
-                <small class="lead-location-line">
-                  {{ item.get_equipment_type_display }}
-                  {% if item.track_serials %} · Serial tracked{% endif %}
-                </small>
-              </td>
-              <td>{{ item.quantity }}</td>
-              <td>
-                {% if item.quantity < 1 %}
-                  <span class="org-status org-status-suspended">Out of stock</span>
-                {% else %}
-                  <button
-                    type="button"
-                    class="btn btn-primary btn-sm"
-                    data-open-allocate
-                    data-equipment-id="{{ item.pk }}"
-                    data-equipment-name="{{ item.name }}"
-                    data-equipment-stock="{{ item.quantity }}"
-                    data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
-                  >
-                    Allocate
-                  </button>
-                {% endif %}
-              </td>
+    {% if equipment_list %}
+      <div class="org-table-shell">
+        <table class="org-table" id="allocate-equipment-table">
+          <thead>
+            <tr>
+              <th>Equipment</th>
+              <th>On hand</th>
+              <th>Allocate</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No active network equipment available to allocate.</p>
-  {% endif %}
+          </thead>
+          <tbody>
+            {% for item in equipment_list %}
+              <tr
+                data-equipment-id="{{ item.pk }}"
+                data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
+                data-stock="{{ item.quantity }}"
+              >
+                <td>
+                  <strong>{{ item.name }}</strong>
+                  <small class="lead-location-line">
+                    {{ item.get_equipment_type_display }}
+                    {% if item.track_serials %} · Serial tracked{% endif %}
+                  </small>
+                </td>
+                <td>{{ item.quantity }}</td>
+                <td>
+                  {% if item.quantity < 1 %}
+                    <span class="org-status org-status-suspended">Out of stock</span>
+                  {% else %}
+                    <button
+                      type="button"
+                      class="btn btn-primary btn-sm"
+                      data-open-allocate
+                      data-equipment-id="{{ item.pk }}"
+                      data-equipment-name="{{ item.name }}"
+                      data-equipment-stock="{{ item.quantity }}"
+                      data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
+                    >
+                      Allocate
+                    </button>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-role-empty">
+        <p class="cs-role-empty-title">No stock available</p>
+        <p>No active network equipment available to allocate.</p>
+      </div>
+    {% endif %}
+  </section>
 </section>
 
 <div class="role-modal" id="allocate-modal" hidden aria-hidden="true">

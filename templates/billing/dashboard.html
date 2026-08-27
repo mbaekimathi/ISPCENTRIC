@@ -4,305 +4,397 @@
 
 {% block client_content %}
 <div class="billing-dash">
-  <header class="billing-dash-hero">
-    <div class="billing-dash-hero-copy">
-      <p class="billing-dash-kicker">Overview</p>
-      <p class="billing-dash-lead">
-        Track renewals, collect M-Pesa payments, and review every successful collection.
-      </p>
-    </div>
-    <div class="billing-dash-hero-actions">
-      <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">Clients</a>
-      <a class="btn btn-ghost" href="{% url 'billing:packages' %}">Packages</a>
-    </div>
-  </header>
-
-  <div class="billing-dash-stats">
-    <article class="billing-dash-stat">
-      <p class="billing-dash-stat-label">Customers</p>
-      <p class="billing-dash-stat-value">{{ stats.customers }}</p>
-    </article>
-    <article class="billing-dash-stat is-good">
-      <p class="billing-dash-stat-label">Active</p>
-      <p class="billing-dash-stat-value">{{ stats.active_customers }}</p>
-    </article>
-    <article class="billing-dash-stat{% if stats.attention_customers %} is-warn{% endif %}">
-      <p class="billing-dash-stat-label">Needs renewal</p>
-      <p class="billing-dash-stat-value">{{ stats.attention_customers }}</p>
-    </article>
-    <article class="billing-dash-stat">
-      <p class="billing-dash-stat-label">Pending invoices</p>
-      <p class="billing-dash-stat-value">{{ stats.pending_invoices }}</p>
-    </article>
-  </div>
-
-  <section class="panel staff-panel staff-panel-solid billing-dash-panel billing-dash-revenue">
-    <div class="panel-head-row">
-      <div>
-        <h2>Revenue</h2>
-        <p class="panel-sub">
-          {% if revenue_filter.active %}
-            Collections for {{ revenue_filter.label }}.
-          {% else %}
-            All-time collections. Choose a calendar range to filter.
+  <section class="billing-workspace">
+    <header class="billing-workspace-head">
+      <div class="billing-workspace-title">
+        <h1>Billing</h1>
+        <p class="billing-workspace-summary">
+          <span><strong>{{ stats.customers }}</strong> customers</span>
+          <span class="billing-workspace-pill tone-active">{{ stats.active_customers }} active</span>
+          {% if stats.attention_customers %}
+            <span class="billing-workspace-pill tone-warn">{{ stats.attention_customers }} need renewal</span>
           {% endif %}
+          <span class="billing-workspace-pill tone-invoice">{{ stats.pending_invoices }} pending</span>
         </p>
       </div>
-      {% if revenue_filter.active %}
-        <div class="panel-head-actions">
-          <a class="btn btn-ghost" href="{% url 'billing:dashboard' %}">Clear filter</a>
+      <div class="billing-workspace-actions">
+        <a class="btn btn-ghost btn-sm billing-hero-btn" href="{% url 'core:my_clients' %}">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Clients
+        </a>
+        <a class="btn btn-ghost btn-sm billing-hero-btn" href="{% url 'billing:packages' %}">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3.3 7 12 12l8.7-5M12 22V12"/></svg>
+          Packages
+        </a>
+      </div>
+    </header>
+
+    <div class="billing-dash-stats" role="list">
+      <article class="billing-dash-stat tone-total" role="listitem">
+        <span class="billing-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </span>
+        <div class="billing-dash-stat-body">
+          <p class="billing-dash-stat-label">Customers</p>
+          <p class="billing-dash-stat-value">{{ stats.customers }}</p>
+        </div>
+      </article>
+      <article class="billing-dash-stat tone-good" role="listitem">
+        <span class="billing-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 6 9 17l-5-5"/></svg>
+        </span>
+        <div class="billing-dash-stat-body">
+          <p class="billing-dash-stat-label">Active</p>
+          <p class="billing-dash-stat-value">{{ stats.active_customers }}</p>
+        </div>
+      </article>
+      <article class="billing-dash-stat tone-warn{% if stats.attention_customers %} is-warn{% endif %}" role="listitem">
+        <span class="billing-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        </span>
+        <div class="billing-dash-stat-body">
+          <p class="billing-dash-stat-label">Needs renewal</p>
+          <p class="billing-dash-stat-value">{{ stats.attention_customers }}</p>
+        </div>
+      </article>
+      <article class="billing-dash-stat tone-invoice" role="listitem">
+        <span class="billing-dash-stat-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M14 2v6h6M8 13h8M8 17h5"/></svg>
+        </span>
+        <div class="billing-dash-stat-body">
+          <p class="billing-dash-stat-label">Pending invoices</p>
+          <p class="billing-dash-stat-value">{{ stats.pending_invoices }}</p>
+        </div>
+      </article>
+    </div>
+
+    <section class="billing-section billing-dash-revenue">
+      <div class="billing-section-head">
+        <div>
+          <h2>Revenue</h2>
+          <p class="billing-section-sub">
+            {% if revenue_filter.active %}
+              Collections for {{ revenue_filter.label }}.
+            {% else %}
+              All-time collections. Filter by day, period, month, or year.
+            {% endif %}
+          </p>
+        </div>
+        {% if revenue_filter.active %}
+          <div class="billing-section-actions">
+            <a class="btn btn-ghost btn-sm" href="{% url 'billing:dashboard' %}">Clear filter</a>
+          </div>
+        {% endif %}
+      </div>
+
+      <form class="billing-revenue-filter" method="get" action="{% url 'billing:dashboard' %}" id="billing-revenue-filter">
+        <div class="billing-revenue-modes" role="group" aria-label="Revenue period">
+          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'day' %} is-active{% endif %}">
+            <input type="radio" name="range" value="day"{% if revenue_filter.ui_range == 'day' %} checked{% endif %}>
+            <span>Day</span>
+          </label>
+          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'period' %} is-active{% endif %}">
+            <input type="radio" name="range" value="period"{% if revenue_filter.ui_range == 'period' %} checked{% endif %}>
+            <span>Period</span>
+          </label>
+          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'month' %} is-active{% endif %}">
+            <input type="radio" name="range" value="month"{% if revenue_filter.ui_range == 'month' %} checked{% endif %}>
+            <span>Month</span>
+          </label>
+          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'year' %} is-active{% endif %}">
+            <input type="radio" name="range" value="year"{% if revenue_filter.ui_range == 'year' %} checked{% endif %}>
+            <span>Year</span>
+          </label>
+        </div>
+
+        <div class="billing-revenue-picker">
+          <div
+            class="billing-revenue-panel"
+            data-range-panel="day"
+            {% if revenue_filter.ui_range != 'day' %}hidden{% endif %}
+          >
+            <div class="billing-revenue-field">
+              <label for="billing-revenue-day">Select day</label>
+              <input id="billing-revenue-day" type="date" name="day" value="{{ revenue_filter.day }}">
+            </div>
+          </div>
+
+          <div
+            class="billing-revenue-panel"
+            data-range-panel="period"
+            {% if revenue_filter.ui_range != 'period' %}hidden{% endif %}
+          >
+            <div class="billing-revenue-field">
+              <label for="billing-revenue-start">From</label>
+              <input id="billing-revenue-start" type="date" name="start" value="{{ revenue_filter.start }}">
+            </div>
+            <div class="billing-revenue-field">
+              <label for="billing-revenue-end">To</label>
+              <input id="billing-revenue-end" type="date" name="end" value="{{ revenue_filter.end }}">
+            </div>
+          </div>
+
+          <div
+            class="billing-revenue-panel"
+            data-range-panel="month"
+            {% if revenue_filter.ui_range != 'month' %}hidden{% endif %}
+          >
+            <div class="billing-revenue-field">
+              <label for="billing-revenue-month">Select month</label>
+              <input id="billing-revenue-month" type="month" name="month" value="{{ revenue_filter.month }}">
+            </div>
+          </div>
+
+          <div
+            class="billing-revenue-panel"
+            data-range-panel="year"
+            {% if revenue_filter.ui_range != 'year' %}hidden{% endif %}
+          >
+            <div class="billing-revenue-field">
+              <label for="billing-revenue-year">Select year</label>
+              <input id="billing-revenue-year" type="number" name="year" min="2000" max="2100" step="1" placeholder="YYYY" value="{{ revenue_filter.year }}">
+            </div>
+          </div>
+
+          <div class="billing-revenue-actions">
+            <button type="submit" class="btn btn-primary btn-sm">Apply</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="billing-revenue-cards">
+        <article class="billing-revenue-card is-total">
+          <p class="billing-dash-stat-label">Total revenue</p>
+          <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue }}</p>
+          <p class="billing-revenue-meta">{{ stats.payment_count }} payment{{ stats.payment_count|pluralize }}</p>
+        </article>
+        <article class="billing-revenue-card is-pppoe">
+          <p class="billing-dash-stat-label">PPPoE</p>
+          <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_pppoe }}</p>
+          <p class="billing-revenue-meta">From PPPoE clients</p>
+        </article>
+        <article class="billing-revenue-card is-hotspot">
+          <p class="billing-dash-stat-label">Hotspot</p>
+          <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_hotspot }}</p>
+          <p class="billing-revenue-meta">From Hotspot clients</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="billing-section">
+      <div class="billing-section-head">
+        <div>
+          <h2>Needs attention</h2>
+          <p class="billing-section-sub">Expired packages or clients at ¾ or more of their period.</p>
+        </div>
+        <div class="billing-section-actions">
+          <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}">All clients</a>
+        </div>
+      </div>
+
+      {% if attention_customers %}
+        <div class="org-table-shell billing-dash-table-shell">
+          <table class="org-table billing-dash-table billing-dash-table-attention">
+            <colgroup>
+              <col class="col-client">
+              <col class="col-package">
+              <col class="col-period">
+              <col class="col-used">
+              <col class="col-status">
+              <col class="col-action">
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Client</th>
+                <th scope="col">Package</th>
+                <th scope="col">Period</th>
+                <th scope="col">Used</th>
+                <th scope="col">Status</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in attention_customers %}
+                <tr class="{% if row.attention == 'expired' %}is-expired{% else %}is-due{% endif %}">
+                  <td data-label="Client">
+                    <a class="billing-dash-client" href="{% url 'core:client_detail' row.customer.pk %}">
+                      <strong class="billing-dash-cell-primary">{{ row.customer.full_name }}</strong>
+                      <small class="billing-dash-cell-secondary">{{ row.customer.account_number }}</small>
+                    </a>
+                  </td>
+                  <td data-label="Package">
+                    {% if row.customer.plan %}
+                      <div class="billing-dash-stack">
+                        <span class="billing-dash-cell-primary billing-dash-plan">{{ row.customer.plan.name }}</span>
+                        {% if row.customer.plan.price %}
+                          <span class="billing-dash-cell-secondary">KES {{ row.customer.plan.price }}</span>
+                        {% endif %}
+                      </div>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Period">
+                    {% if row.customer.package_start and row.customer.package_end %}
+                      <div class="billing-dash-stack billing-dash-period">
+                        <span class="billing-dash-cell-primary">{{ row.customer.package_start|date:"M j, Y" }}</span>
+                        <span class="billing-dash-cell-secondary">to {{ row.customer.package_end|date:"M j, Y" }}</span>
+                      </div>
+                    {% elif row.customer.package_end %}
+                      <div class="billing-dash-stack billing-dash-period">
+                        <span class="billing-dash-cell-primary">Ends</span>
+                        <span class="billing-dash-cell-secondary">{{ row.customer.package_end|date:"M j, Y" }}</span>
+                      </div>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Used">
+                    {% if row.progress %}
+                      <div class="billing-dash-progress" title="{{ row.progress.percent }}% used">
+                        <div class="billing-dash-progress-track">
+                          <span
+                            class="billing-dash-progress-fill{% if row.attention == 'expired' %} is-expired{% endif %}"
+                            style="width: {% if row.attention == 'expired' %}100{% else %}{{ row.progress.percent }}{% endif %}%;"
+                          ></span>
+                        </div>
+                        <span class="billing-dash-progress-label">{{ row.progress.percent }}%</span>
+                      </div>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Status" class="billing-dash-col-status">
+                    {% if row.attention == "expired" %}
+                      <span class="badge badge-warn">Expired</span>
+                    {% else %}
+                      <span class="badge billing-dash-badge-due">¾ used</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Action" class="billing-dash-col-action">
+                    {% if row.customer.plan and row.customer.plan.price %}
+                      <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        data-stk-pay
+                        data-customer-id="{{ row.customer.pk }}"
+                        data-customer-name="{{ row.customer.full_name }}"
+                        data-account="{{ row.customer.account_number }}"
+                        data-phone="{{ row.customer.phone }}"
+                        data-plan="{{ row.customer.plan.name }}"
+                        data-amount="{{ row.customer.plan.price }}"
+                        data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
+                      >Collect</button>
+                    {% else %}
+                      <span class="billing-dash-muted">No package</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="billing-dash-empty">
+          <p class="billing-dash-empty-title">All clear</p>
+          <p class="billing-dash-empty-copy">No expired or nearly exhausted subscriptions right now.</p>
         </div>
       {% endif %}
-    </div>
+    </section>
 
-    <form class="billing-revenue-filter" method="get" action="{% url 'billing:dashboard' %}" id="billing-revenue-filter">
-      <div class="billing-revenue-modes" role="group" aria-label="Revenue period">
-        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'day' %} is-active{% endif %}">
-          <input type="radio" name="range" value="day"{% if revenue_filter.ui_range == 'day' %} checked{% endif %}>
-          <span>Single day</span>
-        </label>
-        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'period' %} is-active{% endif %}">
-          <input type="radio" name="range" value="period"{% if revenue_filter.ui_range == 'period' %} checked{% endif %}>
-          <span>Period</span>
-        </label>
-        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'month' %} is-active{% endif %}">
-          <input type="radio" name="range" value="month"{% if revenue_filter.ui_range == 'month' %} checked{% endif %}>
-          <span>Month</span>
-        </label>
-        <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'year' %} is-active{% endif %}">
-          <input type="radio" name="range" value="year"{% if revenue_filter.ui_range == 'year' %} checked{% endif %}>
-          <span>Year</span>
-        </label>
-      </div>
-
-      <div class="billing-revenue-calendars">
-        <div class="billing-revenue-field" data-range-field="day" hidden>
-          <label for="billing-revenue-day">Day</label>
-          <input id="billing-revenue-day" type="date" name="day" value="{{ revenue_filter.day }}">
+    <section class="billing-section is-last">
+      <div class="billing-section-head">
+        <div>
+          <h2>Payments</h2>
+          <p class="billing-section-sub">
+            {% if revenue_filter.active %}
+              Successful collections for {{ revenue_filter.label }}.
+            {% else %}
+              Successful collections for this organization.
+            {% endif %}
+          </p>
         </div>
-        <div class="billing-revenue-field" data-range-field="period" hidden>
-          <label for="billing-revenue-start">From</label>
-          <input id="billing-revenue-start" type="date" name="start" value="{{ revenue_filter.start }}">
-        </div>
-        <div class="billing-revenue-field" data-range-field="period" hidden>
-          <label for="billing-revenue-end">To</label>
-          <input id="billing-revenue-end" type="date" name="end" value="{{ revenue_filter.end }}">
-        </div>
-        <div class="billing-revenue-field" data-range-field="month" hidden>
-          <label for="billing-revenue-month">Month</label>
-          <input id="billing-revenue-month" type="month" name="month" value="{{ revenue_filter.month }}">
-        </div>
-        <div class="billing-revenue-field" data-range-field="year" hidden>
-          <label for="billing-revenue-year">Year</label>
-          <input id="billing-revenue-year" type="number" name="year" min="2000" max="2100" step="1" placeholder="YYYY" value="{{ revenue_filter.year }}">
-        </div>
-        <div class="billing-revenue-actions">
-          <button type="submit" class="btn btn-primary">Apply</button>
+        <div class="billing-section-actions">
+          <span class="billing-count-chip">{{ stats.payment_count }} recorded</span>
         </div>
       </div>
-    </form>
 
-    <div class="billing-revenue-cards">
-      <article class="billing-revenue-card is-total">
-        <p class="billing-dash-stat-label">Total revenue</p>
-        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue }}</p>
-        <p class="billing-revenue-meta">{{ stats.payment_count }} payment{{ stats.payment_count|pluralize }}</p>
-      </article>
-      <article class="billing-revenue-card is-pppoe">
-        <p class="billing-dash-stat-label">PPPoE revenue</p>
-        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_pppoe }}</p>
-        <p class="billing-revenue-meta">From PPPoE clients</p>
-      </article>
-      <article class="billing-revenue-card is-hotspot">
-        <p class="billing-dash-stat-label">Hotspot revenue</p>
-        <p class="billing-dash-stat-value billing-dash-stat-money">KES {{ stats.revenue_hotspot }}</p>
-        <p class="billing-revenue-meta">From Hotspot clients</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="panel staff-panel staff-panel-solid billing-dash-panel">
-    <div class="panel-head-row">
-      <div>
-        <h2>Subscriptions needing attention</h2>
-        <p class="panel-sub">Expired packages or clients who have used ¾ or more of their period.</p>
-      </div>
-      <div class="panel-head-actions">
-        <a class="btn btn-ghost" href="{% url 'core:my_clients' %}">All clients</a>
-      </div>
-    </div>
-
-    {% if attention_customers %}
-      <div class="org-table-shell billing-dash-table-shell">
-        <table class="org-table billing-dash-table">
-          <thead>
-            <tr>
-              <th>Client</th>
-              <th>Package</th>
-              <th>Period</th>
-              <th>Used</th>
-              <th>Status</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in attention_customers %}
-              <tr class="{% if row.attention == 'expired' %}is-expired{% else %}is-due{% endif %}">
-                <td data-label="Client">
-                  <a class="billing-dash-client" href="{% url 'core:client_detail' row.customer.pk %}">
-                    <strong>{{ row.customer.full_name }}</strong>
-                    <small>{{ row.customer.account_number }}</small>
-                  </a>
-                </td>
-                <td data-label="Package">
-                  {% if row.customer.plan %}
-                    <span class="billing-dash-plan">{{ row.customer.plan.name }}</span>
-                    {% if row.customer.plan.price %}
-                      <small class="billing-dash-muted">KES {{ row.customer.plan.price }}</small>
-                    {% endif %}
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-                <td data-label="Period">
-                  {% if row.customer.package_start and row.customer.package_end %}
-                    <span class="billing-dash-period">
-                      {{ row.customer.package_start|date:"M j" }}
-                      <span aria-hidden="true">→</span>
-                      {{ row.customer.package_end|date:"M j, Y" }}
-                    </span>
-                  {% elif row.customer.package_end %}
-                    Ends {{ row.customer.package_end|date:"M j, Y" }}
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-                <td data-label="Used">
-                  {% if row.progress %}
-                    <div class="billing-dash-progress" title="{{ row.progress.percent }}% used">
-                      <div class="billing-dash-progress-track">
-                        <span
-                          class="billing-dash-progress-fill{% if row.attention == 'expired' %} is-expired{% endif %}"
-                          style="width: {% if row.attention == 'expired' %}100{% else %}{{ row.progress.percent }}{% endif %}%;"
-                        ></span>
-                      </div>
-                      <span class="billing-dash-progress-label">{{ row.progress.percent }}%</span>
-                    </div>
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-                <td data-label="Status">
-                  {% if row.attention == "expired" %}
-                    <span class="badge badge-warn">Expired</span>
-                  {% else %}
-                    <span class="badge billing-dash-badge-due">¾ used</span>
-                  {% endif %}
-                </td>
-                <td data-label="Action">
-                  {% if row.customer.plan and row.customer.plan.price %}
-                    <button
-                      type="button"
-                      class="btn btn-primary btn-sm"
-                      data-stk-pay
-                      data-customer-id="{{ row.customer.pk }}"
-                      data-customer-name="{{ row.customer.full_name }}"
-                      data-account="{{ row.customer.account_number }}"
-                      data-phone="{{ row.customer.phone }}"
-                      data-plan="{{ row.customer.plan.name }}"
-                      data-amount="{{ row.customer.plan.price }}"
-                      data-pay-url="{% url 'billing:subscription_stk_pay' row.customer.pk %}"
-                    >Collect</button>
-                  {% else %}
-                    <span class="billing-dash-muted">No package</span>
-                  {% endif %}
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="billing-dash-empty">
-        <p class="billing-dash-empty-title">All clear</p>
-        <p class="billing-dash-empty-copy">No expired or nearly exhausted subscriptions right now.</p>
-      </div>
-    {% endif %}
-  </section>
-
-  <section class="panel staff-panel staff-panel-solid billing-dash-panel">
-    <div class="panel-head-row">
-      <div>
-        <h2>Payments</h2>
-        <p class="panel-sub">
-          {% if revenue_filter.active %}
-            Successful collections for {{ revenue_filter.label }}.
-          {% else %}
-            Every successful collection for this organization.
-          {% endif %}
-        </p>
-      </div>
-      <div class="panel-head-actions">
-        <span class="org-status org-status-active">{{ stats.payment_count }} recorded</span>
-      </div>
-    </div>
-
-    {% if payments %}
-      <div class="org-table-shell billing-dash-table-shell">
-        <table class="org-table billing-dash-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Customer</th>
-              <th>Service</th>
-              <th>Amount</th>
-              <th>Method</th>
-              <th>M-Pesa / Ref</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for pay in payments %}
+      {% if payments %}
+        <div class="org-table-shell billing-dash-table-shell">
+          <table class="org-table billing-dash-table billing-dash-table-payments">
+            <colgroup>
+              <col class="col-date">
+              <col class="col-customer">
+              <col class="col-service">
+              <col class="col-amount">
+              <col class="col-method">
+              <col class="col-ref">
+            </colgroup>
+            <thead>
               <tr>
-                <td data-label="Date">{{ pay.received_at|date:"M j, Y g:i A" }}</td>
-                <td data-label="Customer">
-                  {% if pay.invoice and pay.invoice.customer %}
-                    <a class="billing-dash-client" href="{% url 'core:client_detail' pay.invoice.customer.pk %}">
-                      <strong>{{ pay.invoice.customer.full_name }}</strong>
-                      <small>{{ pay.invoice.customer.account_number }}</small>
-                    </a>
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-                <td data-label="Service">
-                  {% if pay.invoice and pay.invoice.customer %}
-                    <span class="billing-service-pill billing-service-{{ pay.invoice.customer.service_type }}">
-                      {{ pay.invoice.customer.get_service_type_display }}
-                    </span>
-                  {% else %}
-                    —
-                  {% endif %}
-                </td>
-                <td data-label="Amount"><strong>KES {{ pay.amount }}</strong></td>
-                <td data-label="Method">{{ pay.get_method_display }}</td>
-                <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
+                <th scope="col">Date</th>
+                <th scope="col">Customer</th>
+                <th scope="col">Service</th>
+                <th scope="col">Amount</th>
+                <th scope="col">Method</th>
+                <th scope="col">M-Pesa / Ref</th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="billing-dash-empty">
-        <p class="billing-dash-empty-title">No payments yet</p>
-        <p class="billing-dash-empty-copy">
-          {% if revenue_filter.active %}
-            No collections in this calendar range.
-          {% else %}
-            Successful M-Pesa and other collections will appear here.
-          {% endif %}
-        </p>
-      </div>
-    {% endif %}
+            </thead>
+            <tbody>
+              {% for pay in payments %}
+                <tr>
+                  <td data-label="Date">
+                    <div class="billing-dash-stack">
+                      <span class="billing-dash-cell-primary">{{ pay.received_at|date:"M j, Y" }}</span>
+                      <span class="billing-dash-cell-secondary">{{ pay.received_at|date:"g:i A" }}</span>
+                    </div>
+                  </td>
+                  <td data-label="Customer">
+                    {% if pay.invoice and pay.invoice.customer %}
+                      <a class="billing-dash-client" href="{% url 'core:client_detail' pay.invoice.customer.pk %}">
+                        <strong class="billing-dash-cell-primary">{{ pay.invoice.customer.full_name }}</strong>
+                        <small class="billing-dash-cell-secondary">{{ pay.invoice.customer.account_number }}</small>
+                      </a>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Service" class="billing-dash-col-service">
+                    {% if pay.invoice and pay.invoice.customer %}
+                      <span class="billing-service-pill billing-service-{{ pay.invoice.customer.service_type }}">
+                        {{ pay.invoice.customer.get_service_type_display }}
+                      </span>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Amount" class="billing-dash-col-amount">
+                    <strong class="billing-dash-amount">KES {{ pay.amount }}</strong>
+                  </td>
+                  <td data-label="Method" class="billing-dash-col-method">
+                    <span class="billing-dash-cell-primary">{{ pay.get_method_display }}</span>
+                  </td>
+                  <td data-label="M-Pesa / Ref" class="billing-dash-col-ref">
+                    <span class="org-code billing-dash-ref">{{ pay.reference|default:"—" }}</span>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="billing-dash-empty">
+          <p class="billing-dash-empty-title">No payments yet</p>
+          <p class="billing-dash-empty-copy">
+            {% if revenue_filter.active %}
+              No collections in this calendar range.
+            {% else %}
+              Successful M-Pesa and other collections will appear here.
+            {% endif %}
+          </p>
+        </div>
+      {% endif %}
+    </section>
   </section>
 </div>
 
@@ -396,7 +488,7 @@
   if (!form) return;
 
   var modes = form.querySelectorAll('input[name="range"]');
-  var fields = form.querySelectorAll("[data-range-field]");
+  var panels = form.querySelectorAll("[data-range-panel]");
   var modeLabels = form.querySelectorAll(".billing-revenue-mode");
 
   function selectedRange() {
@@ -404,25 +496,25 @@
     return checked ? checked.value : "month";
   }
 
-  function syncFields() {
+  function syncPanels() {
     var range = selectedRange();
     modeLabels.forEach(function (label) {
       var input = label.querySelector('input[name="range"]');
       label.classList.toggle("is-active", !!(input && input.checked));
     });
-    fields.forEach(function (field) {
-      var match = field.getAttribute("data-range-field") === range;
-      field.hidden = !match;
-      field.querySelectorAll("input").forEach(function (input) {
+    panels.forEach(function (panel) {
+      var match = panel.getAttribute("data-range-panel") === range;
+      panel.hidden = !match;
+      panel.querySelectorAll("input").forEach(function (input) {
         input.disabled = !match;
       });
     });
   }
 
   modes.forEach(function (input) {
-    input.addEventListener("change", syncFields);
+    input.addEventListener("change", syncPanels);
   });
-  syncFields();
+  syncPanels();
 })();
 
 (function () {

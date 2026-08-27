@@ -1700,6 +1700,15 @@ class AccessVoucherLifecycleTests(TestCase):
             }
         }
         with patch(
+            "billing.stk._confirm_stk_success_with_daraja",
+            return_value={
+                "success": True,
+                "pending": False,
+                "error": "",
+                "result_desc": "Confirmed",
+                "data": {},
+            },
+        ), patch(
             "billing.vouchers.activate_paid_subscription_stk",
             return_value={"ok": True, "queued": True},
         ) as activate:
@@ -1708,6 +1717,80 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(result["ok"])
         activate.assert_called_once()
         self.assertTrue(activate.call_args.kwargs.get("background"))
+
+    def test_callback_rejects_amount_mismatch(self):
+        from billing.stk import process_stk_callback_payload
+
+        stk = self._stk()
+        stk.checkout_request_id = "ws_CO_AMT"
+        stk.save(update_fields=["checkout_request_id"])
+        payload = {
+            "Body": {
+                "stkCallback": {
+                    "CheckoutRequestID": "ws_CO_AMT",
+                    "ResultCode": 0,
+                    "ResultDesc": "ok",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 999},
+                            {"Name": "MpesaReceiptNumber", "Value": "FAKE1"},
+                        ]
+                    },
+                }
+            }
+        }
+        with patch(
+            "billing.stk._confirm_stk_success_with_daraja",
+            return_value={"success": True, "pending": False, "error": "", "data": {}},
+        ) as confirm:
+            result = process_stk_callback_payload(payload)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("does not match", result.get("error") or "")
+        confirm.assert_not_called()
+        stk.refresh_from_db()
+        self.assertEqual(stk.status, stk.Status.PENDING)
+
+    def test_callback_defers_when_daraja_confirm_pending(self):
+        from billing.stk import process_stk_callback_payload
+
+        stk = self._stk()
+        stk.checkout_request_id = "ws_CO_PEND"
+        stk.save(update_fields=["checkout_request_id"])
+        payload = {
+            "Body": {
+                "stkCallback": {
+                    "CheckoutRequestID": "ws_CO_PEND",
+                    "ResultCode": 0,
+                    "ResultDesc": "ok",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": 50},
+                            {"Name": "MpesaReceiptNumber", "Value": "PEND1"},
+                        ]
+                    },
+                }
+            }
+        }
+        with patch(
+            "billing.stk._confirm_stk_success_with_daraja",
+            return_value={
+                "success": False,
+                "pending": True,
+                "error": "waiting",
+                "result_desc": "",
+                "data": {},
+            },
+        ), patch(
+            "billing.vouchers.activate_paid_subscription_stk",
+        ) as activate:
+            result = process_stk_callback_payload(payload)
+
+        self.assertTrue(result.get("pending_verification"))
+        activate.assert_not_called()
+        stk.refresh_from_db()
+        self.assertEqual(stk.status, stk.Status.PENDING)
+        self.assertEqual(stk.mpesa_receipt, "PEND1")
 
 
 class HotspotMultiDeviceVoucherTests(TestCase):

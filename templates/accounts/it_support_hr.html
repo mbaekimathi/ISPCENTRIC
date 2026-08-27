@@ -8,30 +8,64 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="org-page" id="hr-employees">
-  <header class="org-page-header">
-    <div>
-      <h2>Registered employees</h2>
-      <p>Staff accounts currently in ISPCENTRIC.</p>
+<section class="org-page hr-page" id="hr-employees">
+  <header class="hr-hero">
+    <div class="hr-hero-main">
+      <span class="hr-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M16.5 7.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z"/>
+          <path d="M4.5 19.2c.8-3.2 3.5-5.2 7.5-5.2s6.7 2 7.5 5.2" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="hr-hero-copy">
+        <p class="hr-kicker">People · Staff</p>
+        <h2>Registered employees</h2>
+        <p>Staff accounts currently in ISPCENTRIC — search, edit, suspend, or remove access.</p>
+      </div>
     </div>
-    <p class="org-page-count"><strong id="org-visible-count">{{ employees_count }}</strong> <span id="org-count-label">{% if employees_count == 1 %}employee{% else %}employees{% endif %}</span></p>
+    <div class="hr-hero-stats" aria-label="Employee summary">
+      <div class="hr-stat tone-total">
+        <strong id="org-visible-count">{{ employees_count }}</strong>
+        <span id="org-count-label">{% if employees_count == 1 %}employee{% else %}employees{% endif %}</span>
+      </div>
+      <div class="hr-stat tone-active">
+        <strong>{{ active_count }}</strong>
+        <span>Active</span>
+      </div>
+      <div class="hr-stat tone-pending{% if pending_count %} is-soft{% endif %}">
+        <strong>{{ pending_count }}</strong>
+        <span>Pending</span>
+      </div>
+      <div class="hr-stat tone-suspended{% if suspended_count %} is-hot{% endif %}">
+        <strong>{{ suspended_count }}</strong>
+        <span>Suspended</span>
+      </div>
+    </div>
   </header>
 
   {% if employees %}
-  <div class="org-search-bar">
+  <div class="hr-toolbar">
     <label class="visually-hidden" for="org-search">Search employees</label>
-    <input
-      type="search"
-      id="org-search"
-      class="org-search-input"
-      placeholder="Search by name, email, phone, role, login code, or status…"
-      autocomplete="off"
-      spellcheck="false"
-    >
+    <div class="hr-search-wrap">
+      <span class="hr-search-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="6.5"/>
+          <path d="M16.2 16.2 20 20" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <input
+        type="search"
+        id="org-search"
+        class="org-search-input hr-search"
+        placeholder="Search by name, email, phone, role, login code, or status…"
+        autocomplete="off"
+        spellcheck="false"
+      >
+    </div>
   </div>
 
-  <div class="org-table-shell">
-    <table class="org-table org-table-hr" id="org-table">
+  <div class="org-table-shell hr-table-shell">
+    <table class="org-table org-table-hr hr-table" id="org-table">
       <thead>
         <tr>
           <th>Employee</th>
@@ -44,11 +78,14 @@
       </thead>
       <tbody>
         {% for member in employees %}
-        <tr data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.login_code }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {{ member.status }}">
-          <td>
+        <tr
+          class="hr-row{% if member.status == 'suspended' %} is-suspended{% elif member.status == 'pending_approval' %} is-pending{% endif %}"
+          data-search="{{ member.user.get_full_name|default:member.user.username }} {{ member.user.username }} {{ member.user.email }} {{ member.phone }} {{ member.login_code }} {{ member.get_role_display }} {{ member.role }} {{ member.get_status_display }} {{ member.status }}"
+        >
+          <td data-label="Employee">
             <div class="org-identity">
               {% if member.profile_photo %}
-                <img src="{{ member.profile_photo.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+                <img src="{{ member.profile_photo.url }}" alt="" width="40" height="40" loading="lazy" decoding="async">
               {% else %}
                 <span aria-hidden="true">{{ member.user.get_full_name|default:member.user.username|slice:":1"|upper }}</span>
               {% endif %}
@@ -58,13 +95,19 @@
               </div>
             </div>
           </td>
-          <td>{{ member.phone|default:"—" }}</td>
-          <td><span class="org-code">{{ member.login_code|default:"—" }}</span></td>
-          <td>{{ member.get_role_display }}</td>
-          <td>
+          <td data-label="Contact">
+            {% if member.phone %}
+              <a class="hr-phone" href="tel:{{ member.phone }}">{{ member.phone }}</a>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td data-label="Login code"><span class="org-code">{{ member.login_code|default:"—" }}</span></td>
+          <td data-label="Role"><span class="hr-role">{{ member.get_role_display }}</span></td>
+          <td data-label="Status">
             <span class="org-status org-status-{{ member.status }}">{{ member.get_status_display }}</span>
           </td>
-          <td>
+          <td data-label="Actions">
             <div class="org-actions org-actions-icons">
               <a
                 class="org-action-icon"
@@ -114,9 +157,15 @@
       </tbody>
     </table>
   </div>
-  <p class="org-empty org-search-empty" id="org-search-empty" hidden>No employees match your search.</p>
+  <div class="hr-empty" id="org-search-empty" hidden>
+    <p class="hr-empty-title">No matches</p>
+    <p>No employees match your search.</p>
+  </div>
   {% else %}
-  <p class="org-empty">No employee accounts registered yet.</p>
+  <div class="hr-empty">
+    <p class="hr-empty-title">No employees yet</p>
+    <p>No employee accounts registered yet.</p>
+  </div>
   {% endif %}
 </section>
 
