@@ -216,6 +216,11 @@ urlpatterns = [
         name="it_support_payment_gateway_status",
     ),
     path(
+        "it-support/company-profile/",
+        role_dashboards.it_support_company_profile,
+        name="it_support_company_profile",
+    ),
+    path(
         "it-support/company-settings/",
         role_dashboards.it_support_company_settings,
         name="it_support_company_settings",
@@ -241,24 +246,49 @@ urlpatterns = [
         name="it_support_commission_role",
     ),
     path(
+        "it-support/company-payment-links/",
+        role_dashboards.it_support_company_payment_links,
+        name="it_support_company_payment_links",
+    ),
+    path(
+        "it-support/isp-onboarding-settings/",
+        role_dashboards.it_support_isp_onboarding_settings,
+        name="it_support_isp_onboarding_settings",
+    ),
+    path(
+        "it-support/company-system-settings/",
+        role_dashboards.it_support_company_system_settings,
+        name="it_support_company_system_settings",
+    ),
+    path(
+        "it-support/company-system-settings/communications/",
+        role_dashboards.it_support_settings_communications,
+        name="it_support_settings_communications",
+    ),
+    # Legacy payment / client settings URLs
+    path(
+        "it-support/company-system-settings/payments/",
+        role_dashboards.it_support_settings_payments_redirect,
+        name="it_support_settings_payments",
+    ),
+    path(
+        "it-support/client-settings/",
+        role_dashboards.it_support_client_settings_redirect,
+        name="it_support_client_settings",
+    ),
+    # Legacy system-settings URLs → company-system-settings
+    path(
         "it-support/system-settings/",
-        role_dashboards.it_support_system_settings,
+        role_dashboards.it_support_system_settings_redirect,
         name="it_support_system_settings",
     ),
     path(
         "it-support/system-settings/communications/",
         role_dashboards.it_support_settings_communications,
-        name="it_support_settings_communications",
     ),
     path(
         "it-support/system-settings/payments/",
-        role_dashboards.it_support_settings_payments,
-        name="it_support_settings_payments",
-    ),
-    path(
-        "it-support/client-settings/",
-        role_dashboards.it_support_client_settings,
-        name="it_support_client_settings",
+        role_dashboards.it_support_settings_payments_redirect,
     ),
     path("it-support/switch-role/", role_dashboards.switch_role_view, name="switch_role"),
     path("sales/dashboard/", role_dashboards.sales_dashboard, name="sales"),

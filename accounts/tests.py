@@ -942,3 +942,73 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(Organization.objects.filter(pk=platform_org.pk).exists())
         self.assertTrue(User.objects.filter(pk=platform_owner.pk).exists())
+
+
+class PaymentGatewaySandboxCallbackTests(SimpleTestCase):
+    path = PaymentGateway.STK_CALLBACK_PATH
+
+    @override_settings(HOSTED=False, PUBLIC_BASE_URL="auto", DEBUG=True)
+    def test_local_dev_exposes_local_and_hosted_sandbox_callbacks(self):
+        local = PaymentGateway.sandbox_local_callback_url()
+        self.assertTrue(local.startswith("http://localhost"))
+        self.assertTrue(local.endswith(self.path))
+
+        with override_settings(PUBLIC_BASE_URL="https://isp.example.com"):
+            hosted = PaymentGateway.sandbox_hosted_callback_url()
+            self.assertEqual(
+                hosted,
+                f"https://isp.example.com{self.path}",
+            )
+
+        options = PaymentGateway.sandbox_callback_options()
+        urls = {item["url"] for item in options}
+        self.assertIn(local, urls)
+        self.assertEqual(
+            PaymentGateway.default_callback_url(PaymentGateway.Environment.SANDBOX),
+            local,
+        )
+
+    @override_settings(HOSTED=True, PUBLIC_BASE_URL="https://isp.example.com")
+    def test_hosted_deploy_defaults_to_hosted_sandbox_callback(self):
+        hosted = PaymentGateway.sandbox_hosted_callback_url()
+        local = PaymentGateway.sandbox_local_callback_url()
+        self.assertEqual(hosted, f"https://isp.example.com{self.path}")
+        self.assertTrue(local.startswith("http://localhost"))
+
+        options = PaymentGateway.sandbox_callback_options()
+        kinds = {item["kind"] for item in options}
+        self.assertEqual(kinds, {"local", "hosted"})
+
+        self.assertEqual(
+            PaymentGateway.default_callback_url(PaymentGateway.Environment.SANDBOX),
+            hosted,
+        )
+        self.assertEqual(PaymentGateway.sandbox_base_url(), "https://isp.example.com")
+
+    @override_settings(HOSTED=True, PUBLIC_BASE_URL="https://isp.example.com")
+    def test_sandbox_form_accepts_local_and_hosted_callbacks(self):
+        from accounts.forms import PaymentGatewayForm
+
+        base = {
+            "enabled": True,
+            "environment": PaymentGateway.Environment.SANDBOX,
+            "payment_type": PaymentGateway.PaymentType.PAYBILL,
+            "shortcode": "174379",
+            "consumer_key": "k",
+            "consumer_secret": "s",
+            "passkey": "p",
+        }
+        local_form = PaymentGatewayForm(
+            data={
+                **base,
+                "callback_url": PaymentGateway.sandbox_local_callback_url(),
+            }
+        )
+        hosted_form = PaymentGatewayForm(
+            data={
+                **base,
+                "callback_url": "https://isp.example.com/api/mpesa/stk-callback/",
+            }
+        )
+        self.assertTrue(local_form.is_valid(), local_form.errors)
+        self.assertTrue(hosted_form.is_valid(), hosted_form.errors)

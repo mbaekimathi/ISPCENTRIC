@@ -534,7 +534,7 @@ def mpesa_stk_callback(request):
     """
     Daraja STK Push result callback.
 
-    Sandbox local testing uses http://localhost:8000/api/mpesa/stk-callback/.
+    Sandbox accepts both local (http://localhost…) and hosted (https://…) callbacks.
     Always acknowledges so Safaricom treats the callback as received.
     """
     import json

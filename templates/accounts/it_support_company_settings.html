@@ -8,7 +8,7 @@
 {% endblock %}
 
 {% block staff_nav %}
-  {% include "accounts/includes/it_support_company_settings_nav.html" %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
 {% endblock %}
 
 {% block staff_content %}
@@ -107,7 +107,7 @@
 
     <div class="org-edit-actions">
       <button type="submit" class="btn btn-primary">Save company profile</button>
-      <a class="btn btn-ghost" href="{% url 'roles:it_support' %}">Back to dashboard</a>
+      <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back to Company System Settings</a>
     </div>
   </form>
 </section>

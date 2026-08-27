@@ -850,7 +850,8 @@ class PaymentGateway(models.Model):
         blank=True,
         help_text=(
             "URL Safaricom calls with STK Push results. "
-            "Sandbox may use http://localhost:8000; production requires HTTPS."
+            "Sandbox accepts local (http://localhost) or hosted (https://…) URLs. "
+            "Production requires HTTPS."
         ),
     )
     updated_at = models.DateTimeField(auto_now=True)
@@ -916,33 +917,134 @@ class PaymentGateway(models.Model):
         }
 
     @classmethod
-    def sandbox_base_url(cls) -> str:
-        base = ""
+    def sandbox_local_base_url(cls, request=None) -> str:
+        """Loopback origin for Daraja sandbox testing on this PC."""
+        port = 8000
         try:
-            from core.hotspot_portal import is_loopback_url, public_base_url
-
-            base = (public_base_url() or "").strip().rstrip("/")
-            if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
-                return base
-            if is_loopback_url(base):
-                return base
-        except Exception:
             from django.conf import settings
 
-            base = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
-            if base.startswith("http://localhost") or base.startswith("http://127.0.0.1"):
-                return base
-        return cls.SANDBOX_BASE_URL
+            from core.hotspot_portal import _local_http_port
+
+            port = _local_http_port(
+                getattr(settings, "PUBLIC_BASE_URL", "") or "",
+                request,
+            )
+        except Exception:
+            pass
+        if port in (80, 443):
+            return "http://localhost"
+        return f"http://localhost:{port}"
 
     @classmethod
-    def default_callback_url(cls, environment: str = "") -> str:
+    def sandbox_hosted_base_url(cls, request=None) -> str:
+        """Public origin for Daraja sandbox testing on a hosted deploy."""
+        try:
+            from urllib.parse import urlparse
+
+            from core.hotspot_portal import (
+                _host_is_private_ip,
+                hosted_fallback_base_url,
+                is_loopback_url,
+                public_base_url,
+            )
+
+            for candidate in (
+                (public_base_url(request) or "").strip().rstrip("/"),
+                (hosted_fallback_base_url(request) or "").strip().rstrip("/"),
+            ):
+                if not candidate or is_loopback_url(candidate):
+                    continue
+                host = (urlparse(candidate).hostname or "").strip().lower()
+                if host in {"localhost", "127.0.0.1", "::1"}:
+                    continue
+                if candidate.startswith("https://"):
+                    return candidate
+                if candidate.startswith("http://") and not _host_is_private_ip(host):
+                    return candidate.replace("http://", "https://", 1)
+                if candidate.startswith("http://"):
+                    return candidate
+        except Exception:
+            pass
+        try:
+            from urllib.parse import urlparse
+
+            from django.conf import settings
+
+            from core.hotspot_portal import is_loopback_url
+
+            configured = (getattr(settings, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+            if configured.lower() in {"", "auto", "detect", "lan", "local"}:
+                return ""
+            if not configured.startswith(("http://", "https://")):
+                configured = f"https://{configured}"
+            if is_loopback_url(configured):
+                return ""
+            host = (urlparse(configured).hostname or "").strip().lower()
+            if configured.startswith("http://"):
+                from core.hotspot_portal import _host_is_private_ip
+
+                if not _host_is_private_ip(host):
+                    return configured.replace("http://", "https://", 1)
+            return configured
+        except Exception:
+            return ""
+        return ""
+
+    @classmethod
+    def sandbox_local_callback_url(cls, request=None) -> str:
+        return cls.normalize_callback_url(
+            f"{cls.sandbox_local_base_url(request)}{cls.STK_CALLBACK_PATH}"
+        )
+
+    @classmethod
+    def sandbox_hosted_callback_url(cls, request=None) -> str:
+        base = cls.sandbox_hosted_base_url(request)
+        if not base:
+            return ""
+        return cls.normalize_callback_url(f"{base}{cls.STK_CALLBACK_PATH}")
+
+    @classmethod
+    def sandbox_callback_options(cls, request=None) -> list[dict]:
+        """Local and hosted sandbox callback URLs (both allowed for testing)."""
+        options: list[dict] = []
+        seen: set[str] = set()
+        for label, url, kind in (
+            ("Local", cls.sandbox_local_callback_url(request), "local"),
+            ("Hosted", cls.sandbox_hosted_callback_url(request), "hosted"),
+        ):
+            if url and url not in seen:
+                seen.add(url)
+                options.append({"label": label, "url": url, "kind": kind})
+        return options
+
+    @classmethod
+    def sandbox_base_url(cls, request=None) -> str:
+        """Default sandbox origin: hosted when deployed, localhost when developing."""
+        try:
+            from django.conf import settings
+
+            from core.hotspot_portal import _is_hosted, is_loopback_url, public_base_url
+
+            if _is_hosted():
+                hosted = cls.sandbox_hosted_base_url(request)
+                if hosted:
+                    return hosted
+            base = (public_base_url(request) or "").strip().rstrip("/")
+            if base and is_loopback_url(base):
+                return base
+        except Exception:
+            pass
+        return cls.sandbox_local_base_url(request)
+
+    @classmethod
+    def default_callback_url(cls, environment: str = "", request=None) -> str:
         env = (environment or "").strip().lower()
         if env == cls.Environment.SANDBOX or not env:
-            return f"{cls.sandbox_base_url()}{cls.STK_CALLBACK_PATH}"
+            return f"{cls.sandbox_base_url(request)}{cls.STK_CALLBACK_PATH}"
         try:
             from core.hotspot_portal import public_base_url
 
-            base = (public_base_url() or "").strip().rstrip("/")
+            base = (public_base_url(request) or "").strip().rstrip("/")
         except Exception:
             from django.conf import settings
 

@@ -31,11 +31,13 @@
           {% endfor %}
         {% endblock %}
       </nav>
-      <div class="staff-sidebar-meta">
-        <span class="staff-sidebar-meta-label">Signed in</span>
-        <strong>{{ user.get_full_name|default:user.username }}</strong>
-        <span>{{ actual_role_label }}</span>
-      </div>
+      {% if staff_nav_before_meta %}
+      <nav class="staff-sidebar-nav-before-meta">
+        {% for item in staff_nav_before_meta %}
+          <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
+        {% endfor %}
+      </nav>
+      {% endif %}
       <nav class="staff-sidebar-nav-end">
         {% for item in staff_nav_end %}
           {% if item.action == "logout" %}
@@ -48,6 +50,11 @@
           {% endif %}
         {% endfor %}
       </nav>
+      <div class="staff-sidebar-meta">
+        <span class="staff-sidebar-meta-label">Signed in</span>
+        <strong>{{ user.get_full_name|default:user.username }}</strong>
+        <span>{{ actual_role_label }}</span>
+      </div>
     </div>
     {% else %}
     <div class="staff-sidebar-meta">

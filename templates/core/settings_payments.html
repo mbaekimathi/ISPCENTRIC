@@ -91,6 +91,7 @@
 
             <div class="field account-receive-field">
               <span class="account-receive-label">{{ form.mpesa_payment_type.label }}</span>
+              {{ form.mpesa_payment_type }}
               <div class="account-receive-options" role="radiogroup" aria-label="Receive via">
                 <button type="button" class="account-receive-option" data-receive-value="paybill" aria-pressed="false">
                   <span class="account-receive-option-title">Paybill</span>
@@ -101,7 +102,6 @@
                   <span class="account-receive-option-copy">Buy Goods Till number for subscription collections.</span>
                 </button>
               </div>
-              <div class="visually-hidden">{{ form.mpesa_payment_type }}</div>
               {% if form.mpesa_payment_type.errors %}<div class="field-error">{{ form.mpesa_payment_type.errors|striptags }}</div>{% endif %}
             </div>
 
@@ -114,6 +114,7 @@
               </div>
               <div class="field" data-mpesa-account-field hidden style="grid-column: 1 / -1;">
                 <span class="account-receive-label">{{ form.mpesa_account_mode.label }}</span>
+                {{ form.mpesa_account_mode }}
                 <div class="account-receive-options" role="radiogroup" aria-label="Manual Paybill account">
                   <button type="button" class="account-receive-option" data-account-mode="client" aria-pressed="false">
                     <span class="account-receive-option-title">Client account number</span>
@@ -124,7 +125,6 @@
                     <span class="account-receive-option-copy">Use your name, business name, or any fixed Account value.</span>
                   </button>
                 </div>
-                <div class="visually-hidden">{{ form.mpesa_account_mode }}</div>
                 {% if form.mpesa_account_mode.help_text %}<p class="field-hint">{{ form.mpesa_account_mode.help_text }}</p>{% endif %}
                 {% if form.mpesa_account_mode.errors %}<div class="field-error">{{ form.mpesa_account_mode.errors|striptags }}</div>{% endif %}
 

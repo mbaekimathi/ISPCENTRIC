@@ -84,16 +84,6 @@ ROLE_DASHBOARD_ONLY_NAV = {
             "url_name": "roles:it_support_company_clients",
         },
         {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
-        {
-            "key": "company_settings",
-            "label": "Company settings",
-            "url_name": "roles:it_support_company_settings",
-        },
-        {
-            "key": "system_settings",
-            "label": "System settings",
-            "url_name": "roles:it_support_system_settings",
-        },
     ],
     Employee.Role.SALES: [
         {
@@ -151,14 +141,10 @@ ROLE_DASHBOARD_ONLY_NAV = {
     ],
 }
 
-# Sidebar links shown while inside IT Support company settings and related pages.
-# These are rendered only by those page templates (not the dashboard nav).
+# Sidebar links shown while inside IT Support company hub pages
+# (communications, payment gateway, commissions). Company profile lives under
+# Company System Settings instead.
 IT_SUPPORT_COMPANY_SETTINGS_NAV = [
-    {
-        "key": "company_settings",
-        "label": "Company settings",
-        "url_name": "roles:it_support_company_settings",
-    },
     {
         "key": "company_communications",
         "label": "Company communications settings",
@@ -179,6 +165,17 @@ IT_SUPPORT_COMPANY_SETTINGS_NAV = [
 IT_SUPPORT_COMPANY_SETTINGS_PAGES = frozenset(
     item["key"] for item in IT_SUPPORT_COMPANY_SETTINGS_NAV
 )
+
+# Links pinned above the Signed in block (bottom of sidebar, above logout).
+ROLE_NAV_BEFORE_META = {
+    Employee.Role.IT_SUPPORT: [
+        {
+            "key": "company_system_settings",
+            "label": "Company System Settings",
+            "url_name": "roles:it_support_company_system_settings",
+        },
+    ],
+}
 
 SWITCHABLE_ROLES = [
     Employee.Role.SUPER_ADMIN,
@@ -263,6 +260,7 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
         items.extend(equipment_nav)
     return {
         "main": items,
+        "before_meta": list(ROLE_NAV_BEFORE_META.get(role, [])),
         "end": [{"key": "logout", "label": "Logout", "action": "logout"}],
     }
 
@@ -281,16 +279,21 @@ def page_key_from_path(path: str) -> str | None:
         return "payment_gateway"
     if "/company-settings/communications/" in path:
         return "company_communications"
+    if "/company-profile/" in path:
+        return "company_profile"
     if "/company-settings/" in path:
-        return "company_settings"
-    if "/client-settings/" in path:
-        return "client_settings"
-    if "/system-settings/communications/" in path:
+        # Legacy company-settings URL redirects to company profile.
+        return "company_profile"
+    if "/isp-onboarding-settings/" in path or "/client-settings/" in path:
+        return "isp_onboarding_settings"
+    if "/company-payment-links/" in path:
+        return "company_payment_links"
+    if "/company-system-settings/communications/" in path or "/system-settings/communications/" in path:
         return "communications"
-    if "/system-settings/payments/" in path:
-        return "payments_links"
-    if "/system-settings/" in path:
-        return "system_settings"
+    if "/company-system-settings/payments/" in path or "/system-settings/payments/" in path:
+        return "company_payment_links"
+    if "/company-system-settings/" in path or "/system-settings/" in path:
+        return "company_system_settings"
     if "/installations/" in path:
         return "installations"
     if "/fault-tickets/" in path:

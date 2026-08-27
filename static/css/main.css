@@ -178,6 +178,18 @@ img {
   display: block;
 }
 
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -3326,7 +3338,7 @@ a {
   flex: 1 1 auto;
 }
 
-.staff-sidebar-nav-end {
+.staff-sidebar-nav-before-meta {
   display: grid;
   gap: 0.2rem;
   padding-top: 0.75rem;
@@ -3334,8 +3346,21 @@ a {
   flex: 0 0 auto;
 }
 
+.staff-sidebar-nav-end {
+  display: grid;
+  gap: 0.2rem;
+  flex: 0 0 auto;
+}
+
+.staff-sidebar-nav-main + .staff-sidebar-nav-end {
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
 .staff-sidebar-nav-stack .staff-sidebar-meta {
   flex: 0 0 auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .client-sidebar-nav a {
@@ -9784,7 +9809,7 @@ body.staff-nav-lock {
   }
 }
 
-/* —— Packages page —— */
+/* ?? Packages page ?? */
 .packages-page {
   display: grid;
   gap: 1.1rem;
@@ -10261,7 +10286,7 @@ a.packages-stat:focus-visible {
   margin-top: 0.35rem;
 }
 
-/* —— Package offer modal —— */
+/* ?? Package offer modal ?? */
 .package-offer-modal {
   place-items: center;
   padding: 1rem;
@@ -10874,7 +10899,7 @@ a.packages-stat:focus-visible {
   max-width: 11rem;
 }
 
-/* Packages table → cards on smaller screens */
+/* Packages table ? cards on smaller screens */
 @media (max-width: 960px) {
   .packages-jump {
     display: flex;
@@ -13601,7 +13626,7 @@ a.packages-stat:focus-visible {
   color: #b91c1c;
 }
 
-/* Stack MikroTik routers as cards — no horizontal scroll on small / mid screens */
+/* Stack MikroTik routers as cards ? no horizontal scroll on small / mid screens */
 @media (max-width: 1100px) {
   .org-table-shell.mikrotik-table-shell,
   .org-table-shell:has(.org-table-mikrotik) {
@@ -13720,7 +13745,7 @@ a.packages-stat:focus-visible {
     justify-content: flex-end;
   }
 
-  .org-table-mikrotik td[data-label="Wi‑Fi"] .mikrotik-wifi-chip {
+  .org-table-mikrotik td[data-label="Wi?Fi"] .mikrotik-wifi-chip {
     max-width: min(14rem, 58vw);
   }
 
@@ -13957,7 +13982,7 @@ a.packages-stat:focus-visible {
   padding: 0 1.15rem 0.85rem;
 }
 
-/* MikroTik action modals — match Register PPPoE / client popup polish */
+/* MikroTik action modals ? match Register PPPoE / client popup polish */
 .mikrotik-action-modal.pppoe-modal {
   place-items: end center;
   padding: 0;
@@ -18224,6 +18249,114 @@ a.packages-stat:focus-visible {
   }
 }
 
+/* ISP Acc. Settings */
+.account-chip--warn {
+  border-color: color-mix(in srgb, var(--signal, #c45c26) 36%, transparent);
+  background: color-mix(in srgb, var(--signal, #c45c26) 12%, var(--surface-solid, #fff));
+  color: color-mix(in srgb, var(--signal, #c45c26) 72%, var(--ink));
+}
+
+.isp-settings-aside-meta {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.isp-settings-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.isp-settings-code-item {
+  border-color: color-mix(in srgb, var(--sea) 28%, transparent);
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--sea) 12%, transparent),
+      color-mix(in srgb, var(--surface-3) 55%, transparent)
+    );
+}
+
+.isp-settings-code {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  letter-spacing: 0.14em;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-session-row .isp-settings-code {
+  font-size: 1.05rem;
+  letter-spacing: 0.12em;
+}
+
+.isp-settings-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.isp-settings-link {
+  display: grid;
+  gap: 0.4rem;
+  padding: 1.05rem 1.1rem;
+  border-radius: 16px;
+  border: 1px solid var(--border-strong);
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in srgb, var(--sea) 8%, transparent),
+      color-mix(in srgb, var(--surface-3) 60%, transparent)
+    );
+  text-decoration: none;
+  color: inherit;
+  transition:
+    border-color 0.2s var(--ease-out, ease),
+    transform 0.2s var(--ease-out, ease),
+    background 0.2s var(--ease-out, ease);
+}
+
+.isp-settings-link:hover,
+.isp-settings-link:focus-visible {
+  border-color: color-mix(in srgb, var(--sea) 40%, transparent);
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in srgb, var(--sea) 14%, transparent),
+      color-mix(in srgb, var(--surface-3) 50%, transparent)
+    );
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.isp-settings-link strong {
+  font-family: var(--font-display);
+  font-size: 0.98rem;
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink);
+}
+
+.isp-settings-link span {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 900px) {
+  .isp-settings-summary,
+  .isp-settings-links {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .isp-settings-summary,
+  .isp-settings-links {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ?? Register PPPoE client modal ?? */
 .pppoe-modal {
   place-items: end center;
@@ -18805,7 +18938,7 @@ a.packages-stat:focus-visible {
   background: rgba(176, 48, 48, 0.08);
 }
 
-/* Client register / edit modal — section layout */
+/* Client register / edit modal ? section layout */
 .pppoe-head-badges {
   display: flex;
   flex-wrap: wrap;
@@ -22093,7 +22226,7 @@ textarea.form-control {
   z-index: 1;
 }
 
-/* Register PPPoE — taller/wider; three sections need room to breathe */
+/* Register PPPoE ? taller/wider; three sections need room to breathe */
 .client-action-modal.pppoe-modal.pppoe-modal--register .role-modal-panel.pppoe-panel {
   width: min(100%, 36rem);
   max-height: min(94dvh, 52rem);
@@ -29125,6 +29258,233 @@ body.mikrotik-page-loading {
   }
 
   .shop-row-nav:active {
+    transform: none;
+  }
+}
+
+/* IT Support ? Company System Settings hub */
+.css-hub-page {
+  width: 100%;
+  max-width: 58rem;
+  margin-inline: auto;
+  padding: 0.35rem 0 1.75rem;
+}
+
+.css-hub-shell {
+  display: grid;
+  gap: clamp(1.25rem, 2.2vw, 1.75rem);
+}
+
+.css-hub-hero {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 0.55rem;
+  padding: clamp(1.4rem, 2.8vw, 2rem) clamp(1.15rem, 2.6vw, 1.75rem);
+  border: 1px solid var(--border-strong);
+  border-radius: 24px;
+  background:
+    radial-gradient(ellipse 60% 95% at 50% -18%, color-mix(in srgb, var(--sea) 24%, transparent), transparent 60%),
+    radial-gradient(ellipse 42% 70% at 8% 110%, color-mix(in srgb, var(--signal) 12%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sea) 8%, var(--surface-solid)), var(--surface-solid));
+  box-shadow: var(--card-shadow);
+}
+
+.css-hub-hero-mark {
+  display: grid;
+  place-items: center;
+  width: 3.1rem;
+  height: 3.1rem;
+  margin-bottom: 0.15rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--sea) 28%, var(--border));
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface));
+  color: var(--sea-deep);
+}
+
+.css-hub-kicker {
+  margin: 0;
+  color: var(--sea-deep);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.css-hub-title {
+  margin: 0;
+  max-width: 18ch;
+  font-family: var(--font-display);
+  font-size: clamp(1.7rem, 1.35rem + 1.2vw, 2.25rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  color: var(--ink);
+}
+
+.css-hub-lead {
+  margin: 0;
+  max-width: 38rem;
+  color: var(--ink-soft);
+  font-size: clamp(0.92rem, 0.86rem + 0.25vw, 1.05rem);
+  line-height: 1.55;
+}
+
+.css-hub-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-top: 0.2rem;
+}
+
+.css-hub-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.css-hub-chip.is-live {
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.css-hub-chip.is-soft {
+  background: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  color: var(--ink-soft);
+}
+
+.css-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.95rem;
+}
+
+.css-hub-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 0.95rem;
+  row-gap: 0.85rem;
+  align-items: start;
+  min-height: 100%;
+  padding: 1.15rem 1.15rem 1.05rem;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface-solid);
+  box-shadow: var(--card-shadow);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.css-hub-card:hover,
+.css-hub-card:focus-visible {
+  border-color: color-mix(in srgb, var(--sea) 42%, var(--border));
+  box-shadow: 0 12px 28px color-mix(in srgb, var(--ink) 10%, transparent);
+  transform: translateY(-2px);
+  outline: none;
+}
+
+.css-hub-card-glow {
+  position: absolute;
+  inset: auto -20% -55% auto;
+  width: 10rem;
+  height: 10rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--sea) 18%, transparent), transparent 68%);
+  pointer-events: none;
+}
+
+.css-hub-card-icon {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--sea) 22%, var(--border));
+  background: color-mix(in srgb, var(--sea) 10%, var(--surface));
+  color: var(--sea-deep);
+}
+
+.css-hub-card-body {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.css-hub-card-label {
+  font-size: 1.02rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.css-hub-card-copy {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.css-hub-card-cta {
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+  color: var(--sea-deep);
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.css-hub-card:hover .css-hub-card-cta svg,
+.css-hub-card:focus-visible .css-hub-card-cta svg {
+  transform: translateX(2px);
+}
+
+.css-hub-card-cta svg {
+  transition: transform 160ms ease;
+}
+
+[data-theme="dark"] .css-hub-hero {
+  background:
+    radial-gradient(ellipse 60% 95% at 50% -18%, color-mix(in srgb, var(--sea) 28%, transparent), transparent 60%),
+    radial-gradient(ellipse 42% 70% at 8% 110%, color-mix(in srgb, var(--signal) 16%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sea) 10%, var(--surface-solid)), var(--surface-solid));
+}
+
+[data-theme="dark"] .css-hub-card:hover,
+[data-theme="dark"] .css-hub-card:focus-visible {
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+}
+
+@media (max-width: 760px) {
+  .css-hub-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .css-hub-card,
+  .css-hub-card-cta svg {
+    transition: none;
+  }
+
+  .css-hub-card:hover,
+  .css-hub-card:focus-visible {
     transform: none;
   }
 }

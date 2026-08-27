@@ -337,7 +337,7 @@ CLIENT_SIDEBARS = {
         "items": [
             {
                 "key": "company_settings",
-                "label": "Company settings",
+                "label": "ISP Acc. Settings",
                 "url_name": "core:system_settings",
             },
             {
@@ -10661,9 +10661,9 @@ def system_settings(request):
             request,
             active_nav="settings",
             sidebar_active="company_settings",
-            page_title="Company settings",
+            page_title="ISP Acc. Settings",
             page_kicker="Settings",
-            page_subtitle="Organization status, join code, and workspace preferences.",
+            page_subtitle="ISP account status, staff join code, and workspace identity.",
         ),
     )
 

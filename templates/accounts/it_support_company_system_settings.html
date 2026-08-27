@@ -1,0 +1,75 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="css-hub-page" data-company-system-settings>
+  <div class="css-hub-shell">
+    <header class="css-hub-hero">
+      <div class="css-hub-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2.8v2.2M12 19v2.2M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M2.8 12h2.2M19 12h2.2M4.9 19.1l1.6-1.6M17.5 6.5l1.6-1.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <p class="css-hub-kicker">Platform · Workspace</p>
+      <h2 class="css-hub-title">{{ page_title }}</h2>
+      <p class="css-hub-lead">{{ page_subtitle }}</p>
+      <div class="css-hub-meta">
+        <span class="css-hub-chip is-live">{{ settings_modules|length }} modules</span>
+        <span class="css-hub-chip is-soft">IT Support</span>
+      </div>
+    </header>
+
+    <div class="css-hub-grid" role="list">
+      {% for module in settings_modules %}
+        <a class="css-hub-card" role="listitem" href="{% url module.url_name %}">
+          <span class="css-hub-card-glow" aria-hidden="true"></span>
+          <span class="css-hub-card-icon" aria-hidden="true">
+            {% if module.key == "company_profile" %}
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M4.5 19.5V7.8A2.3 2.3 0 0 1 6.8 5.5h10.4a2.3 2.3 0 0 1 2.3 2.3v11.7"/>
+                <path d="M9 19.5V12h6v7.5M4.5 19.5h15" stroke-linecap="round"/>
+              </svg>
+            {% elif module.key == "company_communications" %}
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M5 7.5h14v7.2a2 2 0 0 1-2 2H9.2L5 20.5v-13Z"/>
+                <path d="M9 11h6M9 14h3.5" stroke-linecap="round"/>
+              </svg>
+            {% elif module.key == "company_payment_links" %}
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                <rect x="3.5" y="6" width="17" height="12" rx="2.2"/>
+                <path d="M3.5 10h17M8 14.2h3.2" stroke-linecap="round"/>
+              </svg>
+            {% else %}
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M12 4.5 4.8 8.2v7.6L12 19.5l7.2-3.7V8.2L12 4.5Z"/>
+                <path d="M12 12v7.5M4.8 8.2 12 12l7.2-3.8" stroke-linecap="round"/>
+              </svg>
+            {% endif %}
+          </span>
+          <span class="css-hub-card-body">
+            <span class="css-hub-card-label">{{ module.label }}</span>
+            <span class="css-hub-card-copy">{{ module.description }}</span>
+          </span>
+          <span class="css-hub-card-cta">
+            Open
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M5 12h14M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+        </a>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+{% endblock %}

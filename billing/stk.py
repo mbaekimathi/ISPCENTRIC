@@ -77,7 +77,7 @@ def resolve_stk_callback_url(
         url = PaymentGateway.normalize_callback_url(url)
     else:
         url = PaymentGateway.normalize_callback_url(
-            PaymentGateway.default_callback_url(env)
+            PaymentGateway.default_callback_url(env, request)
         )
     if not url and request is not None:
         url = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
@@ -97,7 +97,7 @@ def resolve_stk_callback_url(
             return f"{public}{PaymentGateway.STK_CALLBACK_PATH}"
         return f"https://ispcentric.local{PaymentGateway.STK_CALLBACK_PATH}"
 
-    return url or f"{PaymentGateway.sandbox_base_url()}{PaymentGateway.STK_CALLBACK_PATH}"
+    return url or f"{PaymentGateway.sandbox_base_url(request)}{PaymentGateway.STK_CALLBACK_PATH}"
 
 
 def _is_local_http_callback(url: str) -> bool:

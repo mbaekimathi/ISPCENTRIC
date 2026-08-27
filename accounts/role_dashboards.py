@@ -1580,10 +1580,18 @@ def it_support_payment_gateway(request):
             "dashboard_url_name": "roles:it_support",
             "form": form,
             "gateway": gateway,
-            "sandbox_base_url": PaymentGateway.sandbox_base_url(),
+            "sandbox_base_url": PaymentGateway.sandbox_base_url(request),
             "sandbox_callback_url": PaymentGateway.default_callback_url(
-                PaymentGateway.Environment.SANDBOX
+                PaymentGateway.Environment.SANDBOX,
+                request,
             ),
+            "sandbox_local_callback_url": PaymentGateway.sandbox_local_callback_url(
+                request
+            ),
+            "sandbox_hosted_callback_url": PaymentGateway.sandbox_hosted_callback_url(
+                request
+            ),
+            "sandbox_callback_options": PaymentGateway.sandbox_callback_options(request),
         },
     )
 
@@ -1641,7 +1649,7 @@ def _it_support_settings_page(
 
 
 @role_required(Employee.Role.IT_SUPPORT)
-def it_support_company_settings(request):
+def it_support_company_profile(request):
     _prepare_it_support_view(request)
     profile = CompanyProfile.get_solo()
 
@@ -1650,7 +1658,7 @@ def it_support_company_settings(request):
         if form.is_valid():
             form.save()
             messages.success(request, "Company profile saved.")
-            return redirect("roles:it_support_company_settings")
+            return redirect("roles:it_support_company_profile")
     else:
         form = CompanyProfileForm(instance=profile)
 
@@ -1658,15 +1666,21 @@ def it_support_company_settings(request):
         request,
         "accounts/it_support_company_settings.html",
         {
-            "page_title": "Company settings",
+            "page_title": "Company profile",
             "page_kicker": "Company",
             "page_subtitle": "Update the platform app name, contact details, and logo.",
-            "current_page": "company_settings",
+            "current_page": "company_profile",
             "dashboard_url_name": "roles:it_support",
             "form": form,
             "company_profile": profile,
         },
     )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_settings(request):
+    """Legacy URL → company profile."""
+    return redirect("roles:it_support_company_profile")
 
 
 def _commission_role_links():
@@ -1761,15 +1775,67 @@ def it_support_commission_role(request, role_slug):
 
 
 @role_required(Employee.Role.IT_SUPPORT)
-def it_support_system_settings(request):
-    return _it_support_settings_page(
+def it_support_company_system_settings(request):
+    _prepare_it_support_view(request)
+    return render(
         request,
-        current_page="system_settings",
-        page_title="Company settings",
-        page_kicker="Settings",
-        page_subtitle="Organization and workspace preferences for the platform.",
-        empty_text="Additional company preferences are coming soon. Use Client settings for landing and onboarding controls.",
+        "accounts/it_support_company_system_settings.html",
+        {
+            "page_title": "Company System Settings",
+            "page_kicker": "Settings",
+            "page_subtitle": (
+                "Configure platform identity, communications, payment links, "
+                "and ISP onboarding from one place."
+            ),
+            "current_page": "company_system_settings",
+            "dashboard_url_name": "roles:it_support",
+            "settings_modules": [
+                {
+                    "key": "company_profile",
+                    "label": "Company profile",
+                    "description": "App name, logo, and contact details shown across the platform.",
+                    "url_name": "roles:it_support_company_profile",
+                },
+                {
+                    "key": "company_communications",
+                    "label": "Company communications",
+                    "description": "SMS, email, and WhatsApp credentials used for platform messages.",
+                    "url_name": "roles:it_support_company_communications",
+                },
+                {
+                    "key": "company_payment_links",
+                    "label": "Company payment links",
+                    "description": "Payment portal and collection links for company billing flows.",
+                    "url_name": "roles:it_support_company_payment_links",
+                },
+                {
+                    "key": "isp_onboarding_settings",
+                    "label": "ISP onboarding settings",
+                    "description": "Landing Register, MikroTik onboarding fees, and referral controls.",
+                    "url_name": "roles:it_support_isp_onboarding_settings",
+                },
+            ],
+        },
     )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_system_settings_redirect(request):
+    return redirect("roles:it_support_company_system_settings")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_settings_payments_redirect(request):
+    return redirect("roles:it_support_company_payment_links")
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_client_settings_redirect(request):
+    return redirect("roles:it_support_isp_onboarding_settings")
+
+
+# Backwards-compatible alias used by older imports/tests.
+it_support_system_settings = it_support_company_system_settings
 
 
 @role_required(Employee.Role.IT_SUPPORT)
@@ -1846,19 +1912,23 @@ def it_support_settings_communications(request):
 
 
 @role_required(Employee.Role.IT_SUPPORT)
-def it_support_settings_payments(request):
+def it_support_company_payment_links(request):
     return _it_support_settings_page(
         request,
-        current_page="payments_links",
-        page_title="Payments links",
+        current_page="company_payment_links",
+        page_title="Company payment links",
         page_kicker="Settings",
-        page_subtitle="Payment portal and collection links for clients.",
-        empty_text="Payments links settings are coming soon.",
+        page_subtitle="Payment portal and collection links for the company.",
+        empty_text="Company payment links settings are coming soon.",
     )
 
 
+# Backwards-compatible alias.
+it_support_settings_payments = it_support_company_payment_links
+
+
 @role_required(Employee.Role.IT_SUPPORT)
-def it_support_client_settings(request):
+def it_support_isp_onboarding_settings(request):
     _prepare_it_support_view(request)
     settings_obj = ClientSettings.get_solo()
 
@@ -1866,8 +1936,8 @@ def it_support_client_settings(request):
         form = ClientSettingsForm(request.POST, instance=settings_obj)
         if form.is_valid():
             form.save()
-            messages.success(request, "Client settings saved.")
-            return redirect("roles:it_support_client_settings")
+            messages.success(request, "ISP onboarding settings saved.")
+            return redirect("roles:it_support_isp_onboarding_settings")
     else:
         form = ClientSettingsForm(instance=settings_obj)
 
@@ -1875,17 +1945,21 @@ def it_support_client_settings(request):
         request,
         "accounts/it_support_client_settings.html",
         {
-            "page_title": "Client settings",
+            "page_title": "ISP onboarding settings",
             "page_kicker": "Settings",
             "page_subtitle": (
                 "Control landing-page Register, MikroTik onboarding fees, and referrals."
             ),
-            "current_page": "client_settings",
+            "current_page": "isp_onboarding_settings",
             "dashboard_url_name": "roles:it_support",
             "form": form,
             "client_settings": settings_obj,
         },
     )
+
+
+# Backwards-compatible alias.
+it_support_client_settings = it_support_isp_onboarding_settings
 
 
 @role_required(Employee.Role.SALES)

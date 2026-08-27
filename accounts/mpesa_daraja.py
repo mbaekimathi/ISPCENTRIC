@@ -764,9 +764,9 @@ def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dic
                 callback_url
             )
             callback_message = (
-                "Sandbox callback accepted for local testing."
+                "Sandbox callback accepted (local or hosted)."
                 if callback_ok
-                else "Sandbox callback must be https://… or http://localhost:8000…"
+                else "Sandbox callback must be https://… (hosted) or http://localhost… (local)."
             )
     checks.append(
         {

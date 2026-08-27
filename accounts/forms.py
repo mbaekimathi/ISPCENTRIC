@@ -941,7 +941,7 @@ class OrganizationEditForm(forms.ModelForm):
         choices=MpesaAccountMode.choices,
         required=False,
         initial=MpesaAccountMode.CLIENT,
-        widget=forms.Select(attrs={"id": "id_mpesa_account_mode", "class": "form-control"}),
+        widget=forms.HiddenInput(attrs={"id": "id_mpesa_account_mode"}),
         label="Manual Paybill account",
         help_text=(
             "Shown on manual Paybill payment instructions. "
@@ -990,9 +990,8 @@ class OrganizationEditForm(forms.ModelForm):
             "daraja_environment": forms.Select(
                 attrs={"class": "form-control", "id": "id_daraja_environment"}
             ),
-            "mpesa_payment_type": forms.Select(
+            "mpesa_payment_type": forms.HiddenInput(
                 attrs={
-                    "class": "form-control",
                     "id": "id_mpesa_payment_type",
                 }
             ),
@@ -1337,7 +1336,7 @@ class PaymentGatewayForm(forms.ModelForm):
                 "and for platform fees such as MikroTik onboarding."
             ),
             "environment": (
-                "Sandbox supports local testing with http://localhost:8000. "
+                "Sandbox supports local (http://localhost) and hosted (https://…) callbacks. "
                 "Use Production only with a public HTTPS domain."
             ),
             "payment_type": "Paybill uses CustomerPayBillOnline; Till uses CustomerBuyGoodsOnline.",
@@ -1346,8 +1345,8 @@ class PaymentGatewayForm(forms.ModelForm):
             "consumer_secret": "App Consumer Secret from the Safaricom Daraja developer portal.",
             "passkey": "Passkey paired with your Lipa Na M-Pesa Online shortcode.",
             "callback_url": (
-                "Sandbox: http://localhost:8000/api/mpesa/stk-callback/ is allowed for local testing. "
-                "Production must use a public HTTPS URL."
+                "Sandbox: use http://localhost… when testing on this PC, or https://your-domain… "
+                "when Safaricom must reach your hosted server. Production must use public HTTPS."
             ),
         }
 
@@ -1435,7 +1434,7 @@ class PaymentGatewayForm(forms.ModelForm):
                 ):
                     self.add_error(
                         "callback_url",
-                        "Sandbox callback must be https://… or http://localhost:8000… "
+                        "Sandbox callback must be https://… (hosted) or http://localhost… "
                         "(local testing).",
                     )
             elif environment == PaymentGateway.Environment.PRODUCTION:

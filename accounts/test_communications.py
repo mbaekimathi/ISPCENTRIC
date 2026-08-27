@@ -351,6 +351,7 @@ class PlatformCommunicationSettingsTests(TestCase):
         )
         self.client.force_login(self.staff_user)
         self.url = reverse("roles:it_support_company_communications")
+        self.company_profile_url = reverse("roles:it_support_company_profile")
         self.company_settings_url = reverse("roles:it_support_company_settings")
 
     def test_get_solo_is_singleton(self):
@@ -360,12 +361,18 @@ class PlatformCommunicationSettingsTests(TestCase):
         self.assertEqual(first.pk, second.pk)
         self.assertEqual(PlatformCommunicationSettings.objects.count(), 1)
 
-    def test_company_settings_sidebar_has_communications_link(self):
-        response = self.client.get(self.company_settings_url)
+    def test_company_profile_sidebar_has_communications_link(self):
+        response = self.client.get(self.company_profile_url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "/it-support/company-settings/communications/")
         self.assertContains(response, "Company communications settings")
+        self.assertContains(response, "Company profile")
         self.assertNotContains(response, "/app/account/communications/")
+
+    def test_legacy_company_settings_url_redirects_to_profile(self):
+        response = self.client.get(self.company_settings_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/it-support/company-profile/", response["Location"])
 
     def test_get_shows_platform_form_not_isp_client_copy(self):
         response = self.client.get(self.url)

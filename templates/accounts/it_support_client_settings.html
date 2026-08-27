@@ -15,8 +15,8 @@
 <section class="client-settings-page" data-client-settings-root>
   <div class="cs-shell">
     <header class="cs-hero">
-      <p class="cs-kicker">Client experience</p>
-      <h2 class="cs-title">Client settings</h2>
+      <p class="cs-kicker">ISP onboarding</p>
+      <h2 class="cs-title">ISP onboarding settings</h2>
       <p class="cs-lead">{{ page_subtitle }}</p>
       <div class="cs-hero-meta">
         {% if client_settings.landing_register_enabled or client_settings.onboarding_fee_enabled or client_settings.referral_enabled %}
@@ -137,8 +137,8 @@
       </div>
 
       <footer class="cs-actions">
-        <button type="submit" class="btn btn-primary cs-save">Save settings</button>
-        <a class="btn btn-ghost" href="{% url 'roles:it_support_system_settings' %}">Back</a>
+        <button type="submit" class="btn btn-primary cs-save">Save ISP onboarding settings</button>
+        <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back</a>
       </footer>
     </form>
   </div>

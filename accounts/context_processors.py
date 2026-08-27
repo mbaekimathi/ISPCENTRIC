@@ -65,8 +65,11 @@ def staff_workspace(request):
         "dashboard_url_name": dashboard_name,
         "role_slug": role_slug,
         "staff_nav_main": nav.get("main", []),
+        "staff_nav_before_meta": nav.get("before_meta", []),
         "staff_nav_end": nav.get("end", []),
-        "staff_nav_items": nav.get("main", []) + nav.get("end", []),
+        "staff_nav_items": (
+            nav.get("main", []) + nav.get("before_meta", []) + nav.get("end", [])
+        ),
         "switchable_roles": switchable_role_options(request, employee, selected=viewed),
         "switchable_clients": switchable_clients_list() if switcher else [],
         "selected_client_id": client_org.pk if client_org else None,
