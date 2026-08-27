@@ -943,15 +943,17 @@ def recharge_customer_cash(
     """
     Record a cash payment and immediately extend the customer's prepaid package.
 
-    Unlike M-Pesa STK (which issues a voucher), staff cash recharges activate
-    access right away and sync to the router afterward.
+    Hotspot: also issues fresh access vouchers and expects the caller to kick
+    MikroTik sessions so devices autoconnect or redeem a voucher to start fresh.
+    PPPoE: activates access right away (no vouchers).
 
     When ``period_start`` and ``period_end`` are provided, the surfing window is
     set to that range (partial recharge) instead of stacking a full plan unit.
     """
     from django.db import transaction
 
-    from billing.models import Payment
+    from billing.models import BillingPlan, Payment
+    from billing.vouchers import create_vouchers_for_cash_recharge, format_voucher_code
 
     if plan is None:
         raise ValueError("Select a package to recharge.")
@@ -966,6 +968,7 @@ def recharge_customer_cash(
     if partial and (period_start is None or period_end is None):
         raise ValueError("Partial recharge requires both from and to dates.")
 
+    vouchers = []
     with transaction.atomic():
         update_fields: list[str] = []
         if customer.plan_id != plan.pk:
@@ -1004,11 +1007,27 @@ def recharge_customer_cash(
             apply_paid_subscription_with_offer(customer, plan=plan)
         customer.refresh_from_db()
 
+        is_hotspot = (
+            getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT
+            or getattr(plan, "service_type", "") == BillingPlan.ServiceType.HOTSPOT
+        )
+        if is_hotspot:
+            vouchers = create_vouchers_for_cash_recharge(
+                organization=organization,
+                customer=customer,
+                plan=plan,
+                payment=payment,
+            )
+
+    voucher_codes = [format_voucher_code(row.code) for row in vouchers]
     return {
         "customer": customer,
         "invoice": invoice,
         "payment": payment,
         "partial": partial,
+        "vouchers": vouchers,
+        "voucher_codes": voucher_codes,
+        "kick_sessions": bool(vouchers),
     }
 
 

@@ -5346,7 +5346,14 @@ def client_detail(request, customer_id: int):
 
         threading.Thread(target=_bg_bind, daemon=True).start()
 
-    def _package_json_response(customer, *, message: str, provision: bool) -> JsonResponse:
+    def _package_json_response(
+        customer,
+        *,
+        message: str,
+        provision: bool,
+        voucher_codes: list | None = None,
+        kick_sessions: bool = False,
+    ) -> JsonResponse:
         from django.utils import timezone as dj_tz
 
         allowed = customer_receives_internet(customer)
@@ -5378,6 +5385,7 @@ def client_detail(request, customer_id: int):
                 else:
                     remaining_label = f"{seconds}s"
 
+        codes = [str(code) for code in (voucher_codes or []) if code]
         return JsonResponse({
             "ok": True,
             "message": message,
@@ -5398,6 +5406,9 @@ def client_detail(request, customer_id: int):
             "remaining_seconds": remaining_seconds,
             "remaining_label": remaining_label,
             "syncing": provision,
+            "kick_sessions": bool(kick_sessions),
+            "voucher_codes": codes,
+            "voucher_code": codes[0] if codes else "",
             "can_pause_package": customer_can_pause_package(customer),
             "can_resume_package": customer_can_resume_package(customer),
         })
@@ -5556,9 +5567,15 @@ def client_detail(request, customer_id: int):
 
                 customer = result["customer"]
                 invoice = result["invoice"]
+                voucher_codes = result.get("voucher_codes") or []
+                kick_sessions = bool(result.get("kick_sessions"))
                 provision = customer_needs_nas_provision(customer)
                 enqueue_customer_subscription_sync(
-                    customer.pk, provision, wait_first=True, quick=True
+                    customer.pk,
+                    provision,
+                    wait_first=True,
+                    quick=True,
+                    reauthenticate=True,
                 )
 
                 amount_label = f"{recharge_form.cleaned_data['amount']:.2f}"
@@ -5583,11 +5600,20 @@ def client_detail(request, customer_id: int):
                         f"Cash recharge of KES {amount_label} recorded "
                         f"({invoice.invoice_number}). Package active until {end_label}."
                     )
+                if voucher_codes:
+                    codes_label = ", ".join(voucher_codes)
+                    msg += (
+                        f" New voucher{'s' if len(voucher_codes) != 1 else ''}: "
+                        f"{codes_label}. Device session cleared — they can "
+                        "autoconnect or enter a voucher on the pay page."
+                    )
                 if is_ajax:
                     return _package_json_response(
                         customer,
                         message=msg,
                         provision=provision,
+                        voucher_codes=voucher_codes,
+                        kick_sessions=kick_sessions,
                     )
                 messages.success(request, msg)
                 return redirect("core:client_detail", customer_id=customer.pk)
@@ -9351,14 +9377,16 @@ def hotspot_welcome(request, join_code: str):
 @require_POST
 def hotspot_payment_activate(request, join_code: str, stk_id: int):
     """
-    Reauthenticate a paid MAC after its success page has loaded.
+    Authorize / reauthenticate a paid MAC after payment success.
 
-    Expiring the old RouterOS host during the status poll resets that client's
-    network connection and can discard the success JSON before the captive
-    browser redirects. This signed follow-up is intentionally fire-and-forget:
-    the welcome page is already visible when RouterOS resets the connection.
+    Waits for one quick MikroTik restore so the welcome page can show Connected
+    only after the NAS allows surfing. A background follow-up finishes CPE work.
     """
     from billing.models import StkPushRequest
+    from core.subscription_sync import (
+        enqueue_customer_subscription_sync,
+        nas_access_ready,
+    )
 
     org = get_object_or_404(Organization, join_code=join_code)
     try:
@@ -9383,31 +9411,30 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
 
     if not customer_owns_hotspot_mac(stk.customer, payload.get("mac") or ""):
         return JsonResponse({"ok": False, "error": "Invalid payment session."}, status=403)
-    customer_pk = stk.customer_id
 
-    def _bg_activate(pk: int = customer_pk) -> None:
-        try:
-            cust = Customer.objects.select_related(
-                "plan", "router", "organization"
-            ).get(pk=pk)
-            sync_customer_subscription_access(
-                cust,
-                provision=True,
-                reauthenticate=True,
-            )
-        except Exception:
-            pass
-
-    # Welcome page is already shown; reauth can reset the client's network.
-    _schedule_mikrotik_job(_bg_activate, name=f"hotspot-activate-{customer_pk}")
+    nas = (
+        enqueue_customer_subscription_sync(
+            stk.customer_id,
+            True,
+            wait_first=True,
+            quick=True,
+            reauthenticate=True,
+        )
+        or {}
+    )
+    authorized = nas_access_ready(nas)
     return JsonResponse(
         {
             "ok": True,
-            "authorized": True,
-            "queued": True,
-            "can_retry_authorize": False,
-            "offline": False,
-            "message": "Reauthenticating on MikroTik in the background.",
+            "authorized": authorized,
+            "queued": False,
+            "can_retry_authorize": not authorized,
+            "offline": bool(nas.get("offline")),
+            "message": (
+                "Surfing allowed on MikroTik."
+                if authorized
+                else (nas.get("message") or "Waiting for MikroTik to allow surfing.")
+            ),
         }
     )
 

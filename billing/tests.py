@@ -2187,6 +2187,105 @@ class CashRechargeTests(TestCase):
         self.assertTrue(customer_receives_internet(self.customer))
 
 
+class HotspotCashRechargeVoucherTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-hs-cash", password="x")
+        self.org = Organization.objects.create(
+            name="Hotspot Cash ISP",
+            owner=self.owner,
+            join_code="555666",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="HS Daily",
+            price="50.00",
+            duration=BillingPlan.Duration.DAILY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=2,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        now = timezone.localtime()
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Cash Client",
+            phone="254700000070",
+            account_number="HSCASH-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:70",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(hours=1),
+        )
+
+    def test_hotspot_cash_recharge_issues_vouchers_and_marks_applied(self):
+        from billing.models import AccessVoucher
+        from billing.vouchers import redeem_access_voucher
+
+        original_end = self.customer.package_end
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.plan,
+            amount="50.00",
+            reference="HS-CASH-1",
+            recorded_by=self.owner,
+        )
+        self.customer.refresh_from_db()
+        self.assertTrue(result["kick_sessions"])
+        self.assertEqual(len(result["voucher_codes"]), 2)
+        self.assertGreater(self.customer.package_end, original_end)
+
+        vouchers = list(
+            AccessVoucher.objects.filter(payment=result["payment"]).order_by("id")
+        )
+        self.assertEqual(len(vouchers), 2)
+        self.assertTrue(all(v.status == AccessVoucher.Status.VALID for v in vouchers))
+        self.assertTrue(all(v.subscription_applied for v in vouchers))
+
+        end_after_recharge = self.customer.package_end
+        redeemed = redeem_access_voucher(
+            organization=self.org,
+            code=vouchers[0].code,
+            customer=self.customer,
+            mac="AA:BB:CC:DD:EE:71",
+            provision=False,
+        )
+        self.assertTrue(redeemed["ok"])
+        self.customer.refresh_from_db()
+        # Package was already extended by cash recharge — redeem must not stack again.
+        self.assertEqual(self.customer.package_end, end_after_recharge)
+        vouchers[0].refresh_from_db()
+        self.assertEqual(vouchers[0].status, AccessVoucher.Status.INVALID)
+
+    def test_hotspot_cash_recharge_invalidates_previous_unused_vouchers(self):
+        from billing.models import AccessVoucher
+
+        old = AccessVoucher.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            code="1111A",
+            status=AccessVoucher.Status.VALID,
+        )
+        recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.plan,
+            amount="50.00",
+            recorded_by=self.owner,
+        )
+        old.refresh_from_db()
+        self.assertEqual(old.status, AccessVoucher.Status.INVALID)
+        self.assertEqual(
+            AccessVoucher.objects.filter(
+                customer=self.customer, status=AccessVoucher.Status.VALID
+            ).count(),
+            2,
+        )
+
+
 class PartialRechargeTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user("owner-partial", password="x")

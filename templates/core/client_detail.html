@@ -621,10 +621,18 @@
             </div>
           </div>
           <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-full>
-            Payment method is recorded as <strong>Cash</strong>. The package period stacks onto any remaining time and MikroTik access syncs in the background.
+            {% if customer.service_type == "hotspot" %}
+              Payment method is recorded as <strong>Cash</strong>. Hotspot recharges issue new vouchers, clear the current device session, and MikroTik syncs so the client can autoconnect or enter a voucher to start fresh.
+            {% else %}
+              Payment method is recorded as <strong>Cash</strong>. The package period stacks onto any remaining time and MikroTik access syncs in the background.
+            {% endif %}
           </p>
           <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-partial hidden>
-            Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates (inclusive) and MikroTik access syncs in the background.
+            {% if customer.service_type == "hotspot" %}
+              Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates. New vouchers are issued and the current device session is cleared so the client starts fresh.
+            {% else %}
+              Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates (inclusive) and MikroTik access syncs in the background.
+            {% endif %}
           </p>
         </section>
       </div>
@@ -834,7 +842,15 @@
               window.refreshClientSubscription(false);
             }
             showPackageToast(data.message || "Recharged.", "success");
-            if (data.syncing) {
+            if (data.voucher_codes && data.voucher_codes.length) {
+              showPackageToast(
+                "Voucher" + (data.voucher_codes.length === 1 ? "" : "s") + ": " + data.voucher_codes.join(", "),
+                "info"
+              );
+            }
+            if (data.kick_sessions) {
+              showPackageToast("Device session cleared — autoconnect or enter a voucher to start fresh.", "info");
+            } else if (data.syncing) {
               showPackageToast("Internet restored on MikroTik — finishing CPE sync…", "info");
             }
           })

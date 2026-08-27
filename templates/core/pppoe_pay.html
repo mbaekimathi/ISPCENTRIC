@@ -1623,13 +1623,13 @@
       }
 
       function openInternet(stkId, token) {
-        setWaiting(true, "You're online", "Payment successful. Restoring your connection…", false, true);
+        setWaiting(true, "You're online", "MikroTik allowed surfing. Opening…", false, true);
         var separator = welcomeUrl.indexOf("?") === -1 ? "?" : "&";
         window.setTimeout(function () {
           window.location.replace(
             welcomeUrl + separator + "stk=" + encodeURIComponent(stkId) + "&token=" + encodeURIComponent(token)
           );
-        }, 100);
+        }, 50);
       }
 
       function bindPanel(root) {

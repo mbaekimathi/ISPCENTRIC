@@ -71,7 +71,15 @@ def customer_unused_voucher_count(customer) -> int:
     ).count()
 
 
-def _create_one_voucher(*, organization, customer, plan, stk) -> AccessVoucher:
+def _create_one_voucher(
+    *,
+    organization,
+    customer,
+    plan,
+    stk=None,
+    payment=None,
+    subscription_applied: bool = False,
+) -> AccessVoucher:
     last_error = None
     for _ in range(12):
         code = _generate_code()
@@ -82,6 +90,8 @@ def _create_one_voucher(*, organization, customer, plan, stk) -> AccessVoucher:
                     customer=customer,
                     plan=plan,
                     stk_request=stk,
+                    payment=payment,
+                    subscription_applied=bool(subscription_applied),
                     code=code,
                     status=AccessVoucher.Status.VALID,
                 )
@@ -119,9 +129,80 @@ def create_vouchers_for_stk(stk: StkPushRequest) -> list[AccessVoucher]:
                 customer=customer,
                 plan=plan,
                 stk=stk,
+                payment=getattr(stk, "payment", None),
+                subscription_applied=bool(getattr(stk, "subscription_applied", False)),
             )
         )
     return created
+
+
+def invalidate_unused_customer_vouchers(customer, *, keep_ids: Iterable[int] | None = None) -> int:
+    """Burn leftover VALID vouchers so a fresh recharge batch is the only redeemable set."""
+    if customer is None or not getattr(customer, "pk", None):
+        return 0
+    keep = {int(pk) for pk in (keep_ids or []) if pk}
+    now = timezone.now()
+    updated = 0
+    qs = AccessVoucher.objects.filter(
+        customer_id=customer.pk,
+        status=AccessVoucher.Status.VALID,
+    )
+    if keep:
+        qs = qs.exclude(pk__in=keep)
+    for voucher in qs:
+        voucher.status = AccessVoucher.Status.INVALID
+        voucher.invalidated_at = now
+        voucher.save(update_fields=["status", "invalidated_at"])
+        updated += 1
+    return updated
+
+
+def create_vouchers_for_cash_recharge(
+    *,
+    organization,
+    customer,
+    plan,
+    payment=None,
+) -> list[AccessVoucher]:
+    """
+    Issue a fresh Hotspot voucher batch after staff cash recharge.
+
+    Marks older unused vouchers invalid, then creates one code per device slot.
+    Package is already extended by the recharge, so vouchers are marked applied.
+    """
+    if customer is None or plan is None:
+        raise ValueError("Voucher requires a customer and plan.")
+    needed = voucher_count_for_plan(plan)
+    invalidate_unused_customer_vouchers(customer)
+    created: list[AccessVoucher] = []
+    for _ in range(needed):
+        created.append(
+            _create_one_voucher(
+                organization=organization,
+                customer=customer,
+                plan=plan,
+                payment=payment,
+                subscription_applied=True,
+            )
+        )
+    return created
+
+
+def vouchers_for_batch(voucher: AccessVoucher | None) -> list[AccessVoucher]:
+    """Sibling vouchers from the same STK or cash payment."""
+    if voucher is None:
+        return []
+    if voucher.stk_request_id:
+        return list(
+            AccessVoucher.objects.filter(stk_request_id=voucher.stk_request_id).order_by(
+                "id"
+            )
+        )
+    if voucher.payment_id:
+        return list(
+            AccessVoucher.objects.filter(payment_id=voucher.payment_id).order_by("id")
+        )
+    return [voucher]
 
 
 def create_voucher_for_stk(stk: StkPushRequest) -> AccessVoucher:
@@ -147,12 +228,8 @@ def voucher_payload(
     """Pay-page fields: only still-valid (unused) voucher codes."""
     if voucher is None and not all_vouchers:
         return {}
-    if all_vouchers is None and voucher is not None and voucher.stk_request_id:
-        all_vouchers = list(
-            AccessVoucher.objects.filter(stk_request_id=voucher.stk_request_id).order_by(
-                "id"
-            )
-        )
+    if all_vouchers is None and voucher is not None:
+        all_vouchers = vouchers_for_batch(voucher)
     elif all_vouchers is None:
         all_vouchers = [voucher] if voucher else []
     valid = [row for row in all_vouchers if row.status == AccessVoucher.Status.VALID]
@@ -273,18 +350,32 @@ def redeem_access_voucher(
                 }
 
     stk = voucher.stk_request
-    # Auto-connect may already have applied this payment; don't double-extend.
-    if stk is None or not stk.subscription_applied:
+    # Cash recharge / auto-connect may already have applied this payment.
+    already_applied = bool(voucher.subscription_applied) or (
+        stk is not None and bool(stk.subscription_applied)
+    )
+    if not already_applied:
         try:
             apply_paid_subscription_with_offer(target, plan=paid_plan)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        voucher.subscription_applied = True
+        voucher.save(update_fields=["subscription_applied"])
+        if voucher.payment_id:
+            AccessVoucher.objects.filter(payment_id=voucher.payment_id).update(
+                subscription_applied=True
+            )
+        elif stk is not None:
+            AccessVoucher.objects.filter(stk_request=stk).update(
+                subscription_applied=True
+            )
 
     _mark_voucher_used(voucher, mac=mac)
 
     if stk is not None and not stk.subscription_applied:
         stk.subscription_applied = True
         stk.save(update_fields=["subscription_applied"])
+        AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
 
     nas = {"ok": False, "allowed": False}
     if provision:
@@ -312,11 +403,7 @@ def redeem_access_voucher(
     from core.subscription_sync import nas_access_ready
 
     authorized = nas_access_ready(nas) if nas else False
-    siblings = (
-        list(AccessVoucher.objects.filter(stk_request=stk).order_by("id"))
-        if stk is not None
-        else [voucher]
-    )
+    siblings = vouchers_for_batch(voucher)
     return {
         "ok": True,
         "activated": True,
@@ -418,6 +505,7 @@ def activate_paid_subscription_stk(
             return {"ok": False, "error": str(exc)}
         stk.subscription_applied = True
         stk.save(update_fields=["subscription_applied"])
+        AccessVoucher.objects.filter(stk_request=stk).update(subscription_applied=True)
         if device_mac:
             from billing.devices import attach_hotspot_device, normalize_device_mac
 
@@ -475,16 +563,27 @@ def _apply_package_while_burning(voucher: AccessVoucher) -> None:
     customer = voucher.customer
     paid_plan = voucher.plan or getattr(customer, "plan", None)
     stk = voucher.stk_request
-    if customer is None or (stk is not None and stk.subscription_applied):
+    if customer is None:
+        return
+    if voucher.subscription_applied or (stk is not None and stk.subscription_applied):
         return
     try:
         if paid_plan is not None and customer.plan_id != paid_plan.pk:
             customer.plan = paid_plan
             customer.save(update_fields=["plan"])
         apply_paid_subscription_with_offer(customer, plan=paid_plan)
+        voucher.subscription_applied = True
+        voucher.save(update_fields=["subscription_applied"])
+        if voucher.payment_id:
+            AccessVoucher.objects.filter(payment_id=voucher.payment_id).update(
+                subscription_applied=True
+            )
         if stk is not None and not stk.subscription_applied:
             stk.subscription_applied = True
             stk.save(update_fields=["subscription_applied"])
+            AccessVoucher.objects.filter(stk_request=stk).update(
+                subscription_applied=True
+            )
     except Exception:  # noqa: BLE001
         logger.exception(
             "Failed applying package while invalidating voucher %s",

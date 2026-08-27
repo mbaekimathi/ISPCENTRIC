@@ -793,6 +793,18 @@ class AccessVoucher(models.Model):
         blank=True,
         related_name="access_vouchers",
     )
+    payment = models.ForeignKey(
+        "Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="access_vouchers",
+        help_text="Cash/bank recharge that issued this voucher batch (when no STK).",
+    )
+    subscription_applied = models.BooleanField(
+        default=False,
+        help_text="True when the paid package for this voucher was already extended (cash recharge or STK activate).",
+    )
     code = models.CharField(max_length=24, db_index=True)
     status = models.CharField(
         max_length=16,
@@ -826,6 +838,10 @@ class AccessVoucher(models.Model):
             models.Index(
                 fields=["stk_request", "status"],
                 name="bill_voucher_stk_status_idx",
+            ),
+            models.Index(
+                fields=["payment", "status"],
+                name="bill_voucher_pay_status_idx",
             ),
         ]
 

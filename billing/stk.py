@@ -1496,8 +1496,8 @@ def _apply_paid_subscription_to_status(
         return payload
     from billing.vouchers import activate_paid_subscription_stk, attach_voucher_to_stk_status
 
-    # Dashboard polls must not start a new NAS sync every 2s. Captive pay pages
-    # (wait_for_nas) still push MikroTik on this request so surfing can start.
+    # Captive pay pages (wait_for_nas) block on one quick MikroTik restore so
+    # "Connected" / welcome only appears after the NAS can let them surf.
     activation = {}
     if not stk.subscription_applied or wait_for_nas:
         activation = activate_paid_subscription_stk(
@@ -1539,7 +1539,8 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
     localhost callbacks cannot be reached).
 
     ``wait_for_nas=True`` (captive pay pages) applies the package and waits for
-    one quick MikroTik restore so the device can surf on this response.
+    one quick MikroTik restore so Connected/welcome only shows after surfing
+    is allowed on the NAS.
     """
     stk.refresh_from_db()
     customer = stk.customer

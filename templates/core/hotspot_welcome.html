@@ -302,12 +302,12 @@
           </svg>
         </div>
 
-        <h1>{{ page_title }}</h1>
-        {% if page_message %}<p class="msg">{{ page_message }}</p>{% endif %}
-        <p class="status" role="status">{% if paid %}Payment confirmed · Connected{% else %}Connected{% endif %}</p>
+        <h1 data-welcome-title>{{ page_title }}</h1>
+        {% if page_message %}<p class="msg" data-welcome-msg>{{ page_message }}</p>{% endif %}
+        <p class="status" role="status" data-welcome-status>{% if paid and activation_url %}Payment confirmed · Connecting…{% elif paid %}Payment confirmed · Connected{% else %}Connected{% endif %}</p>
       </header>
 
-      <div class="body">
+      <div class="body" data-welcome-body{% if paid and activation_url %} hidden{% endif %}>
         <a class="ok" id="continue-browsing" href="{{ button_url }}">{{ button_label }}</a>
 
         <div class="quick-links" aria-label="Open a site">
@@ -322,6 +322,12 @@
 
         <p class="meta">Hotspot · {{ org_name }}</p>
       </div>
+      {% if paid and activation_url %}
+      <div class="body" data-welcome-connecting>
+        <p class="hint" style="margin: 0;">Waiting for MikroTik to allow surfing on this device…</p>
+        <p class="meta">Hotspot · {{ org_name }}</p>
+      </div>
+      {% endif %}
     </main>
   </div>
 
@@ -330,8 +336,21 @@
     (function () {
       var url = "{{ activation_url|escapejs }}";
       var attempts = 0;
+      var statusEl = document.querySelector("[data-welcome-status]");
+      var bodyEl = document.querySelector("[data-welcome-body]");
+      var connectingEl = document.querySelector("[data-welcome-connecting]");
+
+      function showConnected() {
+        if (statusEl) statusEl.textContent = "Payment confirmed · Connected";
+        if (connectingEl) connectingEl.hidden = true;
+        if (bodyEl) bodyEl.hidden = false;
+      }
+
       function activate() {
         attempts += 1;
+        if (statusEl && attempts > 1) {
+          statusEl.textContent = "Payment confirmed · Still connecting… (" + attempts + "/4)";
+        }
         fetch(url, {
           method: "POST",
           keepalive: true,
@@ -344,19 +363,33 @@
           })
           .then(function (result) {
             if (result.data.authorized) {
+              showConnected();
               return;
             }
-            if (attempts < 4 && (result.data.can_retry_authorize || result.data.offline)) {
-              window.setTimeout(activate, 2500 * attempts);
+            if (attempts < 4 && (result.data.can_retry_authorize || result.data.offline || result.ok)) {
+              window.setTimeout(activate, 1500 * attempts);
+              return;
+            }
+            if (statusEl) {
+              statusEl.textContent = "Payment confirmed · Could not auto-connect";
+            }
+            if (connectingEl) {
+              connectingEl.innerHTML =
+                '<p class="hint" style="margin:0;">Payment succeeded, but MikroTik has not allowed surfing yet. Wait a moment, or open the pay page and enter a voucher.</p>' +
+                '<p class="meta">Hotspot · {{ org_name|escapejs }}</p>';
             }
           })
           .catch(function () {
             if (attempts < 3) {
-              window.setTimeout(activate, 2500 * attempts);
+              window.setTimeout(activate, 1500 * attempts);
+              return;
             }
+            if (statusEl) statusEl.textContent = "Payment confirmed · Retrying connection…";
+            if (bodyEl) bodyEl.hidden = false;
+            if (connectingEl) connectingEl.hidden = true;
           });
       }
-      window.setTimeout(activate, 800);
+      window.setTimeout(activate, 50);
     })();
   </script>
   {% endif %}
