@@ -15,12 +15,15 @@ from core.mikrotik_connect import (
     apply_mikrotik_single_wan,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
+    assess_uplink_switch_risk,
     list_mikrotik_ports,
 )
 from core.models import MikroTikRouter
 from core.views import (
+    _build_uplink_prompt,
     _failover_ports_from_roles,
     _pick_auto_wan,
+    apply_detected_uplink,
     suggest_port_roles,
 )
 
@@ -564,3 +567,123 @@ class SingleWanSyncTests(SimpleTestCase):
         ]
         self.assertIn("ether1", members)
         self.assertIn("pppoe-out1", members)
+
+
+class AssessUplinkSwitchRiskTests(SimpleTestCase):
+    def test_tunnel_management_is_safe(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp", running=True),
+        ]
+        risk = assess_uplink_switch_risk(
+            new_wan="ether2",
+            old_wan="ether1",
+            ports=ports,
+            management_host="192.168.88.1",
+            tunnel_address="10.9.0.5",
+            uses_tunnel=True,
+        )
+        self.assertTrue(risk["safe"])
+        self.assertFalse(risk["blocking"])
+
+    def test_management_on_old_wan_blocks_switch(self):
+        ports = [
+            _port("ether1", uplink_kind="pppoe"),
+            _port("ether2", uplink_kind="dhcp", running=True),
+        ]
+        risk = assess_uplink_switch_risk(
+            new_wan="ether2",
+            old_wan="ether1",
+            ports=ports,
+            management_host="203.0.113.8",
+            management_iface_by_host={"203.0.113.8": "pppoe-out1"},
+        )
+        self.assertTrue(risk["blocking"])
+        self.assertFalse(risk["safe"])
+
+    def test_bridged_new_wan_warns_without_blocking(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", bridged=True, uplink_kind="dhcp", running=True),
+        ]
+        risk = assess_uplink_switch_risk(
+            new_wan="ether2",
+            old_wan="ether1",
+            ports=ports,
+            management_host="192.168.10.1",
+            management_iface_by_host={"192.168.10.1": "bridgeLocal"},
+        )
+        self.assertFalse(risk["blocking"])
+        self.assertFalse(risk["safe"])
+        self.assertTrue(any("bridge" in line.lower() for line in risk["risks"]))
+
+
+class UplinkPromptTests(SimpleTestCase):
+    def _router(self, **kwargs):
+        router = MikroTikRouter(
+            name="test",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            wan_interface=kwargs.pop("wan_interface", "ether1"),
+            uplink_mode=kwargs.pop("uplink_mode", MikroTikRouter.UplinkMode.SINGLE),
+            port_roles=kwargs.pop(
+                "port_roles", {"ether1": MikroTikRouter.PortRole.WAN}
+            ),
+        )
+        for key, value in kwargs.items():
+            setattr(router, key, value)
+        return router
+
+    def test_prompt_when_suggested_differs_from_stored(self):
+        router = self._router()
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp", running=True),
+        ]
+        prompt = _build_uplink_prompt(
+            router,
+            suggested_wan="ether2",
+            live_ports=ports,
+            management_iface_by_host={"192.168.88.1": "bridgeLocal"},
+        )
+        self.assertIsNotNone(prompt)
+        self.assertEqual(prompt["port"], "ether2")
+        self.assertEqual(prompt["current_port"], "ether1")
+
+    def test_no_prompt_when_modes_match(self):
+        router = self._router()
+        ports = [_port("ether1", uplink_kind="dhcp")]
+        prompt = _build_uplink_prompt(
+            router,
+            suggested_wan="ether1",
+            live_ports=ports,
+            management_iface_by_host={},
+        )
+        self.assertIsNone(prompt)
+
+
+class ApplyDetectedUplinkTests(SimpleTestCase):
+    def test_moves_internet_and_clears_old_uplink(self):
+        router = MikroTikRouter(
+            name="r",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            wan_interface="ether1",
+            uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+            uplink_ports=["ether1"],
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether2": MikroTikRouter.PortRole.NONE,
+            },
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp", running=True),
+        ]
+        result = apply_detected_uplink(router, "ether2", ports)
+        self.assertTrue(result["ok"])
+        self.assertEqual(router.wan_interface, "ether2")
+        self.assertEqual(router.port_roles["ether2"], MikroTikRouter.PortRole.WAN)
+        self.assertEqual(router.port_roles["ether1"], MikroTikRouter.PortRole.NONE)

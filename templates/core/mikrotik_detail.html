@@ -40,6 +40,23 @@
         <span class="mikrotik-link-dot" aria-hidden="true"></span>
         <span class="mikrotik-link-label">Checking…</span>
       </span>
+      <span
+        class="mikrotik-auto-restore-badge{% if auto_restore and not auto_restore.skipped %}{% if auto_restore.ok %} is-ok{% else %} is-fail{% endif %}{% else %} is-hidden{% endif %}"
+        data-auto-restore-badge="{{ router.id }}"
+        {% if not auto_restore or auto_restore.skipped %}hidden{% endif %}
+        title="{{ auto_restore.message|default:'' }}"
+      >
+        <span class="mikrotik-auto-restore-icon" aria-hidden="true">↻</span>
+        <span class="mikrotik-auto-restore-label">
+          {% if auto_restore and not auto_restore.skipped %}
+            {% if auto_restore.restore_kind == "internet" %}Internet{% elif auto_restore.restore_kind == "management" %}Management{% else %}Auto{% endif %}
+            {% if auto_restore.ok %}auto-restored{% else %}restore failed{% endif %}
+            {{ auto_restore.at_label }}
+          {% else %}
+            Auto-restore
+          {% endif %}
+        </span>
+      </span>
       <span class="mikrotik-account-pill{% if is_suspended %} is-suspended{% else %} is-active{% endif %}">
         {{ router.get_account_status_display }}
       </span>
@@ -170,31 +187,84 @@
 
 {% block client_content %}
 {% include "core/includes/mikrotik_job_poll.html" %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel mikrotik-detail-panel">
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="mikrotik-detail-kicker">Live router</p>
-      <h2>{{ router.name }}</h2>
+<div class="mk-page mk-detail-page">
+  <header class="mk-page-hero mk-detail-hero{% if is_suspended %} is-suspended{% endif %}" id="mk-detail-hero">
+    <div class="mk-detail-hero-main">
+      <div class="mk-detail-hero-thumb" aria-hidden="true">
+        <img src="{{ router_model_image }}" alt="" width="120" height="90" loading="eager" decoding="async">
+      </div>
+      <div class="mk-page-hero-copy">
+        <p class="mk-page-kicker">Live router</p>
+        <h1 class="mk-page-title">{{ router.name }}</h1>
+        <p class="mk-page-lead">
+          {{ router.get_model_display }}
+          <span class="mk-host-chip">{{ router.host }}</span>
+          {% if router.location %}<span class="mk-detail-location">{{ router.location }}</span>{% endif %}
+        </p>
+      </div>
     </div>
-    <div class="mikrotik-detail-actions">
-      <button
-        type="button"
-        class="btn btn-ghost"
-        id="mikrotik-detail-reconnect"
-        data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
-        {% if is_suspended %}disabled{% endif %}
-      >Reconnect</button>
-      <button type="button" class="btn btn-ghost" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>
-        <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
-        <span class="mikrotik-btn-label">Refresh live</span>
-      </button>
-      <a class="btn btn-ghost" href="{% url 'core:mikrotik' %}">Back to routers</a>
+    <div class="mk-page-hero-status mk-detail-hero-status">
+      <span
+        class="mikrotik-link-status mk-detail-link-pill is-checking"
+        id="mikrotik-page-link"
+        data-router-status="{{ router.id }}"
+        data-router-host="{{ router.host }}"
+      >
+        <span class="mikrotik-link-spinner" aria-hidden="true"></span>
+        <span class="mikrotik-link-dot" aria-hidden="true"></span>
+        <span class="mikrotik-link-label">Checking…</span>
+      </span>
+      <span
+        class="mikrotik-auto-restore-badge{% if auto_restore and not auto_restore.skipped %}{% if auto_restore.ok %} is-ok{% else %} is-fail{% endif %}{% else %} is-hidden{% endif %}"
+        data-auto-restore-badge="{{ router.id }}"
+        {% if not auto_restore or auto_restore.skipped %}hidden{% endif %}
+        title="{{ auto_restore.message|default:'' }}"
+      >
+        <span class="mikrotik-auto-restore-icon" aria-hidden="true">↻</span>
+        <span class="mikrotik-auto-restore-label">
+          {% if auto_restore and not auto_restore.skipped %}
+            {% if auto_restore.restore_kind == "internet" %}Internet{% elif auto_restore.restore_kind == "management" %}Management{% else %}Auto{% endif %}
+            {% if auto_restore.ok %}auto-restored{% else %}restore failed{% endif %}
+            {{ auto_restore.at_label }}
+          {% else %}
+            Auto-restore
+          {% endif %}
+        </span>
+      </span>
+      <span class="mikrotik-account-pill{% if is_suspended %} is-suspended{% else %} is-active{% endif %}">
+        {{ router.get_account_status_display }}
+      </span>
+      <div class="mk-detail-hero-actions">
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          id="mikrotik-detail-reconnect"
+          data-reconnect-url="{% url 'core:mikrotik_reconnect' router.id %}"
+          {% if is_suspended %}disabled{% endif %}
+        >Reconnect</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="mikrotik-live-refresh" {% if is_suspended %}disabled{% endif %}>
+          <span class="mikrotik-btn-spinner" aria-hidden="true" hidden></span>
+          <span class="mikrotik-btn-label">Refresh</span>
+        </button>
+        <a class="btn btn-ghost btn-sm" href="{% url 'core:mikrotik' %}">All routers</a>
+      </div>
     </div>
-  </div>
+  </header>
 
-  <section class="mikrotik-live is-loading" id="mikrotik-live" aria-live="polite" data-live-url="{% url 'core:mikrotik_live' router.id %}" data-suspended="{% if is_suspended %}1{% else %}0{% endif %}">
+  <nav class="mk-detail-quicknav" aria-label="Router sections">
+    <a class="mk-detail-quicklink is-active" href="{% url 'core:mikrotik_detail' router.id %}" aria-current="page">Overview</a>
+    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_ports' router.id %}">Ports</a>
+    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_pppoe_settings' router.id %}">PPPoE &amp; Hotspot</a>
+    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_clean_uplink' router.id %}">Clean uplink</a>
+  </nav>
+
+  <section
+    class="mk-surface mk-detail-surface mikrotik-live is-loading"
+    id="mikrotik-live"
+    aria-live="polite"
+    data-live-url="{% url 'core:mikrotik_live' router.id %}"
+    data-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+  >
     <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended %}hidden{% endif %} role="status" aria-live="polite">
       <span class="mikrotik-page-spinner" aria-hidden="true"></span>
       <div>
@@ -202,12 +272,37 @@
         <p class="mikrotik-live-loading-sub">Connecting to {{ router.name }} over RouterOS API.</p>
       </div>
     </div>
-    <div class="mikrotik-live-head">
+
+    <header class="mikrotik-live-head mk-detail-live-head">
       <div>
-        <h3>Live overview</h3>
+        <p class="mk-section-step">Live telemetry</p>
+        <h2 class="mk-detail-section-title">Router health</h2>
         <p class="mikrotik-live-sub" id="mikrotik-live-sub">{% if is_suspended %}Live access is paused while this account is suspended.{% else %}Reading the router…{% endif %}</p>
       </div>
-      <span class="mikrotik-live-stamp" id="mikrotik-live-stamp">—</span>
+      <span class="mikrotik-live-stamp mk-detail-stamp" id="mikrotik-live-stamp">—</span>
+    </header>
+
+    <div class="mikrotik-live-facts mk-detail-facts" id="mikrotik-page-facts" {% if is_suspended %}hidden{% endif %}>
+      <div class="mikrotik-live-fact">
+        <span>Identity</span>
+        <strong data-live="identity">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>Board</span>
+        <strong data-live="board">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>Serial</span>
+        <strong data-live="serial">{{ router.serial_number|default:"—" }}</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>RouterOS</span>
+        <strong data-live="version">—</strong>
+      </div>
+      <div class="mikrotik-live-fact">
+        <span>Wi‑Fi</span>
+        <strong data-live="wifi">—</strong>
+      </div>
     </div>
 
     <div class="mikrotik-live-blocked" id="mikrotik-live-blocked" {% if not is_suspended %}hidden{% endif %}>
@@ -222,60 +317,61 @@
           {% endif %}
         </p>
       </div>
-      <button type="button" class="btn btn-ghost" id="mikrotik-live-blocked-why" {% if not is_suspended %}hidden{% endif %}>View reason</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="mikrotik-live-blocked-why" {% if not is_suspended %}hidden{% endif %}>View reason</button>
     </div>
 
-    <div class="mikrotik-live-grid" id="mikrotik-live-grid" {% if is_suspended %}hidden{% endif %}>
-      <article class="mikrotik-live-card" data-metric="status">
+    <div class="mikrotik-live-grid mk-detail-metrics" id="mikrotik-live-grid" {% if is_suspended %}hidden{% endif %}>
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="status">
         <p class="mikrotik-live-label">Connection</p>
         <p class="mikrotik-live-value" data-live="status">…</p>
         <p class="mikrotik-live-hint" data-live="status-hint">Checking reachability</p>
       </article>
-      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="download">
+      <article class="mikrotik-live-card mikrotik-live-card-speed mk-detail-metric" data-metric="download">
         <p class="mikrotik-live-label">Download</p>
         <p class="mikrotik-live-value" data-live="wan-download">—</p>
         <p class="mikrotik-live-hint" data-live="wan-download-hint">Live inbound speed</p>
       </article>
-      <article class="mikrotik-live-card mikrotik-live-card-speed" data-metric="upload">
+      <article class="mikrotik-live-card mikrotik-live-card-speed mk-detail-metric" data-metric="upload">
         <p class="mikrotik-live-label">Upload</p>
         <p class="mikrotik-live-value" data-live="wan-upload">—</p>
         <p class="mikrotik-live-hint" data-live="wan-upload-hint">Live outbound speed</p>
       </article>
-      <article class="mikrotik-live-card" data-metric="uptime">
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="uptime">
         <p class="mikrotik-live-label">Uptime</p>
         <p class="mikrotik-live-value" data-live="uptime">—</p>
         <p class="mikrotik-live-hint">How long the router has been running</p>
       </article>
-      <article class="mikrotik-live-card" data-metric="cpu">
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="cpu">
         <p class="mikrotik-live-label">CPU load</p>
         <p class="mikrotik-live-value" data-live="cpu">—</p>
         <div class="mikrotik-meter" aria-hidden="true"><span data-live-bar="cpu"></span></div>
         <p class="mikrotik-live-hint">Processor usage right now</p>
       </article>
-      <article class="mikrotik-live-card" data-metric="memory">
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="memory">
         <p class="mikrotik-live-label">Memory used</p>
         <p class="mikrotik-live-value" data-live="memory">—</p>
         <div class="mikrotik-meter" aria-hidden="true"><span data-live-bar="memory"></span></div>
         <p class="mikrotik-live-hint" data-live="memory-hint">Free / total</p>
       </article>
-      <article class="mikrotik-live-card" data-metric="ports">
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="ports">
         <p class="mikrotik-live-label">Ports online</p>
         <p class="mikrotik-live-value" data-live="ports">—</p>
         <p class="mikrotik-live-hint">Network interfaces currently running</p>
       </article>
-      <article class="mikrotik-live-card" data-metric="users">
+      <article class="mikrotik-live-card mk-detail-metric" data-metric="users">
         <p class="mikrotik-live-label">Online users</p>
         <p class="mikrotik-live-value" data-live="users">—</p>
         <p class="mikrotik-live-hint" data-live="users-hint">PPPoE + Hotspot sessions</p>
       </article>
     </div>
 
-    <section class="mikrotik-uplink" id="mikrotik-uplink" {% if is_suspended %}hidden{% endif %}>
-      <div class="mikrotik-uplink-head">
-        <h3>Internet source</h3>
+    <section class="mikrotik-uplink mk-detail-uplink" id="mikrotik-uplink" {% if is_suspended %}hidden{% endif %}>
+      <header class="mikrotik-uplink-head">
+        <p class="mk-section-step">Upstream</p>
+        <h2 class="mk-detail-section-title">Internet source</h2>
         <p class="mikrotik-uplink-sub" data-live="wan-summary">Where upstream internet enters this MikroTik.</p>
-      </div>
-      <div class="mikrotik-uplink-grid mikrotik-uplink-grid-5">
+      </header>
+      <div class="mikrotik-uplink-grid mikrotik-uplink-grid-5 mk-detail-uplink-grid">
         <article class="mikrotik-uplink-card mikrotik-uplink-card-provider">
           <p class="mikrotik-live-label">Internet company</p>
           <p class="mikrotik-live-value mikrotik-uplink-value" data-live="wan-provider">—</p>
@@ -304,7 +400,7 @@
       </div>
     </section>
   </section>
-</section>
+</div>
 
 {# —— Access notice popup —— #}
 <div class="role-modal mikrotik-notice-modal" id="mikrotik-access-notice" hidden aria-hidden="true">
@@ -710,6 +806,9 @@
   var subEl = document.getElementById("mikrotik-live-sub");
   var stampEl = document.getElementById("mikrotik-live-stamp");
   var hero = document.getElementById("mikrotik-hero-link");
+  var pageHero = document.getElementById("mikrotik-page-link");
+  var pageFacts = document.getElementById("mikrotik-page-facts");
+  var detailHero = document.getElementById("mk-detail-hero");
   var grid = document.getElementById("mikrotik-live-grid");
   var facts = document.getElementById("mikrotik-live-facts");
   var uplink = document.getElementById("mikrotik-uplink");
@@ -727,6 +826,34 @@
   var lastReason = "";
   var noticeShownFor = "";
   var wasOnline = null;
+
+  function formatAutoRestore(ar) {
+    if (!ar || !ar.at || ar.skipped) return null;
+    var kind =
+      ar.restore_kind === "internet"
+        ? "Internet"
+        : (ar.restore_kind === "management" ? "Management" : "Auto");
+    var ago = ar.at_label || "";
+    if (ar.ok) return kind + " auto-restored " + ago;
+    return kind + " restore failed " + ago;
+  }
+
+  function applyAutoRestoreBadge(ar) {
+    document.querySelectorAll('[data-auto-restore-badge]').forEach(function (el) {
+      var text = formatAutoRestore(ar);
+      if (!text) {
+        el.hidden = true;
+        el.classList.add("is-hidden");
+        return;
+      }
+      el.hidden = false;
+      el.classList.remove("is-hidden", "is-ok", "is-fail");
+      el.classList.add(ar.ok ? "is-ok" : "is-fail");
+      el.title = ar.message || text;
+      var badgeLabel = el.querySelector(".mikrotik-auto-restore-label");
+      if (badgeLabel) badgeLabel.textContent = text;
+    });
+  }
 
   function clearLiveLoading() {
     liveRoot.classList.remove("is-loading");
@@ -751,11 +878,17 @@
   }
 
   function setHero(online) {
-    if (!hero) return;
-    hero.classList.remove("is-checking", "is-connected", "is-disconnected");
-    hero.classList.add(online ? "is-connected" : "is-disconnected");
-    var label = hero.querySelector(".mikrotik-link-label");
-    if (label) label.textContent = online ? "Connected" : "Disconnected";
+    [hero, pageHero].forEach(function (el) {
+      if (!el) return;
+      el.classList.remove("is-checking", "is-connected", "is-disconnected");
+      el.classList.add(online ? "is-connected" : "is-disconnected");
+      var label = el.querySelector(".mikrotik-link-label");
+      if (label) label.textContent = online ? "Connected" : "Disconnected";
+    });
+    if (detailHero) {
+      detailHero.classList.toggle("is-online", online);
+      detailHero.classList.toggle("is-offline", !online);
+    }
   }
 
   function stampNow() {
@@ -825,6 +958,7 @@
     liveRoot.classList.remove("is-online");
     if (grid) grid.hidden = true;
     if (uplink) uplink.hidden = true;
+    if (pageFacts) pageFacts.hidden = true;
     if (blocked) blocked.hidden = false;
     if (blockedTitle) blockedTitle.textContent = "Cannot access this MikroTik";
     if (blockedText) blockedText.textContent = "You cannot access live data due to a connection or account issue.";
@@ -839,9 +973,11 @@
     if (blocked) blocked.hidden = true;
     if (grid) grid.hidden = false;
     if (uplink) uplink.hidden = false;
+    if (pageFacts) pageFacts.hidden = false;
   }
 
   function renderLive(data) {
+    if (data && data.auto_restore) applyAutoRestoreBadge(data.auto_restore);
     clearLiveLoading();
     if (!data || !data.ok || !data.online) {
       var reason = friendlyReason(data || {});

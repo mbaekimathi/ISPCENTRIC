@@ -93,10 +93,10 @@
           <dd>{% if client.phone %}<a href="tel:{{ client.phone }}">{{ client.phone }}</a>{% else %}—{% endif %}</dd>
         </div>
         <div>
-          <dt>Login</dt>
+          <dt>Login code</dt>
           <dd>
             {% if client.owner %}
-              <span class="org-code" title="Owner login username">{{ client.owner.username }}</span>
+              <span class="org-code" title="Owner 6-digit login code">{{ client.owner.username }}</span>
             {% else %}
               —
             {% endif %}
@@ -178,8 +178,8 @@
 <div
   class="role-modal cc-edit-modal"
   id="cc-edit-modal"
-  {% if not edit_form %}hidden{% endif %}
-  aria-hidden="{% if edit_form %}false{% else %}true{% endif %}"
+  {% if not edit_form and not edit_owner_form %}hidden{% endif %}
+  aria-hidden="{% if edit_form or edit_owner_form %}false{% else %}true{% endif %}"
   data-open-id="{% if open_edit_id %}{{ open_edit_id }}{% endif %}"
   data-has-errors="{% if edit_form or edit_owner_form %}1{% else %}0{% endif %}"
 >
@@ -292,29 +292,31 @@
         >
           <div class="cc-edit-section-head">
             <h3 class="cc-edit-section-title">Login credentials</h3>
-            <p class="cc-edit-section-hint">Owner sign-in for this ISP. Passwords are stored hashed — set a new one to reset access.</p>
+            <p class="cc-edit-section-hint">ISP clients sign in with a 6-digit code and password. Staff use the employee login page instead.</p>
           </div>
           {% if edit_owner_form and edit_owner_form.non_field_errors %}
             <div class="notice notice-error">{{ edit_owner_form.non_field_errors }}</div>
           {% endif %}
           <div class="form-group">
-            <label for="id_cc_owner_username">Username or 6-digit code</label>
+            <label for="id_cc_owner_username">6-digit login code</label>
             <input
               id="id_cc_owner_username"
-              class="form-control text-upper"
+              class="form-control join-code-input"
               type="text"
               name="username"
-              maxlength="150"
+              maxlength="6"
+              inputmode="numeric"
               autocomplete="username"
+              placeholder="000000"
               value="{% if edit_owner_form %}{{ edit_owner_form.username.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.username }}{% endif %}"
             >
-            <p class="field-hint">Sign in with this username or 6-digit code.</p>
+            <p class="field-hint">Exactly 6 digits. Used with the password on the ISP client login page.</p>
             {% if edit_owner_form and edit_owner_form.username.errors %}
               <div class="field-error">{{ edit_owner_form.username.errors|striptags }}</div>
             {% endif %}
           </div>
           <div class="form-group">
-            <label for="id_cc_owner_email">Email</label>
+            <label for="id_cc_owner_email">Email <span class="field-optional">(optional)</span></label>
             <input
               id="id_cc_owner_email"
               class="form-control text-lower"
@@ -530,7 +532,14 @@
     phoneEl.value = btn.getAttribute("data-phone") || "";
     statusEl.value = btn.getAttribute("data-status") || "registered";
     if (loginSection) loginSection.hidden = !hasOwner;
-    if (ownerUsernameEl) ownerUsernameEl.value = btn.getAttribute("data-owner-username") || "";
+    if (ownerUsernameEl) {
+      var ownerUser = btn.getAttribute("data-owner-username") || "";
+      var isCode = /^[0-9]{6}$/.test(ownerUser);
+      ownerUsernameEl.value = isCode ? ownerUser : "";
+      ownerUsernameEl.placeholder = isCode
+        ? "000000"
+        : (ownerUser ? ("Set 6-digit code (was " + ownerUser + ")") : "000000");
+    }
     if (ownerEmailEl) ownerEmailEl.value = btn.getAttribute("data-owner-email") || "";
     if (ownerFirstEl) ownerFirstEl.value = btn.getAttribute("data-owner-first") || "";
     if (ownerLastEl) ownerLastEl.value = btn.getAttribute("data-owner-last") || "";

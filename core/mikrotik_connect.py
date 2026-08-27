@@ -16905,6 +16905,337 @@ def _port_uplink_hints(
     return hints
 
 
+def _interfaces_for_management_hosts(
+    sock: socket.socket,
+    hosts: list[str],
+) -> dict[str, str]:
+    """Map management IPv4 addresses to RouterOS interface names."""
+    want: set[str] = set()
+    for raw in hosts:
+        host = normalize_mikrotik_host(raw)
+        if not host:
+            continue
+        try:
+            want.add(str(ipaddress.ip_address(host)))
+        except ValueError:
+            continue
+    if not want:
+        return {}
+    found: dict[str, str] = {}
+    try:
+        for row in _print(sock, "/ip/address", props="address,interface"):
+            iface = (row.get("interface") or "").strip()
+            addr_str = (row.get("address") or "").strip()
+            if "/" in addr_str:
+                addr_str = addr_str.split("/", 1)[0].strip()
+            if addr_str in want and iface:
+                found[addr_str] = iface
+    except Exception:
+        pass
+    return found
+
+
+def _iface_serves_physical_port(
+    iface: str,
+    port_name: str,
+    ports_by_name: dict[str, dict],
+) -> bool:
+    """True when a RouterOS interface name is tied to a physical port row."""
+    iface = (iface or "").strip()
+    port_name = (port_name or "").strip()
+    if not iface or not port_name:
+        return False
+    if iface == port_name:
+        return True
+    row = ports_by_name.get(port_name) or {}
+    uplink_iface = (row.get("uplink_iface") or "").strip()
+    if uplink_iface and iface == uplink_iface:
+        return True
+    bridge = (row.get("bridge") or "").strip()
+    if bridge and iface == bridge:
+        return True
+    return False
+
+
+def _is_private_ipv4(host: str) -> bool:
+    host = normalize_mikrotik_host(host)
+    if not host:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
+
+
+def assess_uplink_switch_risk(
+    *,
+    new_wan: str,
+    old_wan: str,
+    ports: list[dict],
+    management_host: str = "",
+    tunnel_address: str = "",
+    management_iface_by_host: dict[str, str] | None = None,
+    uses_tunnel: bool = False,
+) -> dict[str, Any]:
+    """
+    Estimate whether moving the Internet port could drop RouterOS API access.
+
+    ``blocking`` means the switch should not proceed without fixing management
+  (e.g. billing dials the current WAN). ``safe`` means proceed without extra
+    confirmation; otherwise show risks and require explicit confirm.
+    """
+    new_wan = (new_wan or "").strip()
+    old_wan = (old_wan or "").strip()
+    ports_by_name = {
+        (p.get("name") or "").strip(): p for p in ports if (p.get("name") or "").strip()
+    }
+    new_row = ports_by_name.get(new_wan) or {}
+    old_row = ports_by_name.get(old_wan) or {}
+    risks: list[str] = []
+    blocking = False
+
+    mgmt_host = normalize_mikrotik_host(management_host)
+    mgmt_iface = ""
+    if mgmt_host and management_iface_by_host:
+        try:
+            mgmt_iface = (management_iface_by_host.get(str(ipaddress.ip_address(mgmt_host))) or "").strip()
+        except ValueError:
+            mgmt_iface = ""
+
+    tunnel = normalize_mikrotik_host(tunnel_address)
+    if uses_tunnel or tunnel:
+        return {
+            "ok": True,
+            "safe": True,
+            "blocking": False,
+            "risk_level": "low",
+            "risks": [],
+            "uses_tunnel": True,
+            "management_host": mgmt_host or tunnel,
+            "management_iface": mgmt_iface,
+            "summary": (
+                "Management uses the WireGuard tunnel — switching the Internet port "
+                "is unlikely to drop API access."
+            ),
+        }
+
+    if mgmt_iface.lower().startswith(("wg", "wireguard")):
+        return {
+            "ok": True,
+            "safe": True,
+            "blocking": False,
+            "risk_level": "low",
+            "risks": [],
+            "uses_tunnel": True,
+            "management_host": mgmt_host,
+            "management_iface": mgmt_iface,
+            "summary": "Management runs over WireGuard — switching WAN is unlikely to drop API access.",
+        }
+
+    if old_wan and mgmt_iface and _iface_serves_physical_port(mgmt_iface, old_wan, ports_by_name):
+        if not _iface_serves_physical_port(mgmt_iface, new_wan, ports_by_name):
+            blocking = True
+            risks.append(
+                f"The billing server reaches this router via {old_wan} "
+                f"({mgmt_host or 'saved host'} on {mgmt_iface}). "
+                "Switching away may drop API access until you reconnect on LAN or enable the tunnel."
+            )
+
+    if mgmt_host and not _is_private_ipv4(mgmt_host) and old_wan:
+        if _iface_serves_physical_port(mgmt_iface, old_wan, ports_by_name):
+            blocking = True
+            risks.append(
+                f"Saved management address {mgmt_host} is on the current Internet port. "
+                "Switch only after the router has a WireGuard tunnel or LAN management IP."
+            )
+
+    if new_row.get("disabled"):
+        blocking = True
+        risks.append(f"{new_wan} is disabled on the MikroTik — enable it before switching.")
+
+    if new_row.get("is_bridged"):
+        risks.append(
+            f"{new_wan} is a bridge member. ISP DHCP/PPPoE may not work until it leaves the bridge. "
+            "This page will not unbridge automatically to avoid breaking customer LAN access."
+        )
+
+    if not new_row.get("running") and not (new_row.get("uplink_kind") or "").strip():
+        risks.append(
+            f"No live link on {new_wan} yet — confirm the cable is plugged in before switching."
+        )
+
+    if old_wan and old_wan != new_wan and (old_row.get("uplink_kind") or old_row.get("running")):
+        risks.append(
+            f"Moving the default route from {old_wan} to {new_wan} may cause a brief internet outage."
+        )
+
+    risk_level = "low"
+    if blocking:
+        risk_level = "high"
+    elif risks:
+        risk_level = "medium"
+
+    safe = not blocking and not risks
+    summary = (
+        "Switch looks safe — management is not tied to the current Internet port."
+        if safe
+        else (
+            risks[0]
+            if len(risks) == 1
+            else "Review the warnings below before switching the Internet port."
+        )
+    )
+
+    return {
+        "ok": True,
+        "safe": safe,
+        "blocking": blocking,
+        "risk_level": risk_level,
+        "risks": risks,
+        "uses_tunnel": False,
+        "management_host": mgmt_host,
+        "management_iface": mgmt_iface,
+        "summary": summary,
+    }
+
+
+def assess_uplink_mode_apply_risk(
+    *,
+    mode: str,
+    touch_ports: list[str],
+    ports: list[dict],
+    management_host: str = "",
+    tunnel_address: str = "",
+    management_iface_by_host: dict[str, str] | None = None,
+    uses_tunnel: bool = False,
+) -> dict[str, Any]:
+    """
+    Risk check before bond / failover / balance / clear uplink apply.
+
+    Warns when customer internet may drop briefly and blocks when API access
+    would likely be lost (management on a port about to be unbridged).
+    """
+    mode = (mode or "").strip().lower()
+    touch_ports = [p.strip() for p in touch_ports if (p or "").strip()]
+    ports_by_name = {
+        (p.get("name") or "").strip(): p for p in ports if (p.get("name") or "").strip()
+    }
+    risks: list[str] = []
+    blocking = False
+
+    mgmt_host = normalize_mikrotik_host(management_host)
+    mgmt_iface = ""
+    if mgmt_host and management_iface_by_host:
+        try:
+            mgmt_iface = (
+                management_iface_by_host.get(str(ipaddress.ip_address(mgmt_host))) or ""
+            ).strip()
+        except ValueError:
+            mgmt_iface = ""
+
+    tunnel = normalize_mikrotik_host(tunnel_address)
+    api_safe = bool(
+        uses_tunnel
+        or tunnel
+        or mgmt_iface.lower().startswith(("wg", "wireguard"))
+    )
+
+    mode_labels = {
+        "bond": "Bonding uplink ports",
+        "failover": "Applying failover uplinks",
+        "balance": "Applying load-balanced uplinks",
+        "clear": "Resetting to single WAN",
+    }
+    action_label = mode_labels.get(mode, "Changing uplink setup")
+
+    if mode in {"bond", "failover", "balance", "clear"}:
+        risks.append(
+            f"{action_label} may interrupt customer internet for up to a minute "
+            "while RouterOS reconfigures routes and interfaces."
+        )
+
+    for port_name in touch_ports:
+        row = ports_by_name.get(port_name) or {}
+        if row.get("disabled"):
+            blocking = True
+            risks.append(f"{port_name} is disabled on the MikroTik — enable it before applying.")
+
+        if row.get("is_bridged"):
+            bridge = (row.get("bridge") or "").strip() or "bridge"
+            risks.append(
+                f"{port_name} will leave bridge “{bridge}” — required for this uplink mode."
+            )
+            if not api_safe:
+                if mgmt_iface and mgmt_iface == bridge:
+                    blocking = True
+                    risks.append(
+                        f"Management IP ({mgmt_host or 'saved host'}) is on {bridge}. "
+                        f"Unbridging {port_name} may drop API access until you enable WireGuard."
+                    )
+                elif mgmt_iface and _iface_serves_physical_port(
+                    mgmt_iface, port_name, ports_by_name
+                ):
+                    blocking = True
+                    risks.append(
+                        f"Management reaches this router through {port_name} ({mgmt_iface}). "
+                        "Set up WireGuard tunnel management before applying."
+                    )
+                elif mgmt_host and not _is_private_ipv4(mgmt_host):
+                    if _iface_serves_physical_port(mgmt_iface, port_name, ports_by_name):
+                        blocking = True
+                        risks.append(
+                            f"Saved management address {mgmt_host} is tied to {port_name}."
+                        )
+
+    risk_level = "low"
+    if blocking:
+        risk_level = "high"
+    elif len(risks) > 1:
+        risk_level = "medium"
+    elif risks:
+        risk_level = "medium"
+
+    disabled_touch = any(
+        (ports_by_name.get(p) or {}).get("disabled") for p in touch_ports
+    )
+    safe = not blocking and not disabled_touch and api_safe and not any(
+        (ports_by_name.get(p) or {}).get("is_bridged") for p in touch_ports
+    )
+
+    if safe:
+        summary = (
+            "WireGuard management is active — customer internet may still pause briefly "
+            "during the change."
+        )
+    elif blocking:
+        summary = (
+            risks[-1]
+            if risks
+            else "This change would likely drop management access to the MikroTik."
+        )
+    elif risks:
+        summary = (
+            risks[0]
+            if len(risks) == 1
+            else "Review the warnings below — customer internet may drop during the change."
+        )
+    else:
+        summary = "Review before continuing."
+
+    return {
+        "ok": True,
+        "safe": safe,
+        "blocking": blocking,
+        "risk_level": risk_level,
+        "risks": risks,
+        "uses_tunnel": api_safe,
+        "management_host": mgmt_host,
+        "management_iface": mgmt_iface,
+        "summary": summary,
+        "mode": mode,
+    }
+
+
 def list_mikrotik_ports(
     host: str,
     username: str,
@@ -16912,6 +17243,7 @@ def list_mikrotik_ports(
     *,
     port: int = 8728,
     timeout: float = 6.0,
+    management_hosts: list[str] | None = None,
 ) -> dict[str, Any]:
     """List physical / wireless ports that can be enabled, disabled, or assigned a role."""
     host = (host or "").strip()
@@ -16949,6 +17281,14 @@ def list_mikrotik_ports(
 
             uplink_hints = _port_uplink_hints(sock)
             suggested_wan = _default_route_wan(sock)
+            mgmt_hosts = [
+                (h or "").strip()
+                for h in (management_hosts or [])
+                if (h or "").strip()
+            ]
+            management_iface_by_host = (
+                _interfaces_for_management_hosts(sock, mgmt_hosts) if mgmt_hosts else {}
+            )
             ports: list[dict[str, Any]] = []
             for row in rows:
                 if not _is_manageable_port(row):
@@ -16997,6 +17337,7 @@ def list_mikrotik_ports(
                 "ports": ports,
                 "host": host,
                 "suggested_wan": suggested_wan,
+                "management_iface_by_host": management_iface_by_host,
             }
     except TimeoutError:
         return {
@@ -17004,6 +17345,7 @@ def list_mikrotik_ports(
             "error": "Connection timed out. Is the router reachable on API port 8728?",
             "ports": [],
             "suggested_wan": "",
+            "management_iface_by_host": {},
         }
     except ConnectionError as exc:
         return {
@@ -17011,6 +17353,7 @@ def list_mikrotik_ports(
             "error": str(exc) or "Login failed. Check the saved username and password.",
             "ports": [],
             "suggested_wan": "",
+            "management_iface_by_host": {},
         }
     except OSError as exc:
         return {
@@ -17018,6 +17361,7 @@ def list_mikrotik_ports(
             "error": f"Could not reach {host}:8728. ({exc})",
             "ports": [],
             "suggested_wan": "",
+            "management_iface_by_host": {},
         }
 
 
@@ -18693,6 +19037,229 @@ def clear_mikrotik_uplink_multi(
         }
     except OSError as exc:
         return {"ok": False, "error": f"Could not reach {host}:8728. ({exc})"}
+
+
+def _renew_dhcp_on_port(sock: socket.socket, port: str, notes: list[str]) -> None:
+    port = (port or "").strip()
+    if not port:
+        return
+    for row in _print(sock, "/ip/dhcp-client", props=".id,interface,disabled"):
+        if (row.get("interface") or "").strip() != port:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _flag_yes(row.get("disabled")):
+            _set(sock, "/ip/dhcp-client", item_id, disabled="no")
+            notes.append(f"enabled DHCP client on {port}")
+        try:
+            _command(sock, ["/ip/dhcp-client/release", f"=.id={item_id}"])
+            _command(sock, ["/ip/dhcp-client/renew", f"=.id={item_id}"])
+            notes.append(f"renewed DHCP on {port}")
+        except Exception as exc:
+            notes.append(f"DHCP renew on {port} warning: {exc}")
+
+
+def _enable_uplink_port(sock: socket.socket, port: str, notes: list[str]) -> None:
+    port = (port or "").strip()
+    if not port:
+        return
+    for row in _print(sock, "/interface", props=".id,name,disabled"):
+        name = (row.get("name") or "").strip()
+        if name != port:
+            continue
+        if _flag_yes(row.get("disabled")):
+            item_id = (row.get(".id") or "").strip()
+            if item_id:
+                _set(sock, "/interface", item_id, disabled="no")
+                notes.append(f"enabled interface {port}")
+        break
+    for row in _print(sock, "/interface/pppoe-client", props=".id,name,interface,disabled"):
+        if (row.get("interface") or "").strip() != port:
+            continue
+        if _flag_yes(row.get("disabled")):
+            item_id = (row.get(".id") or "").strip()
+            pppoe_name = (row.get("name") or "").strip()
+            if item_id:
+                _set(sock, "/interface/pppoe-client", item_id, disabled="no")
+                notes.append(
+                    f"enabled PPPoE {pppoe_name or port}"
+                )
+        break
+
+
+def probe_mikrotik_internet(sock: socket.socket) -> dict[str, Any]:
+    """Ping + default route check from an open RouterOS API session."""
+    uplink = _read_internet_uplink(sock)
+    ping = _nas_ping_host(sock, "1.1.1.1", count=2)
+    has_route = bool(
+        (uplink.get("wan_gateway") or "").strip()
+        or (uplink.get("wan_interface") or "").strip()
+    )
+    internet_ok = bool(ping.get("reachable")) and has_route
+    return {
+        "internet_ok": internet_ok,
+        "ping_reachable": bool(ping.get("reachable")),
+        "has_default_route": has_route,
+        "uplink": uplink,
+        "ping_error": (ping.get("error") or "").strip(),
+    }
+
+
+def restore_mikrotik_internet_uplink(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    wan_interface: str = "",
+    uplink_mode: str = "single",
+    uplink_ports: list[str] | None = None,
+    port: int = 8728,
+    timeout: float = 14.0,
+) -> dict[str, Any]:
+    """
+    Soft WAN restore when API works but customer internet is down.
+
+    Renews DHCP, re-enables disabled uplink interfaces, and syncs single-WAN
+    list membership — without unbridging ports (safe for auto-repair loops).
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    wan_interface = (wan_interface or "").strip()
+    uplink_ports = [
+        str(p).strip() for p in (uplink_ports or []) if str(p).strip()
+    ]
+    touch_ports = list(dict.fromkeys(uplink_ports or ([wan_interface] if wan_interface else [])))
+    if not touch_ports:
+        touch_ports = ["ether1"]
+
+    if not host or not username:
+        return {"ok": False, "error": "Missing router credentials."}
+
+    notes: list[str] = []
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            before = probe_mikrotik_internet(sock)
+            if before.get("internet_ok"):
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "internet_ok": True,
+                    "message": "Internet probe succeeded — no WAN restore needed.",
+                    "notes": notes,
+                }
+
+            for port_name in touch_ports:
+                _enable_uplink_port(sock, port_name, notes)
+                _renew_dhcp_on_port(sock, port_name, notes)
+
+            mode = (uplink_mode or "single").strip().lower()
+            if mode == "single" and wan_interface:
+                sync = apply_mikrotik_single_wan(
+                    host,
+                    username,
+                    password,
+                    wan_interface=wan_interface,
+                    port=port,
+                    timeout=timeout,
+                )
+                if sync.get("ok"):
+                    notes.append(sync.get("message") or f"synced WAN list for {wan_interface}")
+                elif sync.get("error"):
+                    notes.append(f"WAN list sync warning: {sync.get('error')}")
+
+            after = probe_mikrotik_internet(sock)
+            internet_ok = bool(after.get("internet_ok"))
+            return {
+                "ok": internet_ok,
+                "internet_ok": internet_ok,
+                "skipped": False,
+                "before": before,
+                "after": after,
+                "notes": notes,
+                "message": (
+                    "Internet restored on the MikroTik."
+                    if internet_ok
+                    else (
+                        "WAN soft-restore ran but internet is still down. "
+                        "Check ISP cable, failover setup, or use Ports to re-apply uplink."
+                    )
+                ),
+            }
+    except TimeoutError:
+        return {"ok": False, "error": "Connection timed out during internet restore."}
+    except ConnectionError as exc:
+        return {
+            "ok": False,
+            "error": str(exc) or "Login failed during internet restore.",
+        }
+    except OSError as exc:
+        return {"ok": False, "error": f"Could not reach {host}:8728 during restore. ({exc})"}
+
+
+def attempt_mikrotik_auto_restore(
+    router,
+    *,
+    port: int = 8728,
+    timeout: float = 14.0,
+) -> dict[str, Any]:
+    """
+    Auto-repair management access and/or customer internet when probes fail.
+
+    1. If API is down → recover_mikrotik_connection (tunnel/LAN/hotspot unlock).
+    2. If API is up but internet probe fails → soft WAN restore (DHCP renew).
+    """
+    from core.connectivity_verification import evaluate_nas_connectivity
+
+    account_status = (getattr(router, "account_status", None) or "").strip().lower()
+    if account_status == "suspended":
+        return {"ok": False, "skipped": True, "reason": "account_suspended"}
+
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    if not username:
+        return {"ok": False, "skipped": True, "reason": "missing_username"}
+
+    evaluation = evaluate_nas_connectivity(router, timeout=min(3.0, timeout))
+    if not evaluation.get("ok"):
+        recover = recover_mikrotik_connection(
+            (getattr(router, "host", None) or "").strip(),
+            username,
+            password,
+            wan_interface=(getattr(router, "wan_interface", None) or "ether1").strip(),
+            lan_bridge=(getattr(router, "lan_bridge", None) or "bridgeLocal").strip(),
+            router=router,
+            restore_bridge=False,
+            remove_clean_rules=True,
+            port=port,
+            timeout=timeout,
+        )
+        recover["restore_kind"] = "management"
+        return recover
+
+    api_host = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
+    if not api_host:
+        return {"ok": False, "error": "Router host is missing.", "restore_kind": "internet"}
+
+    internet = restore_mikrotik_internet_uplink(
+        api_host,
+        username,
+        password,
+        wan_interface=(getattr(router, "wan_interface", None) or "").strip(),
+        uplink_mode=(getattr(router, "uplink_mode", None) or "single").strip(),
+        uplink_ports=(
+            list(router.uplink_ports)
+            if isinstance(getattr(router, "uplink_ports", None), list)
+            else []
+        ),
+        port=port,
+        timeout=timeout,
+    )
+    internet["restore_kind"] = "internet"
+    if internet.get("skipped"):
+        internet["ok"] = True
+    return internet
 
 
 def read_mikrotik_uplink_multi(

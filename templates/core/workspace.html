@@ -654,7 +654,8 @@
         error: row.error || "",
         reason: statusReason(status, row.error || ""),
         score: score,
-        label: scoreLabel(score)
+        label: scoreLabel(score),
+        auto_restore: row.auto_restore || null
       });
       if (row.id != null) lastScoreByRouter[row.id] = score;
     });
@@ -792,6 +793,17 @@
       });
   }
 
+  function formatAutoRestore(ar) {
+    if (!ar || !ar.at || ar.skipped) return null;
+    var kind =
+      ar.restore_kind === "internet"
+        ? "Internet"
+        : (ar.restore_kind === "management" ? "Management" : "Auto");
+    var ago = ar.at_label || "";
+    if (ar.ok) return kind + " auto-restored " + ago;
+    return kind + " restore failed " + ago;
+  }
+
   function renderRouterPerf(routers) {
     var body = root.querySelector("[data-router-perf-body]");
     if (!body) return;
@@ -807,6 +819,20 @@
     routers.forEach(function (row) {
       var url = row.id ? ("/app/mikrotik/" + row.id + "/") : "{% url 'core:mikrotik' %}";
       var tone = row.score >= 85 ? "is-good" : (row.score >= 45 ? "is-fair" : "is-poor");
+      var restoreNote = "";
+      if (row.auto_restore && !row.auto_restore.skipped) {
+        var restoreText = formatAutoRestore(row.auto_restore);
+        if (restoreText) {
+          restoreNote =
+            '<span class="workspace-auto-restore-note ' +
+            (row.auto_restore.ok ? "is-ok" : "is-fail") +
+            '" title="' +
+            escapeHtml(row.auto_restore.message || restoreText) +
+            '">' +
+            escapeHtml(restoreText) +
+            "</span>";
+        }
+      }
       html +=
         "<tr class=\"" + tone + "\">" +
         '<td data-label="Router"><a class="workspace-dash-client" href="' + url + '"><strong>' + escapeHtml(row.name) + "</strong><small>" + escapeHtml(row.host) + "</small></a></td>" +
@@ -814,7 +840,7 @@
         '<td data-label="Score"><strong>' + row.score + "%</strong></td>" +
         '<td data-label="Health"><span class="workspace-dash-health ' + tone + '">' + row.label + "</span>" +
         '<div class="workspace-dash-scorebar" aria-hidden="true"><span style="width:' + row.score + '%"></span></div></td>' +
-        '<td class="workspace-dash-reason" data-label="Reason">' + escapeHtml(row.reason || statusReason(row.status, row.error)) + "</td>" +
+        '<td class="workspace-dash-reason" data-label="Reason">' + escapeHtml(row.reason || statusReason(row.status, row.error)) + restoreNote + "</td>" +
         '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' + url + '">Open</a></td>' +
         "</tr>";
     });

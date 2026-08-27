@@ -187,6 +187,17 @@ WIREGUARD_CONF_PATH = (os.getenv("WIREGUARD_CONF_PATH") or "/etc/wireguard/wg0.c
 # Optional helper on the VPS, e.g. /opt/ispcentric/scripts/wireguard_apply_peer.sh
 WIREGUARD_SYNC_COMMAND = (os.getenv("WIREGUARD_SYNC_COMMAND") or "").strip()
 
+# Background MikroTik watchdog (sample_mikrotik_status): repair management + WAN.
+MIKROTIK_AUTO_RESTORE = env_flag("MIKROTIK_AUTO_RESTORE", "true" if HOSTED else "false")
+MIKROTIK_AUTO_RESTORE_COOLDOWN_SEC = int(os.getenv("MIKROTIK_AUTO_RESTORE_COOLDOWN_SEC") or "300")
+MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC = int(os.getenv("MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC") or "300")
+MIKROTIK_AUTO_RESTORE_ALERTS = env_flag(
+    "MIKROTIK_AUTO_RESTORE_ALERTS", "true" if HOSTED else "false"
+)
+MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC = int(
+    os.getenv("MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC") or "3600"
+)
+
 # Local auto portal URLs use this machine's current LAN IPs — accept them as Hosts
 # so DisallowedHost does not block Hotspot clients after the IP changes.
 # Runs after WIREGUARD_SUBNET so preferred_lan_ipv4 can exclude the tunnel net.
@@ -264,6 +275,9 @@ DATABASES = {
         "OPTIONS": {
             "charset": "utf8mb4",
             "init_command": "SET sql_mode='STRICT_TRANS_TABLES'",
+            "connect_timeout": 5,
+            "read_timeout": 5,
+            "write_timeout": 5,
         },
     }
 }

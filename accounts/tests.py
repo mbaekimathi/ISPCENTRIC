@@ -9,6 +9,7 @@ from django.urls import reverse
 from accounts.forms import (
     EmployeeLoginForm,
     EmployeeRegisterForm,
+    LoginForm,
     OrganizationEditForm,
     OwnerProfileForm,
     RegisterForm,
@@ -45,11 +46,26 @@ class AccountPasswordTests(TestCase):
 class OwnerProfileFormTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(
-            username="OWNER1",
+            username="554433",
             email="owner@example.com",
             password="oldpass1-long!",
         )
         Organization.objects.create(name="Test ISP", owner=self.user, join_code="998877")
+
+    def test_rejects_non_digit_login_code(self):
+        form = OwnerProfileForm(
+            {
+                "username": "OWNER1",
+                "first_name": "Ann",
+                "last_name": "Owner",
+                "email": "owner@example.com",
+                "password1": "",
+                "password2": "",
+            },
+            user=self.user,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("username", form.errors)
 
     def test_rejects_six_digit_password(self):
         form = OwnerProfileForm(
@@ -87,7 +103,7 @@ class OwnerProfileFormTests(TestCase):
     def test_leave_password_blank_keeps_current(self):
         form = OwnerProfileForm(
             {
-                "username": "OWNER1",
+                "username": "554433",
                 "first_name": "",
                 "last_name": "",
                 "email": "owner@example.com",
@@ -100,6 +116,23 @@ class OwnerProfileFormTests(TestCase):
         form.save()
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_password("oldpass1-long!"))
+
+    def test_email_optional(self):
+        form = OwnerProfileForm(
+            {
+                "username": "554433",
+                "first_name": "",
+                "last_name": "",
+                "email": "",
+                "password1": "",
+                "password2": "",
+            },
+            user=self.user,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "")
 
 
 class RegisterFormPasswordTests(TestCase):
@@ -120,7 +153,7 @@ class RegisterFormPasswordTests(TestCase):
     def test_register_with_strong_password(self):
         form = RegisterForm(
             {
-                "username": "NEWISP",
+                "username": "889900",
                 "email": "new@isp.com",
                 "company_name": "NEW ISP",
                 "country_code": "254|Kenya",
@@ -130,6 +163,21 @@ class RegisterFormPasswordTests(TestCase):
             }
         )
         self.assertTrue(form.is_valid(), form.errors)
+
+    def test_register_rejects_non_digit_username(self):
+        form = RegisterForm(
+            {
+                "username": "NEWISP",
+                "email": "new@isp.com",
+                "company_name": "NEW ISP",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("username", form.errors)
 
 
 class EmployeeRegisterJoinCodeTests(TestCase):
@@ -190,6 +238,58 @@ class EmployeeLoginEnumerationTests(TestCase):
         self.assertNotIn("Invalid login code.", field_errors)
 
 
+class IspClientLoginTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            "778899", email="isp@example.com", password=STRONG_PASSWORD
+        )
+        Organization.objects.create(
+            name="Login ISP", owner=self.owner, join_code="112233"
+        )
+        self.staff = User.objects.create_user(
+            "staffuser", email="staff@example.com", password=STRONG_PASSWORD
+        )
+        Employee.objects.create(
+            user=self.staff,
+            organization=None,
+            login_code="334455",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.SALES,
+        )
+
+    def test_owner_logs_in_with_six_digit_code(self):
+        form = LoginForm(
+            data={"username": "778899", "password": STRONG_PASSWORD}
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.get_user(), self.owner)
+
+    def test_rejects_non_digit_username(self):
+        form = LoginForm(
+            data={"username": "staffuser", "password": STRONG_PASSWORD}
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("username", form.errors)
+
+    def test_employees_cannot_use_isp_client_login(self):
+        # Even if staff somehow share a 6-digit User.username, owner login requires org ownership.
+        self.staff.username = "334455"
+        self.staff.save(update_fields=["username"])
+        form = LoginForm(
+            data={"username": "334455", "password": STRONG_PASSWORD}
+        )
+        self.assertFalse(form.is_valid())
+        errors = " ".join(str(e) for e in form.non_field_errors())
+        self.assertIn("Invalid login code or password.", errors)
+
+    def test_login_page_is_for_isp_clients(self):
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "6-digit login code")
+        self.assertContains(response, "ISP client login")
+        self.assertContains(response, reverse("accounts:employee_login"))
+
+
 @override_settings(OWNER_REGISTER_INVITE_KEY="")
 class OwnerRegisterGateTests(TestCase):
     def setUp(self):
@@ -223,13 +323,14 @@ class OwnerRegisterGateTests(TestCase):
 
 class AuthRateLimitTests(TestCase):
     def test_login_lockout_after_failures(self):
-        User.objects.create_user("rateuser", password=STRONG_PASSWORD)
+        owner = User.objects.create_user("112233", password=STRONG_PASSWORD)
+        Organization.objects.create(name="Rate ISP", owner=owner, join_code="445566")
         url = reverse("accounts:login")
         for _ in range(8):
-            self.client.post(url, {"username": "RATEUSER", "password": "nope-not-it!!"})
+            self.client.post(url, {"username": "112233", "password": "nope-not-it!!"})
         # Per-user counter should now be at/over limit messaging on next fail
         response = self.client.post(
-            url, {"username": "RATEUSER", "password": "nope-not-it!!"}
+            url, {"username": "112233", "password": "nope-not-it!!"}
         )
         self.assertEqual(response.status_code, 200)
 
@@ -434,7 +535,7 @@ class SalesCustomerRegistrationTests(TestCase):
             self.url,
             {
                 "registration_type": "isp",
-                "isp-username": "NEWISP1",
+                "isp-username": "667788",
                 "isp-email": "owner@newisp.com",
                 "isp-company_name": "NEW FIBER",
                 "isp-country_code": "254|Kenya",
@@ -445,7 +546,7 @@ class SalesCustomerRegistrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         org = Organization.objects.get(name="NEW FIBER")
-        self.assertEqual(org.owner.username, "NEWISP1")
+        self.assertEqual(org.owner.username, "667788")
         self.assertEqual(org.status, Organization.Status.REGISTERED)
         self.assertEqual(org.registered_by_id, self.sales_user.pk)
         self.assertEqual(self.sales_user, User.objects.get(username="salesperson"))
@@ -845,8 +946,12 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertContains(response, 'data-owner-username="drop-isp-owner"')
         self.assertContains(response, "id_cc_owner_username")
         self.assertContains(response, "id_cc_owner_password1")
+        self.assertContains(response, "6-digit login code")
 
     def test_edit_updates_profile_only(self):
+        self.drop_owner.username = "221133"
+        self.drop_owner.email = "drop-owner@example.com"
+        self.drop_owner.save(update_fields=["username", "email"])
         url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
         response = self.client.post(
             url,
@@ -854,8 +959,8 @@ class ITSupportCompanyClientsTests(TestCase):
                 "name": "Drop Wireless Updated",
                 "phone": "712345678",
                 "status": Organization.Status.REGISTERED,
-                "username": "drop-isp-owner",
-                "email": self.drop_owner.email or "drop-owner@example.com",
+                "username": "221133",
+                "email": "drop-owner@example.com",
                 "first_name": "",
                 "last_name": "",
                 "password1": "",
@@ -870,7 +975,7 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertEqual(self.drop_org.name, "DROP WIRELESS UPDATED")
         self.assertEqual(self.drop_org.status, Organization.Status.REGISTERED)
         self.drop_owner.refresh_from_db()
-        self.assertEqual(self.drop_owner.username, "DROP-ISP-OWNER")
+        self.assertEqual(self.drop_owner.username, "221133")
         self.keep_org.refresh_from_db()
         self.assertEqual(self.keep_org.name, "Keep Fiber")
 
@@ -882,7 +987,7 @@ class ITSupportCompanyClientsTests(TestCase):
                 "name": "Drop Wireless",
                 "phone": self.drop_org.phone or "",
                 "status": self.drop_org.status,
-                "username": "DROPLOGIN99",
+                "username": "990011",
                 "email": "drop-login@example.com",
                 "first_name": "Drop",
                 "last_name": "Owner",
@@ -893,11 +998,35 @@ class ITSupportCompanyClientsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.drop_owner.refresh_from_db()
-        self.assertEqual(self.drop_owner.username, "DROPLOGIN99")
+        self.assertEqual(self.drop_owner.username, "990011")
         self.assertEqual(self.drop_owner.email, "drop-login@example.com")
         self.assertEqual(self.drop_owner.first_name, "DROP")
         self.assertEqual(self.drop_owner.last_name, "OWNER")
         self.assertTrue(self.drop_owner.check_password(STRONG_PASSWORD))
+
+    def test_edit_can_set_login_code_without_email(self):
+        self.drop_owner.email = ""
+        self.drop_owner.save(update_fields=["email"])
+        url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
+        response = self.client.post(
+            url,
+            {
+                "name": "Drop Wireless",
+                "phone": self.drop_org.phone or "",
+                "status": self.drop_org.status,
+                "username": "445566",
+                "email": "",
+                "first_name": "",
+                "last_name": "",
+                "password1": "",
+                "password2": "",
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.drop_owner.refresh_from_db()
+        self.assertEqual(self.drop_owner.username, "445566")
+        self.assertEqual(self.drop_owner.email, "")
 
     def test_edit_get_opens_list_popup(self):
         url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])

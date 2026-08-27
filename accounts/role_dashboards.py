@@ -1358,6 +1358,10 @@ def _company_client_owner_form(owner, data=None):
     """Owner login form for IT Support company-client edits."""
     kwargs = {"user": owner, "id_prefix": "cc_owner"}
     form = OwnerProfileForm(data, **kwargs) if data is not None else OwnerProfileForm(**kwargs)
+    form.fields["username"].label = "6-digit login code"
+    form.fields["username"].help_text = (
+        "ISP clients sign in with this code and their password."
+    )
     form.fields["password1"].help_text = (
         "Leave blank to keep the current password. "
         "At least 12 characters; not entirely numeric."

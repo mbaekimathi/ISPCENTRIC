@@ -399,6 +399,106 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     return len(rows)
 
 
+def _auto_restore_cooldown_key(router_id: int) -> str:
+    return f"mikrotik_auto_restore_cd:{router_id}"
+
+
+def _internet_probe_cooldown_key(router_id: int) -> str:
+    return f"mikrotik_internet_probe_cd:{router_id}"
+
+
+def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]) -> dict[str, Any] | None:
+    """Run management/internet auto-restore when probes fail (rate-limited per router)."""
+    from django.conf import settings
+
+    if not getattr(settings, "MIKROTIK_AUTO_RESTORE", False):
+        return None
+
+    cooldown = int(getattr(settings, "MIKROTIK_AUTO_RESTORE_COOLDOWN_SEC", 300) or 300)
+    status = (status_row.get("status") or "disconnected").strip().lower()
+
+    if cache.get(_auto_restore_cooldown_key(router.pk)):
+        return None
+
+    need_restore = status != "connected"
+    if not need_restore:
+        inet_cd = int(getattr(settings, "MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC", 300) or 300)
+        inet_key = _internet_probe_cooldown_key(router.pk)
+        if cache.get(inet_key):
+            return None
+        cache.set(inet_key, 1, max(60, inet_cd))
+        need_restore = True
+
+    if not need_restore:
+        return None
+
+    from core.mikrotik_connect import attempt_mikrotik_auto_restore
+
+    result = attempt_mikrotik_auto_restore(router)
+    if result.get("ok") or result.get("skipped"):
+        cache.set(_auto_restore_cooldown_key(router.pk), 1, min(cooldown, 120))
+    else:
+        cache.set(_auto_restore_cooldown_key(router.pk), 1, max(60, cooldown))
+
+    outcome = {
+        **result,
+        "router_id": router.pk,
+        "router_name": router.name,
+        "status_before": status,
+    }
+    from core.mikrotik_auto_restore import record_auto_restore_attempt
+
+    record_auto_restore_attempt(router, outcome)
+    return outcome
+
+
+def maybe_auto_restore_routers(
+    organization,
+    status_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attempt auto-restore for routers that are down or need periodic internet checks."""
+    if not status_rows:
+        return []
+
+    router_ids = [int(row["id"]) for row in status_rows if row.get("id") is not None]
+    if not router_ids:
+        return []
+
+    routers = {
+        r.pk: r
+        for r in MikroTikRouter.objects.filter(
+            organization=organization,
+            pk__in=router_ids,
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        ).only(
+            "id",
+            "name",
+            "host",
+            "username",
+            "password",
+            "vpn_address",
+            "wan_interface",
+            "uplink_mode",
+            "uplink_ports",
+            "lan_bridge",
+            "account_status",
+        )
+    }
+
+    outcomes: list[dict[str, Any]] = []
+    for row in status_rows:
+        rid = row.get("id")
+        if rid is None:
+            continue
+        router = routers.get(int(rid))
+        if not router:
+            continue
+        outcome = maybe_auto_restore_router(router, row)
+        if outcome:
+            outcomes.append(outcome)
+    return outcomes
+
+
 def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     """
     Probe every active MikroTik for an organization and return status rows.
@@ -510,6 +610,7 @@ def sample_all_organizations() -> dict[str, int]:
     )
     written = 0
     probed = 0
+    restored = 0
     for org in orgs:
         payload = collect_organization_status_payload(org)
         probed += len(payload)
@@ -519,8 +620,15 @@ def sample_all_organizations() -> dict[str, int]:
         # healthy ticks still land about once a minute from the scheduled job.
         cache.delete(f"mikrotik_status_sample_gate:{org.pk}")
         written += record_mikrotik_status_samples(org, payload)
+        restore_outcomes = maybe_auto_restore_routers(org, payload)
+        restored += len(restore_outcomes)
         cache.set(f"mikrotik_status:{org.pk}", payload, 5)
-    return {"organizations": orgs.count(), "routers": probed, "samples": written}
+    return {
+        "organizations": orgs.count(),
+        "routers": probed,
+        "samples": written,
+        "auto_restores": restored,
+    }
 
 
 def _bucket_seconds(hours: int) -> int:

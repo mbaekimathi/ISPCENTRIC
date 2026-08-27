@@ -130,6 +130,27 @@ def is_six_digit_code(value: str) -> bool:
     return len(digits) == 6 and digits == str(value or "")
 
 
+def normalize_owner_login_code(value: str) -> str:
+    """Require a 6-digit ISP owner login code (digits only)."""
+    code = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(code) != 6:
+        raise forms.ValidationError("Enter a 6-digit login code.")
+    return code
+
+
+def assert_owner_login_code_available(code: str, *, user=None):
+    """Ensure a 6-digit code is free for an ISP owner User.username."""
+    qs = User.objects.filter(username=code)
+    if user is not None:
+        qs = qs.exclude(pk=user.pk)
+    if qs.exists():
+        raise forms.ValidationError("That login code is already taken.")
+    if Employee.objects.filter(login_code=code).exists():
+        raise forms.ValidationError(
+            "That login code is already used by a staff account."
+        )
+
+
 class RegisterForm(UserCreationForm):
     company_name = forms.CharField(
         max_length=150,
@@ -260,12 +281,18 @@ class RegisterForm(UserCreationForm):
 
         if not ClientSettings.get_solo().referral_enabled:
             self.fields.pop("referral_code", None)
-        self.fields["username"].help_text = "Letters, numbers, or a 6-digit login code (identifier only)."
+        self.fields["username"].label = "6-digit login code"
+        self.fields["username"].help_text = (
+            "Choose a unique 6-digit code you will use with your password to sign in."
+        )
         self.fields["username"].widget.attrs.update(
             {
-                "placeholder": "USERNAME OR 6-DIGIT CODE",
+                "placeholder": "000000",
                 "autocomplete": "username",
-                "class": "form-control text-upper",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input",
             }
         )
         self.fields["password1"].help_text = (
@@ -296,12 +323,9 @@ class RegisterForm(UserCreationForm):
         self.phone_national_length = national_phone_length(selected or DEFAULT_COUNTRY)
 
     def clean_username(self):
-        username = self.cleaned_data["username"].strip().upper()
-        if is_six_digit_code(username):
-            return username
-        if not username:
-            raise forms.ValidationError("Enter a username or 6-digit login code.")
-        return username
+        code = normalize_owner_login_code(self.cleaned_data.get("username"))
+        assert_owner_login_code_available(code)
+        return code
 
     def clean_invite_key(self):
         if not self.require_invite:
@@ -352,12 +376,15 @@ class RegisterForm(UserCreationForm):
 class LoginForm(AuthenticationForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["username"].label = "Username or 6-digit code"
+        self.fields["username"].label = "6-digit login code"
         self.fields["username"].widget.attrs.update(
             {
-                "class": "form-control text-upper",
-                "placeholder": "USERNAME OR 6-DIGIT CODE",
+                "class": "form-control join-code-input",
+                "placeholder": "000000",
                 "autocomplete": "username",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
             }
         )
         self.fields["password"].widget.attrs.update(
@@ -368,11 +395,21 @@ class LoginForm(AuthenticationForm):
             }
         )
         self.error_messages["invalid_login"] = (
-            "Invalid username or password."
+            "Invalid login code or password."
         )
 
     def clean_username(self):
-        return self.cleaned_data["username"].strip().upper()
+        return normalize_owner_login_code(self.cleaned_data.get("username"))
+
+    def confirm_login_allowed(self, user):
+        super().confirm_login_allowed(user)
+        # ISP owner login only — staff must use the employee login page.
+        if not Organization.objects.filter(owner=user).exists():
+            raise forms.ValidationError(
+                self.error_messages["invalid_login"],
+                code="invalid_login",
+                params={"username": self.username_field.verbose_name},
+            )
 
 
 class EmployeeRegisterForm(UserCreationForm):
@@ -546,6 +583,8 @@ class EmployeeRegisterForm(UserCreationForm):
         if len(code) != 6:
             raise forms.ValidationError("Enter a 6-digit login code.")
         if Employee.objects.filter(login_code=code).exists():
+            raise forms.ValidationError("This login code is not available. Choose another.")
+        if User.objects.filter(username=code).exists():
             raise forms.ValidationError("This login code is not available. Choose another.")
         return code
 
@@ -778,13 +817,14 @@ class OwnerProfileForm(forms.Form):
 
     username = forms.CharField(
         max_length=150,
-        label="Username or 6-digit code",
-        help_text="Sign in with this username or 6-digit code.",
+        label="6-digit login code",
+        help_text="Sign in with this 6-digit code and your password.",
         widget=forms.TextInput(
             attrs={
-                "placeholder": "USERNAME OR 6-DIGIT CODE",
+                "placeholder": "000000",
                 "autocomplete": "username",
-                "class": "form-control text-upper",
+                "inputmode": "numeric",
+                "class": "form-control join-code-input",
                 "id": "id_owner_username",
             }
         ),
@@ -816,7 +856,7 @@ class OwnerProfileForm(forms.Form):
         ),
     )
     email = forms.EmailField(
-        required=True,
+        required=False,
         label="Email",
         widget=forms.EmailInput(
             attrs={
@@ -861,19 +901,9 @@ class OwnerProfileForm(forms.Form):
             field.widget.attrs["id"] = f"id_{self.id_prefix}_{name}"
 
     def clean_username(self):
-        username = (self.cleaned_data.get("username") or "").strip().upper()
-        if not username:
-            raise forms.ValidationError("Enter a username or 6-digit login code.")
-        if is_six_digit_code(username):
-            pass
-        elif len(username) < 3:
-            raise forms.ValidationError("Username must be at least 3 characters.")
-        qs = User.objects.filter(username__iexact=username)
-        if self.user:
-            qs = qs.exclude(pk=self.user.pk)
-        if qs.exists():
-            raise forms.ValidationError("That username is already taken.")
-        return username
+        code = normalize_owner_login_code(self.cleaned_data.get("username"))
+        assert_owner_login_code_available(code, user=self.user)
+        return code
 
     def clean_first_name(self):
         return (self.cleaned_data.get("first_name") or "").strip().upper()
@@ -882,7 +912,9 @@ class OwnerProfileForm(forms.Form):
         return (self.cleaned_data.get("last_name") or "").strip().upper()
 
     def clean_email(self):
-        email = self.cleaned_data["email"].strip().lower()
+        email = (self.cleaned_data.get("email") or "").strip().lower()
+        if not email:
+            return ""
         qs = User.objects.filter(email__iexact=email)
         if self.user:
             qs = qs.exclude(pk=self.user.pk)
@@ -908,7 +940,7 @@ class OwnerProfileForm(forms.Form):
         user.username = self.cleaned_data["username"]
         user.first_name = self.cleaned_data.get("first_name") or ""
         user.last_name = self.cleaned_data.get("last_name") or ""
-        user.email = self.cleaned_data["email"]
+        user.email = self.cleaned_data.get("email") or ""
         if self.cleaned_data.get("password1"):
             user.set_password(self.cleaned_data["password1"])
         user.save()

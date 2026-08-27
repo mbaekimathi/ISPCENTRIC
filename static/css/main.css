@@ -13862,6 +13862,65 @@ a.packages-stat:focus-visible {
   color: #f87171;
 }
 
+.mikrotik-auto-restore-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.3;
+  border: 1px solid var(--border-strong, rgba(15, 23, 42, 0.12));
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--text-muted, #64748b);
+  max-width: 100%;
+}
+
+.mikrotik-auto-restore-badge.is-hidden {
+  display: none;
+}
+
+.mikrotik-auto-restore-badge.is-ok {
+  border-color: color-mix(in srgb, #34d399 45%, var(--border-strong, rgba(15, 23, 42, 0.12)));
+  background: color-mix(in srgb, #34d399 12%, transparent);
+  color: #047857;
+}
+
+.mikrotik-auto-restore-badge.is-fail {
+  border-color: color-mix(in srgb, #f87171 45%, var(--border-strong, rgba(15, 23, 42, 0.12)));
+  background: color-mix(in srgb, #f87171 12%, transparent);
+  color: #b91c1c;
+}
+
+.mikrotik-auto-restore-icon {
+  font-size: 0.8rem;
+  line-height: 1;
+  opacity: 0.85;
+}
+
+.mikrotik-router-profile-status .mikrotik-auto-restore-badge,
+.mk-detail-hero-status .mikrotik-auto-restore-badge {
+  margin-top: 0;
+}
+
+.workspace-auto-restore-note {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.workspace-auto-restore-note.is-ok {
+  color: #047857;
+}
+
+.workspace-auto-restore-note.is-fail {
+  color: #b91c1c;
+}
+
 .mikrotik-unlock-box {
   margin: 0.75rem 0 0;
   padding: 0.85rem 1rem;
@@ -16160,6 +16219,345 @@ a.packages-stat:focus-visible {
   border-color: rgba(31, 138, 91, 0.28);
 }
 
+/* MikroTik router detail (overview) */
+.mk-detail-page {
+  width: min(100%, 72rem);
+}
+
+.mk-detail-hero {
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.mk-detail-hero.is-online {
+  background:
+    linear-gradient(135deg, var(--success-soft), transparent 46%),
+    var(--surface);
+}
+
+.mk-detail-hero.is-offline {
+  background:
+    linear-gradient(135deg, var(--danger-soft), transparent 46%),
+    var(--surface);
+}
+
+.mk-detail-hero.is-suspended {
+  background:
+    linear-gradient(135deg, rgba(243, 156, 18, 0.14), transparent 46%),
+    var(--surface);
+}
+
+.mk-detail-hero-main {
+  display: flex;
+  align-items: center;
+  gap: 1rem 1.15rem;
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.mk-detail-hero-thumb {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 5.5rem;
+  height: 4.25rem;
+  padding: 0.35rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, var(--surface-2), var(--surface));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.mk-detail-hero-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.mk-detail-location {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.mk-detail-hero-status {
+  display: grid;
+  gap: 0.55rem;
+  justify-items: end;
+  align-content: start;
+}
+
+.mk-detail-link-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 2rem;
+  padding: 0.25rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.mk-detail-link-pill.is-connected {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: transparent;
+}
+
+.mk-detail-link-pill.is-disconnected {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.mk-detail-link-pill.is-checking {
+  color: var(--ink-soft);
+}
+
+.mk-detail-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.mk-detail-quicknav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.15rem 0;
+}
+
+.mk-detail-quicklink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.15rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.mk-detail-quicklink:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.mk-detail-quicklink.is-active {
+  color: var(--chip-sea-fg);
+  background: var(--chip-sea-bg);
+  border-color: transparent;
+}
+
+.mk-detail-surface.mikrotik-live {
+  margin: 0;
+  border-bottom: 0;
+}
+
+.mk-detail-surface > .mikrotik-live-loading,
+.mk-detail-surface > .mikrotik-live-head,
+.mk-detail-surface > .mk-detail-facts,
+.mk-detail-surface > .mikrotik-live-blocked,
+.mk-detail-surface > .mk-detail-metrics {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.mk-detail-surface > .mikrotik-live-loading {
+  margin-top: 0;
+  margin-bottom: 0.85rem;
+}
+
+.mk-detail-section-title {
+  margin: 0.15rem 0 0.35rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.1rem, 2vw, 1.35rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.mk-detail-stamp {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.mk-detail-facts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin: 0.85rem 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.mk-detail-facts .mikrotik-live-fact {
+  padding: 0.15rem 0;
+}
+
+.mk-detail-facts .mikrotik-live-fact strong {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+  line-height: 1.3;
+}
+
+.mk-detail-metrics {
+  padding-bottom: 0.25rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .mk-detail-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 960px) {
+  .mk-detail-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .mk-detail-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.mk-detail-metric {
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mk-detail-metric:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(11, 31, 42, 0.08);
+}
+
+[data-theme="dark"] .mk-detail-metric:hover {
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+}
+
+.mk-detail-uplink {
+  padding-top: 1.15rem !important;
+  margin-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.mk-detail-uplink .mikrotik-uplink-head {
+  margin-bottom: 0.85rem;
+}
+
+.mk-detail-live-head {
+  align-items: flex-start;
+}
+
+.mk-detail-surface.mikrotik-live.is-online {
+  border-color: rgba(31, 138, 91, 0.22);
+}
+
+.mk-detail-surface.mikrotik-live.is-offline {
+  border-color: rgba(192, 57, 43, 0.18);
+}
+
+@media (max-width: 1100px) {
+  .mk-detail-facts {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .mk-detail-hero-main {
+    width: 100%;
+  }
+
+  .mk-detail-hero-status {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .mk-detail-link-pill,
+  .mk-detail-hero-status .mikrotik-account-pill {
+    justify-self: start;
+  }
+
+  .mk-detail-hero-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .mk-detail-hero-actions .btn {
+    width: 100%;
+  }
+
+  .mk-detail-hero-actions .btn:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .mk-detail-quicknav {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 0.35rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .mk-detail-quicklink {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .mk-detail-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mk-detail-live-head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mk-detail-stamp {
+    align-self: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .mk-detail-hero-thumb {
+    width: 4.5rem;
+    height: 3.5rem;
+  }
+
+  .mk-detail-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .mk-detail-hero-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 .mk-banner {
   display: flex;
   flex-wrap: wrap;
@@ -16198,6 +16596,67 @@ a.packages-stat:focus-visible {
   background: var(--notice-error-bg);
   border-color: var(--notice-error-border);
   color: var(--notice-error-fg);
+}
+
+.mk-uplink-prompt-copy {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.mk-uplink-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.mk-uplink-risk-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(8, 12, 20, 0.55);
+}
+
+.mk-uplink-risk-dialog {
+  position: fixed;
+  z-index: 1210;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 1.1rem 1.15rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-elevated, var(--surface));
+  box-shadow: var(--shadow-lg, 0 12px 40px rgba(0, 0, 0, 0.2));
+}
+
+.mk-uplink-risk-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.mk-uplink-risk-list {
+  margin: 0.65rem 0 0.85rem;
+  padding-left: 1.15rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.mk-uplink-risk-confirm {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  margin: 0.75rem 0;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.mk-uplink-risk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
 }
 
 .mk-banner[hidden],

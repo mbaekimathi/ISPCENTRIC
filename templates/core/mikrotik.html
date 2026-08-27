@@ -121,6 +121,15 @@
                       <span class="mikrotik-link-dot" aria-hidden="true"></span>
                       <span class="mikrotik-link-label">Checking…</span>
                     </span>
+                    <span
+                      class="mikrotik-auto-restore-badge is-hidden"
+                      data-auto-restore-badge="{{ router.id }}"
+                      hidden
+                      title=""
+                    >
+                      <span class="mikrotik-auto-restore-icon" aria-hidden="true">↻</span>
+                      <span class="mikrotik-auto-restore-label">Auto-restore</span>
+                    </span>
                   </div>
                 </td>
                 <td data-label="Location">
@@ -3173,6 +3182,34 @@
     }
   }
 
+  function formatAutoRestore(ar) {
+    if (!ar || !ar.at || ar.skipped) return null;
+    var kind =
+      ar.restore_kind === "internet"
+        ? "Internet"
+        : (ar.restore_kind === "management" ? "Management" : "Auto");
+    var ago = ar.at_label || "";
+    if (ar.ok) return kind + " auto-restored " + ago;
+    return kind + " restore failed " + ago;
+  }
+
+  function applyAutoRestoreBadge(id, ar) {
+    document.querySelectorAll('[data-auto-restore-badge="' + id + '"]').forEach(function (el) {
+      var text = formatAutoRestore(ar);
+      if (!text) {
+        el.hidden = true;
+        el.classList.add("is-hidden");
+        return;
+      }
+      el.hidden = false;
+      el.classList.remove("is-hidden", "is-ok", "is-fail");
+      el.classList.add(ar.ok ? "is-ok" : "is-fail");
+      el.title = ar.message || text;
+      var badgeLabel = el.querySelector(".mikrotik-auto-restore-label");
+      if (badgeLabel) badgeLabel.textContent = text;
+    });
+  }
+
   function showHint(text, isError) {
     if (!hint) return;
     hint.hidden = !text;
@@ -3290,6 +3327,7 @@
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
             setStatus(el, !!item.online, item.status || "");
           });
+          applyAutoRestoreBadge(item.id, item.auto_restore);
           if (item.serial_number) {
             var serialCell = document.querySelector('[data-router-serial-cell="' + item.id + '"]');
             if (serialCell) serialCell.textContent = "SN " + item.serial_number;

@@ -17,6 +17,6 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 "Sampled organizations={organizations} routers={routers} "
-                "samples_written={samples}".format(**result)
+                "samples_written={samples} auto_restores={auto_restores}".format(**result)
             )
         )

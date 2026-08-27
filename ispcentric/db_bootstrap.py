@@ -62,6 +62,9 @@ def ensure_database() -> None:
 
     cfg = _mysql_settings()
     database = cfg.pop("database")
+    cfg.setdefault("connect_timeout", 5)
+    cfg.setdefault("read_timeout", 5)
+    cfg.setdefault("write_timeout", 5)
 
     try:
         connection = pymysql.connect(**cfg)

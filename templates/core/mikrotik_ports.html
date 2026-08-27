@@ -37,6 +37,65 @@
 
     <div class="mk-banner is-info mk-ports-info" data-ports-info {% if not auto_assigned %}hidden{% endif %} role="status"></div>
 
+    <div class="mk-banner is-info mk-uplink-prompt" data-uplink-prompt hidden role="alert">
+      <div class="mk-uplink-prompt-copy">
+        <strong>New internet link detected</strong>
+        <span data-uplink-prompt-body></span>
+      </div>
+      <div class="mk-uplink-prompt-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-uplink-prompt-switch>Switch Internet port</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-uplink-prompt-dismiss>Keep current</button>
+      </div>
+    </div>
+
+    <div class="mk-banner is-info mk-backup-uplink-prompt" data-backup-uplink-prompt hidden role="alert">
+      <div class="mk-uplink-prompt-copy">
+        <strong>Second ISP link detected</strong>
+        <span data-backup-uplink-prompt-body></span>
+      </div>
+      <div class="mk-uplink-prompt-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-backup-uplink-prompt-accept>Mark as backup</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-backup-uplink-prompt-dismiss>Not now</button>
+      </div>
+    </div>
+
+    <div class="mk-uplink-risk-backdrop" data-uplink-risk-backdrop hidden></div>
+    <div
+      class="mk-uplink-risk-dialog"
+      data-uplink-risk-dialog
+      hidden
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mk-uplink-risk-title"
+    >
+      <h2 class="mk-uplink-risk-title" id="mk-uplink-risk-title" data-uplink-risk-title>Before switching Internet port</h2>
+      <p class="mk-help-note" data-uplink-risk-summary></p>
+      <ul class="mk-uplink-risk-list" data-uplink-risk-list hidden></ul>
+      <label class="mk-uplink-risk-confirm" data-uplink-risk-confirm-wrap hidden>
+        <input type="checkbox" data-uplink-risk-checkbox>
+        <span>I understand — switch even if management may drop briefly</span>
+      </label>
+      <p class="mk-help-note is-warn" data-uplink-risk-blocking hidden></p>
+      <div class="mk-uplink-risk-actions">
+        <button type="button" class="btn btn-primary btn-sm" data-uplink-risk-proceed disabled>Switch Internet port</button>
+        <button type="button" class="btn btn-ghost btn-sm" data-uplink-risk-cancel>Cancel</button>
+      </div>
+    </div>
+
+    <form method="post" class="mk-inline-form" data-uplink-accept-form hidden>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="accept_detected_uplink">
+      <input type="hidden" name="port_name" value="" data-uplink-accept-port>
+      <input type="hidden" name="confirm_risk" value="" data-uplink-accept-confirm>
+    </form>
+
+    <form method="post" class="mk-inline-form" data-backup-uplink-accept-form hidden>
+      {% csrf_token %}
+      <input type="hidden" name="action" value="accept_detected_backup">
+      <input type="hidden" name="port_name" value="" data-backup-uplink-accept-port>
+      <input type="hidden" name="confirm_risk" value="" data-backup-uplink-accept-confirm>
+    </form>
+
     <div class="mk-stat-grid mk-stat-grid-3" aria-label="Port role summary" data-ports-summary hidden>
       <article class="mk-stat is-internet">
         <p class="mk-stat-label">Internet</p>
@@ -86,9 +145,10 @@
             </span>
             <span class="mk-uplink-health" data-uplink-health hidden></span>
           </div>
-          <form method="post" data-clear-uplink-form {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
+          <form method="post" data-clear-uplink-form data-uplink-risk-apply="clear" {% if uplink_mode == "single" or is_suspended %}hidden{% endif %}>
             {% csrf_token %}
             <input type="hidden" name="action" value="clear_multi_uplink">
+            <input type="hidden" name="confirm_risk" value="">
             <button type="submit" class="btn btn-ghost btn-sm">Reset to single WAN</button>
           </form>
         </div>
@@ -170,9 +230,10 @@
         </div>
       </div>
 
-      <form method="post" class="mk-goal-panel" data-goal-panel="bond" hidden>
+      <form method="post" class="mk-goal-panel" data-goal-panel="bond" data-uplink-risk-apply="bond" hidden>
         {% csrf_token %}
         <input type="hidden" name="action" value="apply_bond">
+        <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
             <li>Below, set each same-ISP cable to <strong>Bonded internet</strong>.</li>
@@ -207,9 +268,10 @@
         </div>
       </form>
 
-      <form method="post" class="mk-goal-panel" data-goal-panel="failover" hidden>
+      <form method="post" class="mk-goal-panel" data-goal-panel="failover" data-uplink-risk-apply="failover" hidden>
         {% csrf_token %}
         <input type="hidden" name="action" value="apply_failover">
+        <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
             <li>Set the main ISP to <strong>Internet</strong> (only one).</li>
@@ -238,9 +300,10 @@
         </div>
       </form>
 
-      <form method="post" class="mk-goal-panel" data-goal-panel="balance" hidden>
+      <form method="post" class="mk-goal-panel" data-goal-panel="balance" data-uplink-risk-apply="balance" hidden>
         {% csrf_token %}
         <input type="hidden" name="action" value="apply_balance">
+        <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
             <li>Set one ISP to <strong>Internet</strong> and the other to <strong>Backup internet</strong>.</li>
@@ -307,6 +370,9 @@
   var goalStorageKey = "mk-ports-goal:" + routerId;
   var selectedGoal = "";
   var lastPortsData = null;
+  var pendingUplinkPrompt = null;
+  var pendingUplinkForm = null;
+  var pendingBackupPrompt = null;
   if (!loading || !liveUrl) return;
 
   var goalHints = {
@@ -1117,6 +1183,177 @@
     }
   }
 
+  function backupDismissKey(port) {
+    return "mk-backup-uplink-dismiss:" + routerId + ":" + (port || "");
+  }
+
+  function isBackupDismissed(port) {
+    try {
+      return sessionStorage.getItem(backupDismissKey(port)) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function dismissBackupPrompt(port) {
+    try {
+      sessionStorage.setItem(backupDismissKey(port), "1");
+    } catch (e) {
+      /* ignore */
+    }
+    setHidden(root.querySelector("[data-backup-uplink-prompt]"), true);
+    closeUplinkRiskDialog();
+  }
+
+  function uplinkDismissKey(port) {
+    return "mk-uplink-dismiss:" + routerId + ":" + (port || "");
+  }
+
+  function isUplinkDismissed(port) {
+    try {
+      return sessionStorage.getItem(uplinkDismissKey(port)) === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function dismissUplinkPrompt(port) {
+    try {
+      sessionStorage.setItem(uplinkDismissKey(port), "1");
+    } catch (e) {
+      /* ignore */
+    }
+    setHidden(root.querySelector("[data-uplink-prompt]"), true);
+    closeUplinkRiskDialog();
+  }
+
+  function closeUplinkRiskDialog() {
+    setHidden(root.querySelector("[data-uplink-risk-backdrop]"), true);
+    setHidden(root.querySelector("[data-uplink-risk-dialog]"), true);
+    pendingUplinkPrompt = null;
+    pendingUplinkForm = null;
+    pendingBackupPrompt = null;
+    var checkbox = root.querySelector("[data-uplink-risk-checkbox]");
+    if (checkbox) checkbox.checked = false;
+    var proceed = root.querySelector("[data-uplink-risk-proceed]");
+    if (proceed) proceed.disabled = true;
+  }
+
+  function submitBackupAccept(prompt, confirmRisk) {
+    var form = root.querySelector("[data-backup-uplink-accept-form]");
+    if (!form || !prompt || !prompt.port) return;
+    var portInput = root.querySelector("[data-backup-uplink-accept-port]");
+    var confirmInput = root.querySelector("[data-backup-uplink-accept-confirm]");
+    if (portInput) portInput.value = prompt.port;
+    if (confirmInput) confirmInput.value = confirmRisk ? "1" : "";
+    form.submit();
+  }
+
+  function submitUplinkAccept(prompt, confirmRisk) {
+    var form = root.querySelector("[data-uplink-accept-form]");
+    if (!form || !prompt || !prompt.port) return;
+    var portInput = root.querySelector("[data-uplink-accept-port]");
+    var confirmInput = root.querySelector("[data-uplink-accept-confirm]");
+    if (portInput) portInput.value = prompt.port;
+    if (confirmInput) confirmInput.value = confirmRisk ? "1" : "";
+    form.submit();
+  }
+
+  function openUplinkRiskDialog(options) {
+    var opts = options || {};
+    var prompt = opts.prompt || null;
+    var form = opts.form || null;
+    var risk = opts.risk || (prompt && prompt.risk) || {};
+    var message = opts.message || (prompt && prompt.message) || risk.summary || "";
+    pendingUplinkPrompt = prompt;
+    pendingUplinkForm = form;
+    pendingBackupPrompt = opts.backupPrompt || null;
+
+    var titleEl = root.querySelector("[data-uplink-risk-title]");
+    if (titleEl) {
+      titleEl.textContent = opts.title || "Before switching Internet port";
+    }
+
+    var summary = root.querySelector("[data-uplink-risk-summary]");
+    if (summary) summary.textContent = message;
+
+    var list = root.querySelector("[data-uplink-risk-list]");
+    var risks = risk.risks || [];
+    if (list) {
+      if (risks.length) {
+        list.innerHTML = risks.map(function (line) {
+          return "<li>" + esc(line) + "</li>";
+        }).join("");
+        setHidden(list, false);
+      } else {
+        list.innerHTML = "";
+        setHidden(list, true);
+      }
+    }
+    var blockingEl = root.querySelector("[data-uplink-risk-blocking]");
+    var confirmWrap = root.querySelector("[data-uplink-risk-confirm-wrap]");
+    var proceed = root.querySelector("[data-uplink-risk-proceed]");
+    var blocking = !!risk.blocking;
+    if (blockingEl) {
+      if (blocking) {
+        blockingEl.textContent =
+          risk.summary || "This change would likely drop management access. Cancel and set up WireGuard first.";
+        setHidden(blockingEl, false);
+      } else {
+        setHidden(blockingEl, true);
+      }
+    }
+    if (confirmWrap) {
+      setHidden(confirmWrap, blocking || risk.safe);
+    }
+    if (proceed) {
+      proceed.textContent = form ? "Continue and apply" : "Switch Internet port";
+      proceed.disabled = blocking || (!risk.safe && !blocking);
+    }
+    setHidden(root.querySelector("[data-uplink-risk-backdrop]"), false);
+    setHidden(root.querySelector("[data-uplink-risk-dialog]"), false);
+  }
+
+  function renderBackupUplinkPrompt(prompt) {
+    var banner = root.querySelector("[data-backup-uplink-prompt]");
+    if (!banner) return;
+    if (!prompt || !prompt.port || isBackupDismissed(prompt.port)) {
+      setHidden(banner, true);
+      return;
+    }
+    var body = root.querySelector("[data-backup-uplink-prompt-body]");
+    if (body) body.textContent = " " + (prompt.message || "");
+    if (prompt.risk && prompt.risk.blocking) {
+      banner.classList.remove("is-info");
+      banner.classList.add("is-warn");
+    } else {
+      banner.classList.remove("is-warn");
+      banner.classList.add("is-info");
+    }
+    setHidden(banner, false);
+  }
+
+  function renderUplinkPrompt(prompt) {
+    var banner = root.querySelector("[data-uplink-prompt]");
+    if (!banner) return;
+    if (!prompt || !prompt.port || isUplinkDismissed(prompt.port)) {
+      setHidden(banner, true);
+      return;
+    }
+    var body = root.querySelector("[data-uplink-prompt-body]");
+    if (body) {
+      body.textContent = " " + (prompt.message || "");
+    }
+    if (prompt.risk && prompt.risk.blocking) {
+      banner.classList.remove("is-info");
+      banner.classList.add("is-warn");
+    } else {
+      banner.classList.remove("is-warn");
+      banner.classList.add("is-info");
+    }
+    setHidden(banner, false);
+  }
+
   function apply(data) {
     setHidden(root.querySelector("[data-ports-loading-ui]"), true);
 
@@ -1330,6 +1567,9 @@
       setHidden(uplinkConfig, true);
       setHidden(root.querySelector("[data-ports-assign]"), true);
     }
+
+    renderUplinkPrompt(data.uplink_prompt);
+    renderBackupUplinkPrompt(data.backup_uplink_prompt);
   }
 
   function refresh(options) {
@@ -1384,6 +1624,105 @@
   });
 
   root.addEventListener("click", function (event) {
+    var dismissBtn = event.target.closest("[data-uplink-prompt-dismiss]");
+    if (dismissBtn && root.contains(dismissBtn)) {
+      event.preventDefault();
+      var port = (lastPortsData && lastPortsData.uplink_prompt && lastPortsData.uplink_prompt.port) || "";
+      dismissUplinkPrompt(port);
+      return;
+    }
+    var backupDismiss = event.target.closest("[data-backup-uplink-prompt-dismiss]");
+    if (backupDismiss && root.contains(backupDismiss)) {
+      event.preventDefault();
+      var bport = (lastPortsData && lastPortsData.backup_uplink_prompt && lastPortsData.backup_uplink_prompt.port) || "";
+      dismissBackupPrompt(bport);
+      return;
+    }
+    var backupAccept = event.target.closest("[data-backup-uplink-prompt-accept]");
+    if (backupAccept && root.contains(backupAccept)) {
+      event.preventDefault();
+      var bprompt = lastPortsData && lastPortsData.backup_uplink_prompt;
+      if (!bprompt) return;
+      var brisk = bprompt.risk || {};
+      if (brisk.blocking) {
+        openUplinkRiskDialog({
+          backupPrompt: bprompt,
+          prompt: bprompt,
+          title: "Before marking backup internet",
+        });
+        return;
+      }
+      if (brisk.safe) {
+        submitBackupAccept(bprompt, false);
+        return;
+      }
+      openUplinkRiskDialog({
+        backupPrompt: bprompt,
+        prompt: bprompt,
+        title: "Before marking backup internet",
+      });
+      return;
+    }
+    var switchBtn = event.target.closest("[data-uplink-prompt-switch]");
+    if (switchBtn && root.contains(switchBtn)) {
+      event.preventDefault();
+      var prompt = lastPortsData && lastPortsData.uplink_prompt;
+      if (!prompt) return;
+      var risk = prompt.risk || {};
+      if (risk.blocking) {
+        openUplinkRiskDialog({ prompt: prompt, title: "Before switching Internet port" });
+        return;
+      }
+      if (risk.safe) {
+        submitUplinkAccept(prompt, false);
+        return;
+      }
+      openUplinkRiskDialog({ prompt: prompt, title: "Before switching Internet port" });
+      return;
+    }
+    var riskCancel = event.target.closest("[data-uplink-risk-cancel]");
+    if (riskCancel && root.contains(riskCancel)) {
+      event.preventDefault();
+      closeUplinkRiskDialog();
+      return;
+    }
+    var riskProceed = event.target.closest("[data-uplink-risk-proceed]");
+    if (riskProceed && root.contains(riskProceed)) {
+      event.preventDefault();
+      var needConfirm = false;
+      if (pendingUplinkForm) {
+        var formRisk =
+          lastPortsData &&
+          lastPortsData.uplink_apply_risks &&
+          lastPortsData.uplink_apply_risks[pendingUplinkForm.getAttribute("data-uplink-risk-apply")];
+        if (formRisk && formRisk.blocking) return;
+        needConfirm = formRisk && !formRisk.safe;
+        var checkbox = root.querySelector("[data-uplink-risk-checkbox]");
+        if (needConfirm && checkbox && !checkbox.checked) return;
+        var confirmField = pendingUplinkForm.querySelector("[name='confirm_risk']");
+        if (confirmField) confirmField.value = needConfirm ? "1" : "";
+        pendingUplinkForm.submit();
+        closeUplinkRiskDialog();
+        return;
+      }
+      if (pendingBackupPrompt) {
+        var brisk = pendingBackupPrompt.risk || {};
+        if (brisk.blocking) return;
+        needConfirm = !brisk.safe;
+        var cb = root.querySelector("[data-uplink-risk-checkbox]");
+        if (needConfirm && cb && !cb.checked) return;
+        submitBackupAccept(pendingBackupPrompt, needConfirm);
+        closeUplinkRiskDialog();
+        return;
+      }
+      if (!pendingUplinkPrompt || (pendingUplinkPrompt.risk && pendingUplinkPrompt.risk.blocking)) return;
+      needConfirm = pendingUplinkPrompt.risk && !pendingUplinkPrompt.risk.safe;
+      var riskCheckbox = root.querySelector("[data-uplink-risk-checkbox]");
+      if (needConfirm && riskCheckbox && !riskCheckbox.checked) return;
+      submitUplinkAccept(pendingUplinkPrompt, needConfirm);
+      closeUplinkRiskDialog();
+      return;
+    }
     var preset = event.target.closest("[data-balance-preset]");
     if (preset && root.contains(preset)) {
       event.preventDefault();
@@ -1395,6 +1734,55 @@
     event.preventDefault();
     jumpToPortCard(jump.getAttribute("data-jump-port") || "");
   });
+
+  root.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (!form || !root.contains(form)) return;
+    var mode = form.getAttribute("data-uplink-risk-apply");
+    if (!mode) return;
+    var risks = lastPortsData && lastPortsData.uplink_apply_risks;
+    var risk = risks && risks[mode];
+    if (!risk) return;
+    if (risk.safe && !risk.blocking) return;
+    event.preventDefault();
+    var titles = {
+      bond: "Before applying bonding",
+      failover: "Before applying failover",
+      balance: "Before applying load balance",
+      clear: "Before resetting to single WAN",
+    };
+    openUplinkRiskDialog({
+      form: form,
+      risk: risk,
+      message: risk.summary,
+      title: titles[mode] || "Before applying uplink change",
+    });
+  });
+
+  var riskCheckbox = root.querySelector("[data-uplink-risk-checkbox]");
+  if (riskCheckbox) {
+    riskCheckbox.addEventListener("change", function () {
+      var proceed = root.querySelector("[data-uplink-risk-proceed]");
+      if (!proceed) return;
+      if (pendingUplinkForm) {
+        var formRisk =
+          lastPortsData &&
+          lastPortsData.uplink_apply_risks &&
+          lastPortsData.uplink_apply_risks[pendingUplinkForm.getAttribute("data-uplink-risk-apply")];
+        if (formRisk && !formRisk.blocking && !formRisk.safe) {
+          proceed.disabled = !riskCheckbox.checked;
+        }
+        return;
+      }
+      if (pendingBackupPrompt && pendingBackupPrompt.risk && !pendingBackupPrompt.risk.blocking && !pendingBackupPrompt.risk.safe) {
+        proceed.disabled = !riskCheckbox.checked;
+        return;
+      }
+      if (pendingUplinkPrompt && pendingUplinkPrompt.risk && !pendingUplinkPrompt.risk.blocking && !pendingUplinkPrompt.risk.safe) {
+        proceed.disabled = !riskCheckbox.checked;
+      }
+    });
+  }
 
   var retry = root.querySelector("[data-ports-retry]");
   if (retry) retry.addEventListener("click", function () { refresh(); });
