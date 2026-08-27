@@ -837,6 +837,15 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertNotContains(response, "Keep Client")
         self.assertNotContains(response, "Keep Monthly")
 
+    def test_lists_owner_login_username(self):
+        response = self.client.get(reverse("roles:it_support_company_clients"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "drop-isp-owner")
+        self.assertContains(response, "Login credentials")
+        self.assertContains(response, 'data-owner-username="drop-isp-owner"')
+        self.assertContains(response, "id_cc_owner_username")
+        self.assertContains(response, "id_cc_owner_password1")
+
     def test_edit_updates_profile_only(self):
         url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
         response = self.client.post(
@@ -845,6 +854,12 @@ class ITSupportCompanyClientsTests(TestCase):
                 "name": "Drop Wireless Updated",
                 "phone": "712345678",
                 "status": Organization.Status.REGISTERED,
+                "username": "drop-isp-owner",
+                "email": self.drop_owner.email or "drop-owner@example.com",
+                "first_name": "",
+                "last_name": "",
+                "password1": "",
+                "password2": "",
             },
             follow=True,
         )
@@ -854,8 +869,35 @@ class ITSupportCompanyClientsTests(TestCase):
         self.drop_org.refresh_from_db()
         self.assertEqual(self.drop_org.name, "DROP WIRELESS UPDATED")
         self.assertEqual(self.drop_org.status, Organization.Status.REGISTERED)
+        self.drop_owner.refresh_from_db()
+        self.assertEqual(self.drop_owner.username, "DROP-ISP-OWNER")
         self.keep_org.refresh_from_db()
         self.assertEqual(self.keep_org.name, "Keep Fiber")
+
+    def test_edit_updates_owner_login_credentials(self):
+        url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
+        response = self.client.post(
+            url,
+            {
+                "name": "Drop Wireless",
+                "phone": self.drop_org.phone or "",
+                "status": self.drop_org.status,
+                "username": "DROPLOGIN99",
+                "email": "drop-login@example.com",
+                "first_name": "Drop",
+                "last_name": "Owner",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            },
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.drop_owner.refresh_from_db()
+        self.assertEqual(self.drop_owner.username, "DROPLOGIN99")
+        self.assertEqual(self.drop_owner.email, "drop-login@example.com")
+        self.assertEqual(self.drop_owner.first_name, "DROP")
+        self.assertEqual(self.drop_owner.last_name, "OWNER")
+        self.assertTrue(self.drop_owner.check_password(STRONG_PASSWORD))
 
     def test_edit_get_opens_list_popup(self):
         url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
@@ -869,6 +911,7 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertEqual(followed.status_code, 200)
         self.assertContains(followed, "cc-edit-modal")
         self.assertContains(followed, 'data-open-id="' + str(self.drop_org.pk) + '"')
+        self.assertContains(followed, "Login credentials")
 
     def test_suspend_and_unsuspend(self):
         suspend_url = reverse(

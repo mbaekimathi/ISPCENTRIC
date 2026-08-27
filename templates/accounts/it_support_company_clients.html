@@ -64,7 +64,7 @@
     {% for client in clients %}
     <article
       class="cc-card{% if client.status == 'suspended' %} is-suspended{% endif %}"
-      data-search="{{ client.name }} {{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.email }} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}"
+      data-search="{{ client.name }} {% if client.owner %}{{ client.owner.get_full_name|default:client.owner.username }} {{ client.owner.username }} {{ client.owner.email }}{% endif %} {{ client.phone }} {{ client.join_code }} {{ client.get_status_display }} {{ client.status }}"
     >
       <div class="cc-card-top">
         <div class="cc-identity">
@@ -91,6 +91,16 @@
         <div>
           <dt>Contact</dt>
           <dd>{% if client.phone %}<a href="tel:{{ client.phone }}">{{ client.phone }}</a>{% else %}—{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Login</dt>
+          <dd>
+            {% if client.owner %}
+              <span class="org-code" title="Owner login username">{{ client.owner.username }}</span>
+            {% else %}
+              —
+            {% endif %}
+          </dd>
         </div>
         <div>
           <dt>Join code</dt>
@@ -126,7 +136,12 @@
           data-phone="{{ client.phone }}"
           data-status="{{ client.status }}"
           data-join-code="{{ client.join_code }}"
+          data-has-owner="{% if client.owner %}1{% else %}0{% endif %}"
           data-owner="{% if client.owner %}{{ client.owner.get_full_name|default:client.owner.username }}{% endif %}"
+          data-owner-username="{% if client.owner %}{{ client.owner.username }}{% endif %}"
+          data-owner-email="{% if client.owner %}{{ client.owner.email }}{% endif %}"
+          data-owner-first="{% if client.owner %}{{ client.owner.first_name }}{% endif %}"
+          data-owner-last="{% if client.owner %}{{ client.owner.last_name }}{% endif %}"
           data-email="{% if client.owner %}{{ client.owner.email }}{% endif %}"
           data-photo="{% if client.profile_photo %}{{ client.profile_photo.url }}{% endif %}"
           data-initial="{{ client.name|slice:':1'|upper }}"
@@ -166,7 +181,7 @@
   {% if not edit_form %}hidden{% endif %}
   aria-hidden="{% if edit_form %}false{% else %}true{% endif %}"
   data-open-id="{% if open_edit_id %}{{ open_edit_id }}{% endif %}"
-  data-has-errors="{% if edit_form %}1{% else %}0{% endif %}"
+  data-has-errors="{% if edit_form or edit_owner_form %}1{% else %}0{% endif %}"
 >
   <div class="role-modal-backdrop" data-cc-edit-close></div>
   <div class="role-modal-panel cc-edit-panel" role="dialog" aria-modal="true" aria-labelledby="cc-edit-title">
@@ -269,6 +284,127 @@
             {% endif %}
           </div>
         </div>
+
+        <section
+          class="cc-edit-section"
+          id="cc-edit-login"
+          {% if edit_client and not edit_client.owner %}hidden{% endif %}
+        >
+          <div class="cc-edit-section-head">
+            <h3 class="cc-edit-section-title">Login credentials</h3>
+            <p class="cc-edit-section-hint">Owner sign-in for this ISP. Passwords are stored hashed — set a new one to reset access.</p>
+          </div>
+          {% if edit_owner_form and edit_owner_form.non_field_errors %}
+            <div class="notice notice-error">{{ edit_owner_form.non_field_errors }}</div>
+          {% endif %}
+          <div class="form-group">
+            <label for="id_cc_owner_username">Username or 6-digit code</label>
+            <input
+              id="id_cc_owner_username"
+              class="form-control text-upper"
+              type="text"
+              name="username"
+              maxlength="150"
+              autocomplete="username"
+              value="{% if edit_owner_form %}{{ edit_owner_form.username.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.username }}{% endif %}"
+            >
+            <p class="field-hint">Sign in with this username or 6-digit code.</p>
+            {% if edit_owner_form and edit_owner_form.username.errors %}
+              <div class="field-error">{{ edit_owner_form.username.errors|striptags }}</div>
+            {% endif %}
+          </div>
+          <div class="form-group">
+            <label for="id_cc_owner_email">Email</label>
+            <input
+              id="id_cc_owner_email"
+              class="form-control text-lower"
+              type="email"
+              name="email"
+              autocomplete="email"
+              value="{% if edit_owner_form %}{{ edit_owner_form.email.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.email }}{% endif %}"
+            >
+            {% if edit_owner_form and edit_owner_form.email.errors %}
+              <div class="field-error">{{ edit_owner_form.email.errors|striptags }}</div>
+            {% endif %}
+          </div>
+          <div class="cc-edit-grid">
+            <div class="form-group">
+              <label for="id_cc_owner_first_name">First name</label>
+              <input
+                id="id_cc_owner_first_name"
+                class="form-control text-upper"
+                type="text"
+                name="first_name"
+                maxlength="150"
+                autocomplete="given-name"
+                value="{% if edit_owner_form %}{{ edit_owner_form.first_name.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.first_name }}{% endif %}"
+              >
+              {% if edit_owner_form and edit_owner_form.first_name.errors %}
+                <div class="field-error">{{ edit_owner_form.first_name.errors|striptags }}</div>
+              {% endif %}
+            </div>
+            <div class="form-group">
+              <label for="id_cc_owner_last_name">Last name</label>
+              <input
+                id="id_cc_owner_last_name"
+                class="form-control text-upper"
+                type="text"
+                name="last_name"
+                maxlength="150"
+                autocomplete="family-name"
+                value="{% if edit_owner_form %}{{ edit_owner_form.last_name.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.last_name }}{% endif %}"
+              >
+              {% if edit_owner_form and edit_owner_form.last_name.errors %}
+                <div class="field-error">{{ edit_owner_form.last_name.errors|striptags }}</div>
+              {% endif %}
+            </div>
+          </div>
+          <div class="cc-edit-grid">
+            <div class="form-group">
+              <label for="id_cc_owner_password1">New password</label>
+              <div class="password-field">
+                <input
+                  id="id_cc_owner_password1"
+                  class="form-control password-input"
+                  type="password"
+                  name="password1"
+                  autocomplete="new-password"
+                  placeholder="Leave blank to keep current"
+                  value="{% if edit_owner_form %}{{ edit_owner_form.password1.value|default_if_none:'' }}{% endif %}"
+                >
+                <button type="button" class="password-toggle" data-toggle-password="id_cc_owner_password1" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              <p class="field-hint">Leave blank to keep the current password. At least 12 characters; not entirely numeric.</p>
+              {% if edit_owner_form and edit_owner_form.password1.errors %}
+                <div class="field-error">{{ edit_owner_form.password1.errors|striptags }}</div>
+              {% endif %}
+            </div>
+            <div class="form-group">
+              <label for="id_cc_owner_password2">Confirm new password</label>
+              <div class="password-field">
+                <input
+                  id="id_cc_owner_password2"
+                  class="form-control password-input"
+                  type="password"
+                  name="password2"
+                  autocomplete="new-password"
+                  placeholder="Confirm new password"
+                  value="{% if edit_owner_form %}{{ edit_owner_form.password2.value|default_if_none:'' }}{% endif %}"
+                >
+                <button type="button" class="password-toggle" data-toggle-password="id_cc_owner_password2" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if edit_owner_form and edit_owner_form.password2.errors %}
+                <div class="field-error">{{ edit_owner_form.password2.errors|striptags }}</div>
+              {% endif %}
+            </div>
+          </div>
+        </section>
       </div>
 
       <div class="cc-edit-foot">
@@ -318,11 +454,30 @@
   var nameEl = document.getElementById("cc-edit-name");
   var phoneEl = document.getElementById("cc-edit-phone");
   var statusEl = document.getElementById("cc-edit-status");
+  var loginSection = document.getElementById("cc-edit-login");
+  var ownerUsernameEl = document.getElementById("id_cc_owner_username");
+  var ownerEmailEl = document.getElementById("id_cc_owner_email");
+  var ownerFirstEl = document.getElementById("id_cc_owner_first_name");
+  var ownerLastEl = document.getElementById("id_cc_owner_last_name");
+  var ownerPass1El = document.getElementById("id_cc_owner_password1");
+  var ownerPass2El = document.getElementById("id_cc_owner_password2");
   var photoInput = document.getElementById("cc-edit-photo");
   var photoImg = document.getElementById("cc-edit-photo-img");
   var photoFallback = document.getElementById("cc-edit-photo-fallback");
   var fileHint = document.getElementById("cc-edit-file-hint");
   var previewUrl = "";
+
+  function resetPasswordToggles() {
+    modal.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (input) input.type = "password";
+      btn.setAttribute("aria-label", "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye) eye.hidden = false;
+      if (eyeOff) eyeOff.hidden = true;
+    });
+  }
 
   function setPhoto(url, initial) {
     if (previewUrl) {
@@ -354,6 +509,7 @@
     document.body.classList.remove("role-modal-open");
     form.reset();
     setPhoto("", "");
+    resetPasswordToggles();
     if (fileHint) fileHint.textContent = "PNG or JPG, optional";
     if (window.history && window.history.replaceState && window.location.search.indexOf("edit=") !== -1) {
       window.history.replaceState({}, "", window.location.pathname);
@@ -366,12 +522,21 @@
     var owner = btn.getAttribute("data-owner") || "";
     var email = btn.getAttribute("data-email") || "";
     var code = btn.getAttribute("data-join-code") || "";
+    var hasOwner = btn.getAttribute("data-has-owner") === "1";
     titleEl.textContent = name || "Edit ISP account";
     subEl.textContent = [owner, email, code ? ("Join code " + code) : ""].filter(Boolean).join(" · ")
-      || "Update company name, phone, photo, and status.";
+      || "Update company name, phone, photo, status, and login credentials.";
     nameEl.value = name;
     phoneEl.value = btn.getAttribute("data-phone") || "";
     statusEl.value = btn.getAttribute("data-status") || "registered";
+    if (loginSection) loginSection.hidden = !hasOwner;
+    if (ownerUsernameEl) ownerUsernameEl.value = btn.getAttribute("data-owner-username") || "";
+    if (ownerEmailEl) ownerEmailEl.value = btn.getAttribute("data-owner-email") || "";
+    if (ownerFirstEl) ownerFirstEl.value = btn.getAttribute("data-owner-first") || "";
+    if (ownerLastEl) ownerLastEl.value = btn.getAttribute("data-owner-last") || "";
+    if (ownerPass1El) ownerPass1El.value = "";
+    if (ownerPass2El) ownerPass2El.value = "";
+    resetPasswordToggles();
     if (fileHint) fileHint.textContent = "PNG or JPG, optional";
     if (photoInput) photoInput.value = "";
     setPhoto(btn.getAttribute("data-photo") || "", btn.getAttribute("data-initial") || "");
@@ -386,6 +551,20 @@
 
   modal.querySelectorAll("[data-cc-edit-close]").forEach(function (el) {
     el.addEventListener("click", closeModal);
+  });
+
+  modal.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye) eye.hidden = show;
+      if (eyeOff) eyeOff.hidden = !show;
+    });
   });
 
   document.addEventListener("keydown", function (event) {

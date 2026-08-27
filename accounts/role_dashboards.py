@@ -17,6 +17,7 @@ from accounts.forms import (
     NATIONAL_PHONE_LENGTHS,
     NetworkEquipmentRegisterForm,
     OrganizationEditForm,
+    OwnerProfileForm,
     ClientSettingsForm,
     CompanyProfileForm,
     PaymentGatewayForm,
@@ -1353,6 +1354,19 @@ def it_support_company_clients(request):
     return _render_it_support_company_clients(request)
 
 
+def _company_client_owner_form(owner, data=None):
+    """Owner login form for IT Support company-client edits."""
+    kwargs = {"user": owner, "id_prefix": "cc_owner"}
+    form = OwnerProfileForm(data, **kwargs) if data is not None else OwnerProfileForm(**kwargs)
+    form.fields["password1"].help_text = (
+        "Leave blank to keep the current password. "
+        "At least 12 characters; not entirely numeric."
+    )
+    form.fields["password1"].label = "New password"
+    form.fields["password2"].label = "Confirm new password"
+    return form
+
+
 @role_required(Employee.Role.IT_SUPPORT)
 def it_support_company_client_edit(request, pk):
     _prepare_it_support_view(request)
@@ -1368,8 +1382,16 @@ def it_support_company_client_edit(request, pk):
         instance=client,
         section=OrganizationEditForm.SECTION_PROFILE,
     )
-    if form.is_valid():
+    owner_form = None
+    if client.owner_id:
+        owner_form = _company_client_owner_form(client.owner, request.POST)
+
+    org_ok = form.is_valid()
+    owner_ok = owner_form.is_valid() if owner_form is not None else True
+    if org_ok and owner_ok:
         form.save()
+        if owner_form is not None:
+            owner_form.save()
         messages.success(request, f"Updated {client.name}.")
         return redirect("roles:it_support_company_clients")
 
@@ -1377,6 +1399,7 @@ def it_support_company_client_edit(request, pk):
         request,
         open_edit_id=client.pk,
         edit_form=form,
+        edit_owner_form=owner_form,
         edit_client=client,
     )
 

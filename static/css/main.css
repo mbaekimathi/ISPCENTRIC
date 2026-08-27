@@ -12511,8 +12511,8 @@ a.packages-stat:focus-visible {
 .cc-edit-panel.role-modal-panel {
   display: flex;
   flex-direction: column;
-  width: min(100%, 34rem);
-  max-height: min(94dvh, 42rem);
+  width: min(100%, 36rem);
+  max-height: min(94dvh, 48rem);
   padding: 0;
   overflow: hidden;
   color: var(--ink);
@@ -12520,6 +12520,48 @@ a.packages-stat:focus-visible {
     linear-gradient(180deg, color-mix(in srgb, var(--sea) 10%, transparent), transparent 42%),
     var(--surface-solid, var(--surface));
   box-shadow: 0 -18px 48px color-mix(in srgb, var(--ink) 18%, transparent);
+}
+
+.cc-edit-section {
+  display: grid;
+  gap: 0.85rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border);
+}
+
+.cc-edit-section-head {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.cc-edit-section-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+
+.cc-edit-section-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.cc-edit-body .password-field {
+  position: relative;
+}
+
+.cc-edit-body .password-field .password-input {
+  padding-right: 2.75rem;
+}
+
+.cc-edit-body .field-hint {
+  margin: 0.35rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.4;
 }
 
 .cc-edit-panel.role-modal-panel::before {
