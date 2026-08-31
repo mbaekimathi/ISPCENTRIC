@@ -5,8 +5,7 @@ from django.db.models import Q
 
 from billing.models import Customer
 from core.mikrotik_connect import (
-    repair_hotspot_captive_portal,
-    repair_router_expired_captive_redirect,
+    refresh_onboarded_router_config,
     sweep_log_text,
     sync_customer_subscription_access,
 )
@@ -96,9 +95,6 @@ class Command(BaseCommand):
         blocked = allowed = errors = 0
         hotspot_org_ids: set[int] = set()
         expired_hotspot: list[Customer] = []
-        # NAS routers that blocked at least one PPPoE client — repair captive
-        # redirect rules so any device that dials/connects still pops pay instantly.
-        repair_router_ids: set[int] = set()
 
         for customer in qs:
             receives = customer_receives_internet(customer)
@@ -206,9 +202,6 @@ class Command(BaseCommand):
                         )
             else:
                 blocked += 1
-                router_id = getattr(customer, "router_id", None)
-                if router_id:
-                    repair_router_ids.add(router_id)
                 # Re-push CPE renew only when the earlier attempt actually failed
                 # (not when the CPE was offline / skipped — that just wastes API).
                 portal = result.get("portal") or {}
@@ -301,41 +294,33 @@ class Command(BaseCommand):
                     style=self.style.WARNING,
                 )
 
-        for router in self._hotspot_routers(hotspot_org_ids):
-            # Correction loop: lost login.html / option 114 must not leave unpaid
-            # Wi-Fi clients on "connected, no internet" until the next cron.
-            result = repair_hotspot_captive_portal(router)
-            if result.get("ok") or result.get("skipped"):
-                note = "synced"
-                if any(
-                    "repaired on attempt" in str(n)
-                    for n in (result.get("notes") or [])
-                ):
-                    note = "captive repaired"
-                self._write(self.stdout, f"hotspot {router.host}: {note}")
-            else:
-                errors += 1
-                self._write(
-                    self.stderr,
-                    f"hotspot {router.host}: {result.get('error')}",
-                    style=self.style.WARNING,
-                )
+        if not dry_run:
+            from core.models import MikroTikRouter
 
-        for router in self._routers_for_ids(repair_router_ids):
-            repair = repair_router_expired_captive_redirect(router)
-            if repair.get("ok"):
-                self._write(
-                    self.stdout,
-                    f"expired-redirect {router.host}: "
-                    f"{repair.get('message') or 'ok'}",
+            router_qs = (
+                MikroTikRouter.objects.filter(
+                    account_status=MikroTikRouter.AccountStatus.ACTIVE,
                 )
-            elif not repair.get("skipped"):
-                errors += 1
-                self._write(
-                    self.stderr,
-                    f"expired-redirect {router.host}: {repair.get('error')}",
-                    style=self.style.WARNING,
-                )
+                .exclude(host="")
+                .select_related("organization")
+                .order_by("id")
+            )
+            if org_id:
+                router_qs = router_qs.filter(organization_id=org_id)
+
+            for router in router_qs:
+                result = refresh_onboarded_router_config(router)
+                if result.get("ok") or result.get("skipped"):
+                    note = result.get("message") or "synced"
+                    self._write(self.stdout, f"nas {router.host}: {note}")
+                else:
+                    errors += 1
+                    self._write(
+                        self.stderr,
+                        f"nas {router.host}: "
+                        f"{result.get('error') or result.get('message')}",
+                        style=self.style.WARNING,
+                    )
 
         self._write(
             self.stdout,

@@ -1943,6 +1943,67 @@ def _management_source_ipv4s() -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def ensure_routeros_api_enabled(
+    sock: socket.socket,
+    *,
+    allowed_from: str = "",
+) -> list[str]:
+    """
+    Ensure RouterOS API listens on port 8728.
+
+    Called during Connect, reconnect, and post-onboard refresh so Hotspot /
+    PPPoE pushes cannot leave management on Winbox-only while billing needs
+    API :8728.
+    """
+    notes: list[str] = []
+    allowed = (allowed_from or "").strip()
+    try:
+        api_row: dict[str, str] | None = None
+        for row in _print(sock, "/ip/service", props=".id,name,port,disabled,address"):
+            if (row.get("name") or "").strip().lower() == "api":
+                api_row = row
+                break
+        props: dict[str, str] = {"disabled": "no", "port": "8728"}
+        if allowed:
+            props["address"] = allowed
+        else:
+            props["address"] = ""
+        if api_row:
+            item_id = (api_row.get(".id") or "").strip()
+            if item_id:
+                terminal = _set(sock, "/ip/service", item_id, **props)
+                if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                    notes.append("RouterOS API enabled on port 8728")
+        else:
+            terminal = _add(sock, "/ip/service", **props, name="api")
+            if terminal.get("_reply") not in {"!trap", "!fatal"}:
+                notes.append("RouterOS API service created on port 8728")
+    except Exception:
+        pass
+    return notes
+
+
+def _ensure_nas_api_and_management(router) -> list[str]:
+    """Dial onboarded NAS and ensure API + Hotspot-safe management paths."""
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    if not username:
+        return []
+    notes: list[str] = []
+    for host in _router_api_host_candidates(router, discover=on_router_lan()):
+        try:
+            with _api_session(host, username, password, timeout=10.0) as sock:
+                notes.extend(
+                    _ensure_hotspot_management_access(
+                        sock, username=username, password=password
+                    )
+                )
+                return notes
+        except Exception:
+            continue
+    return notes
+
+
 def _ensure_hotspot_management_access(
     sock: socket.socket,
     *,
@@ -1954,12 +2015,14 @@ def _ensure_hotspot_management_access(
 
     Hotspot inserts a dynamic ``input → hs-input → hs-unauth → reject`` path
     above normal LAN accepts, so unpaid clients never reach API 8728. Install:
+      0) ensure RouterOS API service is enabled on 8728
       1) accept management ports on ``input`` *before* the Hotspot jump
       2) accept on ``hs-unauth`` / ``hs-input`` *before* the reject
       3) ip-binding bypass for this PC's LAN addresses
       4) dedicated Hotspot user for HTTP login rescue
     """
     notes: list[str] = []
+    notes.extend(ensure_routeros_api_enabled(sock))
 
     def _rows() -> list[dict[str, str]]:
         try:
@@ -13322,6 +13385,7 @@ def repair_hotspot_captive_portal(
     *,
     organization=None,
     attempts: int | None = None,
+    reauthenticate: bool = False,
 ) -> dict[str, Any]:
     """
     Re-push ISP Hotspot captive pages / option 114 until login.html is live.
@@ -13337,7 +13401,7 @@ def repair_hotspot_captive_portal(
                 router,
                 enabled=True,
                 organization=organization,
-                reauthenticate=False,
+                reauthenticate=reauthenticate,
             )
         except Exception as exc:  # noqa: BLE001
             last = {
@@ -13358,6 +13422,147 @@ def repair_hotspot_captive_portal(
         if "absolute pay url" in err or "organization is required" in err:
             return last
     return last
+
+
+def refresh_onboarded_router_config(
+    router,
+    *,
+    skip_pppoe: bool = False,
+    skip_hotspot: bool = False,
+    reauthenticate: bool = False,
+) -> dict[str, Any]:
+    """
+    Push the latest PPPoE / Hotspot / captive templates to one onboarded NAS.
+
+    Used after onboard, reconnect, deploy, and the subscription sweep so routers
+    pick up code changes (firewall rules, login.html, bypass cleanup, MAC blocks)
+    without a manual push from the UI.
+    """
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or getattr(router, "host", "") or ""
+    host = (getattr(router, "host", None) or "").strip()
+    org = getattr(router, "organization", None)
+    from billing.models import Customer
+    from core.models import MikroTikRouter
+
+    if org is None:
+        return {
+            "ok": False,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "error": "No organization linked to this router.",
+        }
+    if getattr(router, "account_status", "") == MikroTikRouter.AccountStatus.SUSPENDED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "message": f"{router_name} is suspended — NAS refresh skipped.",
+        }
+    if not host:
+        return {
+            "ok": False,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "error": "Router host is missing.",
+        }
+
+    api_notes = _ensure_nas_api_and_management(router)
+    if api_notes:
+        notes: list[str] = list(api_notes[:4])
+    else:
+        notes = []
+
+    compulsory = bool(getattr(org, "pppoe_compulsory", False))
+    hotspot_on = bool(getattr(org, "hotspot_enabled", False))
+    has_pppoe = (
+        Customer.objects.filter(
+            organization=org,
+            service_type=Customer.ServiceType.PPPOE,
+        )
+        .exclude(pppoe_username="")
+        .exists()
+    )
+    has_hotspot = hotspot_on or Customer.objects.filter(
+        organization=org,
+        service_type=Customer.ServiceType.HOTSPOT,
+    ).exclude(hotspot_mac="").exists()
+
+    router_ok = True
+    pppoe_result: dict[str, Any] | None = None
+    hotspot_result: dict[str, Any] | None = None
+    redirect_result: dict[str, Any] | None = None
+
+    # Drop cached "stack ready" so the next Hotspot authorize cannot skip a
+    # full repair after a code upgrade.
+    if router_id:
+        try:
+            from django.core.cache import cache
+
+            cache.delete(_hotspot_stack_ready_key(router_id))
+        except Exception:
+            pass
+
+    if not skip_pppoe and (compulsory or has_pppoe):
+        pppoe_result = apply_pppoe_enforcement_on_router(
+            router,
+            compulsory=compulsory,
+            hotspot_fallback=bool(compulsory or hotspot_on or has_hotspot),
+        )
+        if pppoe_result.get("ok"):
+            notes.append("pppoe ok")
+            notes.extend(list(pppoe_result.get("notes") or [])[:6])
+            hotspot_result = pppoe_result.get("hotspot")
+        else:
+            router_ok = False
+            notes.append(pppoe_result.get("error") or "pppoe refresh failed")
+    else:
+        redirect_result = repair_router_expired_captive_redirect(router)
+        if redirect_result.get("ok") or redirect_result.get("skipped"):
+            notes.append(redirect_result.get("message") or "expired-redirect ok")
+        else:
+            router_ok = False
+            notes.append(redirect_result.get("error") or "expired-redirect failed")
+
+    need_hotspot = (
+        not skip_hotspot
+        and (hotspot_on or has_hotspot)
+        and not (compulsory and not skip_pppoe)
+    )
+    if need_hotspot:
+        hotspot_result = repair_hotspot_captive_portal(
+            router,
+            organization=org,
+            attempts=2,
+            reauthenticate=reauthenticate,
+        )
+        if hotspot_result.get("ok"):
+            notes.append("hotspot ok")
+        elif hotspot_result.get("skipped"):
+            notes.append(hotspot_result.get("message") or "hotspot skipped")
+        else:
+            router_ok = False
+            notes.append(hotspot_result.get("error") or "hotspot refresh failed")
+
+    return {
+        "ok": router_ok,
+        "skipped": False,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": host,
+        "compulsory": compulsory,
+        "pppoe": pppoe_result,
+        "hotspot": hotspot_result,
+        "redirect": redirect_result,
+        "notes": notes,
+        "message": "; ".join(notes) if notes else "NAS config refreshed",
+    }
 
 
 def _disable_cpe_renew_hotspot(sock: socket.socket) -> list[str]:
@@ -18450,31 +18655,9 @@ def build_api_enable_terminal_script() -> str:
 
     Paste in Winbox → New Terminal when billing cannot reach the router API.
     """
-    return "\n".join(
-        [
-            "# Winbox → New Terminal → paste all lines, press Enter",
-            ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
-            ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-            ":do { /ip service enable [find where name=api] } on-error={}",
-            "/ip firewall filter",
-            (
-                "add chain=input action=accept protocol=tcp dst-port=8728 "
-                'src-address=10.0.0.0/8 comment="ispcentric-api-lan-10" '
-                "place-before=[find where chain=input and jump-target=hs-input]"
-            ),
-            (
-                "add chain=input action=accept protocol=tcp dst-port=8728 "
-                'src-address=172.16.0.0/12 comment="ispcentric-api-lan-172" '
-                "place-before=[find where chain=input and jump-target=hs-input]"
-            ),
-            (
-                "add chain=input action=accept protocol=tcp dst-port=8728 "
-                'src-address=192.168.0.0/16 comment="ispcentric-api-lan-192" '
-                "place-before=[find where chain=input and jump-target=hs-input]"
-            ),
-            ':put "RouterOS API enabled on port 8728"',
-        ]
-    )
+    from core.wireguard import routeros_standalone_api_enable_script
+
+    return routeros_standalone_api_enable_script()
 
 
 def _api_unreachable_ports_error(error: str) -> dict[str, Any]:

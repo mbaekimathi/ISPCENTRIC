@@ -456,6 +456,70 @@ def _ros_check(condition: str, ok_message: str, fail_message: str) -> str:
     )
 
 
+def _ros_api_enabled_condition() -> str:
+    return "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0"
+
+
+def _ros_api_enable_lines(*, verify: bool = True) -> list[str]:
+    """
+    RouterOS lines that force API :8728 on (create service if missing).
+
+    Used in the onboarding tunnel script (step 2 + final verify) and recovery
+    paste snippets. Multiple set/enable paths cover RouterOS builds where a
+    single ``on-error={}`` line would silently skip activation.
+    """
+    lines = [
+        "# Compulsory: RouterOS API on 8728 — Connect/Reconnect cannot work without it.",
+        ':do { /ip service add name=api port=8728 disabled=no address="" } on-error={}',
+        ':do { /ip service enable [find where name=api] } on-error={}',
+        ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
+        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+        (
+            ":do { :foreach i in=[/ip service find where name=api] do={ "
+            '/ip service set $i disabled=no port=8728 address="" '
+            "} } on-error={}"
+        ),
+    ]
+    if verify:
+        lines += [
+            _ros_check(
+                _ros_api_enabled_condition(),
+                "RouterOS API enabled on port 8728",
+                "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
+            ),
+            (
+                ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
+                '[/ip service get [find where name=api] address]) } on-error={'
+                f'{_ros_warn("Could not read API allowed-from list")}'
+                "}"
+            ),
+        ]
+    return lines
+
+
+def routeros_standalone_api_enable_script() -> str:
+    """Winbox terminal paste when billing cannot reach RouterOS API :8728."""
+    lines = [
+        "# Winbox -> New Terminal -> paste all lines, press Enter",
+        *_ros_api_enable_lines(verify=True),
+        "/ip firewall filter",
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
+            "ispcentric-api-lan-10",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
+            "ispcentric-api-lan-172",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
+            "ispcentric-api-lan-192",
+        ),
+    ]
+    return "\n".join(lines)
+
+
 def _ros_filter_add(rule: str, comment: str, *, chain: str = "input") -> str:
     """
     Insert a filter rule near the top of ``chain`` when that chain has rules.
@@ -1513,22 +1577,7 @@ def _routeros_install_lines(
         _ros_info(
             "Step 2/8 management — enable API 8728 + LAN/Hotspot management ports"
         ),
-        "# Compulsory: RouterOS API on 8728 - Connect/Reconnect cannot work without it.",
-        ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
-        ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
-        ":do { /ip service enable [find where name=api] } on-error={}",
-        _ros_check(
-            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
-            "RouterOS API enabled on port 8728",
-            "RouterOS API still disabled - open IP > Services > api, port 8728, Allowed From empty",
-        ),
-        (
-            ':do { :put ("[ISPCENTRIC] API allowed-from: " . '
-            '[/ip service get [find where name=api] address]) } on-error={'
-            f'{_ros_warn("Could not read API allowed-from list")}'
-            "}"
-        ),
+        *_ros_api_enable_lines(verify=True),
     ]
     lan_ip = (lan_address or "").strip()
     if lan_ip:
@@ -1687,6 +1736,8 @@ def _routeros_install_lines(
     # --- Step 8: backup + summary -----------------------------------------
     lines += [
         _ros_info("Step 8/8 backup — save config and print summary"),
+        _ros_info("Final verify — RouterOS API must stay enabled on 8728"),
+        *_ros_api_enable_lines(verify=True),
         ':do { /file remove [find where name="ispcentric-tunnel.backup"] } on-error={}',
         "/system backup",
         "save name=ispcentric-tunnel dont-encrypt=yes",
@@ -1703,7 +1754,7 @@ def _routeros_install_lines(
             "Summary: VPS peer",
         ),
         _ros_check(
-            "[:len [/ip service find where name=api and disabled=no and port=8728]] > 0",
+            _ros_api_enabled_condition(),
             "Summary: API port 8728",
             "Summary: API port 8728",
         ),
@@ -2009,8 +2060,7 @@ def _routeros_post_reset_rsc_body(
             f'allowed-address={network} persistent-keepalive=25s '
             f'comment="ispcentric billing server"'
         ),
-        '/ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0',
-        ':do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}',
+        *_ros_api_enable_lines(verify=False),
         (
             '/ip firewall filter add chain=input action=accept protocol=tcp '
             'dst-port=8728 in-interface=ispcentric-vpn comment="ispcentric-vpn-api"'

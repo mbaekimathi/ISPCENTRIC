@@ -4,12 +4,7 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from core.mikrotik_connect import (
-    apply_pppoe_enforcement_on_router,
-    repair_hotspot_captive_portal,
-    repair_router_expired_captive_redirect,
-    sweep_log_text,
-)
+from core.mikrotik_connect import refresh_onboarded_router_config, sweep_log_text
 
 
 class Command(BaseCommand):
@@ -49,7 +44,7 @@ class Command(BaseCommand):
         try:
             stream.write(text + "\n")
         except UnicodeEncodeError:
-            stream.write(text.encode("ascii", "replace").decode("ascii") + "\n")
+            stream.write(text.encode("ascii", errors="replace").decode("ascii") + "\n")
 
     def handle(self, *args, **options):
         from billing.models import Customer
@@ -115,80 +110,27 @@ class Command(BaseCommand):
                 ok += 1
                 continue
 
-            router_ok = True
-            notes: list[str] = []
-
-            # 1) Full PPPoE stack when the org uses PPPoE / compulsory mode.
-            #    Always refresh expired redirect + blocked profile otherwise.
-            if not skip_pppoe and (compulsory or has_pppoe):
-                try:
-                    result = apply_pppoe_enforcement_on_router(
-                        router,
-                        compulsory=compulsory,
-                        hotspot_fallback=True if compulsory else False,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    result = {"ok": False, "error": str(exc)}
-                if result.get("ok"):
-                    notes.append("pppoe ok")
-                    if result.get("notes"):
-                        notes.extend(
-                            sweep_log_text(n) for n in list(result["notes"])[:4]
-                        )
-                else:
-                    router_ok = False
-                    errors += 1
-                    self._write(
-                        self.stderr,
-                        f"{label}: pppoe {result.get('error') or 'failed'}",
-                        style=self.style.WARNING,
-                    )
-            else:
-                try:
-                    result = repair_router_expired_captive_redirect(router)
-                except Exception as exc:  # noqa: BLE001
-                    result = {"ok": False, "error": str(exc)}
-                if result.get("ok") or result.get("skipped"):
-                    notes.append(result.get("message") or "expired-redirect ok")
-                else:
-                    router_ok = False
-                    errors += 1
-                    self._write(
-                        self.stderr,
-                        f"{label}: redirect {result.get('error') or 'failed'}",
-                        style=self.style.WARNING,
-                    )
-
-            # 2) Hotspot captive pages / login.html when Hotspot is in use.
-            #    Compulsory PPPoE already pushed Hotspot fallback above.
-            need_hotspot = (
-                not skip_hotspot
-                and (hotspot_on or has_hotspot)
-                and not (compulsory and not skip_pppoe)
+            result = refresh_onboarded_router_config(
+                router,
+                skip_pppoe=skip_pppoe,
+                skip_hotspot=skip_hotspot,
             )
-            if need_hotspot:
-                try:
-                    hs = repair_hotspot_captive_portal(
-                        router, organization=org, attempts=2
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    hs = {"ok": False, "error": str(exc)}
-                if hs.get("ok") or hs.get("skipped"):
-                    notes.append("hotspot ok" if hs.get("ok") else "hotspot skipped")
-                else:
-                    router_ok = False
-                    errors += 1
-                    self._write(
-                        self.stderr,
-                        f"{label}: hotspot {hs.get('error') or 'failed'}",
-                        style=self.style.WARNING,
-                    )
-
-            if router_ok:
+            if result.get("ok"):
                 ok += 1
+                note = result.get("message") or "synced"
+                self._write(self.stdout, f"{label}: {note}")
+            elif result.get("skipped"):
+                skipped += 1
                 self._write(
                     self.stdout,
-                    f"{label}: " + ("; ".join(notes) if notes else "synced"),
+                    f"{label}: {result.get('message') or 'skipped'}",
+                )
+            else:
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"{label}: {result.get('error') or result.get('message') or 'failed'}",
+                    style=self.style.WARNING,
                 )
 
         self._write(

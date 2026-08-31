@@ -110,6 +110,7 @@ from core.mikrotik_connect import (
     discover_local_mikrotik_host,
     pick_local_onboard_connect_host,
     finalize_onboard_addresses,
+    refresh_onboarded_router_config,
     suggest_unique_mikrotik_lan_ip,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
@@ -3761,30 +3762,46 @@ def mikrotik(request):
                         request,
                         "Referral marked active — your first MikroTik is onboarded.",
                     )
+            router_pk = router.pk
+
+            def _bg_refresh_nas(pk: int = router_pk) -> None:
+                try:
+                    live = MikroTikRouter.objects.select_related("organization").get(
+                        pk=pk
+                    )
+                    refresh_onboarded_router_config(live, reauthenticate=True)
+                except Exception:
+                    pass
+
+            _schedule_mikrotik_job(
+                _bg_refresh_nas, name=f"nas-refresh-{router_pk}"
+            )
             if org and getattr(org, "pppoe_compulsory", False):
-                router_pk = router.pk
-
-                def _bg_enforce(pk: int = router_pk) -> None:
-                    try:
-                        live = MikroTikRouter.objects.select_related("organization").get(
-                            pk=pk
-                        )
-                        apply_pppoe_enforcement_on_router(live, compulsory=True)
-                    except Exception:
-                        pass
-
-                _schedule_mikrotik_job(_bg_enforce, name=f"pppoe-enforce-{router_pk}")
                 messages.info(
                     request,
-                    "PPPoE enforcement is being applied on this MikroTik in the background — "
-                    "paid PPPoE clients will surf automatically; other devices use Hotspot.",
+                    "Latest PPPoE and Hotspot settings are being applied on this MikroTik "
+                    "in the background — paid PPPoE clients surf automatically; other "
+                    "devices use Hotspot.",
+                )
+            elif org and getattr(org, "hotspot_enabled", False):
+                messages.info(
+                    request,
+                    "Latest Hotspot settings are being applied on this MikroTik in the "
+                    "background.",
                 )
             # Drop stale discovery/status caches for this org after onboard.
             if org:
-                from core.mikrotik_status_samples import clear_mikrotik_onboarding_active
+                from core.mikrotik_status_samples import (
+                    clear_mikrotik_onboarding_active,
+                    mark_mikrotik_post_onboard_grace,
+                )
 
                 clear_mikrotik_onboarding_active(
                     org.pk, user_id=request.user.pk, org_wide=True
+                )
+                mark_mikrotik_post_onboard_grace(
+                    router.pk,
+                    tunnel=bool((router.vpn_address or tunnel_host or "").strip()),
                 )
                 cache.delete_many(
                     [
@@ -6302,6 +6319,17 @@ def mikrotik_reconnect(request, router_id: int):
         ]
     )
 
+    router_pk = router.pk
+
+    def _bg_refresh_nas(pk: int = router_pk) -> None:
+        try:
+            live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
+            refresh_onboarded_router_config(live, reauthenticate=True)
+        except Exception:
+            pass
+
+    _schedule_mikrotik_job(_bg_refresh_nas, name=f"nas-refresh-{router_pk}")
+
     return JsonResponse(
         {
             "ok": True,
@@ -7419,8 +7447,11 @@ def mikrotik_status(request):
 
     from core.mikrotik_status_samples import (
         _HOSTED_AUTH_CACHE_TTL,
-        classify_mikrotik_probe,
+        build_router_probe_plan,
+        classify_router_status_row,
         is_mikrotik_onboarding_active,
+        pick_best_probe_for_router,
+        probe_mikrotik_hosts,
         stabilize_live_status_rows,
     )
 
@@ -7470,68 +7501,15 @@ def mikrotik_status(request):
 
     results = {}
 
-    # Probe each unique dial target once; per-router fallbacks try tunnel then LAN
-    # so status stays Connected when the saved IP moved but an alternate path works.
-    router_candidates: dict[int, list[str]] = {}
-    unique_hosts: list[str] = []
-    for router in routers:
-        candidates = _router_api_host_candidates(router, discover=on_router_lan())
-        if on_router_lan():
-            discovered = discover_local_mikrotik_host(
-                tunnel_address=(router.vpn_address or "").strip(),
-                prefer_host=(router.host or "").strip(),
-            )
-            if discovered and discovered not in candidates:
-                candidates.insert(0, discovered)
-        if not candidates:
-            primary = (router.api_host or "").strip()
-            candidates = [primary] if primary else []
-        router_candidates[router.id] = candidates
-        for host in candidates:
-            if host and host not in unique_hosts:
-                unique_hosts.append(host)
-    probe_by_host: dict[str, dict] = {}
-
-    def _probe_host(host: str):
-        return host, check_mikrotik_reachable(
-            host, timeout=mikrotik_probe_timeout(host)
-        )
-
-    probe_workers = min(8, max(1, len(unique_hosts)))
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        futures = [pool.submit(_probe_host, host) for host in unique_hosts]
-        for future in as_completed(futures):
-            try:
-                host, probe = future.result()
-                probe_by_host[host] = probe
-            except Exception:
-                continue
+    router_candidates, unique_hosts, tunnel_by_router = build_router_probe_plan(routers)
+    probe_by_host = probe_mikrotik_hosts(unique_hosts)
 
     def _best_probe_for_router(router):
-        candidates = router_candidates.get(router.id) or []
-        fallback_host = (router.api_host or "").strip()
-        via_rank = {"api": 0, "winbox": 1, "http": 2, "ping": 3}
-        best_host = ""
-        best_probe: dict = {}
-        best_rank = 99
-        for host in candidates:
-            probe = probe_by_host.get(host) or {}
-            if not probe.get("online"):
-                continue
-            via = (probe.get("via") or "").strip()
-            rank = via_rank.get(via, 5)
-            if rank < best_rank:
-                best_rank = rank
-                best_host, best_probe = host, probe
-        if best_host:
-            return best_host, best_probe
-        if fallback_host:
-            return fallback_host, probe_by_host.get(fallback_host) or {
-                "online": False,
-                "via": "",
-                "error": "Unreachable.",
-            }
-        return "", {"online": False, "via": "", "error": "Unreachable."}
+        return pick_best_probe_for_router(
+            router,
+            router_candidates.get(router.id) or [],
+            probe_by_host,
+        )
 
     def _check(router):
         host, probe = _best_probe_for_router(router)
@@ -7543,37 +7521,25 @@ def mikrotik_status(request):
             and getattr(settings, "HOSTED", False)
             and bool(cache.get(auth_cache_key))
         )
-        classified = classify_mikrotik_probe(
-            probe,
+        item = classify_router_status_row(
+            router,
             host=host,
-            username=router.username or "",
-            password=router.password or "",
-            serial_number=(router.serial_number or "").strip(),
-            software_id=(router.software_id or "").strip(),
+            probe=probe,
             skip_login=skip_login,
-            router=router,
         )
         backfill = {}
-        if classified.get("auth_ok"):
+        if item.get("auth_ok"):
             if getattr(settings, "HOSTED", False) and not skip_login:
                 cache.set(auth_cache_key, True, _HOSTED_AUTH_CACHE_TTL)
-            live_serial = (classified.get("serial_number") or "").strip()
-            live_soft = (classified.get("software_id") or "").strip()
+            live_serial = (item.get("serial_number") or "").strip()
+            live_soft = (item.get("software_id") or "").strip()
             if live_serial and live_serial != (router.serial_number or "").strip():
                 backfill["serial_number"] = live_serial
             if live_soft and live_soft != (router.software_id or "").strip():
                 backfill["software_id"] = live_soft
         elif via == "api" and getattr(settings, "HOSTED", False):
             cache.delete(auth_cache_key)
-
-        classified.pop("_login", None)
-        return router.id, {
-            "id": router.id,
-            "host": router.host,
-            "name": router.name,
-            **classified,
-            "_backfill": backfill,
-        }
+        return router.id, {**item, "_backfill": backfill}
 
     workers = min(8, max(1, len(routers)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -7624,6 +7590,7 @@ def mikrotik_status(request):
         org.pk if org else 0,
         payload,
         force=force_refresh,
+        tunnel_by_router=tunnel_by_router,
     )
     from core.mikrotik_auto_restore import attach_auto_restore_to_rows
 

@@ -421,10 +421,15 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertIn("Step 3/8 wireguard", script)
         self.assertLess(script.find("Step 2/8 management"), script.find("Step 3/8 wireguard"))
         self.assertIn(
+            ':do { /ip service add name=api port=8728 disabled=no address="" } on-error={}',
+            script,
+        )
+        self.assertIn(
             ':do { /ip service set [find where name=api] disabled=no port=8728 '
             'address=0.0.0.0/0 } on-error={}',
             script,
         )
+        self.assertIn("Final verify — RouterOS API must stay enabled on 8728", script)
         self.assertIn(
             ":do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } "
             "on-error={}",
@@ -489,7 +494,10 @@ class WireGuardKeyTests(SimpleTestCase):
         )
         # No multi-line :for — Winbox paste breaks braces across prompts.
         self.assertNotIn(":for IspTry", script)
-        self.assertNotIn(":foreach ", script)
+        self.assertIn(
+            ":foreach i in=[/ip service find where name=api]",
+            script,
+        )
         ping_checks = [
             line
             for line in script.splitlines()
@@ -6386,12 +6394,8 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 "core.mikrotik_connect.apply_cpe_renew_portal",
             ) as cpe_retry,
             patch(
-                "billing.management.commands.sync_subscription_access.repair_hotspot_captive_portal",
-                return_value={"ok": True, "notes": []},
-            ),
-            patch(
-                "billing.management.commands.sync_subscription_access.repair_router_expired_captive_redirect",
-                return_value={"ok": True, "message": "ok"},
+                "billing.management.commands.sync_subscription_access.refresh_onboarded_router_config",
+                return_value={"ok": True, "message": "synced"},
             ),
         ):
             call_command("sync_subscription_access", stdout=StringIO())
@@ -6579,7 +6583,7 @@ class AccessFlowCorrectionLoopTests(TestCase):
             any("repaired on attempt" in n for n in (result.get("notes") or []))
         )
 
-    def test_sync_command_repairs_hotspot_and_expired_redirect(self):
+    def test_sync_command_refreshes_onboarded_router_config(self):
         from io import StringIO
 
         from django.core.management import call_command
@@ -6603,25 +6607,20 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 return_value={"ok": True, "enabled": True},
             ),
             patch(
-                "billing.management.commands.sync_subscription_access.repair_hotspot_captive_portal",
+                "billing.management.commands.sync_subscription_access.refresh_onboarded_router_config",
                 return_value={
                     "ok": True,
-                    "notes": ["Hotspot captive repaired on attempt 2"],
+                    "message": "pppoe ok; hotspot ok",
                 },
-            ) as hs_repair,
-            patch(
-                "billing.management.commands.sync_subscription_access.repair_router_expired_captive_redirect",
-                return_value={"ok": True, "message": "expired captive redirect ok"},
-            ) as nas_repair,
+            ) as nas_refresh,
         ):
             out = StringIO()
             call_command("sync_subscription_access", stdout=out)
             text = out.getvalue()
 
-        self.assertTrue(hs_repair.called)
-        self.assertTrue(nas_repair.called)
-        self.assertIn("captive repaired", text)
-        self.assertIn("expired-redirect", text)
+        self.assertTrue(nas_refresh.called)
+        self.assertIn("nas", text)
+        self.assertIn("pppoe ok", text)
 
     def test_captive_html_invariants_for_both_pay_modes(self):
         from core.mikrotik_connect import _captive_pay_redirect_html
@@ -7713,10 +7712,16 @@ class MikroTikStatusOfflineTests(TestCase):
         )
         with (
             patch(
-                "core.views.check_mikrotik_reachable",
-                return_value={"online": False, "via": "", "error": "timed out"},
+                "core.mikrotik_status_samples.probe_mikrotik_hosts",
+                return_value={
+                    "192.168.88.1": {
+                        "online": False,
+                        "via": "",
+                        "error": "timed out",
+                    }
+                },
             ),
-            patch("core.views.test_mikrotik_api_login") as login,
+            patch("core.mikrotik_connect.test_mikrotik_api_login") as login,
         ):
             response = self.client.get("/app/mikrotik/status/?refresh=1")
         login.assert_not_called()
@@ -7725,17 +7730,35 @@ class MikroTikStatusOfflineTests(TestCase):
         self.assertEqual(data["routers"][0]["status"], "disconnected")
         self.assertFalse(data["routers"][0]["online"])
         self.assertIsNone(cache.get(live_key))
-        sample = MikroTikStatusSample.objects.get(router=self.router)
+        # Chart samples debounce the first outage after Connected — confirm twice.
+        with (
+            patch(
+                "core.mikrotik_status_samples.probe_mikrotik_hosts",
+                return_value={
+                    "192.168.88.1": {
+                        "online": False,
+                        "via": "",
+                        "error": "timed out",
+                    }
+                },
+            ),
+            patch("core.mikrotik_connect.test_mikrotik_api_login"),
+        ):
+            self.client.get("/app/mikrotik/status/?refresh=1")
+            response = self.client.get("/app/mikrotik/status/?refresh=1")
+        data = response.json()
+        self.assertEqual(data["routers"][0]["status"], "disconnected")
+        sample = MikroTikStatusSample.objects.filter(router=self.router).latest("sampled_at")
         self.assertEqual(sample.status, "disconnected")
         self.assertEqual(sample.score, 0)
 
     def test_live_endpoint_dials_api_host_not_lan_only(self):
         self.router.vpn_address = "10.9.0.12"
         self.router.save(update_fields=["vpn_address", "updated_at"])
-        with patch(
-            "core.views.fetch_mikrotik_live_snapshot",
-            return_value={"ok": False, "online": False, "error": "down"},
-        ) as snap:
+        with (
+            patch("core.views.fetch_mikrotik_live_snapshot", return_value={"ok": False, "online": False, "error": "down"}) as snap,
+            patch("core.views.settings.HOSTED", True),
+        ):
             response = self.client.get(
                 f"/app/mikrotik/{self.router.pk}/live/?refresh=1"
             )
@@ -7749,20 +7772,22 @@ class MikroTikStatusOfflineTests(TestCase):
     def test_outage_sample_bypasses_healthy_gate(self):
         from django.core.cache import cache
 
-        from core.mikrotik_status_samples import record_mikrotik_status_samples
+        from core.mikrotik_status_samples import (
+            _last_status_cache_key,
+            record_mikrotik_status_samples,
+        )
         from core.models import MikroTikStatusSample
 
+        cache.clear()
+        cache.set(_last_status_cache_key(self.org.pk, self.router.pk), "connected", 60)
         cache.set(f"mikrotik_status_sample_gate:{self.org.pk}", 1, 55)
-        written = record_mikrotik_status_samples(
-            self.org,
-            [
-                {
-                    "id": self.router.pk,
-                    "status": "disconnected",
-                    "online": False,
-                }
-            ],
-        )
+        row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+        }
+        self.assertEqual(record_mikrotik_status_samples(self.org, [row]), 0)
+        written = record_mikrotik_status_samples(self.org, [row])
         self.assertEqual(written, 1)
         self.assertEqual(MikroTikStatusSample.objects.count(), 1)
 
@@ -8008,4 +8033,156 @@ class MikroTikStatusOfflineTests(TestCase):
         self.assertTrue(result.get("online"))
         self.assertEqual(result.get("via"), "api")
         self.assertEqual(calls["n"], 2)
+
+    def test_tunnel_router_holds_connected_through_two_flaky_polls(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import stabilize_live_status_row
+
+        cache.clear()
+        self.router.vpn_address = "10.9.0.55"
+        self.router.save(update_fields=["vpn_address", "updated_at"])
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(
+            self.org.pk, self.router.pk, connected, tunnel=True
+        )
+        fail_row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+            "error": "timed out",
+        }
+        first = stabilize_live_status_row(
+            self.org.pk, self.router.pk, fail_row, tunnel=True
+        )
+        self.assertEqual(first["status"], "connected")
+        second = stabilize_live_status_row(
+            self.org.pk, self.router.pk, fail_row, tunnel=True
+        )
+        self.assertEqual(second["status"], "connected")
+        third = stabilize_live_status_row(
+            self.org.pk, self.router.pk, fail_row, tunnel=True
+        )
+        self.assertEqual(third["status"], "disconnected")
+
+    def test_post_onboard_grace_extends_stabilization(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            mark_mikrotik_post_onboard_grace,
+            stabilize_live_status_row,
+        )
+
+        cache.clear()
+        mark_mikrotik_post_onboard_grace(self.router.pk, tunnel=True)
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(self.org.pk, self.router.pk, connected)
+        fail_row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+            "error": "timed out",
+        }
+        for _ in range(3):
+            held = stabilize_live_status_row(self.org.pk, self.router.pk, fail_row)
+            self.assertEqual(held["status"], "connected")
+        confirmed = stabilize_live_status_row(self.org.pk, self.router.pk, fail_row)
+        self.assertEqual(confirmed["status"], "disconnected")
+
+    def test_probe_mikrotik_hosts_retries_on_first_miss(self):
+        from core.mikrotik_status_samples import probe_mikrotik_hosts
+
+        calls = {"n": 0}
+
+        def fake_reachable(host, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"online": False, "via": "", "error": "timed out"}
+            return {"online": True, "via": "api", "port": 8728}
+
+        with patch(
+            "core.mikrotik_connect.check_mikrotik_reachable",
+            side_effect=fake_reachable,
+        ):
+            probes = probe_mikrotik_hosts(["10.9.0.40"])
+        self.assertTrue(probes["10.9.0.40"].get("online"))
+        self.assertEqual(calls["n"], 2)
+
+    def test_auto_restore_requires_confirmed_outage(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import maybe_auto_restore_router
+
+        cache.clear()
+        cache.delete(f"mikrotik_auto_restore_pending:{self.router.pk}")
+        cache.delete(f"mikrotik_auto_restore_cd:{self.router.pk}")
+        with patch("django.conf.settings.MIKROTIK_AUTO_RESTORE", True, create=True):
+            with patch(
+                "core.mikrotik_connect.attempt_mikrotik_auto_restore",
+                return_value={"ok": True, "skipped": True},
+            ) as restore:
+                row = {"id": self.router.pk, "status": "disconnected", "online": False}
+                self.assertIsNone(maybe_auto_restore_router(self.router, row))
+                outcome = maybe_auto_restore_router(self.router, row)
+        self.assertIsNotNone(outcome)
+        restore.assert_called_once()
+
+    def test_connected_status_skips_auto_restore(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import maybe_auto_restore_router
+
+        cache.clear()
+        cache.delete(f"mikrotik_auto_restore_pending:{self.router.pk}")
+        cache.delete(f"mikrotik_auto_restore_cd:{self.router.pk}")
+        with patch("django.conf.settings.MIKROTIK_AUTO_RESTORE", True, create=True):
+            with patch(
+                "core.mikrotik_connect.attempt_mikrotik_auto_restore"
+            ) as restore:
+                row = {"id": self.router.pk, "status": "connected", "online": True}
+                self.assertIsNone(maybe_auto_restore_router(self.router, row))
+        restore.assert_not_called()
+
+    def test_status_stability_loop_detects_flaky_disconnect(self):
+        from core.mikrotik_status_samples import run_router_status_stability_loop
+
+        calls = {"n": 0}
+
+        def fake_probe(unique_hosts):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"10.9.0.50": {"online": False, "via": "", "error": "down"}}
+            return {"10.9.0.50": {"online": True, "via": "api", "port": 8728}}
+
+        with (
+            patch(
+                "core.mikrotik_status_samples.probe_mikrotik_hosts",
+                side_effect=fake_probe,
+            ),
+            patch(
+                "core.mikrotik_status_samples.build_router_probe_plan",
+                return_value=({self.router.pk: ["10.9.0.50"]}, ["10.9.0.50"], {self.router.pk: True}),
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True, "identity": "Edge"},
+            ),
+            patch("time.sleep"),
+        ):
+            outcome = run_router_status_stability_loop(
+                self.router, loops=3, settle=0
+            )
+        self.assertTrue(outcome["passed"])
+        self.assertTrue(outcome["flaky"])
+        self.assertEqual(outcome["status_counts"].get("connected"), 2)
 

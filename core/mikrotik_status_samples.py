@@ -77,9 +77,15 @@ _OUTAGE_STATUSES = frozenset(
 _SAMPLE_GATE_TTL = 55  # seconds between org-wide status sample writes
 _OUTAGE_SAMPLE_GATE_TTL = 12  # allow outage transitions through sooner
 _OUTAGE_CONFIRM_TTL = 90  # pending first-fail before chart drop is persisted
-_LIVE_STABLE_TTL = 90  # hold last Connected row through one flaky live poll
+_LIVE_STABLE_TTL = 90  # hold last Connected row through flaky live polls
 _IMMEDIATE_LIVE_OUTAGE = frozenset({"auth_failed", "wrong_host"})
 _ONBOARDING_GUARD_TTL = 15 * 60  # pause fleet probes/auto-restore while onboarding
+_POST_ONBOARD_GRACE_TTL = 30 * 60  # after onboard: extra probe retries + hold Connected
+_STABILIZE_FAILURES_DEFAULT = 2  # consecutive non-connected polls before UI drops
+_STABILIZE_FAILURES_TUNNEL = 3  # WireGuard peers need more tolerance
+_STABILIZE_FAILURES_GRACE = 4  # freshly onboarded routers
+_AUTO_RESTORE_CONFIRM_TTL = 120  # require repeated outage before auto-restore runs
+_SOFT_LIVE_OUTAGE = frozenset({"disconnected", "reachable", "limited"})
 _HOSTED_AUTH_CACHE_TTL = 20  # seconds; short so password changes surface quickly
 _TREND_CACHE_TTL = 20
 # Do not pretend the last score held across silent gaps longer than this.
@@ -366,6 +372,44 @@ def mark_mikrotik_onboarding_active(
         cache.set(mikrotik_onboarding_guard_key(organization_id, user_id), 1, ttl)
 
 
+def _post_onboard_grace_key(router_id: int) -> str:
+    return f"mikrotik_post_onboard_grace:{int(router_id)}"
+
+
+def mark_mikrotik_post_onboard_grace(
+    router_id: int,
+    *,
+    tunnel: bool = False,
+    ttl: int = _POST_ONBOARD_GRACE_TTL,
+) -> None:
+    """After onboard, tolerate brief tunnel/API jitter without showing Offline."""
+    if not router_id:
+        return
+    cache.set(_post_onboard_grace_key(router_id), {"tunnel": bool(tunnel)}, max(60, ttl))
+
+
+def is_mikrotik_post_onboard_grace(router_id: int) -> bool:
+    return bool(cache.get(_post_onboard_grace_key(router_id)))
+
+
+def _post_onboard_grace_meta(router_id: int) -> dict[str, Any]:
+    raw = cache.get(_post_onboard_grace_key(router_id))
+    return raw if isinstance(raw, dict) else {}
+
+
+def _stabilize_failures_required(router_id: int, *, tunnel: bool = False) -> int:
+    if is_mikrotik_post_onboard_grace(router_id):
+        return _STABILIZE_FAILURES_GRACE
+    meta = _post_onboard_grace_meta(router_id)
+    if meta.get("tunnel") or tunnel:
+        return _STABILIZE_FAILURES_TUNNEL
+    return _STABILIZE_FAILURES_DEFAULT
+
+
+def _auto_restore_pending_key(router_id: int) -> str:
+    return f"mikrotik_auto_restore_pending:{int(router_id)}"
+
+
 def clear_mikrotik_onboarding_active(
     organization_id: int,
     *,
@@ -400,11 +444,13 @@ def stabilize_live_status_row(
     row: dict[str, Any],
     *,
     force: bool = False,
+    tunnel: bool = False,
 ) -> dict[str, Any]:
     """
-    Hold the last Connected row through one flaky poll so the UI does not flash
-    Disconnected on a single timeout. Recoveries and credential failures publish
-    immediately. Chart sampling keeps its own debounce via record_mikrotik_status_samples.
+    Hold the last Connected row through flaky polls so the UI does not flash
+    Disconnected on a single WireGuard timeout. Recoveries and credential failures
+    publish immediately. Chart sampling keeps its own debounce via
+    record_mikrotik_status_samples.
     """
     if force or not organization_id:
         return row
@@ -416,6 +462,7 @@ def stabilize_live_status_row(
     if status == "connected":
         cache.set(stable_key, dict(row), _LIVE_STABLE_TTL)
         cache.delete(pending_key)
+        cache.delete(_auto_restore_pending_key(router_id))
         return row
 
     if status in _IMMEDIATE_LIVE_OUTAGE:
@@ -423,10 +470,22 @@ def stabilize_live_status_row(
         cache.delete(pending_key)
         return row
 
+    if status not in _SOFT_LIVE_OUTAGE:
+        return row
+
     last_good = cache.get(stable_key)
     if isinstance(last_good, dict) and (last_good.get("status") or "").strip().lower() == "connected":
-        if not cache.get(pending_key):
-            cache.set(pending_key, {"status": status}, _LIVE_STABLE_TTL)
+        required = _stabilize_failures_required(router_id, tunnel=tunnel)
+        pending = cache.get(pending_key)
+        count = 1
+        if isinstance(pending, dict):
+            count = int(pending.get("count") or 0) + 1
+        if count < required:
+            cache.set(
+                pending_key,
+                {"status": status, "count": count},
+                _LIVE_STABLE_TTL,
+            )
             held = dict(last_good)
             held["stabilized"] = True
             held["probe_status"] = status
@@ -443,20 +502,28 @@ def stabilize_live_status_rows(
     rows: list[dict[str, Any]],
     *,
     force: bool = False,
+    tunnel_by_router: dict[int, bool] | None = None,
 ) -> list[dict[str, Any]]:
     if force or not organization_id or not rows:
         return rows
-    return [
-        stabilize_live_status_row(
-            organization_id,
-            int(row["id"]),
-            row,
-            force=force,
+    tunnel_map = tunnel_by_router or {}
+    stabilized: list[dict[str, Any]] = []
+    for row in rows:
+        rid = row.get("id")
+        if rid is None:
+            stabilized.append(row)
+            continue
+        rid_int = int(rid)
+        stabilized.append(
+            stabilize_live_status_row(
+                organization_id,
+                rid_int,
+                row,
+                force=force,
+                tunnel=bool(tunnel_map.get(rid_int)),
+            )
         )
-        if row.get("id") is not None
-        else row
-        for row in rows
-    ]
+    return stabilized
 
 
 def last_recorded_score(organization_id: int, router_id: int) -> int:
@@ -604,8 +671,238 @@ def _internet_probe_cooldown_key(router_id: int) -> str:
     return f"mikrotik_internet_probe_cd:{router_id}"
 
 
+def build_router_probe_plan(
+    routers: list[MikroTikRouter],
+) -> tuple[dict[int, list[str]], list[str], dict[int, bool]]:
+    """
+    Map each router to dial candidates (tunnel + LAN + discovery) and unique hosts.
+
+    Returns (router_candidates, unique_hosts, tunnel_by_router).
+    """
+    from core.mikrotik_connect import (
+        _router_api_host_candidates,
+        discover_local_mikrotik_host,
+        on_router_lan,
+    )
+
+    router_candidates: dict[int, list[str]] = {}
+    unique_hosts: list[str] = []
+    tunnel_by_router: dict[int, bool] = {}
+
+    for router in routers:
+        candidates = _router_api_host_candidates(router, discover=on_router_lan())
+        if on_router_lan():
+            discovered = discover_local_mikrotik_host(
+                tunnel_address=(router.vpn_address or "").strip(),
+                prefer_host=(router.host or "").strip(),
+            )
+            if discovered and discovered not in candidates:
+                candidates.insert(0, discovered)
+        if not candidates:
+            primary = (router.api_host or "").strip()
+            candidates = [primary] if primary else []
+        router_candidates[router.id] = candidates
+        tunnel_by_router[router.id] = bool(
+            (router.vpn_address or "").strip()
+            or any(
+                (host or "").startswith("10.9.")
+                for host in candidates
+            )
+        )
+        for host in candidates:
+            if host and host not in unique_hosts:
+                unique_hosts.append(host)
+    return router_candidates, unique_hosts, tunnel_by_router
+
+
+def probe_mikrotik_hosts(unique_hosts: list[str]) -> dict[str, dict[str, Any]]:
+    """Parallel TCP reachability probes keyed by host."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from core.mikrotik_connect import check_mikrotik_reachable, mikrotik_probe_timeout
+
+    probe_by_host: dict[str, dict[str, Any]] = {}
+    if not unique_hosts:
+        return probe_by_host
+
+    def _probe_host(host: str):
+        timeout = mikrotik_probe_timeout(host)
+        probe = check_mikrotik_reachable(host, timeout=timeout)
+        if probe.get("online"):
+            return host, probe
+        # Second pass — tunnel peers often miss on the first short dial.
+        confirm = check_mikrotik_reachable(
+            host, timeout=min(4.0, timeout + 1.5)
+        )
+        if confirm.get("online"):
+            confirm["confirmed"] = True
+            return host, confirm
+        return host, probe
+
+    workers = min(8, max(1, len(unique_hosts)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_probe_host, host) for host in unique_hosts]
+        for future in as_completed(futures):
+            try:
+                host, probe = future.result()
+                probe_by_host[host] = probe
+            except Exception:
+                continue
+    return probe_by_host
+
+
+_VIA_RANK = {"api": 0, "winbox": 1, "http": 2, "ping": 3}
+
+
+def pick_best_probe_for_router(
+    router: MikroTikRouter,
+    candidates: list[str],
+    probe_by_host: dict[str, dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Choose the best reachable host for one router (API preferred)."""
+    fallback_host = (router.api_host or "").strip()
+    best_host = ""
+    best_probe: dict[str, Any] = {}
+    best_rank = 99
+    for host in candidates:
+        probe = probe_by_host.get(host) or {}
+        if not probe.get("online"):
+            continue
+        via = (probe.get("via") or "").strip()
+        rank = _VIA_RANK.get(via, 5)
+        if rank < best_rank:
+            best_rank = rank
+            best_host, best_probe = host, probe
+    if best_host:
+        return best_host, best_probe
+    if fallback_host:
+        return fallback_host, probe_by_host.get(fallback_host) or {
+            "online": False,
+            "via": "",
+            "error": "Unreachable.",
+        }
+    return "", {"online": False, "via": "", "error": "Unreachable."}
+
+
+def classify_router_status_row(
+    router: MikroTikRouter,
+    *,
+    host: str,
+    probe: dict[str, Any],
+    skip_login: bool = False,
+) -> dict[str, Any]:
+    """Classify one router row from a reachability probe (+ optional login)."""
+    classified = classify_mikrotik_probe(
+        probe,
+        host=host,
+        username=router.username or "",
+        password=router.password or "",
+        serial_number=(router.serial_number or "").strip(),
+        software_id=(router.software_id or "").strip(),
+        skip_login=skip_login,
+        router=router,
+    )
+    classified.pop("_login", None)
+    return {
+        "id": router.id,
+        "host": router.host,
+        "name": router.name,
+        **classified,
+    }
+
+
+def run_router_status_stability_loop(
+    router: MikroTikRouter,
+    *,
+    loops: int = 5,
+    settle: float = 2.0,
+    sleep_fn=None,
+    log_fn=None,
+) -> dict[str, Any]:
+    """
+    Repeat full status probes (multi-host + classify) to catch flaky disconnects.
+
+    Used by diagnose commands and tests — mirrors dashboard status collection.
+    """
+    import time
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class StatusLoopOutcome:
+        router: MikroTikRouter | None = None
+        passed: bool = False
+        flaky: bool = False
+        attempts: list[dict] = field(default_factory=list)
+        status_counts: dict[str, int] = field(default_factory=dict)
+        dominant_failure: str = ""
+
+    loops = max(1, int(loops))
+    settle = max(0.0, float(settle))
+    sleep = sleep_fn or time.sleep
+    log = log_fn or (lambda _msg: None)
+
+    outcome = StatusLoopOutcome(router=router, passed=False)
+    status_counts: dict[str, int] = {}
+
+    for attempt in range(1, loops + 1):
+        router_candidates, unique_hosts, _tunnel_map = build_router_probe_plan([router])
+        probe_by_host = probe_mikrotik_hosts(unique_hosts)
+        host, probe = pick_best_probe_for_router(
+            router,
+            router_candidates.get(router.id) or [],
+            probe_by_host,
+        )
+        row = classify_router_status_row(router, host=host, probe=probe)
+        status = (row.get("status") or "disconnected").strip().lower()
+        status_counts[status] = status_counts.get(status, 0) + 1
+        outcome.attempts.append(
+            {
+                "attempt": attempt,
+                "host": host,
+                "status": status,
+                "online": bool(row.get("online")),
+                "via": row.get("via") or "",
+                "error": row.get("error") or "",
+            }
+        )
+        log(
+            f"  attempt {attempt}/{loops}: host={host or '-'} status={status} "
+            f"via={row.get('via') or '-'} online={row.get('online')}"
+        )
+        if status == "connected":
+            outcome.passed = True
+        if attempt < loops and settle > 0:
+            sleep(settle)
+
+    outcome.status_counts = status_counts
+    outcome.flaky = len(status_counts) > 1 or (
+        status_counts.get("connected", 0) not in (0, loops)
+    )
+    if outcome.passed and not outcome.flaky:
+        outcome.dominant_failure = ""
+    else:
+        for key in (
+            "disconnected",
+            "wrong_host",
+            "auth_failed",
+            "limited",
+            "reachable",
+            "connected",
+        ):
+            if status_counts.get(key):
+                outcome.dominant_failure = key
+                break
+    return {
+        "passed": outcome.passed,
+        "flaky": outcome.flaky,
+        "attempts": outcome.attempts,
+        "status_counts": outcome.status_counts,
+        "dominant_failure": outcome.dominant_failure,
+    }
+
+
 def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]) -> dict[str, Any] | None:
-    """Run management/internet auto-restore when probes fail (rate-limited per router)."""
+    """Run management auto-restore when probes fail repeatedly (rate-limited per router)."""
     from django.conf import settings
 
     org_id = getattr(router, "organization_id", None)
@@ -621,17 +918,28 @@ def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]
     if cache.get(_auto_restore_cooldown_key(router.pk)):
         return None
 
-    need_restore = status != "connected"
-    if not need_restore:
-        inet_cd = int(getattr(settings, "MIKROTIK_INTERNET_PROBE_COOLDOWN_SEC", 300) or 300)
-        inet_key = _internet_probe_cooldown_key(router.pk)
-        if cache.get(inet_key):
-            return None
-        cache.set(inet_key, 1, max(60, inet_cd))
-        need_restore = True
-
-    if not need_restore:
+    # Connected / healthy — never run restore from a status poll (avoids false
+    # positives from periodic internet probes that can disrupt WAN).
+    if status == "connected":
+        cache.delete(_auto_restore_pending_key(router.pk))
         return None
+
+    if status not in _OUTAGE_STATUSES:
+        cache.delete(_auto_restore_pending_key(router.pk))
+        return None
+
+    # Require repeated outage observations before touching the live router.
+    pending_key = _auto_restore_pending_key(router.pk)
+    pending = cache.get(pending_key)
+    required_confirms = 3 if is_mikrotik_post_onboard_grace(router.pk) else 2
+    if not isinstance(pending, dict) or not pending.get("status"):
+        cache.set(pending_key, {"status": status, "count": 1}, _AUTO_RESTORE_CONFIRM_TTL)
+        return None
+    count = int(pending.get("count") or 0) + 1
+    if count < required_confirms:
+        cache.set(pending_key, {"status": status, "count": count}, _AUTO_RESTORE_CONFIRM_TTL)
+        return None
+    cache.delete(pending_key)
 
     from core.mikrotik_connect import attempt_mikrotik_auto_restore
 
@@ -714,8 +1022,6 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from core.mikrotik_connect import check_mikrotik_reachable, mikrotik_probe_timeout
-
     routers = list(
         MikroTikRouter.objects.filter(
             organization=organization,
@@ -735,49 +1041,19 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     if not routers:
         return []
 
-    unique_hosts = list(
-        dict.fromkeys(
-            router.api_host for router in routers if (router.api_host or "").strip()
-        )
-    )
-    probe_by_host: dict[str, dict] = {}
-
-    def _probe_host(host: str):
-        return host, check_mikrotik_reachable(
-            host, timeout=mikrotik_probe_timeout(host)
-        )
-
-    workers = min(8, max(1, len(unique_hosts)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_probe_host, host) for host in unique_hosts]
-        for future in as_completed(futures):
-            try:
-                host, probe = future.result()
-                probe_by_host[host] = probe
-            except Exception:
-                continue
-
+    router_candidates, unique_hosts, _tunnel_map = build_router_probe_plan(routers)
+    probe_by_host = probe_mikrotik_hosts(unique_hosts)
     results: dict[int, dict[str, Any]] = {}
 
     def _check(router: MikroTikRouter):
-        host = (router.api_host or "").strip()
-        probe = probe_by_host.get(host) or {"online": False, "via": "", "error": ""}
-        classified = classify_mikrotik_probe(
-            probe,
-            host=host,
-            username=router.username or "",
-            password=router.password or "",
-            serial_number=(router.serial_number or "").strip(),
-            software_id=(router.software_id or "").strip(),
-            router=router,
+        host, probe = pick_best_probe_for_router(
+            router,
+            router_candidates.get(router.id) or [],
+            probe_by_host,
         )
-        classified.pop("_login", None)
-        return router.id, {
-            "id": router.id,
-            "host": router.host,
-            "name": router.name,
-            **classified,
-        }
+        return router.id, classify_router_status_row(
+            router, host=host, probe=probe, skip_login=False
+        )
 
     workers = min(8, max(1, len(routers)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
