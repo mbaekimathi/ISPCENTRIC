@@ -23,31 +23,45 @@ logger = logging.getLogger(__name__)
 
 
 WIFI_PACKAGES = (
-    {
-        "mode": "wireless",
-        "iface_path": "/interface/wireless",
-        "sec_path": "/interface/wireless/security-profiles",
-        "profile_key": "security-profile",
-        "classic": True,
-        "iface_props": ".id,name,ssid,mode,security-profile",
-    },
+    # Prefer modern RouterOS 7 wifi drivers first (wifi-qcom / wifiwave2 rename).
     {
         "mode": "wifi",
         "iface_path": "/interface/wifi",
         "sec_path": "/interface/wifi/security",
+        "cfg_path": "/interface/wifi/configuration",
         "profile_key": "security",
+        "config_key": "configuration",
         "classic": False,
-        "iface_props": ".id,name,ssid,mode,security",
+        "iface_props": ".id,name,ssid,mode,security,configuration,disabled,master-interface",
     },
     {
         "mode": "wifiwave2",
         "iface_path": "/interface/wifiwave2",
         "sec_path": "/interface/wifiwave2/security",
+        "cfg_path": "/interface/wifiwave2/configuration",
         "profile_key": "security",
+        "config_key": "configuration",
         "classic": False,
-        "iface_props": ".id,name,ssid,mode,security",
+        "iface_props": ".id,name,ssid,mode,security,configuration,disabled,master-interface",
+    },
+    {
+        "mode": "wireless",
+        "iface_path": "/interface/wireless",
+        "sec_path": "/interface/wireless/security-profiles",
+        "cfg_path": "",
+        "profile_key": "security-profile",
+        "config_key": "",
+        "classic": True,
+        "iface_props": ".id,name,ssid,mode,security-profile,disabled,master-interface",
     },
 )
+
+# Map /interface type (and common name prefixes) → wifi package mode.
+_WIFI_IFACE_TYPE_TO_MODE = {
+    "wifi": "wifi",
+    "wifiwave2": "wifiwave2",
+    "wlan": "wireless",
+}
 
 
 def _encode_length(length: int) -> bytes:
@@ -753,6 +767,212 @@ def _wait_for_api(
             f"Router API at {host}:{port} did not come back after changing the WAN bridge. "
             f"Wait a few seconds and try Enable again. ({last_error})"
         )
+
+
+def _api_hosts_for_uplink_apply(
+    primary_host: str,
+    *,
+    api_hosts: list[str] | None = None,
+) -> list[str]:
+    """Ordered dial hosts for uplink apply — tunnel candidates first when provided."""
+    ordered: list[str] = []
+    for candidate in [*(api_hosts or []), primary_host]:
+        value = (candidate or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _wait_for_api_any(
+    hosts: list[str],
+    *,
+    port: int = 8728,
+    attempts: int = 10,
+    delay: float = 1.25,
+    connect_timeout: float = 4.0,
+) -> str:
+    """Wait until RouterOS API accepts TCP on any of the given hosts."""
+    hosts = [h.strip() for h in (hosts or []) if (h or "").strip()]
+    if not hosts:
+        raise ConnectionError("No API hosts to wait for.")
+    last_error: OSError | None = None
+    for _ in range(max(1, attempts)):
+        for host in hosts:
+            try:
+                with socket.create_connection(
+                    (dial_host(host), port), timeout=connect_timeout
+                ):
+                    return host
+            except OSError as exc:
+                last_error = exc
+        time.sleep(delay)
+    raise ConnectionError(
+        "Router API did not come back after changing uplink ports. "
+        f"Wait a few seconds and try again. ({last_error})"
+    )
+
+
+@contextmanager
+def _api_session_on_any(
+    hosts: list[str],
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> Iterator[tuple[socket.socket, str]]:
+    """Open a RouterOS API session on the first reachable host."""
+    last_error = ""
+    for host in _api_hosts_for_uplink_apply("", api_hosts=hosts):
+        try:
+            with _api_session(
+                host, username, password, port=port, timeout=timeout
+            ) as sock:
+                yield sock, host
+                return
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            last_error = str(exc) or last_error
+    raise ConnectionError(last_error or "Could not sign in to the MikroTik API.")
+
+
+def check_router_tunnel_management(router, *, timeout: float = 4.0) -> dict[str, Any]:
+    """
+    True when billing can reach RouterOS API over the saved WireGuard peer IP.
+
+    A saved ``vpn_address`` alone is not enough — the tunnel must answer on 8728
+    (or, on hosted servers, show a recent WireGuard handshake).
+
+    On a LAN/dev billing PC, API may still dial the router LAN IP while the
+    tunnel peer is configured — that counts as verified when keys are present.
+    """
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    host = (getattr(router, "host", None) or "").strip()
+    if not tunnel and _is_wireguard_tunnel_host(host):
+        tunnel = host
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    public_key = (getattr(router, "vpn_public_key", None) or "").strip()
+    if not tunnel:
+        return {
+            "verified": False,
+            "tunnel_address": "",
+            "api_ok": False,
+            "handshake_ok": False,
+            "reason": "no_tunnel",
+        }
+
+    dial_targets: list[str] = []
+    for candidate in (tunnel, host):
+        value = (candidate or "").strip()
+        if value and value not in dial_targets:
+            dial_targets.append(value)
+
+    api_ok = False
+    api_host = ""
+    for target in dial_targets:
+        try:
+            with _api_session(target, username, password, timeout=timeout):
+                api_ok = True
+                api_host = target
+                break
+        except Exception:
+            continue
+
+    handshake_ok = False
+    if public_key:
+        try:
+            from core.wireguard import inspect_server_peer
+
+            peer = inspect_server_peer(public_key)
+            age = peer.get("handshake_age_sec")
+            handshake_ok = bool(
+                peer.get("present") and age is not None and int(age) < 300
+            )
+        except Exception:
+            handshake_ok = False
+
+    verified = False
+    if api_ok and api_host == tunnel:
+        verified = True
+    elif api_ok and _is_wireguard_tunnel_host(api_host):
+        verified = True
+    elif api_ok and on_router_lan() and tunnel:
+        # Dev/LAN: tunnel peer is configured; billing may still dial the LAN IP.
+        verified = True
+    elif not on_router_lan() and handshake_ok:
+        verified = True
+
+    reason = "tunnel_ok" if verified else "tunnel_unreachable"
+    if not verified and tunnel and not api_ok and not handshake_ok:
+        reason = "tunnel_not_ready"
+
+    return {
+        "verified": verified,
+        "tunnel_address": tunnel,
+        "api_ok": api_ok,
+        "api_host": api_host,
+        "handshake_ok": handshake_ok,
+        "reason": reason,
+    }
+
+
+def reconnect_after_uplink_apply(
+    router,
+    *,
+    candidate_hosts: list[str] | None = None,
+    timeout: float = 8.0,
+) -> dict[str, Any]:
+    """After bond/failover/balance, find a working API dial host (tunnel preferred)."""
+    hosts = _router_api_host_candidates(
+        router, candidate_hosts, discover=on_router_lan()
+    )
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    if not hosts or not username:
+        return {"ok": False, "error": "Missing router credentials or dial hosts."}
+
+    last_error = ""
+    for attempt in range(1, 4):
+        for host in hosts:
+            try:
+                with _api_session(
+                    host, username, password, timeout=min(timeout, 6.0)
+                ):
+                    return {"ok": True, "host": host}
+            except Exception as exc:
+                last_error = str(exc) or last_error
+        if attempt < 3:
+            time.sleep(1.5 * attempt)
+            try:
+                _wait_for_api_any(hosts, connect_timeout=3.0, attempts=4)
+            except ConnectionError:
+                pass
+    return {"ok": False, "error": last_error or "Could not reconnect to the MikroTik."}
+
+
+def _phase1_prepare_uplink_ports(
+    dial_hosts: list[str],
+    username: str,
+    password: str,
+    *,
+    ports: list[str],
+    port: int = 8728,
+    timeout: float = 12.0,
+) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+    """Clear uplink leftovers and unbridge ports (may drop LAN-management API)."""
+    ordered = [p.strip() for p in ports if (p or "").strip()]
+    with _api_session_on_any(
+        dial_hosts, username, password, port=port, timeout=timeout
+    ) as (sock, _):
+        names = _iface_names(sock)
+        missing = [p for p in ordered if p not in names]
+        if missing:
+            return [], {
+                "ok": False,
+                "error": f"Port(s) not found on router: {', '.join(missing)}.",
+            }
+        _clear_tagged_uplink(sock)
+        return _unbridge_interfaces(sock, ordered), None
 
 
 def ensure_mikrotik_lan_passthrough(
@@ -4735,25 +4955,81 @@ def _package_by_mode(mode: str) -> dict[str, Any] | None:
     return None
 
 
+def _wifi_packages_to_try(preferred_mode: str = "") -> list[dict[str, Any]]:
+    """Ordered package list: preferred mode first, then the rest (never lock to one)."""
+    packages: list[dict[str, Any]] = []
+    known = _package_by_mode(preferred_mode)
+    if known:
+        packages.append(known)
+    for package in WIFI_PACKAGES:
+        if package not in packages:
+            packages.append(package)
+    return packages
+
+
+def _print_wifi_interfaces(sock: socket.socket, package: dict[str, Any]) -> list[dict[str, str]]:
+    """List wireless interfaces; fall back to full print when .proplist is unreliable."""
+    path = package["iface_path"]
+    props = package.get("iface_props") or ""
+    try:
+        rows = _print(sock, path, props=props) if props else _print(sock, path)
+    except (TimeoutError, OSError):
+        raise
+    if any(row.get(".id") for row in rows):
+        return rows
+    # Some RouterOS builds ignore/break .proplist on wifi paths — retry bare print.
+    if props:
+        try:
+            rows = _print(sock, path)
+        except (TimeoutError, OSError):
+            raise
+    return rows
+
+
+def _hint_wifi_mode_from_interfaces(sock: socket.socket) -> str:
+    """Best-effort mode from /interface types (works even when package menus trap)."""
+    try:
+        rows = _print(sock, "/interface", props="name,type")
+    except (TimeoutError, OSError):
+        return ""
+    for row in rows:
+        iface_type = (row.get("type") or "").strip().lower()
+        name = (row.get("name") or "").strip().lower()
+        mode = _WIFI_IFACE_TYPE_TO_MODE.get(iface_type)
+        if mode:
+            return mode
+        if name.startswith("wifi") and not name.startswith("wifiwave"):
+            return "wifi"
+        if name.startswith("wlan"):
+            return "wireless"
+    return ""
+
+
 def _detect_wifi_package(sock: socket.socket) -> dict[str, Any] | None:
     """Return the first wireless package that exposes interfaces."""
     previous = sock.gettimeout()
     sock.settimeout(5.0)
     try:
-        for package in WIFI_PACKAGES:
+        hinted = _hint_wifi_mode_from_interfaces(sock)
+        for package in _wifi_packages_to_try(hinted):
             try:
-                # Full print — .proplist is unreliable on older RouterOS builds.
-                rows = _print(sock, package["iface_path"])
+                rows = _print_wifi_interfaces(sock, package)
             except (TimeoutError, OSError):
-                return None
-            if not any(row.get(".id") for row in rows):
+                # Timed-out package must not abort detection of later packages.
                 continue
-            # Stop on the first package that answers. Probing later packages
-            # (especially wifiwave2 on older boards) can desync the API session.
-            return package
+            if any(row.get(".id") for row in rows):
+                return package
         return None
     finally:
         sock.settimeout(previous)
+
+
+def _ssid_from_row(row: dict[str, str]) -> str:
+    for key in ("ssid", "configuration.ssid"):
+        value = (row.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _pick_ssid(rows: list[dict[str, str]]) -> str:
@@ -4761,15 +5037,13 @@ def _pick_ssid(rows: list[dict[str, str]]) -> str:
     for row in rows:
         if _is_station(row):
             continue
-        for key in ("ssid", "configuration.ssid"):
-            value = (row.get(key) or "").strip()
-            if value:
-                return value
+        value = _ssid_from_row(row)
+        if value:
+            return value
     for row in rows:
-        for key in ("ssid", "configuration.ssid"):
-            value = (row.get(key) or "").strip()
-            if value:
-                return value
+        value = _ssid_from_row(row)
+        if value:
+            return value
     return ""
 
 
@@ -4790,6 +5064,34 @@ def _pick_password(profiles: list[dict[str, str]], profile_names: set[str]) -> s
     return ""
 
 
+def _read_configuration_ssid(
+    sock: socket.socket,
+    package: dict[str, Any],
+    config_names: set[str],
+) -> str:
+    """Resolve SSID from named wifi configuration profiles (RouterOS 7)."""
+    cfg_path = (package.get("cfg_path") or "").strip()
+    if not cfg_path:
+        return ""
+    try:
+        configs = _print(sock, cfg_path)
+    except (TimeoutError, OSError):
+        return ""
+    preferred: list[dict[str, str]] = []
+    others: list[dict[str, str]] = []
+    for row in configs:
+        name = (row.get("name") or "").strip()
+        if config_names and name in config_names:
+            preferred.append(row)
+        else:
+            others.append(row)
+    for row in preferred + others:
+        ssid = (row.get("ssid") or "").strip()
+        if ssid:
+            return ssid
+    return ""
+
+
 def _read_wifi_settings(sock: socket.socket, package: dict[str, Any] | None = None) -> dict[str, str]:
     """Read current SSID/password for a known (or auto-detected) wireless package."""
     previous = sock.gettimeout()
@@ -4798,22 +5100,31 @@ def _read_wifi_settings(sock: socket.socket, package: dict[str, Any] | None = No
         packages = [package] if package else list(WIFI_PACKAGES)
         for pkg in packages:
             try:
-                rows = _print(sock, pkg["iface_path"])
+                rows = _print_wifi_interfaces(sock, pkg)
             except (TimeoutError, OSError):
-                break
+                continue
             if not any(row.get(".id") for row in rows):
                 continue
 
-            ap_rows = [row for row in rows if row.get(".id") and not _is_station(row)]
+            radio_rows = [row for row in rows if row.get(".id")]
+            ap_rows = [row for row in radio_rows if not _is_station(row)]
             if not ap_rows:
                 # Station/CAP radios still expose the current SSID.
-                ap_rows = [row for row in rows if row.get(".id") and (row.get("ssid") or "").strip()]
-            if not ap_rows and rows:
-                ap_rows = [row for row in rows if row.get(".id")]
+                ap_rows = [row for row in radio_rows if _ssid_from_row(row)]
+            if not ap_rows:
+                ap_rows = list(radio_rows)
             if not ap_rows:
                 continue
 
             ssid = _pick_ssid(ap_rows) or _pick_ssid(rows)
+            if not ssid:
+                config_names = {
+                    (row.get(pkg.get("config_key") or "") or "").strip()
+                    for row in ap_rows
+                    if (row.get(pkg.get("config_key") or "") or "").strip()
+                }
+                ssid = _read_configuration_ssid(sock, pkg, config_names)
+
             profile_names = {
                 (row.get(pkg["profile_key"]) or "").strip()
                 for row in ap_rows
@@ -4833,10 +5144,9 @@ def _read_wifi_settings(sock: socket.socket, package: dict[str, Any] | None = No
                 "wifi_mode": pkg["mode"],
                 "wifi_enabled": any(
                     (row.get("disabled") or "").lower() not in {"true", "yes"}
-                    for row in rows
-                    if row.get(".id")
+                    for row in radio_rows
                 ),
-                "interface_count": len([row for row in rows if row.get(".id")]),
+                "interface_count": len(radio_rows),
             }
         return {
             "wifi_ssid": "",
@@ -4958,10 +5268,14 @@ def set_mikrotik_wifi_enabled(
             if not package:
                 return {
                     "ok": False,
-                    "error": "No Wi‑Fi radio was found on this MikroTik.",
+                    "error": (
+                        "No Wi‑Fi radio was found on this MikroTik. "
+                        "If this board has wireless, install the wifi / wireless package "
+                        "and ensure the radio is not locked by CAPsMAN."
+                    ),
                 }
 
-            rows = _print(sock, package["iface_path"])
+            rows = _print_wifi_interfaces(sock, package)
             radio_rows = [row for row in rows if row.get(".id")]
             if not radio_rows:
                 return {
@@ -4981,34 +5295,37 @@ def set_mikrotik_wifi_enabled(
                 if enabled:
                     mode = (row.get("mode") or "").lower()
                     if "station" in mode:
-                        props["mode"] = "ap-bridge"
-                    if wifi_ssid and (row.get("ssid") or "").strip() != wifi_ssid:
-                        props["ssid"] = wifi_ssid
+                        props["mode"] = "ap" if not package.get("classic") else "ap-bridge"
                 terminal = _set(sock, package["iface_path"], item_id, **props)
                 if terminal.get("_reply") == "!trap":
                     last_error = terminal.get("message") or last_error
                     continue
                 updated += 1
 
-                if enabled and wifi_password and package.get("classic"):
+                if enabled and wifi_ssid:
+                    ssid_terminal = _set_iface_ssid(sock, package, row, wifi_ssid)
+                    if ssid_terminal.get("_reply") == "!trap":
+                        last_error = ssid_terminal.get("message") or last_error
+
+                if enabled and wifi_password:
                     profile_name = (row.get(package["profile_key"]) or "default").strip()
-                    try:
-                        profiles = _print(sock, package["sec_path"])
-                    except (TimeoutError, OSError):
-                        profiles = []
-                    for profile in profiles:
-                        name = (profile.get("name") or "").strip()
-                        if name != profile_name and not (
-                            profile_name == "default" and name.lower() == "default"
-                        ):
-                            continue
-                        pid = profile.get(".id")
-                        if not pid:
-                            continue
-                        pw_terminal = _set_password(sock, package, pid, wifi_password)
-                        if pw_terminal.get("_reply") == "!trap":
-                            last_error = pw_terminal.get("message") or last_error
-                        break
+                    name, pw_terminal = _ensure_security_profile(
+                        sock,
+                        package,
+                        profile_name=profile_name,
+                        wifi_password=wifi_password,
+                    )
+                    if pw_terminal.get("_reply") == "!trap":
+                        last_error = pw_terminal.get("message") or last_error
+                    elif name and not (row.get(package["profile_key"]) or "").strip():
+                        attach = _set(
+                            sock,
+                            package["iface_path"],
+                            item_id,
+                            **{package["profile_key"]: name},
+                        )
+                        if attach.get("_reply") == "!trap":
+                            last_error = attach.get("message") or last_error
 
             if updated == 0:
                 return {
@@ -5090,7 +5407,11 @@ def toggle_mikrotik_wifi(
             if not package:
                 return {
                     "ok": False,
-                    "error": "No Wi‑Fi radio was found on this MikroTik.",
+                    "error": (
+                        "No Wi‑Fi radio was found on this MikroTik. "
+                        "If this board has wireless, install the wifi / wireless package "
+                        "and ensure the radio is not locked by CAPsMAN."
+                    ),
                 }
             current = _read_wifi_settings(sock, package)
             enabled = not bool(current.get("wifi_enabled"))
@@ -5099,7 +5420,7 @@ def toggle_mikrotik_wifi(
             if enabled and not wifi_password:
                 wifi_password = current.get("wifi_password") or ""
 
-            rows = _print(sock, package["iface_path"])
+            rows = _print_wifi_interfaces(sock, package)
             radio_rows = [row for row in rows if row.get(".id")]
             if not radio_rows:
                 return {
@@ -5118,34 +5439,37 @@ def toggle_mikrotik_wifi(
                 if enabled:
                     mode = (row.get("mode") or "").lower()
                     if "station" in mode:
-                        props["mode"] = "ap-bridge"
-                    if wifi_ssid and (row.get("ssid") or "").strip() != wifi_ssid:
-                        props["ssid"] = wifi_ssid
+                        props["mode"] = "ap" if not package.get("classic") else "ap-bridge"
                 terminal = _set(sock, package["iface_path"], item_id, **props)
                 if terminal.get("_reply") == "!trap":
                     last_error = terminal.get("message") or last_error
                     continue
                 updated += 1
 
-                if enabled and wifi_password and package.get("classic"):
+                if enabled and wifi_ssid:
+                    ssid_terminal = _set_iface_ssid(sock, package, row, wifi_ssid)
+                    if ssid_terminal.get("_reply") == "!trap":
+                        last_error = ssid_terminal.get("message") or last_error
+
+                if enabled and wifi_password:
                     profile_name = (row.get(package["profile_key"]) or "default").strip()
-                    try:
-                        profiles = _print(sock, package["sec_path"])
-                    except (TimeoutError, OSError):
-                        profiles = []
-                    for profile in profiles:
-                        name = (profile.get("name") or "").strip()
-                        if name != profile_name and not (
-                            profile_name == "default" and name.lower() == "default"
-                        ):
-                            continue
-                        pid = profile.get(".id")
-                        if not pid:
-                            continue
-                        pw_terminal = _set_password(sock, package, pid, wifi_password)
-                        if pw_terminal.get("_reply") == "!trap":
-                            last_error = pw_terminal.get("message") or last_error
-                        break
+                    name, pw_terminal = _ensure_security_profile(
+                        sock,
+                        package,
+                        profile_name=profile_name,
+                        wifi_password=wifi_password,
+                    )
+                    if pw_terminal.get("_reply") == "!trap":
+                        last_error = pw_terminal.get("message") or last_error
+                    elif name and not (row.get(package["profile_key"]) or "").strip():
+                        attach = _set(
+                            sock,
+                            package["iface_path"],
+                            item_id,
+                            **{package["profile_key"]: name},
+                        )
+                        if attach.get("_reply") == "!trap":
+                            last_error = attach.get("message") or last_error
 
             if updated == 0:
                 return {
@@ -5196,6 +5520,130 @@ def _set_password(sock: socket.socket, package: dict[str, Any], item_id: str, wi
     return _set(sock, package["sec_path"], item_id, passphrase=wifi_password)
 
 
+def _set_iface_ssid(
+    sock: socket.socket,
+    package: dict[str, Any],
+    row: dict[str, str],
+    ssid: str,
+) -> dict[str, str]:
+    """Set SSID on a radio — classic property, nested configuration, or named profile."""
+    item_id = (row.get(".id") or "").strip()
+    if not item_id:
+        return {"_reply": "!trap", "message": "Missing interface id."}
+
+    # 1) Direct ssid= (classic wireless + many wifi builds)
+    terminal = _set(sock, package["iface_path"], item_id, ssid=ssid)
+    if terminal.get("_reply") != "!trap":
+        return terminal
+
+    if package.get("classic"):
+        return terminal
+
+    # 2) Nested configuration.ssid= (RouterOS 7 wifi / wifiwave2)
+    terminal = _set(sock, package["iface_path"], item_id, **{"configuration.ssid": ssid})
+    if terminal.get("_reply") != "!trap":
+        return terminal
+
+    # 3) Update / create a named configuration profile and attach it
+    cfg_path = (package.get("cfg_path") or "").strip()
+    config_key = (package.get("config_key") or "configuration").strip() or "configuration"
+    if not cfg_path:
+        return terminal
+
+    config_name = (row.get(config_key) or "").strip()
+    try:
+        configs = _print(sock, cfg_path)
+    except (TimeoutError, OSError):
+        configs = []
+
+    target = None
+    if config_name:
+        for cfg in configs:
+            if (cfg.get("name") or "").strip() == config_name:
+                target = cfg
+                break
+    if target is None:
+        for cfg in configs:
+            if (cfg.get("name") or "").strip().lower() == "default":
+                target = cfg
+                break
+
+    if target and target.get(".id"):
+        cfg_terminal = _set(sock, cfg_path, target[".id"], ssid=ssid)
+        if cfg_terminal.get("_reply") == "!trap":
+            return cfg_terminal
+        # Ensure the interface points at this configuration.
+        if config_name and config_name == (target.get("name") or "").strip():
+            return cfg_terminal
+        attach = _set(
+            sock,
+            package["iface_path"],
+            item_id,
+            **{config_key: (target.get("name") or "").strip()},
+        )
+        return attach if attach.get("_reply") != "!trap" else cfg_terminal
+
+    # Create a dedicated ISPCENTRIC configuration profile.
+    new_name = "ispcentric-wifi"
+    add_terminal = _add(sock, cfg_path, name=new_name, ssid=ssid, mode="ap")
+    if add_terminal.get("_reply") == "!trap":
+        # Name may already exist — try updating it.
+        for cfg in configs:
+            if (cfg.get("name") or "").strip() == new_name and cfg.get(".id"):
+                cfg_terminal = _set(sock, cfg_path, cfg[".id"], ssid=ssid)
+                if cfg_terminal.get("_reply") == "!trap":
+                    return cfg_terminal
+                return _set(
+                    sock,
+                    package["iface_path"],
+                    item_id,
+                    **{config_key: new_name},
+                )
+        return add_terminal
+    return _set(sock, package["iface_path"], item_id, **{config_key: new_name})
+
+
+def _ensure_security_profile(
+    sock: socket.socket,
+    package: dict[str, Any],
+    *,
+    profile_name: str,
+    wifi_password: str,
+) -> tuple[str, dict[str, str]]:
+    """Update or create a security profile; return (name, terminal)."""
+    profile_name = (profile_name or "").strip() or "default"
+    try:
+        profiles = _print(sock, package["sec_path"], props=".id,name")
+    except (TimeoutError, OSError):
+        try:
+            profiles = _print(sock, package["sec_path"])
+        except (TimeoutError, OSError) as exc:
+            return profile_name, {"_reply": "!trap", "message": str(exc)}
+
+    for row in profiles:
+        name = (row.get("name") or "").strip()
+        if name != profile_name and not (
+            profile_name.lower() == "default" and name.lower() == "default"
+        ):
+            continue
+        pid = (row.get(".id") or "").strip()
+        if not pid:
+            continue
+        return name or profile_name, _set_password(sock, package, pid, wifi_password)
+
+    # Create a new profile when none match.
+    new_name = profile_name if profile_name.lower() != "default" else "ispcentric-wifi"
+    props: dict[str, str] = {"name": new_name}
+    if package.get("classic"):
+        props["authentication-types"] = "wpa2-psk"
+        props["mode"] = "dynamic-keys"
+        props["wpa2-pre-shared-key"] = wifi_password
+    else:
+        props["passphrase"] = wifi_password
+    terminal = _add(sock, package["sec_path"], **props)
+    return new_name, terminal
+
+
 def _apply_on_package(
     sock: socket.socket,
     package: dict[str, Any],
@@ -5206,15 +5654,27 @@ def _apply_on_package(
     apply_password: bool,
 ) -> dict[str, Any]:
     """Apply only the requested Wi‑Fi changes on one package."""
-    sock.settimeout(4.0)
+    sock.settimeout(6.0)
     try:
-        rows = _print(sock, package["iface_path"], props=package["iface_props"])
+        rows = _print_wifi_interfaces(sock, package)
     except (TimeoutError, OSError) as exc:
-        return {"ok": False, "updated": False, "error": f"Could not read {package['mode']} interfaces: {exc}"}
+        return {
+            "ok": False,
+            "updated": False,
+            "error": f"Could not read {package['mode']} interfaces: {exc}",
+            "skip": True,
+        }
 
-    ap_rows = [row for row in rows if row.get(".id") and not _is_station(row)]
-    if not ap_rows:
+    radio_rows = [row for row in rows if row.get(".id")]
+    if not radio_rows:
         return {"ok": False, "updated": False, "error": "", "skip": True}
+
+    # Prefer AP radios; if everything is station/CAP, reclaim for local AP use.
+    ap_rows = [row for row in radio_rows if not _is_station(row)]
+    if not ap_rows:
+        ap_rows = list(radio_rows)
+
+    _disable_cap_client(sock, package)
 
     used_profiles = {
         (row.get(package["profile_key"]) or "").strip()
@@ -5226,11 +5686,33 @@ def _apply_on_package(
 
     if apply_ssid and ssid:
         for row in ap_rows:
-            if (row.get("ssid") or "").strip() == ssid:
+            current = _ssid_from_row(row)
+            props: dict[str, str] = {}
+            mode = (row.get("mode") or "").lower()
+            if "station" in mode:
+                # Local customer CPE / ISP AP should broadcast, not join upstream.
+                props["mode"] = "ap" if not package.get("classic") else "ap-bridge"
+            if (row.get("disabled") or "").lower() in {"true", "yes"}:
+                props["disabled"] = "no"
+            if props:
+                sock.settimeout(20.0)
+                try:
+                    mode_terminal = _set(sock, package["iface_path"], row[".id"], **props)
+                except (TimeoutError, OSError):
+                    return {
+                        "ok": False,
+                        "updated": False,
+                        "error": "timeout_verify_ssid",
+                        "mode": package["mode"],
+                    }
+                if mode_terminal.get("_reply") == "!trap":
+                    last_error = mode_terminal.get("message") or last_error
+
+            if current == ssid and not props:
                 continue
             sock.settimeout(20.0)
             try:
-                terminal = _set(sock, package["iface_path"], row[".id"], ssid=ssid)
+                terminal = _set_iface_ssid(sock, package, row, ssid)
             except (TimeoutError, OSError):
                 # Wireless restart can drop the API reply; verify on a fresh call later.
                 return {
@@ -5245,36 +5727,23 @@ def _apply_on_package(
                 updated = True
 
     if apply_password and wifi_password:
-        sock.settimeout(4.0)
-        try:
-            # Do not request secret properties here — that can hang on some RouterOS builds.
-            profiles = _print(sock, package["sec_path"], props=".id,name")
-        except (TimeoutError, OSError) as exc:
-            return {"ok": False, "updated": False, "error": f"Could not read Wi‑Fi security profiles: {exc}"}
+        sock.settimeout(6.0)
+        targets: list[str] = []
+        if used_profiles:
+            targets = list(used_profiles)
+        else:
+            targets = ["default"]
 
-        targets = []
-        for row in profiles:
-            if not row.get(".id"):
-                continue
-            name = (row.get("name") or "").strip()
-            if used_profiles:
-                if name in used_profiles or name.lower() == "default":
-                    targets.append(row)
-            else:
-                targets.append(row)
-        if not targets and profiles:
-            targets = profiles[:1]
-        if not targets:
-            return {
-                "ok": False,
-                "updated": False,
-                "error": "No Wi‑Fi security profile found to update the password.",
-            }
-
-        for row in targets:
+        any_pw = False
+        for profile_name in targets:
             sock.settimeout(20.0)
             try:
-                terminal = _set_password(sock, package, row[".id"], wifi_password)
+                name, terminal = _ensure_security_profile(
+                    sock,
+                    package,
+                    profile_name=profile_name,
+                    wifi_password=wifi_password,
+                )
             except (TimeoutError, OSError):
                 return {
                     "ok": False,
@@ -5284,8 +5753,31 @@ def _apply_on_package(
                 }
             if terminal.get("_reply") == "!trap":
                 last_error = terminal.get("message") or f"Failed updating {package['mode']} password."
-            else:
-                updated = True
+                continue
+            any_pw = True
+            updated = True
+            # Attach newly created profile to radios that had none.
+            if name and name not in used_profiles:
+                for row in ap_rows:
+                    existing = (row.get(package["profile_key"]) or "").strip()
+                    if existing:
+                        continue
+                    attach = _set(
+                        sock,
+                        package["iface_path"],
+                        row[".id"],
+                        **{package["profile_key"]: name},
+                    )
+                    if attach.get("_reply") == "!trap":
+                        last_error = attach.get("message") or last_error
+
+        if not any_pw and not updated:
+            return {
+                "ok": False,
+                "updated": False,
+                "error": last_error
+                or "No Wi‑Fi security profile found to update the password.",
+            }
 
     if last_error and not updated:
         return {"ok": False, "updated": False, "error": last_error}
@@ -5313,8 +5805,16 @@ def _verify_wifi(
     """Re-login and confirm Wi‑Fi values after a possible API timeout."""
     try:
         with _api_session(host, username, password, port=port, timeout=8.0) as sock:
-            package = _package_by_mode(wifi_mode) if wifi_mode else _detect_wifi_package(sock)
-            current = _read_wifi_settings(sock, package)
+            current = {"wifi_ssid": "", "wifi_password": "", "wifi_mode": ""}
+            for package in _wifi_packages_to_try(wifi_mode):
+                try:
+                    current = _read_wifi_settings(sock, package)
+                except Exception:
+                    continue
+                if (current.get("wifi_ssid") or "").strip() or int(
+                    current.get("interface_count") or 0
+                ):
+                    break
     except Exception as exc:
         return {"ok": False, "error": f"Could not verify Wi‑Fi after update: {exc}"}
 
@@ -6407,19 +6907,30 @@ def fetch_mikrotik_live_snapshot(
                 if iface_type in {"wlan", "wifi", "wifiwave2"} or name.lower().startswith("wlan"):
                     pass
 
-            # Live Wi‑Fi SSIDs (best effort). Avoid wifiwave2 after a hit —
-            # some older boards desync the API session on that path.
-            for path in ("/interface/wireless", "/interface/wifi", "/interface/wifiwave2"):
+            # Live Wi‑Fi SSIDs (best effort). Prefer modern wifi drivers first.
+            for path in ("/interface/wifi", "/interface/wifiwave2", "/interface/wireless"):
                 try:
                     rows = _print(sock, path)
                 except Exception:
                     rows = []
                 for row in rows:
-                    ssid = (row.get("ssid") or "").strip()
+                    ssid = (row.get("ssid") or row.get("configuration.ssid") or "").strip()
                     if ssid and ssid not in wifi_ssids:
                         wifi_ssids.append(ssid)
                 if wifi_ssids:
                     break
+                # Named configuration profiles (RouterOS 7).
+                if path.endswith("/wifi") or path.endswith("/wifiwave2"):
+                    try:
+                        configs = _print(sock, f"{path}/configuration")
+                    except Exception:
+                        configs = []
+                    for row in configs:
+                        ssid = (row.get("ssid") or "").strip()
+                        if ssid and ssid not in wifi_ssids:
+                            wifi_ssids.append(ssid)
+                    if wifi_ssids:
+                        break
 
             pppoe_active = 0
             hotspot_active = 0
@@ -7937,14 +8448,10 @@ def configure_mikrotik_wifi(
                 "wifi_mode": wifi_mode,
             }
 
-        packages = []
-        known = _package_by_mode(wifi_mode)
-        if known:
-            packages.append(known)
-        else:
-            packages.extend(WIFI_PACKAGES)
+        packages = _wifi_packages_to_try(wifi_mode)
 
         last_error = ""
+        tried_any_radios = False
         for package in packages:
             # Brand-new TCP session per package so a timed-out probe cannot poison later work.
             try:
@@ -7981,6 +8488,7 @@ def configure_mikrotik_wifi(
             if result.get("skip"):
                 continue
 
+            tried_any_radios = True
             err = result.get("error") or ""
             if err in {"timeout_verify_ssid", "timeout_verify_password"}:
                 verified = _verify_wifi(
@@ -7997,7 +8505,8 @@ def configure_mikrotik_wifi(
                 if verified.get("ok"):
                     return verified
                 last_error = verified.get("error") or "Timed out while updating Wi‑Fi on the router."
-                break
+                # Try remaining packages — wrong mode may have been preferred.
+                continue
 
             if result.get("ok"):
                 if apply_ssid or apply_password:
@@ -8014,20 +8523,30 @@ def configure_mikrotik_wifi(
                     )
                     if verified.get("ok"):
                         return verified
-                    return {
-                        "ok": False,
-                        "error": verified.get("error") or "Wi‑Fi update could not be confirmed.",
-                    }
+                    # Keep trying other packages if verify failed (wrong driver path).
+                    last_error = verified.get("error") or "Wi‑Fi update could not be confirmed."
+                    continue
                 return result
 
             last_error = result.get("error") or last_error
-            break
+            continue
 
+        if not tried_any_radios:
+            return {
+                "ok": False,
+                "updated": False,
+                "error": (
+                    last_error
+                    or "No Wi‑Fi radio was found on this MikroTik. "
+                    "If this board has wireless, install the wifi / wireless package "
+                    "and ensure the radio is not locked by CAPsMAN."
+                ),
+            }
         return {
             "ok": False,
             "updated": False,
             "error": last_error
-            or "No Wi‑Fi interfaces found on this MikroTik (it may be wired-only).",
+            or "Could not update Wi‑Fi on this MikroTik. Check API access and radio settings.",
         }
     except TimeoutError:
         return {
@@ -8382,6 +8901,9 @@ def apply_mikrotik_access_changes(
 
 # Factory MikroTik LAN gateway — keeping it on every site causes ARP/management collisions.
 FACTORY_DEFAULT_MIKROTIK_IPS = frozenset({"192.168.88.1"})
+# Hotspot gateway / factory LAN — not stable as the saved management host.
+# Hotspot gateway — not stable as the saved management host (router LAN may differ).
+TRANSIENT_ONBOARD_HOSTS = frozenset({"10.50.50.1"})
 
 
 def normalize_mikrotik_host(value: str) -> str:
@@ -8400,6 +8922,127 @@ def normalize_mikrotik_host(value: str) -> str:
 def is_factory_default_mikrotik_ip(value: str) -> bool:
     """True when value is the stock MikroTik LAN IP (192.168.88.1)."""
     return normalize_mikrotik_host(value) in FACTORY_DEFAULT_MIKROTIK_IPS
+
+
+def is_transient_onboard_host(value: str) -> bool:
+    """True when Connect must move the router to a unique LAN IP before onboard."""
+    return normalize_mikrotik_host(value) in TRANSIENT_ONBOARD_HOSTS
+
+
+def resolve_onboard_management_host(
+    *,
+    connect_host: str = "",
+    tunnel_host: str = "",
+    lan_result: dict[str, Any] | None = None,
+    fallback: str = "",
+) -> str:
+    """Pick the LAN address to save on ``host`` after Connect / onboard."""
+    lan_result = lan_result or {}
+    for candidate in (
+        lan_result.get("verified_host"),
+        lan_result.get("management_host"),
+        connect_host,
+        lan_result.get("host"),
+        fallback,
+    ):
+        host = normalize_mikrotik_host(candidate or "")
+        if host and not _is_wireguard_tunnel_host(host):
+            return host
+    tunnel = normalize_mikrotik_host(tunnel_host or "")
+    return tunnel
+
+
+def finalize_onboard_addresses(
+    router,
+    *,
+    lan_host: str = "",
+    tunnel_host: str = "",
+) -> list[str]:
+    """Persist LAN on ``host`` and tunnel on ``vpn_address`` (they may differ)."""
+    changed: list[str] = []
+    lan = normalize_mikrotik_host(lan_host or getattr(router, "host", None) or "")
+    tunnel = normalize_mikrotik_host(
+        tunnel_host or getattr(router, "vpn_address", None) or ""
+    )
+    if lan and (router.host or "").strip() != lan:
+        router.host = lan
+        changed.append("host")
+    if tunnel and (router.vpn_address or "").strip() != tunnel:
+        router.vpn_address = tunnel
+        changed.append("vpn_address")
+    return changed
+
+
+def unify_router_management_host(router, working_host: str = "") -> str:
+    """Return the address ``working_host`` updated, respecting LAN vs tunnel role."""
+    working = normalize_mikrotik_host(working_host or "")
+    if not working:
+        return normalize_mikrotik_host(getattr(router, "host", None) or "")
+    if _is_wireguard_tunnel_host(working):
+        return working
+    return working
+
+
+def apply_unified_management_host(router, working_host: str = "") -> list[str]:
+    """
+    After reconnect, update ``host`` for LAN paths or ``vpn_address`` for tunnel paths.
+    """
+    working = normalize_mikrotik_host(working_host or "")
+    if not working:
+        return []
+    changed: list[str] = []
+    if _is_wireguard_tunnel_host(working):
+        if (router.vpn_address or "").strip() != working:
+            router.vpn_address = working
+            changed.append("vpn_address")
+        try:
+            from django.conf import settings
+
+            if bool(getattr(settings, "HOSTED", False)):
+                if (router.host or "").strip() != working:
+                    router.host = working
+                    changed.append("host")
+        except Exception:
+            pass
+    elif (router.host or "").strip() != working:
+        router.host = working
+        changed.append("host")
+    return changed
+
+
+# Third octets reserved for factory MikroTik LAN and CPE renew Hotspot pools.
+_RESERVED_MIKROTIK_LAN_THIRD_OCTETS = frozenset({88, 189})
+_MIKROTIK_LAN_SUGGEST_START_THIRD_OCTET = 10
+
+
+def suggest_unique_mikrotik_lan_ip(existing_hosts: list[str] | None = None) -> str:
+    """Pick a fresh 192.168.x.1 gateway that does not overlap onboarded routers."""
+    used_third_octets: set[int] = set()
+    for raw in existing_hosts or []:
+        host = normalize_mikrotik_host(raw)
+        if not host:
+            continue
+        try:
+            ip = ipaddress.IPv4Address(host)
+        except ValueError:
+            continue
+        if not ip.is_private:
+            continue
+        octets = str(ip).split(".")
+        if len(octets) == 4 and octets[0] == "192" and octets[1] == "168":
+            used_third_octets.add(int(octets[2]))
+
+    for third in range(_MIKROTIK_LAN_SUGGEST_START_THIRD_OCTET, 256):
+        if third in _RESERVED_MIKROTIK_LAN_THIRD_OCTETS or third in used_third_octets:
+            continue
+        return f"192.168.{third}.1"
+
+    for third in range(1, 256):
+        if third in _RESERVED_MIKROTIK_LAN_THIRD_OCTETS or third in used_third_octets:
+            continue
+        return f"192.168.{third}.1"
+
+    return "192.168.10.1"
 
 
 def _dhcp_pool_ranges_for_gateway(gateway: str, prefixlen: int = 24) -> str:
@@ -8746,6 +9389,8 @@ def change_mikrotik_lan_ip(
                 "message": "; ".join(notes) + ".",
                 "notes": notes,
                 "verified": False,
+                "serial_number": "",
+                "software_id": "",
             }
         return {
             "ok": False,
@@ -8771,6 +9416,8 @@ def change_mikrotik_lan_ip(
         "notes": notes,
         "verified": True,
         "verified_host": verified_host or new_ip,
+        "serial_number": (verify.get("serial_number") or "").strip(),
+        "software_id": (verify.get("software_id") or "").strip(),
     }
 
 
@@ -11018,6 +11665,44 @@ def dial_host(host: str) -> str:
     return _tunnel_hosts().get(host, host)
 
 
+def mikrotik_probe_timeout(host: str, *, base: float = 1.2) -> float:
+    """TCP reachability timeout — longer on WireGuard peers (brief jitter is common)."""
+    host = (host or "").strip()
+    if _is_wireguard_tunnel_host(host):
+        return max(base, 2.0)
+    return base
+
+
+def mikrotik_login_timeout(host: str, *, base: float = 2.5) -> float:
+    """RouterOS API login timeout — tunnel dials need more time under load."""
+    host = (host or "").strip()
+    if _is_wireguard_tunnel_host(host):
+        return max(base, 4.0)
+    return base
+
+
+def probe_mikrotik_for_onboarding(host: str, *, base_timeout: float = 1.5) -> dict[str, Any]:
+    """
+    Reachability probe for onboarding / tunnel checks.
+
+    Uses a longer first dial and one confirm pass so a router that is still
+    applying the Winbox script is not reported offline on a single slow reply.
+    """
+    host = (host or "").strip()
+    if not host:
+        return {"online": False, "via": "", "error": "Missing host."}
+    timeout = mikrotik_probe_timeout(host, base=base_timeout)
+    probe = check_mikrotik_reachable(host, timeout=timeout)
+    if probe.get("online"):
+        return probe
+    confirm_timeout = min(4.0, timeout + 1.5)
+    confirmed = check_mikrotik_reachable(host, timeout=confirm_timeout)
+    if confirmed.get("online"):
+        confirmed["confirmed"] = True
+        return confirmed
+    return probe
+
+
 def on_router_lan() -> bool:
     """
     True when the billing server shares a network with the routers.
@@ -11027,6 +11712,76 @@ def on_router_lan() -> bool:
     timeout — and on a VPS the scan would probe unrelated datacentre hosts.
     """
     return not bool(getattr(settings, "HOSTED", False))
+
+
+def discover_local_mikrotik_host(
+    *,
+    tunnel_address: str = "",
+    reservation_label: str = "",
+    prefer_host: str = "",
+) -> str:
+    """
+    Find the router's current LAN IP on this PC's network (MNDP/API scan).
+
+    The Winbox script may plan 192.168.88.1 while the router still answers on
+    another address (e.g. 192.168.0.112 on the office LAN).
+    """
+    if not on_router_lan():
+        return ""
+    try:
+        from core.mikrotik_discovery import discover_mikrotik_devices
+    except ImportError:
+        return ""
+
+    devices = discover_mikrotik_devices(timeout=2.0, full_scan=False) or []
+    tunnel = normalize_mikrotik_host(tunnel_address)
+    marker = f"ispcentric.{tunnel}".casefold() if tunnel else ""
+    label = (reservation_label or "").strip().casefold()
+    prefer = normalize_mikrotik_host(prefer_host)
+
+    for device in devices:
+        ident = (device.get("identity") or device.get("name") or "").strip().casefold()
+        host = normalize_mikrotik_host(device.get("host") or "")
+        if not host:
+            continue
+        if marker and marker in ident:
+            return host
+        if label and label in ident:
+            return host
+    if prefer:
+        for device in devices:
+            host = normalize_mikrotik_host(device.get("host") or "")
+            if host == prefer:
+                return host
+    if len(devices) == 1:
+        return normalize_mikrotik_host(devices[0].get("host") or "")
+    return ""
+
+
+def pick_local_onboard_connect_host(
+    *,
+    tunnel_address: str = "",
+    reservation_label: str = "",
+    planned_lan: str = "",
+    current: str = "",
+) -> str:
+    """
+    LAN IP to dial from a local billing PC during onboard.
+
+    Prefers a live MNDP/API discovery match over the script-planned address
+    (e.g. 192.168.88.1) when the router still answers on another subnet.
+    """
+    discovered = discover_local_mikrotik_host(
+        tunnel_address=tunnel_address,
+        reservation_label=reservation_label,
+        prefer_host=current or planned_lan,
+    )
+    if discovered:
+        return discovered
+    current_host = normalize_mikrotik_host(current or "")
+    if current_host and not _is_wireguard_tunnel_host(current_host):
+        return current_host
+    return normalize_mikrotik_host(planned_lan or "")
 
 
 def _is_wireguard_tunnel_host(host: str) -> bool:
@@ -16808,6 +17563,162 @@ def _resolve_wan_to_physical(iface: str, pppoe_parents: dict[str, str] | None = 
     return iface
 
 
+def _is_bridge_iface_name(name: str) -> bool:
+    n = (name or "").strip().lower()
+    if not n:
+        return False
+    return n.startswith("bridge") or n in {"br-lan", "br0", "br1"}
+
+
+def _normalize_mac(mac: str) -> str:
+    return (mac or "").strip().upper().replace("-", ":")
+
+
+def _bridge_member_for_mac(
+    sock: socket.socket,
+    mac: str,
+    *,
+    bridge: str = "",
+) -> str:
+    """Return the bridge member port that learned ``mac`` (not the bridge itself)."""
+    mac = _normalize_mac(mac)
+    if not mac:
+        return ""
+    bridge = (bridge or "").strip()
+    try:
+        rows = _print(
+            sock,
+            "/interface/bridge/host",
+            props="mac-address,on-interface,bridge,local",
+        )
+    except (TimeoutError, OSError, ConnectionError):
+        try:
+            rows = _print(sock, "/interface/bridge/host")
+        except (TimeoutError, OSError, ConnectionError):
+            return ""
+    for row in rows:
+        if _flag_yes(row.get("local")):
+            continue
+        if _normalize_mac(row.get("mac-address") or "") != mac:
+            continue
+        on_iface = (row.get("on-interface") or "").strip()
+        row_bridge = (row.get("bridge") or "").strip()
+        if bridge and row_bridge and row_bridge != bridge:
+            continue
+        if not on_iface or _is_bridge_iface_name(on_iface):
+            continue
+        return on_iface
+    return ""
+
+
+def _gateway_mac_from_arp(
+    sock: socket.socket,
+    gateway: str,
+    *,
+    iface: str = "",
+) -> str:
+    """Look up the MAC for a gateway IP (optionally scoped to an interface)."""
+    gateway = (gateway or "").strip()
+    if not gateway:
+        return ""
+    # Strip interface suffix if present: 192.168.1.1%bridgeLocal
+    if "%" in gateway:
+        gateway = gateway.split("%", 1)[0].strip()
+    try:
+        ipaddress.ip_address(gateway)
+    except ValueError:
+        return ""
+    iface = (iface or "").strip()
+    try:
+        rows = _print(sock, "/ip/arp", props="address,mac-address,interface,complete")
+    except (TimeoutError, OSError, ConnectionError):
+        try:
+            rows = _print(sock, "/ip/arp")
+        except (TimeoutError, OSError, ConnectionError):
+            return ""
+    fallback = ""
+    for row in rows:
+        if (row.get("address") or "").strip() != gateway:
+            continue
+        mac = _normalize_mac(row.get("mac-address") or "")
+        if not mac:
+            continue
+        row_iface = (row.get("interface") or "").strip()
+        if iface and row_iface and row_iface != iface:
+            if not fallback:
+                fallback = mac
+            continue
+        return mac
+    return fallback
+
+
+def _resolve_bridge_wan_port(
+    sock: socket.socket,
+    *,
+    bridge: str,
+    gateway: str = "",
+) -> str:
+    """
+    When the default route points at a bridge, find the physical member that
+    reaches the ISP gateway (ARP → bridge host table).
+    """
+    bridge = (bridge or "").strip()
+    if not bridge:
+        return ""
+    mac = _gateway_mac_from_arp(sock, gateway, iface=bridge)
+    if not mac and gateway:
+        mac = _gateway_mac_from_arp(sock, gateway, iface="")
+    if not mac:
+        return ""
+    return _bridge_member_for_mac(sock, mac, bridge=bridge)
+
+
+def _extract_route_gateway_and_iface(row: dict[str, str]) -> tuple[str, str]:
+    """Return (gateway_ip_or_name, iface) from a default-route row."""
+    immediate = (row.get("immediate-gw") or "").strip()
+    gateway = (row.get("gateway") or "").strip()
+    iface = ""
+    gw_ip = ""
+    for raw in (immediate, gateway):
+        raw = (raw or "").strip()
+        if not raw:
+            continue
+        if "%" in raw:
+            left, right = raw.split("%", 1)
+            left, right = left.strip(), right.strip()
+            if right and not iface:
+                iface = right
+            try:
+                ipaddress.ip_address(left)
+                if not gw_ip:
+                    gw_ip = left
+            except ValueError:
+                if not iface:
+                    iface = left
+            continue
+        try:
+            ipaddress.ip_address(raw.split("%", 1)[0])
+            if not gw_ip:
+                gw_ip = raw
+        except ValueError:
+            # Interface name (pppoe-out1, ether1, bridgeLocal).
+            if "/" not in raw and not iface:
+                iface = raw
+    if not iface and immediate:
+        parts = immediate.replace("%", " ").split()
+        for part in reversed(parts):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                ipaddress.ip_address(token)
+                continue
+            except ValueError:
+                iface = token
+                break
+    return gw_ip or gateway.split("%", 1)[0].strip(), iface
+
+
 def _default_route_wan(sock: socket.socket) -> str:
     """Best-effort physical WAN port from the active default route (DHCP or PPPoE)."""
     pppoe_parents = _pppoe_parent_map(sock)
@@ -16823,7 +17734,7 @@ def _default_route_wan(sock: socket.socket) -> str:
             return next(iter(pppoe_parents.values()))
         return ""
 
-    candidates: list[tuple[int, str]] = []
+    candidates: list[tuple[int, str, str, str]] = []
     for row in routes:
         if _flag_yes(row.get("disabled")):
             continue
@@ -16832,49 +17743,37 @@ def _default_route_wan(sock: socket.socket) -> str:
             continue
         if not _flag_yes(row.get("active")):
             continue
-        immediate = (row.get("immediate-gw") or "").strip()
-        gateway = (row.get("gateway") or "").strip()
-        iface = ""
-        for raw in (immediate, gateway):
-            raw = (raw or "").strip()
-            if not raw:
-                continue
-            if "%" in raw:
-                iface = raw.split("%", 1)[-1].strip()
-            elif "/" not in raw and ":" not in raw:
-                # Interface name (pppoe-out1, ether1) — not an IPv4/IPv6 address.
-                try:
-                    ipaddress.ip_address(raw.split("%", 1)[0])
-                except ValueError:
-                    iface = raw
-            if iface:
-                break
-        if not iface and immediate:
-            # e.g. 192.168.1.1%ether1
-            parts = immediate.replace("%", " ").split()
-            for part in reversed(parts):
-                token = part.strip()
-                if not token:
-                    continue
-                try:
-                    ipaddress.ip_address(token)
-                    continue
-                except ValueError:
-                    iface = token
-                    break
-        if iface:
-            try:
-                distance = int(str(row.get("distance") or "1").strip() or "1")
-            except ValueError:
-                distance = 1
-            physical = _resolve_wan_to_physical(iface, pppoe_parents) or iface
-            candidates.append((distance, physical))
+        gw_ip, iface = _extract_route_gateway_and_iface(row)
+        if not iface and not gw_ip:
+            continue
+        try:
+            distance = int(str(row.get("distance") or "1").strip() or "1")
+        except ValueError:
+            distance = 1
+        physical = _resolve_wan_to_physical(iface, pppoe_parents) or iface
+        candidates.append((distance, physical, gw_ip, iface))
     if not candidates:
         if pppoe_parents:
             return next(iter(pppoe_parents.values()))
         return ""
     candidates.sort(key=lambda item: item[0])
-    return candidates[0][1]
+    _distance, physical, gw_ip, iface = candidates[0]
+
+    # Behind-provider / default Mikrotik layouts often put DHCP on the LAN bridge.
+    # Resolve the ISP cable via gateway MAC → bridge host port.
+    if physical and _is_bridge_iface_name(physical):
+        member = _resolve_bridge_wan_port(sock, bridge=physical, gateway=gw_ip)
+        if member:
+            return member
+    if iface and _is_bridge_iface_name(iface) and (
+        not physical or _is_bridge_iface_name(physical)
+    ):
+        member = _resolve_bridge_wan_port(sock, bridge=iface, gateway=gw_ip)
+        if member:
+            return member
+    if physical and not _is_bridge_iface_name(physical):
+        return physical
+    return physical or ""
 
 
 def _port_uplink_hints(
@@ -16883,25 +17782,73 @@ def _port_uplink_hints(
     """
     Per-physical-port uplink hints: dhcp / pppoe and related interface name.
 
-    Keys are physical (or bond) interface names.
+    Keys are physical (or bond) interface names. Bridge DHCP that is actually
+    carrying the default route is attributed to the bridge member that reaches
+    the ISP gateway when that can be resolved.
     """
     hints: dict[str, dict[str, str]] = {}
     pppoe_parents = _pppoe_parent_map(sock)
     for pppoe_name, parent in pppoe_parents.items():
-        hints[parent] = {"kind": "pppoe", "uplink": pppoe_name}
+        hints[parent] = {"kind": "pppoe", "uplink": pppoe_name, "active": "1"}
+
+    bound_bridge_clients: list[tuple[str, str]] = []
     try:
-        for row in _print(sock, "/ip/dhcp-client", props="interface,disabled"):
+        for row in _print(
+            sock,
+            "/ip/dhcp-client",
+            props="interface,disabled,status,gateway,add-default-route",
+        ):
             if _flag_yes(row.get("disabled")):
                 continue
             iface = (row.get("interface") or "").strip()
             if not iface:
                 continue
+            status = (row.get("status") or "").strip().lower()
+            active = status in {"bound", "renewing", "rebinding"}
             # PPPoE wins when both somehow exist on the same parent.
             if iface in hints and hints[iface].get("kind") == "pppoe":
                 continue
-            hints[iface] = {"kind": "dhcp", "uplink": iface}
+            entry = {
+                "kind": "dhcp",
+                "uplink": iface,
+                "active": "1" if active else "0",
+                "status": status,
+            }
+            if _is_bridge_iface_name(iface):
+                # Keep bridge hint for diagnostics; prefer attributing to a member.
+                if active:
+                    bound_bridge_clients.append(
+                        (iface, (row.get("gateway") or "").strip())
+                    )
+                continue
+            # Ignore stale/unbound DHCP clients — they look like WANs but aren't live.
+            if not active:
+                continue
+            # Prefer an already-active hint; don't let a stale unbound client
+            # overwrite a live one.
+            existing = hints.get(iface) or {}
+            if existing.get("active") == "1" and not active:
+                continue
+            hints[iface] = entry
     except Exception:
         pass
+
+    for bridge, gateway in bound_bridge_clients:
+        member = _resolve_bridge_wan_port(sock, bridge=bridge, gateway=gateway)
+        if member:
+            hints[member] = {
+                "kind": "dhcp",
+                "uplink": bridge,
+                "active": "1",
+                "via_bridge": bridge,
+            }
+        else:
+            # Could not resolve member — keep the bridge as a weak hint key.
+            hints[bridge] = {
+                "kind": "dhcp",
+                "uplink": bridge,
+                "active": "1",
+            }
     return hints
 
 
@@ -16976,12 +17923,13 @@ def assess_uplink_switch_risk(
     tunnel_address: str = "",
     management_iface_by_host: dict[str, str] | None = None,
     uses_tunnel: bool = False,
+    tunnel_verified: bool | None = None,
 ) -> dict[str, Any]:
     """
     Estimate whether moving the Internet port could drop RouterOS API access.
 
     ``blocking`` means the switch should not proceed without fixing management
-  (e.g. billing dials the current WAN). ``safe`` means proceed without extra
+    (e.g. billing dials the current WAN). ``safe`` means proceed without extra
     confirmation; otherwise show risks and require explicit confirm.
     """
     new_wan = (new_wan or "").strip()
@@ -16993,6 +17941,7 @@ def assess_uplink_switch_risk(
     old_row = ports_by_name.get(old_wan) or {}
     risks: list[str] = []
     blocking = False
+    needs_tunnel = False
 
     mgmt_host = normalize_mikrotik_host(management_host)
     mgmt_iface = ""
@@ -17003,14 +17952,18 @@ def assess_uplink_switch_risk(
             mgmt_iface = ""
 
     tunnel = normalize_mikrotik_host(tunnel_address)
-    if uses_tunnel or tunnel:
+    if tunnel_verified is None:
+        tunnel_verified = bool(uses_tunnel and tunnel)
+    if tunnel_verified:
         return {
             "ok": True,
             "safe": True,
             "blocking": False,
+            "needs_tunnel": False,
             "risk_level": "low",
             "risks": [],
             "uses_tunnel": True,
+            "tunnel_verified": True,
             "management_host": mgmt_host or tunnel,
             "management_iface": mgmt_iface,
             "summary": (
@@ -17024,17 +17977,25 @@ def assess_uplink_switch_risk(
             "ok": True,
             "safe": True,
             "blocking": False,
+            "needs_tunnel": False,
             "risk_level": "low",
             "risks": [],
             "uses_tunnel": True,
+            "tunnel_verified": True,
             "management_host": mgmt_host,
             "management_iface": mgmt_iface,
             "summary": "Management runs over WireGuard — switching WAN is unlikely to drop API access.",
         }
 
+    if tunnel and not tunnel_verified:
+        risks.append(
+            f"WireGuard tunnel ({tunnel}) is saved but not reachable yet. "
+            "Finish tunnel setup before switching if you manage this router remotely."
+        )
+
     if old_wan and mgmt_iface and _iface_serves_physical_port(mgmt_iface, old_wan, ports_by_name):
         if not _iface_serves_physical_port(mgmt_iface, new_wan, ports_by_name):
-            blocking = True
+            needs_tunnel = True
             risks.append(
                 f"The billing server reaches this router via {old_wan} "
                 f"({mgmt_host or 'saved host'} on {mgmt_iface}). "
@@ -17043,10 +18004,10 @@ def assess_uplink_switch_risk(
 
     if mgmt_host and not _is_private_ipv4(mgmt_host) and old_wan:
         if _iface_serves_physical_port(mgmt_iface, old_wan, ports_by_name):
-            blocking = True
+            needs_tunnel = True
             risks.append(
                 f"Saved management address {mgmt_host} is on the current Internet port. "
-                "Switch only after the router has a WireGuard tunnel or LAN management IP."
+                "Prefer WireGuard or a LAN management IP, then confirm to continue."
             )
 
     if new_row.get("disabled"):
@@ -17072,10 +18033,10 @@ def assess_uplink_switch_risk(
     risk_level = "low"
     if blocking:
         risk_level = "high"
-    elif risks:
-        risk_level = "medium"
+    elif needs_tunnel or risks:
+        risk_level = "high" if needs_tunnel else "medium"
 
-    safe = not blocking and not risks
+    safe = not blocking and not risks and not needs_tunnel
     summary = (
         "Switch looks safe — management is not tied to the current Internet port."
         if safe
@@ -17090,9 +18051,12 @@ def assess_uplink_switch_risk(
         "ok": True,
         "safe": safe,
         "blocking": blocking,
+        "confirmable": (not blocking) and (bool(risks) or needs_tunnel),
+        "needs_tunnel": needs_tunnel,
         "risk_level": risk_level,
         "risks": risks,
         "uses_tunnel": False,
+        "tunnel_verified": False,
         "management_host": mgmt_host,
         "management_iface": mgmt_iface,
         "summary": summary,
@@ -17108,12 +18072,14 @@ def assess_uplink_mode_apply_risk(
     tunnel_address: str = "",
     management_iface_by_host: dict[str, str] | None = None,
     uses_tunnel: bool = False,
+    tunnel_verified: bool | None = None,
 ) -> dict[str, Any]:
     """
     Risk check before bond / failover / balance / clear uplink apply.
 
-    Warns when customer internet may drop briefly and blocks when API access
-    would likely be lost (management on a port about to be unbridged).
+    Warns when customer internet may drop briefly. Management-drop cases are
+    confirmable (operator may continue after acknowledging). Only disabled
+    ports hard-block apply.
     """
     mode = (mode or "").strip().lower()
     touch_ports = [p.strip() for p in touch_ports if (p or "").strip()]
@@ -17122,6 +18088,7 @@ def assess_uplink_mode_apply_risk(
     }
     risks: list[str] = []
     blocking = False
+    needs_tunnel = False
 
     mgmt_host = normalize_mikrotik_host(management_host)
     mgmt_iface = ""
@@ -17134,9 +18101,10 @@ def assess_uplink_mode_apply_risk(
             mgmt_iface = ""
 
     tunnel = normalize_mikrotik_host(tunnel_address)
+    if tunnel_verified is None:
+        tunnel_verified = bool(uses_tunnel and tunnel)
     api_safe = bool(
-        uses_tunnel
-        or tunnel
+        tunnel_verified
         or mgmt_iface.lower().startswith(("wg", "wireguard"))
     )
 
@@ -17148,10 +18116,39 @@ def assess_uplink_mode_apply_risk(
     }
     action_label = mode_labels.get(mode, "Changing uplink setup")
 
+    if tunnel_verified:
+        return {
+            "ok": True,
+            "safe": True,
+            "blocking": False,
+            "confirmable": False,
+            "needs_tunnel": False,
+            "risk_level": "low",
+            "risks": [
+                f"{action_label} may interrupt customer internet for up to a minute "
+                "while RouterOS reconfigures routes and interfaces."
+            ],
+            "uses_tunnel": True,
+            "tunnel_verified": True,
+            "management_host": mgmt_host or tunnel,
+            "management_iface": mgmt_iface,
+            "summary": (
+                "WireGuard management is active — customer internet may pause briefly "
+                "during the change."
+            ),
+            "mode": mode,
+        }
+
     if mode in {"bond", "failover", "balance", "clear"}:
         risks.append(
             f"{action_label} may interrupt customer internet for up to a minute "
             "while RouterOS reconfigures routes and interfaces."
+        )
+
+    if tunnel and not tunnel_verified and not api_safe:
+        risks.append(
+            f"WireGuard tunnel ({tunnel}) is saved but not reachable yet. "
+            "Verify the tunnel before applying if you manage this router remotely."
         )
 
     for port_name in touch_ports:
@@ -17167,28 +18164,31 @@ def assess_uplink_mode_apply_risk(
             )
             if not api_safe:
                 if mgmt_iface and mgmt_iface == bridge:
-                    blocking = True
+                    needs_tunnel = True
                     risks.append(
                         f"Management IP ({mgmt_host or 'saved host'}) is on {bridge}. "
-                        f"Unbridging {port_name} may drop API access until you enable WireGuard."
+                        f"Unbridging {port_name} may drop API access — prefer WireGuard, "
+                        "or confirm to continue (Winbox recovery is available)."
                     )
                 elif mgmt_iface and _iface_serves_physical_port(
                     mgmt_iface, port_name, ports_by_name
                 ):
-                    blocking = True
+                    needs_tunnel = True
                     risks.append(
                         f"Management reaches this router through {port_name} ({mgmt_iface}). "
-                        "Set up WireGuard tunnel management before applying."
+                        "Prefer WireGuard, or confirm to continue with on-site recovery ready."
                     )
                 elif mgmt_host and not _is_private_ipv4(mgmt_host):
                     if _iface_serves_physical_port(mgmt_iface, port_name, ports_by_name):
-                        blocking = True
+                        needs_tunnel = True
                         risks.append(
                             f"Saved management address {mgmt_host} is tied to {port_name}."
                         )
 
     risk_level = "low"
     if blocking:
+        risk_level = "high"
+    elif needs_tunnel:
         risk_level = "high"
     elif len(risks) > 1:
         risk_level = "medium"
@@ -17201,6 +18201,7 @@ def assess_uplink_mode_apply_risk(
     safe = not blocking and not disabled_touch and api_safe and not any(
         (ports_by_name.get(p) or {}).get("is_bridged") for p in touch_ports
     )
+    confirmable = (not blocking) and (not safe)
 
     if safe:
         summary = (
@@ -17211,7 +18212,12 @@ def assess_uplink_mode_apply_risk(
         summary = (
             risks[-1]
             if risks
-            else "This change would likely drop management access to the MikroTik."
+            else "This change cannot be applied until the disabled port is enabled."
+        )
+    elif needs_tunnel:
+        summary = (
+            "Management may drop when ports leave the LAN bridge. "
+            "Confirm to continue — WireGuard is recommended, and Winbox recovery is ready."
         )
     elif risks:
         summary = (
@@ -17226,9 +18232,12 @@ def assess_uplink_mode_apply_risk(
         "ok": True,
         "safe": safe,
         "blocking": blocking,
+        "confirmable": confirmable,
+        "needs_tunnel": needs_tunnel,
         "risk_level": risk_level,
         "risks": risks,
         "uses_tunnel": api_safe,
+        "tunnel_verified": bool(tunnel_verified),
         "management_host": mgmt_host,
         "management_iface": mgmt_iface,
         "summary": summary,
@@ -17318,6 +18327,7 @@ def list_mikrotik_ports(
                         or name.lower().startswith(("wlan", "wifi")),
                         "uplink_kind": hint.get("kind") or "",
                         "uplink_iface": hint.get("uplink") or "",
+                        "uplink_active": (hint.get("active") or "") == "1",
                         "traffic_iface": traffic_iface,
                         "rx_byte": rx_byte,
                         "tx_byte": tx_byte,
@@ -17340,13 +18350,9 @@ def list_mikrotik_ports(
                 "management_iface_by_host": management_iface_by_host,
             }
     except TimeoutError:
-        return {
-            "ok": False,
-            "error": "Connection timed out. Is the router reachable on API port 8728?",
-            "ports": [],
-            "suggested_wan": "",
-            "management_iface_by_host": {},
-        }
+        return _api_unreachable_ports_error(
+            "Connection timed out. Is the router reachable on API port 8728?"
+        )
     except ConnectionError as exc:
         return {
             "ok": False,
@@ -17356,13 +18362,7 @@ def list_mikrotik_ports(
             "management_iface_by_host": {},
         }
     except OSError as exc:
-        return {
-            "ok": False,
-            "error": f"Could not reach {host}:8728. ({exc})",
-            "ports": [],
-            "suggested_wan": "",
-            "management_iface_by_host": {},
-        }
+        return _api_unreachable_ports_error(f"Could not reach {host}:8728. ({exc})")
 
 
 def _remove_wan_list_members(sock: socket.socket, interfaces: list[str]) -> list[str]:
@@ -17442,6 +18442,51 @@ def _retire_wan_interface(sock: socket.socket, interface: str) -> list[str]:
     for removed in _remove_wan_list_members(sock, [interface]):
         notes.append(f"removed {removed} from WAN list")
     return notes
+
+
+def build_api_enable_terminal_script() -> str:
+    """
+    RouterOS terminal script to enable API on port 8728 and open LAN firewall.
+
+    Paste in Winbox → New Terminal when billing cannot reach the router API.
+    """
+    return "\n".join(
+        [
+            "# Winbox → New Terminal → paste all lines, press Enter",
+            ':do { /ip service set [find where name=api] disabled=no port=8728 address="" } on-error={}',
+            ":do { /ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0 } on-error={}",
+            ":do { /ip service enable [find where name=api] } on-error={}",
+            "/ip firewall filter",
+            (
+                "add chain=input action=accept protocol=tcp dst-port=8728 "
+                'src-address=10.0.0.0/8 comment="ispcentric-api-lan-10" '
+                "place-before=[find where chain=input and jump-target=hs-input]"
+            ),
+            (
+                "add chain=input action=accept protocol=tcp dst-port=8728 "
+                'src-address=172.16.0.0/12 comment="ispcentric-api-lan-172" '
+                "place-before=[find where chain=input and jump-target=hs-input]"
+            ),
+            (
+                "add chain=input action=accept protocol=tcp dst-port=8728 "
+                'src-address=192.168.0.0/16 comment="ispcentric-api-lan-192" '
+                "place-before=[find where chain=input and jump-target=hs-input]"
+            ),
+            ':put "RouterOS API enabled on port 8728"',
+        ]
+    )
+
+
+def _api_unreachable_ports_error(error: str) -> dict[str, Any]:
+    """Ports list failure with Winbox recovery script for API connectivity."""
+    return {
+        "ok": False,
+        "error": error,
+        "ports": [],
+        "suggested_wan": "",
+        "management_iface_by_host": {},
+        "terminal_script": build_api_enable_terminal_script(),
+    }
 
 
 def build_single_wan_recovery_script(
@@ -17524,6 +18569,76 @@ def build_single_wan_recovery_script(
             "",
             ':put ("Single Internet reset on " . $wan . " — check IP and default route.")',
         ]
+    )
+    return "\n".join(lines)
+
+
+def build_uplink_recovery_script(
+    mode: str,
+    *,
+    members: list[str] | None = None,
+    bond_name: str = "",
+    unbridged: list[dict[str, str]] | None = None,
+    primary_port: str = "",
+    lan_bridge: str = "bridgeLocal",
+) -> str:
+    """
+    RouterOS terminal script to undo a failed bond / failover / balance apply.
+
+    Restores bridge membership and removes ISPCENTRIC uplink leftovers.
+    """
+    mode = (mode or "").strip().lower() or "uplink"
+    members = [p.strip() for p in (members or []) if (p or "").strip()]
+    bond_name = (bond_name or DEFAULT_BOND_NAME).strip() or DEFAULT_BOND_NAME
+    lan_bridge = (lan_bridge or "bridgeLocal").strip() or "bridgeLocal"
+    restore_entries = list(unbridged or [])
+    known = {(e.get("interface") or "").strip() for e in restore_entries}
+    for name in members:
+        if name and name not in known:
+            restore_entries.append({"interface": name, "bridge": lan_bridge})
+
+    lines = [
+        f"# ISPCENTRIC — recovery after {mode} uplink change",
+        "# Winbox → New Terminal → paste all lines, press Enter",
+        "",
+        "# Remove ISPCENTRIC bond / failover / balance leftovers",
+        f'/ip route remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip dhcp-client remove [find comment~"{UPLINK_TAG}"]',
+        f'/interface list member remove [find comment~"{UPLINK_TAG}"]',
+        f'/interface bonding remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip firewall mangle remove [find comment~"{UPLINK_TAG}"]',
+        f'/routing table remove [find comment~"{UPLINK_TAG}"]',
+        f'/system scheduler remove [find comment~"{UPLINK_TAG}"]',
+        f'/system script remove [find comment~"{UPLINK_TAG}"]',
+        "",
+    ]
+    if mode == "bond" and bond_name:
+        lines.extend(
+            [
+                f':if ([:len [/interface bonding find name="{bond_name}"]] > 0) do={{',
+                f'  /interface bonding remove [find name="{bond_name}"]',
+                "}",
+                "",
+            ]
+        )
+    lines.append(f':local lanBridge "{lan_bridge}"')
+    for index, entry in enumerate(restore_entries, start=1):
+        iface = (entry.get("interface") or "").strip()
+        bridge = (entry.get("bridge") or "").strip() or lan_bridge
+        if not iface:
+            continue
+        lines.extend(
+            [
+                f':local port{index} "{iface}"',
+                f':local br{index} "{bridge}"',
+                f":if ([:len [/interface bridge port find interface=$port{index}]] = 0) do={{",
+                f"  /interface bridge port add bridge=$br{index} interface=$port{index}",
+                "}",
+                "",
+            ]
+        )
+    lines.append(
+        ':put ("ISPCENTRIC uplink recovery done — check bridge ports and default route.")'
     )
     return "\n".join(lines)
 
@@ -17947,6 +19062,8 @@ def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
         "list_members": _remove_comment_tagged(sock, "/interface/list/member", UPLINK_TAG),
         "mangle": _remove_comment_tagged(sock, "/ip/firewall/mangle", UPLINK_TAG),
         "routing_tables": routing_tables,
+        "scripts": _remove_comment_tagged(sock, "/system/script", UPLINK_TAG),
+        "schedulers": _remove_comment_tagged(sock, "/system/scheduler", UPLINK_TAG),
     }
 
 
@@ -18491,6 +19608,7 @@ def apply_mikrotik_uplink_bond(
     bond_mode: str = "balance-xor",
     port: int = 8728,
     timeout: float = 12.0,
+    api_hosts: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Bond two or more ports for the same provider.
@@ -18498,6 +19616,9 @@ def apply_mikrotik_uplink_bond(
     Creates /interface/bonding with link monitoring, slaves the selected ports,
     moves PPPoE onto the bond when present (else DHCP on the bond), and adds the
     bond to the WAN interface list.
+
+    Runs in phases and reconnects over alternate API hosts (WireGuard first) when
+    unbridging drops the LAN-management session.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -18508,6 +19629,12 @@ def apply_mikrotik_uplink_bond(
         bond_mode = "balance-xor"
     members = [p.strip() for p in (member_ports or []) if (p or "").strip()]
     members = list(dict.fromkeys(members))
+    dial_hosts = _api_hosts_for_uplink_apply(host, api_hosts=api_hosts)
+    recovery_script = build_uplink_recovery_script(
+        "bond",
+        members=members,
+        bond_name=bond_name,
+    )
 
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
@@ -18517,7 +19644,10 @@ def apply_mikrotik_uplink_bond(
         return {"ok": False, "error": "Bond interface name cannot match a member port."}
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+        unbridged: list[dict[str, str]] = []
+        with _api_session_on_any(
+            dial_hosts, username, password, port=port, timeout=timeout
+        ) as (sock, _phase_host):
             names = _iface_names(sock)
             missing = [p for p in members if p not in names]
             if missing:
@@ -18527,7 +19657,6 @@ def apply_mikrotik_uplink_bond(
                 }
 
             _clear_tagged_uplink(sock)
-            # If a leftover bond with the same name exists without our tag, remove it only when owned.
             for row in _print(sock, "/interface/bonding", props=".id,name,comment"):
                 if (row.get("name") or "").strip() != bond_name:
                     continue
@@ -18545,80 +19674,123 @@ def apply_mikrotik_uplink_bond(
                     }
 
             unbridged = _unbridge_interfaces(sock, members)
-            terminal, bond_mode = _create_bonding_interface(
-                sock,
-                bond_name=bond_name,
-                bond_mode=bond_mode,
+            recovery_script = build_uplink_recovery_script(
+                "bond",
                 members=members,
+                bond_name=bond_name,
+                unbridged=unbridged,
             )
-            if terminal.get("_reply") in {"!trap", "!fatal"}:
-                if unbridged:
-                    _restore_bridged_interfaces(sock, unbridged)
-                return {
-                    "ok": False,
-                    "error": _trap_message(
-                        terminal,
-                        f"Could not create bonding interface {bond_name}.",
-                    ),
-                }
 
-            disabled_dhcp = _disable_member_dhcp_clients(sock, members)
-            moved_pppoe = _move_member_pppoe_to_bond(sock, members, bond_name)
-            uplink_kind = "pppoe" if moved_pppoe else "dhcp"
-            if not moved_pppoe:
-                dhcp = _ensure_bond_dhcp_client(sock, bond_name)
-                if dhcp.get("_reply") in {"!trap", "!fatal"}:
-                    return {
-                        "ok": False,
-                        "error": _trap_message(
-                            dhcp,
-                            f"Bond created, but DHCP client failed on {bond_name}.",
-                        ),
-                        "bond_name": bond_name,
-                        "members": members,
-                        "unbridged": unbridged,
-                    }
+        if unbridged:
+            time.sleep(1.5)
+            try:
+                _wait_for_api_any(dial_hosts, port=port)
+            except ConnectionError:
+                pass
 
-            _ensure_uplink_list_member(sock, bond_name)
-            for pppoe_name in moved_pppoe:
-                if pppoe_name and pppoe_name != bond_name:
-                    _ensure_uplink_list_member(sock, pppoe_name)
-
-            return {
-                "ok": True,
-                "mode": "bond",
-                "bond_name": bond_name,
-                "bond_mode": bond_mode,
-                "members": members,
-                "wan_interface": bond_name,
-                "unbridged": unbridged,
-                "disabled_member_dhcp": disabled_dhcp,
-                "moved_pppoe": moved_pppoe,
-                "uplink_kind": uplink_kind,
-                "message": (
-                    f"Bonded {', '.join(members)} as {bond_name} "
-                    f"({bond_mode}) for the same provider"
-                    + (
-                        f"; PPPoE moved to {bond_name}."
-                        if moved_pppoe
-                        else "."
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                with _api_session_on_any(
+                    dial_hosts, username, password, port=port, timeout=timeout
+                ) as (sock, session_host):
+                    terminal, bond_mode = _create_bonding_interface(
+                        sock,
+                        bond_name=bond_name,
+                        bond_mode=bond_mode,
+                        members=members,
                     )
-                ),
-            }
+                    if terminal.get("_reply") in {"!trap", "!fatal"}:
+                        if unbridged:
+                            _restore_bridged_interfaces(sock, unbridged)
+                        return {
+                            "ok": False,
+                            "error": _trap_message(
+                                terminal,
+                                f"Could not create bonding interface {bond_name}.",
+                            ),
+                            "recovery_script": recovery_script,
+                        }
+
+                    disabled_dhcp = _disable_member_dhcp_clients(sock, members)
+                    moved_pppoe = _move_member_pppoe_to_bond(sock, members, bond_name)
+                    uplink_kind = "pppoe" if moved_pppoe else "dhcp"
+                    if not moved_pppoe:
+                        dhcp = _ensure_bond_dhcp_client(sock, bond_name)
+                        if dhcp.get("_reply") in {"!trap", "!fatal"}:
+                            return {
+                                "ok": False,
+                                "error": _trap_message(
+                                    dhcp,
+                                    f"Bond created, but DHCP client failed on {bond_name}.",
+                                ),
+                                "bond_name": bond_name,
+                                "members": members,
+                                "unbridged": unbridged,
+                                "recovery_script": recovery_script,
+                            }
+
+                    _ensure_uplink_list_member(sock, bond_name)
+                    for pppoe_name in moved_pppoe:
+                        if pppoe_name and pppoe_name != bond_name:
+                            _ensure_uplink_list_member(sock, pppoe_name)
+
+                    return {
+                        "ok": True,
+                        "mode": "bond",
+                        "bond_name": bond_name,
+                        "bond_mode": bond_mode,
+                        "members": members,
+                        "wan_interface": bond_name,
+                        "unbridged": unbridged,
+                        "disabled_member_dhcp": disabled_dhcp,
+                        "moved_pppoe": moved_pppoe,
+                        "uplink_kind": uplink_kind,
+                        "session_host": session_host,
+                        "recovery_script": recovery_script,
+                        "message": (
+                            f"Bonded {', '.join(members)} as {bond_name} "
+                            f"({bond_mode}) for the same provider"
+                            + (
+                                f"; PPPoE moved to {bond_name}."
+                                if moved_pppoe
+                                else "."
+                            )
+                        ),
+                    }
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                last_error = str(exc)
+                if attempt >= 3:
+                    break
+                time.sleep(1.5 * attempt)
+                try:
+                    _wait_for_api_any(dial_hosts, port=port)
+                except ConnectionError:
+                    pass
+
+        return {
+            "ok": False,
+            "error": last_error or "Connection timed out while configuring bonding.",
+            "unbridged": unbridged,
+            "recovery_script": recovery_script,
+        }
     except TimeoutError:
         return {
             "ok": False,
             "error": "Connection timed out while configuring bonding.",
+            "recovery_script": recovery_script,
         }
     except ConnectionError as exc:
         return {
             "ok": False,
             "error": str(exc) or "Login failed. Check the saved username and password.",
+            "recovery_script": recovery_script,
         }
     except OSError as exc:
         return {
             "ok": False,
             "error": f"Could not reach {host}:8728. ({exc})",
+            "recovery_script": recovery_script,
         }
 
 
@@ -18907,6 +20079,259 @@ def _install_balance_pcc(
     }
 
 
+SMART_BALANCE_SCRIPT_NAME = "ispcentric-smart-balance"
+SMART_BALANCE_SCHEDULER_NAME = "ispcentric-smart-balance"
+SMART_BALANCE_SLOW_RTT_MS = 250
+SMART_BALANCE_RECOVER_RTT_MS = 180
+SMART_BALANCE_SLOW_LOSS_PCT = 25
+SMART_BALANCE_RECOVER_LOSS_PCT = 10
+
+
+def _build_smart_balance_ros_script(members: list[dict[str, str]]) -> str:
+    """RouterOS script: ping each WAN table and disable PCC slots when slow."""
+    lines = [
+        "# ISPCENTRIC smart balance — avoid slow ISP links",
+        f":local slowRtt {SMART_BALANCE_SLOW_RTT_MS}",
+        f":local recoverRtt {SMART_BALANCE_RECOVER_RTT_MS}",
+        f":local slowLoss {SMART_BALANCE_SLOW_LOSS_PCT}",
+        f":local recoverLoss {SMART_BALANCE_RECOVER_LOSS_PCT}",
+        ':local targets {"1.1.1.1";"8.8.8.8"}',
+        "",
+    ]
+    for item in members:
+        index = int(item.get("index") or 0)
+        iface = (item.get("interface") or "").strip()
+        table = _balance_table_name(index)
+        mark = f"ispcentric-c{index}"
+        lines.extend(
+            [
+                f"# {iface}",
+                f":global ispcentricSmart{index}",
+                (
+                    f':if ([:typeof $ispcentricSmart{index}] = "nothing") do='
+                    f'{{ :set ispcentricSmart{index} "ok" }}'
+                ),
+                f':local tbl{index} "{table}"',
+                f':local mark{index} "{mark}"',
+                f":local sent{index} 0",
+                f":local recv{index} 0",
+                f":local rttSum{index} 0",
+                f":foreach target in=$targets do={{",
+                "  :do {",
+                (
+                    f"    :local pingOut [/ping address=$target count=3 interval=200ms "
+                    f'routing-table=$tbl{index} as-value]'
+                ),
+                f"    :local got ($pingOut->\"received\")",
+                f"    :local avg ($pingOut->\"avg-rtt\")",
+                f"    :if ([:len $avg] > 0) do={{",
+                f"      :set rttSum{index} ($rttSum{index} + $avg)",
+                f"      :set recv{index} ($recv{index} + $got)",
+                f"    }}",
+                f"    :set sent{index} ($sent{index} + 3)",
+                "  } on-error={",
+                f"    :set sent{index} ($sent{index} + 3)",
+                "  }",
+                "}",
+                f":local loss{index} 100",
+                f":if ($sent{index} > 0) do={{",
+                f"  :set loss{index} (100 - (($recv{index} * 100) / $sent{index}))",
+                "}",
+                f":local avgRtt{index} 999",
+                f":if ($recv{index} > 0) do={{",
+                f"  :set avgRtt{index} ($rttSum{index} / $recv{index})",
+                "}",
+                f":local bad{index} false",
+                (
+                    f":if ($recv{index} = 0 or $avgRtt{index} > $slowRtt "
+                    f"or $loss{index} > $slowLoss) do={{ :set bad{index} true }}"
+                ),
+                f":local good{index} false",
+                (
+                    f":if ($recv{index} > 0 and $avgRtt{index} < $recoverRtt "
+                    f"and $loss{index} < $recoverLoss) do={{ :set good{index} true }}"
+                ),
+                (
+                    f":if ($bad{index} and ($ispcentricSmart{index} = \"ok\")) do={{"
+                ),
+                (
+                    f"  :foreach id in=[/ip firewall mangle find where chain=prerouting "
+                    f'and comment~"{UPLINK_TAG}" and new-connection-mark=$mark{index} '
+                    f'and per-connection-classifier~":"] do={{'
+                ),
+                "    /ip firewall mangle disable $id",
+                "  }",
+                (
+                    f"  :foreach id in=[/ip route find where comment~\"{UPLINK_TAG}\" "
+                    f"and routing-table=$tbl{index}] do={{"
+                ),
+                "    /ip route disable $id",
+                "  }",
+                f'  :set ispcentricSmart{index} "slow"',
+                "}",
+                (
+                    f":if ($good{index} and ($ispcentricSmart{index} = \"slow\")) do={{"
+                ),
+                (
+                    f"  :foreach id in=[/ip firewall mangle find where chain=prerouting "
+                    f'and comment~"{UPLINK_TAG}" and new-connection-mark=$mark{index} '
+                    f'and per-connection-classifier~":"] do={{'
+                ),
+                "    /ip firewall mangle enable $id",
+                "  }",
+                (
+                    f"  :foreach id in=[/ip route find where comment~\"{UPLINK_TAG}\" "
+                    f"and routing-table=$tbl{index}] do={{"
+                ),
+                "    /ip route enable $id",
+                "  }",
+                f'  :set ispcentricSmart{index} "ok"',
+                "}",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _remove_named_routeros_items(sock: socket.socket, path: str, name: str) -> int:
+    removed = 0
+    for row in _print(sock, path, props=".id,name"):
+        if (row.get("name") or "").strip() != name:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        if _remove(sock, path, item_id).get("_reply") not in {"!trap", "!fatal"}:
+            removed += 1
+    return removed
+
+
+def _install_smart_balance_monitor(
+    sock: socket.socket,
+    members: list[dict[str, str]],
+    *,
+    interval: str = "1m",
+) -> dict[str, Any]:
+    """Install RouterOS script + scheduler to avoid slow WAN PCC slots."""
+    ordered = sorted(
+        members,
+        key=lambda m: (-int(m.get("weight") or 1), str(m.get("interface") or "")),
+    )
+    for index, item in enumerate(ordered):
+        item["index"] = str(index)
+    if len(ordered) < 2:
+        return {"ok": False, "error": "Need at least two WAN members for smart balance."}
+
+    script_body = _build_smart_balance_ros_script(ordered)
+    _remove_named_routeros_items(sock, "/system/scheduler", SMART_BALANCE_SCHEDULER_NAME)
+    _remove_named_routeros_items(sock, "/system/script", SMART_BALANCE_SCRIPT_NAME)
+
+    script_terminal = _add(
+        sock,
+        "/system/script",
+        name=SMART_BALANCE_SCRIPT_NAME,
+        source=script_body,
+        comment=UPLINK_TAG,
+        policy="read,write,policy,test,sniff,sensitive,romon",
+    )
+    if script_terminal.get("_reply") in {"!trap", "!fatal"}:
+        return {
+            "ok": False,
+            "error": _trap_message(
+                script_terminal, "Could not install smart-balance monitor script."
+            ),
+        }
+
+    sched_terminal = _add(
+        sock,
+        "/system/scheduler",
+        name=SMART_BALANCE_SCHEDULER_NAME,
+        interval=interval,
+        on_event=SMART_BALANCE_SCRIPT_NAME,
+        comment=UPLINK_TAG,
+        policy="read,write,policy,test,sniff,sensitive,romon",
+    )
+    if sched_terminal.get("_reply") in {"!trap", "!fatal"}:
+        return {
+            "ok": False,
+            "error": _trap_message(
+                sched_terminal, "Could not install smart-balance scheduler."
+            ),
+        }
+
+    run_rows, run_terminal = _command(
+        sock, ["/system/script/run", f"=number={SMART_BALANCE_SCRIPT_NAME}"]
+    )
+    _ = run_rows
+    if run_terminal.get("_reply") in {"!trap", "!fatal"}:
+        # Non-fatal: scheduler will run on interval.
+        pass
+
+    return {
+        "ok": True,
+        "script": SMART_BALANCE_SCRIPT_NAME,
+        "scheduler": SMART_BALANCE_SCHEDULER_NAME,
+        "members": [m.get("interface") for m in ordered],
+    }
+
+
+def read_smart_balance_status(
+    sock: socket.socket,
+    member_ports: list[str],
+) -> dict[str, Any]:
+    """Read whether each WAN PCC pool slot is active or temporarily sidelined."""
+    ports = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    if len(ports) < 2:
+        return {"ok": False, "members": {}}
+
+    has_scheduler = False
+    try:
+        for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
+            if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
+                continue
+            if UPLINK_TAG in (row.get("comment") or ""):
+                has_scheduler = not _flag_yes(row.get("disabled"))
+                break
+    except Exception:
+        has_scheduler = False
+
+    members: dict[str, str] = {}
+    for index, name in enumerate(ports):
+        mark = f"ispcentric-c{index}"
+        pcc_total = 0
+        pcc_disabled = 0
+        try:
+            for row in _print(
+                sock,
+                "/ip/firewall/mangle",
+                props="chain,action,new-connection-mark,per-connection-classifier,disabled,comment",
+            ):
+                if UPLINK_TAG not in (row.get("comment") or ""):
+                    continue
+                if (row.get("chain") or "").strip() != "prerouting":
+                    continue
+                if (row.get("new-connection-mark") or "").strip() != mark:
+                    continue
+                if not (row.get("per-connection-classifier") or "").strip():
+                    continue
+                pcc_total += 1
+                if _flag_yes(row.get("disabled")):
+                    pcc_disabled += 1
+        except Exception:
+            pass
+        if pcc_total and pcc_disabled >= pcc_total:
+            members[name] = "slow"
+        else:
+            members[name] = "ok"
+
+    return {
+        "ok": True,
+        "enabled": has_scheduler,
+        "members": members,
+        "slow_ports": [name for name, state in members.items() if state == "slow"],
+    }
+
+
 def _resolve_balance_member_gateway(
     sock: socket.socket,
     *,
@@ -18934,8 +20359,10 @@ def apply_mikrotik_uplink_balance(
     *,
     member_ports: list[str],
     member_weights: dict[str, int] | None = None,
+    smart_balance: bool = False,
     port: int = 8728,
     timeout: float = 14.0,
+    api_hosts: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     PCC load-balance across different ISP uplinks.
@@ -18943,15 +20370,21 @@ def apply_mikrotik_uplink_balance(
     Uses the same port roles as failover (Internet + Backup internet). When
     ``member_weights`` maps port → Mbps, connections are split in that ratio
     (e.g. 100/20 → ~5:1). Otherwise each member gets an equal share.
-    """
-    import time as _time
 
+    When ``smart_balance`` is True, a RouterOS scheduler pings each WAN and
+    temporarily disables PCC slots for links that are slow or lossy.
+
+    Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
+    """
     host = (host or "").strip()
     username = (username or "").strip()
     password = password or ""
     members = [p.strip() for p in (member_ports or []) if (p or "").strip()]
     members = list(dict.fromkeys(members))
     weights_in = member_weights if isinstance(member_weights, dict) else {}
+    dial_hosts = _api_hosts_for_uplink_apply(host, api_hosts=api_hosts)
+    recovery_mode = "smart_balance" if smart_balance else "balance"
+    recovery_script = build_uplink_recovery_script(recovery_mode, members=members)
 
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
@@ -18969,161 +20402,241 @@ def apply_mikrotik_uplink_balance(
             return 100
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            names = _iface_names(sock)
-            missing = [p for p in members if p not in names]
-            if missing:
-                return {
-                    "ok": False,
-                    "error": f"Port(s) not found on router: {', '.join(missing)}.",
-                }
+        unbridged, phase_error = _phase1_prepare_uplink_ports(
+            dial_hosts,
+            username,
+            password,
+            ports=members,
+            port=port,
+            timeout=timeout,
+        )
+        if phase_error:
+            phase_error["recovery_script"] = recovery_script
+            return phase_error
+        recovery_script = build_uplink_recovery_script(
+            recovery_mode, members=members, unbridged=unbridged
+        )
 
-            _clear_tagged_uplink(sock)
-            unbridged = _unbridge_interfaces(sock, members)
+        if unbridged:
+            time.sleep(1.5)
+            try:
+                _wait_for_api_any(dial_hosts, port=port)
+            except ConnectionError:
+                pass
 
-            uplink_results: list[dict[str, str]] = []
-            for index, iface in enumerate(members):
-                # Do not let DHCP/PPPoE install competing ECMP defaults — we
-                # own ping-checked static routes for balance.
-                terminal = _ensure_failover_uplink(
-                    sock, iface, distance=1, add_default_route=False
-                )
-                if terminal.get("_reply") in {"!trap", "!fatal"}:
-                    if unbridged:
-                        _restore_bridged_interfaces(sock, unbridged)
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                with _api_session_on_any(
+                    dial_hosts, username, password, port=port, timeout=timeout
+                ) as (sock, session_host):
+                    uplink_results: list[dict[str, str]] = []
+                    for index, iface in enumerate(members):
+                        terminal = _ensure_failover_uplink(
+                            sock, iface, distance=1, add_default_route=False
+                        )
+                        if terminal.get("_reply") in {"!trap", "!fatal"}:
+                            if unbridged:
+                                _restore_bridged_interfaces(sock, unbridged)
+                            return {
+                                "ok": False,
+                                "error": _trap_message(
+                                    terminal,
+                                    f"Could not configure balance uplink on {iface}.",
+                                ),
+                                "recovery_script": recovery_script,
+                            }
+                        terminal = dict(terminal)
+                        terminal["_index"] = str(index)
+                        uplink_results.append(terminal)
+                        _ensure_uplink_list_member(sock, iface)
+                        pppoe_name = (
+                            (terminal.get("_pppoe") or "").strip()
+                            or _find_pppoe_client_for_wan(sock, iface)
+                        )
+                        if pppoe_name and pppoe_name != iface:
+                            _ensure_uplink_list_member(sock, pppoe_name)
+
+                    time.sleep(1.2)
+
+                    balance_members: list[dict[str, str]] = []
+                    missing_gw: list[str] = []
+                    for item in uplink_results:
+                        iface = (item.get("_interface") or "").strip()
+                        kind = (item.get("_kind") or "dhcp").strip()
+                        pppoe_name = (item.get("_pppoe") or "").strip()
+                        index = int(item.get("_index") or "0")
+                        wan_iface, gateway = _resolve_balance_member_gateway(
+                            sock,
+                            interface=iface,
+                            kind=kind,
+                            pppoe_name=pppoe_name,
+                        )
+                        if not gateway:
+                            missing_gw.append(iface)
+                            continue
+                        _disable_client_default_route(
+                            sock,
+                            kind=kind,
+                            interface=iface,
+                            pppoe_name=pppoe_name or gateway,
+                        )
+                        balance_members.append(
+                            {
+                                "interface": iface,
+                                "wan_iface": wan_iface,
+                                "gateway": gateway,
+                                "index": str(index),
+                                "kind": kind,
+                                "weight": str(_weight_for(iface)),
+                            }
+                        )
+
+                    if len(balance_members) < 2:
+                        return {
+                            "ok": False,
+                            "error": (
+                                "Could not learn gateways on enough WAN ports for balance. "
+                                "Confirm both links have internet (DHCP or PPPoE), then retry."
+                                + (
+                                    f" Missing gateway on: {', '.join(missing_gw)}."
+                                    if missing_gw
+                                    else ""
+                                )
+                            ),
+                            "unbridged": unbridged,
+                            "recovery_script": recovery_script,
+                        }
+
+                    pcc = _install_balance_pcc(sock, balance_members)
+                    if not pcc.get("ok"):
+                        return {
+                            "ok": False,
+                            "error": pcc.get("error")
+                            or "Could not install PCC balance rules.",
+                            "unbridged": unbridged,
+                            "recovery_script": recovery_script,
+                        }
+
+                    smart_status: dict[str, Any] = {}
+                    if smart_balance:
+                        smart = _install_smart_balance_monitor(sock, balance_members)
+                        if not smart.get("ok"):
+                            return {
+                                "ok": False,
+                                "error": smart.get("error")
+                                or "Could not install smart-balance monitor.",
+                                "unbridged": unbridged,
+                                "recovery_script": recovery_script,
+                            }
+                        smart_status = read_smart_balance_status(
+                            sock,
+                            [m["interface"] for m in balance_members],
+                        )
+
+                    labels = list(
+                        pcc.get("members") or [m["interface"] for m in balance_members]
+                    )
+                    weights_out = {
+                        m["interface"]: int(m.get("weight") or 100)
+                        for m in balance_members
+                    }
+                    weights_ordered = {
+                        name: weights_out.get(name, 100) for name in labels
+                    }
+                    for name, val in weights_out.items():
+                        weights_ordered.setdefault(name, val)
+                    slots = pcc.get("slot_counts") or []
+                    preferred = (
+                        pcc.get("preferred") or (labels[0] if labels else "")
+                    ).strip()
+                    equal = len(set(slots)) <= 1 if slots else True
+                    if equal:
+                        share_text = (
+                            "equal connections via PCC; "
+                            "fastest link preferred if one dies"
+                        )
+                    else:
+                        ratio = ":".join(str(s) for s in slots)
+                        mbps_bits = ", ".join(
+                            f"{name} {weights_ordered.get(name, 100)} Mbps"
+                            for name in labels
+                        )
+                        share_text = (
+                            f"weighted {ratio} toward {preferred or 'fastest'} "
+                            f"({mbps_bits}); ping-checks drop a dead ISP"
+                        )
+                    if smart_balance:
+                        share_text += (
+                            "; smart monitor avoids slow links "
+                            f"(>{SMART_BALANCE_SLOW_RTT_MS}ms or >{SMART_BALANCE_SLOW_LOSS_PCT}% loss)"
+                        )
+
                     return {
-                        "ok": False,
-                        "error": _trap_message(
-                            terminal,
-                            f"Could not configure balance uplink on {iface}.",
+                        "ok": True,
+                        "mode": "smart_balance" if smart_balance else "balance",
+                        "smart_balance": smart_balance,
+                        "smart_balance_status": smart_status if smart_balance else {},
+                        "ports": labels,
+                        "wan_interface": preferred or (labels[0] if labels else ""),
+                        "unbridged": unbridged,
+                        "gateways": {
+                            m["interface"]: m["gateway"] for m in balance_members
+                        },
+                        "weights": weights_ordered,
+                        "slot_counts": slots,
+                        "preferred": preferred,
+                        "mangle_rules": pcc.get("mangle_rules") or 0,
+                        "session_host": session_host,
+                        "recovery_script": recovery_script,
+                        "message": (
+                            (
+                                f"Smart balance ready across {', '.join(labels)} "
+                                if smart_balance
+                                else f"Load balance ready across {', '.join(labels)} "
+                            )
+                            + f"({share_text})."
+                            + (
+                                f" Waiting on gateway for: {', '.join(missing_gw)}."
+                                if missing_gw
+                                else ""
+                            )
                         ),
                     }
-                terminal = dict(terminal)
-                terminal["_index"] = str(index)
-                uplink_results.append(terminal)
-                _ensure_uplink_list_member(sock, iface)
-                pppoe_name = (terminal.get("_pppoe") or "").strip() or _find_pppoe_client_for_wan(
-                    sock, iface
-                )
-                if pppoe_name and pppoe_name != iface:
-                    _ensure_uplink_list_member(sock, pppoe_name)
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                last_error = str(exc)
+                if attempt >= 3:
+                    break
+                time.sleep(1.5 * attempt)
+                try:
+                    _wait_for_api_any(dial_hosts, port=port)
+                except ConnectionError:
+                    pass
 
-            _time.sleep(1.2)
-
-            balance_members: list[dict[str, str]] = []
-            missing_gw: list[str] = []
-            for item in uplink_results:
-                iface = (item.get("_interface") or "").strip()
-                kind = (item.get("_kind") or "dhcp").strip()
-                pppoe_name = (item.get("_pppoe") or "").strip()
-                index = int(item.get("_index") or "0")
-                wan_iface, gateway = _resolve_balance_member_gateway(
-                    sock,
-                    interface=iface,
-                    kind=kind,
-                    pppoe_name=pppoe_name,
-                )
-                if not gateway:
-                    missing_gw.append(iface)
-                    continue
-                _disable_client_default_route(
-                    sock,
-                    kind=kind,
-                    interface=iface,
-                    pppoe_name=pppoe_name or gateway,
-                )
-                balance_members.append(
-                    {
-                        "interface": iface,
-                        "wan_iface": wan_iface,
-                        "gateway": gateway,
-                        "index": str(index),
-                        "kind": kind,
-                        "weight": str(_weight_for(iface)),
-                    }
-                )
-
-            if len(balance_members) < 2:
-                return {
-                    "ok": False,
-                    "error": (
-                        "Could not learn gateways on enough WAN ports for balance. "
-                        "Confirm both links have internet (DHCP or PPPoE), then retry."
-                        + (
-                            f" Missing gateway on: {', '.join(missing_gw)}."
-                            if missing_gw
-                            else ""
-                        )
-                    ),
-                    "unbridged": unbridged,
-                }
-
-            pcc = _install_balance_pcc(sock, balance_members)
-            if not pcc.get("ok"):
-                return {
-                    "ok": False,
-                    "error": pcc.get("error") or "Could not install PCC balance rules.",
-                    "unbridged": unbridged,
-                }
-
-            labels = list(pcc.get("members") or [m["interface"] for m in balance_members])
-            weights_out = {
-                m["interface"]: int(m.get("weight") or 100) for m in balance_members
-            }
-            # Reorder weights_out keys to match preferred order for UI.
-            weights_ordered = {name: weights_out.get(name, 100) for name in labels}
-            for name, val in weights_out.items():
-                weights_ordered.setdefault(name, val)
-            slots = pcc.get("slot_counts") or []
-            preferred = (pcc.get("preferred") or (labels[0] if labels else "")).strip()
-            equal = len(set(slots)) <= 1 if slots else True
-            if equal:
-                share_text = "equal connections via PCC; fastest link preferred if one dies"
-            else:
-                ratio = ":".join(str(s) for s in slots)
-                mbps_bits = ", ".join(
-                    f"{name} {weights_ordered.get(name, 100)} Mbps" for name in labels
-                )
-                share_text = (
-                    f"weighted {ratio} toward {preferred or 'fastest'} "
-                    f"({mbps_bits}); ping-checks drop a dead ISP"
-                )
-
-            return {
-                "ok": True,
-                "mode": "balance",
-                "ports": labels,
-                "wan_interface": preferred or (labels[0] if labels else ""),
-                "unbridged": unbridged,
-                "gateways": {m["interface"]: m["gateway"] for m in balance_members},
-                "weights": weights_ordered,
-                "slot_counts": slots,
-                "preferred": preferred,
-                "mangle_rules": pcc.get("mangle_rules") or 0,
-                "message": (
-                    f"Load balance ready across {', '.join(labels)} "
-                    f"({share_text})."
-                    + (
-                        f" Waiting on gateway for: {', '.join(missing_gw)}."
-                        if missing_gw
-                        else ""
-                    )
-                ),
-            }
+        return {
+            "ok": False,
+            "error": last_error
+            or "Connection timed out while configuring load balance.",
+            "unbridged": unbridged,
+            "recovery_script": recovery_script,
+        }
     except TimeoutError:
         return {
             "ok": False,
             "error": "Connection timed out while configuring load balance.",
+            "recovery_script": recovery_script,
         }
     except ConnectionError as exc:
         return {
             "ok": False,
             "error": str(exc) or "Login failed. Check the saved username and password.",
+            "recovery_script": recovery_script,
         }
     except OSError as exc:
         return {
             "ok": False,
             "error": f"Could not reach {host}:8728. ({exc})",
+            "recovery_script": recovery_script,
         }
 
 
@@ -19136,6 +20649,7 @@ def apply_mikrotik_uplink_failover(
     backup_ports: list[str],
     port: int = 8728,
     timeout: float = 12.0,
+    api_hosts: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Configure primary + backup WAN ports for different providers.
@@ -19143,6 +20657,8 @@ def apply_mikrotik_uplink_failover(
     Prefers PPPoE when present, otherwise DHCP, with rising default-route
     distances. When gateways are known, installs ping-checked static defaults so
     failover also triggers if the ISP path dies while the cable stays up.
+
+    Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -19150,6 +20666,7 @@ def apply_mikrotik_uplink_failover(
     primary_port = (primary_port or "").strip()
     backups = [p.strip() for p in (backup_ports or []) if (p or "").strip()]
     backups = [p for p in dict.fromkeys(backups) if p != primary_port]
+    dial_hosts = _api_hosts_for_uplink_apply(host, api_hosts=api_hosts)
 
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
@@ -19159,97 +20676,142 @@ def apply_mikrotik_uplink_failover(
         return {"ok": False, "error": "Choose at least one backup WAN port."}
 
     ordered = [primary_port, *backups]
+    recovery_script = build_uplink_recovery_script(
+        "failover",
+        members=ordered,
+        primary_port=primary_port,
+    )
 
     try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            names = _iface_names(sock)
-            missing = [p for p in ordered if p not in names]
-            if missing:
-                return {
-                    "ok": False,
-                    "error": f"Port(s) not found on router: {', '.join(missing)}.",
-                }
+        unbridged, phase_error = _phase1_prepare_uplink_ports(
+            dial_hosts,
+            username,
+            password,
+            ports=ordered,
+            port=port,
+            timeout=timeout,
+        )
+        if phase_error:
+            phase_error["recovery_script"] = recovery_script
+            return phase_error
+        recovery_script = build_uplink_recovery_script(
+            "failover",
+            members=ordered,
+            primary_port=primary_port,
+            unbridged=unbridged,
+        )
 
-            _clear_tagged_uplink(sock)
-            unbridged = _unbridge_interfaces(sock, ordered)
+        if unbridged:
+            time.sleep(1.5)
+            try:
+                _wait_for_api_any(dial_hosts, port=port)
+            except ConnectionError:
+                pass
 
-            uplink_results: list[dict[str, str]] = []
-            for index, iface in enumerate(ordered):
-                distance = 1 + (index * 10)
-                terminal = _ensure_failover_uplink(
-                    sock, iface, distance=distance
-                )
-                if terminal.get("_reply") in {"!trap", "!fatal"}:
-                    if unbridged:
-                        _restore_bridged_interfaces(sock, unbridged)
+        last_error = ""
+        for attempt in range(1, 4):
+            try:
+                with _api_session_on_any(
+                    dial_hosts, username, password, port=port, timeout=timeout
+                ) as (sock, session_host):
+                    uplink_results: list[dict[str, str]] = []
+                    for index, iface in enumerate(ordered):
+                        distance = 1 + (index * 10)
+                        terminal = _ensure_failover_uplink(
+                            sock, iface, distance=distance
+                        )
+                        if terminal.get("_reply") in {"!trap", "!fatal"}:
+                            if unbridged:
+                                _restore_bridged_interfaces(sock, unbridged)
+                            return {
+                                "ok": False,
+                                "error": _trap_message(
+                                    terminal,
+                                    f"Could not configure failover uplink on {iface}.",
+                                ),
+                                "recovery_script": recovery_script,
+                            }
+                        uplink_results.append(terminal)
+                        _ensure_uplink_list_member(sock, iface)
+                        pppoe_name = (
+                            (terminal.get("_pppoe") or "").strip()
+                            or _find_pppoe_client_for_wan(sock, iface)
+                        )
+                        if pppoe_name and pppoe_name != iface:
+                            _ensure_uplink_list_member(sock, pppoe_name)
+
+                    checked_routes = _install_failover_gateway_checks(sock, uplink_results)
+
+                    for row in _print(
+                        sock,
+                        "/ip/route",
+                        props=".id,dst-address,gateway,distance,dynamic,comment,active",
+                    ):
+                        dst = (row.get("dst-address") or "").strip()
+                        if dst not in {"0.0.0.0/0", "::/0"}:
+                            continue
+                        item_id = (row.get(".id") or "").strip()
+                        if not item_id or _flag_yes(row.get("dynamic")):
+                            continue
+                        _set(sock, "/ip/route", item_id, **{"check-gateway": "ping"})
+
+                    checked_label = ""
+                    if checked_routes:
+                        checked_label = (
+                            f" Ping-check enabled on {len(checked_routes)} "
+                            f"gateway{'s' if len(checked_routes) != 1 else ''}."
+                        )
+
                     return {
-                        "ok": False,
-                        "error": _trap_message(
-                            terminal,
-                            f"Could not configure failover uplink on {iface}.",
+                        "ok": True,
+                        "mode": "failover",
+                        "primary": primary_port,
+                        "backups": backups,
+                        "ports": ordered,
+                        "wan_interface": primary_port,
+                        "unbridged": unbridged,
+                        "checked_routes": checked_routes,
+                        "session_host": session_host,
+                        "recovery_script": recovery_script,
+                        "message": (
+                            f"Failover ready: primary {primary_port}, "
+                            f"backup {', '.join(backups)}."
+                            f"{checked_label}"
                         ),
                     }
-                uplink_results.append(terminal)
-                # Put physical + PPPoE (if any) into WAN list.
-                _ensure_uplink_list_member(sock, iface)
-                pppoe_name = (terminal.get("_pppoe") or "").strip() or _find_pppoe_client_for_wan(
-                    sock, iface
-                )
-                if pppoe_name and pppoe_name != iface:
-                    _ensure_uplink_list_member(sock, pppoe_name)
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                last_error = str(exc)
+                if attempt >= 3:
+                    break
+                time.sleep(1.5 * attempt)
+                try:
+                    _wait_for_api_any(dial_hosts, port=port)
+                except ConnectionError:
+                    pass
 
-            checked_routes = _install_failover_gateway_checks(sock, uplink_results)
-
-            # Best-effort: also ping-check any remaining static defaults.
-            for row in _print(
-                sock,
-                "/ip/route",
-                props=".id,dst-address,gateway,distance,dynamic,comment,active",
-            ):
-                dst = (row.get("dst-address") or "").strip()
-                if dst not in {"0.0.0.0/0", "::/0"}:
-                    continue
-                item_id = (row.get(".id") or "").strip()
-                if not item_id or _flag_yes(row.get("dynamic")):
-                    continue
-                _set(sock, "/ip/route", item_id, **{"check-gateway": "ping"})
-
-            checked_label = ""
-            if checked_routes:
-                checked_label = (
-                    f" Ping-check enabled on {len(checked_routes)} "
-                    f"gateway{'s' if len(checked_routes) != 1 else ''}."
-                )
-
-            return {
-                "ok": True,
-                "mode": "failover",
-                "primary": primary_port,
-                "backups": backups,
-                "ports": ordered,
-                "wan_interface": primary_port,
-                "unbridged": unbridged,
-                "checked_routes": checked_routes,
-                "message": (
-                    f"Failover ready: primary {primary_port}, "
-                    f"backup {', '.join(backups)}."
-                    f"{checked_label}"
-                ),
-            }
+        return {
+            "ok": False,
+            "error": last_error or "Connection timed out while configuring failover.",
+            "unbridged": unbridged,
+            "recovery_script": recovery_script,
+        }
     except TimeoutError:
         return {
             "ok": False,
             "error": "Connection timed out while configuring failover.",
+            "recovery_script": recovery_script,
         }
     except ConnectionError as exc:
         return {
             "ok": False,
             "error": str(exc) or "Login failed. Check the saved username and password.",
+            "recovery_script": recovery_script,
         }
     except OSError as exc:
         return {
             "ok": False,
             "error": f"Could not reach {host}:8728. ({exc})",
+            "recovery_script": recovery_script,
         }
 
 
@@ -19585,6 +21147,7 @@ def read_mikrotik_uplink_multi(
     username: str,
     password: str,
     *,
+    member_ports: list[str] | None = None,
     port: int = 8728,
     timeout: float = 6.0,
 ) -> dict[str, Any]:
@@ -19698,9 +21261,41 @@ def read_mikrotik_uplink_multi(
                 key=lambda item: int(item["distance"]) if str(item["distance"]).isdigit() else 99
             )
 
+            pcc_rules = 0
+            try:
+                for row in _print(
+                    sock,
+                    "/ip/firewall/mangle",
+                    props="chain,action,per-connection-classifier,comment",
+                ):
+                    if UPLINK_TAG not in (row.get("comment") or ""):
+                        continue
+                    classifier = (row.get("per-connection-classifier") or "").strip()
+                    if (
+                        classifier
+                        and (row.get("action") or "").strip() == "mark-connection"
+                        and (row.get("chain") or "").strip() == "prerouting"
+                    ):
+                        pcc_rules += 1
+            except Exception:
+                pcc_rules = 0
+
+            smart_scheduler = False
+            try:
+                for row in _print(sock, "/system/scheduler", props="name,comment,disabled"):
+                    if (row.get("name") or "").strip() != SMART_BALANCE_SCHEDULER_NAME:
+                        continue
+                    if UPLINK_TAG in (row.get("comment") or ""):
+                        smart_scheduler = not _flag_yes(row.get("disabled"))
+                        break
+            except Exception:
+                smart_scheduler = False
+
             mode = "single"
             if bonds:
                 mode = "bond"
+            elif pcc_rules >= 2:
+                mode = "smart_balance" if smart_scheduler else "balance"
             else:
                 distances = {
                     str(c.get("distance") or "1")
@@ -19713,10 +21308,22 @@ def read_mikrotik_uplink_multi(
             healthy = False
             if mode == "bond":
                 healthy = any(b.get("running") and not b.get("disabled") for b in bonds)
+            elif mode in {"balance", "smart_balance"}:
+                healthy = pcc_rules >= 2 and (
+                    any(r.get("active") and not r.get("disabled") for r in checked_routes)
+                    or any(not c.get("disabled") for c in failover_clients)
+                )
             elif mode == "failover":
                 healthy = any(r.get("active") and not r.get("disabled") for r in checked_routes) or any(
                     not c.get("disabled") for c in failover_clients
                 )
+
+            smart_balance_status: dict[str, Any] = {}
+            ports_for_status = [
+                str(p).strip() for p in (member_ports or []) if str(p).strip()
+            ]
+            if mode == "smart_balance" and len(ports_for_status) >= 2:
+                smart_balance_status = read_smart_balance_status(sock, ports_for_status)
 
             return {
                 "ok": True,
@@ -19725,6 +21332,265 @@ def read_mikrotik_uplink_multi(
                 "failover_clients": failover_clients,
                 "checked_routes": checked_routes,
                 "healthy": healthy,
+                "balance_pcc_rules": pcc_rules,
+                "smart_balance_enabled": smart_scheduler,
+                "smart_balance_status": smart_balance_status,
             }
     except Exception as exc:
         return {"ok": False, "error": str(exc) or "Could not read uplink state."}
+
+
+UPLINK_CONN_MARK_PREFIX = "ispcentric-c"
+
+
+def _parse_connection_address(addr: str) -> str:
+    raw = (addr or "").strip()
+    if not raw:
+        return ""
+    return raw.split("/")[0].strip()
+
+
+def _is_likely_lan_ip(ip: str) -> bool:
+    if not ip or ":" in ip:
+        return False
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        first, second, _, _ = (int(part) for part in parts)
+    except ValueError:
+        return False
+    if first == 10:
+        return True
+    if first == 172 and 16 <= second <= 31:
+        return True
+    if first == 192 and second == 168:
+        return True
+    if first == 100 and 64 <= second <= 127:
+        return True
+    return False
+
+
+def _parse_ispcentric_mark_index(mark: str) -> int | None:
+    mark = (mark or "").strip()
+    if not mark.startswith(UPLINK_CONN_MARK_PREFIX):
+        return None
+    suffix = mark[len(UPLINK_CONN_MARK_PREFIX) :]
+    try:
+        return int(suffix)
+    except ValueError:
+        return None
+
+
+def _read_balance_mark_to_port(sock: socket.socket) -> dict[int, str]:
+    """Map PCC connection-mark index to WAN interface from mangle input rules."""
+    mapping: dict[int, str] = {}
+    try:
+        for row in _print(
+            sock,
+            "/ip/firewall/mangle",
+            props="chain,in-interface,new-connection-mark,comment",
+        ):
+            if UPLINK_TAG not in (row.get("comment") or ""):
+                continue
+            if (row.get("chain") or "").strip() != "input":
+                continue
+            index = _parse_ispcentric_mark_index(row.get("new-connection-mark") or "")
+            iface = (row.get("in-interface") or "").strip()
+            if index is not None and iface:
+                mapping[index] = iface
+    except Exception:
+        return mapping
+    return mapping
+
+
+def _read_live_session_addresses(sock: socket.socket) -> dict[str, dict[str, str]]:
+    """Map client IP to session metadata (PPPoE username, MAC, source)."""
+    sessions: dict[str, dict[str, str]] = {}
+
+    def _remember(ip: str, *, source: str, username: str = "", mac: str = "") -> None:
+        ip = _parse_connection_address(ip)
+        if not ip:
+            return
+        existing = sessions.get(ip) or {}
+        sessions[ip] = {
+            "source": source or existing.get("source") or "",
+            "pppoe_username": username or existing.get("pppoe_username") or "",
+            "mac": mac or existing.get("mac") or "",
+        }
+
+    try:
+        for row in _print(sock, "/ppp/active", props="name,address"):
+            _remember(
+                row.get("address") or "",
+                source="pppoe",
+                username=(row.get("name") or "").strip(),
+            )
+    except Exception:
+        pass
+
+    try:
+        for row in _print(sock, "/ip/hotspot/active", props="address,mac-address,user"):
+            mac = _mac_compact(row.get("mac-address") or row.get("user") or "")
+            _remember(row.get("address") or "", source="hotspot", mac=mac)
+    except Exception:
+        pass
+
+    try:
+        for row in _print(
+            sock,
+            "/ip/dhcp-server/lease",
+            props="address,mac-address,active-mac-address,status",
+        ):
+            status = (row.get("status") or "").strip().lower()
+            if status and status not in {"bound", "waiting"}:
+                continue
+            mac = _mac_compact(
+                row.get("active-mac-address") or row.get("mac-address") or ""
+            )
+            _remember(row.get("address") or "", source="dhcp", mac=mac)
+    except Exception:
+        pass
+
+    return sessions
+
+
+def read_client_wan_usage(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    uplink_mode: str = "single",
+    member_ports: list[str] | None = None,
+    primary_wan: str = "",
+    failover_active_port: str = "",
+    bond_interface: str = "",
+    port: int = 8728,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """
+    Live per-client WAN usage from firewall connection marks and active sessions.
+
+    For balance/smart_balance, groups LAN client IPs by dominant PCC mark.
+    For single/failover/bond, assigns the active/default WAN port.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    mode = (uplink_mode or "single").strip()
+    members = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    empty = {
+        "ok": False,
+        "mark_to_port": {},
+        "ip_usage": {},
+        "sessions": {},
+        "default_isp_port": "",
+        "uses_connection_marks": False,
+        "error": "Missing router credentials.",
+    }
+    if not host or not username:
+        return empty
+
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            mark_to_port = _read_balance_mark_to_port(sock)
+            if not mark_to_port and len(members) >= 2:
+                for index, name in enumerate(members):
+                    mark_to_port[index] = name
+
+            sessions = _read_live_session_addresses(sock)
+            ip_mark_counts: dict[str, dict[int, int]] = {}
+            total_marked = 0
+
+            conn_rows: list[dict[str, str]] = []
+            try:
+                conn_rows = _print(
+                    sock,
+                    "/ip/firewall/connection",
+                    props="src-address,connection-mark,repl-connection-mark",
+                    query={"connection-mark~": UPLINK_CONN_MARK_PREFIX},
+                )
+            except Exception:
+                conn_rows = []
+            if not conn_rows:
+                try:
+                    conn_rows = _print(
+                        sock,
+                        "/ip/firewall/connection",
+                        props="src-address,connection-mark,repl-connection-mark",
+                    )
+                except Exception:
+                    conn_rows = []
+
+            for row in conn_rows:
+                mark = (row.get("connection-mark") or "").strip()
+                if not mark or mark == "no-mark":
+                    mark = (row.get("repl-connection-mark") or "").strip()
+                index = _parse_ispcentric_mark_index(mark)
+                if index is None:
+                    continue
+                src = _parse_connection_address(row.get("src-address") or "")
+                if not src or not _is_likely_lan_ip(src):
+                    continue
+                bucket = ip_mark_counts.setdefault(src, {})
+                bucket[index] = bucket.get(index, 0) + 1
+                total_marked += 1
+
+            uses_marks = total_marked > 0 and bool(mark_to_port)
+            default_port = ""
+            if mode == "bond":
+                default_port = (bond_interface or "").strip() or (
+                    members[0] if members else ""
+                )
+            elif mode == "failover":
+                default_port = (failover_active_port or primary_wan or "").strip()
+            elif mode in {"balance", "smart_balance"}:
+                default_port = (members[0] if members else primary_wan or "").strip()
+            else:
+                default_port = (primary_wan or members[0] if members else "").strip()
+
+            ip_usage: dict[str, dict[str, Any]] = {}
+            for ip, counts in ip_mark_counts.items():
+                best_index = max(counts, key=lambda idx: counts[idx])
+                isp_port = mark_to_port.get(best_index, "") or default_port
+                ip_usage[ip] = {
+                    "isp_port": isp_port,
+                    "connections": sum(counts.values()),
+                    "mark_index": best_index,
+                    "source": "connection_mark",
+                }
+
+            for ip in sessions:
+                if ip in ip_usage:
+                    continue
+                if default_port:
+                    ip_usage[ip] = {
+                        "isp_port": default_port,
+                        "connections": 0,
+                        "mark_index": None,
+                        "source": "default_wan",
+                    }
+
+            mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
+            return {
+                "ok": True,
+                "mark_to_port": mark_to_port_out,
+                "ip_usage": ip_usage,
+                "sessions": sessions,
+                "default_isp_port": default_port,
+                "uses_connection_marks": uses_marks,
+                "error": "",
+            }
+    except TimeoutError:
+        return {**empty, "error": "Connection timed out."}
+    except OSError as exc:
+        return {
+            **empty,
+            "error": f"Could not reach {host}:8728.",
+            "detail": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **empty,
+            "error": str(exc) or "Could not read client WAN usage.",
+        }

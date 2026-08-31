@@ -14,6 +14,7 @@ from .models import (
     PaymentGateway,
     PlatformCommunicationSettings,
     RoleCommission,
+    SecurityAuditLog,
 )
 
 
@@ -273,3 +274,19 @@ class NetworkEquipmentAllocationAdmin(admin.ModelAdmin):
     )
     raw_id_fields = ("equipment", "employee", "serial", "allocated_by")
     readonly_fields = ("allocated_at",)
+
+
+@admin.register(SecurityAuditLog)
+class SecurityAuditLogAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "action", "actor", "actor_ip", "target")
+    list_filter = ("action",)
+    search_fields = ("target", "actor_ip", "actor__username")
+    readonly_fields = ("created_at", "action", "actor", "actor_ip", "target", "detail")
+    ordering = ("-created_at",)
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+

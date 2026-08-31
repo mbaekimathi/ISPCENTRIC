@@ -161,20 +161,11 @@ class MikroTikOnboardForm(forms.ModelForm):
         return (self.cleaned_data.get("name") or "").strip()
 
     def clean_host(self):
-        from core.mikrotik_connect import (
-            is_factory_default_mikrotik_ip,
-            normalize_mikrotik_host,
-        )
+        from core.mikrotik_connect import normalize_mikrotik_host
 
         host = normalize_mikrotik_host(self.cleaned_data.get("host") or "")
         if not host:
             raise forms.ValidationError("Enter the MikroTik IP address or hostname.")
-        if is_factory_default_mikrotik_ip(host):
-            raise forms.ValidationError(
-                "Change the MikroTik LAN IP away from the factory default "
-                "192.168.88.1 before onboarding — keeping it causes collisions "
-                "with other MikroTik routers."
-            )
         return host
 
     def clean_username(self):

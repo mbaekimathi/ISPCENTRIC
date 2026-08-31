@@ -1,0 +1,89 @@
+{% extends "core/client_base.html" %}
+{% load static %}
+
+{% block title %}Assigned ports — {{ router.name }} — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+<div class="mk-page mk-assigned-ports-page">
+  <header class="mk-page-hero">
+    <div class="mk-page-hero-copy">
+      <p class="mk-page-kicker">Live analysis</p>
+      <h1 class="mk-page-title">Assigned ports</h1>
+      <p class="mk-page-lead">
+        ISP health and which internet link each customer on
+        <strong>{{ router.name }}</strong>
+        <span class="mk-host-chip">{{ router.host }}</span>
+        is using right now.
+      </p>
+    </div>
+    <div class="mk-ports-hero-actions">
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
+      <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back</a>
+    </div>
+  </header>
+
+  {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+  <section
+    class="mk-surface mk-assigned-ports-surface"
+    id="mikrotik-assigned-ports-root"
+    data-ports-live-url="{{ ports_live_url }}"
+    data-ports-loading="{% if ports_loading %}1{% else %}0{% endif %}"
+    data-is-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-router-id="{{ router.id }}"
+  >
+    <div class="mk-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
+      <div class="mk-loading-pulse" aria-hidden="true"></div>
+      <div>
+        <p class="mk-loading-title">Reading live ISP data…</p>
+        <p class="mk-help-note">Connecting to {{ router.name }} for client WAN mapping.</p>
+      </div>
+    </div>
+
+    <div class="mk-banner is-danger mk-ports-error" role="alert" data-assigned-error hidden>
+      <p data-assigned-error-text></p>
+      <button type="button" class="btn btn-ghost" data-assigned-retry hidden>Retry</button>
+    </div>
+
+    <section class="mk-router-analysis" data-router-analysis hidden aria-label="Router analysis and client ISP mapping">
+      <header class="mk-router-analysis-head">
+        <div>
+          <p class="mk-section-step">Router analysis</p>
+          <h2 class="mk-router-analysis-title">ISP links &amp; live share</h2>
+          <p class="mk-help-note" data-router-analysis-note></p>
+        </div>
+        <div class="mk-router-analysis-summary" data-router-analysis-summary hidden></div>
+      </header>
+
+      <div class="mk-router-analysis-isps" data-router-analysis-isps hidden></div>
+
+      <div class="mk-router-analysis-clients-wrap" data-router-analysis-clients-wrap hidden>
+        <div class="mk-router-analysis-clients-head">
+          <h3 class="mk-router-analysis-subtitle">Clients by ISP</h3>
+          <p class="mk-help-note">Which internet link each assigned customer is using right now.</p>
+        </div>
+        <div class="mk-router-analysis-table-wrap">
+          <table class="mk-router-analysis-table">
+            <thead>
+              <tr>
+                <th scope="col">Client</th>
+                <th scope="col">Account</th>
+                <th scope="col">Service</th>
+                <th scope="col">IP</th>
+                <th scope="col">ISP / port</th>
+                <th scope="col">Sessions</th>
+              </tr>
+            </thead>
+            <tbody data-router-analysis-clients></tbody>
+          </table>
+        </div>
+        <p class="mk-help-note" data-router-analysis-empty hidden>No customers are assigned to this MikroTik yet.</p>
+      </div>
+
+      <p class="mk-help-note mk-router-analysis-error" data-router-analysis-error hidden></p>
+    </section>
+  </section>
+</div>
+
+<script src="{% static 'js/mikrotik_assigned_ports.js' %}" defer></script>
+{% endblock %}

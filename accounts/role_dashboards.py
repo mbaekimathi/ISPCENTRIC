@@ -182,6 +182,8 @@ def switch_role_view(request):
         messages.error(request, "Role switch is only available to IT Support.")
         return redirect(home_url_for_user(request.user, request))
 
+    from accounts.audit import record_audit
+
     role = (request.POST.get("role") or "").strip()
     if role == CLIENT_VIEW_VALUE:
         raw_org = (request.POST.get("organization_id") or "").strip()
@@ -194,6 +196,12 @@ def switch_role_view(request):
             messages.error(request, "Choose a client organization to view.")
             return redirect(home_url_for_user(request.user, request))
         set_client_view(request, org.pk)
+        record_audit(
+            action="client_view",
+            request=request,
+            target=f"org:{org.pk}",
+            detail={"organization": org.name, "join_code": org.join_code},
+        )
         messages.success(request, f"Now viewing as client {org.name}.")
         return redirect("core:workspace")
 
@@ -202,6 +210,12 @@ def switch_role_view(request):
         return redirect(home_url_for_user(request.user, request))
 
     set_role_view(request, role)
+    record_audit(
+        action="role_switch",
+        request=request,
+        target=role,
+        detail={"role_label": dict(Employee.Role.choices).get(role, role)},
+    )
     messages.success(request, f"Now viewing as {dict(Employee.Role.choices)[role]}.")
     return redirect(ROLE_DASHBOARD_NAMES[role])
 

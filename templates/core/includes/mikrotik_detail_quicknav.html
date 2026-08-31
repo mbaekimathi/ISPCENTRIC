@@ -1,0 +1,27 @@
+<nav class="mk-detail-quicknav" aria-label="Router sections">
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'overview' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_detail' router.id %}"
+    {% if mikrotik_quicknav_active == 'overview' %}aria-current="page"{% endif %}
+  >Overview</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'ports' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_ports' router.id %}"
+    {% if mikrotik_quicknav_active == 'ports' %}aria-current="page"{% endif %}
+  >Port setup</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'assigned_ports' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_assigned_ports' router.id %}"
+    {% if mikrotik_quicknav_active == 'assigned_ports' %}aria-current="page"{% endif %}
+  >Assigned ports</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'pppoe_hotspot' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_pppoe_settings' router.id %}"
+    {% if mikrotik_quicknav_active == 'pppoe_hotspot' %}aria-current="page"{% endif %}
+  >PPPoE &amp; Hotspot</a>
+  <a
+    class="mk-detail-quicklink{% if mikrotik_quicknav_active == 'clean_uplink' %} is-active{% endif %}"
+    href="{% url 'core:mikrotik_clean_uplink' router.id %}"
+    {% if mikrotik_quicknav_active == 'clean_uplink' %}aria-current="page"{% endif %}
+  >Clean uplink</a>
+</nav>

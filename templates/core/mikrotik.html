@@ -787,12 +787,15 @@
               {% if onboard_form.location.errors %}<div class="field-error">{{ onboard_form.location.errors|striptags }}</div>{% endif %}
             </div>
             <div class="field field-span-2">
-              <label for="id_mikrotik_host_onboard">Change IP <span class="mikrotik-required-mark" id="mikrotik-host-required-mark" hidden>*</span></label>
+              <label for="mikrotik-onboard-host-display" id="mikrotik-host-onboard-label">LAN IP</label>
               <input type="hidden" name="host_original" id="id_mikrotik_host_original" value="{{ request.POST.host_original|default:'' }}">
               <input type="hidden" name="tunnel_address" id="id_mikrotik_tunnel_address" value="{{ request.POST.tunnel_address|default:'' }}">
-              <input type="text" class="form-control" id="id_mikrotik_host_onboard" autocomplete="off" placeholder="e.g. 192.168.10.1" value="{% if request.POST.host_original %}{{ onboard_form.host.value|default:'' }}{% endif %}">
+              <input type="hidden" name="lan_ip_applied" id="id_mikrotik_lan_ip_applied" value="{{ request.POST.lan_ip_applied|default:'' }}">
+              <input type="hidden" name="connect_serial_number" id="id_mikrotik_connect_serial" value="{{ request.POST.connect_serial_number|default:'' }}">
+              <input type="hidden" name="connect_software_id" id="id_mikrotik_connect_software_id" value="{{ request.POST.connect_software_id|default:'' }}">
+              <p class="mikrotik-onboard-host form-control is-readonly" id="mikrotik-onboard-host-display" aria-live="polite">{% if request.POST.host_original %}{{ onboard_form.host.value|default:'' }}{% else %}—{% endif %}</p>
               <p class="mikrotik-section-hint" id="mikrotik-host-change-hint">
-                If this MikroTik still uses the factory IP <strong>192.168.88.1</strong>, you must set a unique LAN IP here before onboarding — otherwise routers will collide.
+                The same IP used to Connect is saved on this router — no separate LAN IP step.
               </p>
               {% if onboard_form.host.errors %}<div class="field-error" id="mikrotik-host-onboard-error">{{ onboard_form.host.errors|striptags }}</div>{% endif %}
             </div>
@@ -932,8 +935,10 @@
   var tunnelAddress = document.getElementById("mikrotik-tunnel-address");
   var tunnelPhone = document.getElementById("mikrotik-tunnel-phone");
   var onboardingStkUrl = tunnelCard ? (tunnelCard.getAttribute("data-onboarding-stk-url") || "") : "";
+  var onboardingGuardUrl = "{% url 'core:mikrotik_onboarding_guard' %}";
   var paidStkId = null;
   var onboardingPollTimer = null;
+  var onboardingGuardTimer = null;
   var tunnelPaywait = document.getElementById("mikrotik-tunnel-paywait");
   var tunnelPaywaitTitle = document.getElementById("mikrotik-tunnel-paywait-title");
   var tunnelPaywaitDetail = document.getElementById("mikrotik-tunnel-paywait-detail");
@@ -1006,11 +1011,13 @@
   var hostInput = document.getElementById("id_mikrotik_host");
   var usernameInput = document.getElementById("id_mikrotik_username");
   var passwordInput = document.getElementById("id_mikrotik_password");
-  var hostOnboard = document.getElementById("id_mikrotik_host_onboard");
+  var hostOnboardDisplay = document.getElementById("mikrotik-onboard-host-display");
   var hostOriginalInput = document.getElementById("id_mikrotik_host_original");
+  var lanIpAppliedInput = document.getElementById("id_mikrotik_lan_ip_applied");
   var tunnelAddressInput = document.getElementById("id_mikrotik_tunnel_address");
+  var connectSerialInput = document.getElementById("id_mikrotik_connect_serial");
+  var connectSoftwareIdInput = document.getElementById("id_mikrotik_connect_software_id");
   var hostChangeHint = document.getElementById("mikrotik-host-change-hint");
-  var hostRequiredMark = document.getElementById("mikrotik-host-required-mark");
   var usernameOnboard = document.getElementById("id_mikrotik_username_onboard");
   var passwordOnboard = document.getElementById("id_mikrotik_password_onboard");
   var wifiSsidInput = document.getElementById("id_mikrotik_wifi_ssid");
@@ -1021,7 +1028,83 @@
   var wifiHint = document.getElementById("mikrotik-wifi-hint");
   var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
   var FACTORY_DEFAULT_IP = "192.168.88.1";
-  var requiresIpChange = false;
+  var scriptAssignedLanIp = "";
+  var hostOnboardLabel = document.getElementById("mikrotik-host-onboard-label");
+
+  function shouldAutoFillDiscoveredLan(discovered, planned) {
+    if (!discovered) return false;
+    var current = hostInput ? hostInput.value.trim() : "";
+    if (!current) return true;
+    if (planned && current === planned) return true;
+    if (current === FACTORY_DEFAULT_IP) return true;
+    if (tunnelReadyAddress && current === tunnelReadyAddress) return true;
+    return false;
+  }
+
+  function pickDeviceForTunnel() {
+    var tunnel = (tunnelReadyAddress || "").trim();
+    var marker = tunnel ? ("ispcentric." + tunnel).toLowerCase() : "";
+    var newDevices = discoveredDevices.filter(function (d) { return !d.onboarded; });
+    var i;
+    if (marker) {
+      for (i = 0; i < newDevices.length; i++) {
+        var ident = String(newDevices[i].identity || newDevices[i].name || "").toLowerCase();
+        if (ident.indexOf(marker) >= 0) return newDevices[i];
+      }
+    }
+    if (newDevices.length === 1) return newDevices[0];
+    return null;
+  }
+
+  function autoFillDiscoveredHost(force) {
+    var pick = pickDeviceForTunnel();
+    if (!pick || !pick.host) return;
+    var current = hostInput ? hostInput.value.trim() : "";
+    var planned = scriptAssignedLanIp || FACTORY_DEFAULT_IP;
+    var shouldReplace = force || !current || current === planned || current === FACTORY_DEFAULT_IP;
+    if (tunnelReadyAddress && current === tunnelReadyAddress) shouldReplace = true;
+    if (!shouldReplace) return;
+    applySingleOnboardHost(pick.host);
+    setHostHint("Auto-filled LAN " + pick.host + " from network scan.");
+  }
+
+  function applySingleOnboardHost(ip, options) {
+    options = options || {};
+    var value = String(ip || "").trim();
+    if (hostInput) hostInput.value = value;
+    if (hostOriginalInput) hostOriginalInput.value = value;
+    if (hostOnboardDisplay) hostOnboardDisplay.textContent = value || "—";
+    if (lanIpAppliedInput) {
+      lanIpAppliedInput.value = options.lanIpApplied ? "1" : "";
+    }
+    if (hostChangeHint) {
+      if (options.lanMessage) {
+        hostChangeHint.textContent = options.lanMessage;
+        hostChangeHint.classList.add("is-warning");
+      } else if (scriptAssignedLanIp && tunnelReadyAddress) {
+        hostChangeHint.innerHTML =
+          "Connect and save LAN <strong>" + escapeHtml(scriptAssignedLanIp) +
+          "</strong>. Tunnel <strong>" + escapeHtml(tunnelReadyAddress) +
+          "</strong> is used for remote access from the VPS.";
+        hostChangeHint.classList.remove("is-warning");
+      } else if (tunnelReadyAddress && value && value !== tunnelReadyAddress) {
+        hostChangeHint.innerHTML =
+          "LAN <strong>" + escapeHtml(value) +
+          "</strong> for Connect here. Tunnel <strong>" +
+          escapeHtml(tunnelReadyAddress) + "</strong> for the hosted server.";
+        hostChangeHint.classList.remove("is-warning");
+      } else if (scriptAssignedLanIp) {
+        hostChangeHint.innerHTML =
+          "Connect uses LAN <strong>" + escapeHtml(scriptAssignedLanIp) + "</strong>.";
+        hostChangeHint.classList.remove("is-warning");
+      } else {
+        hostChangeHint.textContent =
+          "The IP used to Connect is saved as this router's LAN address.";
+        hostChangeHint.classList.remove("is-warning");
+      }
+    }
+    scheduleSaveOnboardDraft();
+  }
 
   function escapeHtml(value) {
     return String(value || "")
@@ -1426,10 +1509,13 @@
       wifiSsidOriginal: wifiSsidOriginal ? wifiSsidOriginal.value : "",
       wifiPasswordOriginal: wifiPasswordOriginal ? wifiPasswordOriginal.value : "",
       wifiMode: wifiModeInput ? wifiModeInput.value : "",
-      hostOnboard: hostOnboard ? hostOnboard.value : "",
+      hostOnboard: hostOnboardDisplay ? hostOnboardDisplay.textContent : "",
       hostOriginal: hostOriginalInput ? hostOriginalInput.value : "",
+      lanIpApplied: lanIpAppliedInput ? lanIpAppliedInput.value : "",
       tunnelAddress: tunnelAddressInput ? tunnelAddressInput.value : (tunnelReadyAddress || ""),
-      requiresIpChange: !!requiresIpChange,
+      connectSerialNumber: connectSerialInput ? connectSerialInput.value : "",
+      connectSoftwareId: connectSoftwareIdInput ? connectSoftwareIdInput.value : "",
+      scriptAssignedLanIp: scriptAssignedLanIp || "",
       usernameOnboard: usernameOnboard ? usernameOnboard.value : "",
       passwordOnboard: passwordOnboard ? passwordOnboard.value : ""
     };
@@ -1501,15 +1587,23 @@
       wifiPasswordOriginal.value = data.wifiPasswordOriginal;
     }
     if (wifiModeInput && data.wifiMode != null) wifiModeInput.value = data.wifiMode;
-    if (hostOnboard && data.hostOnboard != null) hostOnboard.value = data.hostOnboard;
+    if (data.scriptAssignedLanIp) {
+      setScriptAssignedLan(data.scriptAssignedLanIp);
+    } else if (data.hostOriginal || data.hostOnboard || data.host) {
+      applySingleOnboardHost(
+        data.hostOriginal || data.hostOnboard || data.host,
+        { lanIpApplied: data.lanIpApplied === "1" }
+      );
+    }
     if (hostOriginalInput && data.hostOriginal != null) hostOriginalInput.value = data.hostOriginal;
+    if (lanIpAppliedInput && data.lanIpApplied != null) lanIpAppliedInput.value = data.lanIpApplied;
     if (tunnelAddressInput && data.tunnelAddress != null) tunnelAddressInput.value = data.tunnelAddress;
     else syncTunnelAddressField();
-    if (data.requiresIpChange || isFactoryDefaultIp(data.hostOriginal || data.host)) {
-      setRequiresIpChange(true, data.hostOriginal || data.host || "");
-      if (hostOnboard && data.hostOnboard != null) hostOnboard.value = data.hostOnboard;
-    } else {
-      setRequiresIpChange(false, data.hostOriginal || data.host || "");
+    if (connectSerialInput && data.connectSerialNumber != null) {
+      connectSerialInput.value = data.connectSerialNumber;
+    }
+    if (connectSoftwareIdInput && data.connectSoftwareId != null) {
+      connectSoftwareIdInput.value = data.connectSoftwareId;
     }
     if (usernameOnboard && data.usernameOnboard != null) usernameOnboard.value = data.usernameOnboard;
     if (passwordOnboard && data.passwordOnboard != null) passwordOnboard.value = data.passwordOnboard;
@@ -1579,8 +1673,8 @@
 
   function applyTunnelIp(address) {
     if (!address || !hostInput) return;
-    hostInput.value = address;
-    setHostHint("Using tunnel IP " + address + " — paste the script in Winbox first, then Connect.");
+    applySingleOnboardHost(address);
+    setHostHint("Using management IP " + address + " — paste the script in Winbox first, then Connect.");
     showConnectStatus("");
     scheduleSaveOnboardDraft();
     if (usernameInput && !usernameInput.value.trim()) {
@@ -1610,6 +1704,15 @@
     options = options || {};
     tunnelScriptText = (data && data.script) || "";
     tunnelReadyAddress = (data && data.address) || "";
+    if (data && data.lan_address) {
+      scriptAssignedLanIp = String(data.lan_address).trim();
+      if (hostOnboardLabel) hostOnboardLabel.textContent = "LAN IP";
+    }
+    if (data && data.discovered_lan) {
+      applySingleOnboardHost(data.discovered_lan);
+    } else {
+      autoFillDiscoveredHost(true);
+    }
     tunnelStatusToken = (data && data.status_token) || "";
     syncTunnelAddressField();
     if (!options.resume) tunnelApiReady = false;
@@ -1674,6 +1777,7 @@
     tunnelReadyAddress = "";
     tunnelStatusToken = "";
     tunnelApiReady = false;
+    setScriptAssignedLan("");
     stopTunnelStatusPolling();
     if (tunnelScript) tunnelScript.textContent = "";
     if (tunnelPeerBlock) tunnelPeerBlock.textContent = "";
@@ -1759,6 +1863,19 @@
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         var data = result.data || {};
+        if (data.script_lan_address) {
+          scriptAssignedLanIp = String(data.script_lan_address).trim();
+          if (hostOnboardLabel) hostOnboardLabel.textContent = "LAN IP";
+        }
+        if (
+          data.lan_address &&
+          shouldAutoFillDiscoveredLan(
+            data.lan_address,
+            data.script_lan_address || scriptAssignedLanIp
+          )
+        ) {
+          applySingleOnboardHost(data.lan_address);
+        }
         if (!result.ok || !data.ok) {
           setTunnelCheckState("error", data.error || "Could not check the tunnel.", false, false);
           renderTunnelChecks([]);
@@ -1767,9 +1884,8 @@
         }
         renderTunnelChecks(data.checks || []);
         if (data.local_mode) {
-          if (data.lan_address && hostInput) {
-            hostInput.value = data.lan_address;
-            scheduleSaveOnboardDraft();
+          if (data.lan_address) {
+            applySingleOnboardHost(data.lan_address);
           }
           // Factory reset / missing script must clear a previous false "ready".
           if (!data.ready && tunnelApiReady) {
@@ -1783,6 +1899,9 @@
             stopTunnelStatusPolling();
             setTunnelCheckState("ready", "LAN connected · script confirmed", true, true);
             setStep4IpCopy("lan", data.lan_address, data.address || tunnelReadyAddress);
+            if (data.lan_address) {
+              applySingleOnboardHost(data.lan_address);
+            }
             setCheckNowSecondary(true);
             setTunnelMeters(
               data.lan_address ? data.lan_address : "Online",
@@ -1969,6 +2088,36 @@
     stopTunnelStatusPolling();
     checkTunnelStatus();
     tunnelStatusTimer = setInterval(checkTunnelStatus, 3000);
+  }
+
+  function postOnboardingGuard(action) {
+    if (!onboardingGuardUrl) return Promise.resolve();
+    var body = new FormData();
+    body.append("action", action || "ping");
+    body.append("csrfmiddlewaretoken", csrfToken());
+    return fetch(onboardingGuardUrl, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: { "X-Requested-With": "XMLHttpRequest", "Accept": "application/json" }
+    }).catch(function () {});
+  }
+
+  function startOnboardingGuard() {
+    postOnboardingGuard("ping");
+    if (onboardingGuardTimer) clearInterval(onboardingGuardTimer);
+    onboardingGuardTimer = setInterval(function () {
+      if (modal.hidden) return;
+      postOnboardingGuard("ping");
+    }, 120000);
+  }
+
+  function stopOnboardingGuard() {
+    if (onboardingGuardTimer) {
+      clearInterval(onboardingGuardTimer);
+      onboardingGuardTimer = null;
+    }
+    postOnboardingGuard("clear");
   }
 
   function stopOnboardingPoll() {
@@ -2263,9 +2412,7 @@
     if (titleEl) titleEl.textContent = onboard ? "Onboard MikroTik" : "Connect to a New MikroTik";
     if (subEl) {
       subEl.textContent = onboard
-        ? (requiresIpChange
-          ? "Name the router, set location, and change the factory LAN IP before saving."
-          : "Name the router, set its location, Wi‑Fi, and adjust IP or credentials if needed.")
+        ? "Name the router, set location, and confirm the management IP from Connect."
         : (wireguardReady
           ? "Generate the Winbox script if this server is remote, then sign in to the router."
           : "Enter the router IP and login. Tunnel setup is optional on a local network.");
@@ -2288,51 +2435,39 @@
     return String(value || "").trim().toLowerCase() === FACTORY_DEFAULT_IP;
   }
 
-  function setRequiresIpChange(required, connectHost) {
-    requiresIpChange = !!required;
-    if (hostRequiredMark) hostRequiredMark.hidden = !requiresIpChange;
-    if (hostOnboard) {
-      hostOnboard.required = requiresIpChange;
-      hostOnboard.classList.toggle("is-required-ip", requiresIpChange);
-      if (requiresIpChange) {
-        hostOnboard.value = "";
-        hostOnboard.placeholder = "e.g. 192.168.10.1 (required)";
-      } else {
-        hostOnboard.placeholder = "e.g. 192.168.10.1";
-      }
+  function collectUsedLanThirdOctets() {
+    var used = {};
+    document.querySelectorAll("[data-router-host]").forEach(function (el) {
+      var host = String(el.getAttribute("data-router-host") || "").trim();
+      var match = /^192\.168\.(\d+)\./i.exec(host);
+      if (match) used[parseInt(match[1], 10)] = true;
+    });
+    return used;
+  }
+
+  function suggestUniqueLanIp() {
+    var used = collectUsedLanThirdOctets();
+    var reserved = { 88: true, 189: true };
+    var third;
+    for (third = 10; third < 256; third++) {
+      if (!reserved[third] && !used[third]) return "192.168." + third + ".1";
     }
-    if (hostChangeHint) {
-      if (requiresIpChange) {
-        hostChangeHint.innerHTML =
-          "This MikroTik is still on the factory IP <strong>" +
-          FACTORY_DEFAULT_IP +
-          "</strong>. Enter a unique LAN IP (for example 192.168.10.1) — onboarding is blocked until you change it, to avoid collisions with other routers.";
-        hostChangeHint.classList.add("is-warning");
-      } else {
-        hostChangeHint.innerHTML =
-          "Optionally set a unique LAN IP here. Avoid the factory default <strong>" +
-          FACTORY_DEFAULT_IP +
-          "</strong> so routers do not collide.";
-        hostChangeHint.classList.remove("is-warning");
-      }
+    for (third = 1; third < 256; third++) {
+      if (!reserved[third] && !used[third]) return "192.168." + third + ".1";
     }
-    if (hostOriginalInput) {
-      hostOriginalInput.value = connectHost || hostOriginalInput.value || "";
+    return "192.168.10.1";
+  }
+
+  function setScriptAssignedLan(lanIp) {
+    scriptAssignedLanIp = String(lanIp || "").trim();
+    if (hostOnboardLabel) {
+      hostOnboardLabel.textContent = "LAN IP";
     }
     syncTunnelAddressField();
+    scheduleSaveOnboardDraft();
   }
 
   function syncOnboardCredentialsFromConnect() {
-    var connectHost = hostInput ? hostInput.value.trim() : "";
-    if (hostOriginalInput) hostOriginalInput.value = connectHost;
-    if (hostOnboard && hostInput) {
-      if (isFactoryDefaultIp(connectHost)) {
-        setRequiresIpChange(true, connectHost);
-      } else {
-        hostOnboard.value = connectHost;
-        setRequiresIpChange(false, connectHost);
-      }
-    }
     if (usernameOnboard && usernameInput) usernameOnboard.value = usernameInput.value;
     if (passwordOnboard && passwordInput) passwordOnboard.value = passwordInput.value;
   }
@@ -2381,7 +2516,6 @@
   }
 
   function syncConnectCredentialsFromOnboard() {
-    if (hostInput && hostOnboard) hostInput.value = hostOnboard.value;
     if (usernameInput && usernameOnboard) usernameInput.value = usernameOnboard.value;
     if (passwordInput && passwordOnboard) passwordInput.value = passwordOnboard.value;
   }
@@ -2504,7 +2638,7 @@
 
   function applyDevice(device) {
     if (!device || !hostInput) return;
-    hostInput.value = device.host || "";
+    applySingleOnboardHost(device.host || "");
     if (device.model) setSelectedModel(device.model, false);
     if (nameInput && device.name && !nameInput.value) nameInput.value = device.name;
     closeHostPicker();
@@ -2559,6 +2693,7 @@
         applyDevice(discoveredDevices[Number(btn.getAttribute("data-idx"))]);
       });
     });
+    autoFillDiscoveredHost(false);
   }
 
   function runDiscovery(full) {
@@ -2611,6 +2746,7 @@
     document.body.classList.add("role-modal-open");
     setStep((draft && draft.step === "onboard") ? "onboard" : "connect");
     showConnectStatus("");
+    startOnboardingGuard();
     startLiveDiscovery();
     if (wireguardReady && !tunnelApiReady) setConnectCredentialsVisible(false);
     else setConnectCredentialsVisible(true);
@@ -2625,6 +2761,7 @@
     modal.hidden = true;
     modal.setAttribute("aria-hidden", "true");
     document.body.classList.remove("role-modal-open");
+    stopOnboardingGuard();
     stopLiveDiscovery();
     stopTunnelStatusPolling();
     hideSuggest();
@@ -2667,6 +2804,11 @@
     body.append("username", username);
     body.append("password", password);
     body.append("csrfmiddlewaretoken", csrfToken());
+    if (scriptAssignedLanIp) body.append("script_lan", scriptAssignedLanIp);
+    syncTunnelAddressField();
+    if (tunnelAddressInput && tunnelAddressInput.value.trim()) {
+      body.append("tunnel_host", tunnelAddressInput.value.trim());
+    }
 
     fetch(connectUrl, {
       method: "POST",
@@ -2701,10 +2843,17 @@
         }
         if (data.model) setSelectedModel(data.model, false);
         if (data.factory_default_ip) FACTORY_DEFAULT_IP = String(data.factory_default_ip);
-        syncOnboardCredentialsFromConnect();
-        if (data.requires_ip_change) {
-          setRequiresIpChange(true, data.host || host);
+        if (connectSerialInput) connectSerialInput.value = data.serial_number || "";
+        if (connectSoftwareIdInput) connectSoftwareIdInput.value = data.software_id || "";
+        applySingleOnboardHost(data.host || host, {
+          lanIpApplied: !!data.lan_ip_applied,
+          lanMessage: data.lan_message || ""
+        });
+        if (data.tunnel_host) {
+          tunnelReadyAddress = data.tunnel_host;
+          syncTunnelAddressField();
         }
+        syncOnboardCredentialsFromConnect();
         fillWifiFromRouter(data);
         if (connectedTitle) connectedTitle.textContent = "Connected to " + (data.identity || data.name || host);
         if (connectedMeta) {
@@ -2750,8 +2899,7 @@
         );
         if (hostInput && hostInput.value.trim()) {
           setHostHint(
-            "Connecting via LAN IP " + hostInput.value.trim() +
-            ". Tunnel IP stays reserved for remote access."
+            "Connecting via management IP " + hostInput.value.trim() + "."
           );
         }
         return;
@@ -2817,7 +2965,7 @@
   }
   [
     tunnelLabel, usernameInput, passwordInput, nameInput, locationInput,
-    wifiSsidInput, wifiPasswordInput, hostOnboard, usernameOnboard, passwordOnboard
+    wifiSsidInput, wifiPasswordInput, usernameOnboard, passwordOnboard
   ].forEach(function (el) {
     if (!el) return;
     el.addEventListener("input", scheduleSaveOnboardDraft);
@@ -2844,6 +2992,7 @@
   var serverOpenedOnboard = {% if open_mikrotik_onboard %}true{% else %}false{% endif %};
   if (!modal.hidden) {
     document.body.classList.add("role-modal-open");
+    startOnboardingGuard();
     if (!serverOpenedOnboard) restoreOnboardDraft();
     else saveOnboardDraft();
     var draft = readOnboardDraft();
@@ -2853,15 +3002,7 @@
       !!(wifiPasswordInput && wifiPasswordInput.value) ||
       !!modal.querySelector("#mikrotik-step-onboard .field-error");
     if (reopenOnboard) {
-      var postedOriginal = hostOriginalInput ? hostOriginalInput.value.trim() : "";
-      if (postedOriginal && isFactoryDefaultIp(postedOriginal)) {
-        setRequiresIpChange(true, postedOriginal);
-        if (hostOnboard && hostInput && hostInput.value.trim() && !isFactoryDefaultIp(hostInput.value)) {
-          hostOnboard.value = hostInput.value.trim();
-        }
-      } else {
-        syncOnboardCredentialsFromConnect();
-      }
+      syncOnboardCredentialsFromConnect();
       setStep("onboard");
     } else {
       setStep("connect");
@@ -3066,30 +3207,15 @@
       syncConnectCredentialsFromOnboard();
       syncTunnelAddressField();
 
-      var newHost = hostOnboard ? hostOnboard.value.trim() : "";
-      var originalHost = hostOriginalInput
-        ? hostOriginalInput.value.trim()
-        : (hostInput ? hostInput.value.trim() : "");
-      if (requiresIpChange || isFactoryDefaultIp(originalHost) || isFactoryDefaultIp(newHost)) {
-        if (!newHost) {
-          e.preventDefault();
-          alert("Enter a new MikroTik LAN IP — the factory default 192.168.88.1 cannot be used.");
-          if (hostOnboard) hostOnboard.focus();
-          return;
-        }
-        if (isFactoryDefaultIp(newHost)) {
-          e.preventDefault();
-          alert("Choose a LAN IP other than the factory default 192.168.88.1 to avoid collisions.");
-          if (hostOnboard) hostOnboard.focus();
-          return;
-        }
-        if (newHost === originalHost) {
-          e.preventDefault();
-          alert("Enter a different LAN IP than " + originalHost + " before onboarding.");
-          if (hostOnboard) hostOnboard.focus();
-          return;
-        }
+      var managementHost = hostInput ? hostInput.value.trim() : "";
+      if (!managementHost) {
+        e.preventDefault();
+        alert("Connect to the MikroTik first so a management IP is set.");
+        return;
       }
+      applySingleOnboardHost(managementHost, {
+        lanIpApplied: !!(lanIpAppliedInput && lanIpAppliedInput.value === "1")
+      });
 
       var locationValue = locationInput ? locationInput.value.trim() : "";
       var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
@@ -3130,6 +3256,7 @@
 <script>
 (function () {
   var statusUrl = "{% url 'core:mikrotik_status' %}";
+  var onboardingGuardUrl = "{% url 'core:mikrotik_onboarding_guard' %}";
   var timer = null;
   var started = false;
   var hint = document.getElementById("mikrotik-reconnect-hint");
@@ -3313,8 +3440,13 @@
     }
   }
 
+  function isOnboardModalOpen() {
+    var modal = document.getElementById("mikrotik-onboard-modal");
+    return !!(modal && !modal.hidden);
+  }
+
   function refreshStatus(force) {
-    if (document.hidden) return;
+    if (document.hidden || isOnboardModalOpen()) return;
     var url = statusUrl;
     if (force) url += (statusUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
     var refreshBtn = document.getElementById("mikrotik-refresh-status");
@@ -3334,6 +3466,11 @@
         data.routers.forEach(function (item) {
           document.querySelectorAll('[data-router-status="' + item.id + '"]').forEach(function (el) {
             setStatus(el, !!item.online, item.status || "");
+            if (item.error && (item.status === "reachable" || item.status === "limited" || item.status === "auth_failed")) {
+              el.setAttribute("title", item.error);
+            } else {
+              el.removeAttribute("title");
+            }
           });
           applyAutoRestoreBadge(item.id, item.auto_restore);
           if (item.serial_number) {
@@ -3355,7 +3492,7 @@
               activeReconnectBtn = btn;
             }
           } else if (
-            (item.status === "reachable" || item.status === "limited") &&
+            (item.status === "disconnected" || item.status === "limited") &&
             !autoReconnectTried[item.id]
           ) {
             autoReconnectTried[item.id] = true;
@@ -3552,7 +3689,9 @@
   }
   if (window.requestIdleCallback) window.requestIdleCallback(startPolling, { timeout: 1200 });
   else setTimeout(startPolling, 400);
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) refreshStatus(true); });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && !isOnboardModalOpen()) refreshStatus(true);
+  });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && passwordModal && !passwordModal.hidden) closePasswordModal();
   });

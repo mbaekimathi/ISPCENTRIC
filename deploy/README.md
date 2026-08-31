@@ -269,3 +269,56 @@ sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py sync_nas_config
 
 Set `NAS_CONFIG_SYNC_ON_BOOT=true` in `.env` only if you want **every** app
 restart to re-push all routers (slower; usually unnecessary).
+
+## Security hardening (production checklist)
+
+### VPS firewall and SSH
+
+```bash
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow OpenSSH
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw allow 51820/udp
+sudo ufw enable
+```
+
+Prefer SSH keys only (`PasswordAuthentication no`), disable root login, and
+install fail2ban. Restrict SSH to your office/admin IP when practical.
+
+### Secrets and field encryption
+
+1. Set `FIELD_ENCRYPTION_KEY` in `.env` (Fernet key — see `.env.production.example`).
+2. Keep a secure offline backup of that key.
+3. After deploy/migrate, encrypt any legacy plaintext credential rows:
+
+```bash
+sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py encrypt_sensitive_fields
+```
+
+Router API passwords, Daraja secrets, CPE/PPPoE passwords, WireGuard peer
+private keys, and SMS/SMTP/WhatsApp tokens are stored encrypted at rest.
+
+### M-Pesa callback allowlist
+
+Set `MPESA_CALLBACK_ALLOWED_IPS` to Safaricom’s published callback source IPs
+once you have them from Daraja. Keep `STK_CALLBACK_REQUIRE_DARAJA_QUERY=true`.
+
+### MikroTik API lockdown (each router)
+
+After the WireGuard tunnel is up, restrict RouterOS API to the tunnel subnet
+only (example for `10.9.0.0/24`):
+
+```
+/ip service set api address=10.9.0.0/24
+/ip service set winbox address=10.9.0.0/24,192.168.88.0/24
+/ip service disable www,ftp,telnet
+```
+
+Never expose API (8728) or Winbox on the public WAN.
+
+### Audit log
+
+Privileged IT Support role/client switches and WireGuard `.rsc` downloads are
+recorded in Django admin under **Security audit logs**.

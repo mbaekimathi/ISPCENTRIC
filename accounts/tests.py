@@ -287,7 +287,8 @@ class IspClientLoginTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "6-digit login code")
         self.assertContains(response, "ISP client login")
-        self.assertContains(response, reverse("accounts:employee_login"))
+        self.assertContains(response, reverse("accounts:password_reset"))
+        self.assertNotContains(response, reverse("accounts:employee_login"))
 
 
 @override_settings(OWNER_REGISTER_INVITE_KEY="")

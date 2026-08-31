@@ -103,11 +103,18 @@ from core.mikrotik_connect import (
     access_customer_cpe_wifi,
     apply_mikrotik_access_changes,
     change_mikrotik_lan_ip,
-    is_factory_default_mikrotik_ip,
+    is_transient_onboard_host,
     normalize_mikrotik_host,
+    resolve_onboard_management_host,
+    apply_unified_management_host,
+    discover_local_mikrotik_host,
+    pick_local_onboard_connect_host,
+    finalize_onboard_addresses,
+    suggest_unique_mikrotik_lan_ip,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
     apply_mikrotik_uplink_balance,
+    read_smart_balance_status,
     apply_mikrotik_single_wan,
     switch_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
@@ -121,8 +128,10 @@ from core.mikrotik_connect import (
     dial_host,
     resolve_customer_cpe_target,
     probe_customer_cpe_web,
+    probe_mikrotik_for_onboarding,
     login_customer_cpe_web_session,
     CPE_WEB_PORTS,
+    mikrotik_probe_timeout,
     PPPOE_LOCAL_ADDRESS as MK_PPPOE_LOCAL_ADDRESS,
     configure_customer_cpe_web_wifi,
     configure_mikrotik_wifi,
@@ -139,15 +148,21 @@ from core.mikrotik_connect import (
     list_mikrotik_ports,
     assess_uplink_switch_risk,
     assess_uplink_mode_apply_risk,
+    build_uplink_recovery_script,
+    check_router_tunnel_management,
     cpe_firewall_unlock_script,
+    on_router_lan,
     prepare_customer_cpe_access,
     provision_customer_pppoe,
     provision_static_client_dhcp_lease,
     read_mikrotik_uplink_multi,
+    read_client_wan_usage,
     build_wan_traffic_share,
+    build_api_enable_terminal_script,
     build_single_wan_recovery_script,
     read_mikrotik_wifi,
     recover_mikrotik_connection,
+    reconnect_after_uplink_apply,
     reboot_mikrotik,
     set_mikrotik_clean_uplink,
     set_mikrotik_port_enabled,
@@ -157,6 +172,7 @@ from core.mikrotik_connect import (
     toggle_mikrotik_wifi,
     _api_session,
     _ensure_hotspot_management_access,
+    _router_api_host_candidates,
 )
 from core.mikrotik_jobs import get_job, get_router_jobs, set_job
 from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_devices, guess_model
@@ -478,6 +494,108 @@ def _router_uses_tunnel(router) -> bool:
         return host.startswith("10.9.")
 
 
+def _router_tunnel_cache_key(router) -> str:
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    if not tunnel:
+        host = (getattr(router, "host", None) or "").strip()
+        try:
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+            if _is_wireguard_tunnel_host(host):
+                tunnel = host
+        except Exception:
+            tunnel = ""
+    return f"mikrotik_tunnel_ok:{getattr(router, 'pk', 0)}:{tunnel or 'none'}"
+
+
+def _clear_router_tunnel_cache(router) -> None:
+    cache.delete(_router_tunnel_cache_key(router))
+
+
+def _router_tunnel_verified(router, *, force: bool = False) -> bool:
+    """Live check: WireGuard peer answers API (or recent handshake on hosted)."""
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    if not tunnel:
+        host = (getattr(router, "host", None) or "").strip()
+        try:
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+            if not _is_wireguard_tunnel_host(host):
+                return False
+        except Exception:
+            return False
+    cache_key = _router_tunnel_cache_key(router)
+    if not force:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return bool(cached)
+    try:
+        result = check_router_tunnel_management(router, timeout=3.0)
+        verified = bool(result.get("verified"))
+    except Exception:
+        verified = False
+    cache.set(cache_key, verified, 45 if verified else 8)
+    return verified
+
+
+def _uplink_api_hosts_for_router(router) -> list[str]:
+    """Prefer WireGuard, then LAN host, for phased uplink apply reconnect."""
+    hosts: list[str] = []
+    for raw in (
+        (getattr(router, "vpn_address", None) or "").strip(),
+        _router_api_host(router),
+        (getattr(router, "host", None) or "").strip(),
+    ):
+        value = (raw or "").strip()
+        if value and value not in hosts:
+            hosts.append(value)
+    return hosts
+
+
+def _finalize_uplink_apply_result(router: MikroTikRouter, result: dict) -> dict:
+    """After bond/failover/balance, reconnect API and attach recovery script."""
+    result = dict(result or {})
+    if not result.get("recovery_script"):
+        mode = (result.get("mode") or "").strip() or "uplink"
+        members = list(result.get("members") or result.get("ports") or [])
+        result["recovery_script"] = build_uplink_recovery_script(
+            mode,
+            members=members,
+            bond_name=(result.get("bond_name") or getattr(router, "bond_interface", "") or ""),
+            unbridged=result.get("unbridged") or [],
+            primary_port=(result.get("primary") or result.get("wan_interface") or ""),
+        )
+    if not result.get("ok"):
+        return result
+    try:
+        reconnect = reconnect_after_uplink_apply(router)
+    except Exception as exc:
+        reconnect = {"ok": False, "error": str(exc)}
+    result["reconnect"] = reconnect
+    if reconnect.get("ok") and reconnect.get("host"):
+        dial = (reconnect.get("host") or "").strip()
+        tunnel = (getattr(router, "vpn_address", None) or "").strip()
+        result["management_host"] = dial
+        if dial and dial == tunnel:
+            cache.set(f"mikrotik_tunnel_ok:{router.pk}:{tunnel}", True, 120)
+            # Hosted billing should dial the tunnel; keep LAN host on local PC.
+            if not on_router_lan() and (router.host or "").strip() != dial:
+                router.host = dial
+                try:
+                    router.save(update_fields=["host", "updated_at"])
+                except Exception:
+                    pass
+    elif result.get("ok"):
+        # Apply succeeded on the router but we cannot dial yet — keep OK with note.
+        note = (
+            " Uplink applied on the MikroTik; reconnecting over WireGuard/LAN…"
+            if (router.vpn_address or "").strip()
+            else " Uplink applied; if the page loses contact, use the Winbox recovery script."
+        )
+        result["message"] = (result.get("message") or "").rstrip() + note
+    return result
+
+
 def _cpe_router_failure_class(probe: dict | None = None, *, nas_ok: bool = True) -> str:
     """Map probe/NAS outcome to a stable UI failure class."""
     if not nas_ok:
@@ -745,11 +863,15 @@ def build_mikrotik_detail_nav(
     """Sidebar items for a single router (overview + ports + access + optional modal actions)."""
     detail_url = reverse("core:mikrotik_detail", kwargs={"router_id": router.pk})
     ports_url = reverse("core:mikrotik_ports", kwargs={"router_id": router.pk})
+    assigned_ports_url = reverse(
+        "core:mikrotik_assigned_ports", kwargs={"router_id": router.pk}
+    )
     access_url = reverse("core:mikrotik_pppoe_settings", kwargs={"router_id": router.pk})
     clean_url = reverse("core:mikrotik_clean_uplink", kwargs={"router_id": router.pk})
     nav: list[dict] = [
         {"key": "overview", "label": "Router overview", "href": detail_url},
-        {"key": "ports", "label": "Ports", "href": ports_url},
+        {"key": "ports", "label": "Port setup", "href": ports_url},
+        {"key": "assigned_ports", "label": "Assigned ports", "href": assigned_ports_url},
         {
             "key": "pppoe_hotspot_settings",
             "label": "PPPoE & Hotspot settings",
@@ -779,6 +901,48 @@ def apply_mikrotik_detail_sidebar(ctx: dict, router: MikroTikRouter, *, detail_n
     ctx["sidebar_label"] = router.name or "MikroTik"
     ctx["router"] = router
     return ctx
+
+
+@client_workspace_required
+@require_GET
+def mikrotik_assigned_ports(request, router_id: int):
+    """Live router ISP analysis and per-client WAN mapping for this MikroTik."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:mikrotik")
+
+    router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
+    is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+    detail_nav = build_mikrotik_detail_nav(
+        router,
+        is_suspended=is_suspended,
+        include_modals=False,
+    )
+    uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
+    ctx = client_page_context(
+        request,
+        active_nav="mikrotik_detail",
+        sidebar_active="assigned_ports",
+        page_title=f"{router.name} — Assigned ports",
+        page_subtitle="Live ISP analysis and which internet link each customer is using.",
+        router=router,
+        ports_loading=not is_suspended,
+        ports_live_url=(
+            reverse("core:mikrotik_ports_live", args=[router.pk]) if not is_suspended else ""
+        ),
+        is_suspended=is_suspended,
+        uplink_mode=uplink_mode,
+        uplink_mode_label=dict(MikroTikRouter.UplinkMode.choices).get(
+            uplink_mode, "Single WAN"
+        ),
+        mikrotik_quicknav_active="assigned_ports",
+    )
+    return render(
+        request,
+        "core/mikrotik_assigned_ports.html",
+        apply_mikrotik_detail_sidebar(ctx, router, detail_nav=detail_nav),
+    )
 
 
 def get_org_router(request, router_id: int):
@@ -944,7 +1108,7 @@ def resolve_port_role(router: MikroTikRouter, port_name: str) -> str:
         return MikroTikRouter.PortRole.BOND
     if mode in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
     } and uplink_ports:
         if port_name == uplink_ports[0]:
             return MikroTikRouter.PortRole.WAN
@@ -982,13 +1146,18 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
 
     primary = ""
     secondary = ""
+    extra_balance_ports: list[str] = []
     if mode in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
     } and uplink_ports:
         primary = uplink_ports[0]
         if len(uplink_ports) > 1:
             secondary = uplink_ports[1]
+        if _is_weighted_share_mode(mode) and len(uplink_ports) > 2:
+            extra_balance_ports = [
+                str(p).strip() for p in uplink_ports[2:] if str(p).strip()
+            ]
     else:
         for name, role in roles.items():
             port_name = str(name or "").strip()
@@ -1018,7 +1187,7 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
                 "interface": primary,
                 "label": (
                     f"Balanced WAN · {primary}"
-                    if mode == MikroTikRouter.UplinkMode.BALANCE
+                    if _is_weighted_share_mode(mode)
                     else f"Primary WAN · {primary}"
                 ),
             }
@@ -1030,12 +1199,326 @@ def resolve_wan_speed_interfaces(router: MikroTikRouter) -> list[dict]:
                 "interface": secondary,
                 "label": (
                     f"Balanced WAN · {secondary}"
-                    if mode == MikroTikRouter.UplinkMode.BALANCE
+                    if _is_weighted_share_mode(mode)
                     else f"Secondary WAN · {secondary}"
                 ),
             }
         )
+    for name in extra_balance_ports:
+        if name in {primary, secondary}:
+            continue
+        ports.append(
+            {
+                "role": "secondary",
+                "interface": name,
+                "label": f"Balanced WAN · {name}",
+            }
+        )
     return ports
+
+
+def _weighted_share_uplink_modes() -> set[str]:
+    return {
+        MikroTikRouter.UplinkMode.BALANCE,
+        MikroTikRouter.UplinkMode.SMART_BALANCE,
+    }
+
+
+def _is_weighted_share_mode(mode: str) -> bool:
+    return (mode or "").strip() in _weighted_share_uplink_modes()
+
+
+def _failover_active_wan_port(
+    uplink_live: dict,
+    *,
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+) -> str:
+    """Best-effort map of the live failover default route to a physical WAN port."""
+    checked = uplink_live.get("checked_routes") or []
+    clients = uplink_live.get("failover_clients") or []
+    active_route = next(
+        (row for row in checked if row.get("active") and not row.get("disabled")),
+        None,
+    )
+    if active_route and clients:
+        dist = str(active_route.get("distance") or "1")
+        for client in clients:
+            if client.get("disabled"):
+                continue
+            if str(client.get("distance") or "1") == dist:
+                return (client.get("interface") or "").strip()
+    for client in clients:
+        if not client.get("disabled"):
+            return (client.get("interface") or "").strip()
+    if primary_wan_ports:
+        return str(primary_wan_ports[0]).strip()
+    if backup_wan_ports:
+        return str(backup_wan_ports[0]).strip()
+    return ""
+
+
+def _mac_compact_key(mac: str) -> str:
+    return "".join(ch for ch in (mac or "").lower() if ch.isalnum())
+
+
+def _build_router_client_analysis(
+    router: MikroTikRouter,
+    *,
+    uplink_mode: str,
+    uplink_live: dict,
+    wan_share: dict,
+    smart_balance_status: dict,
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    usage: dict,
+) -> dict:
+    """Merge billing customers with live WAN usage for the ports page."""
+    from billing.models import Customer
+
+    mode = (uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    member_ports = [
+        str(p).strip()
+        for p in (
+            list(router.uplink_ports or [])
+            or list(primary_wan_ports) + list(backup_wan_ports)
+        )
+        if str(p).strip()
+    ]
+    weights = (
+        dict(router.uplink_weights)
+        if isinstance(router.uplink_weights, dict)
+        else {}
+    )
+    share_by_port = {
+        (row.get("name") or "").strip(): row
+        for row in (wan_share.get("shares") or [])
+        if (row.get("name") or "").strip()
+    }
+    slow_ports = set(
+        str(p).strip()
+        for p in (smart_balance_status.get("slow_ports") or [])
+        if str(p).strip()
+    )
+    member_status = smart_balance_status.get("members") or {}
+
+    def _isp_label(port_name: str, index: int) -> str:
+        port_name = (port_name or "").strip()
+        if not port_name:
+            return "Unknown"
+        if len(member_ports) > 1:
+            return f"ISP {index + 1} · {port_name}"
+        return port_name
+
+    isps: list[dict] = []
+    for index, port_name in enumerate(member_ports):
+        share_row = share_by_port.get(port_name) or {}
+        weight = weights.get(port_name) or weights.get(str(port_name))
+        status = "active"
+        member_row = member_status.get(port_name) or {}
+        if port_name in slow_ports or member_row.get("slow"):
+            status = "slow"
+        elif member_row.get("disabled") or member_row.get("sidelined"):
+            status = "sidelined"
+        isps.append(
+            {
+                "port": port_name,
+                "label": _isp_label(port_name, index),
+                "weight": weight,
+                "share_pct": share_row.get("pct"),
+                "rate_label": share_row.get("rate_label") or "—",
+                "status": status,
+                "client_count": 0,
+                "connection_count": 0,
+            }
+        )
+    if not isps:
+        fallback_port = (
+            (primary_wan_ports[0] if primary_wan_ports else "")
+            or (router.wan_interface or "")
+        ).strip()
+        if fallback_port:
+            share_row = share_by_port.get(fallback_port) or {}
+            isps.append(
+                {
+                    "port": fallback_port,
+                    "label": _isp_label(fallback_port, 0),
+                    "weight": weights.get(fallback_port),
+                    "share_pct": share_row.get("pct"),
+                    "rate_label": share_row.get("rate_label") or "—",
+                    "status": "active",
+                    "client_count": 0,
+                    "connection_count": 0,
+                }
+            )
+    isp_by_port = {row["port"]: row for row in isps}
+
+    ip_usage = usage.get("ip_usage") if isinstance(usage.get("ip_usage"), dict) else {}
+    sessions = usage.get("sessions") if isinstance(usage.get("sessions"), dict) else {}
+    default_isp = (usage.get("default_isp_port") or "").strip()
+
+    customers = list(
+        Customer.objects.filter(router=router).only(
+            "pk",
+            "full_name",
+            "account_number",
+            "pppoe_username",
+            "hotspot_mac",
+            "cpe_ip",
+            "cpe_mac",
+            "service_type",
+            "status",
+        )
+    )
+
+    ip_to_customer: dict[str, Customer] = {}
+    username_to_customer = {
+        (c.pppoe_username or "").strip().lower(): c
+        for c in customers
+        if (c.pppoe_username or "").strip()
+    }
+    mac_to_customer = {
+        _mac_compact_key(c.hotspot_mac or c.cpe_mac or ""): c
+        for c in customers
+        if _mac_compact_key(c.hotspot_mac or c.cpe_mac or "")
+    }
+    for customer in customers:
+        static_ip = (customer.cpe_ip or "").strip()
+        if static_ip:
+            ip_to_customer[_parse_connection_address(static_ip)] = customer
+
+    for ip, session in sessions.items():
+        if ip in ip_to_customer:
+            continue
+        username = (session.get("pppoe_username") or "").strip().lower()
+        if username and username in username_to_customer:
+            ip_to_customer[ip] = username_to_customer[username]
+            continue
+        mac = _mac_compact_key(session.get("mac") or "")
+        if mac and mac in mac_to_customer:
+            ip_to_customer[ip] = mac_to_customer[mac]
+
+    client_rows: list[dict] = []
+    seen_customer_ids: set[int] = set()
+
+    def _append_client(customer: Customer, *, ip: str, usage_row: dict | None) -> None:
+        if customer.pk in seen_customer_ids:
+            return
+        seen_customer_ids.add(customer.pk)
+        usage_row = usage_row or {}
+        isp_port = (usage_row.get("isp_port") or default_isp or "").strip()
+        isp_row = isp_by_port.get(isp_port) or {}
+        isp_label = isp_row.get("label") or isp_port or "—"
+        online = bool(ip)
+        connections = int(usage_row.get("connections") or 0)
+        source = (usage_row.get("source") or "").strip()
+        if isp_port and isp_port in isp_by_port and online:
+            isp_by_port[isp_port]["client_count"] = (
+                int(isp_by_port[isp_port].get("client_count") or 0) + 1
+            )
+            isp_by_port[isp_port]["connection_count"] = (
+                int(isp_by_port[isp_port].get("connection_count") or 0) + connections
+            )
+        client_rows.append(
+            {
+                "customer_id": customer.pk,
+                "name": customer.full_name,
+                "account_number": customer.account_number,
+                "service_type": customer.service_type,
+                "status": customer.status,
+                "online": online,
+                "ip": ip,
+                "isp_port": isp_port,
+                "isp_label": isp_label,
+                "connection_count": connections,
+                "assignment_source": source or ("offline" if not online else "default_wan"),
+            }
+        )
+
+    for ip, usage_row in ip_usage.items():
+        customer = ip_to_customer.get(ip)
+        if customer:
+            _append_client(customer, ip=ip, usage_row=usage_row)
+
+    for customer in customers:
+        if customer.pk in seen_customer_ids:
+            continue
+        matched_ip = ""
+        usage_row: dict | None = None
+        static_ip = _parse_connection_address(customer.cpe_ip or "")
+        if static_ip and static_ip in ip_usage:
+            matched_ip = static_ip
+            usage_row = ip_usage[static_ip]
+        else:
+            username = (customer.pppoe_username or "").strip().lower()
+            if username:
+                for ip, session in sessions.items():
+                    if (session.get("pppoe_username") or "").strip().lower() == username:
+                        matched_ip = ip
+                        usage_row = ip_usage.get(ip)
+                        break
+            if not matched_ip:
+                mac = _mac_compact_key(customer.hotspot_mac or customer.cpe_mac or "")
+                if mac:
+                    for ip, session in sessions.items():
+                        if _mac_compact_key(session.get("mac") or "") == mac:
+                            matched_ip = ip
+                            usage_row = ip_usage.get(ip)
+                            break
+        _append_client(customer, ip=matched_ip, usage_row=usage_row)
+
+    client_rows.sort(
+        key=lambda row: (
+            0 if row.get("online") else 1,
+            (row.get("isp_label") or "").lower(),
+            (row.get("name") or "").lower(),
+        )
+    )
+
+    online_clients = sum(1 for row in client_rows if row.get("online"))
+    total_connections = sum(int(row.get("connection_count") or 0) for row in client_rows)
+
+    mode_notes = {
+        MikroTikRouter.UplinkMode.SINGLE: "All online clients use the single Internet port.",
+        MikroTikRouter.UplinkMode.BOND: "Clients share the bonded uplink.",
+        MikroTikRouter.UplinkMode.FAILOVER: "Clients use whichever ISP is active on the default route.",
+        MikroTikRouter.UplinkMode.BALANCE: (
+            "Per-connection PCC split — a client may use different ISPs for different sessions."
+            if usage.get("uses_connection_marks")
+            else "Weighted balance configured — apply on the MikroTik to see live per-connection ISP."
+        ),
+        MikroTikRouter.UplinkMode.SMART_BALANCE: (
+            "Smart balance active — slow ISPs are sidelined from new connections."
+            if usage.get("uses_connection_marks")
+            else "Smart balance configured — apply on the MikroTik for live ISP tracking."
+        ),
+    }
+
+    return {
+        "ok": True,
+        "usage_ok": bool(usage.get("ok")),
+        "error": usage.get("error") or "",
+        "mode": mode,
+        "mode_label": dict(MikroTikRouter.UplinkMode.choices).get(mode, mode),
+        "mode_note": mode_notes.get(mode, ""),
+        "uses_connection_marks": bool(usage.get("uses_connection_marks")),
+        "default_isp_port": default_isp,
+        "isps": isps,
+        "summary": {
+            "total_clients": len(client_rows),
+            "online_clients": online_clients,
+            "offline_clients": max(0, len(client_rows) - online_clients),
+            "total_connections": total_connections,
+        },
+        "clients": client_rows,
+    }
+
+
+def _parse_connection_address(addr: str) -> str:
+    raw = (addr or "").strip()
+    if not raw:
+        return ""
+    return raw.split("/")[0].strip()
 
 
 def _allowed_roles_for_uplink_mode(mode: str) -> set[str]:
@@ -1050,7 +1533,7 @@ def _allowed_roles_for_uplink_mode(mode: str) -> set[str]:
         return base | {MikroTikRouter.PortRole.BOND}
     if mode in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
     }:
         return base | {
             MikroTikRouter.PortRole.WAN,
@@ -1139,12 +1622,42 @@ def _apply_single_wan_on_router(
     *,
     wan_interface: str,
     retire_ports: list[str] | None = None,
+    live_ports: list[dict] | None = None,
 ) -> dict:
-    """Push a full single-WAN switch to RouterOS."""
+    """Push a full single-WAN switch to RouterOS.
+
+    Behind-provider layouts (DHCP on the LAN bridge, ISP modem on a bridge
+    member) must not be unbridged automatically — that drops customers and can
+    hang the API. In that case roles are saved in the app only.
+    """
+    wan_interface = (wan_interface or "").strip()
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in (live_ports or [])
+        if (p.get("name") or "").strip()
+    }
+    row = by_name.get(wan_interface) or {}
+    via_bridge = bool((row.get("uplink_iface") or "").strip()) and (
+        str(row.get("uplink_iface") or "").lower().startswith("bridge")
+        or (row.get("is_bridged") and row.get("uplink_active"))
+    )
+    if row.get("is_bridged") and (
+        via_bridge or (row.get("uplink_kind") == "dhcp" and row.get("uplink_active"))
+    ):
+        return {
+            "ok": True,
+            "skipped": True,
+            "wan_interface": wan_interface,
+            "message": (
+                f"Saved {wan_interface} as Internet. "
+                "It stays on the LAN bridge (behind-provider) — not unbridged."
+            ),
+        }
+
     old_mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
     clear_multi = old_mode in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
         MikroTikRouter.UplinkMode.BOND,
     }
     return switch_mikrotik_single_wan(
@@ -1157,12 +1670,18 @@ def _apply_single_wan_on_router(
     )
 
 
-def _port_role_choices_for_ui() -> list[tuple[str, str]]:
+def _port_role_choices_for_ui(mode: str | None = None) -> list[tuple[str, str]]:
     """Roles shown in the ports UI (WAN primary is merged into WAN)."""
+    uplink_mode = (mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    backup_label = (
+        "Shared ISP"
+        if _is_weighted_share_mode(uplink_mode)
+        else "Backup internet"
+    )
     labels = {
         MikroTikRouter.PortRole.NONE: "Unassigned",
         MikroTikRouter.PortRole.WAN: "Internet",
-        MikroTikRouter.PortRole.WAN_BACKUP: "Backup internet",
+        MikroTikRouter.PortRole.WAN_BACKUP: backup_label,
         MikroTikRouter.PortRole.BOND: "Bonded internet",
         MikroTikRouter.PortRole.LAN: "Customers",
         MikroTikRouter.PortRole.UNUSED: "Unused",
@@ -1175,9 +1694,31 @@ def _port_role_choices_for_ui() -> list[tuple[str, str]]:
     ]
 
 
-def _friendly_role_label(role: str) -> str:
-    labels = dict(_port_role_choices_for_ui())
+def _friendly_role_label(role: str, *, mode: str | None = None) -> str:
+    labels = dict(_port_role_choices_for_ui(mode))
     return labels.get((role or "").strip().lower(), "Unassigned")
+
+
+def _balance_apply_readiness(
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    physical_ports: list[dict],
+) -> tuple[bool, str]:
+    """Whether balance can be applied and an operator-facing hint."""
+    if not primary_wan_ports:
+        return False, "Set one port to Internet on the cards below."
+    if len(primary_wan_ports) > 1:
+        names = ", ".join(primary_wan_ports)
+        return False, f"Keep only one Internet port ({names} assigned)."
+    if not backup_wan_ports:
+        return False, "Set at least one other ISP port to Shared ISP."
+    down: list[str] = []
+    for name in primary_wan_ports + backup_wan_ports:
+        if not _port_has_live_uplink(name, physical_ports):
+            down.append(name)
+    if down:
+        return False, f"Link must be up: {', '.join(down)}."
+    return True, "Ready — enter Mbps and click Apply load balance."
 
 
 def _is_bond_port_row(row: dict) -> bool:
@@ -1186,44 +1727,78 @@ def _is_bond_port_row(row: dict) -> bool:
     return iface_type == "bond" or name.startswith("bond")
 
 
+def _is_bridge_port_name(name: str) -> bool:
+    n = (name or "").strip().lower()
+    return n.startswith("bridge") or n in {"br-lan", "br0", "br1"}
+
+
+def _port_viable_for_wan(row: dict | None) -> bool:
+    """True when a physical port can reasonably be Internet."""
+    if not row:
+        return False
+    if row.get("disabled") or row.get("is_wireless") or _is_bond_port_row(row):
+        return False
+    name = (row.get("name") or "").strip()
+    if not name or _is_bridge_port_name(name):
+        return False
+    if row.get("running"):
+        return True
+    if (row.get("uplink_kind") or "").strip() and row.get("uplink_active"):
+        return True
+    return False
+
+
 def _pick_auto_wan(ports: list[dict], *, suggested_wan: str, saved_wan: str) -> str:
     """Choose the best Internet port from live data (DHCP, PPPoE, or ether)."""
     physical = [p for p in ports if not _is_bond_port_row(p)]
     by_name = {(p.get("name") or "").strip(): p for p in physical}
 
-    for candidate in (suggested_wan, saved_wan, "ether1"):
-        name = (candidate or "").strip()
+    def _try(name: str) -> str:
+        name = (name or "").strip()
+        if not name or _is_bridge_port_name(name):
+            return ""
         row = by_name.get(name)
-        if not row:
-            continue
-        if row.get("disabled") or row.get("is_wireless"):
-            continue
-        return name
+        if _port_viable_for_wan(row):
+            return name
+        return ""
 
-    # Prefer a port that already has PPPoE or DHCP uplink configured.
+    # 1) Live default-route suggestion (physical when bridge→host resolved).
+    picked = _try(suggested_wan)
+    if picked:
+        return picked
+
+    # 2) Active PPPoE, then active DHCP (skip stale unbound clients).
     for kind in ("pppoe", "dhcp"):
         for p in physical:
-            if p.get("disabled") or p.get("is_wireless"):
-                continue
             if (p.get("uplink_kind") or "") != kind:
                 continue
-            name = (p.get("name") or "").strip()
+            if not p.get("uplink_active") and not p.get("running"):
+                continue
+            name = _try(p.get("name") or "")
             if name:
                 return name
 
+    # 3) Saved WAN only if it still looks viable.
+    picked = _try(saved_wan)
+    if picked:
+        return picked
+
+    # 4) Running non-bridged ether (typical dedicated WAN).
     running_ether = [
         p
         for p in physical
         if p.get("running")
         and not p.get("is_wireless")
         and not p.get("disabled")
-        and not (p.get("is_bridged") and (p.get("name") or "").lower() != "ether1")
     ]
-    if running_ether:
-        # Prefer non-bridged running ether (typical WAN), else first running.
-        unbridged = [p for p in running_ether if not p.get("is_bridged")]
-        pick = (unbridged or running_ether)[0]
-        return (pick.get("name") or "").strip()
+    unbridged = [p for p in running_ether if not p.get("is_bridged")]
+    if unbridged:
+        return (unbridged[0].get("name") or "").strip()
+
+    # 5) Classic default ether1 only when present and viable.
+    picked = _try("ether1")
+    if picked:
+        return picked
 
     any_ether = [
         p
@@ -1231,6 +1806,9 @@ def _pick_auto_wan(ports: list[dict], *, suggested_wan: str, saved_wan: str) -> 
         if not p.get("is_wireless") and not p.get("disabled")
     ]
     if any_ether:
+        for p in any_ether:
+            if (p.get("uplink_kind") or "").strip():
+                return (p.get("name") or "").strip()
         return (any_ether[0].get("name") or "").strip()
     return ""
 
@@ -1253,7 +1831,8 @@ def _check_uplink_apply_confirmation(request, risk: dict) -> tuple[bool, str | N
     if risk.get("blocking"):
         return (
             False,
-            risk.get("summary") or "This change would likely drop management access.",
+            risk.get("summary")
+            or "This change cannot be applied until the issue is fixed.",
         )
     if risk.get("safe"):
         return True, None
@@ -1276,8 +1855,12 @@ def _assess_uplink_mode_apply(
     touch_ports: list[str],
     live_ports: list[dict],
     management_iface_by_host: dict[str, str] | None,
+    *,
+    tunnel_verified: bool | None = None,
 ) -> dict:
-    return assess_uplink_mode_apply_risk(
+    if tunnel_verified is None:
+        tunnel_verified = _router_tunnel_verified(router)
+    risk = assess_uplink_mode_apply_risk(
         mode=mode,
         touch_ports=touch_ports,
         ports=live_ports,
@@ -1285,7 +1868,16 @@ def _assess_uplink_mode_apply(
         tunnel_address=(router.vpn_address or "").strip(),
         management_iface_by_host=management_iface_by_host or {},
         uses_tunnel=_router_uses_tunnel(router),
+        tunnel_verified=tunnel_verified,
     )
+    risk["recovery_script"] = build_uplink_recovery_script(
+        mode,
+        members=touch_ports,
+        bond_name=(router.bond_interface or "").strip(),
+        primary_port=(touch_ports[0] if touch_ports else ""),
+    )
+    risk["tunnel_setup_url"] = reverse("core:mikrotik_detail", args=[router.pk])
+    return risk
 
 
 def _touch_ports_for_clear(router: MikroTikRouter) -> list[str]:
@@ -1316,6 +1908,7 @@ def _build_uplink_apply_risks(
     bond_member_ports: list[str],
     primary_wan_ports: list[str],
     backup_wan_ports: list[str],
+    tunnel_verified: bool | None = None,
 ) -> dict[str, dict]:
     """Pre-compute apply risks for bond / failover / balance / clear (live JSON + UI)."""
     mgmt = management_iface_by_host or {}
@@ -1324,16 +1917,19 @@ def _build_uplink_apply_risks(
 
     if len(bond_member_ports) >= 2:
         risks["bond"] = _assess_uplink_mode_apply(
-            router, "bond", bond_member_ports, live_ports, mgmt
+            router, "bond", bond_member_ports, live_ports, mgmt, tunnel_verified=tunnel_verified
         )
 
     if len(primary_wan_ports) == 1 and backup_wan_ports:
         touch = [primary_wan_ports[0], *backup_wan_ports]
         risks["failover"] = _assess_uplink_mode_apply(
-            router, "failover", touch, live_ports, mgmt
+            router, "failover", touch, live_ports, mgmt, tunnel_verified=tunnel_verified
         )
         risks["balance"] = _assess_uplink_mode_apply(
-            router, "balance", touch, live_ports, mgmt
+            router, "balance", touch, live_ports, mgmt, tunnel_verified=tunnel_verified
+        )
+        risks["smart_balance"] = _assess_uplink_mode_apply(
+            router, "balance", touch, live_ports, mgmt, tunnel_verified=tunnel_verified
         )
 
     if uplink_mode != MikroTikRouter.UplinkMode.SINGLE:
@@ -1343,6 +1939,7 @@ def _build_uplink_apply_risks(
             _touch_ports_for_clear(router),
             live_ports,
             mgmt,
+            tunnel_verified=tunnel_verified,
         )
 
     return risks
@@ -1354,6 +1951,7 @@ def _build_wan_switch_risks(
     live_ports: list[dict],
     management_iface_by_host: dict[str, str] | None,
     primary_wan_ports: list[str],
+    tunnel_verified: bool | None = None,
 ) -> dict[str, dict]:
     """Per-port risk when assigning Internet in single-WAN mode (for UI + POST guard)."""
     mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
@@ -1364,6 +1962,8 @@ def _build_wan_switch_risks(
         router
     )
     mgmt = management_iface_by_host or {}
+    if tunnel_verified is None:
+        tunnel_verified = _router_tunnel_verified(router)
     risks: dict[str, dict] = {}
     for row in live_ports:
         if _is_bond_port_row(row):
@@ -1379,6 +1979,7 @@ def _build_wan_switch_risks(
             tunnel_address=(router.vpn_address or "").strip(),
             management_iface_by_host=mgmt,
             uses_tunnel=_router_uses_tunnel(router),
+            tunnel_verified=_router_tunnel_verified(router),
         )
         risk["recovery_script"] = build_single_wan_recovery_script(
             name,
@@ -1388,13 +1989,236 @@ def _build_wan_switch_risks(
     return risks
 
 
+def _build_uplink_health_alerts(
+    *,
+    uplink_mode: str,
+    uplink_live: dict,
+    wan_share: dict,
+    primary_wan_ports: list[str],
+    backup_wan_ports: list[str],
+    bond_member_ports: list[str],
+    physical_ports: list[dict],
+    uplink_weights: dict,
+    balance_router_applied: bool = False,
+    smart_balance_status: dict | None = None,
+) -> list[dict]:
+    """Operator-facing health warnings for bond / failover / balance."""
+    alerts: list[dict] = []
+    mode = (uplink_mode or "").strip()
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in physical_ports
+        if (p.get("name") or "").strip()
+    }
+
+    if mode == MikroTikRouter.UplinkMode.BOND and bond_member_ports:
+        down = []
+        for name in bond_member_ports:
+            row = by_name.get(name) or {}
+            if row.get("disabled") or not row.get("running"):
+                down.append(name)
+        bond_rows = uplink_live.get("bonds") or []
+        bond_live = bond_rows[0] if bond_rows else {}
+        if down:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "bond_slave_down",
+                    "message": f"Bond member(s) down: {', '.join(down)}.",
+                }
+            )
+        elif bond_live and not bond_live.get("running"):
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "bond_not_running",
+                    "message": "Bond interface is not running on the MikroTik yet.",
+                }
+            )
+
+    if mode == MikroTikRouter.UplinkMode.FAILOVER and (
+        primary_wan_ports or backup_wan_ports
+    ):
+        primary_down = []
+        for name in primary_wan_ports:
+            row = by_name.get(name) or {}
+            if row.get("disabled") or not row.get("running"):
+                primary_down.append(name)
+        backup_up = []
+        for name in backup_wan_ports:
+            row = by_name.get(name) or {}
+            if row.get("running") and not row.get("disabled"):
+                backup_up.append(name)
+        checked = uplink_live.get("checked_routes") or []
+        active = next((r for r in checked if r.get("active") and not r.get("disabled")), None)
+        clients = uplink_live.get("failover_clients") or []
+        on_backup = False
+        if active and clients:
+            dist = str(active.get("distance") or "1")
+            for c in clients:
+                if c.get("disabled"):
+                    continue
+                if str(c.get("distance") or "1") != dist:
+                    continue
+                iface = (c.get("interface") or "").strip()
+                if iface in backup_wan_ports:
+                    on_backup = True
+                    break
+        elif primary_down and backup_up:
+            on_backup = True
+        if on_backup:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "failover_on_backup",
+                    "message": (
+                        "Failover is carrying traffic on backup"
+                        + (f" ({', '.join(backup_up)})" if backup_up else "")
+                        + " — primary is down or failing gateway checks."
+                    ),
+                }
+            )
+        for name in backup_wan_ports:
+            row = by_name.get(name) or {}
+            if row.get("disabled") or not row.get("running"):
+                alerts.append(
+                    {
+                        "level": "info",
+                        "code": "backup_down",
+                        "message": f"Backup {name} has no link — failover has no standby.",
+                    }
+                )
+
+    if _is_weighted_share_mode(mode) and (
+        primary_wan_ports or backup_wan_ports
+    ):
+        members = list(primary_wan_ports) + list(backup_wan_ports)
+        down = []
+        for name in members:
+            row = by_name.get(name) or {}
+            if row.get("disabled") or not row.get("running"):
+                if not _port_has_live_uplink(name, physical_ports):
+                    down.append(name)
+        if down:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "balance_member_down",
+                    "message": (
+                        f"Shared ISP link down: {', '.join(down)} — "
+                        "traffic shifts to surviving links after apply."
+                    ),
+                }
+            )
+        if len(members) >= 2 and not balance_router_applied:
+            alerts.append(
+                {
+                    "level": "info",
+                    "code": "balance_not_applied",
+                    "message": (
+                        "Load balance is configured here but not on the MikroTik yet — "
+                        "click Apply load balance."
+                    ),
+                }
+            )
+
+    if mode == MikroTikRouter.UplinkMode.SMART_BALANCE:
+        slow_ports = []
+        if isinstance(smart_balance_status, dict):
+            slow_ports = [
+                str(p).strip()
+                for p in (smart_balance_status.get("slow_ports") or [])
+                if str(p).strip()
+            ]
+        if slow_ports:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "smart_balance_slow",
+                    "message": (
+                        "Slow ISP sidelined from new connections: "
+                        + ", ".join(slow_ports)
+                        + "."
+                    ),
+                }
+            )
+
+    if _is_weighted_share_mode(mode) and wan_share.get("ok"):
+        shares = wan_share.get("shares") or []
+        weights = {}
+        for k, v in (uplink_weights or {}).items():
+            name = str(k).strip()
+            if not name:
+                continue
+            try:
+                weights[name] = max(1, int(v))
+            except (TypeError, ValueError):
+                continue
+        if shares and weights and len(shares) >= 2:
+            total_w = sum(weights.get(s.get("name") or "", 0) for s in shares) or 0
+            if total_w > 0:
+                drifted = []
+                for s in shares:
+                    name = (s.get("name") or "").strip()
+                    actual = s.get("pct")
+                    if actual is None or name not in weights:
+                        continue
+                    target = round(100 * weights[name] / total_w)
+                    try:
+                        actual_i = int(actual)
+                    except (TypeError, ValueError):
+                        continue
+                    if abs(actual_i - target) >= 25 and (wan_share.get("total_bps") or 0) > 0:
+                        drifted.append(f"{name} ~{actual_i}% (target ~{target}%)")
+                if drifted:
+                    alerts.append(
+                        {
+                            "level": "info",
+                            "code": "balance_share_drift",
+                            "message": (
+                                "Live bandwidth share differs from connection weights: "
+                                + "; ".join(drifted)
+                                + " (PCC splits new sessions, not every byte)."
+                            ),
+                        }
+                    )
+
+    return alerts
+
+
+def _record_ports_audit(
+    request,
+    *,
+    action: str,
+    router: MikroTikRouter,
+    detail: dict | None = None,
+) -> None:
+    """Best-effort audit for WAN / uplink changes on the ports page."""
+    try:
+        from accounts.audit import record_audit
+
+        record_audit(
+            action=(action or "ports_change")[:64],
+            request=request,
+            target=f"mikrotik:{router.pk}:{router.name}",
+            detail={
+                "router_id": router.pk,
+                "router_name": router.name,
+                "host": router.host,
+                **(detail or {}),
+            },
+        )
+    except Exception:
+        pass
+
+
 def _wan_switch_confirmed(request, risk: dict) -> tuple[bool, str]:
     """Return whether a single-WAN port switch may proceed."""
     if risk.get("blocking"):
         return (
             False,
             risk.get("summary")
-            or "Switching would likely drop management access to this MikroTik.",
+            or "This change cannot be applied until the issue is fixed.",
         )
     confirm_risk = (request.POST.get("confirm_risk") or "").strip().lower() in {
         "1",
@@ -1457,6 +2281,7 @@ def _build_uplink_prompt(
         tunnel_address=(router.vpn_address or "").strip(),
         management_iface_by_host=management_iface_by_host or {},
         uses_tunnel=uses_tunnel,
+        tunnel_verified=_router_tunnel_verified(router),
     )
 
     kind = (new_row.get("uplink_kind") or "").strip()
@@ -1491,7 +2316,7 @@ def _build_backup_uplink_prompt(
     mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
     if mode not in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
     }:
         return None
 
@@ -1534,9 +2359,17 @@ def _build_backup_uplink_prompt(
         tunnel_address=(router.vpn_address or "").strip(),
         management_iface_by_host=management_iface_by_host or {},
         uses_tunnel=uses_tunnel,
+        tunnel_verified=_router_tunnel_verified(router),
     )
     kind = (candidate_row.get("uplink_kind") or "").strip()
     kind_label = {"pppoe": "PPPoE", "dhcp": "DHCP"}.get(kind, "link up")
+    mode_apply = (
+        "failover"
+        if mode == MikroTikRouter.UplinkMode.FAILOVER
+        else "smart balance"
+        if mode == MikroTikRouter.UplinkMode.SMART_BALANCE
+        else "load balance"
+    )
 
     return {
         "port": candidate,
@@ -1548,8 +2381,11 @@ def _build_backup_uplink_prompt(
         "kind": "add_backup",
         "message": (
             f"Second ISP detected on {candidate} ({kind_label}). "
-            f"Mark it as Backup internet, then apply "
-            f"{'failover or load balance' if mode == MikroTikRouter.UplinkMode.SINGLE else ('failover' if mode == MikroTikRouter.UplinkMode.FAILOVER else 'load balance')}."
+            + (
+                f"Mark it as Shared ISP, then apply {mode_apply}."
+                if _is_weighted_share_mode(mode)
+                else f"Mark it as Backup internet, then apply {mode_apply}."
+            )
         ),
     }
 
@@ -1649,30 +2485,45 @@ def suggest_port_roles(
 ) -> dict[str, str]:
     """
     Auto map ports for any ISP uplink:
-    - one Internet (WAN) from default route / PPPoE parent / ether1 / first live uplink
-    - running customer ports → Customers (LAN)
-    - disabled / link-down → Unused
+    - one Internet (WAN) from default route / bridge-host gateway / PPPoE / live uplink
+    - bridge members + Wi‑Fi → Customers (LAN), except the Internet port
+    - disabled / quiet unused ports → Unused
     """
     roles: dict[str, str] = {}
     wan = _pick_auto_wan(ports, suggested_wan=suggested_wan, saved_wan=saved_wan)
 
     for row in ports:
         name = (row.get("name") or "").strip()
-        if not name or _is_bond_port_row(row):
+        if not name or _is_bond_port_row(row) or _is_bridge_port_name(name):
             continue
-        if name == wan:
+        if wan and name == wan:
             roles[name] = MikroTikRouter.PortRole.WAN
             continue
         if row.get("disabled"):
             roles[name] = MikroTikRouter.PortRole.UNUSED
             continue
-        # Bridged / Wi‑Fi ports are customer-facing even if the link is currently down.
-        # Ports that already carry DHCP/PPPoE but are not the chosen WAN stay unassigned
-        # so the operator can mark them as backup deliberately.
-        if (row.get("uplink_kind") or "") in {"pppoe", "dhcp"} and name != wan:
+        # Secondary live ISP uplinks stay unassigned so the operator can mark backup.
+        if (
+            (row.get("uplink_kind") or "") in {"pppoe", "dhcp"}
+            and row.get("uplink_active")
+            and name != wan
+            and not row.get("is_bridged")
+        ):
             roles[name] = MikroTikRouter.PortRole.NONE
             continue
-        if row.get("is_bridged") or row.get("is_wireless") or row.get("running"):
+        # Stale DHCP/PPPoE on a down, non-bridged port is unused — not a customer port.
+        if (
+            (row.get("uplink_kind") or "") in {"pppoe", "dhcp"}
+            and not row.get("uplink_active")
+            and not row.get("running")
+            and not row.get("is_bridged")
+        ):
+            roles[name] = MikroTikRouter.PortRole.UNUSED
+            continue
+        if row.get("is_bridged") or row.get("is_wireless"):
+            roles[name] = MikroTikRouter.PortRole.LAN
+            continue
+        if row.get("running"):
             roles[name] = MikroTikRouter.PortRole.LAN
         else:
             roles[name] = MikroTikRouter.PortRole.UNUSED
@@ -1744,7 +2595,7 @@ def _sync_roles_for_uplink(
             roles[name] = MikroTikRouter.PortRole.BOND
     elif mode in {
         MikroTikRouter.UplinkMode.FAILOVER,
-        MikroTikRouter.UplinkMode.BALANCE,
+        *_weighted_share_uplink_modes(),
     } and ports:
         roles[ports[0]] = MikroTikRouter.PortRole.WAN
         for name in ports[1:]:
@@ -2365,6 +3216,68 @@ def _apply_hardware_ids(router, *, serial_number: str = "", software_id: str = "
     return changed
 
 
+def _mikrotik_hardware_probe_hosts(
+    *,
+    connect_host: str = "",
+    tunnel_host: str = "",
+    session_host: str = "",
+    target_host: str = "",
+    router_host: str = "",
+    discovered_host: str = "",
+    lan_changed: bool = False,
+    lan_result: dict | None = None,
+) -> list[str]:
+    """Order API dial targets after onboard — discovered/LAN first on a local PC."""
+    lan_result = lan_result or {}
+    lan_first = (
+        discovered_host,
+        connect_host,
+        lan_result.get("verified_host"),
+        lan_result.get("management_host"),
+        session_host,
+        target_host if not lan_changed else "",
+        router_host,
+    )
+    tunnel_first = (tunnel_host,)
+    ordered = (
+        (*lan_first, *tunnel_first)
+        if on_router_lan()
+        else (*tunnel_first, *lan_first)
+    )
+    hosts: list[str] = []
+    for host in ordered:
+        host = normalize_mikrotik_host(host or "")
+        if host and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+def _probe_mikrotik_hardware(
+    hosts: list[str],
+    username: str,
+    password: str,
+    *,
+    timeout: float = 5.0,
+    attempts: int = 1,
+) -> tuple[dict, str, str]:
+    """Try API login on each host; return (result, session_host, last_error)."""
+    last_error = ""
+    for _ in range(max(1, attempts)):
+        for host in hosts:
+            result = test_mikrotik_api_login(
+                host,
+                username,
+                password,
+                timeout=timeout,
+            )
+            if result.get("ok"):
+                return result, host, ""
+            last_error = result.get("error") or last_error
+        if attempts > 1:
+            time.sleep(0.6)
+    return {"ok": False}, "", last_error
+
+
 def _render_mikrotik_list(
     request,
     *,
@@ -2432,6 +3345,11 @@ def mikrotik(request):
         if not org:
             messages.error(request, "No organization is linked to this workspace.")
             return redirect("core:mikrotik")
+        from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
+
+        mark_mikrotik_onboarding_active(
+            org.pk, user_id=request.user.pk, org_wide=True
+        )
         if form.is_valid():
             router = form.save(commit=False)
             router.organization = org
@@ -2453,6 +3371,9 @@ def mikrotik(request):
                 request.POST.get("tunnel_address") or ""
             )
             target_host = normalize_mikrotik_host(router.host)
+            lan_ip_applied_at_connect = (
+                request.POST.get("lan_ip_applied") or ""
+            ).strip() == "1"
             session_host = connect_host or target_host
             api_hosts = [
                 host
@@ -2460,31 +3381,66 @@ def mikrotik(request):
                 if host
             ]
 
-            # Factory default must be changed on the device before we save.
+            script_lan = ""
+            if tunnel_host:
+                reservation = WireGuardReservation.objects.filter(
+                    address=tunnel_host
+                ).first()
+                if reservation:
+                    script_lan = (reservation.lan_address or "").strip()
+
+            # One management IP for the whole onboard flow — assigned at Connect
+            # (or by the Winbox script) and saved unchanged here.
             lan_changed = False
-            if is_factory_default_mikrotik_ip(session_host) or is_factory_default_mikrotik_ip(
+            lan_result: dict = {}
+            if script_lan:
+                discovered_save = discover_local_mikrotik_host(
+                    tunnel_address=tunnel_host,
+                    reservation_label=(reservation.label if reservation else ""),
+                    prefer_host=connect_host or script_lan,
+                )
+                router.host = normalize_mikrotik_host(
+                    discovered_save or connect_host or script_lan
+                )
+                if tunnel_host:
+                    router.vpn_address = tunnel_host
+                target_host = router.host
+                session_host = connect_host or router.host
+                api_hosts = [
+                    host
+                    for host in (tunnel_host, connect_host, script_lan, target_host)
+                    if host
+                ]
+                messages.info(
+                    request,
+                    (
+                        f"MikroTik LAN IP {router.host} saved"
+                        + (
+                            f" (remote tunnel {tunnel_host})"
+                            if tunnel_host and tunnel_host != router.host
+                            else ""
+                        )
+                        + "."
+                    ),
+                )
+            elif lan_ip_applied_at_connect or (
+                connect_host and target_host and connect_host == target_host
+            ):
+                router.host = target_host or connect_host
+                target_host = router.host
+                session_host = connect_host or target_host
+                if lan_ip_applied_at_connect:
+                    messages.info(
+                        request,
+                        f"MikroTik management IP {router.host} was set during Connect.",
+                    )
+            elif is_transient_onboard_host(connect_host) or is_transient_onboard_host(
                 target_host
             ):
-                if is_factory_default_mikrotik_ip(target_host):
-                    form.add_error(
-                        "host",
-                        "Change the MikroTik LAN IP away from the factory default "
-                        "192.168.88.1 before onboarding — keeping it causes collisions "
-                        "with other MikroTik routers.",
-                    )
-                    open_onboard = True
-                    messages.error(request, str(next(iter(form.errors.values()))[0]))
-                    return _render_mikrotik_list(
-                        request,
-                        org=org,
-                        routers=routers,
-                        onboard_form=form,
-                        open_onboard=True,
-                    )
                 if not connect_host:
                     form.add_error(
                         "host",
-                        "Reconnect to the MikroTik, then set a new LAN IP in Change IP.",
+                        "Reconnect to the MikroTik, then Connect again.",
                     )
                     open_onboard = True
                     messages.error(request, str(next(iter(form.errors.values()))[0]))
@@ -2518,26 +3474,27 @@ def mikrotik(request):
                         open_onboard=True,
                     )
                 lan_changed = True
-                lan_ip = lan_result.get("host") or target_host
-                # Keep API on the path that still answers (tunnel or original LAN).
-                session_host = (
-                    lan_result.get("management_host")
-                    or lan_result.get("verified_host")
-                    or tunnel_host
-                    or connect_host
-                    or lan_ip
+                router.host = resolve_onboard_management_host(
+                    connect_host=connect_host,
+                    tunnel_host=tunnel_host,
+                    lan_result=lan_result,
+                    fallback=target_host,
                 )
-                # Always save the unique LAN IP as host. Keep the tunnel address
-                # on vpn_address for hosted/VPS dialing — local status must use host.
-                router.host = lan_ip
+                target_host = router.host
+                session_host = (
+                    lan_result.get("verified_host")
+                    or tunnel_host
+                    or lan_result.get("management_host")
+                    or connect_host
+                    or target_host
+                )
                 if tunnel_host and not (router.vpn_address or "").strip():
                     router.vpn_address = tunnel_host
                 messages.info(
                     request,
-                    f"MikroTik LAN IP set to {lan_ip} to avoid factory-default collisions.",
+                    f"MikroTik management IP set to {router.host}.",
                 )
             elif connect_host and target_host and connect_host != target_host:
-                # Optional IP change when the connect host was already non-default.
                 lan_result = change_mikrotik_lan_ip(
                     connect_host,
                     router.username,
@@ -2561,55 +3518,126 @@ def mikrotik(request):
                         open_onboard=True,
                     )
                 lan_changed = True
-                lan_ip = lan_result.get("host") or target_host
-                session_host = (
-                    lan_result.get("management_host")
-                    or lan_result.get("verified_host")
-                    or tunnel_host
-                    or connect_host
-                    or lan_ip
+                router.host = resolve_onboard_management_host(
+                    connect_host=connect_host,
+                    tunnel_host=tunnel_host,
+                    lan_result=lan_result,
+                    fallback=target_host,
                 )
-                router.host = lan_ip
+                target_host = router.host
+                session_host = (
+                    lan_result.get("verified_host")
+                    or tunnel_host
+                    or lan_result.get("management_host")
+                    or connect_host
+                    or target_host
+                )
                 if tunnel_host and not (router.vpn_address or "").strip():
                     router.vpn_address = tunnel_host
 
             # Read hardware IDs so we can detect the same physical MikroTik.
             # Prefer the path Connect already proved (and tunnel) — never dial the
             # brand-new LAN subnet first (this PC often cannot route there yet).
-            hardware = {"ok": False}
-            hardware_hosts: list[str] = []
-            for host in (
-                connect_host,
-                tunnel_host,
-                session_host,
-                target_host if not lan_changed else "",
-                router.host,
-            ):
-                host = normalize_mikrotik_host(host)
-                if host and host not in hardware_hosts:
-                    hardware_hosts.append(host)
-            last_hardware_error = ""
-            for host in hardware_hosts:
-                hardware = test_mikrotik_api_login(
-                    host,
-                    router.username,
-                    router.password,
-                    timeout=5.0,
-                )
-                if hardware.get("ok"):
-                    session_host = host
-                    break
-                last_hardware_error = hardware.get("error") or last_hardware_error
+            connect_serial = (request.POST.get("connect_serial_number") or "").strip()
+            connect_software_id = (request.POST.get("connect_software_id") or "").strip()
+            reservation = (
+                WireGuardReservation.objects.filter(address=tunnel_host).first()
+                if tunnel_host
+                else None
+            )
+            discovered_lan = discover_local_mikrotik_host(
+                tunnel_address=tunnel_host,
+                reservation_label=(reservation.label if reservation else ""),
+                prefer_host=connect_host or target_host,
+            )
+            if discovered_lan:
+                discovered_lan = normalize_mikrotik_host(discovered_lan)
+                if discovered_lan != connect_host:
+                    connect_host = discovered_lan
+                    session_host = discovered_lan
+                planned = normalize_mikrotik_host(script_lan or target_host or "")
+                if not planned or planned == "192.168.88.1" or planned != discovered_lan:
+                    router.host = discovered_lan
+                    target_host = discovered_lan
+            lan_result_data = lan_result if lan_changed else {}
+            hardware_hosts = _mikrotik_hardware_probe_hosts(
+                connect_host=connect_host,
+                tunnel_host=tunnel_host,
+                session_host=session_host,
+                target_host=target_host,
+                router_host=router.host,
+                discovered_host=discovered_lan,
+                lan_changed=lan_changed,
+                lan_result=lan_result_data,
+            )
+            hardware, probe_host, last_hardware_error = _probe_mikrotik_hardware(
+                hardware_hosts,
+                router.username,
+                router.password,
+                timeout=8.0 if lan_changed else 5.0,
+                attempts=3 if lan_changed else 1,
+            )
+            if hardware.get("ok"):
+                session_host = probe_host or session_host
             serial_number = ""
             software_id = ""
             if not hardware.get("ok"):
+                if lan_changed and lan_result_data.get("ok"):
+                    serial_number = (
+                        (lan_result_data.get("serial_number") or "").strip()
+                        or connect_serial
+                    )
+                    software_id = (
+                        (lan_result_data.get("software_id") or "").strip()
+                        or connect_software_id
+                    )
+                    if serial_number or software_id:
+                        hardware = {"ok": True}
+                        session_host = (
+                            tunnel_host
+                            or lan_result_data.get("verified_host")
+                            or lan_result_data.get("management_host")
+                            or connect_host
+                            or session_host
+                        )
+                        messages.info(
+                            request,
+                            (
+                                f"MikroTik LAN IP set to {router.host}. "
+                                "This PC cannot reach the router on API port 8728 right now — "
+                                "hardware IDs were taken from the Connect step. "
+                                "Use the WireGuard tunnel IP for management until your PC is on the new LAN."
+                            ),
+                        )
+            if hardware.get("ok"):
+                serial_number = (
+                    serial_number
+                    or (hardware.get("serial_number") or "").strip()
+                )
+                software_id = (
+                    software_id or (hardware.get("software_id") or "").strip()
+                )
+            if not hardware.get("ok"):
                 tried = ", ".join(hardware_hosts) if hardware_hosts else "(none)"
+                lan_hint = (discovered_lan or connect_host or router.host or "192.168.88.1").strip()
+                extra = ""
+                if tunnel_host and on_router_lan():
+                    if discovered_lan and discovered_lan != (script_lan or "192.168.88.1"):
+                        extra = (
+                            f" This router was found at {discovered_lan} on your network — "
+                            f"Connect there (not {script_lan or '192.168.88.1'}). "
+                            f"Tunnel {tunnel_host} is only reachable from the VPS."
+                        )
+                    else:
+                        extra = (
+                            f" From this PC, Connect at the LAN IP ({lan_hint}) first — "
+                            f"tunnel {tunnel_host} is only reachable from the VPS."
+                        )
                 form.add_error(
                     "host",
                     (
                         f"{last_hardware_error or 'Could not reach this MikroTik on API port 8728.'} "
-                        f"Tried: {tried}. If you just changed the LAN IP, Connect again using the "
-                        "WireGuard tunnel IP (or the original LAN IP if it was kept), then onboard."
+                        f"Tried: {tried}.{extra}"
                     ),
                 )
                 open_onboard = True
@@ -2674,8 +3702,9 @@ def mikrotik(request):
                 elif apply_password and wifi_password and len(wifi_password) < 8:
                     form.add_error("wifi_password", "Wi‑Fi password must be at least 8 characters.")
                 else:
+                    wifi_host = tunnel_host or session_host
                     wifi_result = configure_mikrotik_wifi(
-                        session_host,
+                        wifi_host,
                         router.username,
                         router.password,
                         wifi_ssid=wifi_ssid,
@@ -2711,6 +3740,11 @@ def mikrotik(request):
             else:
                 messages.success(request, f"MikroTik “{router.name}” onboarded.")
 
+            finalize_onboard_addresses(
+                router,
+                lan_host=router.host,
+                tunnel_host=tunnel_host,
+            )
             router.save()
             # If Connect used a reserved tunnel address, attach that WireGuard peer.
             wireguard.adopt_reservation_for_router(router)
@@ -2747,6 +3781,11 @@ def mikrotik(request):
                 )
             # Drop stale discovery/status caches for this org after onboard.
             if org:
+                from core.mikrotik_status_samples import clear_mikrotik_onboarding_active
+
+                clear_mikrotik_onboarding_active(
+                    org.pk, user_id=request.user.pk, org_wide=True
+                )
                 cache.delete_many(
                     [
                         f"mikrotik_discover:{org.pk}:quick",
@@ -3268,7 +4307,7 @@ def mikrotik_ports(request, router_id: int):
     router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
     is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
     api_host = _router_api_host(router)
-    role_choices = _port_role_choices_for_ui()
+    role_choices = _port_role_choices_for_ui(router.uplink_mode)
     bond_mode_choices = [
         ("balance-xor", "Balance XOR (same provider)"),
         ("802.3ad", "LACP 802.3ad (if provider/switch supports it)"),
@@ -3291,7 +4330,7 @@ def mikrotik_ports(request, router_id: int):
                 api_host,
                 router.username,
                 router.password or "",
-                timeout=6.0,
+                timeout=12.0,
                 management_hosts=_management_hosts_for_router(router),
             )
             if not listed.get("ok"):
@@ -3308,6 +4347,7 @@ def mikrotik_ports(request, router_id: int):
             )
             # Best-effort: put the chosen Internet port on the router WAN list.
             wan_name = (result.get("wan") or "").strip()
+            live_ports = listed.get("ports") or []
             if wan_name:
                 old_wan = _current_primary_wan_port(router)
                 retire = [old_wan] if old_wan and old_wan != wan_name else []
@@ -3316,6 +4356,7 @@ def mikrotik_ports(request, router_id: int):
                     api_host,
                     wan_interface=wan_name,
                     retire_ports=retire,
+                    live_ports=live_ports,
                 )
                 if not switch.get("ok"):
                     messages.warning(
@@ -3323,6 +4364,8 @@ def mikrotik_ports(request, router_id: int):
                         switch.get("error")
                         or f"Saved {wan_name} as Internet, but could not configure it on the router.",
                     )
+                elif switch.get("skipped"):
+                    messages.info(request, switch.get("message") or "")
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -3330,6 +4373,12 @@ def mikrotik_ports(request, router_id: int):
                 ]
             )
             messages.success(request, result.get("message") or "Ports auto-assigned.")
+            _record_ports_audit(
+                request,
+                action="ports_auto_assign",
+                router=router,
+                detail={"wan": result.get("wan") or ""},
+            )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
         if action == "accept_detected_uplink":
@@ -3370,6 +4419,7 @@ def mikrotik_ports(request, router_id: int):
                 tunnel_address=(router.vpn_address or "").strip(),
                 management_iface_by_host=listed.get("management_iface_by_host") or {},
                 uses_tunnel=_router_uses_tunnel(router),
+                tunnel_verified=_router_tunnel_verified(router),
             )
             ok, err = _wan_switch_confirmed(request, risk)
             if not ok:
@@ -3406,6 +4456,16 @@ def mikrotik_ports(request, router_id: int):
                     sync.get("message") or result.get("message") or "Internet port switched.",
                 )
 
+            _record_ports_audit(
+                request,
+                action="ports_accept_detected_uplink",
+                router=router,
+                detail={
+                    "old_wan": old_wan,
+                    "new_wan": port_name,
+                    "router_ok": bool(sync.get("ok")),
+                },
+            )
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -3444,6 +4504,7 @@ def mikrotik_ports(request, router_id: int):
                 tunnel_address=(router.vpn_address or "").strip(),
                 management_iface_by_host=listed.get("management_iface_by_host") or {},
                 uses_tunnel=_router_uses_tunnel(router),
+                tunnel_verified=_router_tunnel_verified(router),
             )
             ok, err = _check_uplink_apply_confirmation(request, risk)
             if not ok:
@@ -3507,6 +4568,7 @@ def mikrotik_ports(request, router_id: int):
                 MikroTikRouter.UplinkMode.BOND,
                 MikroTikRouter.UplinkMode.FAILOVER,
                 MikroTikRouter.UplinkMode.BALANCE,
+                MikroTikRouter.UplinkMode.SMART_BALANCE,
             }
             if goal not in valid_goals:
                 messages.error(request, "Choose a valid internet setup.")
@@ -3561,7 +4623,7 @@ def mikrotik_ports(request, router_id: int):
                 old_mode
                 in {
                     MikroTikRouter.UplinkMode.FAILOVER,
-                    MikroTikRouter.UplinkMode.BALANCE,
+                    *_weighted_share_uplink_modes(),
                     MikroTikRouter.UplinkMode.BOND,
                 }
                 and goal == MikroTikRouter.UplinkMode.SINGLE
@@ -3663,18 +4725,28 @@ def mikrotik_ports(request, router_id: int):
                             else {}
                         ),
                         uses_tunnel=_router_uses_tunnel(router),
+                        tunnel_verified=_router_tunnel_verified(router),
                     )
                     ok, err = _wan_switch_confirmed(request, risk)
                     if not ok:
                         messages.error(request, err)
                         return redirect("core:mikrotik_ports", router_id=router.pk)
 
+                demoted_to_backup: list[str] = []
                 for name, existing in list(roles.items()):
                     if name == port_name:
                         continue
                     if _is_primary_wan_role(existing):
-                        roles[name] = MikroTikRouter.PortRole.UNUSED
-                        retire_ports.append(name)
+                        if uplink_mode in {
+                            MikroTikRouter.UplinkMode.FAILOVER,
+                            MikroTikRouter.UplinkMode.BALANCE,
+                        }:
+                            # Swap: previous Internet becomes Backup internet.
+                            roles[name] = MikroTikRouter.PortRole.WAN_BACKUP
+                            demoted_to_backup.append(name)
+                        else:
+                            roles[name] = MikroTikRouter.PortRole.UNUSED
+                            retire_ports.append(name)
                     elif existing == MikroTikRouter.PortRole.BOND:
                         roles[name] = MikroTikRouter.PortRole.NONE
                     elif (
@@ -3709,6 +4781,16 @@ def mikrotik_ports(request, router_id: int):
                         wan_interface=port_name,
                         retire_ports=retire_ports or ([old_wan] if old_wan and old_wan != port_name else []),
                     )
+                    _record_ports_audit(
+                        request,
+                        action="ports_wan_switch",
+                        router=router,
+                        detail={
+                            "old_wan": old_wan,
+                            "new_wan": port_name,
+                            "router_ok": bool(sync.get("ok")),
+                        },
+                    )
                     if not sync.get("ok"):
                         messages.warning(
                             request,
@@ -3722,11 +4804,34 @@ def mikrotik_ports(request, router_id: int):
                         )
                 else:
                     label = dict(MikroTikRouter.PortRole.choices).get(role, role)
+                    swap_note = ""
+                    if demoted_to_backup:
+                        swap_note = (
+                            f" Previous Internet ({', '.join(demoted_to_backup)}) "
+                            "moved to Backup internet."
+                        )
+                    apply_mode = (
+                        "failover"
+                        if uplink_mode == MikroTikRouter.UplinkMode.FAILOVER
+                        else "smart balance"
+                        if uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE
+                        else "load balance"
+                    )
                     messages.success(
                         request,
-                        f"{port_name} role set to {label}. Apply "
-                        f"{'failover' if uplink_mode == MikroTikRouter.UplinkMode.FAILOVER else 'load balance'} "
-                        "when both ISP links are assigned.",
+                        f"{port_name} role set to {label}.{swap_note} Apply "
+                        f"{apply_mode} when all ISP links are assigned.",
+                    )
+                    _record_ports_audit(
+                        request,
+                        action="ports_wan_role",
+                        router=router,
+                        detail={
+                            "port": port_name,
+                            "role": role,
+                            "mode": uplink_mode,
+                            "demoted_to_backup": demoted_to_backup,
+                        },
                     )
             elif role == MikroTikRouter.PortRole.WAN_BACKUP:
                 roles[port_name] = MikroTikRouter.PortRole.WAN_BACKUP
@@ -3744,6 +4849,13 @@ def mikrotik_ports(request, router_id: int):
                         "Assign Internet to the main ISP port before adding a backup.",
                     )
                     return redirect("core:mikrotik_ports", router_id=router.pk)
+                # Clear this port from primary if it somehow had wan role already.
+                if port_name == primary:
+                    messages.error(
+                        request,
+                        "Choose a different port than the primary Internet port.",
+                    )
+                    return redirect("core:mikrotik_ports", router_id=router.pk)
                 router.wan_interface = primary
                 backup_ports = [
                     name
@@ -3752,7 +4864,7 @@ def mikrotik_ports(request, router_id: int):
                     == MikroTikRouter.PortRole.WAN_BACKUP
                 ]
                 router.uplink_ports = [primary, *backup_ports]
-                update_fields.extend(["uplink_mode", "wan_interface", "uplink_ports"])
+                update_fields.extend(["wan_interface", "uplink_ports"])
             elif role == MikroTikRouter.PortRole.BOND:
                 roles[port_name] = MikroTikRouter.PortRole.BOND
             else:
@@ -3830,7 +4942,9 @@ def mikrotik_ports(request, router_id: int):
                     member_ports=ports,
                     bond_name=bname,
                     bond_mode=bmode,
+                    api_hosts=_uplink_api_hosts_for_router(live),
                 )
+                job_result = _finalize_uplink_apply_result(live, job_result)
                 if job_result.get("ok"):
                     members = job_result.get("members") or ports
                     live.uplink_mode = MikroTikRouter.UplinkMode.BOND
@@ -3881,7 +4995,9 @@ def mikrotik_ports(request, router_id: int):
                 member_ports=member_ports,
                 bond_name=bond_name,
                 bond_mode=bond_mode,
+                api_hosts=_uplink_api_hosts_for_router(router),
             )
+            result = _finalize_uplink_apply_result(router, result)
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -3918,6 +5034,12 @@ def mikrotik_ports(request, router_id: int):
                 ]
             )
             messages.success(request, result.get("message") or "Bonded uplinks applied.")
+            _record_ports_audit(
+                request,
+                action="ports_apply_bond",
+                router=router,
+                detail={"members": members, "bond": router.bond_interface},
+            )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
         if action == "apply_failover":
@@ -3934,12 +5056,6 @@ def mikrotik_ports(request, router_id: int):
                     "Assign WAN backup to at least one other port in the table above.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
-            if len(backups) != 1:
-                messages.error(
-                    request,
-                    "Failover needs exactly two ISP links — one Internet and one Backup internet.",
-                )
-                return redirect("core:mikrotik_ports", router_id=router.pk)
 
             listed = list_mikrotik_ports(
                 api_host,
@@ -3953,7 +5069,7 @@ def mikrotik_ports(request, router_id: int):
             if not all(_port_has_live_uplink(port, live_ports) for port in touch):
                 messages.error(
                     request,
-                    "Both ISP links must show link up before applying failover.",
+                    "All ISP links must show link up before applying failover.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
             failover_risk = _assess_uplink_mode_apply(
@@ -3987,7 +5103,9 @@ def mikrotik_ports(request, router_id: int):
                     live.password or "",
                     primary_port=primary_port,
                     backup_ports=backup_ports,
+                    api_hosts=_uplink_api_hosts_for_router(live),
                 )
+                job_result = _finalize_uplink_apply_result(live, job_result)
                 if job_result.get("ok"):
                     ordered = job_result.get("ports") or [primary_port, *backup_ports]
                     live.uplink_mode = MikroTikRouter.UplinkMode.FAILOVER
@@ -4035,7 +5153,9 @@ def mikrotik_ports(request, router_id: int):
                 router.password or "",
                 primary_port=primary,
                 backup_ports=backups,
+                api_hosts=_uplink_api_hosts_for_router(router),
             )
+            result = _finalize_uplink_apply_result(router, result)
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -4068,9 +5188,22 @@ def mikrotik_ports(request, router_id: int):
                 ]
             )
             messages.success(request, result.get("message") or "Failover uplinks applied.")
+            _record_ports_audit(
+                request,
+                action="ports_apply_failover",
+                router=router,
+                detail={"ports": ordered},
+            )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
-        if action == "apply_balance":
+        if action in {"apply_balance", "apply_smart_balance"}:
+            smart_balance = action == "apply_smart_balance"
+            target_mode = (
+                MikroTikRouter.UplinkMode.SMART_BALANCE
+                if smart_balance
+                else MikroTikRouter.UplinkMode.BALANCE
+            )
+            apply_label = "smart balance" if smart_balance else "load balance"
             primary, backups = _failover_ports_from_roles(router)
             if not primary:
                 messages.error(
@@ -4081,13 +5214,9 @@ def mikrotik_ports(request, router_id: int):
             if not backups:
                 messages.error(
                     request,
-                    "Assign Backup internet to at least one other port for load balance.",
-                )
-                return redirect("core:mikrotik_ports", router_id=router.pk)
-            if len(backups) != 1:
-                messages.error(
-                    request,
-                    "Load balance needs exactly two ISP links — one Internet and one Backup internet.",
+                    "Assign at least one other port as Shared ISP for "
+                    + apply_label
+                    + ".",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
@@ -4116,12 +5245,12 @@ def mikrotik_ports(request, router_id: int):
             if not all(_port_has_live_uplink(port, live_ports) for port in ordered):
                 messages.error(
                     request,
-                    "Both ISP links must show link up before applying load balance.",
+                    f"All ISP links must show link up before applying {apply_label}.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
             balance_risk = _assess_uplink_mode_apply(
                 router,
-                "balance",
+                "smart_balance" if smart_balance else "balance",
                 ordered,
                 live_ports,
                 listed.get("management_iface_by_host") if listed.get("ok") else {},
@@ -4141,6 +5270,8 @@ def mikrotik_ports(request, router_id: int):
                 port_weights=balance_weights,
                 pk=router_pk,
                 organization_pk=org_pk,
+                smart=smart_balance,
+                mode=target_mode,
             ):
                 live = MikroTikRouter.objects.get(pk=pk)
                 host = _router_api_host(live)
@@ -4150,17 +5281,20 @@ def mikrotik_ports(request, router_id: int):
                     live.password or "",
                     member_ports=ports,
                     member_weights=port_weights,
+                    smart_balance=smart,
+                    api_hosts=_uplink_api_hosts_for_router(live),
                 )
+                job_result = _finalize_uplink_apply_result(live, job_result)
                 if job_result.get("ok"):
                     ordered_ports = job_result.get("ports") or ports
-                    live.uplink_mode = MikroTikRouter.UplinkMode.BALANCE
+                    live.uplink_mode = mode
                     live.uplink_ports = ordered_ports
                     live.uplink_weights = job_result.get("weights") or port_weights
                     live.wan_interface = job_result.get("wan_interface") or ports[0]
                     live.uplink_unbridged = job_result.get("unbridged") or []
                     live.port_roles = _sync_roles_for_uplink(
                         live,
-                        mode=MikroTikRouter.UplinkMode.BALANCE,
+                        mode=mode,
                         ports=ordered_ports,
                     )
                     live.save(
@@ -4177,21 +5311,22 @@ def mikrotik_ports(request, router_id: int):
                     _invalidate_mikrotik_router_caches(organization_pk, pk)
                 return job_result
 
+            job_type = "uplink_smart_balance" if smart_balance else "uplink_balance"
             if _background_mikrotik_ops():
-                set_job(router.pk, "uplink_balance", "pending")
+                set_job(router.pk, job_type, "pending")
                 _schedule_mikrotik_job(
                     _apply_balance_job,
-                    name=f"uplink-balance-{router.pk}",
+                    name=f"{job_type}-{router.pk}",
                     router_id=router.pk,
-                    job_type="uplink_balance",
+                    job_type=job_type,
                 )
                 messages.success(
                     request,
-                    "Applying load-balance uplinks on the MikroTik in the background. "
+                    f"Applying {apply_label} uplinks on the MikroTik in the background. "
                     "This page will show progress shortly.",
                 )
                 return _redirect_with_mikrotik_job(
-                    request, "core:mikrotik_ports", router.pk, "uplink_balance"
+                    request, "core:mikrotik_ports", router.pk, job_type
                 )
 
             result = apply_mikrotik_uplink_balance(
@@ -4200,7 +5335,10 @@ def mikrotik_ports(request, router_id: int):
                 router.password or "",
                 member_ports=ordered,
                 member_weights=weights,
+                smart_balance=smart_balance,
+                api_hosts=_uplink_api_hosts_for_router(router),
             )
+            result = _finalize_uplink_apply_result(router, result)
             cache.delete_many(
                 [
                     f"mikrotik_live:{org.pk}:{router.pk}",
@@ -4210,18 +5348,18 @@ def mikrotik_ports(request, router_id: int):
             if not result.get("ok"):
                 messages.error(
                     request,
-                    result.get("error") or "Could not apply load-balance uplinks.",
+                    result.get("error") or f"Could not apply {apply_label} uplinks.",
                 )
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
             ordered = result.get("ports") or ordered
-            router.uplink_mode = MikroTikRouter.UplinkMode.BALANCE
+            router.uplink_mode = target_mode
             router.uplink_ports = ordered
             router.uplink_weights = result.get("weights") or weights
             router.wan_interface = result.get("wan_interface") or primary
             router.uplink_unbridged = result.get("unbridged") or []
             router.port_roles = _sync_roles_for_uplink(
-                router, mode=MikroTikRouter.UplinkMode.BALANCE, ports=ordered
+                router, mode=target_mode, ports=ordered
             )
             router.save(
                 update_fields=[
@@ -4236,7 +5374,18 @@ def mikrotik_ports(request, router_id: int):
             )
             messages.success(
                 request,
-                result.get("message") or "Load-balance uplinks applied.",
+                result.get("message")
+                or (f"{apply_label.title()} uplinks applied."),
+            )
+            _record_ports_audit(
+                request,
+                action="ports_apply_smart_balance" if smart_balance else "ports_apply_balance",
+                router=router,
+                detail={
+                    "ports": ordered,
+                    "weights": router.uplink_weights,
+                    "smart_balance": smart_balance,
+                },
             )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
@@ -4322,10 +5471,38 @@ def mikrotik_ports(request, router_id: int):
                     "updated_at",
                 ]
             )
-            messages.success(
-                request,
-                result.get("message") or "Bonded / failover / balance uplink settings cleared.",
+            # Push a full single-WAN config so the router is not left without a WAN.
+            switch = _apply_single_wan_on_router(
+                router,
+                api_host,
+                wan_interface=router.wan_interface,
+                retire_ports=[],
             )
+            _record_ports_audit(
+                request,
+                action="ports_clear_multi_uplink",
+                router=router,
+                detail={
+                    "wan": router.wan_interface,
+                    "clear_ok": bool(result.get("ok")),
+                    "wan_sync_ok": bool(switch.get("ok")),
+                },
+            )
+            if not switch.get("ok"):
+                messages.warning(
+                    request,
+                    switch.get("error")
+                    or (
+                        f"Cleared multi-uplink settings, but could not configure "
+                        f"single WAN on {router.wan_interface}."
+                    ),
+                )
+            else:
+                messages.success(
+                    request,
+                    result.get("message")
+                    or "Bonded / failover / balance uplink settings cleared.",
+                )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
         messages.error(request, "Unknown ports action.")
@@ -4358,7 +5535,11 @@ def mikrotik_ports(request, router_id: int):
         (MikroTikRouter.PortRole.NONE, "Unassigned"),
     ]
 
-    detail_nav = build_mikrotik_detail_nav(router, include_modals=False)
+    detail_nav = build_mikrotik_detail_nav(
+        router,
+        is_suspended=is_suspended,
+        include_modals=False,
+    )
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
 
     ctx = client_page_context(
@@ -4404,13 +5585,13 @@ def mikrotik_ports(request, router_id: int):
         default_bond_mode=router.bond_mode or "balance-xor",
         suggested_wan=suggested_wan,
         auto_assigned=auto_assigned,
+        api_terminal_script=build_api_enable_terminal_script(),
     )
-    ctx["client_nav_main"] = [
-        *CLIENT_COMMON_NAV_START,
-        *detail_nav,
-    ]
-    ctx["sidebar_label"] = "MikroTik"
-    return render(request, "core/mikrotik_ports.html", ctx)
+    return render(
+        request,
+        "core/mikrotik_ports.html",
+        apply_mikrotik_detail_sidebar(ctx, router, detail_nav=detail_nav),
+    )
 
 
 @client_workspace_required
@@ -4568,21 +5749,26 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
 
     # Ports list and uplink multi-read are independent RouterOS sessions —
     # run them together so the ports page fills in sooner.
+    api_host = _router_api_host(router)
+    member_ports_for_read = [
+        str(p).strip() for p in (router.uplink_ports or []) if str(p).strip()
+    ]
     with ThreadPoolExecutor(max_workers=2) as pool:
         ports_future = pool.submit(
             list_mikrotik_ports,
-            router.host,
+            api_host,
             router.username,
             router.password or "",
-            timeout=6.0,
+            timeout=5.0,
             management_hosts=_management_hosts_for_router(router),
         )
         uplink_future = pool.submit(
             read_mikrotik_uplink_multi,
-            router.host,
+            api_host,
             router.username,
             router.password or "",
-            timeout=5.0,
+            timeout=8.0,
+            member_ports=member_ports_for_read or None,
         )
         listed = ports_future.result()
         try:
@@ -4596,11 +5782,13 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
             "error": listed.get("error") or "Could not read ports from the MikroTik.",
             "ports": [],
             "auto_assigned": False,
+            "terminal_script": listed.get("terminal_script") or "",
         }
 
     suggested_wan = (listed.get("suggested_wan") or "").strip()
     live_ports = listed.get("ports") or []
     auto_assigned = False
+    auto_assigned_router_warning = ""
 
     stored_roles = router.port_roles if isinstance(router.port_roles, dict) else {}
     assigned = {
@@ -4619,6 +5807,30 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         router.refresh_from_db(
             fields=["port_roles", "wan_interface", "uplink_mode", "uplink_ports"]
         )
+        # Keep RouterOS in sync with the first auto-assign (same as the button).
+        wan_name = (router.wan_interface or "").strip()
+        if wan_name:
+            try:
+                sync = _apply_single_wan_on_router(
+                    router,
+                    api_host,
+                    wan_interface=wan_name,
+                    retire_ports=[],
+                    live_ports=live_ports,
+                )
+                if not sync.get("ok"):
+                    auto_assigned_router_warning = (
+                        sync.get("error")
+                        or f"Saved {wan_name} as Internet, but could not configure it on the router."
+                    )
+                elif sync.get("skipped"):
+                    auto_assigned_router_warning = ""
+            except Exception:
+                auto_assigned_router_warning = (
+                    f"Saved {wan_name} as Internet, but could not configure it on the router."
+                )
+
+    uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
 
     ports: list[dict] = []
     for row in live_ports:
@@ -4628,7 +5840,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
             {
                 **row,
                 "role": role,
-                "role_label": _friendly_role_label(role),
+                "role_label": _friendly_role_label(role, mode=uplink_mode),
                 "is_bond_iface": _is_bond_port_row(row),
             }
         )
@@ -4658,7 +5870,6 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         for p in physical_ports
         if p.get("role") in {"", MikroTikRouter.PortRole.NONE, None}
     ]
-    uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
 
     # Live % share across multi-WAN ports — from rx/tx counters already on
     # the ports list (no third API session). Prefer byte-delta rate when a
@@ -4669,10 +5880,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         for p in (list(primary_wan_ports) + list(backup_wan_ports))
         if str(p).strip()
     ]
-    if len(share_ports) >= 2 and uplink_mode in {
-        MikroTikRouter.UplinkMode.BALANCE,
-        MikroTikRouter.UplinkMode.FAILOVER,
-    }:
+    if len(share_ports) >= 2 and uplink_mode in _weighted_share_uplink_modes():
         by_name = {p.get("name"): p for p in physical_ports}
         samples = []
         for name in share_ports:
@@ -4712,6 +5920,8 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         live_ports=live_ports,
         management_iface_by_host=listed.get("management_iface_by_host") or {},
     )
+    tunnel_management = check_router_tunnel_management(router, timeout=3.0)
+    tunnel_verified = bool(tunnel_management.get("verified"))
     uplink_apply_risks = _build_uplink_apply_risks(
         router,
         live_ports=live_ports,
@@ -4719,11 +5929,12 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         bond_member_ports=bond_member_ports,
         primary_wan_ports=primary_wan_ports,
         backup_wan_ports=backup_wan_ports,
+        tunnel_verified=tunnel_verified,
     )
 
     dual_wan_ready = (
         len(primary_wan_ports) == 1
-        and len(backup_wan_ports) == 1
+        and len(backup_wan_ports) >= 1
         and all(
             _port_has_live_uplink(name, physical_ports)
             for name in (primary_wan_ports + backup_wan_ports)
@@ -4732,13 +5943,95 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
     bond_ready = len(bond_member_ports) >= 2 and all(
         _port_has_live_uplink(name, physical_ports) for name in bond_member_ports
     )
+    balance_ready, balance_apply_hint = _balance_apply_readiness(
+        primary_wan_ports, backup_wan_ports, physical_ports
+    )
+    balance_router_applied = (
+        _is_weighted_share_mode(uplink_mode)
+        and bool(uplink_live.get("ok"))
+        and (uplink_live.get("mode") or "").strip() in _weighted_share_uplink_modes()
+    )
+    smart_balance_status = (
+        uplink_live.get("smart_balance_status")
+        if isinstance(uplink_live.get("smart_balance_status"), dict)
+        else {}
+    )
     allowed_roles = sorted(_allowed_roles_for_uplink_mode(uplink_mode))
     wan_switch_risks = _build_wan_switch_risks(
         router,
         live_ports=live_ports,
         management_iface_by_host=listed.get("management_iface_by_host") or {},
         primary_wan_ports=primary_wan_ports,
+        tunnel_verified=tunnel_verified,
     )
+    uplink_health_alerts = _build_uplink_health_alerts(
+        uplink_mode=uplink_mode,
+        uplink_live=uplink_live if uplink_live.get("ok") else {},
+        wan_share=wan_share if wan_share.get("ok") else {},
+        primary_wan_ports=primary_wan_ports,
+        backup_wan_ports=backup_wan_ports,
+        bond_member_ports=bond_member_ports,
+        physical_ports=physical_ports,
+        uplink_weights=(
+            dict(router.uplink_weights)
+            if isinstance(router.uplink_weights, dict)
+            else {}
+        ),
+        balance_router_applied=balance_router_applied,
+        smart_balance_status=smart_balance_status,
+    )
+
+    member_ports = [
+        str(p).strip()
+        for p in (
+            list(router.uplink_ports or [])
+            or list(primary_wan_ports) + list(backup_wan_ports)
+        )
+        if str(p).strip()
+    ]
+    failover_active = ""
+    if uplink_mode == MikroTikRouter.UplinkMode.FAILOVER and uplink_live.get("ok"):
+        failover_active = _failover_active_wan_port(
+            uplink_live,
+            primary_wan_ports=primary_wan_ports,
+            backup_wan_ports=backup_wan_ports,
+        )
+    try:
+        client_usage = read_client_wan_usage(
+            api_host,
+            router.username,
+            router.password or "",
+            uplink_mode=uplink_mode,
+            member_ports=member_ports,
+            primary_wan=(primary_wan_ports[0] if primary_wan_ports else router.wan_interface or ""),
+            failover_active_port=failover_active,
+            bond_interface=router.bond_interface or "",
+            timeout=6.0,
+        )
+    except Exception:
+        client_usage = {"ok": False, "error": "Could not read client WAN usage."}
+    router_analysis = _build_router_client_analysis(
+        router,
+        uplink_mode=uplink_mode,
+        uplink_live=uplink_live if uplink_live.get("ok") else {},
+        wan_share=wan_share if wan_share.get("ok") else {},
+        smart_balance_status=smart_balance_status,
+        primary_wan_ports=primary_wan_ports,
+        backup_wan_ports=backup_wan_ports,
+        usage=client_usage if isinstance(client_usage, dict) else {},
+    )
+
+    auto_msg = ""
+    if auto_assigned:
+        auto_msg = (
+            "Ports were auto-assigned from live links and applied on the MikroTik. "
+            "Change any role with one tap, or run Auto-assign again."
+        )
+        if auto_assigned_router_warning:
+            auto_msg = (
+                "Ports were auto-assigned from live links. "
+                + auto_assigned_router_warning
+            )
 
     return {
         "ok": True,
@@ -4746,11 +6039,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "physical_ports": physical_ports,
         "suggested_wan": suggested_wan,
         "auto_assigned": auto_assigned,
-        "auto_assigned_message": (
-            "Ports were auto-assigned from live links. Change any role with one tap, or run Auto-assign again."
-            if auto_assigned
-            else ""
-        ),
+        "auto_assigned_message": auto_msg,
         "uplink_live": uplink_live if uplink_live.get("ok") else {},
         "wan_share": wan_share if wan_share.get("ok") else {"ok": False, "shares": [], "total_bps": 0},
         "bond_member_ports": bond_member_ports,
@@ -4761,6 +6050,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "unassigned_ports": unassigned_ports,
         "allowed_roles": allowed_roles,
         "wan_switch_risks": wan_switch_risks,
+        "uplink_health_alerts": uplink_health_alerts,
         "can_apply_bond": (
             uplink_mode == MikroTikRouter.UplinkMode.BOND and bond_ready
         ),
@@ -4768,8 +6058,14 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
             uplink_mode == MikroTikRouter.UplinkMode.FAILOVER and dual_wan_ready
         ),
         "can_apply_balance": (
-            uplink_mode == MikroTikRouter.UplinkMode.BALANCE and dual_wan_ready
+            uplink_mode == MikroTikRouter.UplinkMode.BALANCE and balance_ready
         ),
+        "can_apply_smart_balance": (
+            uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE and balance_ready
+        ),
+        "balance_apply_hint": balance_apply_hint,
+        "balance_router_applied": balance_router_applied,
+        "smart_balance_status": smart_balance_status if smart_balance_status else {"ok": False, "members": {}, "slow_ports": []},
         "uplink_mode": uplink_mode,
         "uplink_mode_label": dict(MikroTikRouter.UplinkMode.choices).get(
             uplink_mode, "Single WAN"
@@ -4789,6 +6085,8 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "uplink_prompt": uplink_prompt,
         "backup_uplink_prompt": backup_uplink_prompt,
         "uplink_apply_risks": uplink_apply_risks,
+        "tunnel_management": tunnel_management,
+        "router_analysis": router_analysis,
     }
 
 
@@ -4812,6 +6110,8 @@ def mikrotik_ports_live(request, router_id: int):
 
     cache_key = f"mikrotik_ports_live:{org.pk}:{router.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    if force:
+        _clear_router_tunnel_cache(router)
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -4944,12 +6244,16 @@ def mikrotik_reconnect(request, router_id: int):
 
     update_fields = ["updated_at"]
     new_host = (result.get("host") or "").strip()
-    if new_host and new_host != (router.host or "").strip():
-        router.host = new_host
-        update_fields.append("host")
+    if new_host:
+        unify_fields = apply_unified_management_host(router, new_host)
+        update_fields.extend(unify_fields)
     if discovered_vpn and not (router.vpn_address or "").strip():
         router.vpn_address = discovered_vpn
         update_fields.append("vpn_address")
+        unify_fields = apply_unified_management_host(router, discovered_vpn)
+        for field in unify_fields:
+            if field not in update_fields:
+                update_fields.append(field)
 
     # Persist credentials from the popup once they work.
     if posted_username and posted_username != (router.username or ""):
@@ -5383,6 +6687,7 @@ def mikrotik_tunnel_script(request):
             reservation.address,
             reservation.private_key,
             reservation.public_key,
+            lan_address=(reservation.lan_address or ""),
         )
     except ValueError as exc:
         return JsonResponse({"ok": False, "configured": True, "error": str(exc)}, status=400)
@@ -5402,12 +6707,26 @@ def mikrotik_tunnel_script(request):
         )
 
     sync_info = wireguard.peer_sync_report(peer_sync)
+    from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
+
+    mark_mikrotik_onboarding_active(
+        org.pk, user_id=request.user.pk, org_wide=True
+    )
+    discovered_lan = ""
+    if on_router_lan():
+        discovered_lan = pick_local_onboard_connect_host(
+            tunnel_address=reservation.address,
+            reservation_label=reservation.label,
+            planned_lan=payload.get("lan_address") or "",
+        )
     return JsonResponse(
         {
             "ok": True,
             "configured": True,
             "label": payload["label"],
             "address": payload["address"],
+            "lan_address": payload.get("lan_address") or "",
+            "discovered_lan": discovered_lan,
             "script": payload["script"],
             "server_peer": payload["server_peer"],
             "endpoint": payload["endpoint"],
@@ -5426,24 +6745,53 @@ def mikrotik_tunnel_script(request):
     )
 
 
-def _mikrotik_rsc_response(*, address: str, kind: str):
+def _mikrotik_rsc_response(*, address: str, kind: str, request=None):
     """Build HttpResponse for install or post-reset .rsc from a reservation address."""
     from django.http import HttpResponse
 
+    from accounts.audit import record_audit
     from core.models import WireGuardReservation
 
     address = (address or "").strip()
     kind = (kind or "install").strip().lower()
+    if not wireguard.rsc_download_allowed(address):
+        record_audit(
+            action="rsc_download",
+            request=request,
+            target=address,
+            detail={"kind": kind, "blocked": True, "reason": "rate_limit"},
+        )
+        return HttpResponse(
+            "download rate limit exceeded — try again later\n",
+            status=429,
+            content_type="text/plain",
+        )
+
     reservation = WireGuardReservation.objects.filter(address=address).first()
     if reservation is None:
         return HttpResponse("reservation not found\n", status=404, content_type="text/plain")
 
     if kind in {"post-reset", "reset", "post_reset", "p"}:
-        body = wireguard.post_reset_rsc_body(reservation.address, reservation.private_key)
+        body = wireguard.post_reset_rsc_body(
+            reservation.address,
+            reservation.private_key,
+            lan_address=(reservation.lan_address or ""),
+        )
         filename = "ispcentric-post-reset.rsc"
     else:
-        body = wireguard.install_rsc_body(reservation.address, reservation.private_key)
+        body = wireguard.install_rsc_body(
+            reservation.address,
+            reservation.private_key,
+            lan_address=(reservation.lan_address or ""),
+        )
         filename = "ispcentric-install.rsc"
+
+    record_audit(
+        action="rsc_download",
+        request=request,
+        target=address,
+        detail={"kind": kind, "filename": filename},
+    )
 
     response = HttpResponse(body + "\n", content_type="text/plain; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
@@ -5463,12 +6811,18 @@ def mikrotik_tunnel_rsc(request):
 
     token = (request.GET.get("token") or "").strip()
     kind = (request.GET.get("kind") or "install").strip().lower()
+    # Shorter TTL reduces leaked-URL window (MikroTik fetch is near-immediate).
+    max_age = int(getattr(settings, "WIREGUARD_RSC_TOKEN_MAX_AGE", 7200) or 7200)
     try:
-        signed = signing.loads(token, salt="mikrotik-tunnel-rsc", max_age=86400)
+        signed = signing.loads(token, salt="mikrotik-tunnel-rsc", max_age=max_age)
     except signing.BadSignature:
         return HttpResponse("invalid or expired token\n", status=403, content_type="text/plain")
 
-    return _mikrotik_rsc_response(address=signed.get("address") or "", kind=kind)
+    return _mikrotik_rsc_response(
+        address=signed.get("address") or "",
+        kind=kind,
+        request=request,
+    )
 
 
 @require_GET
@@ -5483,7 +6837,7 @@ def mikrotik_tunnel_rsc_short(request, address: str, mac: str, kind: str):
     address = (address or "").strip()
     if not wireguard.verify_rsc_download_mac(address, mac):
         return HttpResponse("invalid mac\n", status=403, content_type="text/plain")
-    return _mikrotik_rsc_response(address=address, kind=kind)
+    return _mikrotik_rsc_response(address=address, kind=kind, request=request)
 
 
 @client_workspace_required
@@ -5623,6 +6977,7 @@ def mikrotik_tunnel_status(request):
         cache.set(cache_key, devices, 8)
 
         candidates = [device for device in devices if not device.get("onboarded")]
+        planned_lan = (getattr(reservation, "lan_address", None) or "").strip()
         requested_lan = (
             request.POST.get("lan_host") or request.GET.get("lan_host") or ""
         ).strip()
@@ -5670,7 +7025,7 @@ def mikrotik_tunnel_status(request):
         if not lan_address and requested_lan:
             lan_address = requested_lan
         probe = (
-            check_mikrotik_reachable(lan_address, timeout=0.8)
+            probe_mikrotik_for_onboarding(lan_address, base_timeout=1.2)
             if lan_address
             else {}
         )
@@ -5781,6 +7136,7 @@ def mikrotik_tunnel_status(request):
                 "no_tunnel_route": True,
                 "local_mode": True,
                 "lan_address": lan_address,
+                "script_lan_address": planned_lan,
                 "local_ip": local_ip,
                 "subnet_mismatch": subnet_mismatch,
                 "local_devices": [
@@ -5796,7 +7152,7 @@ def mikrotik_tunnel_status(request):
             }
         )
 
-    probe = check_mikrotik_reachable(address, timeout=0.8)
+    probe = probe_mikrotik_for_onboarding(address, base_timeout=1.5)
     via = probe.get("via") or ""
     api_enabled = bool(probe.get("online") and via == "api")
     tunnel_reachable = bool(probe.get("online"))
@@ -5806,7 +7162,7 @@ def mikrotik_tunnel_status(request):
         diagnosis = wireguard.ensure_reservation_peer(reservation)
         # Peer may have just been applied — re-probe once.
         if diagnosis.get("peer_sync", {}).get("ok"):
-            probe = check_mikrotik_reachable(address, timeout=0.8)
+            probe = probe_mikrotik_for_onboarding(address, base_timeout=1.5)
             via = probe.get("via") or ""
             api_enabled = bool(probe.get("online") and via == "api")
             tunnel_reachable = bool(probe.get("online"))
@@ -5849,6 +7205,7 @@ def mikrotik_tunnel_status(request):
     peer_info = diagnosis.get("peer") or {}
     # On the VPS, reaching the tunnel IP means the Winbox script created the peer.
     script_installed = bool(tunnel_reachable or api_enabled)
+    script_lan = (getattr(reservation, "lan_address", None) or "").strip()
     return JsonResponse(
         {
             "ok": True,
@@ -5860,6 +7217,8 @@ def mikrotik_tunnel_status(request):
             "no_tunnel_route": False,
             "hosted_wg_down": False,
             "local_mode": False,
+            "lan_address": script_lan,
+            "script_lan_address": script_lan,
             "via": via,
             "message": message,
             "checks": checks,
@@ -5880,8 +7239,19 @@ def mikrotik_connect(request):
     username = (request.POST.get("username") or "").strip()
     password = request.POST.get("password") or ""
     org = resolve_organization(request.user, request)
+    connect_host = normalize_mikrotik_host(host)
+    script_lan = normalize_mikrotik_host(request.POST.get("script_lan") or "")
+    tunnel_host = normalize_mikrotik_host(request.POST.get("tunnel_host") or "")
 
-    result = test_mikrotik_api_login(host, username, password)
+    if on_router_lan():
+        connect_host = pick_local_onboard_connect_host(
+            tunnel_address=tunnel_host,
+            planned_lan=script_lan,
+            current=connect_host,
+        )
+    dial_host = connect_host
+
+    result = test_mikrotik_api_login(dial_host, username, password)
     if not result.get("ok"):
         return JsonResponse(
             {"ok": False, "error": result.get("error") or "Connection failed."},
@@ -5891,7 +7261,7 @@ def mikrotik_connect(request):
     # While API is open, permanently free this PC from Hotspot lockout so
     # Fleet Reconnect keeps working after ISP Hotspot is pushed.
     try:
-        with _api_session(host, username, password, timeout=8.0) as sock:
+        with _api_session(dial_host, username, password, timeout=8.0) as sock:
             _ensure_hotspot_management_access(
                 sock, username=username, password=password
             )
@@ -5927,10 +7297,59 @@ def mikrotik_connect(request):
             status=400,
         )
 
+    if org:
+        from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
+
+        mark_mikrotik_onboarding_active(org.pk, user_id=request.user.pk)
+
+    final_host = connect_host or normalize_mikrotik_host(result.get("host") or host)
+    lan_ip_applied = False
+    lan_message = ""
+
+    if is_transient_onboard_host(connect_host):
+        suggested_lan_ip = suggest_unique_mikrotik_lan_ip(
+            list(
+                MikroTikRouter.objects.filter(organization=org).values_list(
+                    "host", flat=True
+                )
+            )
+            if org
+            else []
+        )
+        if connect_host != suggested_lan_ip:
+            lan_result = change_mikrotik_lan_ip(
+                connect_host,
+                username,
+                password,
+                suggested_lan_ip,
+                api_hosts=[host for host in (tunnel_host, connect_host) if host],
+            )
+            if not lan_result.get("ok"):
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "error": lan_result.get("error")
+                        or "Could not assign a unique LAN IP on this MikroTik.",
+                    },
+                    status=400,
+                )
+            lan_ip_applied = True
+            final_host = resolve_onboard_management_host(
+                connect_host=connect_host,
+                tunnel_host=tunnel_host,
+                lan_result=lan_result,
+                fallback=suggested_lan_ip,
+            )
+            lan_message = (lan_result.get("message") or "").strip()
+    elif tunnel_host and not on_router_lan():
+        final_host = tunnel_host
+
     return JsonResponse(
         {
             "ok": True,
-            "host": result.get("host") or host,
+            "host": final_host,
+            "connect_host": connect_host,
+            "tunnel_host": tunnel_host,
             "name": result.get("name") or "",
             "identity": result.get("identity") or "",
             "version": result.get("version") or "",
@@ -5943,12 +7362,36 @@ def mikrotik_connect(request):
             "wifi_password": result.get("wifi_password") or "",
             "wifi_mode": result.get("wifi_mode") or "",
             "already_onboarded": False,
-            "requires_ip_change": is_factory_default_mikrotik_ip(
-                result.get("host") or host
-            ),
+            "requires_ip_change": False,
+            "lan_ip_applied": lan_ip_applied,
+            "lan_message": lan_message,
             "factory_default_ip": "192.168.88.1",
+            "suggested_lan_ip": final_host,
         }
     )
+
+
+@client_workspace_required
+@require_POST
+def mikrotik_onboarding_guard(request):
+    """Keep fleet status probes paused while the onboard modal is open."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization is linked."}, status=400)
+
+    from core.mikrotik_status_samples import (
+        clear_mikrotik_onboarding_active,
+        mark_mikrotik_onboarding_active,
+    )
+
+    action = (request.POST.get("action") or "ping").strip().lower()
+    if action == "clear":
+        clear_mikrotik_onboarding_active(
+            org.pk, user_id=request.user.pk, org_wide=False
+        )
+    else:
+        mark_mikrotik_onboarding_active(org.pk, user_id=request.user.pk)
+    return JsonResponse({"ok": True, "action": action})
 
 
 @client_workspace_required
@@ -5977,6 +7420,8 @@ def mikrotik_status(request):
     from core.mikrotik_status_samples import (
         _HOSTED_AUTH_CACHE_TTL,
         classify_mikrotik_probe,
+        is_mikrotik_onboarding_active,
+        stabilize_live_status_rows,
     )
 
     org = resolve_organization(request.user, request)
@@ -5991,6 +7436,7 @@ def mikrotik_status(request):
                 "serial_number",
                 "software_id",
                 "vpn_address",
+                "vpn_public_key",
             )
         )
         if org
@@ -6001,6 +7447,19 @@ def mikrotik_status(request):
 
     force_refresh = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     cache_key = f"mikrotik_status:{org.pk if org else 0}"
+    onboarding_hold = bool(
+        org
+        and is_mikrotik_onboarding_active(org.pk, user_id=request.user.pk)
+    )
+    if onboarding_hold and not force_refresh:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            from core.mikrotik_auto_restore import attach_auto_restore_to_rows
+
+            attach_auto_restore_to_rows(cached)
+            return JsonResponse(
+                {"ok": True, "routers": cached, "onboarding_hold": True}
+            )
     if not force_refresh:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -6011,20 +7470,32 @@ def mikrotik_status(request):
 
     results = {}
 
-    # Probe each unique host once so duplicate onboardings of the same IP
-    # cannot race to different via channels (Connected vs Reachable).
-    # api_host prefers the management tunnel, which is the address every other
-    # router call dials; probing the raw LAN default instead reported remote
-    # sites on whatever device now owns 192.168.88.1.
-    unique_hosts = list(
-        dict.fromkeys(
-            router.api_host for router in routers if (router.api_host or "").strip()
-        )
-    )
+    # Probe each unique dial target once; per-router fallbacks try tunnel then LAN
+    # so status stays Connected when the saved IP moved but an alternate path works.
+    router_candidates: dict[int, list[str]] = {}
+    unique_hosts: list[str] = []
+    for router in routers:
+        candidates = _router_api_host_candidates(router, discover=on_router_lan())
+        if on_router_lan():
+            discovered = discover_local_mikrotik_host(
+                tunnel_address=(router.vpn_address or "").strip(),
+                prefer_host=(router.host or "").strip(),
+            )
+            if discovered and discovered not in candidates:
+                candidates.insert(0, discovered)
+        if not candidates:
+            primary = (router.api_host or "").strip()
+            candidates = [primary] if primary else []
+        router_candidates[router.id] = candidates
+        for host in candidates:
+            if host and host not in unique_hosts:
+                unique_hosts.append(host)
     probe_by_host: dict[str, dict] = {}
 
     def _probe_host(host: str):
-        return host, check_mikrotik_reachable(host, timeout=1.2)
+        return host, check_mikrotik_reachable(
+            host, timeout=mikrotik_probe_timeout(host)
+        )
 
     probe_workers = min(8, max(1, len(unique_hosts)))
     with ThreadPoolExecutor(max_workers=probe_workers) as pool:
@@ -6036,13 +7507,34 @@ def mikrotik_status(request):
             except Exception:
                 continue
 
+    def _best_probe_for_router(router):
+        candidates = router_candidates.get(router.id) or []
+        fallback_host = (router.api_host or "").strip()
+        via_rank = {"api": 0, "winbox": 1, "http": 2, "ping": 3}
+        best_host = ""
+        best_probe: dict = {}
+        best_rank = 99
+        for host in candidates:
+            probe = probe_by_host.get(host) or {}
+            if not probe.get("online"):
+                continue
+            via = (probe.get("via") or "").strip()
+            rank = via_rank.get(via, 5)
+            if rank < best_rank:
+                best_rank = rank
+                best_host, best_probe = host, probe
+        if best_host:
+            return best_host, best_probe
+        if fallback_host:
+            return fallback_host, probe_by_host.get(fallback_host) or {
+                "online": False,
+                "via": "",
+                "error": "Unreachable.",
+            }
+        return "", {"online": False, "via": "", "error": "Unreachable."}
+
     def _check(router):
-        host = (router.api_host or "").strip()
-        probe = probe_by_host.get(host) or {
-            "online": False,
-            "via": "",
-            "error": "Unreachable.",
-        }
+        host, probe = _best_probe_for_router(router)
         via = (probe.get("via") or "").strip()
         auth_cache_key = f"mikrotik_auth_ok:{org.pk}:{router.id}"
         skip_login = (
@@ -6059,6 +7551,7 @@ def mikrotik_status(request):
             serial_number=(router.serial_number or "").strip(),
             software_id=(router.software_id or "").strip(),
             skip_login=skip_login,
+            router=router,
         )
         backfill = {}
         if classified.get("auth_ok"):
@@ -6126,9 +7619,16 @@ def mikrotik_status(request):
             except Exception:
                 pass
         payload.append(item)
+    probe_payload = [dict(row) for row in payload]
+    payload = stabilize_live_status_rows(
+        org.pk if org else 0,
+        payload,
+        force=force_refresh,
+    )
     from core.mikrotik_auto_restore import attach_auto_restore_to_rows
 
-    attach_auto_restore_to_rows(payload)
+    if not onboarding_hold:
+        attach_auto_restore_to_rows(payload)
     # Keep the org-wide cache short. A 15s "any peer online" TTL left powered-off
     # routers showing Connected for a full dashboard poll cycle.
     all_connected = bool(payload) and all(
@@ -6137,16 +7637,23 @@ def mikrotik_status(request):
     cache.set(cache_key, payload, _mikrotik_status_cache_ttl(all_connected))
     # Drop stale live snapshots so the detail page cannot keep showing Online
     # after status has already marked the router down.
-    for item in payload:
+    for item in probe_payload:
         if (item.get("status") or "") != "connected" and item.get("id") is not None:
             cache.delete(f"mikrotik_live:{org.pk}:{item['id']}")
-    try:
-        from core.mikrotik_status_samples import record_mikrotik_status_samples
+    if not onboarding_hold:
+        try:
+            from core.mikrotik_status_samples import record_mikrotik_status_samples
 
-        record_mikrotik_status_samples(org, payload)
-    except Exception:
-        pass
-    return JsonResponse({"ok": True, "routers": payload})
+            record_mikrotik_status_samples(org, probe_payload)
+        except Exception:
+            pass
+    return JsonResponse(
+        {
+            "ok": True,
+            "routers": payload,
+            "onboarding_hold": onboarding_hold,
+        }
+    )
 
 
 @client_workspace_required
@@ -10102,8 +11609,30 @@ def pppoe_voucher_redeem(request, join_code: str):
 @require_POST
 def hotspot_payment_start(request, join_code: str):
     """Start public M-Pesa payment for a captive device; no Hotspot password."""
+    from accounts.security import AuthRateLimitExceeded, assert_public_pay_allowed, record_auth_failure
     from billing.devices import resolve_or_create_hotspot_customer
     from billing.stk import start_subscription_stk_payment
+
+    try:
+        assert_public_pay_allowed(request, join_code)
+    except AuthRateLimitExceeded as exc:
+        from accounts.audit import record_audit
+
+        record_audit(
+            action="stk_rate_limit",
+            request=request,
+            target=f"hotspot:{join_code}",
+            detail={"retry_after": exc.retry_after},
+        )
+        return JsonResponse(
+            {"ok": False, "error": "Too many payment attempts. Try again later."},
+            status=429,
+        )
+    record_auth_failure("stk_start_ip", request, limit=12, window=900)
+    if join_code:
+        record_auth_failure(
+            "stk_start_code", request, identifier=join_code, limit=20, window=900
+        )
 
     org = get_object_or_404(Organization, join_code=join_code)
     mac = _resolve_request_hotspot_mac(org, request)
@@ -10828,7 +12357,29 @@ def pppoe_pay(request, join_code: str):
 @require_POST
 def pppoe_payment_start(request, join_code: str):
     """Start M-Pesa STK Push for an identified PPPoE customer."""
+    from accounts.security import AuthRateLimitExceeded, assert_public_pay_allowed, record_auth_failure
     from billing.stk import start_subscription_stk_payment
+
+    try:
+        assert_public_pay_allowed(request, join_code)
+    except AuthRateLimitExceeded as exc:
+        from accounts.audit import record_audit
+
+        record_audit(
+            action="stk_rate_limit",
+            request=request,
+            target=f"pppoe:{join_code}",
+            detail={"retry_after": getattr(exc, "retry_after", 900)},
+        )
+        return JsonResponse(
+            {"ok": False, "error": "Too many payment attempts. Try again later."},
+            status=429,
+        )
+    record_auth_failure("stk_start_ip", request, limit=12, window=900)
+    if join_code:
+        record_auth_failure(
+            "stk_start_code", request, identifier=join_code, limit=20, window=900
+        )
 
     org = get_object_or_404(Organization, join_code=join_code)
     customer = None

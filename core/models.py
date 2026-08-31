@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.db import models
 
+from ispcentric.encrypted_fields import EncryptedCharField
+
 
 class MikroTikRouter(models.Model):
     class ModelChoice(models.TextChoices):
@@ -36,7 +38,7 @@ class MikroTikRouter(models.Model):
     location_lng = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     host = models.CharField(max_length=255, help_text="MikroTik IP address or hostname")
     username = models.CharField(max_length=100)
-    password = models.CharField(max_length=255)
+    password = EncryptedCharField(max_length=512)
     serial_number = models.CharField(
         "Serial number",
         max_length=64,
@@ -51,7 +53,7 @@ class MikroTikRouter(models.Model):
         help_text="RouterOS license software-id from /system/license.",
     )
     wifi_ssid = models.CharField("Wi‑Fi name", max_length=32, blank=True)
-    wifi_password = models.CharField("Wi‑Fi password", max_length=63, blank=True)
+    wifi_password = EncryptedCharField("Wi‑Fi password", max_length=512, blank=True)
     default_cpe_username = models.CharField(
         "Default client router username",
         max_length=64,
@@ -59,9 +61,9 @@ class MikroTikRouter(models.Model):
         default="admin",
         help_text="Pre-filled on new PPPoE clients linked to this MikroTik.",
     )
-    default_cpe_password = models.CharField(
+    default_cpe_password = EncryptedCharField(
         "Default client router password",
-        max_length=128,
+        max_length=512,
         blank=True,
         help_text="Pre-filled on new PPPoE clients; used for remote CPE access from ISPCENTRIC.",
     )
@@ -136,6 +138,7 @@ class MikroTikRouter(models.Model):
         BOND = "bond", "Bonded uplinks (same provider)"
         FAILOVER = "failover", "Failover (different providers)"
         BALANCE = "balance", "Load balance (different providers)"
+        SMART_BALANCE = "smart_balance", "Smart balance (avoid slow ISPs)"
 
     uplink_mode = models.CharField(
         "Uplink mode",
@@ -144,7 +147,8 @@ class MikroTikRouter(models.Model):
         default=UplinkMode.SINGLE,
         help_text=(
             "Single WAN, bond multiple ports to one provider, failover across "
-            "providers, or PCC load-balance (equal or weighted by Mbps) across providers."
+            "providers, PCC load-balance (equal or weighted by Mbps), or smart "
+            "balance that temporarily avoids slow ISP links."
         ),
     )
     bond_interface = models.CharField(
@@ -204,17 +208,17 @@ class MikroTikRouter(models.Model):
         help_text="Address this router answers on inside the WireGuard tunnel.",
     )
     vpn_public_key = models.CharField(max_length=64, blank=True)
-    vpn_private_key = models.CharField(max_length=64, blank=True)
+    vpn_private_key = EncryptedCharField(max_length=512, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     @property
     def api_host(self) -> str:
-        """Address the billing server should dial for the API.
+        """Address the billing server dials for RouterOS API access.
 
-        Hosted servers must use the WireGuard tunnel. On a LAN/dev machine the
-        tunnel peer is often unreachable, so prefer the saved LAN ``host``.
+        ``host`` is the on-site LAN gateway; ``vpn_address`` is the WireGuard
+        tunnel. Hosted servers prefer the tunnel; a local billing PC prefers LAN.
         """
         host = (self.host or "").strip()
         tunnel = (self.vpn_address or "").strip()
@@ -292,8 +296,15 @@ class WireGuardReservation(models.Model):
 
     label = models.CharField(max_length=150, help_text="Site name, for your reference.")
     address = models.GenericIPAddressField(protocol="IPv4", unique=True)
+    lan_address = models.GenericIPAddressField(
+        "Planned LAN IP",
+        protocol="IPv4",
+        null=True,
+        blank=True,
+        help_text="Unique LAN gateway the Winbox script assigns on the MikroTik.",
+    )
     public_key = models.CharField(max_length=64)
-    private_key = models.CharField(max_length=64)
+    private_key = EncryptedCharField(max_length=512)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

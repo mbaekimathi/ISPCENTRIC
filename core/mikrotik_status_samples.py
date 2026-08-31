@@ -77,6 +77,9 @@ _OUTAGE_STATUSES = frozenset(
 _SAMPLE_GATE_TTL = 55  # seconds between org-wide status sample writes
 _OUTAGE_SAMPLE_GATE_TTL = 12  # allow outage transitions through sooner
 _OUTAGE_CONFIRM_TTL = 90  # pending first-fail before chart drop is persisted
+_LIVE_STABLE_TTL = 90  # hold last Connected row through one flaky live poll
+_IMMEDIATE_LIVE_OUTAGE = frozenset({"auth_failed", "wrong_host"})
+_ONBOARDING_GUARD_TTL = 15 * 60  # pause fleet probes/auto-restore while onboarding
 _HOSTED_AUTH_CACHE_TTL = 20  # seconds; short so password changes surface quickly
 _TREND_CACHE_TTL = 20
 # Do not pretend the last score held across silent gaps longer than this.
@@ -184,13 +187,20 @@ def classify_mikrotik_probe(
     software_id: str = "",
     login: dict[str, Any] | None = None,
     skip_login: bool = False,
+    router=None,
 ) -> dict[str, Any]:
     """
     Map a reachability probe (+ optional login) to a status row.
 
     Shared by the live status endpoint and the background sampler.
     """
-    from core.mikrotik_connect import test_mikrotik_api_login
+    import time
+
+    from core.mikrotik_connect import (
+        mikrotik_login_timeout,
+        on_router_lan,
+        test_mikrotik_api_login,
+    )
 
     probe = probe or {"online": False, "via": "", "error": ""}
     online = bool(probe.get("online"))
@@ -208,13 +218,29 @@ def classify_mikrotik_probe(
             status = "connected"
         else:
             if login is None:
+                login_timeout = mikrotik_login_timeout(host)
                 login = test_mikrotik_api_login(
                     host,
                     username,
                     password or "",
-                    timeout=2.0,
+                    timeout=login_timeout,
                     include_wifi=False,
                 )
+                if not login.get("ok"):
+                    login_error = (login.get("error") or "").strip().lower()
+                    flaky = (
+                        not login_error
+                        or any(token in login_error for token in _CONNECTIVITY_FAILURE_TOKENS)
+                    )
+                    if flaky:
+                        time.sleep(0.35)
+                        login = test_mikrotik_api_login(
+                            host,
+                            username,
+                            password or "",
+                            timeout=login_timeout + 1.5,
+                            include_wifi=False,
+                        )
             status, auth_ok, error = status_after_api_probe(login, via=via)
             if auth_ok:
                 identity_login = login
@@ -227,18 +253,65 @@ def classify_mikrotik_probe(
     elif online and via == "ping":
         status = "limited"
         error = _LIMITED_HINT
+    elif online and via in {"winbox", "http"} and username:
+        # Winbox/WebFig answering does not prove API — try 8728 before "reachable".
+        if login is None:
+            login_timeout = mikrotik_login_timeout(host)
+            login = test_mikrotik_api_login(
+                host,
+                username,
+                password or "",
+                timeout=login_timeout,
+                include_wifi=False,
+            )
+        if login and login.get("ok"):
+            status, auth_ok, error = "connected", True, ""
+            identity_login = login
+            live_serial = (login.get("serial_number") or "").strip()
+            live_soft = (login.get("software_id") or "").strip()
+            if live_serial:
+                serial_number = live_serial
+            if live_soft:
+                software_id = live_soft
+        elif login:
+            status, auth_ok, error = status_after_api_probe(login, via="api")
+        else:
+            status = "reachable"
+            error = (probe.get("error") or "").strip() or _REACHABLE_HINT
     elif online:
         status = "reachable"
         error = (probe.get("error") or "").strip() or _REACHABLE_HINT
     elif probe.get("foreign_http"):
         status = "wrong_host"
         error = probe.get("error") or "Another device answers on this address."
-    elif probe.get("error"):
-        error = probe["error"]
+    else:
+        if probe.get("error"):
+            error = probe["error"]
+        if (
+            not online
+            and router is not None
+            and not on_router_lan()
+        ):
+            public_key = (getattr(router, "vpn_public_key", None) or "").strip()
+            if public_key:
+                try:
+                    from core.wireguard import inspect_server_peer
 
+                    peer = inspect_server_peer(public_key)
+                    age = peer.get("handshake_age_sec")
+                    if peer.get("present") and age is not None and int(age) < 180:
+                        status = "reachable"
+                        error = (
+                            "API probe failed but the WireGuard tunnel is up — "
+                            "management may recover on the next check."
+                        )
+                except Exception:
+                    pass
+
+    probe_reachable = bool(probe.get("online")) or status == "reachable"
     return {
-        "online": bool(auth_ok) if via == "api" else online and via != "ping",
-        "reachable": online,
+        "online": bool(auth_ok) if via == "api" else probe_reachable and via != "ping",
+        "reachable": probe_reachable,
         "auth_ok": auth_ok,
         "manageable": bool(auth_ok),
         "status": status,
@@ -260,6 +333,130 @@ def _last_score_cache_key(organization_id: int, router_id: int) -> str:
 
 def _pending_outage_cache_key(organization_id: int, router_id: int) -> str:
     return f"mikrotik_status_pending_outage:{organization_id}:{router_id}"
+
+
+def _live_stable_cache_key(organization_id: int, router_id: int) -> str:
+    return f"mikrotik_live_stable:{organization_id}:{router_id}"
+
+
+def _live_stable_pending_key(organization_id: int, router_id: int) -> str:
+    return f"mikrotik_live_stable_pending:{organization_id}:{router_id}"
+
+
+def mikrotik_onboarding_guard_key(
+    organization_id: int, user_id: int | None = None
+) -> str:
+    """user_id=0 is the org-wide guard (tunnel script / onboard POST)."""
+    return f"mikrotik_onboarding_guard:{organization_id}:{int(user_id or 0)}"
+
+
+def mark_mikrotik_onboarding_active(
+    organization_id: int,
+    *,
+    user_id: int | None = None,
+    org_wide: bool = False,
+    ttl: int = _ONBOARDING_GUARD_TTL,
+) -> None:
+    """Pause fleet status churn while a MikroTik is being onboarded."""
+    if not organization_id:
+        return
+    if org_wide:
+        cache.set(mikrotik_onboarding_guard_key(organization_id, 0), 1, ttl)
+    if user_id:
+        cache.set(mikrotik_onboarding_guard_key(organization_id, user_id), 1, ttl)
+
+
+def clear_mikrotik_onboarding_active(
+    organization_id: int,
+    *,
+    user_id: int | None = None,
+    org_wide: bool = False,
+) -> None:
+    if not organization_id:
+        return
+    if org_wide:
+        cache.delete(mikrotik_onboarding_guard_key(organization_id, 0))
+    if user_id:
+        cache.delete(mikrotik_onboarding_guard_key(organization_id, user_id))
+
+
+def is_mikrotik_onboarding_active(
+    organization_id: int,
+    *,
+    user_id: int | None = None,
+) -> bool:
+    if not organization_id:
+        return False
+    if cache.get(mikrotik_onboarding_guard_key(organization_id, 0)):
+        return True
+    if user_id and cache.get(mikrotik_onboarding_guard_key(organization_id, user_id)):
+        return True
+    return False
+
+
+def stabilize_live_status_row(
+    organization_id: int,
+    router_id: int,
+    row: dict[str, Any],
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    """
+    Hold the last Connected row through one flaky poll so the UI does not flash
+    Disconnected on a single timeout. Recoveries and credential failures publish
+    immediately. Chart sampling keeps its own debounce via record_mikrotik_status_samples.
+    """
+    if force or not organization_id:
+        return row
+
+    status = (row.get("status") or "disconnected").strip().lower()
+    stable_key = _live_stable_cache_key(organization_id, router_id)
+    pending_key = _live_stable_pending_key(organization_id, router_id)
+
+    if status == "connected":
+        cache.set(stable_key, dict(row), _LIVE_STABLE_TTL)
+        cache.delete(pending_key)
+        return row
+
+    if status in _IMMEDIATE_LIVE_OUTAGE:
+        cache.delete(stable_key)
+        cache.delete(pending_key)
+        return row
+
+    last_good = cache.get(stable_key)
+    if isinstance(last_good, dict) and (last_good.get("status") or "").strip().lower() == "connected":
+        if not cache.get(pending_key):
+            cache.set(pending_key, {"status": status}, _LIVE_STABLE_TTL)
+            held = dict(last_good)
+            held["stabilized"] = True
+            held["probe_status"] = status
+            if row.get("error"):
+                held["probe_error"] = row["error"]
+            return held
+        cache.delete(pending_key)
+        cache.delete(stable_key)
+    return row
+
+
+def stabilize_live_status_rows(
+    organization_id: int,
+    rows: list[dict[str, Any]],
+    *,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    if force or not organization_id or not rows:
+        return rows
+    return [
+        stabilize_live_status_row(
+            organization_id,
+            int(row["id"]),
+            row,
+            force=force,
+        )
+        if row.get("id") is not None
+        else row
+        for row in rows
+    ]
 
 
 def last_recorded_score(organization_id: int, router_id: int) -> int:
@@ -411,6 +608,10 @@ def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]
     """Run management/internet auto-restore when probes fail (rate-limited per router)."""
     from django.conf import settings
 
+    org_id = getattr(router, "organization_id", None)
+    if org_id and is_mikrotik_onboarding_active(org_id):
+        return None
+
     if not getattr(settings, "MIKROTIK_AUTO_RESTORE", False):
         return None
 
@@ -506,9 +707,14 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     Shared by the dashboard status endpoint and the background sampler so
     outages are recorded even when nobody has /app/ open.
     """
+    if is_mikrotik_onboarding_active(organization.pk):
+        cached = cache.get(f"mikrotik_status:{organization.pk}")
+        if isinstance(cached, list):
+            return cached
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from core.mikrotik_connect import check_mikrotik_reachable
+    from core.mikrotik_connect import check_mikrotik_reachable, mikrotik_probe_timeout
 
     routers = list(
         MikroTikRouter.objects.filter(
@@ -523,6 +729,7 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
             "serial_number",
             "software_id",
             "vpn_address",
+            "vpn_public_key",
         )
     )
     if not routers:
@@ -536,7 +743,9 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     probe_by_host: dict[str, dict] = {}
 
     def _probe_host(host: str):
-        return host, check_mikrotik_reachable(host, timeout=1.2)
+        return host, check_mikrotik_reachable(
+            host, timeout=mikrotik_probe_timeout(host)
+        )
 
     workers = min(8, max(1, len(unique_hosts)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -560,6 +769,7 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
             password=router.password or "",
             serial_number=(router.serial_number or "").strip(),
             software_id=(router.software_id or "").strip(),
+            router=router,
         )
         classified.pop("_login", None)
         return router.id, {

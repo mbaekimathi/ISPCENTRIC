@@ -13900,14 +13900,212 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-restart-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
   margin: 0 0 1rem;
-  padding: 0.75rem 0.9rem;
-  border-radius: 10px;
-  border: 1px solid color-mix(in srgb, #f59e0b 35%, var(--border-strong, rgba(15, 23, 42, 0.12)));
-  background: color-mix(in srgb, #f59e0b 10%, transparent);
-  color: #92400e;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
   font-size: 0.88rem;
-  line-height: 1.45;
+  line-height: 1.5;
+}
+
+.mikrotik-restart-warning p {
+  margin: 0;
+}
+
+.mikrotik-restart-warning-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.65rem;
+  height: 1.65rem;
+  margin-top: 0.05rem;
+  color: #fbbf24;
+}
+
+.mikrotik-restart-modal .mikrotik-restart-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+  background:
+    radial-gradient(ellipse 70% 50% at 100% 0%, rgba(245, 158, 11, 0.14), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 100%, rgba(239, 68, 68, 0.08), transparent 50%),
+    linear-gradient(185deg, #1a3742 0%, #12252e 45%, #0d171d 100%);
+  box-shadow:
+    0 24px 60px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.mikrotik-restart-head {
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin: 0;
+  padding: 1.15rem 1.2rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.mikrotik-restart-head-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-restart-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 2.65rem;
+  height: 2.65rem;
+  border-radius: 14px;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.28);
+}
+
+.mikrotik-restart-modal .role-modal-kicker {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 0.4rem;
+  padding: 0.22rem 0.55rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.12);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  color: #fbbf24;
+}
+
+.mikrotik-restart-modal .role-modal-head h2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.1rem, 3.6vw, 1.4rem);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.mikrotik-restart-modal .role-modal-sub {
+  max-width: 38ch;
+  color: rgba(232, 242, 244, 0.72);
+}
+
+.mikrotik-restart-body {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 1.2rem 0.35rem;
+}
+
+.mikrotik-restart-confirm {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(232, 242, 244, 0.9);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.mikrotik-restart-confirm:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mikrotik-restart-confirm:has(input:checked) {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.mikrotik-restart-confirm input {
+  margin-top: 0.15rem;
+  width: 1rem;
+  height: 1rem;
+  accent-color: #f59e0b;
+}
+
+.mikrotik-restart-error {
+  margin: 0;
+}
+
+.mikrotik-restart-actions {
+  margin: 0;
+  padding: 0.85rem 1.2rem 1.15rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .mikrotik-restart-modal .mikrotik-restart-panel {
+  background:
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(245, 158, 11, 0.1), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.08), transparent 50%),
+    linear-gradient(180deg, #ffffff 0%, #f3f7f8 100%);
+  color: var(--ink);
+  box-shadow:
+    0 -18px 48px rgba(11, 31, 42, 0.18),
+    0 0 0 1px rgba(11, 31, 42, 0.06);
+}
+
+[data-theme="light"] .mikrotik-restart-head {
+  border-bottom-color: rgba(11, 31, 42, 0.08);
+  background: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="light"] .mikrotik-restart-mark {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.22);
+}
+
+[data-theme="light"] .mikrotik-restart-modal .role-modal-kicker {
+  border-color: rgba(160, 106, 0, 0.28);
+  background: rgba(232, 163, 23, 0.12);
+  color: #a06a00;
+}
+
+[data-theme="light"] .mikrotik-restart-modal .role-modal-sub {
+  color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-restart-modal .role-modal-close {
+  border-color: var(--border-strong);
+  background: rgba(11, 31, 42, 0.04);
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-restart-warning {
+  border-color: rgba(180, 83, 9, 0.28);
+  background: rgba(245, 158, 11, 0.1);
+  color: #92400e;
+}
+
+[data-theme="light"] .mikrotik-restart-warning-icon {
+  color: #b45309;
+}
+
+[data-theme="light"] .mikrotik-restart-confirm {
+  border-color: rgba(11, 31, 42, 0.1);
+  background: rgba(11, 31, 42, 0.03);
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-restart-confirm:hover {
+  border-color: rgba(11, 31, 42, 0.16);
+  background: rgba(11, 31, 42, 0.05);
+}
+
+[data-theme="light"] .mikrotik-restart-confirm:has(input:checked) {
+  border-color: rgba(180, 83, 9, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+[data-theme="light"] .mikrotik-restart-actions {
+  border-top-color: rgba(11, 31, 42, 0.08);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .mikrotik-restart-btn {
@@ -14408,14 +14606,30 @@ a.packages-stat:focus-visible {
   padding: 0 1.15rem 0.85rem;
 }
 
-/* MikroTik action modals ? match Register PPPoE / client popup polish */
+/* MikroTik action modals — match Register PPPoE / client popup polish */
 .mikrotik-action-modal.pppoe-modal {
   place-items: end center;
   padding: 0;
+  align-content: end;
+  box-sizing: border-box;
 }
 
 .mikrotik-action-modal.pppoe-modal .role-modal-backdrop {
   background: rgba(6, 14, 20, 0.66);
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-panel {
+  width: min(100%, 40rem);
+  max-width: 100%;
+  max-height: min(94dvh, 100%);
+  margin: 0;
+}
+
+/* Compact Wi‑Fi dialogs — tighter than the full edit sheet */
+#mikrotik-credentials-modal .pppoe-panel,
+#mikrotik-wifi-modal .pppoe-panel {
+  width: min(100%, 28rem);
+  max-height: min(92dvh, 36rem);
 }
 
 .mikrotik-action-modal.pppoe-modal .pppoe-head {
@@ -14447,18 +14661,76 @@ a.packages-stat:focus-visible {
   background: rgba(14, 124, 134, 0.45);
 }
 
-.mikrotik-action-modal.pppoe-modal .mikrotik-confirm-check {
+.mikrotik-action-modal.pppoe-modal .pppoe-foot {
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.mikrotik-action-modal.pppoe-modal .pppoe-foot .btn {
+  flex: 1 1 auto;
+  min-width: min(100%, 8rem);
+}
+
+.mikrotik-action-modal .mikrotik-action-panel .mikrotik-confirm-check {
   color: rgba(232, 242, 244, 0.88);
 }
 
-[data-theme="light"] .mikrotik-action-modal.pppoe-modal .mikrotik-confirm-check {
+.mikrotik-action-modal.pppoe-modal .pppoe-panel .mikrotik-confirm-check {
+  color: rgba(232, 242, 244, 0.88);
+}
+
+[data-theme="light"] .mikrotik-action-modal.pppoe-modal .pppoe-panel .mikrotik-confirm-check {
   color: var(--ink);
 }
 
 @media (min-width: 40rem) {
+  /* Higher specificity than base .mikrotik-action-modal.pppoe-modal so
+     these sheets center like other role/pppoe modals on tablet+ desktop. */
+  .mikrotik-action-modal.pppoe-modal {
+    place-items: center;
+    align-content: center;
+    padding: 1.25rem;
+  }
+
+  .mikrotik-action-modal.pppoe-modal .pppoe-panel {
+    width: min(100%, 40rem);
+    max-width: min(40rem, calc(100vw - 2.5rem));
+    max-height: min(88dvh, 46rem);
+    border-radius: 22px;
+  }
+
+  #mikrotik-credentials-modal .pppoe-panel,
+  #mikrotik-wifi-modal .pppoe-panel {
+    width: min(100%, 28rem);
+    max-width: min(28rem, calc(100vw - 2.5rem));
+    max-height: min(88dvh, 36rem);
+  }
+
   .mikrotik-action-modal.pppoe-modal .pppoe-body.mikrotik-action-scroll {
     padding: 1.25rem 1.5rem 1.4rem;
     gap: 1.2rem;
+  }
+
+  .mikrotik-action-modal.pppoe-modal .pppoe-foot .btn {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 39.99rem) {
+  .mikrotik-action-modal.pppoe-modal .pppoe-panel,
+  #mikrotik-credentials-modal .pppoe-panel,
+  #mikrotik-wifi-modal .pppoe-panel {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 22px 22px 0 0;
+  }
+
+  .mikrotik-action-modal.pppoe-modal .pppoe-foot {
+    justify-content: stretch;
+  }
+
+  .mikrotik-action-modal.pppoe-modal .pppoe-foot .btn {
+    flex: 1 1 calc(50% - 0.35rem);
   }
 }
 
@@ -16981,6 +17253,18 @@ a.packages-stat:focus-visible {
   color: var(--notice-error-fg);
 }
 
+.mk-assigned-ports-page .mk-assigned-ports-surface {
+  margin-top: 1rem;
+  padding: 1.1rem 1.15rem;
+}
+
+.mk-assigned-ports-page .mk-router-analysis {
+  margin-top: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
 .mk-ports-page {
   gap: 1rem;
 }
@@ -17049,6 +17333,151 @@ a.packages-stat:focus-visible {
 .mk-ports-map-caption {
   margin: 0;
   font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.mk-router-analysis {
+  margin-top: 1.25rem;
+  padding: 1.1rem 1.15rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  display: grid;
+  gap: 1rem;
+}
+
+.mk-router-analysis-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+}
+
+.mk-router-analysis-title {
+  margin: 0.15rem 0 0;
+  font-size: 1.15rem;
+}
+
+.mk-router-analysis-summary {
+  font-size: 0.875rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.mk-router-isp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.75rem;
+}
+
+.mk-router-isp-card {
+  padding: 0.85rem 0.95rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.mk-router-isp-card.is-slow {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface-2));
+}
+
+.mk-router-isp-card.is-sidelined {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  opacity: 0.85;
+}
+
+.mk-router-isp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.mk-router-isp-index {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mk-router-isp-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--success);
+}
+
+.mk-router-isp-card.is-slow .mk-router-isp-status {
+  color: var(--warn);
+}
+
+.mk-router-isp-card.is-sidelined .mk-router-isp-status {
+  color: var(--danger);
+}
+
+.mk-router-isp-name {
+  font-size: 0.95rem;
+}
+
+.mk-router-isp-foot {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.mk-router-analysis-clients-head {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.mk-router-analysis-subtitle {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.mk-router-analysis-table-wrap {
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.mk-router-analysis-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.mk-router-analysis-table th,
+.mk-router-analysis-table td {
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.mk-router-analysis-table th {
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+}
+
+.mk-router-analysis-table tr:last-child td {
+  border-bottom: none;
+}
+
+.mk-router-analysis-table tr.is-offline td {
+  color: var(--ink-soft);
+}
+
+.mk-router-analysis-table tr.is-slow-isp td:nth-child(5) {
+  color: var(--warn);
+}
+
+.mk-muted {
   color: var(--ink-soft);
 }
 
@@ -18228,6 +18657,17 @@ a.packages-stat:focus-visible {
 
 .mk-ports-error {
   justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.mk-ports-error-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.mk-ports-api-recovery {
+  margin-top: 0.65rem;
 }
 
 .mk-form-banner {

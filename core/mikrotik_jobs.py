@@ -20,6 +20,7 @@ JOB_TYPES = (
     "uplink_bond",
     "uplink_failover",
     "uplink_balance",
+    "uplink_smart_balance",
     "pppoe_push",
     "hotspot_push",
 )

@@ -258,12 +258,7 @@
     </div>
   </header>
 
-  <nav class="mk-detail-quicknav" aria-label="Router sections">
-    <a class="mk-detail-quicklink is-active" href="{% url 'core:mikrotik_detail' router.id %}" aria-current="page">Overview</a>
-    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_ports' router.id %}">Ports</a>
-    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_pppoe_settings' router.id %}">PPPoE &amp; Hotspot</a>
-    <a class="mk-detail-quicklink" href="{% url 'core:mikrotik_clean_uplink' router.id %}">Clean uplink</a>
-  </nav>
+  {% include "core/includes/mikrotik_detail_quicknav.html" %}
 
   <section
     class="mk-surface mk-detail-surface mikrotik-live{% if not initial_live %} is-loading{% endif %}"
@@ -411,32 +406,47 @@
 
 {% if initial_live %}{{ initial_live|json_script:"mikrotik-initial-live" }}{% endif %}
 
-<div class="role-modal mikrotik-action-modal pppoe-modal" id="mikrotik-restart-modal" hidden aria-hidden="true">
+<div class="role-modal mikrotik-action-modal pppoe-modal mikrotik-restart-modal" id="mikrotik-restart-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-restart-modal></div>
-  <div class="role-modal-panel mikrotik-action-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-restart-title">
-    <header class="role-modal-head">
-      <div>
-        <p class="role-modal-kicker">Power cycle</p>
-        <h2 id="mikrotik-restart-title">Restart {{ router.name }}?</h2>
-        <p class="role-modal-sub">
-          This reboots the MikroTik like switching it off and on. PPPoE users, firewall rules,
-          Wi‑Fi settings, and uplink configuration are <strong>not</strong> reset.
-        </p>
+  <div class="role-modal-panel mikrotik-action-panel mikrotik-restart-panel" role="alertdialog" aria-modal="true" aria-labelledby="mikrotik-restart-title">
+    <header class="role-modal-head mikrotik-restart-head">
+      <div class="mikrotik-restart-head-main">
+        <span class="mikrotik-restart-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 2v10"></path>
+            <path d="M18.4 6.6a9 9 0 1 1-12.77.01"></path>
+          </svg>
+        </span>
+        <div>
+          <p class="role-modal-kicker">Power cycle</p>
+          <h2 id="mikrotik-restart-title">Restart {{ router.name }}?</h2>
+          <p class="role-modal-sub">
+            This reboots the MikroTik like switching it off and on. PPPoE users, firewall rules,
+            Wi‑Fi settings, and uplink configuration are <strong>not</strong> reset.
+          </p>
+        </div>
       </div>
       <button type="button" class="role-modal-close" data-close-restart-modal aria-label="Close">×</button>
     </header>
-    <div class="mikrotik-action-scroll">
-      <p class="mikrotik-restart-warning">
-        All clients on this router will lose internet for about 1–3 minutes while it boots.
-        Remote management may also drop until the router is back online.
-      </p>
-      <label class="mikrotik-confirm-check">
+    <div class="mikrotik-action-scroll mikrotik-restart-body">
+      <div class="mikrotik-restart-warning" role="note">
+        <span class="mikrotik-restart-warning-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+            <path d="M12 2 1.5 20h21L12 2zm0 5.2c.55 0 1 .45 1 1v5.1c0 .55-.45 1-1 1s-1-.45-1-1V8.2c0-.55.45-1 1-1zm-.05 9.35a1.05 1.05 0 1 0 0 2.1 1.05 1.05 0 0 0 0-2.1z"></path>
+          </svg>
+        </span>
+        <p>
+          All clients on this router will lose internet for about 1–3 minutes while it boots.
+          Remote management may also drop until the router is back online.
+        </p>
+      </div>
+      <label class="mikrotik-confirm-check mikrotik-restart-confirm">
         <input type="checkbox" id="mikrotik-restart-confirm">
         <span>I understand clients will disconnect briefly during the restart.</span>
       </label>
-      <div class="field-error mikrotik-form-banner" id="mikrotik-restart-error" hidden></div>
+      <div class="field-error mikrotik-form-banner mikrotik-restart-error" id="mikrotik-restart-error" hidden></div>
     </div>
-    <div class="role-modal-actions">
+    <div class="role-modal-actions mikrotik-restart-actions">
       <button type="button" class="btn btn-ghost" data-close-restart-modal>Cancel</button>
       <button type="button" class="btn btn-danger" id="mikrotik-restart-submit" disabled>Restart router</button>
     </div>

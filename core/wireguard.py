@@ -103,6 +103,11 @@ def allocate_address(exclude: set[str] | None = None) -> str:
     )
 
 
+def allocate_lan_address(exclude: set[str] | None = None) -> str:
+    """Return the stock MikroTik LAN gateway for the Winbox script."""
+    return "192.168.88.1"
+
+
 def server_on_tunnel() -> bool:
     """
     True when this machine holds the tunnel's server address.
@@ -368,9 +373,13 @@ def reserve_peer(label: str):
         reservation = WireGuardReservation.objects.create(
             label=label,
             address=allocate_address(),
+            lan_address=allocate_lan_address(),
             private_key=private_key,
             public_key=public_key,
         )
+    elif not (reservation.lan_address or "").strip():
+        reservation.lan_address = allocate_lan_address()
+        reservation.save(update_fields=["lan_address"])
 
     peer_sync = apply_server_peer(
         reservation.label,
@@ -388,17 +397,24 @@ def adopt_reservation_for_router(router) -> bool:
     """
     from core.models import WireGuardReservation
 
+    vpn = (getattr(router, "vpn_address", None) or "").strip()
     host = (getattr(router, "host", None) or "").strip()
-    if not host:
-        return False
-
-    reservation = WireGuardReservation.objects.filter(address=host).first()
+    reservation = None
+    if vpn:
+        reservation = WireGuardReservation.objects.filter(address=vpn).first()
+    if reservation is None and host:
+        reservation = WireGuardReservation.objects.filter(address=host).first()
     if reservation is None:
         return False
 
     changed: list[str] = []
-    if router.vpn_address != reservation.address:
-        router.vpn_address = reservation.address
+    tunnel = (reservation.address or "").strip()
+    planned_lan = (getattr(reservation, "lan_address", None) or "192.168.88.1").strip()
+    if planned_lan and (router.host or "").strip() != planned_lan:
+        router.host = planned_lan
+        changed.append("host")
+    if tunnel and router.vpn_address != tunnel:
+        router.vpn_address = tunnel
         changed.append("vpn_address")
     if not router.vpn_private_key:
         router.vpn_private_key = reservation.private_key
@@ -1292,12 +1308,20 @@ def tunnel_verification_checks(
     return checks
 
 
-def peer_payload(label: str, address: str, private_key: str, public_key: str) -> dict:
+def peer_payload(
+    label: str,
+    address: str,
+    private_key: str,
+    public_key: str,
+    lan_address: str = "",
+) -> dict:
     """JSON-friendly tunnel details for the Connect modal."""
+    lan_address = (lan_address or "").strip()
     return {
         "label": label,
         "address": address,
-        "script": routeros_script(address, private_key),
+        "lan_address": lan_address,
+        "script": routeros_script(address, private_key, lan_address=lan_address),
         "server_peer": server_peer_block(label, address, public_key),
         "endpoint": _endpoint(),
     }
@@ -1344,7 +1368,82 @@ def validate_inline_install_steps(script: str) -> list[str]:
         problems.append("missing Hotspot hs-input management allow")
     if 'identity set name="ispcentric.' not in text:
         problems.append("missing ispcentric identity marker for LAN Check")
+    if "Assign unique LAN IP" in text and 'comment="ispcentric-lan"' not in text:
+        problems.append("missing ispcentric-lan LAN assignment in script")
     return problems
+
+
+def _ros_lan_assign_lines(lan_ip: str) -> list[str]:
+    """
+    RouterOS lines that assign a LAN gateway on the bridge interface.
+
+    Skipped when ``lan_ip`` is the factory default — the router already has it.
+    """
+    from core.mikrotik_connect import _dhcp_pool_ranges_for_gateway, is_factory_default_mikrotik_ip
+
+    lan_ip = (lan_ip or "").strip()
+    if not lan_ip or is_factory_default_mikrotik_ip(lan_ip):
+        return []
+    try:
+        prefix = 24
+        net = ipaddress.ip_network(f"{lan_ip}/{prefix}", strict=False)
+    except ValueError:
+        return []
+
+    cidr = f"{lan_ip}/{prefix}"
+    net_str = str(net)
+    pool_ranges = _dhcp_pool_ranges_for_gateway(lan_ip, prefix)
+    if not pool_ranges:
+        pool_ranges = f"{net.network_address + 10}-{net.network_address + 200}"
+
+    ok_lan = _ros_ok(f"LAN IP {cidr} assigned on bridge")
+    fail_lan = _ros_fail("Could not add LAN IP on bridge")
+    ok_dhcp = _ros_ok(f"DHCP network {net_str} configured")
+    ok_remove = _ros_ok("Removed factory LAN 192.168.88.x")
+    warn_remove = _ros_warn(
+        "Factory LAN 192.168.88.x not found (may already be changed)"
+    )
+
+    lines = [
+        _ros_info(f"Assign unique LAN IP {lan_ip} (script-set — avoids factory collisions)"),
+        ":global IspLanBridge",
+        ':set IspLanBridge "bridgeLocal"',
+        (
+            ":if ([:len [/interface find where name=bridgeLocal]] = 0) do="
+            "{:if ([:len [/interface find where name=bridge]] > 0) do="
+            '{:set IspLanBridge "bridge"}}}'
+        ),
+        (
+            f":if ([:len [/ip address find where address~\"^{lan_ip}/\"]] = 0) do="
+            f'{{:do {{ /ip address add address={cidr} interface=$IspLanBridge '
+            f'comment="ispcentric-lan" ; {ok_lan} }} '
+            f"on-error={{{fail_lan}}}}}"
+        ),
+        (
+            f':do {{ /ip dhcp-server network set [find where gateway=192.168.88.1] '
+            f'address={net_str} gateway={lan_ip} dns-server={lan_ip} }} on-error={{}}'
+        ),
+        (
+            f':if ([:len [/ip dhcp-server network find where address={net_str}]] = 0) do='
+            f'{{:do {{ /ip dhcp-server network add address={net_str} gateway={lan_ip} '
+            f'dns-server={lan_ip} comment="ispcentric-lan" ; {ok_dhcp} }} on-error={{}}}}'
+        ),
+        (
+            f':do {{ /ip pool set [find where name="ispcentric-lan"] ranges={pool_ranges} }} '
+            "on-error={}"
+        ),
+        (
+            ':do { /ip address remove [find where interface=$IspLanBridge and '
+            'address~"^192.168.88."] ; '
+            f"{ok_remove} }} on-error={{{warn_remove}}}"
+        ),
+        _ros_check(
+            f'[:len [/ip address find where address~\"^{lan_ip}/\"]] > 0',
+            f"Verify: LAN gateway {lan_ip} is on the bridge",
+            f"Verify: LAN gateway {lan_ip} missing — check bridge interface",
+        ),
+    ]
+    return lines
 
 
 def _routeros_install_lines(
@@ -1352,6 +1451,7 @@ def _routeros_install_lines(
     private_key: str,
     *,
     include_cleanup: bool,
+    lan_address: str = "",
 ) -> list[str]:
     """
     RouterOS commands that install the billing tunnel (paste-safe, one line each).
@@ -1429,6 +1529,11 @@ def _routeros_install_lines(
             f'{_ros_warn("Could not read API allowed-from list")}'
             "}"
         ),
+    ]
+    lan_ip = (lan_address or "").strip()
+    if lan_ip:
+        lines += _ros_lan_assign_lines(lan_ip)
+    lines += [
         "/ip firewall filter",
         # LAN RFC1918 → API (firewall only; never whole-LAN Hotspot bypass).
         # Must sit above the dynamic Hotspot jump on input, or captive PCs never
@@ -1703,6 +1808,29 @@ def verify_rsc_download_mac(address: str, mac: str) -> bool:
     return hmac.compare_digest(expected, (mac or "").strip().lower())
 
 
+def rsc_download_allowed(address: str) -> bool:
+    """
+    Rate-limit public .rsc downloads per tunnel address.
+
+    MikroTik may retry /tool fetch a few times during paste, so this is not a
+    single-use token — it caps abuse while keeping install scripts reliable.
+    """
+    from django.core.cache import cache
+
+    address = (address or "").strip()
+    if not address:
+        return False
+    limit = int(getattr(settings, "WIREGUARD_RSC_DOWNLOAD_LIMIT", 20) or 20)
+    window = int(getattr(settings, "WIREGUARD_RSC_DOWNLOAD_WINDOW", 3600) or 3600)
+    key = f"wg_rsc_dl:{address}"
+    data = cache.get(key) or {"count": 0}
+    count = int(data.get("count") or 0)
+    if count >= limit:
+        return False
+    cache.set(key, {"count": count + 1}, window)
+    return True
+
+
 def short_rsc_url(address: str, kind: str) -> tuple[str, str]:
     """
     Return (url, http_host) for /app/m/<addr>/<mac>/<i|p>/.
@@ -1789,10 +1917,11 @@ def _fetch_rsc_retry_lines(
     return lines
 
 
-def install_rsc_body(address: str, private_key: str) -> str:
+def install_rsc_body(address: str, private_key: str, lan_address: str = "") -> str:
     """Full install .rsc: fetch post-reset if needed, decide reset vs install, configure."""
     address = (address or "").strip()
     private_key = (private_key or "").strip()
+    lan_address = (lan_address or "").strip()
     lines = ["# ISPCENTRIC install.rsc"]
     reset_url, http_host = short_rsc_url(address, "p")
     if reset_url:
@@ -1820,14 +1949,16 @@ def install_rsc_body(address: str, private_key: str) -> str:
     lines += [
         *_routeros_customized_flag_lines(),
         *_routeros_maybe_reset_lines(),
-        *_routeros_install_lines(address, private_key, include_cleanup=True),
+        *_routeros_install_lines(
+            address, private_key, include_cleanup=True, lan_address=lan_address
+        ),
     ]
     return "\n".join(lines)
 
 
-def post_reset_rsc_body(address: str, private_key: str) -> str:
+def post_reset_rsc_body(address: str, private_key: str, lan_address: str = "") -> str:
     """Compact post-reset .rsc body."""
-    return _routeros_post_reset_rsc_body(address, private_key)
+    return _routeros_post_reset_rsc_body(address, private_key, lan_address=lan_address)
 
 
 def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg: str) -> str:
@@ -1841,7 +1972,9 @@ def _fetch_rsc_line(url: str, host_header: str, dst: str, ok_msg: str, fail_msg:
     )
 
 
-def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
+def _routeros_post_reset_rsc_body(
+    address: str, private_key: str, lan_address: str = ""
+) -> str:
     """
     Compact .rsc run after factory reset (must stay small for /file contents=).
 
@@ -1854,66 +1987,68 @@ def _routeros_post_reset_rsc_body(address: str, private_key: str) -> str:
     server = str(server_address())
     address = (address or "").strip()
     private_key = (private_key or "").strip()
+    lan_address = (lan_address or "").strip()
     endpoint_host = _resolved_endpoint_host(host)
     listen_port = _router_listen_port(address)
-    return "\n".join(
-        [
-            "# ISPCENTRIC post-reset tunnel install",
-            ":delay 20s",
-            *_wan_wait_lines(endpoint_host),
-            (
-                f'/interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
-                f'private-key="{private_key}" comment="ispcentric billing tunnel"'
-            ),
-            (
-                f'/ip address add address={address}/{network.prefixlen} '
-                f'interface=ispcentric-vpn comment="ispcentric billing tunnel"'
-            ),
-            (
-                f'/interface wireguard peers add interface=ispcentric-vpn '
-                f'public-key="{_server_public_key()}" '
-                f'endpoint-address={endpoint_host} endpoint-port={port} '
-                f'allowed-address={network} persistent-keepalive=25s '
-                f'comment="ispcentric billing server"'
-            ),
-            '/ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0',
-            ':do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}',
-            (
-                '/ip firewall filter add chain=input action=accept protocol=tcp '
-                'dst-port=8728 in-interface=ispcentric-vpn comment="ispcentric-vpn-api"'
-            ),
-            (
-                f'/ip firewall filter add chain=input action=accept protocol=tcp '
-                f'dst-port=8728 src-address={network} comment="ispcentric-vpn-api-net"'
-            ),
-            (
-                '/ip firewall filter add chain=input action=accept protocol=icmp '
-                'in-interface=ispcentric-vpn comment="ispcentric-vpn-icmp"'
-            ),
-            (
-                '/ip firewall filter add chain=input action=accept protocol=tcp '
-                'dst-port=8728 src-address=10.0.0.0/8 comment="ispcentric-vpn-api-lan-10"'
-            ),
-            (
-                '/ip firewall filter add chain=input action=accept protocol=tcp '
-                'dst-port=8728 src-address=172.16.0.0/12 comment="ispcentric-vpn-api-lan-172"'
-            ),
-            (
-                '/ip firewall filter add chain=input action=accept protocol=tcp '
-                'dst-port=8728 src-address=192.168.0.0/16 comment="ispcentric-vpn-api-lan-192"'
-            ),
-            (
-                f'/ip firewall nat add chain=srcnat action=accept dst-address={network} '
-                f'comment="ispcentric-vpn-no-nat"'
-            ),
-            (
-                f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
-                f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
-            ),
-            *_handshake_wait_lines(server, address),
-            ':put "[ISPCENTRIC OK] Post-reset tunnel install finished - Check now in ISPCENTRIC"',
-        ]
-    )
+    body = [
+        "# ISPCENTRIC post-reset tunnel install",
+        ":delay 20s",
+        *_wan_wait_lines(endpoint_host),
+        (
+            f'/interface wireguard add name=ispcentric-vpn listen-port={listen_port} '
+            f'private-key="{private_key}" comment="ispcentric billing tunnel"'
+        ),
+        (
+            f'/ip address add address={address}/{network.prefixlen} '
+            f'interface=ispcentric-vpn comment="ispcentric billing tunnel"'
+        ),
+        (
+            f'/interface wireguard peers add interface=ispcentric-vpn '
+            f'public-key="{_server_public_key()}" '
+            f'endpoint-address={endpoint_host} endpoint-port={port} '
+            f'allowed-address={network} persistent-keepalive=25s '
+            f'comment="ispcentric billing server"'
+        ),
+        '/ip service set [find where name=api] disabled=no port=8728 address=0.0.0.0/0',
+        ':do { /ip service set api disabled=no port=8728 address=0.0.0.0/0 } on-error={}',
+        (
+            '/ip firewall filter add chain=input action=accept protocol=tcp '
+            'dst-port=8728 in-interface=ispcentric-vpn comment="ispcentric-vpn-api"'
+        ),
+        (
+            f'/ip firewall filter add chain=input action=accept protocol=tcp '
+            f'dst-port=8728 src-address={network} comment="ispcentric-vpn-api-net"'
+        ),
+        (
+            '/ip firewall filter add chain=input action=accept protocol=icmp '
+            'in-interface=ispcentric-vpn comment="ispcentric-vpn-icmp"'
+        ),
+        (
+            '/ip firewall filter add chain=input action=accept protocol=tcp '
+            'dst-port=8728 src-address=10.0.0.0/8 comment="ispcentric-vpn-api-lan-10"'
+        ),
+        (
+            '/ip firewall filter add chain=input action=accept protocol=tcp '
+            'dst-port=8728 src-address=172.16.0.0/12 comment="ispcentric-vpn-api-lan-172"'
+        ),
+        (
+            '/ip firewall filter add chain=input action=accept protocol=tcp '
+            'dst-port=8728 src-address=192.168.0.0/16 comment="ispcentric-vpn-api-lan-192"'
+        ),
+        (
+            f'/ip firewall nat add chain=srcnat action=accept dst-address={network} '
+            f'comment="ispcentric-vpn-no-nat"'
+        ),
+        (
+            f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
+            f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
+        ),
+        *_handshake_wait_lines(server, address),
+        ':put "[ISPCENTRIC OK] Post-reset tunnel install finished - Check now in ISPCENTRIC"',
+    ]
+    if lan_address:
+        body = body[:4] + _ros_lan_assign_lines(lan_address) + body[4:]
+    return "\n".join(body)
 
 
 def _script_fetch_target() -> tuple[str, str]:
@@ -1971,7 +2106,13 @@ def rsc_access_token(address: str) -> str:
     )
 
 
-def routeros_script(address: str, private_key: str, *, factory_reset: bool = True) -> str:
+def routeros_script(
+    address: str,
+    private_key: str,
+    *,
+    factory_reset: bool = True,
+    lan_address: str = "",
+) -> str:
     """
     Full inline Winbox paste to join the billing WireGuard tunnel.
 
@@ -1986,6 +2127,7 @@ def routeros_script(address: str, private_key: str, *, factory_reset: bool = Tru
         address,
         private_key,
         include_cleanup=True,
+        lan_address=lan_address,
     )
     return "\n".join(
         [

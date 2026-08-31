@@ -6,6 +6,7 @@ from django.db import models
 from django.utils import timezone
 
 from accounts.image_utils import maybe_optimize_image_field
+from ispcentric.encrypted_fields import EncryptedCharField
 
 
 class BillingPlan(models.Model):
@@ -244,7 +245,7 @@ class Customer(models.Model):
         db_index=True,
     )
     pppoe_username = models.CharField("PPPoE username", max_length=64, blank=True)
-    pppoe_password = models.CharField("PPPoE password", max_length=128, blank=True)
+    pppoe_password = EncryptedCharField("PPPoE password", max_length=512, blank=True)
     hotspot_mac = models.CharField(
         "Hotspot device MAC",
         max_length=17,
@@ -262,14 +263,14 @@ class Customer(models.Model):
         default="admin",
         help_text="RouterOS / Winbox username on the client's CPE router.",
     )
-    cpe_password = models.CharField(
+    cpe_password = EncryptedCharField(
         "CPE password",
-        max_length=128,
+        max_length=512,
         blank=True,
         help_text="RouterOS / Winbox password on the client's CPE router.",
     )
     cpe_wifi_ssid = models.CharField("CPE Wi‑Fi name", max_length=64, blank=True)
-    cpe_wifi_password = models.CharField("CPE Wi‑Fi password", max_length=128, blank=True)
+    cpe_wifi_password = EncryptedCharField("CPE Wi‑Fi password", max_length=512, blank=True)
     cpe_ip = models.CharField(
         "CPE IP address",
         max_length=45,

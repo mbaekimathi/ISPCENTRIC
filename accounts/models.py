@@ -3,6 +3,8 @@ import secrets
 from django.contrib.auth.models import User
 from django.db import models
 
+from ispcentric.encrypted_fields import EncryptedCharField
+
 from .image_utils import maybe_optimize_image_field
 
 
@@ -166,19 +168,19 @@ class Organization(models.Model):
         choices=DarajaEnvironment.choices,
         default=DarajaEnvironment.SANDBOX,
     )
-    daraja_consumer_key = models.CharField(
+    daraja_consumer_key = EncryptedCharField(
         "Daraja consumer key",
-        max_length=255,
+        max_length=512,
         blank=True,
     )
-    daraja_consumer_secret = models.CharField(
+    daraja_consumer_secret = EncryptedCharField(
         "Daraja consumer secret",
-        max_length=255,
+        max_length=512,
         blank=True,
     )
-    daraja_passkey = models.CharField(
+    daraja_passkey = EncryptedCharField(
         "Lipa Na M-Pesa passkey",
-        max_length=255,
+        max_length=512,
         blank=True,
         help_text="Passkey for your Paybill or Till Lipa Na M-Pesa Online shortcode.",
     )
@@ -836,11 +838,11 @@ class PaymentGateway(models.Model):
         blank=True,
         help_text="Unused. STK Push AccountReference is always the client's account number.",
     )
-    consumer_key = models.CharField("Consumer key", max_length=255, blank=True)
-    consumer_secret = models.CharField("Consumer secret", max_length=255, blank=True)
-    passkey = models.CharField(
+    consumer_key = EncryptedCharField("Consumer key", max_length=512, blank=True)
+    consumer_secret = EncryptedCharField("Consumer secret", max_length=512, blank=True)
+    passkey = EncryptedCharField(
         "Lipa Na M-Pesa passkey",
-        max_length=255,
+        max_length=512,
         blank=True,
         help_text="Passkey for the Lipa Na M-Pesa Online shortcode.",
     )
@@ -1227,9 +1229,9 @@ class CommunicationCredentialsBase(models.Model):
         blank=True,
         help_text="Africa's Talking username or Twilio Account SID.",
     )
-    sms_api_key = models.CharField(
+    sms_api_key = EncryptedCharField(
         "SMS API key / Auth token",
-        max_length=512,
+        max_length=1024,
         blank=True,
         help_text="Africa's Talking API key, Twilio Auth Token, or custom API key.",
     )
@@ -1279,9 +1281,9 @@ class CommunicationCredentialsBase(models.Model):
         blank=True,
         help_text="Usually the full email address you sign in with.",
     )
-    email_host_password = models.CharField(
+    email_host_password = EncryptedCharField(
         "SMTP password",
-        max_length=512,
+        max_length=1024,
         blank=True,
         help_text="App password or mailbox password.",
     )
@@ -1315,9 +1317,9 @@ class CommunicationCredentialsBase(models.Model):
         blank=True,
         help_text="From Meta WhatsApp Cloud API.",
     )
-    whatsapp_access_token = models.CharField(
+    whatsapp_access_token = EncryptedCharField(
         "WhatsApp access token",
-        max_length=1024,
+        max_length=2048,
         blank=True,
         help_text="Permanent or temporary Meta Cloud API token.",
     )
@@ -1327,9 +1329,9 @@ class CommunicationCredentialsBase(models.Model):
         blank=True,
         help_text="Twilio Account SID or Africa's Talking username.",
     )
-    whatsapp_api_key = models.CharField(
+    whatsapp_api_key = EncryptedCharField(
         "WhatsApp API key / Auth token",
-        max_length=512,
+        max_length=1024,
         blank=True,
         help_text="Twilio Auth Token or Africa's Talking API key.",
     )
@@ -1837,3 +1839,37 @@ class NetworkEquipmentAllocation(models.Model):
     @property
     def is_active(self) -> bool:
         return self.returned_at is None
+
+
+class SecurityAuditLog(models.Model):
+    """Immutable-ish record of privileged and security-sensitive actions."""
+
+    class Action(models.TextChoices):
+        ROLE_SWITCH = "role_switch", "Role switch"
+        CLIENT_VIEW = "client_view", "Client workspace view"
+        RSC_DOWNLOAD = "rsc_download", "WireGuard RSC download"
+        STK_RATE_LIMIT = "stk_rate_limit", "STK rate limit hit"
+        LOGIN_RATE_LIMIT = "login_rate_limit", "Login rate limit hit"
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    action = models.CharField(max_length=64, db_index=True)
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="security_audit_logs",
+    )
+    actor_ip = models.CharField(max_length=64, blank=True, default="")
+    target = models.CharField(max_length=255, blank=True, default="")
+    detail = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "accounts_security_audit_log"
+        ordering = ["-created_at"]
+        verbose_name = "Security audit log"
+        verbose_name_plural = "Security audit logs"
+
+    def __str__(self):
+        who = self.actor_id or self.actor_ip or "?"
+        return f"{self.created_at:%Y-%m-%d %H:%M} {self.action} by {who}"

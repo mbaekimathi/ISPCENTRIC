@@ -158,6 +158,25 @@ STK_CALLBACK_REQUIRE_DARAJA_QUERY = env_flag(
 )
 # Optional comma-separated allowlist for /api/mpesa/stk-callback/ (empty = any IP).
 MPESA_CALLBACK_ALLOWED_IPS = (os.getenv("MPESA_CALLBACK_ALLOWED_IPS") or "").strip()
+if HOSTED and not DEBUG and not MPESA_CALLBACK_ALLOWED_IPS:
+    import logging as _logging
+
+    _logging.getLogger(__name__).warning(
+        "MPESA_CALLBACK_ALLOWED_IPS is empty on a hosted install. "
+        "Set it to Safaricom callback source IPs (see .env.production.example) "
+        "so forged STK callbacks are rejected at the edge. "
+        "Daraja STK Query confirmation remains enabled by default."
+    )
+
+# Fernet key or passphrase for EncryptedCharField (router/payment/CPE secrets).
+# If unset, a key is derived from DJANGO_SECRET_KEY — set this explicitly in
+# production so SECRET_KEY rotation does not brick ciphertext.
+FIELD_ENCRYPTION_KEY = (os.getenv("FIELD_ENCRYPTION_KEY") or "").strip()
+
+# Public WireGuard .rsc download limits (MikroTik retries a few times on paste).
+WIREGUARD_RSC_DOWNLOAD_LIMIT = int(os.getenv("WIREGUARD_RSC_DOWNLOAD_LIMIT") or "20")
+WIREGUARD_RSC_DOWNLOAD_WINDOW = int(os.getenv("WIREGUARD_RSC_DOWNLOAD_WINDOW") or "3600")
+WIREGUARD_RSC_TOKEN_MAX_AGE = int(os.getenv("WIREGUARD_RSC_TOKEN_MAX_AGE") or "7200")
 
 # Public base URL for captive Hotspot / renew pages pushed to MikroTik.
 # Use a concrete URL on hosted (e.g. http://isp.richcom.co.ke), or "auto"/empty
@@ -225,6 +244,7 @@ MIDDLEWARE = [
     "ispcentric.middleware.RealClientIpMiddleware",
     "ispcentric.middleware.CaptiveHostRewriteMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "ispcentric.security_headers.SecurityHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",

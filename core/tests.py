@@ -40,7 +40,100 @@ class MikroTikFactoryDefaultIpTests(SimpleTestCase):
         self.assertFalse(mikrotik_connect.is_factory_default_mikrotik_ip("192.168.10.1"))
         self.assertFalse(mikrotik_connect.is_factory_default_mikrotik_ip("10.9.0.4"))
 
-    def test_onboard_form_rejects_factory_default_host(self):
+    def test_transient_onboard_hosts_include_hotspot_gateway(self):
+        self.assertFalse(mikrotik_connect.is_transient_onboard_host("192.168.88.1"))
+        self.assertTrue(mikrotik_connect.is_transient_onboard_host("10.50.50.1"))
+        self.assertFalse(mikrotik_connect.is_transient_onboard_host("192.168.12.1"))
+
+    def test_pick_local_onboard_connect_host_prefers_discovery(self):
+        with patch(
+            "core.mikrotik_connect.discover_local_mikrotik_host",
+            return_value="192.168.0.112",
+        ):
+            host = mikrotik_connect.pick_local_onboard_connect_host(
+                tunnel_address="10.9.0.46",
+                planned_lan="192.168.88.1",
+                current="192.168.88.1",
+            )
+        self.assertEqual(host, "192.168.0.112")
+
+    def test_pick_local_onboard_connect_host_falls_back_to_planned_lan(self):
+        with patch(
+            "core.mikrotik_connect.discover_local_mikrotik_host",
+            return_value="",
+        ):
+            host = mikrotik_connect.pick_local_onboard_connect_host(
+                planned_lan="192.168.88.1",
+            )
+        self.assertEqual(host, "192.168.88.1")
+
+    def test_resolve_onboard_management_host_prefers_lan_over_tunnel(self):
+        host = mikrotik_connect.resolve_onboard_management_host(
+            connect_host="192.168.88.1",
+            tunnel_host="10.9.0.31",
+            lan_result={"host": "192.168.12.1"},
+            fallback="192.168.12.1",
+        )
+        self.assertEqual(host, "192.168.88.1")
+
+    def test_resolve_onboard_management_host_uses_tunnel_when_no_lan(self):
+        host = mikrotik_connect.resolve_onboard_management_host(
+            tunnel_host="10.9.0.31",
+        )
+        self.assertEqual(host, "10.9.0.31")
+
+    def test_resolve_onboard_management_host_prefers_verified_path(self):
+        host = mikrotik_connect.resolve_onboard_management_host(
+            connect_host="192.168.88.1",
+            lan_result={
+                "verified_host": "192.168.88.1",
+                "management_host": "192.168.88.1",
+                "host": "192.168.12.1",
+            },
+            fallback="192.168.12.1",
+        )
+        self.assertEqual(host, "192.168.88.1")
+
+    def test_suggest_unique_lan_ip_skips_factory_and_existing_subnets(self):
+        self.assertEqual(
+            mikrotik_connect.suggest_unique_mikrotik_lan_ip([]),
+            "192.168.10.1",
+        )
+        self.assertEqual(
+            mikrotik_connect.suggest_unique_mikrotik_lan_ip(["192.168.10.1"]),
+            "192.168.11.1",
+        )
+        self.assertEqual(
+            mikrotik_connect.suggest_unique_mikrotik_lan_ip(
+                ["192.168.10.5", "192.168.11.1", "192.168.88.1"]
+            ),
+            "192.168.12.1",
+        )
+        self.assertEqual(
+            mikrotik_connect.suggest_unique_mikrotik_lan_ip(["192.168.189.1"]),
+            "192.168.10.1",
+        )
+
+    def test_hardware_probe_hosts_prefers_discovered_lan_on_local_billing_pc(self):
+        from core.views import _mikrotik_hardware_probe_hosts
+
+        hosts = _mikrotik_hardware_probe_hosts(
+            connect_host="192.168.88.1",
+            discovered_host="192.168.0.112",
+            tunnel_host="10.9.0.31",
+            session_host="192.168.10.22",
+            target_host="192.168.10.22",
+            router_host="192.168.10.22",
+            lan_changed=True,
+            lan_result={
+                "verified_host": "",
+                "management_host": "192.168.88.1",
+            },
+        )
+        self.assertEqual(hosts[0], "192.168.0.112")
+        self.assertIn("192.168.88.1", hosts)
+
+    def test_onboard_form_accepts_factory_default_host(self):
         from core.forms import MikroTikOnboardForm
 
         form = MikroTikOnboardForm(
@@ -59,9 +152,8 @@ class MikroTikFactoryDefaultIpTests(SimpleTestCase):
                 "default_cpe_password": "",
             }
         )
-        self.assertFalse(form.is_valid())
-        self.assertIn("host", form.errors)
-        self.assertIn("192.168.88.1", form.errors["host"][0])
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["host"], "192.168.88.1")
 
     def test_change_lan_ip_rejects_factory_default_target(self):
         result = mikrotik_connect.change_mikrotik_lan_ip(
@@ -487,6 +579,42 @@ class WireGuardKeyTests(SimpleTestCase):
                         self.assertIn('comment="ispcentric-vpn-hs-input"', script)
                         self.assertIn("Step 7/8 handshake", script)
                         self.assertIn("Step 8/8 backup", script)
+
+    @override_settings(
+        WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        WIREGUARD_SUBNET="10.9.0.0/24",
+    )
+    def test_routeros_script_keeps_factory_lan_ip(self):
+        private_key, _ = wireguard.generate_keypair()
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        ):
+            script = wireguard.routeros_script(
+                "10.9.0.15",
+                private_key,
+                lan_address="192.168.88.1",
+            )
+        self.assertNotIn('comment="ispcentric-lan"', script)
+        self.assertNotIn("Assign unique LAN IP", script)
+        self.assertEqual(wireguard.validate_inline_install_steps(script), [])
+
+    def test_routeros_script_assigns_unique_lan_ip(self):
+        private_key, _ = wireguard.generate_keypair()
+        with patch(
+            "core.wireguard.socket.getaddrinfo",
+            return_value=[(socket.AF_INET, socket.SOCK_DGRAM, 17, "", ("203.0.113.50", 0))],
+        ):
+            script = wireguard.routeros_script(
+                "10.9.0.15",
+                private_key,
+                lan_address="192.168.12.1",
+            )
+        self.assertIn('comment="ispcentric-lan"', script)
+        self.assertIn("address=192.168.12.1/24", script)
+        self.assertIn("Assign unique LAN IP 192.168.12.1", script)
+        self.assertEqual(wireguard.validate_inline_install_steps(script), [])
 
     @override_settings(
         WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -7766,4 +7894,118 @@ class MikroTikStatusOfflineTests(TestCase):
         event = payload["events"][0]
         self.assertEqual(event["status"], "limited")
         self.assertIn("ping", event["reason"].lower())
+
+    def test_live_status_holds_connected_through_one_flaky_poll(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import stabilize_live_status_row
+
+        cache.clear()
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(self.org.pk, self.router.pk, connected)
+        held = stabilize_live_status_row(
+            self.org.pk,
+            self.router.pk,
+            {
+                "id": self.router.pk,
+                "status": "disconnected",
+                "online": False,
+                "error": "timed out",
+            },
+        )
+        self.assertEqual(held["status"], "connected")
+        self.assertTrue(held.get("stabilized"))
+        self.assertEqual(held.get("probe_status"), "disconnected")
+        confirmed = stabilize_live_status_row(
+            self.org.pk,
+            self.router.pk,
+            {
+                "id": self.router.pk,
+                "status": "disconnected",
+                "online": False,
+                "error": "still down",
+            },
+        )
+        self.assertEqual(confirmed["status"], "disconnected")
+
+    def test_classify_retries_flaky_api_login(self):
+        from unittest.mock import patch
+
+        from core.mikrotik_status_samples import classify_mikrotik_probe
+
+        calls = {"n": 0}
+
+        def fake_login(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"ok": False, "error": "Connection timed out."}
+            return {"ok": True, "serial_number": "SN1"}
+
+        with patch(
+            "core.mikrotik_connect.test_mikrotik_api_login",
+            side_effect=fake_login,
+        ):
+            row = classify_mikrotik_probe(
+                {"online": True, "via": "api"},
+                host="192.168.88.1",
+                username="admin",
+                password="x",
+            )
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(row["status"], "connected")
+        self.assertTrue(row["auth_ok"])
+
+    def test_onboarding_guard_holds_fleet_status_cache(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            mark_mikrotik_onboarding_active,
+            mikrotik_onboarding_guard_key,
+        )
+
+        cache.clear()
+        cached = [
+            {
+                "id": self.router.pk,
+                "host": self.router.host,
+                "name": self.router.name,
+                "online": True,
+                "status": "connected",
+                "error": "",
+            }
+        ]
+        cache.set(f"mikrotik_status:{self.org.pk}", cached, 60)
+        mark_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk)
+        with patch("core.views.check_mikrotik_reachable") as probe:
+            response = self.client.get("/app/mikrotik/status/")
+        probe.assert_not_called()
+        body = response.json()
+        self.assertTrue(body.get("onboarding_hold"))
+        self.assertEqual(body["routers"][0]["status"], "connected")
+        cache.delete(mikrotik_onboarding_guard_key(self.org.pk, self.owner.pk))
+
+    def test_probe_mikrotik_for_onboarding_confirms_slow_api(self):
+        from core.mikrotik_connect import probe_mikrotik_for_onboarding
+
+        calls = {"n": 0}
+
+        def fake_reachable(host, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"online": False, "via": "", "error": "timed out"}
+            return {"online": True, "via": "api", "port": 8728}
+
+        with patch(
+            "core.mikrotik_connect.check_mikrotik_reachable",
+            side_effect=fake_reachable,
+        ):
+            result = probe_mikrotik_for_onboarding("10.9.0.40", base_timeout=0.1)
+        self.assertTrue(result.get("online"))
+        self.assertEqual(result.get("via"), "api")
+        self.assertEqual(calls["n"], 2)
 

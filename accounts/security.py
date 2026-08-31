@@ -70,6 +70,19 @@ def assert_auth_allowed(
         raise AuthRateLimitExceeded(window)
 
 
+def assert_public_pay_allowed(request, join_code: str = "") -> None:
+    """Rate-limit public captive STK start endpoints (per IP and per join code)."""
+    assert_auth_allowed("stk_start_ip", request, limit=12, window=900)
+    if join_code:
+        assert_auth_allowed(
+            "stk_start_code",
+            request,
+            identifier=join_code,
+            limit=20,
+            window=900,
+        )
+
+
 def validate_account_password(
     password1: str,
     password2: str,
