@@ -20,6 +20,9 @@ from core.mikrotik_connect import (
     switch_mikrotik_single_wan,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
+    assess_bond_members_readiness,
+    assess_port_internet_readiness,
+    assess_touch_ports_internet,
     assess_uplink_switch_risk,
     build_api_enable_terminal_script,
     build_single_wan_recovery_script,
@@ -30,6 +33,9 @@ from core.views import (
     _allowed_roles_for_uplink_mode,
     _apply_single_wan_on_router,
     _balance_apply_readiness,
+    _bond_apply_readiness,
+    _auto_assign_bond_roles,
+    _live_bond_candidate_ports,
     _build_router_client_analysis,
     _build_uplink_health_alerts,
     _build_uplink_prompt,
@@ -37,10 +43,12 @@ from core.views import (
     _failover_active_wan_port,
     _failover_ports_from_roles,
     _friendly_role_label,
+    _live_isp_member_ports,
     _normalize_port_roles_for_uplink_mode,
     _pick_auto_wan,
     _port_role_choices_for_ui,
     _role_allowed_for_uplink_mode,
+    _smart_balance_health,
     _wan_switch_confirmed,
     apply_detected_uplink,
     resolve_wan_speed_interfaces,
@@ -846,6 +854,68 @@ class AssessUplinkSwitchRiskTests(SimpleTestCase):
         self.assertFalse(risk["tunnel_verified"])
 
 
+class PortInternetReadinessTests(SimpleTestCase):
+    def test_dhcp_active_is_verified(self):
+        row = assess_port_internet_readiness(
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True)
+        )
+        self.assertTrue(row["verified"])
+        self.assertEqual(row["level"], "ok")
+
+    def test_dhcp_link_without_lease_warns(self):
+        row = assess_port_internet_readiness(
+            _port("ether2", uplink_kind="dhcp", uplink_active=False, running=True)
+        )
+        self.assertFalse(row["verified"])
+        self.assertEqual(row["level"], "warn")
+
+    def test_pppoe_down_blocks(self):
+        row = assess_port_internet_readiness(
+            _port("ether1", uplink_kind="pppoe", uplink_active=False, running=False)
+        )
+        self.assertFalse(row["verified"])
+        self.assertEqual(row["level"], "block")
+
+    def test_touch_ports_requires_all_verified(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+            _port("ether2", uplink_kind="dhcp", uplink_active=False, running=True),
+        ]
+        check = assess_touch_ports_internet(["ether1", "ether2"], ports)
+        self.assertFalse(check["ok"])
+        self.assertTrue(check["blocking"])
+
+    def test_bond_members_need_link_not_per_port_dhcp(self):
+        ports = [
+            _port("ether1", running=True),
+            _port("ether2", running=True),
+        ]
+        check = assess_bond_members_readiness(["ether1", "ether2"], ports)
+        self.assertTrue(check["ok"])
+        self.assertTrue(check["warnings"])
+
+    def test_switch_risk_blocks_target_without_link(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+            _port("ether4", running=False),
+        ]
+        risk = assess_uplink_switch_risk(
+            new_wan="ether4",
+            old_wan="ether1",
+            ports=ports,
+            management_host="192.168.88.1",
+        )
+        self.assertTrue(risk["blocking"])
+
+    def test_touch_ports_blocks_dhcp_without_lease(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+            _port("ether2", uplink_kind="dhcp", uplink_active=False, running=True),
+        ]
+        check = assess_touch_ports_internet(["ether2"], ports)
+        self.assertFalse(check["ok"])
+
+
 class AssessUplinkModeApplyRiskTests(SimpleTestCase):
     def test_mgmt_on_bridge_allows_confirm_for_bond_without_verified_tunnel(self):
         from core.mikrotik_connect import assess_uplink_mode_apply_risk
@@ -1137,10 +1207,24 @@ class BalanceUplinkImprovementTests(SimpleTestCase):
         ready, hint = _balance_apply_readiness(
             ["ether1"],
             ["ether2"],
-            [_port("ether1", running=True), _port("ether2", running=True)],
+            [
+                _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+                _port("ether2", uplink_kind="dhcp", uplink_active=True, running=True),
+            ],
         )
         self.assertTrue(ready)
         self.assertIn("Apply load balance", hint)
+
+        ready, hint = _balance_apply_readiness(
+            ["ether1"],
+            ["ether2"],
+            [
+                _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+                _port("ether2", uplink_kind="dhcp", uplink_active=False, running=True),
+            ],
+        )
+        self.assertFalse(ready)
+        self.assertIn("Live ISP internet", hint)
 
         ready, hint = _balance_apply_readiness(
             [],
@@ -1245,6 +1329,85 @@ class BalanceUplinkImprovementTests(SimpleTestCase):
             smart_balance_status={"ok": True, "slow_ports": ["ether2"], "members": {"ether2": "slow"}},
         )
         self.assertTrue(any(a["code"] == "smart_balance_slow" for a in alerts))
+
+
+class BondAutoSetupTests(SimpleTestCase):
+    def test_live_bond_candidates_prefers_plain_links(self):
+        ports = [
+            _port("ether1", running=True),
+            _port("ether2", running=True),
+            _port("ether4", uplink_kind="dhcp", uplink_active=True, running=True),
+        ]
+        candidates = _live_bond_candidate_ports(ports)
+        self.assertEqual(candidates[:2], ["ether1", "ether2"])
+
+    def test_auto_assign_bond_roles_picks_two_links(self):
+        router = MikroTikRouter(
+            name="test",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.BOND,
+            port_roles={},
+        )
+        ports = [_port("ether1", running=True), _port("ether4", running=True)]
+        with patch.object(MikroTikRouter, "save", return_value=None):
+            result = _auto_assign_bond_roles(router, ports)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["members"], ["ether1", "ether4"])
+        self.assertEqual(
+            router.port_roles,
+            {
+                "ether1": MikroTikRouter.PortRole.BOND,
+                "ether4": MikroTikRouter.PortRole.BOND,
+            },
+        )
+
+    def test_bond_apply_readiness_requires_two_members(self):
+        ready, hint = _bond_apply_readiness(["ether1"], [_port("ether1", running=True)])
+        self.assertFalse(ready)
+        self.assertIn("two", hint.lower())
+
+
+class SmartBalanceAutoSetupTests(SimpleTestCase):
+    def test_live_isp_member_ports_orders_primary_first(self):
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True, running=True),
+            _port("ether4", uplink_kind="dhcp", uplink_active=True, running=True),
+            _port("ether2", bridged=True, running=True),
+        ]
+        members = _live_isp_member_ports(
+            ports,
+            suggested_wan="ether4",
+            saved_wan="ether1",
+        )
+        self.assertEqual(members[0], "ether4")
+        self.assertIn("ether1", members)
+
+    def test_smart_balance_health_requires_monitor(self):
+        health = _smart_balance_health(
+            {
+                "ok": True,
+                "mode": "smart_balance",
+                "balance_pcc_rules": 4,
+                "smart_balance_enabled": False,
+            },
+            MikroTikRouter.UplinkMode.SMART_BALANCE,
+        )
+        self.assertTrue(health.get("needs_apply"))
+        self.assertFalse(health.get("effective"))
+
+        ok = _smart_balance_health(
+            {
+                "ok": True,
+                "mode": "smart_balance",
+                "balance_pcc_rules": 4,
+                "smart_balance_enabled": True,
+            },
+            MikroTikRouter.UplinkMode.SMART_BALANCE,
+        )
+        self.assertTrue(ok.get("effective"))
 
 
 class SwitchSingleWanTests(SimpleTestCase):
@@ -1361,6 +1524,32 @@ class WanSwitchRiskTests(SimpleTestCase):
         )
         self.assertTrue(ok)
         self.assertEqual(err, "")
+
+    def test_build_wan_switch_risks_includes_rollback_to_previous_wan(self):
+        router = MikroTikRouter(
+            name="r",
+            host="203.0.113.8",
+            username="admin",
+            password="x",
+            wan_interface="ether1",
+            uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+            port_roles={"ether1": MikroTikRouter.PortRole.WAN},
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether4", uplink_kind="dhcp", running=True),
+        ]
+        risks = _build_wan_switch_risks(
+            router,
+            live_ports=ports,
+            management_iface_by_host={},
+            primary_wan_ports=["ether1"],
+            tunnel_verified=True,
+        )
+        script = risks["ether4"].get("rollback_recovery_script") or ""
+        self.assertIn("ether1", script)
+        self.assertIn("ether4", script)
+        self.assertIn("Single Internet reset on", script)
 
     def test_build_wan_switch_risks_skips_current_wan(self):
         router = MikroTikRouter(

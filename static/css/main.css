@@ -18188,6 +18188,28 @@ a.packages-stat:focus-visible {
   border-radius: 999px;
 }
 
+.mk-port-inet {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.mk-port-inet.is-ok {
+  color: var(--chip-ok-fg, #0d5c2e);
+  background: var(--chip-ok-bg, #d8f5e4);
+}
+
+.mk-port-inet.is-warn {
+  color: var(--notice-warn-fg, #7a4d00);
+  background: var(--notice-warn-bg, #fff4d6);
+}
+
+.mk-port-inet.is-block {
+  color: var(--notice-error-fg);
+  background: var(--notice-error-bg, #fde8e8);
+}
+
 .mk-port-role-label {
   font-size: 0.82rem;
   font-weight: 700;
@@ -18313,6 +18335,18 @@ a.packages-stat:focus-visible {
   padding: 0.35rem 0.45rem;
   border-radius: 10px;
   background: var(--sea-soft);
+}
+
+.mk-help-note.is-suggest {
+  color: var(--chip-signal-fg, #5a4a00);
+  background: var(--signal-soft, #fff8e6);
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.35rem;
+}
+
+.mk-port-card.is-pending-setup {
+  outline: 1px dashed var(--notice-warn-fg, #9a6700);
+  outline-offset: 2px;
 }
 
 .mk-help-note.is-ok {
@@ -18618,6 +18652,7 @@ a.packages-stat:focus-visible {
 .mk-chip {
   display: inline-flex;
   align-items: center;
+  gap: 0.35rem;
   min-height: 1.8rem;
   padding: 0.2rem 0.65rem;
   border-radius: 999px;
@@ -18625,6 +18660,12 @@ a.packages-stat:focus-visible {
   font-weight: 700;
   background: var(--chip-sea-bg);
   color: var(--chip-sea-fg);
+}
+
+.mk-chip-sub {
+  font-size: 0.72rem;
+  font-weight: 600;
+  opacity: 0.85;
 }
 
 .mk-chip.is-primary {

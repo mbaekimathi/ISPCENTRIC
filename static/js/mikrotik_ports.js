@@ -20,16 +20,41 @@
   var defaultApiScript = defaultApiScriptEl ? defaultApiScriptEl.value.trim() : "";
   var lastConnectOk = null;
 
-  function rememberWanSwitchAttempt(portName, script) {
+  function rememberWanSwitchAttempt(newPort, script, oldPort) {
     try {
       sessionStorage.setItem(
         wanSwitchPendingKey,
-        JSON.stringify({ port: portName || "", at: Date.now() })
+        JSON.stringify({
+          port: newPort || "",
+          old_port: oldPort || "",
+          at: Date.now(),
+        })
       );
       if (script) sessionStorage.setItem(wanRecoveryStorageKey, script);
     } catch (e) {
       /* ignore */
     }
+  }
+
+  function rollbackScriptFromRisk(risk) {
+    if (!risk) return "";
+    return (
+      risk.rollback_recovery_script ||
+      risk.recovery_script ||
+      ""
+    );
+  }
+
+  function storePendingWanSwitch(newPort, oldPort, script) {
+    if (!newPort || !oldPort || newPort === oldPort) return;
+    rememberWanSwitchAttempt(newPort, script, oldPort);
+  }
+
+  function wanRollbackFromData(data) {
+    if (!data || !data.wan_rollback) return null;
+    var rb = data.wan_rollback;
+    if (!rb.rollback_script) return null;
+    return rb;
   }
 
   function clearWanSwitchAttempt() {
@@ -110,17 +135,35 @@
     if (wrap) setHidden(wrap, !script);
   }
 
-  function openWanRecoveryModal(script, portName) {
+  function openWanRecoveryModal(script, oldPort, newPort) {
     var text = script || readStoredWanRecoveryScript();
     if (!text) return;
     setWanRecoveryScript(text);
     var lead = root.querySelector("[data-wan-recovery-lead]");
-    if (lead && portName) {
-      lead.innerHTML =
-        'The billing server lost contact after moving Internet to <strong>' +
-        esc(portName) +
-        "</strong>. Use Winbox on a LAN port to restore " +
-        "<strong>One internet link — single ISP cable</strong>.";
+    var title = root.querySelector("#mk-wan-recovery-title");
+    if (title) {
+      title.textContent = oldPort
+        ? "Reset Internet to " + oldPort
+        : "Router unreachable — on-site recovery";
+    }
+    if (lead) {
+      if (oldPort && newPort) {
+        lead.innerHTML =
+          "The billing server lost contact after moving Internet to <strong>" +
+          esc(newPort) +
+          "</strong>. Use Winbox on a <strong>customer LAN port</strong>, open " +
+          "<strong>New Terminal</strong>, paste the commands below, and press Enter to " +
+          "restore Internet on <strong>" +
+          esc(oldPort) +
+          "</strong>.";
+      } else if (oldPort) {
+        lead.innerHTML =
+          "Use Winbox on a <strong>customer LAN port</strong>, open " +
+          "<strong>New Terminal</strong>, paste the commands below, and press Enter to " +
+          "restore Internet on <strong>" +
+          esc(oldPort) +
+          "</strong>.";
+      }
     }
     setHidden(root.querySelector("[data-wan-recovery-backdrop]"), false);
     setHidden(root.querySelector("[data-wan-recovery-dialog]"), false);
@@ -131,7 +174,45 @@
     setHidden(root.querySelector("[data-wan-recovery-dialog]"), true);
   }
 
-  function maybeShowWanRecoveryModal() {
+  function showWanRollbackIfNeeded(data) {
+    var rb = wanRollbackFromData(data);
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem(wanSwitchPendingKey);
+    } catch (e) {
+      raw = null;
+    }
+    var pending = null;
+    if (raw) {
+      try {
+        pending = JSON.parse(raw);
+      } catch (e) {
+        pending = null;
+      }
+    }
+    if (pending && pending.at && Date.now() - pending.at > 15 * 60 * 1000) {
+      clearWanSwitchAttempt();
+      pending = null;
+    }
+    var script = "";
+    var oldPort = "";
+    var newPort = "";
+    if (rb) {
+      script = rb.rollback_script;
+      oldPort = rb.old_wan || "";
+      newPort = rb.new_wan || "";
+    } else if (pending && pending.old_port) {
+      script = readStoredWanRecoveryScript();
+      oldPort = pending.old_port || "";
+      newPort = pending.port || "";
+    }
+    if (!script || !oldPort) return false;
+    openWanRecoveryModal(script, oldPort, newPort);
+    return true;
+  }
+
+  function maybeShowWanRecoveryModal(data) {
+    if (showWanRollbackIfNeeded(data || {})) return;
     var raw = null;
     try {
       raw = sessionStorage.getItem(wanSwitchPendingKey);
@@ -145,25 +226,29 @@
     } catch (e) {
       pending = null;
     }
-    if (!pending || !pending.port) return;
+    if (!pending || (!pending.port && !pending.old_port)) return;
     if (Date.now() - (pending.at || 0) > 15 * 60 * 1000) {
       clearWanSwitchAttempt();
       return;
     }
-    openWanRecoveryModal(readStoredWanRecoveryScript(), pending.port);
+    openWanRecoveryModal(
+      readStoredWanRecoveryScript(),
+      pending.old_port || "",
+      pending.port || ""
+    );
   }
   if (!loading || !liveUrl) return;
 
   var goalHints = {
     single: "One ISP cable — mark it Internet. Backup and bonding roles are hidden.",
-    bond: "Two cables from the same ISP — mark each Bonded internet, then apply bonding.",
+    bond: "Two cables from the same ISP — use Detect & apply, or mark Bonded internet on each port.",
     failover: "Two or more ISPs — one Internet, one or more Backup internet, all link up, then apply.",
     balance: "Two or more ISPs sharing traffic — one Internet, rest Shared ISP, enter Mbps, then apply.",
     smart_balance: "Two or more ISPs — weighted sharing plus auto-avoid when one is slow."
   };
   var goalSelectHints = {
     single: "Move one cable between ports anytime — tap Internet on the new port.",
-    bond: "Same provider: two cables bonded together for more capacity or redundancy.",
+    bond: "Same provider: plug two cables, then Detect & apply bonding.",
     failover: "Different providers: standby ISP(s) take over when the primary fails.",
     balance: "Different providers: all carry traffic, weighted by the Mbps you enter.",
     smart_balance: "Like weighted balance, but the router sidelines slow ISPs from new connections."
@@ -301,6 +386,26 @@
     }
     if (port.uplink_kind === "dhcp") return "DHCP";
     return "";
+  }
+
+  function portInternetBadge(port) {
+    if (!port || port.is_bond_iface) return "";
+    if (port.internet_verified) {
+      return '<span class="mk-port-inet is-ok" title="ISP internet verified">ISP online</span>';
+    }
+    var hint = (port.internet_hint || "").trim();
+    if (!hint) return "";
+    var level = (port.internet_level || "warn").toLowerCase();
+    var cls = level === "block" ? "is-block" : "is-warn";
+    return (
+      '<span class="mk-port-inet ' +
+      cls +
+      '" title="' +
+      esc(hint) +
+      '">' +
+      esc(level === "block" ? "No ISP" : "ISP pending") +
+      "</span>"
+    );
   }
 
   function routerName() {
@@ -585,8 +690,10 @@
         .join(" · ");
       if (!data.balance_router_applied) {
         health = data.can_apply_balance || data.can_apply_smart_balance
-          ? (mode === "smart_balance" ? "Configured — click Apply smart balance" : "Configured — click Apply load balance")
-          : (mode === "smart_balance" ? "Smart balance setup — not on MikroTik yet" : "Balance setup — not on MikroTik yet");
+          ? (mode === "smart_balance" ? "Configured — applying smart balance…" : "Configured — click Apply load balance")
+          : (mode === "smart_balance" ? "Smart balance setup — waiting for links" : "Balance setup — not on MikroTik yet");
+      } else if (mode === "smart_balance" && !data.smart_balance_applied) {
+        health = "PCC active — installing slow-link monitor…";
       } else if (slowPorts.length && mode === "smart_balance") {
         health = "Slow ISP sidelined: " + slowPorts.join(", ");
       } else if (shareBits) {
@@ -594,7 +701,9 @@
       } else if (wanLive) {
         health =
           (balanceCount >= 2 ? balanceCount + " ISPs" : "ISPs") +
-          (mode === "smart_balance" ? " smart-sharing (PCC)" : " sharing traffic (PCC)");
+          (mode === "smart_balance"
+            ? (data.smart_balance_applied ? " smart-sharing + monitor" : " smart-sharing (PCC)")
+            : " sharing traffic (PCC)");
       } else {
         health = "Balance configured · waiting for links";
       }
@@ -728,12 +837,29 @@
     window.setTimeout(function () { card.classList.remove("is-focus"); }, 1800);
   }
 
-  function chipList(ul, names, chipClass) {
+  function chipList(ul, names, chipClass, ports) {
     if (!ul) return;
+    var byName = {};
+    (ports || []).forEach(function (p) {
+      if (p && p.name) byName[p.name] = p;
+    });
     ul.innerHTML = "";
     (names || []).forEach(function (name) {
       var li = document.createElement("li");
-      li.innerHTML = '<span class="mk-chip' + (chipClass ? " " + chipClass : "") + '">' + esc(name) + "</span>";
+      var p = byName[name];
+      var sub = "";
+      if (p) {
+        if (p.disabled) sub = "disabled";
+        else if (p.running) sub = "link up";
+        else sub = "no link";
+      }
+      li.innerHTML =
+        '<span class="mk-chip' +
+        (chipClass ? " " + chipClass : "") +
+        '">' +
+        esc(name) +
+        (sub ? '<span class="mk-chip-sub">' + esc(sub) + "</span>" : "") +
+        "</span>";
       ul.appendChild(li);
     });
   }
@@ -886,6 +1012,49 @@
     });
   }
 
+  function portSortKey(port, mode) {
+    var role = (port.role || "none").toLowerCase();
+    var order = {
+      wan: 0,
+      wan_primary: 0,
+      wan_backup: 1,
+      bond: 2,
+      lan: 3,
+      none: 4,
+      unused: 5
+    };
+    var base = order[role] != null ? order[role] : 6;
+    if (mode === "bond" && role === "bond") base = 0;
+    return [base, port.name || ""];
+  }
+
+  function bridgeRoleHint(mode) {
+    if (mode === "bond") return "Bonded internet";
+    if (mode === "failover") return "Internet/Backup internet";
+    if (mode === "balance" || mode === "smart_balance") return "Internet/Shared ISP";
+    return "Internet";
+  }
+
+  function updatePortsAssignSection(data) {
+    var mode = data.uplink_mode || "single";
+    var hint = root.querySelector("[data-ports-assign-hint]");
+    if (hint) {
+      hint.textContent =
+        data.ports_assign_hint || goalHints[mode] || goalHints.single;
+    }
+    var title = root.querySelector("[data-ports-assign-title]");
+    if (title) {
+      var titles = {
+        single: "Label each cable",
+        bond: "Bond members (auto-updated)",
+        failover: "ISP ports (auto-updated)",
+        balance: "ISP ports (auto-updated)",
+        smart_balance: "ISP ports (auto-updated)"
+      };
+      title.textContent = titles[mode] || titles.single;
+    }
+  }
+
   function rolePickForms(portName, role, roles) {
     return roles.map(function (pair) {
       var value = pair[0];
@@ -910,8 +1079,10 @@
     }).join("");
   }
 
-  function renderPortCard(port, allowedRoles) {
+  function renderPortCard(port, allowedRoles, uplinkMode) {
+    var mode = uplinkMode || selectedGoal || "single";
     var role = port.role || "none";
+    var pendingClass = port.role_matches_setup === false ? " is-pending-setup" : "";
     var stateClass = port.disabled ? " is-disabled" : port.running ? " is-up" : " is-down";
     var bondClass = port.is_bond_iface ? " is-bond" : "";
     var statusHtml = port.disabled
@@ -923,7 +1094,7 @@
     if (port.is_bond_iface) {
       body = '<p class="mk-help-note">Bond interface — managed by multi-uplink settings.</p>';
     } else {
-      var roles = rolesForGoal(selectedGoal || "single", allowedRoles);
+      var roles = rolesForGoal(mode, allowedRoles);
       var moreValues = roles.more.map(function (pair) { return pair[0]; });
       var advOpen = moreValues.indexOf(role) >= 0 ? " open" : "";
       var bridgeWarn = "";
@@ -931,10 +1102,20 @@
         bridgeWarn =
           '<p class="mk-help-note is-warn">On bridge ' +
           esc(port.bridge || "LAN") +
-          " — assigning Internet/Backup/Bond will unbridge this port when you apply.</p>";
+          " — assigning " +
+          esc(bridgeRoleHint(mode)) +
+          " will unbridge this port when you apply.</p>";
+      }
+      var suggestedHtml = "";
+      if (port.suggested_role && port.suggested_role !== role && port.suggested_role_label) {
+        suggestedHtml =
+          '<p class="mk-help-note is-suggest">Pending: will become <strong>' +
+          esc(port.suggested_role_label) +
+          "</strong> when this link has ISP internet.</p>";
       }
       body =
         bridgeWarn +
+        suggestedHtml +
         '<div class="mk-role-picks" role="group" aria-label="Role for ' + esc(port.name) + '">' +
         rolePickForms(port.name, role, roles.main) +
         "</div>" +
@@ -945,7 +1126,7 @@
         "</div></details>";
     }
     return (
-      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + '"' +
+      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + pendingClass + '"' +
       ' data-port-name="' + esc(port.name) + '" id="port-card-' + esc(port.name).replace(/[^a-zA-Z0-9_-]/g, "-") + '">' +
       '<header class="mk-port-card-head"><div>' +
       '<strong class="mk-port-name">' + esc(port.name) + "</strong>" +
@@ -958,6 +1139,7 @@
           ? '<span class="mk-port-uplink">DHCP</span>'
           : "") +
       (port.comment ? '<span class="mk-port-comment">' + esc(port.comment) + "</span>" : "") +
+      portInternetBadge(port) +
       "</div></div>" + statusHtml + "</header>" +
       body +
       '<footer class="mk-port-card-foot">' +
@@ -976,12 +1158,19 @@
   function renderPortCards(data) {
     var allPorts = data.ports || [];
     var allowedRoles = data.allowed_roles || [];
+    var mode = data.uplink_mode || "single";
     var grid = root.querySelector("[data-ports-grid]");
     var assign = root.querySelector("[data-ports-assign]");
     if (!grid) return;
     if (allPorts.length) {
-      grid.innerHTML = allPorts.map(function (port) {
-        return renderPortCard(port, allowedRoles);
+      var sorted = allPorts.slice().sort(function (a, b) {
+        var ka = portSortKey(a, mode);
+        var kb = portSortKey(b, mode);
+        if (ka[0] !== kb[0]) return ka[0] - kb[0];
+        return ka[1].localeCompare(kb[1]);
+      });
+      grid.innerHTML = sorted.map(function (port) {
+        return renderPortCard(port, allowedRoles, mode);
       }).join("");
       setHidden(grid, false);
       setHidden(assign, false);
@@ -1143,7 +1332,7 @@
     syncRiskProceedButton(risk, form || pendingUplinkForm);
     if (!preserveCheckbox) {
       setWanRecoveryScript(
-        opts.recoveryScript || risk.recovery_script || ""
+        opts.recoveryScript || rollbackScriptFromRisk(risk) || ""
       );
     }
     riskDialogOpen = true;
@@ -1284,7 +1473,7 @@
       }
       lastConnectOk = false;
       setHidden(err, false);
-      maybeShowWanRecoveryModal();
+      maybeShowWanRecoveryModal(data);
       setHidden(root.querySelector("[data-ports-grid]"), true);
       setHidden(root.querySelector("[data-ports-empty]"), true);
       setHidden(root.querySelector("[data-ports-summary]"), true);
@@ -1313,6 +1502,12 @@
     if (info) {
       if (data.auto_assigned && data.auto_assigned_message) {
         info.textContent = data.auto_assigned_message;
+        setHidden(info, false);
+      } else if (data.smart_balance_auto && data.smart_balance_auto.ok && data.smart_balance_auto.message) {
+        info.textContent = data.smart_balance_auto.message;
+        setHidden(info, false);
+      } else if (data.role_sync_message) {
+        info.textContent = data.role_sync_message;
         setHidden(info, false);
       } else {
         setHidden(info, true);
@@ -1485,6 +1680,7 @@
     // Always follow server uplink mode (no sessionStorage goal drift).
     setSelectedGoal(data.uplink_mode || "single", { skipRerender: true });
 
+    updatePortsAssignSection(data);
     renderPortCards(data);
 
     var healthBanner = root.querySelector("[data-ports-health]");
@@ -1507,20 +1703,32 @@
     var uplinkConfig = root.querySelector("[data-uplink-config]");
     if (!suspended && physical.length) {
       setHidden(uplinkConfig, false);
-      chipList(root.querySelector("[data-bond-list]"), bond);
+      chipList(root.querySelector("[data-bond-list]"), bond, "is-bond", data.ports);
       setHidden(root.querySelector("[data-bond-empty]"), !!bond.length);
       setHidden(root.querySelector("[data-bond-list]"), !bond.length);
       var canBond = !!data.can_apply_bond;
       var bondBtn = root.querySelector("[data-apply-bond]");
       if (bondBtn) bondBtn.disabled = !canBond;
-      setHidden(root.querySelector("[data-bond-hint]"), canBond);
+      var bondReadiness = root.querySelector("[data-bond-readiness]");
+      if (bondReadiness) {
+        var bondHintText = data.bond_apply_hint || "";
+        bondReadiness.textContent = bondHintText;
+        bondReadiness.className =
+          "mk-help-note" + (canBond ? " is-ok" : bondHintText ? " is-warn" : "");
+        setHidden(bondReadiness, !bondHintText);
+      }
+      setHidden(root.querySelector("[data-bond-hint]"), canBond || !!(data.bond_apply_hint));
+      var autoBondForm = root.querySelector("[data-bond-auto-form]");
+      if (autoBondForm) {
+        setHidden(autoBondForm, !data.can_auto_setup_bond);
+      }
 
-      chipList(root.querySelector("[data-primary-list]"), primary.length === 1 ? primary : [], "is-primary");
+      chipList(root.querySelector("[data-primary-list]"), primary.length === 1 ? primary : [], "is-primary", data.ports);
       setHidden(root.querySelector("[data-primary-list]"), primary.length !== 1);
       setHidden(root.querySelector("[data-primary-empty]"), primary.length !== 0);
       setHidden(root.querySelector("[data-primary-warn]"), primary.length <= 1);
       var backups = data.backup_wan_ports || [];
-      chipList(root.querySelector("[data-backup-list]"), backups, "is-backup");
+      chipList(root.querySelector("[data-backup-list]"), backups, "is-backup", data.ports);
       setHidden(root.querySelector("[data-backup-list]"), !backups.length);
       setHidden(root.querySelector("[data-backup-empty]"), !!backups.length);
       var canFail = !!data.can_apply_failover;
@@ -1529,7 +1737,7 @@
       setHidden(root.querySelector("[data-failover-hint]"), canFail);
 
       var balanceMembers = primary.concat(data.backup_wan_ports || []);
-      chipList(root.querySelector("[data-balance-list]"), balanceMembers, "is-balance");
+      chipList(root.querySelector("[data-balance-list]"), balanceMembers, "is-balance", data.ports);
       setHidden(root.querySelector("[data-balance-list]"), balanceMembers.length < 2);
       setHidden(root.querySelector("[data-balance-empty]"), balanceMembers.length >= 2);
       renderBalanceWeights(balanceMembers, data.uplink_weights || {});
@@ -1543,7 +1751,7 @@
       }
 
       var smartMembers = primary.concat(data.backup_wan_ports || []);
-      chipList(root.querySelector("[data-smart-balance-list]"), smartMembers, "is-balance");
+      chipList(root.querySelector("[data-smart-balance-list]"), smartMembers, "is-balance", data.ports);
       setHidden(root.querySelector("[data-smart-balance-list]"), smartMembers.length < 2);
       setHidden(root.querySelector("[data-smart-balance-empty]"), smartMembers.length >= 2);
       renderBalanceWeights(smartMembers, data.uplink_weights || {}, "smart-balance");
@@ -1554,6 +1762,14 @@
       if (smartHint) {
         smartHint.textContent = data.balance_apply_hint || "Need 1 Internet + at least 1 Shared ISP, all link up.";
         setHidden(smartHint, false);
+      }
+      var autoSmartForm = root.querySelector("[data-smart-balance-auto-form]");
+      if (autoSmartForm) {
+        var showAuto =
+          (data.uplink_mode || "") === "smart_balance" &&
+          !!data.can_auto_setup_smart_balance &&
+          !data.smart_balance_applied;
+        setHidden(autoSmartForm, !showAuto);
       }
     } else {
       setHidden(uplinkConfig, true);
@@ -1769,12 +1985,14 @@
         if (confirmField) confirmField.value = needConfirm ? "1" : "";
         if (pendingUplinkForm.classList.contains("mk-role-form")) {
           var switchPort = (pendingUplinkForm.querySelector('[name="port_name"]') || {}).value || "";
+          var switchPrimary = ((lastPortsData && lastPortsData.primary_wan_ports) || [])[0] || "";
           rememberWanSwitchAttempt(
             switchPort,
-            (formRisk && formRisk.recovery_script) || readStoredWanRecoveryScript()
+            (formRisk && rollbackScriptFromRisk(formRisk)) || readStoredWanRecoveryScript(),
+            switchPrimary
           );
-        } else if (formRisk && formRisk.recovery_script) {
-          rememberWanSwitchAttempt("", formRisk.recovery_script);
+        } else if (formRisk && rollbackScriptFromRisk(formRisk)) {
+          rememberWanSwitchAttempt("", rollbackScriptFromRisk(formRisk), "");
         }
         pendingUplinkForm.submit();
         closeUplinkRiskDialog();
@@ -1796,7 +2014,10 @@
       if (needConfirm && riskCheckbox && !riskCheckbox.checked) return;
       rememberWanSwitchAttempt(
         pendingUplinkPrompt.port,
-        pendingUplinkPrompt.recovery_script || readStoredWanRecoveryScript()
+        pendingUplinkPrompt.rollback_recovery_script ||
+          pendingUplinkPrompt.recovery_script ||
+          readStoredWanRecoveryScript(),
+        pendingUplinkPrompt.current_port || ""
       );
       submitUplinkAccept(pendingUplinkPrompt, needConfirm);
       closeUplinkRiskDialog();
@@ -1822,6 +2043,18 @@
     var form = event.target;
     if (!form || !root.contains(form)) return;
 
+    if (form.hasAttribute("data-bond-auto-form")) {
+      var bondPanel = root.querySelector('form.mk-goal-panel[data-goal-panel="bond"]');
+      if (bondPanel) {
+        var modeSelect = bondPanel.querySelector('select[name="bond_mode"]');
+        var nameInput = bondPanel.querySelector('input[name="bond_name"]');
+        var modeHidden = form.querySelector('input[name="bond_mode"]');
+        var nameHidden = form.querySelector('input[name="bond_name"]');
+        if (modeSelect && modeHidden) modeHidden.value = modeSelect.value;
+        if (nameInput && nameHidden) nameHidden.value = nameInput.value;
+      }
+    }
+
     if (form.classList && form.classList.contains("mk-role-form")) {
       var roleInput = form.querySelector('input[name="role"]');
       if (!roleInput || roleInput.value !== "wan") return;
@@ -1831,6 +2064,11 @@
       var primary = ((lastPortsData.primary_wan_ports || [])[0] || "").trim();
       if (!portName || portName === primary) return;
       var risk = (lastPortsData.wan_switch_risks || {})[portName];
+      storePendingWanSwitch(
+        portName,
+        primary,
+        rollbackScriptFromRisk(risk)
+      );
       if (!risk || risk.safe) return;
       event.preventDefault();
       var fromLabel = primary || "current port";
@@ -1839,7 +2077,7 @@
         risk: risk,
         message: "Move Internet from " + fromLabel + " to " + portName + "?",
         title: "Before switching Internet port",
-        recoveryScript: risk.recovery_script || "",
+        recoveryScript: rollbackScriptFromRisk(risk),
       });
       return;
     }

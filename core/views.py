@@ -148,6 +148,9 @@ from core.mikrotik_connect import (
     list_mikrotik_ports,
     assess_uplink_switch_risk,
     assess_uplink_mode_apply_risk,
+    assess_touch_ports_internet,
+    assess_bond_members_readiness,
+    assess_port_internet_readiness,
     build_uplink_recovery_script,
     check_router_tunnel_management,
     cpe_firewall_unlock_script,
@@ -469,6 +472,56 @@ def _router_tunnel_cache_key(router) -> str:
 
 def _clear_router_tunnel_cache(router) -> None:
     cache.delete(_router_tunnel_cache_key(router))
+
+
+def _wan_rollback_cache_key(router_pk: int) -> str:
+    return f"mikrotik_wan_rollback:{router_pk}"
+
+
+def _build_wan_rollback_script(old_wan: str, new_wan: str = "") -> str:
+    """RouterOS script to undo a single-WAN port switch (restore the previous Internet port)."""
+    old_wan = (old_wan or "").strip()
+    new_wan = (new_wan or "").strip()
+    if not old_wan:
+        return ""
+    retire = [new_wan] if new_wan and new_wan != old_wan else []
+    return build_single_wan_recovery_script(old_wan, retire_ports=retire)
+
+
+def _store_wan_switch_rollback(
+    router: MikroTikRouter, *, old_wan: str, new_wan: str
+) -> None:
+    old_wan = (old_wan or "").strip()
+    new_wan = (new_wan or "").strip()
+    if not old_wan or not new_wan or old_wan == new_wan:
+        return
+    script = _build_wan_rollback_script(old_wan, new_wan)
+    if not script:
+        return
+    cache.set(
+        _wan_rollback_cache_key(router.pk),
+        {
+            "old_wan": old_wan,
+            "new_wan": new_wan,
+            "rollback_script": script,
+        },
+        3600,
+    )
+
+
+def _wan_switch_rollback_payload(router: MikroTikRouter) -> dict | None:
+    data = cache.get(_wan_rollback_cache_key(router.pk))
+    if not isinstance(data, dict):
+        return None
+    old_wan = (data.get("old_wan") or "").strip()
+    script = (data.get("rollback_script") or "").strip()
+    if not old_wan or not script:
+        return None
+    return {
+        "old_wan": old_wan,
+        "new_wan": (data.get("new_wan") or "").strip(),
+        "rollback_script": script,
+    }
 
 
 def _router_tunnel_verified(router, *, force: bool = False) -> bool:
@@ -1651,6 +1704,7 @@ def _normalize_port_roles_for_uplink_mode(
 
 
 def _port_has_live_uplink(port_name: str, live_ports: list[dict]) -> bool:
+    """Soft check: link up or uplink kind present (UI hints)."""
     by_name = {
         (p.get("name") or "").strip(): p
         for p in live_ports
@@ -1658,6 +1712,52 @@ def _port_has_live_uplink(port_name: str, live_ports: list[dict]) -> bool:
     }
     row = by_name.get((port_name or "").strip()) or {}
     return bool(row.get("running")) or bool((row.get("uplink_kind") or "").strip())
+
+
+def _port_has_verified_internet(port_name: str, live_ports: list[dict]) -> bool:
+    """Strict check: DHCP bound or PPPoE connected before uplink apply."""
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in live_ports
+        if (p.get("name") or "").strip()
+    }
+    row = by_name.get((port_name or "").strip()) or {}
+    return bool(assess_port_internet_readiness(row).get("verified"))
+
+
+def _guard_touch_ports_internet(
+    touch_ports: list[str],
+    live_ports: list[dict],
+    *,
+    action_label: str = "apply this change",
+) -> tuple[bool, str]:
+    """Block uplink apply when target ports lack verified ISP internet."""
+    check = assess_touch_ports_internet(
+        touch_ports, live_ports, require_all_verified=True
+    )
+    if check.get("ok"):
+        return True, ""
+    blocking = check.get("blocking") or []
+    if blocking:
+        return False, blocking[0]
+    return (
+        False,
+        f"Cannot {action_label} — each port needs live ISP internet (DHCP bound or PPPoE up).",
+    )
+
+
+def _guard_bond_members_internet(
+    member_ports: list[str],
+    live_ports: list[dict],
+) -> tuple[bool, str]:
+    """Block bond apply when members are down; warn when ISP is unconfirmed."""
+    check = assess_bond_members_readiness(member_ports, live_ports)
+    if check.get("ok"):
+        return True, ""
+    blocking = check.get("blocking") or []
+    if blocking:
+        return False, blocking[0]
+    return False, "Bond needs at least two connected members before applying."
 
 
 def _apply_single_wan_on_router(
@@ -1757,12 +1857,659 @@ def _balance_apply_readiness(
     if not backup_wan_ports:
         return False, "Set at least one other ISP port to Shared ISP."
     down: list[str] = []
+    no_inet: list[str] = []
     for name in primary_wan_ports + backup_wan_ports:
         if not _port_has_live_uplink(name, physical_ports):
             down.append(name)
+        elif not _port_has_verified_internet(name, physical_ports):
+            no_inet.append(name)
     if down:
         return False, f"Link must be up: {', '.join(down)}."
+    if no_inet:
+        return (
+            False,
+            "Live ISP internet required before applying: "
+            + ", ".join(no_inet)
+            + " (wait for DHCP/PPPoE).",
+        )
     return True, "Ready — enter Mbps and click Apply load balance."
+
+
+def _live_isp_member_ports(
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+    saved_wan: str = "",
+) -> list[str]:
+    """Ordered ISP ports with live uplinks — primary first — for balance modes."""
+    physical = [p for p in live_ports if not _is_bond_port_row(p)]
+    by_name = {(p.get("name") or "").strip(): p for p in physical}
+    primary = _pick_auto_wan(
+        physical,
+        suggested_wan=suggested_wan,
+        saved_wan=saved_wan,
+    )
+    members: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: str) -> None:
+        name = (name or "").strip()
+        if not name or name in seen:
+            return
+        row = by_name.get(name) or {}
+        if not _port_has_verified_internet(name, physical):
+            return
+        seen.add(name)
+        members.append(name)
+
+    if primary:
+        add(primary)
+    for row in physical:
+        name = (row.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        kind = (row.get("uplink_kind") or "").strip()
+        if kind not in {"dhcp", "pppoe"}:
+            continue
+        if not _port_has_verified_internet(name, physical):
+            continue
+        if row.get("is_bridged") and not row.get("uplink_active"):
+            continue
+        add(name)
+    return members
+
+
+def _suggest_balance_weights(
+    members: list[str],
+    live_ports: list[dict],
+    existing: dict | None = None,
+) -> dict[str, int]:
+    """Default Mbps weights for balance / smart balance (equal unless saved)."""
+    existing = existing if isinstance(existing, dict) else {}
+    weights: dict[str, int] = {}
+    for name in members:
+        name = (name or "").strip()
+        if not name:
+            continue
+        raw = existing.get(name, existing.get(name.lower()))
+        try:
+            weights[name] = max(1, min(10000, int(raw)))
+        except (TypeError, ValueError):
+            weights[name] = 100
+    return weights
+
+
+def _live_bond_candidate_ports(live_ports: list[dict]) -> list[str]:
+    """Physical ports with link up — prefer same-ISP style (no separate DHCP/PPPoE yet)."""
+    physical = [p for p in live_ports if not _is_bond_port_row(p)]
+    preferred: list[str] = []
+    fallback: list[str] = []
+    for row in physical:
+        name = (row.get("name") or "").strip()
+        if not name or _is_bridge_port_name(name):
+            continue
+        if row.get("disabled") or not row.get("running"):
+            continue
+        if row.get("is_wireless") or row.get("is_bridged"):
+            continue
+        if (row.get("uplink_kind") or "").strip() and row.get("uplink_active"):
+            fallback.append(name)
+        else:
+            preferred.append(name)
+    ordered = preferred if len(preferred) >= 2 else preferred + fallback
+    return ordered
+
+
+def _auto_assign_bond_roles(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+) -> dict:
+    """Mark linked ports as bond members when bonding mode is selected."""
+    members = _bond_ports_from_roles(router)
+    if len(members) >= 2:
+        ready, _ = _bond_apply_readiness(members, live_ports)
+        return {
+            "ok": ready,
+            "changed": False,
+            "members": members,
+        }
+
+    candidates = _live_bond_candidate_ports(live_ports)
+    pick: list[str] = []
+    if len(members) == 1:
+        extra = [c for c in candidates if c != members[0]]
+        if extra:
+            pick = [members[0], extra[0]]
+    elif len(candidates) >= 2:
+        pick = candidates[:2]
+
+    if len(pick) < 2:
+        return {
+            "ok": False,
+            "changed": False,
+            "error": (
+                "Need two cables from the same ISP with link up — "
+                "plug both in, then try again."
+            ),
+        }
+
+    if members == pick:
+        return {"ok": True, "changed": False, "members": pick}
+
+    roles = dict(router.port_roles) if isinstance(router.port_roles, dict) else {}
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in live_ports
+        if (p.get("name") or "").strip()
+    }
+    pick_set = set(pick)
+    for name, existing in list(roles.items()):
+        if (existing or "").strip().lower() != MikroTikRouter.PortRole.BOND:
+            continue
+        if name in pick_set:
+            continue
+        row = by_name.get(name) or {}
+        roles[name] = (
+            MikroTikRouter.PortRole.LAN
+            if row.get("is_bridged") or row.get("running")
+            else MikroTikRouter.PortRole.UNUSED
+        )
+
+    for name in pick:
+        roles[name] = MikroTikRouter.PortRole.BOND
+
+    router.port_roles = roles
+    router.uplink_mode = MikroTikRouter.UplinkMode.BOND
+    router.uplink_ports = pick
+    router.save(
+        update_fields=["port_roles", "uplink_mode", "uplink_ports", "updated_at"]
+    )
+    return {
+        "ok": True,
+        "changed": True,
+        "members": pick,
+        "message": f"Auto-assigned bond members: {', '.join(pick)}.",
+    }
+
+
+def _bond_apply_readiness(
+    bond_member_ports: list[str],
+    physical_ports: list[dict],
+) -> tuple[bool, str]:
+    """Whether bonding can be applied and an operator-facing hint."""
+    if len(bond_member_ports) < 2:
+        return False, "Need two ports set to Bonded internet — or use Detect & apply."
+    check = assess_bond_members_readiness(bond_member_ports, physical_ports)
+    if not check.get("ok"):
+        blocking = check.get("blocking") or []
+        return False, blocking[0] if blocking else "Bond members are not ready."
+    warnings = check.get("warnings") or []
+    if warnings:
+        return True, warnings[0]
+    return True, "Ready — both cables linked. Click Apply bonding."
+
+
+def _auto_assign_smart_balance_roles(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+) -> dict:
+    """Pick Internet + Shared ISP from live links when smart balance is selected."""
+    return _auto_assign_multi_isp_roles(
+        router,
+        live_ports,
+        mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+        suggested_wan=suggested_wan,
+    )
+
+
+def _roles_complete_for_uplink_mode(
+    router: MikroTikRouter,
+    mode: str,
+    live_ports: list[dict] | None = None,
+) -> bool:
+    """Whether port roles match the minimum for the chosen internet setup."""
+    mode = (mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    if mode == MikroTikRouter.UplinkMode.BOND:
+        return len(_bond_ports_from_roles(router)) >= 2
+    primary, backups = _failover_ports_from_roles(router)
+    if mode == MikroTikRouter.UplinkMode.SINGLE:
+        return bool(primary)
+    if mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        *_weighted_share_uplink_modes(),
+    }:
+        return bool(primary) and len(backups) >= 1
+    return True
+
+
+def _multi_isp_roles_match_live(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+) -> bool:
+    members = _live_isp_member_ports(
+        live_ports,
+        suggested_wan=suggested_wan,
+        saved_wan=router.wan_interface or "",
+    )
+    if len(members) < 2:
+        return True
+    primary, backups = _failover_ports_from_roles(router)
+    ordered = [primary, *backups] if primary else []
+    return ordered == members
+
+
+def _auto_assign_multi_isp_roles(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+    *,
+    mode: str,
+    suggested_wan: str = "",
+) -> dict:
+    """Assign Internet + backup/shared ports from live ISP links."""
+    mode = (mode or "").strip()
+    members = _live_isp_member_ports(
+        live_ports,
+        suggested_wan=suggested_wan,
+        saved_wan=router.wan_interface or "",
+    )
+    primary, backups = _failover_ports_from_roles(router)
+    if len(members) < 2:
+        if primary and backups:
+            return {
+                "ok": True,
+                "changed": False,
+                "primary": primary,
+                "backups": backups,
+            }
+        return {
+            "ok": False,
+            "changed": False,
+            "error": "Need two live ISP links on different ports.",
+        }
+
+    new_primary = members[0]
+    new_backups = members[1:]
+    if primary == new_primary and backups == new_backups:
+        return {
+            "ok": True,
+            "changed": False,
+            "primary": new_primary,
+            "backups": new_backups,
+        }
+
+    roles = dict(router.port_roles) if isinstance(router.port_roles, dict) else {}
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in live_ports
+        if (p.get("name") or "").strip()
+    }
+    member_set = set(members)
+    for name, existing in list(roles.items()):
+        role = (existing or "").strip().lower()
+        if role not in {
+            MikroTikRouter.PortRole.WAN,
+            MikroTikRouter.PortRole.WAN_PRIMARY,
+            MikroTikRouter.PortRole.WAN_BACKUP,
+            MikroTikRouter.PortRole.BOND,
+            MikroTikRouter.PortRole.LAN,
+            MikroTikRouter.PortRole.NONE,
+        }:
+            continue
+        if name in member_set:
+            continue
+        row = by_name.get(name) or {}
+        roles[name] = (
+            MikroTikRouter.PortRole.LAN
+            if row.get("is_bridged") or row.get("is_wireless")
+            else MikroTikRouter.PortRole.UNUSED
+        )
+
+    roles[new_primary] = MikroTikRouter.PortRole.WAN
+    for backup in new_backups:
+        roles[backup] = MikroTikRouter.PortRole.WAN_BACKUP
+
+    weights: dict[str, int] = {}
+    update_fields = [
+        "port_roles",
+        "wan_interface",
+        "uplink_ports",
+        "uplink_mode",
+        "updated_at",
+    ]
+    if mode in _weighted_share_uplink_modes():
+        weights = _suggest_balance_weights(
+            members,
+            live_ports,
+            router.uplink_weights if isinstance(router.uplink_weights, dict) else {},
+        )
+        router.uplink_weights = weights
+        update_fields.append("uplink_weights")
+
+    router.port_roles = roles
+    router.wan_interface = new_primary
+    router.uplink_ports = members
+    router.uplink_mode = mode
+    router.save(update_fields=update_fields)
+
+    backup_label = (
+        "backup"
+        if mode == MikroTikRouter.UplinkMode.FAILOVER
+        else "shared"
+    )
+    mode_label = dict(MikroTikRouter.UplinkMode.choices).get(mode, mode)
+    return {
+        "ok": True,
+        "changed": True,
+        "primary": new_primary,
+        "backups": new_backups,
+        "weights": weights,
+        "message": (
+            f"Auto-assigned {mode_label}: Internet {new_primary}, "
+            f"{backup_label} {', '.join(new_backups)}."
+        ),
+    }
+
+
+def _auto_assign_single_wan_roles(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+) -> dict:
+    """Ensure one Internet port is assigned for single-WAN mode."""
+    roles = dict(router.port_roles) if isinstance(router.port_roles, dict) else {}
+    wan_ports = [
+        name
+        for name, value in roles.items()
+        if _is_primary_wan_role(value)
+    ]
+    if len(wan_ports) == 1:
+        return {"ok": True, "changed": False, "wan": wan_ports[0]}
+
+    suggested_roles = suggest_port_roles(
+        live_ports,
+        suggested_wan=suggested_wan,
+        saved_wan=router.wan_interface or "",
+    )
+    router.port_roles = suggested_roles
+    normalized = _normalize_port_roles_for_uplink_mode(
+        router,
+        MikroTikRouter.UplinkMode.SINGLE,
+        live_ports=live_ports,
+    )
+    primary = next(
+        (name for name, role in normalized.items() if _is_primary_wan_role(role)),
+        "",
+    )
+    if not primary:
+        return {"ok": False, "changed": False, "error": "No live ISP port detected yet."}
+
+    if roles == normalized and wan_ports == [primary]:
+        return {"ok": True, "changed": False, "wan": primary}
+
+    router.port_roles = normalized
+    router.wan_interface = primary
+    router.uplink_ports = [primary]
+    router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
+    router.save(
+        update_fields=[
+            "port_roles",
+            "wan_interface",
+            "uplink_ports",
+            "uplink_mode",
+            "updated_at",
+        ]
+    )
+    return {
+        "ok": True,
+        "changed": True,
+        "wan": primary,
+        "message": f"Auto-assigned Internet on {primary}.",
+    }
+
+
+def _auto_sync_port_roles_for_uplink_mode(
+    router: MikroTikRouter,
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+) -> dict:
+    """Keep port card roles aligned with the selected internet setup and live links."""
+    mode = (router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    complete = _roles_complete_for_uplink_mode(router, mode, live_ports)
+    stale_multi = mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        *_weighted_share_uplink_modes(),
+    } and not _multi_isp_roles_match_live(
+        router, live_ports, suggested_wan=suggested_wan
+    )
+
+    if complete and not stale_multi:
+        if mode == MikroTikRouter.UplinkMode.BOND:
+            if len(_bond_ports_from_roles(router)) >= 2:
+                return {"ok": True, "changed": False}
+        else:
+            return {"ok": True, "changed": False}
+
+    if mode == MikroTikRouter.UplinkMode.SINGLE:
+        return _auto_assign_single_wan_roles(
+            router, live_ports, suggested_wan=suggested_wan
+        )
+    if mode == MikroTikRouter.UplinkMode.BOND:
+        return _auto_assign_bond_roles(router, live_ports)
+    if mode == MikroTikRouter.UplinkMode.FAILOVER:
+        return _auto_assign_multi_isp_roles(
+            router,
+            live_ports,
+            mode=mode,
+            suggested_wan=suggested_wan,
+        )
+    if mode == MikroTikRouter.UplinkMode.BALANCE:
+        return _auto_assign_multi_isp_roles(
+            router,
+            live_ports,
+            mode=mode,
+            suggested_wan=suggested_wan,
+        )
+    if mode == MikroTikRouter.UplinkMode.SMART_BALANCE:
+        return _auto_assign_multi_isp_roles(
+            router,
+            live_ports,
+            mode=mode,
+            suggested_wan=suggested_wan,
+        )
+    return {"ok": True, "changed": False}
+
+
+def _suggested_roles_for_uplink_mode(
+    mode: str,
+    live_ports: list[dict],
+    *,
+    suggested_wan: str = "",
+    saved_wan: str = "",
+) -> dict[str, str]:
+    """Expected role per port for the current setup — used for card hints."""
+    mode = (mode or MikroTikRouter.UplinkMode.SINGLE).strip()
+    out: dict[str, str] = {}
+    if mode == MikroTikRouter.UplinkMode.SINGLE:
+        wan = _pick_auto_wan(
+            live_ports, suggested_wan=suggested_wan, saved_wan=saved_wan
+        )
+        for row in live_ports:
+            if _is_bond_port_row(row):
+                continue
+            name = (row.get("name") or "").strip()
+            if not name or _is_bridge_port_name(name):
+                continue
+            if name == wan:
+                out[name] = MikroTikRouter.PortRole.WAN
+            elif row.get("is_bridged") or row.get("is_wireless"):
+                out[name] = MikroTikRouter.PortRole.LAN
+            elif row.get("disabled"):
+                out[name] = MikroTikRouter.PortRole.UNUSED
+        return out
+
+    if mode == MikroTikRouter.UplinkMode.BOND:
+        for name in _live_bond_candidate_ports(live_ports)[:2]:
+            out[name] = MikroTikRouter.PortRole.BOND
+        return out
+
+    if mode in {
+        MikroTikRouter.UplinkMode.FAILOVER,
+        *_weighted_share_uplink_modes(),
+    }:
+        members = _live_isp_member_ports(
+            live_ports, suggested_wan=suggested_wan, saved_wan=saved_wan
+        )
+        if members:
+            out[members[0]] = MikroTikRouter.PortRole.WAN
+            for backup in members[1:]:
+                out[backup] = MikroTikRouter.PortRole.WAN_BACKUP
+    return out
+
+
+PORTS_ASSIGN_HINTS = {
+    MikroTikRouter.UplinkMode.SINGLE: (
+        "Roles update automatically from live links. Tap Internet to move the ISP cable."
+    ),
+    MikroTikRouter.UplinkMode.BOND: (
+        "Linked ports are marked Bonded internet automatically. Adjust any card if needed."
+    ),
+    MikroTikRouter.UplinkMode.FAILOVER: (
+        "Live ISP ports are assigned as Internet and Backup internet as they come online."
+    ),
+    MikroTikRouter.UplinkMode.BALANCE: (
+        "Live ISP ports are assigned as Internet and Shared ISP — ISP badges refresh every few seconds."
+    ),
+    MikroTikRouter.UplinkMode.SMART_BALANCE: (
+        "Live ISP ports auto-fill as Internet and Shared ISP. Apply smart balance when all show ISP online."
+    ),
+}
+
+
+def _smart_balance_health(uplink_live: dict, uplink_mode: str) -> dict:
+    """Whether smart balance is fully active on the MikroTik (PCC + ping monitor)."""
+    mode = (uplink_mode or "").strip()
+    live = uplink_live if uplink_live.get("ok") else {}
+    live_mode = (live.get("mode") or "").strip()
+    pcc_rules = int(live.get("balance_pcc_rules") or 0)
+    monitor_on = bool(live.get("smart_balance_enabled"))
+    if mode != MikroTikRouter.UplinkMode.SMART_BALANCE:
+        return {
+            "applies": False,
+            "effective": False,
+            "needs_apply": False,
+            "monitor_on": monitor_on,
+            "pcc_rules": pcc_rules,
+        }
+    effective = live_mode == "smart_balance" and pcc_rules >= 2 and monitor_on
+    needs_apply = not effective
+    return {
+        "applies": True,
+        "effective": effective,
+        "needs_apply": needs_apply,
+        "needs_monitor_repair": (
+            live_mode == "smart_balance" and pcc_rules >= 2 and not monitor_on
+        ),
+        "monitor_on": monitor_on,
+        "pcc_rules": pcc_rules,
+        "live_mode": live_mode,
+    }
+
+
+def _smart_balance_auto_cache_key(router_pk: int) -> str:
+    return f"smart_balance_auto:{router_pk}"
+
+
+def _try_auto_apply_smart_balance(
+    router: MikroTikRouter,
+    api_host: str,
+    *,
+    member_ports: list[str],
+    member_weights: dict[str, int],
+    uplink_live: dict,
+    live_ports: list[dict] | None = None,
+    force: bool = False,
+) -> dict:
+    """Push smart balance to RouterOS when configured in the app but not yet effective."""
+    health = _smart_balance_health(uplink_live, router.uplink_mode)
+    if not health.get("applies") or health.get("effective"):
+        return {}
+    ordered = [str(p).strip() for p in (member_ports or []) if str(p).strip()]
+    ordered = list(dict.fromkeys(ordered))
+    if len(ordered) < 2:
+        return {"skipped": True, "reason": "need_two_members"}
+
+    ok_inet, inet_err = _guard_touch_ports_internet(
+        ordered,
+        live_ports or [],
+        action_label="auto-apply smart balance",
+    )
+    if not ok_inet:
+        return {"skipped": True, "reason": inet_err or "ports_need_internet"}
+
+    cache_key = _smart_balance_auto_cache_key(router.pk)
+    if not force and cache.get(cache_key):
+        return {"skipped": True, "reason": "throttled"}
+
+    cache.set(cache_key, True, 90)
+    weights = _suggest_balance_weights(
+        ordered,
+        [],
+        member_weights if isinstance(member_weights, dict) else {},
+    )
+    result = apply_mikrotik_uplink_balance(
+        api_host,
+        router.username,
+        router.password or "",
+        member_ports=ordered,
+        member_weights=weights,
+        smart_balance=True,
+        api_hosts=_uplink_api_hosts_for_router(router),
+    )
+    result = _finalize_uplink_apply_result(router, result)
+    if result.get("ok"):
+        cache.delete(cache_key)
+        ordered_ports = result.get("ports") or ordered
+        router.uplink_mode = MikroTikRouter.UplinkMode.SMART_BALANCE
+        router.uplink_ports = ordered_ports
+        router.uplink_weights = result.get("weights") or weights
+        router.wan_interface = result.get("wan_interface") or ordered[0]
+        router.uplink_unbridged = result.get("unbridged") or []
+        router.port_roles = _sync_roles_for_uplink(
+            router,
+            mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            ports=ordered_ports,
+        )
+        router.save(
+            update_fields=[
+                "uplink_mode",
+                "uplink_ports",
+                "uplink_weights",
+                "wan_interface",
+                "uplink_unbridged",
+                "port_roles",
+                "updated_at",
+            ]
+        )
+        return {
+            "ok": True,
+            "auto_applied": True,
+            "message": result.get("message")
+            or "Smart balance applied on the MikroTik (PCC + slow-link monitor).",
+            "ports": ordered_ports,
+            "weights": router.uplink_weights,
+        }
+    cache.set(cache_key, (result.get("error") or "failed")[:200], 45)
+    return {
+        "ok": False,
+        "auto_applied": False,
+        "error": result.get("error") or "Could not auto-apply smart balance.",
+    }
 
 
 def _is_bond_port_row(row: dict) -> bool:
@@ -2025,10 +2772,9 @@ def _build_wan_switch_risks(
             uses_tunnel=_router_uses_tunnel(router),
             tunnel_verified=_router_tunnel_verified(router),
         )
-        risk["recovery_script"] = build_single_wan_recovery_script(
-            name,
-            retire_ports=[current] if current else [],
-        )
+        rollback = _build_wan_rollback_script(current, name)
+        risk["rollback_recovery_script"] = rollback
+        risk["recovery_script"] = rollback
         risks[name] = risk
     return risks
 
@@ -2045,6 +2791,7 @@ def _build_uplink_health_alerts(
     uplink_weights: dict,
     balance_router_applied: bool = False,
     smart_balance_status: dict | None = None,
+    smart_balance_applied: bool | None = None,
 ) -> list[dict]:
     """Operator-facing health warnings for bond / failover / balance."""
     alerts: list[dict] = []
@@ -2138,11 +2885,13 @@ def _build_uplink_health_alerts(
     ):
         members = list(primary_wan_ports) + list(backup_wan_ports)
         down = []
+        no_inet = []
         for name in members:
             row = by_name.get(name) or {}
             if row.get("disabled") or not row.get("running"):
-                if not _port_has_live_uplink(name, physical_ports):
-                    down.append(name)
+                down.append(name)
+            elif not _port_has_verified_internet(name, physical_ports):
+                no_inet.append(name)
         if down:
             alerts.append(
                 {
@@ -2154,19 +2903,51 @@ def _build_uplink_health_alerts(
                     ),
                 }
             )
+        if no_inet:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "balance_member_no_inet",
+                    "message": (
+                        f"No verified ISP on: {', '.join(no_inet)} — "
+                        "wait for DHCP/PPPoE before applying or you may lose connection."
+                    ),
+                }
+            )
         if len(members) >= 2 and not balance_router_applied:
+            label = (
+                "Smart balance"
+                if mode == MikroTikRouter.UplinkMode.SMART_BALANCE
+                else "Load balance"
+            )
+            apply_hint = (
+                "auto-applies when ISP links are up"
+                if mode == MikroTikRouter.UplinkMode.SMART_BALANCE
+                else "click Apply load balance"
+            )
             alerts.append(
                 {
                     "level": "info",
                     "code": "balance_not_applied",
                     "message": (
-                        "Load balance is configured here but not on the MikroTik yet — "
-                        "click Apply load balance."
+                        f"{label} is configured here but not on the MikroTik yet — "
+                        f"{apply_hint}."
                     ),
                 }
             )
 
     if mode == MikroTikRouter.UplinkMode.SMART_BALANCE:
+        if smart_balance_applied is False and balance_router_applied:
+            alerts.append(
+                {
+                    "level": "warn",
+                    "code": "smart_balance_monitor_off",
+                    "message": (
+                        "PCC balance is on the MikroTik but the slow-link monitor is "
+                        "missing — smart balance will re-apply automatically."
+                    ),
+                }
+            )
         slow_ports = []
         if isinstance(smart_balance_status, dict):
             slow_ports = [
@@ -2330,10 +3111,7 @@ def _build_uplink_prompt(
 
     kind = (new_row.get("uplink_kind") or "").strip()
     kind_label = {"pppoe": "PPPoE", "dhcp": "DHCP"}.get(kind, "link up")
-    recovery_script = build_single_wan_recovery_script(
-        suggested_wan,
-        retire_ports=[current] if current else [],
-    )
+    recovery_script = _build_wan_rollback_script(current, suggested_wan)
 
     return {
         "port": suggested_wan,
@@ -2343,6 +3121,7 @@ def _build_uplink_prompt(
         "running": bool(new_row.get("running")),
         "risk": risk,
         "recovery_script": recovery_script,
+        "rollback_recovery_script": recovery_script,
         "message": (
             f"Internet detected on {suggested_wan} ({kind_label}). "
             f"Current Internet port is {current}."
@@ -4361,10 +5140,12 @@ def mikrotik_ports(request, router_id: int):
     api_host = _router_api_host(router)
     role_choices = _port_role_choices_for_ui(router.uplink_mode)
     bond_mode_choices = [
-        ("balance-xor", "Balance XOR (same provider)"),
-        ("802.3ad", "LACP 802.3ad (if provider/switch supports it)"),
-        ("active-backup", "Active-backup (same provider redundancy)"),
-        ("balance-rr", "Balance round-robin"),
+        ("balance-xor", "Combine cables (recommended)"),
+        ("active-backup", "Redundancy — one active cable"),
+    ]
+    bond_mode_advanced_choices = [
+        ("802.3ad", "LACP 802.3ad (switch must support)"),
+        ("balance-rr", "Round-robin"),
     ]
 
     if request.method == "POST":
@@ -4403,6 +5184,8 @@ def mikrotik_ports(request, router_id: int):
             if wan_name:
                 old_wan = _current_primary_wan_port(router)
                 retire = [old_wan] if old_wan and old_wan != wan_name else []
+                if old_wan and old_wan != wan_name:
+                    _store_wan_switch_rollback(router, old_wan=old_wan, new_wan=wan_name)
                 switch = _apply_single_wan_on_router(
                     router,
                     api_host,
@@ -4478,6 +5261,15 @@ def mikrotik_ports(request, router_id: int):
                 messages.error(request, err)
                 return redirect("core:mikrotik_ports", router_id=router.pk)
 
+            ok_inet, inet_err = _guard_touch_ports_internet(
+                [port_name],
+                live_ports,
+                action_label="switch Internet port",
+            )
+            if not ok_inet:
+                messages.error(request, inet_err)
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
             result = apply_detected_uplink(router, port_name, live_ports)
             if not result.get("ok"):
                 messages.error(
@@ -4488,6 +5280,7 @@ def mikrotik_ports(request, router_id: int):
 
             old_wan = (result.get("old_wan") or current or "").strip()
             retire = [old_wan] if old_wan and old_wan != port_name else []
+            _store_wan_switch_rollback(router, old_wan=old_wan, new_wan=port_name)
             sync = _apply_single_wan_on_router(
                 router,
                 api_host,
@@ -4646,6 +5439,34 @@ def mikrotik_ports(request, router_id: int):
                 if _is_primary_wan_role(value):
                     primary = (name or "").strip()
                     break
+            if live_ports:
+                assign = _auto_sync_port_roles_for_uplink_mode(
+                    router,
+                    live_ports,
+                    suggested_wan=(listed.get("suggested_wan") or ""),
+                )
+                if assign.get("ok") and assign.get("changed"):
+                    router.refresh_from_db(
+                        fields=[
+                            "port_roles",
+                            "wan_interface",
+                            "uplink_ports",
+                            "uplink_weights",
+                            "uplink_mode",
+                            "updated_at",
+                        ]
+                    )
+                    roles = dict(router.port_roles)
+                    primary = (
+                        assign.get("primary")
+                        or assign.get("wan")
+                        or primary
+                        or ""
+                    ).strip()
+                    if assign.get("message"):
+                        messages.info(request, assign["message"])
+                elif not assign.get("ok") and assign.get("error"):
+                    messages.info(request, assign["error"])
             update_fields = ["uplink_mode", "port_roles", "updated_at"]
 
             if goal == MikroTikRouter.UplinkMode.SINGLE:
@@ -4827,6 +5648,15 @@ def mikrotik_ports(request, router_id: int):
                 update_fields.extend(["wan_interface", "uplink_ports"])
 
                 if uplink_mode == MikroTikRouter.UplinkMode.SINGLE and port_name != old_wan:
+                    _store_wan_switch_rollback(router, old_wan=old_wan, new_wan=port_name)
+                    ok_inet, inet_err = _guard_touch_ports_internet(
+                        [port_name],
+                        live_ports,
+                        action_label="switch Internet port",
+                    )
+                    if not ok_inet:
+                        messages.error(request, inet_err)
+                        return redirect("core:mikrotik_ports", router_id=router.pk)
                     sync = _apply_single_wan_on_router(
                         router,
                         api_host,
@@ -4962,6 +5792,13 @@ def mikrotik_ports(request, router_id: int):
                 management_hosts=_management_hosts_for_router(router),
             )
             live_ports = (listed.get("ports") or []) if listed.get("ok") else []
+            ok_inet, inet_err = _guard_bond_members_internet(
+                member_ports,
+                live_ports,
+            )
+            if not ok_inet:
+                messages.error(request, inet_err)
+                return redirect("core:mikrotik_ports", router_id=router.pk)
             bond_risk = _assess_uplink_mode_apply(
                 router,
                 "bond",
@@ -5118,11 +5955,13 @@ def mikrotik_ports(request, router_id: int):
             )
             live_ports = (listed.get("ports") or []) if listed.get("ok") else []
             touch = [primary, *backups]
-            if not all(_port_has_live_uplink(port, live_ports) for port in touch):
-                messages.error(
-                    request,
-                    "All ISP links must show link up before applying failover.",
-                )
+            ok_inet, inet_err = _guard_touch_ports_internet(
+                touch,
+                live_ports,
+                action_label="apply failover",
+            )
+            if not ok_inet:
+                messages.error(request, inet_err)
                 return redirect("core:mikrotik_ports", router_id=router.pk)
             failover_risk = _assess_uplink_mode_apply(
                 router,
@@ -5248,6 +6087,231 @@ def mikrotik_ports(request, router_id: int):
             )
             return redirect("core:mikrotik_ports", router_id=router.pk)
 
+        if action == "auto_setup_bond":
+            bond_name = (request.POST.get("bond_name") or "").strip() or (
+                router.bond_interface or DEFAULT_BOND_NAME
+            )
+            bond_mode = (request.POST.get("bond_mode") or "").strip() or (
+                router.bond_mode or "balance-xor"
+            )
+            if bond_mode not in BOND_MODES:
+                bond_mode = "balance-xor"
+
+            listed = list_mikrotik_ports(
+                api_host,
+                router.username,
+                router.password or "",
+                timeout=8.0,
+                management_hosts=_management_hosts_for_router(router),
+            )
+            if not listed.get("ok"):
+                messages.error(
+                    request,
+                    listed.get("error") or "Could not read ports from the MikroTik.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            live_ports = listed.get("ports") or []
+            router.uplink_mode = MikroTikRouter.UplinkMode.BOND
+            assign = _auto_assign_bond_roles(router, live_ports)
+            if not assign.get("ok"):
+                messages.error(
+                    request,
+                    assign.get("error") or "Need two linked cables from the same ISP.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+            if assign.get("message"):
+                messages.info(request, assign["message"])
+
+            member_ports = list(assign.get("members") or _bond_ports_from_roles(router))
+            ok_bond, bond_err = _guard_bond_members_internet(member_ports, live_ports)
+            if not ok_bond:
+                messages.error(request, bond_err)
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            bond_risk = _assess_uplink_mode_apply(
+                router,
+                "bond",
+                member_ports,
+                live_ports,
+                listed.get("management_iface_by_host") if listed.get("ok") else {},
+            )
+            ok, err = _check_uplink_apply_confirmation(request, bond_risk)
+            if not ok:
+                messages.error(request, err)
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            result = apply_mikrotik_uplink_bond(
+                api_host,
+                router.username,
+                router.password or "",
+                member_ports=member_ports,
+                bond_name=bond_name,
+                bond_mode=bond_mode,
+                api_hosts=_uplink_api_hosts_for_router(router),
+            )
+            result = _finalize_uplink_apply_result(router, result)
+            cache.delete_many(
+                [
+                    f"mikrotik_live:{org.pk}:{router.pk}",
+                    f"mikrotik_ports_live:{org.pk}:{router.pk}",
+                ]
+            )
+            if not result.get("ok"):
+                messages.error(
+                    request,
+                    result.get("error") or "Could not apply bonding.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            members = result.get("members") or member_ports
+            router.uplink_mode = MikroTikRouter.UplinkMode.BOND
+            router.uplink_ports = members
+            router.bond_interface = result.get("bond_name") or bond_name
+            router.bond_mode = result.get("bond_mode") or bond_mode
+            router.wan_interface = result.get("wan_interface") or bond_name
+            router.uplink_unbridged = result.get("unbridged") or []
+            router.port_roles = _sync_roles_for_uplink(
+                router,
+                mode=MikroTikRouter.UplinkMode.BOND,
+                ports=members,
+            )
+            router.save(
+                update_fields=[
+                    "uplink_mode",
+                    "uplink_ports",
+                    "bond_interface",
+                    "bond_mode",
+                    "wan_interface",
+                    "uplink_unbridged",
+                    "port_roles",
+                    "updated_at",
+                ]
+            )
+            messages.success(
+                request,
+                result.get("message")
+                or f"Bonding active on {', '.join(members)}.",
+            )
+            _record_ports_audit(
+                request,
+                action="ports_auto_setup_bond",
+                router=router,
+                detail={
+                    "members": members,
+                    "bond_name": router.bond_interface,
+                    "bond_mode": router.bond_mode,
+                },
+            )
+            return redirect("core:mikrotik_ports", router_id=router.pk)
+
+        if action == "auto_setup_smart_balance":
+            listed = list_mikrotik_ports(
+                api_host,
+                router.username,
+                router.password or "",
+                timeout=8.0,
+                management_hosts=_management_hosts_for_router(router),
+            )
+            if not listed.get("ok"):
+                messages.error(
+                    request,
+                    listed.get("error") or "Could not read ports from the MikroTik.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            live_ports = listed.get("ports") or []
+            router.uplink_mode = MikroTikRouter.UplinkMode.SMART_BALANCE
+            assign = _auto_assign_smart_balance_roles(
+                router,
+                live_ports,
+                suggested_wan=(listed.get("suggested_wan") or ""),
+            )
+            if not assign.get("ok"):
+                messages.error(
+                    request,
+                    assign.get("error") or "Need two live ISP links for smart balance.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+            if assign.get("message"):
+                messages.info(request, assign["message"])
+
+            primary = (assign.get("primary") or "").strip()
+            backups = list(assign.get("backups") or [])
+            ordered = [primary, *backups] if primary else []
+            weights = dict(assign.get("weights") or router.uplink_weights or {})
+            if len(ordered) < 2:
+                messages.error(request, "Assign Internet and Shared ISP before applying.")
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            ok_inet, inet_err = _guard_touch_ports_internet(
+                ordered,
+                live_ports,
+                action_label="apply smart balance",
+            )
+            if not ok_inet:
+                messages.error(request, inet_err)
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            cache.delete(_smart_balance_auto_cache_key(router.pk))
+            result = apply_mikrotik_uplink_balance(
+                api_host,
+                router.username,
+                router.password or "",
+                member_ports=ordered,
+                member_weights=weights,
+                smart_balance=True,
+                api_hosts=_uplink_api_hosts_for_router(router),
+            )
+            result = _finalize_uplink_apply_result(router, result)
+            cache.delete_many(
+                [
+                    f"mikrotik_live:{org.pk}:{router.pk}",
+                    f"mikrotik_ports_live:{org.pk}:{router.pk}",
+                ]
+            )
+            if not result.get("ok"):
+                messages.error(
+                    request,
+                    result.get("error") or "Could not apply smart balance.",
+                )
+                return redirect("core:mikrotik_ports", router_id=router.pk)
+
+            ordered = result.get("ports") or ordered
+            router.uplink_mode = MikroTikRouter.UplinkMode.SMART_BALANCE
+            router.uplink_ports = ordered
+            router.uplink_weights = result.get("weights") or weights
+            router.wan_interface = result.get("wan_interface") or primary
+            router.uplink_unbridged = result.get("unbridged") or []
+            router.port_roles = _sync_roles_for_uplink(
+                router,
+                mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                ports=ordered,
+            )
+            router.save(
+                update_fields=[
+                    "uplink_mode",
+                    "uplink_ports",
+                    "uplink_weights",
+                    "wan_interface",
+                    "uplink_unbridged",
+                    "port_roles",
+                    "updated_at",
+                ]
+            )
+            messages.success(
+                request,
+                result.get("message")
+                or "Smart balance is active — PCC sharing plus slow-link monitor.",
+            )
+            _record_ports_audit(
+                request,
+                action="ports_auto_setup_smart_balance",
+                router=router,
+                detail={"ports": ordered, "weights": router.uplink_weights},
+            )
+            return redirect("core:mikrotik_ports", router_id=router.pk)
+
         if action in {"apply_balance", "apply_smart_balance"}:
             smart_balance = action == "apply_smart_balance"
             target_mode = (
@@ -5294,11 +6358,13 @@ def mikrotik_ports(request, router_id: int):
                 management_hosts=_management_hosts_for_router(router),
             )
             live_ports = (listed.get("ports") or []) if listed.get("ok") else []
-            if not all(_port_has_live_uplink(port, live_ports) for port in ordered):
-                messages.error(
-                    request,
-                    f"All ISP links must show link up before applying {apply_label}.",
-                )
+            ok_inet, inet_err = _guard_touch_ports_internet(
+                ordered,
+                live_ports,
+                action_label=f"apply {apply_label}",
+            )
+            if not ok_inet:
+                messages.error(request, inet_err)
                 return redirect("core:mikrotik_ports", router_id=router.pk)
             balance_risk = _assess_uplink_mode_apply(
                 router,
@@ -5613,6 +6679,7 @@ def mikrotik_ports(request, router_id: int):
         quick_roles=quick_roles,
         advanced_roles=advanced_roles,
         bond_mode_choices=bond_mode_choices,
+        bond_mode_advanced_choices=bond_mode_advanced_choices,
         bond_member_ports=bond_member_ports,
         primary_wan_ports=primary_wan_ports,
         backup_wan_ports=backup_wan_ports,
@@ -5828,14 +6895,19 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         except Exception:
             uplink_live = {"ok": False}
 
+    wan_rollback = _wan_switch_rollback_payload(router)
+
     if not listed.get("ok"):
-        return {
+        payload = {
             "ok": False,
             "error": listed.get("error") or "Could not read ports from the MikroTik.",
             "ports": [],
             "auto_assigned": False,
             "terminal_script": listed.get("terminal_script") or "",
         }
+        if wan_rollback:
+            payload["wan_rollback"] = wan_rollback
+        return payload
 
     suggested_wan = (listed.get("suggested_wan") or "").strip()
     live_ports = listed.get("ports") or []
@@ -5883,17 +6955,54 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
                 )
 
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
+    role_sync_message = ""
+
+    if listed.get("ok"):
+        role_result = _auto_sync_port_roles_for_uplink_mode(
+            router,
+            live_ports,
+            suggested_wan=suggested_wan,
+        )
+        if role_result.get("changed"):
+            role_sync_message = role_result.get("message") or ""
+            router.refresh_from_db(
+                fields=[
+                    "port_roles",
+                    "wan_interface",
+                    "uplink_ports",
+                    "uplink_weights",
+                    "uplink_mode",
+                    "updated_at",
+                ]
+            )
+
+    suggested_roles = _suggested_roles_for_uplink_mode(
+        uplink_mode,
+        live_ports,
+        suggested_wan=suggested_wan,
+        saved_wan=router.wan_interface or "",
+    )
 
     ports: list[dict] = []
     for row in live_ports:
         name = row.get("name") or ""
         role = resolve_port_role(router, name)
+        inet = assess_port_internet_readiness(row)
+        suggested = (suggested_roles.get(name) or "").strip()
         ports.append(
             {
                 **row,
                 "role": role,
                 "role_label": _friendly_role_label(role, mode=uplink_mode),
+                "suggested_role": suggested,
+                "suggested_role_label": (
+                    _friendly_role_label(suggested, mode=uplink_mode) if suggested else ""
+                ),
+                "role_matches_setup": not suggested or suggested == (role or "").strip(),
                 "is_bond_iface": _is_bond_port_row(row),
+                "internet_verified": bool(inet.get("verified")),
+                "internet_hint": (inet.get("message") or "").strip(),
+                "internet_level": (inet.get("level") or "").strip(),
             }
         )
 
@@ -5988,21 +7097,75 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         len(primary_wan_ports) == 1
         and len(backup_wan_ports) >= 1
         and all(
-            _port_has_live_uplink(name, physical_ports)
+            _port_has_verified_internet(name, physical_ports)
             for name in (primary_wan_ports + backup_wan_ports)
         )
     )
-    bond_ready = len(bond_member_ports) >= 2 and all(
-        _port_has_live_uplink(name, physical_ports) for name in bond_member_ports
+    bond_ready, bond_apply_hint = _bond_apply_readiness(
+        bond_member_ports, physical_ports
     )
     balance_ready, balance_apply_hint = _balance_apply_readiness(
         primary_wan_ports, backup_wan_ports, physical_ports
     )
+    if uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE and balance_ready:
+        balance_apply_hint = (
+            "Ready — smart balance auto-applies on the MikroTik when links stay up."
+        )
+
+    smart_balance_health = _smart_balance_health(
+        uplink_live if uplink_live.get("ok") else {},
+        uplink_mode,
+    )
+    smart_balance_auto: dict = {}
+    if (
+        listed.get("ok")
+        and uplink_mode == MikroTikRouter.UplinkMode.SMART_BALANCE
+        and balance_ready
+        and smart_balance_health.get("needs_apply")
+    ):
+        smart_balance_auto = _try_auto_apply_smart_balance(
+            router,
+            api_host,
+            member_ports=list(primary_wan_ports) + list(backup_wan_ports),
+            member_weights=(
+                dict(router.uplink_weights)
+                if isinstance(router.uplink_weights, dict)
+                else {}
+            ),
+            uplink_live=uplink_live if uplink_live.get("ok") else {},
+            live_ports=physical_ports,
+        )
+        if smart_balance_auto.get("ok"):
+            try:
+                uplink_live = read_mikrotik_uplink_multi(
+                    api_host,
+                    router.username,
+                    router.password or "",
+                    timeout=8.0,
+                    member_ports=list(router.uplink_ports or []),
+                )
+            except Exception:
+                pass
+
     balance_router_applied = (
         _is_weighted_share_mode(uplink_mode)
         and bool(uplink_live.get("ok"))
         and (uplink_live.get("mode") or "").strip() in _weighted_share_uplink_modes()
     )
+    smart_balance_applied = (
+        balance_router_applied
+        and (
+            uplink_mode != MikroTikRouter.UplinkMode.SMART_BALANCE
+            or bool(smart_balance_health.get("effective"))
+            or bool(smart_balance_auto.get("ok"))
+        )
+    )
+    if smart_balance_auto.get("ok"):
+        smart_balance_health = _smart_balance_health(
+            uplink_live if uplink_live.get("ok") else {},
+            uplink_mode,
+        )
+        smart_balance_applied = bool(smart_balance_health.get("effective"))
     smart_balance_status = (
         uplink_live.get("smart_balance_status")
         if isinstance(uplink_live.get("smart_balance_status"), dict)
@@ -6031,6 +7194,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         ),
         balance_router_applied=balance_router_applied,
         smart_balance_status=smart_balance_status,
+        smart_balance_applied=smart_balance_applied,
     )
 
     member_ports = [
@@ -6084,6 +7248,10 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
                 "Ports were auto-assigned from live links. "
                 + auto_assigned_router_warning
             )
+    elif role_sync_message:
+        auto_msg = role_sync_message
+    elif smart_balance_auto.get("ok"):
+        auto_msg = smart_balance_auto.get("message") or "Smart balance applied on the MikroTik."
 
     return {
         "ok": True,
@@ -6092,6 +7260,11 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "suggested_wan": suggested_wan,
         "auto_assigned": auto_assigned,
         "auto_assigned_message": auto_msg,
+        "ports_assign_hint": PORTS_ASSIGN_HINTS.get(
+            uplink_mode,
+            PORTS_ASSIGN_HINTS[MikroTikRouter.UplinkMode.SINGLE],
+        ),
+        "role_sync_message": role_sync_message,
         "uplink_live": uplink_live if uplink_live.get("ok") else {},
         "wan_share": wan_share if wan_share.get("ok") else {"ok": False, "shares": [], "total_bps": 0},
         "bond_member_ports": bond_member_ports,
@@ -6106,6 +7279,15 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "can_apply_bond": (
             uplink_mode == MikroTikRouter.UplinkMode.BOND and bond_ready
         ),
+        "bond_apply_hint": bond_apply_hint,
+        "can_auto_setup_bond": (
+            uplink_mode == MikroTikRouter.UplinkMode.BOND
+            and len(_live_bond_candidate_ports(live_ports)) >= 2
+            and not (
+                uplink_live.get("ok")
+                and (uplink_live.get("bonds") or [{}])[0].get("running")
+            )
+        ),
         "can_apply_failover": (
             uplink_mode == MikroTikRouter.UplinkMode.FAILOVER and dual_wan_ready
         ),
@@ -6117,6 +7299,17 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         ),
         "balance_apply_hint": balance_apply_hint,
         "balance_router_applied": balance_router_applied,
+        "smart_balance_applied": smart_balance_applied,
+        "smart_balance_health": smart_balance_health,
+        "smart_balance_auto": smart_balance_auto,
+        "can_auto_setup_smart_balance": len(
+            _live_isp_member_ports(
+                live_ports,
+                suggested_wan=suggested_wan,
+                saved_wan=router.wan_interface or "",
+            )
+        )
+        >= 2,
         "smart_balance_status": smart_balance_status if smart_balance_status else {"ok": False, "members": {}, "slow_ports": []},
         "uplink_mode": uplink_mode,
         "uplink_mode_label": dict(MikroTikRouter.UplinkMode.choices).get(
@@ -6139,6 +7332,7 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
         "uplink_apply_risks": uplink_apply_risks,
         "tunnel_management": tunnel_management,
         "router_analysis": router_analysis,
+        "wan_rollback": wan_rollback,
     }
 
 
@@ -6172,7 +7366,7 @@ def mikrotik_ports_live(request, router_id: int):
     payload = _ports_live_payload(router)
     payload["router_id"] = router.pk
     # Auto-assign mutates DB — do not serve a stale empty role map.
-    ttl = 3 if payload.get("auto_assigned") else (8 if payload.get("ok") else 4)
+    ttl = 3 if (payload.get("auto_assigned") or payload.get("role_sync_message")) else (8 if payload.get("ok") else 4)
     cache.set(cache_key, payload, ttl)
     return JsonResponse(payload)
 
@@ -6530,6 +7724,10 @@ def mikrotik_live(request, router_id: int):
             from core.mikrotik_auto_restore import get_auto_restore_record
 
             cached["auto_restore"] = get_auto_restore_record(router.pk)
+            if not cached.get("ok"):
+                rollback = _wan_switch_rollback_payload(router)
+                if rollback:
+                    cached["wan_rollback"] = rollback
             return JsonResponse(cached)
 
     from core.mikrotik_connect import is_off_lan_tunnel_managed, resolve_router_management_mode
@@ -6591,6 +7789,9 @@ def mikrotik_live(request, router_id: int):
     else:
         snapshot["serial_number"] = router.serial_number or ""
         snapshot["software_id"] = router.software_id or ""
+        rollback = _wan_switch_rollback_payload(router)
+        if rollback:
+            snapshot["wan_rollback"] = rollback
 
     saved_provider = (router.internet_provider or "").strip()
     detected_provider = (snapshot.get("wan_provider_detected") or "").strip()

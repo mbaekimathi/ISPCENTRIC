@@ -93,8 +93,8 @@
       <div class="mk-wan-recovery" data-wan-recovery-wrap hidden>
         <p class="mk-stat-label">If connection drops — Winbox recovery</p>
         <p class="mk-help-note" data-wan-recovery-help>
-          Plug into a <strong>customer LAN port</strong>, open Winbox → <strong>New Terminal</strong>,
-          paste this to restore access:
+          If the billing server loses contact after the switch, plug into a <strong>customer LAN port</strong>,
+          open Winbox → <strong>New Terminal</strong>, and paste this to restore the previous Internet port:
         </p>
         <div class="mk-wan-recovery-copy">
           <pre class="mk-wan-recovery-script" data-wan-recovery-script></pre>
@@ -141,8 +141,9 @@
     >
       <h2 class="mk-uplink-risk-title" id="mk-wan-recovery-title">Router unreachable — on-site recovery</h2>
       <p class="mk-help-note" data-wan-recovery-lead>
-        The billing server lost contact after the Internet port switch. Use Winbox on a LAN port to restore
-        <strong>One internet link — single ISP cable</strong>.
+        The billing server lost contact after an Internet port switch. Use Winbox on a customer LAN port,
+        open <strong>New Terminal</strong>, paste the commands below, and press Enter to restore the
+        previous Internet port.
       </p>
       <p class="mk-help-note"><strong>Winbox → New Terminal</strong> — paste all lines, then press Enter:</p>
       <div class="mk-wan-recovery-copy">
@@ -328,14 +329,15 @@
         <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
-            <li>Below, set each same-ISP cable to <strong>Bonded internet</strong>.</li>
-            <li>Check the members listed here, then apply.</li>
+            <li>Plug <strong>two cables from the same ISP</strong> into the router.</li>
+            <li>Click <strong>Detect &amp; apply bonding</strong> — or mark ports as <strong>Bonded internet</strong> below.</li>
           </ol>
 
           <div class="mk-role-block">
             <span class="mk-stat-label">Bond members</span>
             <ul class="mk-chip-list" data-bond-list></ul>
-            <p class="mk-help-note" data-bond-empty>No bonded ports yet — pick them on the cards below.</p>
+            <p class="mk-help-note" data-bond-empty>No bonded ports yet — use Detect &amp; apply or pick them on the cards below.</p>
+            <p class="mk-help-note" data-bond-readiness></p>
           </div>
 
           <div class="mk-goal-fields">
@@ -344,20 +346,37 @@
               <input type="text" name="bond_name" value="{{ default_bond_name }}" maxlength="64" required>
             </label>
             <label class="mk-field">
-              <span>Bond mode</span>
+              <span>Bond style</span>
               <select name="bond_mode">
                 {% for value, label in bond_mode_choices %}
                   <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
                 {% endfor %}
+                {% if bond_mode_advanced_choices %}
+                  <optgroup label="Advanced">
+                    {% for value, label in bond_mode_advanced_choices %}
+                      <option value="{{ value }}" {% if default_bond_mode == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </optgroup>
+                {% endif %}
               </select>
             </label>
           </div>
 
           <div class="mk-goal-actions">
             <button type="submit" class="btn btn-primary" data-apply-bond disabled>Apply bonding</button>
-            <p class="mk-help-note" data-bond-hint>Need at least 2 bonded ports.</p>
+            <p class="mk-help-note" data-bond-hint>Need two linked cables from the same ISP.</p>
           </div>
         </div>
+      </form>
+
+      <form method="post" class="mk-inline-form mk-bond-auto-form mk-goal-panel" data-goal-panel="bond" data-bond-auto-form data-uplink-risk-apply="bond" hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="auto_setup_bond">
+        <input type="hidden" name="confirm_risk" value="">
+        <input type="hidden" name="bond_name" value="{{ default_bond_name }}">
+        <input type="hidden" name="bond_mode" value="{{ default_bond_mode }}">
+        <button type="submit" class="btn btn-primary btn-sm">Detect &amp; apply bonding</button>
+        <p class="mk-help-note">Find linked ports, assign bond roles, and push bonding to the MikroTik in one step.</p>
       </form>
 
       <form method="post" class="mk-goal-panel" data-goal-panel="failover" data-uplink-risk-apply="failover" hidden>
@@ -438,9 +457,9 @@
         <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
-            <li>Set one ISP to <strong>Internet</strong> and the others to <strong>Shared ISP</strong>.</li>
-            <li>All links must show <strong>Link up</strong>. Enter each link’s relative weight in Mbps.</li>
-            <li>Apply smart balance — the MikroTik will ping every minute and sideline slow ISPs.</li>
+            <li>Plug in two or more ISP cables — ports are auto-detected as <strong>Internet</strong> and <strong>Shared ISP</strong>.</li>
+            <li>All links must show <strong>Link up</strong>. Weights default to equal Mbps unless you change them.</li>
+            <li>Smart balance auto-applies on the MikroTik (PCC + ping monitor every minute).</li>
           </ol>
 
           <div class="mk-role-block">
@@ -468,16 +487,23 @@
 
           <div class="mk-goal-actions">
             <button type="submit" class="btn btn-primary" data-apply-smart-balance disabled>Apply smart balance</button>
-            <p class="mk-help-note" data-smart-balance-hint>Need 1 Internet + at least 1 Shared ISP, all link up.</p>
+            <p class="mk-help-note" data-smart-balance-hint>Need 1 Internet + at least 1 Shared ISP with ISP online.</p>
           </div>
         </div>
+      </form>
+
+      <form method="post" class="mk-inline-form mk-smart-balance-auto-form mk-goal-panel" data-goal-panel="smart_balance" data-smart-balance-auto-form hidden>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="auto_setup_smart_balance">
+        <button type="submit" class="btn btn-primary btn-sm">Auto-setup smart balance</button>
+        <p class="mk-help-note">Detect live ISP ports, assign roles, and apply PCC + monitor in one step.</p>
       </form>
     </section>
 
     <section class="mk-ports-assign" data-ports-assign hidden>
       <header class="mk-ports-assign-head">
         <p class="mk-section-step">Step 3</p>
-        <h2 class="mk-ports-assign-title">Label each cable</h2>
+        <h2 class="mk-ports-assign-title" data-ports-assign-title>Label each cable</h2>
         <p class="mk-help-note" data-ports-assign-hint>
           Tap a role on each port. What you need depends on the setup you picked above.
         </p>

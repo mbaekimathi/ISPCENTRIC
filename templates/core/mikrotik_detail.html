@@ -1049,11 +1049,41 @@
     return "Live access to this MikroTik is unavailable right now.";
   }
 
+  function copyRecoveryScript(script) {
+    if (!script) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(script).catch(function () {});
+    }
+  }
+
   function showLiveToast(reason, options) {
     var opts = options || {};
+    var rb = opts.wanRollback;
+    if (rb && rb.rollback_script && rb.old_wan && rb.new_wan) {
+      reason =
+        "Lost contact after switching Internet to " +
+        rb.new_wan +
+        ". Open Winbox on a LAN port → New Terminal, paste the copied commands, and press Enter to restore " +
+        rb.old_wan +
+        ".";
+    } else if (rb && rb.rollback_script && rb.old_wan) {
+      reason =
+        "Open Winbox on a LAN port → New Terminal, paste the copied commands, and press Enter to restore Internet on " +
+        rb.old_wan +
+        ".";
+    }
     lastReason = reason || "Live access is unavailable right now.";
     if (noticeShownFor === lastReason && liveToastDismiss) return;
     var actions = [];
+    if (rb && rb.rollback_script && rb.old_wan) {
+      actions.push({
+        label: "Copy reset to " + rb.old_wan,
+        onClick: function () {
+          copyRecoveryScript(rb.rollback_script);
+        },
+        keepOpen: true,
+      });
+    }
     var detailReconnectEl = document.getElementById("mikrotik-detail-reconnect");
     if (detailReconnectEl && !detailReconnectEl.disabled) {
       actions.push({
@@ -1099,7 +1129,7 @@
     }
   }
 
-  function showBlocked(reason, openPopup) {
+  function showBlocked(reason, openPopup, data) {
     clearLiveLoading();
     setHero(false);
     liveRoot.classList.add("is-offline");
@@ -1114,7 +1144,9 @@
     if (subEl) subEl.textContent = "Live overview is paused until the router can be reached.";
     if (stampEl) stampEl.textContent = "Checked " + stampNow();
     lastReason = reason;
-    if (openPopup && noticeShownFor !== reason) showLiveToast(reason);
+    if (openPopup && noticeShownFor !== reason) {
+      showLiveToast(reason, { wanRollback: data && data.wan_rollback });
+    }
   }
 
   function showLiveLayout() {
@@ -1135,7 +1167,7 @@
       wasOnline = false;
       setRemoteBanner(false);
       setRemoteControls(true);
-      showBlocked(reason, true);
+      showBlocked(reason, true, data);
       return;
     }
     var remoteOnly = !!(data && data.remote_management_only);

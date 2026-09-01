@@ -18512,6 +18512,198 @@ def _is_private_ipv4(host: str) -> bool:
         return False
 
 
+def assess_port_internet_readiness(row: dict | None) -> dict[str, Any]:
+    """
+    Whether a port row from list_mikrotik_ports has live ISP internet.
+
+    ``verified`` means DHCP is bound or PPPoE is up. ``level`` is ``ok``,
+    ``warn`` (link up, ISP not confirmed — confirm before applying), or
+    ``block`` (cannot safely use this port for uplink apply).
+    """
+    row = row or {}
+    name = (row.get("name") or "").strip() or "port"
+    if row.get("disabled"):
+        return {
+            "ok": False,
+            "verified": False,
+            "level": "block",
+            "message": f"{name} is disabled on the MikroTik.",
+        }
+    kind = (row.get("uplink_kind") or "").strip().lower()
+    active = bool(row.get("uplink_active"))
+    running = bool(row.get("running"))
+    if kind == "pppoe":
+        if active or running:
+            return {"ok": True, "verified": True, "level": "ok", "message": ""}
+        return {
+            "ok": False,
+            "verified": False,
+            "level": "block",
+            "message": (
+                f"{name} has PPPoE but is not connected — no internet on this port yet."
+            ),
+        }
+    if kind == "dhcp":
+        if active:
+            return {"ok": True, "verified": True, "level": "ok", "message": ""}
+        if running:
+            return {
+                "ok": False,
+                "verified": False,
+                "level": "warn",
+                "message": (
+                    f"{name} is linked but DHCP has no lease yet — wait for internet "
+                    "before applying or you may lose connection."
+                ),
+            }
+        return {
+            "ok": False,
+            "verified": False,
+            "level": "block",
+            "message": f"{name} has DHCP but no live internet on this port.",
+        }
+    if running:
+        return {
+            "ok": False,
+            "verified": False,
+            "level": "warn",
+            "message": (
+                f"{name} shows link up but no ISP DHCP/PPPoE detected — confirm "
+                "internet works on this cable before applying."
+            ),
+        }
+    return {
+        "ok": False,
+        "verified": False,
+        "level": "block",
+        "message": f"{name} has no link and no internet.",
+    }
+
+
+def assess_touch_ports_internet(
+    touch_ports: list[str],
+    ports: list[dict],
+    *,
+    require_all_verified: bool = True,
+) -> dict[str, Any]:
+    """Check that every port used for an uplink change has live ISP internet."""
+    ports_by_name = {
+        (p.get("name") or "").strip(): p
+        for p in ports
+        if (p.get("name") or "").strip()
+    }
+    touch = [p.strip() for p in (touch_ports or []) if (p or "").strip()]
+    per_port: dict[str, dict[str, Any]] = {}
+    blocking: list[str] = []
+    warnings: list[str] = []
+    for port_name in touch:
+        row = ports_by_name.get(port_name) or {"name": port_name}
+        status = assess_port_internet_readiness(row)
+        per_port[port_name] = status
+        msg = (status.get("message") or "").strip()
+        if not msg:
+            continue
+        if status.get("level") == "block":
+            blocking.append(msg)
+        elif status.get("level") == "warn":
+            warnings.append(msg)
+
+    if require_all_verified:
+        for port_name, status in per_port.items():
+            if status.get("verified"):
+                continue
+            msg = (status.get("message") or "").strip() or (
+                f"{port_name} has no verified internet."
+            )
+            if msg not in blocking:
+                blocking.append(msg)
+
+    verified_count = sum(1 for s in per_port.values() if s.get("verified"))
+    ok = not blocking and (
+        not require_all_verified or (verified_count == len(per_port) and verified_count > 0)
+    )
+    return {
+        "ok": ok,
+        "blocking": blocking,
+        "warnings": warnings,
+        "per_port": per_port,
+        "verified_count": verified_count,
+        "summary": (
+            blocking[0]
+            if blocking
+            else (
+                warnings[0]
+                if warnings
+                else "All selected ports have live internet."
+            )
+        ),
+    }
+
+
+def assess_bond_members_readiness(
+    member_ports: list[str],
+    ports: list[dict],
+) -> dict[str, Any]:
+    """
+    Bond slaves need a live link on every member. ISP DHCP/PPPoE may only
+    appear on the bond interface after apply, so we do not require verified
+    internet on each slave — only link up and not disabled.
+    """
+    ports_by_name = {
+        (p.get("name") or "").strip(): p
+        for p in ports
+        if (p.get("name") or "").strip()
+    }
+    touch = [p.strip() for p in (member_ports or []) if (p or "").strip()]
+    per_port: dict[str, dict[str, Any]] = {}
+    blocking: list[str] = []
+    warnings: list[str] = []
+    for port_name in touch:
+        row = ports_by_name.get(port_name) or {"name": port_name}
+        name = (row.get("name") or port_name).strip() or port_name
+        if row.get("disabled"):
+            msg = f"{name} is disabled on the MikroTik."
+            per_port[port_name] = {
+                "ok": False,
+                "verified": False,
+                "level": "block",
+                "message": msg,
+            }
+            blocking.append(msg)
+            continue
+        if not row.get("running"):
+            msg = f"{name} has no link — every bond member must be connected."
+            per_port[port_name] = {
+                "ok": False,
+                "verified": False,
+                "level": "block",
+                "message": msg,
+            }
+            blocking.append(msg)
+            continue
+        status = assess_port_internet_readiness(row)
+        per_port[port_name] = status
+        if status.get("level") == "warn":
+            msg = (status.get("message") or "").strip()
+            if msg and msg not in warnings:
+                warnings.append(msg)
+
+    any_verified = any(s.get("verified") for s in per_port.values())
+    if touch and not blocking and not any_verified:
+        warnings.append(
+            "No bond member shows DHCP/PPPoE yet — links are up. Confirm ISP "
+            "is on these cables before applying or you may lose connection."
+        )
+
+    return {
+        "ok": not blocking and len(touch) >= 2,
+        "blocking": blocking,
+        "warnings": warnings,
+        "per_port": per_port,
+        "verified_count": sum(1 for s in per_port.values() if s.get("verified")),
+    }
+
+
 def assess_uplink_switch_risk(
     *,
     new_wan: str,
@@ -18612,15 +18804,19 @@ def assess_uplink_switch_risk(
         blocking = True
         risks.append(f"{new_wan} is disabled on the MikroTik — enable it before switching.")
 
+    new_inet = assess_port_internet_readiness(new_row)
+    inet_msg = (new_inet.get("message") or "").strip()
+    if inet_msg:
+        if new_inet.get("level") == "block":
+            blocking = True
+            risks.append(inet_msg)
+        else:
+            risks.append(inet_msg)
+
     if new_row.get("is_bridged"):
         risks.append(
             f"{new_wan} is a bridge member. ISP DHCP/PPPoE may not work until it leaves the bridge. "
             "This page will not unbridge automatically to avoid breaking customer LAN access."
-        )
-
-    if not new_row.get("running") and not (new_row.get("uplink_kind") or "").strip():
-        risks.append(
-            f"No live link on {new_wan} yet — confirm the cable is plugged in before switching."
         )
 
     if old_wan and old_wan != new_wan and (old_row.get("uplink_kind") or old_row.get("running")):
@@ -18749,11 +18945,28 @@ def assess_uplink_mode_apply_risk(
             "Verify the tunnel before applying if you manage this router remotely."
         )
 
+    inet_check = (
+        assess_bond_members_readiness(touch_ports, ports)
+        if mode == "bond"
+        else assess_touch_ports_internet(
+            touch_ports, ports, require_all_verified=True
+        )
+    )
+    for msg in inet_check.get("blocking") or []:
+        blocking = True
+        if msg not in risks:
+            risks.append(msg)
+    for msg in inet_check.get("warnings") or []:
+        if msg not in risks:
+            risks.append(msg)
+
     for port_name in touch_ports:
         row = ports_by_name.get(port_name) or {}
         if row.get("disabled"):
             blocking = True
-            risks.append(f"{port_name} is disabled on the MikroTik — enable it before applying.")
+            msg = f"{port_name} is disabled on the MikroTik — enable it before applying."
+            if msg not in risks:
+                risks.append(msg)
 
         if row.get("is_bridged"):
             bridge = (row.get("bridge") or "").strip() or "bridge"
