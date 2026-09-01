@@ -4,7 +4,10 @@ __pycache__/
 *.so
 .Python
 .env
+.env.vps
 .secret_key
+deploy/env.isp.richcom.co.ke
+deploy/ispcentric_dump.sql
 .cache/
 .venv/
 venv/

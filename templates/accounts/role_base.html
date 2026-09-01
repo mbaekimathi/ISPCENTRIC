@@ -27,14 +27,22 @@
       <nav class="staff-sidebar-nav-main">
         {% block staff_nav %}
           {% for item in staff_nav_main %}
-            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
+            {% if item.action == "open_modal" %}
+              <button type="button" class="staff-sidebar-modal-trigger" data-open-modal="{{ item.modal_id }}">{{ item.label }}</button>
+            {% else %}
+              <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
+            {% endif %}
           {% endfor %}
         {% endblock %}
       </nav>
       {% if staff_nav_before_meta %}
       <nav class="staff-sidebar-nav-before-meta">
         {% for item in staff_nav_before_meta %}
-          <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
+          {% if item.action == "open_modal" %}
+            <button type="button" class="staff-sidebar-modal-trigger" data-open-modal="{{ item.modal_id }}">{{ item.label }}</button>
+          {% else %}
+            <a class="{% if current_page == item.key %}active{% endif %}" href="{% url item.url_name %}{% if item.query %}?{{ item.query }}{% endif %}">{{ item.label }}</a>
+          {% endif %}
         {% endfor %}
       </nav>
       {% endif %}
@@ -251,6 +259,23 @@
   }
   window.addEventListener("resize", function () {
     if (window.innerWidth > 960) setNav(false);
+  });
+
+  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var modalId = btn.getAttribute("data-open-modal");
+      if (!modalId) return;
+      var target = document.getElementById(modalId);
+      if (!target) return;
+      target.hidden = false;
+      target.setAttribute("aria-hidden", "false");
+      document.body.classList.add("role-modal-open");
+      if (app && app.classList.contains("nav-open")) setNav(false);
+      var focusable = target.querySelector(
+        "input:not([type='hidden']):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])"
+      );
+      if (focusable) focusable.focus();
+    });
   });
 
   var menu = document.getElementById("account-menu");

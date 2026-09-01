@@ -7,6 +7,9 @@ class CoreConfig(AppConfig):
     verbose_name = "Core"
 
     def ready(self):
+        # Register Django system checks (must run before early-return guards).
+        from core import checks  # noqa: F401
+
         # Skip during migrate/makemigrations to avoid recursion
         import sys
 

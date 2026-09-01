@@ -34,6 +34,9 @@
   --tracking-normal: -0.006em;
   --tracking-wide: 0.06em;
   --space-page: clamp(0.85rem, 2.2vw, 1.5rem);
+  --muted: var(--ink-soft);
+  --text-muted: var(--ink-soft);
+  --bg: #d9ecef;
 
   --surface: rgba(255, 255, 255, 0.78);
   --surface-solid: #ffffff;
@@ -82,65 +85,68 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --ink: #eef4f7;
-  --ink-soft: #9db4bf;
-  --foam: #070d12;
-  --mist: #152029;
-  --sea: #45c4cf;
-  --sea-deep: #8adce3;
-  --sea-soft: rgba(69, 196, 207, 0.16);
-  --signal: #f2bc42;
+  --ink: #f2f7fa;
+  --ink-soft: #b8cad4;
+  --foam: #0a1118;
+  --mist: #1a2832;
+  --sea: #52d0db;
+  --sea-deep: #9ae8ef;
+  --sea-soft: rgba(82, 208, 219, 0.2);
+  --signal: #f5c44a;
   --signal-ink: #211805;
-  --signal-soft: rgba(242, 188, 66, 0.16);
-  --danger: #ef6b5e;
-  --danger-soft: rgba(239, 107, 94, 0.14);
-  --success: #6dcea0;
-  --success-soft: rgba(109, 206, 160, 0.14);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  --signal-soft: rgba(245, 196, 74, 0.18);
+  --danger: #f47a6e;
+  --danger-soft: rgba(244, 122, 110, 0.16);
+  --success: #78d9a8;
+  --success-soft: rgba(120, 217, 168, 0.16);
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  --muted: #9db0bc;
+  --text-muted: #9db0bc;
+  --bg: #0a1118;
 
-  --surface: rgba(18, 26, 33, 0.78);
-  --surface-solid: #141c22;
-  --surface-2: rgba(22, 32, 40, 0.88);
-  --surface-3: rgba(255, 255, 255, 0.045);
-  --border: rgba(232, 238, 242, 0.1);
-  --border-strong: rgba(232, 238, 242, 0.16);
-  --topbar-bg: rgba(10, 16, 22, 0.72);
+  --surface: rgba(24, 34, 42, 0.9);
+  --surface-solid: #1a2530;
+  --surface-2: rgba(30, 42, 52, 0.94);
+  --surface-3: rgba(255, 255, 255, 0.07);
+  --border: rgba(232, 238, 242, 0.15);
+  --border-strong: rgba(232, 238, 242, 0.24);
+  --topbar-bg: rgba(12, 18, 26, 0.88);
   --workspace-bg:
-    radial-gradient(ellipse 55% 42% at 100% -8%, rgba(69, 196, 207, 0.2), transparent 55%),
-    radial-gradient(ellipse 45% 38% at -8% 105%, rgba(242, 188, 66, 0.1), transparent 50%),
-    radial-gradient(ellipse 35% 28% at 45% 30%, rgba(69, 196, 207, 0.07), transparent 60%),
-    linear-gradient(165deg, #0a1218 0%, #070d12 55%, #0b141a 100%);
+    radial-gradient(ellipse 55% 42% at 100% -8%, rgba(82, 208, 219, 0.22), transparent 55%),
+    radial-gradient(ellipse 45% 38% at -8% 105%, rgba(245, 196, 74, 0.12), transparent 50%),
+    radial-gradient(ellipse 35% 28% at 45% 30%, rgba(82, 208, 219, 0.09), transparent 60%),
+    linear-gradient(165deg, #0c141c 0%, #0a1118 55%, #0e161e 100%);
   --hero-bg:
-    linear-gradient(135deg, rgba(69, 196, 207, 0.14), transparent 48%),
-    linear-gradient(180deg, #172027 0%, #141c22 100%);
+    linear-gradient(135deg, rgba(82, 208, 219, 0.16), transparent 48%),
+    linear-gradient(180deg, #1a2832 0%, #1a2530 100%);
   --sidebar-bg:
-    radial-gradient(ellipse 90% 55% at 0% 0%, rgba(69, 196, 207, 0.26), transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(242, 188, 66, 0.08), transparent 50%),
-    linear-gradient(185deg, #0d161d 0%, #070c11 100%);
-  --sidebar-text: #e8f2f4;
-  --sidebar-muted: rgba(232, 242, 244, 0.48);
-  --sidebar-link: rgba(232, 242, 244, 0.78);
-  --input-bg: rgba(12, 18, 24, 0.92);
-  --input-border: rgba(232, 238, 242, 0.14);
-  --chip-sea-bg: rgba(69, 196, 207, 0.16);
-  --chip-sea-fg: #9ee7ef;
-  --chip-signal-bg: rgba(242, 188, 66, 0.16);
-  --chip-signal-fg: #f6d58a;
-  --menu-shadow: 0 24px 50px rgba(0, 0, 0, 0.5);
-  --scrim: rgba(0, 0, 0, 0.62);
-  --notice-info-bg: rgba(242, 188, 66, 0.12);
-  --notice-info-border: rgba(242, 188, 66, 0.28);
-  --notice-info-fg: #f6d58a;
-  --notice-success-bg: rgba(109, 206, 160, 0.12);
-  --notice-success-border: rgba(109, 206, 160, 0.28);
-  --notice-success-fg: #9ee0be;
-  --notice-error-bg: rgba(239, 107, 94, 0.12);
-  --notice-error-border: rgba(239, 107, 94, 0.28);
-  --notice-error-fg: #f3a49c;
-  --card-shine: linear-gradient(135deg, rgba(255, 255, 255, 0.08), transparent 42%);
+    radial-gradient(ellipse 90% 55% at 0% 0%, rgba(82, 208, 219, 0.28), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(245, 196, 74, 0.1), transparent 50%),
+    linear-gradient(185deg, #0f181f 0%, #0a1016 100%);
+  --sidebar-text: #eef5f7;
+  --sidebar-muted: rgba(238, 245, 247, 0.62);
+  --sidebar-link: rgba(238, 245, 247, 0.9);
+  --input-bg: rgba(16, 24, 32, 0.96);
+  --input-border: rgba(232, 238, 242, 0.22);
+  --chip-sea-bg: rgba(82, 208, 219, 0.18);
+  --chip-sea-fg: #a8edf3;
+  --chip-signal-bg: rgba(245, 196, 74, 0.18);
+  --chip-signal-fg: #f8dc8e;
+  --menu-shadow: 0 24px 50px rgba(0, 0, 0, 0.55);
+  --scrim: rgba(0, 0, 0, 0.68);
+  --notice-info-bg: rgba(245, 196, 74, 0.14);
+  --notice-info-border: rgba(245, 196, 74, 0.34);
+  --notice-info-fg: #f8dc8e;
+  --notice-success-bg: rgba(120, 217, 168, 0.14);
+  --notice-success-border: rgba(120, 217, 168, 0.34);
+  --notice-success-fg: #a8e8c8;
+  --notice-error-bg: rgba(244, 122, 110, 0.14);
+  --notice-error-border: rgba(244, 122, 110, 0.34);
+  --notice-error-fg: #f5aaa2;
+  --card-shine: linear-gradient(135deg, rgba(255, 255, 255, 0.1), transparent 42%);
   --card-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset,
-    0 22px 48px rgba(0, 0, 0, 0.35);
+    0 1px 0 rgba(255, 255, 255, 0.07) inset,
+    0 22px 48px rgba(0, 0, 0, 0.4);
 }
 
 
@@ -3448,6 +3454,26 @@ a {
   margin: 0;
 }
 
+.staff-sidebar-modal-trigger {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0.65rem 1rem;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.staff-app .staff-sidebar .staff-sidebar-modal-trigger:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
 .staff-sidebar-logout button {
   display: block;
   width: 100%;
@@ -5631,7 +5657,7 @@ body.staff-nav-lock {
 .table td {
   text-align: left;
   padding: 0.7rem 0.35rem;
-  border-bottom: 1px solid rgba(11, 31, 42, 0.06);
+  border-bottom: 1px solid var(--border);
 }
 
 .table th {
@@ -13309,6 +13335,7 @@ a.packages-stat:focus-visible {
   letter-spacing: -0.03em;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 
 .mikrotik-list-panel {
@@ -13418,8 +13445,7 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-muted {
-  color: var(--ink-soft);
-  opacity: 0.72;
+  color: var(--muted);
 }
 
 .mikrotik-wifi-chip {
@@ -13663,7 +13689,7 @@ a.packages-stat:focus-visible {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   font-weight: 700;
-  opacity: 0.55;
+  color: var(--muted);
 }
 
 .mikrotik-router-profile-group:first-child {
@@ -13677,7 +13703,7 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-router-profile .is-warn {
-  color: #ff8a7a;
+  color: var(--danger);
 }
 
 .mikrotik-detail-hero {
@@ -13803,7 +13829,7 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-router-row.is-suspended {
-  opacity: 0.78;
+  background: color-mix(in srgb, var(--signal-soft) 55%, transparent);
 }
 
 .mikrotik-reconnect-btn .mikrotik-reconnect-icon {
@@ -14128,9 +14154,9 @@ a.packages-stat:focus-visible {
   font-size: 0.72rem;
   font-weight: 600;
   line-height: 1.3;
-  border: 1px solid var(--border-strong, rgba(15, 23, 42, 0.12));
-  background: rgba(15, 23, 42, 0.04);
-  color: var(--text-muted, #64748b);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-3);
+  color: var(--muted);
   max-width: 100%;
 }
 
@@ -14139,15 +14165,15 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-auto-restore-badge.is-ok {
-  border-color: color-mix(in srgb, #34d399 45%, var(--border-strong, rgba(15, 23, 42, 0.12)));
-  background: color-mix(in srgb, #34d399 12%, transparent);
-  color: #047857;
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border-strong));
+  background: var(--success-soft);
+  color: var(--success);
 }
 
 .mikrotik-auto-restore-badge.is-fail {
-  border-color: color-mix(in srgb, #f87171 45%, var(--border-strong, rgba(15, 23, 42, 0.12)));
-  background: color-mix(in srgb, #f87171 12%, transparent);
-  color: #b91c1c;
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border-strong));
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .mikrotik-auto-restore-icon {
@@ -14772,15 +14798,15 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-wifi-pill.is-on {
-  color: #7dffb3;
-  background: rgba(46, 204, 113, 0.14);
-  border: 1px solid rgba(46, 204, 113, 0.35);
+  color: var(--success);
+  background: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
 }
 
 .mikrotik-wifi-pill.is-off {
-  color: #ffb4a8;
-  background: rgba(231, 76, 60, 0.12);
-  border: 1px solid rgba(231, 76, 60, 0.28);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
 .mikrotik-wifi-switch {
@@ -15243,13 +15269,13 @@ a.packages-stat:focus-visible {
 }
 
 [data-theme="light"] .mikrotik-wifi-pill.is-on {
-  color: #1e7a45;
-  background: rgba(46, 204, 113, 0.12);
+  color: var(--success);
+  background: var(--success-soft);
 }
 
 [data-theme="light"] .mikrotik-wifi-pill.is-off {
-  color: #a83226;
-  background: rgba(192, 57, 43, 0.08);
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .mikrotik-wifi-off-note strong {
@@ -15260,11 +15286,7 @@ a.packages-stat:focus-visible {
 .mikrotik-live {
   margin: 0 0 1.35rem;
   padding: 1rem 0 1.2rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="light"] .mikrotik-live {
-  border-bottom-color: rgba(16, 36, 44, 0.1);
+  border-bottom: 1px solid var(--border);
 }
 
 .mikrotik-live-head {
@@ -15284,12 +15306,13 @@ a.packages-stat:focus-visible {
 .mikrotik-live-sub {
   margin: 0;
   font-size: 0.88rem;
-  opacity: 0.72;
+  color: var(--ink-soft);
+  line-height: 1.45;
 }
 
 .mikrotik-live-stamp {
   font-size: 0.78rem;
-  opacity: 0.55;
+  color: var(--muted);
   white-space: nowrap;
 }
 
@@ -15303,16 +15326,15 @@ a.packages-stat:focus-visible {
   padding: 0.85rem 0.9rem 0.8rem;
   border-radius: 14px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-solid) 96%, var(--sea) 4%),
+      color-mix(in srgb, var(--surface-2) 92%, transparent)
+    );
+  border: 1px solid var(--border);
+  box-shadow: var(--card-shadow);
   min-width: 0;
   min-height: 6.4rem;
-}
-
-[data-theme="light"] .mikrotik-live-card {
-  background: linear-gradient(180deg, #fff, #f5f8f9);
-  border-color: rgba(16, 36, 44, 0.08);
-  box-shadow: 0 1px 0 rgba(16, 36, 44, 0.03);
 }
 
 .mikrotik-live.is-offline .mikrotik-live-card[data-metric="status"] {
@@ -15324,14 +15346,13 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-live-card-speed {
-  border-color: rgba(56, 189, 248, 0.28);
+  border-color: color-mix(in srgb, var(--sea) 32%, var(--border));
   background:
-    linear-gradient(180deg, rgba(56, 189, 248, 0.1), rgba(255, 255, 255, 0.02));
-}
-
-[data-theme="light"] .mikrotik-live-card-speed {
-  border-color: rgba(14, 116, 144, 0.22);
-  background: linear-gradient(180deg, rgba(14, 116, 144, 0.08), #fff);
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--sea) 12%, var(--surface-solid)),
+      color-mix(in srgb, var(--surface-solid) 94%, transparent)
+    );
 }
 
 .mikrotik-live-label {
@@ -15339,7 +15360,7 @@ a.packages-stat:focus-visible {
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  opacity: 0.62;
+  color: var(--muted);
   font-weight: 700;
 }
 
@@ -15349,12 +15370,13 @@ a.packages-stat:focus-visible {
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.15;
+  color: var(--ink);
 }
 
 .mikrotik-live-hint {
   margin: 0.4rem 0 0;
   font-size: 0.78rem;
-  opacity: 0.62;
+  color: var(--muted);
   line-height: 1.35;
 }
 
@@ -15362,12 +15384,8 @@ a.packages-stat:focus-visible {
   margin-top: 0.55rem;
   height: 0.35rem;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--surface-3);
   overflow: hidden;
-}
-
-[data-theme="light"] .mikrotik-meter {
-  background: rgba(16, 36, 44, 0.08);
 }
 
 .mikrotik-meter > span {
@@ -15402,13 +15420,14 @@ a.packages-stat:focus-visible {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  opacity: 0.55;
+  color: var(--muted);
   font-weight: 700;
 }
 
 .mikrotik-live-fact strong {
   font-size: 0.92rem;
   font-weight: 700;
+  color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -15417,11 +15436,7 @@ a.packages-stat:focus-visible {
 .mikrotik-uplink {
   margin-top: 1.15rem;
   padding-top: 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="light"] .mikrotik-uplink {
-  border-top-color: rgba(16, 36, 44, 0.1);
+  border-top: 1px solid var(--border);
 }
 
 .mikrotik-uplink-head {
@@ -15678,7 +15693,7 @@ a.packages-stat:focus-visible {
 .mikrotik-live-blocked p {
   margin: 0;
   font-size: 0.88rem;
-  opacity: 0.78;
+  color: var(--ink-soft);
   max-width: 36rem;
 }
 
@@ -29702,7 +29717,7 @@ h1, h2, h3, h4,
   display: grid;
   place-items: center;
   padding: 1.5rem;
-  background: color-mix(in srgb, var(--bg, #0b1217) 72%, transparent);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -29718,9 +29733,9 @@ h1, h2, h3, h4,
   min-width: min(100%, 16rem);
   padding: 1.35rem 1.5rem 1.25rem;
   border-radius: 18px;
-  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.12));
-  background: var(--surface, #121a21);
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
   text-align: center;
 }
 
@@ -29752,14 +29767,14 @@ h1, h2, h3, h4,
   margin: 0;
   font-weight: 750;
   font-size: 0.98rem;
-  color: var(--ink, #e8eef2);
+  color: var(--ink);
 }
 
 .mikrotik-page-loader-sub,
 .mikrotik-live-loading-sub {
   margin: 0;
   font-size: 0.82rem;
-  color: var(--muted, #8a9aa3);
+  color: var(--muted);
 }
 
 body.mikrotik-page-loading {
@@ -29793,8 +29808,8 @@ body.mikrotik-page-loading {
   margin-bottom: 1rem;
   padding: 1rem 1.05rem;
   border-radius: 14px;
-  border: 1px dashed var(--border-strong, rgba(255, 255, 255, 0.14));
-  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  border: 1px dashed var(--border-strong);
+  background: color-mix(in srgb, var(--surface-2) 88%, var(--sea) 4%);
 }
 
 .mikrotik-live-loading[hidden] {
@@ -31455,6 +31470,223 @@ a.module-card:focus-visible {
   }
 }
 
+/* MikroTik pages — dual-theme polish (list + detail) */
+.mikrotik-account-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.mikrotik-account-pill.is-active {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 28%, transparent);
+}
+
+.mikrotik-account-pill.is-suspended {
+  color: var(--signal);
+  background: var(--signal-soft);
+  border-color: color-mix(in srgb, var(--signal) 30%, transparent);
+}
+
+[data-theme="light"] .mikrotik-hero,
+[data-theme="light"] .mk-page-hero {
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 16%, transparent), transparent 42%),
+    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, var(--signal) 10%, transparent), transparent 38%),
+    linear-gradient(180deg, var(--surface-solid), color-mix(in srgb, var(--surface-solid) 90%, var(--sea) 10%));
+}
+
+.mk-detail-hero.is-suspended {
+  background:
+    linear-gradient(135deg, var(--signal-soft), transparent 46%),
+    var(--surface);
+}
+
+.mk-detail-surface.mikrotik-live.is-online {
+  border-color: color-mix(in srgb, var(--success) 28%, var(--border));
+}
+
+.mk-detail-surface.mikrotik-live.is-offline {
+  border-color: color-mix(in srgb, var(--danger) 24%, var(--border));
+}
+
+.mikrotik-link-status.is-connected,
+.mk-detail-link-pill.mikrotik-link-status.is-connected,
+.mk-detail-link-pill.is-connected {
+  color: var(--success);
+  background: var(--success-soft);
+  border-color: transparent;
+}
+
+.mikrotik-link-status.is-disconnected,
+.mk-detail-link-pill.mikrotik-link-status.is-disconnected,
+.mk-detail-link-pill.is-disconnected {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: transparent;
+}
+
+.mikrotik-link-status.is-limited,
+.mk-detail-link-pill.mikrotik-link-status.is-limited {
+  color: var(--signal);
+  background: var(--signal-soft);
+  border-color: transparent;
+}
+
+.mikrotik-link-status.is-auth-failed,
+.mikrotik-link-status.is-reachable {
+  color: var(--sea);
+  background: var(--sea-soft);
+  border-color: transparent;
+}
+
+.mikrotik-link-status.is-checking,
+.mk-detail-link-pill.is-checking {
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.mikrotik-link-status.is-connected .mikrotik-link-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+.mikrotik-link-status.is-disconnected .mikrotik-link-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.mikrotik-link-status.is-limited .mikrotik-link-dot {
+  background: var(--signal);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--signal) 20%, transparent);
+}
+
+.mikrotik-tunnel-verify-banner {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.mikrotik-tunnel-verify-banner.is-warn {
+  border-color: color-mix(in srgb, var(--signal) 35%, var(--border));
+  background: var(--notice-info-bg);
+  color: var(--notice-info-fg);
+}
+
+.mikrotik-tunnel-verify-banner.is-warn .mikrotik-tunnel-verify-sub {
+  color: var(--ink-soft);
+  opacity: 1;
+}
+
+.mikrotik-tunnel-verify-banner.is-warn a {
+  color: var(--sea-deep);
+  font-weight: 700;
+}
+
+[data-theme="dark"] .mikrotik-tunnel-verify-banner.is-warn a {
+  color: var(--sea);
+}
+
+.mikrotik-tunnel-verify-banner.is-warn code {
+  padding: 0.1rem 0.35rem;
+  border-radius: 6px;
+  background: var(--surface-3);
+  color: var(--ink);
+  font-size: 0.85em;
+}
+
+.mikrotik-detail-map-link {
+  color: var(--sea);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.mikrotik-detail-map-link:hover {
+  color: var(--sea-deep);
+  text-decoration: underline;
+}
+
+[data-theme="dark"] .mikrotik-detail-map-link:hover {
+  color: var(--sea-deep);
+}
+
+.mikrotik-title,
+.mikrotik-kicker,
+.mk-page-title {
+  color: var(--ink);
+}
+
+.mikrotik-kicker,
+.mk-page-kicker {
+  color: var(--sea);
+}
+
+
+.org-table-mikrotik tbody tr.mikrotik-router-row.is-suspended:hover td {
+  background: color-mix(in srgb, var(--signal-soft) 75%, transparent);
+}
+
+.mikrotik-live-blocked {
+  border-color: color-mix(in srgb, var(--signal) 30%, var(--border));
+  background:
+    radial-gradient(ellipse 70% 90% at 0% 0%, color-mix(in srgb, var(--signal) 14%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-solid) 96%, var(--signal) 4%), var(--surface-2));
+}
+
+.mikrotik-live-blocked-icon {
+  color: var(--signal);
+  background: var(--signal-soft);
+  border-color: color-mix(in srgb, var(--signal) 32%, transparent);
+}
+
+.mikrotik-live-blocked strong {
+  color: var(--ink);
+}
+
+.mk-detail-facts,
+.mikrotik-router-profile-facts {
+  background: color-mix(in srgb, var(--surface-2) 90%, var(--sea) 3%);
+}
+
+.mk-detail-stamp.is-loading {
+  color: var(--sea);
+  background: var(--sea-soft);
+  border-color: color-mix(in srgb, var(--sea) 24%, var(--border));
+}
+
+[data-theme="light"] .mikrotik-page-loader {
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+
+[data-theme="light"] .mikrotik-page-loader-card {
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
+}
+
+[data-theme="light"] .mikrotik-link-spinner {
+  border-color: color-mix(in srgb, var(--sea) 22%, transparent);
+  border-top-color: var(--sea);
+}
+
+[data-theme="dark"] .mikrotik-restart-btn {
+  border-color: color-mix(in srgb, var(--signal) 40%, var(--border-strong));
+  color: var(--signal);
+}
+
+[data-theme="dark"] .mikrotik-restart-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--signal) 55%, var(--border-strong));
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface-2));
+}
+
 /* ==========================================================================
    IT Support ? Company Payment Gateway page
    ========================================================================== */
@@ -32014,6 +32246,24 @@ a.module-card:focus-visible {
 .cc-search-wrap {
   position: relative;
   width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cc-page--modern .cc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: stretch;
+}
+
+.cc-page--modern .cc-register-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.cc-page--modern .cc-empty-panel .btn {
+  margin-top: 0.85rem;
 }
 
 .cc-search-ico {
@@ -34041,4 +34291,267 @@ a.module-card:focus-visible {
   .cs-list-search {
     transition: none;
   }
+}
+
+/* ==========================================================================
+   Dark mode visibility enhancements
+   Improves contrast for text, borders, inputs, and hardcoded light surfaces.
+   ========================================================================== */
+
+[data-theme="dark"] .hero::before {
+  background-image:
+    linear-gradient(rgba(82, 208, 219, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(82, 208, 219, 0.06) 1px, transparent 1px);
+  opacity: 0.55;
+}
+
+[data-theme="dark"] .staff-workspace::before {
+  opacity: 0.5;
+}
+
+[data-theme="dark"] .staff-app .stat .label,
+[data-theme="dark"] .app-shell .stat .label,
+[data-theme="dark"] .stat .label {
+  opacity: 0.95;
+  color: var(--ink-soft);
+}
+
+[data-theme="dark"] .table th {
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+}
+
+[data-theme="dark"] .table tbody tr:hover td {
+  background: color-mix(in srgb, var(--sea) 8%, var(--surface));
+}
+
+[data-theme="dark"] .table td {
+  color: var(--ink);
+}
+
+[data-theme="dark"] .form-control::placeholder,
+[data-theme="dark"] .staff-card .form-control::placeholder,
+[data-theme="dark"] .clients-search-input::placeholder,
+[data-theme="dark"] .pppoe-grid .form-control::placeholder,
+[data-theme="dark"] .mikrotik-onboard-form .form-control::placeholder {
+  color: color-mix(in srgb, var(--ink-soft) 78%, transparent);
+  opacity: 1;
+}
+
+[data-theme="dark"] .btn-ghost {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .btn-ghost:hover {
+  background: var(--surface-3);
+  border-color: color-mix(in srgb, var(--sea) 40%, var(--border-strong));
+}
+
+[data-theme="dark"] .theme-toggle {
+  background: var(--surface-solid);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .account-menu-trigger {
+  border-color: var(--border-strong);
+}
+
+[data-theme="dark"] .flag-select-trigger {
+  background: var(--input-bg);
+  border-color: var(--input-border);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .flag-select-menu {
+  background: var(--surface-solid);
+  border-color: var(--border-strong);
+  box-shadow: var(--menu-shadow);
+}
+
+[data-theme="dark"] .flag-select-search {
+  background: var(--surface-2);
+  border-bottom-color: var(--border);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .flag-select-option:hover,
+[data-theme="dark"] .flag-select-option.is-selected {
+  background: var(--sea-soft);
+}
+
+[data-theme="dark"] .toast {
+  box-shadow: var(--menu-shadow);
+}
+
+[data-theme="dark"] .toast-error {
+  border-color: color-mix(in srgb, #ff8a80 48%, var(--border-strong));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, #ef4444 22%, var(--surface-solid)),
+      color-mix(in srgb, var(--surface-solid) 82%, #1a1012)
+    );
+}
+
+[data-theme="dark"] .toast-error .toast-title {
+  color: #ffb4ab;
+}
+
+[data-theme="dark"] .toast-error .toast-text {
+  color: #f8ecea;
+}
+
+[data-theme="dark"] .toast-error .toast-dismiss {
+  color: #ffb4ab;
+}
+
+[data-theme="dark"] .toast-error .toast-dismiss:hover {
+  background: color-mix(in srgb, #ef4444 22%, transparent);
+  color: #ffd6d1;
+}
+
+[data-theme="dark"] .toast-success {
+  border-color: color-mix(in srgb, #6ee7a0 45%, var(--border-strong));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, #22c55e 18%, var(--surface-solid)),
+      var(--surface-solid)
+    );
+}
+
+[data-theme="dark"] .toast-success .toast-title {
+  color: #9ee8c0;
+}
+
+[data-theme="dark"] .toast-success .toast-text {
+  color: #e8f5ee;
+}
+
+[data-theme="dark"] .toast-warning {
+  border-color: color-mix(in srgb, #fbbf24 48%, var(--border-strong));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, #f59e0b 20%, var(--surface-solid)),
+      var(--surface-solid)
+    );
+}
+
+[data-theme="dark"] .toast-warning .toast-title {
+  color: #fde68a;
+}
+
+[data-theme="dark"] .toast-warning .toast-text {
+  color: #f8f2e4;
+}
+
+[data-theme="dark"] .toast-info,
+[data-theme="dark"] .toast-debug {
+  border-color: color-mix(in srgb, var(--sea) 48%, var(--border-strong));
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--sea) 18%, var(--surface-solid)),
+      var(--surface-solid)
+    );
+}
+
+[data-theme="dark"] .toast-info .toast-title,
+[data-theme="dark"] .toast-debug .toast-title {
+  color: var(--sea-deep);
+}
+
+[data-theme="dark"] .toast-info .toast-text,
+[data-theme="dark"] .toast-debug .toast-text {
+  color: #e6f4f7;
+}
+
+[data-theme="dark"] .pending-meta {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+
+[data-theme="dark"] .pending-meta .meta-label {
+  color: var(--ink-soft);
+}
+
+[data-theme="dark"] .pending-meta .meta-value {
+  color: var(--ink);
+}
+
+[data-theme="dark"] .badge {
+  color: var(--chip-sea-fg);
+}
+
+[data-theme="dark"] .empty {
+  color: var(--ink-soft);
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border-strong));
+}
+
+[data-theme="dark"] .staff-main a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon):not(.module-card):not(.brand):not(.staff-sidebar-modal-trigger),
+[data-theme="dark"] .panel a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon),
+[data-theme="dark"] .auth-panel a:not(.btn) {
+  color: var(--sea-deep);
+}
+
+[data-theme="dark"] .staff-main a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon):not(.module-card):not(.brand):hover,
+[data-theme="dark"] .panel a:not(.btn):not(.client-cat-nav-item):not(.org-action-icon):hover,
+[data-theme="dark"] .auth-panel a:not(.btn):hover {
+  color: var(--sea);
+}
+
+[data-theme="dark"] .staff-topbar-kicker {
+  color: var(--sea);
+}
+
+[data-theme="dark"] .panel-sub,
+[data-theme="dark"] .page-sub,
+[data-theme="dark"] .client-page-lead,
+[data-theme="dark"] .lede {
+  color: var(--ink-soft);
+}
+
+[data-theme="dark"] .password-toggle {
+  color: var(--ink-soft);
+}
+
+[data-theme="dark"] .password-toggle:hover {
+  color: var(--ink);
+}
+
+[data-theme="dark"] .clients-search-input {
+  background: var(--input-bg);
+  border-color: var(--input-border);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .clients-search-clear {
+  background: var(--surface-3);
+  color: var(--ink-soft);
+}
+
+[data-theme="dark"] .clients-search-clear:hover {
+  background: var(--sea-soft);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .account-menu-panel {
+  background: var(--surface-solid);
+  border-color: var(--border-strong);
+}
+
+[data-theme="dark"] .staff-sidebar-meta {
+  color: var(--sidebar-muted);
+}
+
+[data-theme="dark"] .staff-sidebar-meta strong {
+  color: var(--sidebar-text);
+}
+
+[data-theme="dark"] select.form-control option {
+  background: var(--surface-solid);
+  color: var(--ink);
 }

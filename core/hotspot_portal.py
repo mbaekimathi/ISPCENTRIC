@@ -283,6 +283,7 @@ def hosted_fallback_base_url(request=None) -> str:
         if host in {
             "www.msftconnecttest.com",
             "msftconnecttest.com",
+            "www.msftncsi.com",
             "dns.msftncsi.com",
             "connectivitycheck.gstatic.com",
             "clients3.google.com",
@@ -394,3 +395,22 @@ def hotspot_portal_urls(join_code: str, request=None) -> dict[str, str]:
         )
         or bool(base and not configured),
     }
+
+
+def org_portal_base_cache_key(organization_id: int) -> str:
+    return f"mikrotik_portal_base:{organization_id}"
+
+
+def remember_org_portal_base(organization_id: int, base_url: str, *, ttl: int = 86400) -> None:
+    """Cache the portal origin from a browser request for background NAS pushes."""
+    from django.core.cache import cache
+
+    base = (base_url or "").strip().rstrip("/")
+    if organization_id and base and not is_loopback_url(base):
+        cache.set(org_portal_base_cache_key(organization_id), base, ttl)
+
+
+def recall_org_portal_base(organization_id: int) -> str:
+    from django.core.cache import cache
+
+    return (cache.get(org_portal_base_cache_key(organization_id)) or "").strip().rstrip("/")

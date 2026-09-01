@@ -311,13 +311,25 @@ if not _cache_backend and DEBUG:
 elif not _cache_backend:
     _cache_backend = "file"
 if _cache_backend in {"locmem", "locmemcache", "local"}:
+    _jobs_cache_dir = BASE_DIR / ".cache" / "jobs"
+    try:
+        _jobs_cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
             "LOCATION": "ispcentric-default",
             "TIMEOUT": 60,
             "OPTIONS": {"MAX_ENTRIES": 1000},
-        }
+        },
+        # MikroTik push jobs must survive worker threads/processes and dev reloads.
+        "jobs": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": str(_jobs_cache_dir),
+            "TIMEOUT": None,
+            "OPTIONS": {"MAX_ENTRIES": 500},
+        },
     }
 else:
     _cache_dir = BASE_DIR / ".cache"
@@ -331,7 +343,13 @@ else:
             "LOCATION": str(_cache_dir),
             "TIMEOUT": 60,
             "OPTIONS": {"MAX_ENTRIES": 2000},
-        }
+        },
+        "jobs": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": str(_cache_dir / "jobs"),
+            "TIMEOUT": None,
+            "OPTIONS": {"MAX_ENTRIES": 500},
+        },
     }
 
 AUTH_PASSWORD_VALIDATORS = [

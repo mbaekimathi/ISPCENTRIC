@@ -1,0 +1,277 @@
+<div
+  class="role-modal cc-edit-modal cc-register-modal"
+  id="cc-register-isp-modal"
+  {% if not open_register_modal and not register_form.errors %}hidden{% endif %}
+  aria-hidden="{% if open_register_modal or register_form.errors %}false{% else %}true{% endif %}"
+  data-open-on-load="{% if open_register_modal or register_form.errors %}1{% else %}0{% endif %}"
+>
+  <div class="role-modal-backdrop" data-cc-register-close></div>
+  <div class="role-modal-panel cc-edit-panel" role="dialog" aria-modal="true" aria-labelledby="cc-register-isp-title">
+    <header class="cc-edit-head">
+      <div class="cc-edit-head-copy">
+        <p class="cc-kicker">New ISP account</p>
+        <h2 id="cc-register-isp-title">Register ISP client</h2>
+        <p class="cc-edit-sub">Create a company owner login and open the ISP workspace.</p>
+      </div>
+      <button type="button" class="role-modal-close cc-edit-close" data-cc-register-close aria-label="Close">×</button>
+    </header>
+
+    <form
+      method="post"
+      enctype="multipart/form-data"
+      class="cc-edit-form"
+      id="cc-register-isp-form"
+      action="{% url clients_list_url_name %}"
+      novalidate
+    >
+      {% csrf_token %}
+      <input type="hidden" name="form_action" value="register_isp">
+
+      <div class="cc-edit-body">
+        {% if register_form.non_field_errors %}
+          <div class="notice notice-error">{{ register_form.non_field_errors }}</div>
+        {% endif %}
+
+        <div class="form-group">
+          <label for="{{ register_form.company_name.id_for_label }}">{{ register_form.company_name.label }} *</label>
+          {{ register_form.company_name }}
+          {% if register_form.company_name.errors %}
+            <div class="field-error">{{ register_form.company_name.errors|striptags }}</div>
+          {% endif %}
+        </div>
+
+        <div class="form-group">
+          <label for="{{ register_form.phone.id_for_label }}">{{ register_form.phone.label }}</label>
+          <div class="phone-row">
+            <div class="flag-select" id="cc-isp-flag-select">
+              {{ register_form.country_code }}
+              <button type="button" class="flag-select-trigger" id="cc-isp-flag-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <img
+                  class="flag-img"
+                  id="cc-isp-flag-select-img"
+                  src="{{ register_form.selected_country.flag }}"
+                  srcset="{{ register_form.selected_country.flag }} 1x, {{ register_form.selected_country.flag_2x }} 2x"
+                  alt=""
+                  width="28"
+                  height="21"
+                >
+                <span class="flag-select-dial" id="cc-isp-flag-select-dial">+{{ register_form.selected_country.dial }}</span>
+                <span class="flag-select-caret" aria-hidden="true"></span>
+              </button>
+              <div class="flag-select-menu" id="cc-isp-flag-select-menu" role="listbox" hidden>
+                <input type="search" class="flag-select-search" id="cc-isp-flag-select-search" placeholder="Search country…" autocomplete="off">
+                <div class="flag-select-list" id="cc-isp-flag-select-list">
+                  {% for c in register_form.country_options %}
+                    <button
+                      type="button"
+                      class="flag-select-option{% if c.value == register_form.selected_country.value %} is-selected{% endif %}"
+                      role="option"
+                      data-value="{{ c.value }}"
+                      data-dial="{{ c.dial }}"
+                      data-flag="{{ c.flag }}"
+                      data-flag2x="{{ c.flag_2x }}"
+                      data-name="{{ c.name|lower }}"
+                    >
+                      <img class="flag-img" src="{{ c.flag }}" srcset="{{ c.flag }} 1x, {{ c.flag_2x }} 2x" alt="" width="28" height="21" loading="lazy">
+                      <span class="flag-select-name">{{ c.name }}</span>
+                      <span class="flag-select-code">+{{ c.dial }}</span>
+                    </button>
+                  {% endfor %}
+                </div>
+              </div>
+            </div>
+            {{ register_form.phone }}
+          </div>
+          <p class="field-hint">Optional. Used for company contact and referral code.</p>
+          {% if register_form.country_code.errors %}
+            <div class="field-error">{{ register_form.country_code.errors|striptags }}</div>
+          {% endif %}
+          {% if register_form.phone.errors %}
+            <div class="field-error">{{ register_form.phone.errors|striptags }}</div>
+          {% endif %}
+        </div>
+
+        <div class="form-group form-group-photo">
+          <label for="{{ register_form.profile_photo.id_for_label }}">{{ register_form.profile_photo.label }}</label>
+          {{ register_form.profile_photo }}
+          <p class="field-hint">JPG, PNG, or WebP — optional</p>
+          {% if register_form.profile_photo.errors %}
+            <div class="field-error">{{ register_form.profile_photo.errors|striptags }}</div>
+          {% endif %}
+        </div>
+
+        <section class="cc-edit-section">
+          <div class="cc-edit-section-head">
+            <h3 class="cc-edit-section-title">Owner login</h3>
+            <p class="cc-edit-section-hint">The ISP owner signs in with a 6-digit code and password.</p>
+          </div>
+
+          <div class="form-group">
+            <label for="{{ register_form.username.id_for_label }}">{{ register_form.username.label }} *</label>
+            {{ register_form.username }}
+            {% if register_form.username.help_text %}
+              <p class="field-hint">{{ register_form.username.help_text }}</p>
+            {% endif %}
+            {% if register_form.username.errors %}
+              <div class="field-error">{{ register_form.username.errors|striptags }}</div>
+            {% endif %}
+          </div>
+
+          <div class="form-group">
+            <label for="{{ register_form.email.id_for_label }}">{{ register_form.email.label }} *</label>
+            {{ register_form.email }}
+            {% if register_form.email.errors %}
+              <div class="field-error">{{ register_form.email.errors|striptags }}</div>
+            {% endif %}
+          </div>
+
+          <div class="cc-edit-grid">
+            <div class="form-group">
+              <label for="{{ register_form.password1.id_for_label }}">Password *</label>
+              <div class="password-field">
+                {{ register_form.password1 }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ register_form.password1.id_for_label }}" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if register_form.password1.help_text %}
+                <p class="field-hint">{{ register_form.password1.help_text }}</p>
+              {% endif %}
+              {% if register_form.password1.errors %}
+                <div class="field-error">{{ register_form.password1.errors|striptags }}</div>
+              {% endif %}
+            </div>
+            <div class="form-group">
+              <label for="{{ register_form.password2.id_for_label }}">Confirm password *</label>
+              <div class="password-field">
+                {{ register_form.password2 }}
+                <button type="button" class="password-toggle" data-toggle-password="{{ register_form.password2.id_for_label }}" aria-label="Show password">
+                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                </button>
+              </div>
+              {% if register_form.password2.errors %}
+                <div class="field-error">{{ register_form.password2.errors|striptags }}</div>
+              {% endif %}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="cc-edit-foot">
+        <button type="button" class="btn btn-ghost" data-cc-register-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Register ISP client</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("cc-register-isp-modal");
+  if (!modal) return;
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    var focusable = modal.querySelector("input:not([type='hidden']):not([disabled])");
+    if (focusable) focusable.focus();
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".role-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  modal.querySelectorAll("[data-cc-register-close]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.hidden) closeModal();
+  });
+
+  if (modal.getAttribute("data-open-on-load") === "1") {
+    openModal();
+  }
+
+  modal.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye) eye.hidden = show;
+      if (eyeOff) eyeOff.hidden = !show;
+    });
+  });
+
+  var root = document.getElementById("cc-isp-flag-select");
+  var hidden = document.getElementById("id_isp-country_code");
+  var trigger = document.getElementById("cc-isp-flag-select-trigger");
+  var menu = document.getElementById("cc-isp-flag-select-menu");
+  var list = document.getElementById("cc-isp-flag-select-list");
+  var search = document.getElementById("cc-isp-flag-select-search");
+  var img = document.getElementById("cc-isp-flag-select-img");
+  var dialEl = document.getElementById("cc-isp-flag-select-dial");
+  var phone = document.getElementById("id_isp-phone");
+  if (root && hidden && trigger && menu && list) {
+    function dialCode() { return (hidden.value || "254|Kenya").split("|")[0]; }
+    function updatePlaceholder() {
+      if (phone) phone.placeholder = "7XX XXX XXX (+" + dialCode() + ")";
+    }
+    function setOpen(open) {
+      menu.hidden = !open;
+      trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      root.classList.toggle("is-open", open);
+      if (open) {
+        search.value = "";
+        filterOptions("");
+        search.focus();
+      }
+    }
+    function filterOptions(query) {
+      var q = (query || "").toLowerCase().trim();
+      list.querySelectorAll(".flag-select-option").forEach(function (opt) {
+        var hay = (opt.dataset.name || "") + " " + (opt.dataset.dial || "");
+        opt.hidden = q && hay.indexOf(q) === -1;
+      });
+    }
+    function selectOption(opt) {
+      hidden.value = opt.dataset.value;
+      img.src = opt.dataset.flag;
+      img.srcset = opt.dataset.flag + " 1x, " + opt.dataset.flag2x + " 2x";
+      dialEl.textContent = "+" + opt.dataset.dial;
+      list.querySelectorAll(".flag-select-option").forEach(function (el) {
+        el.classList.toggle("is-selected", el === opt);
+      });
+      updatePlaceholder();
+      setOpen(false);
+    }
+    trigger.addEventListener("click", function (e) {
+      e.preventDefault();
+      setOpen(menu.hidden);
+    });
+    search.addEventListener("input", function () { filterOptions(search.value); });
+    list.addEventListener("click", function (e) {
+      var opt = e.target.closest(".flag-select-option");
+      if (opt) selectOption(opt);
+    });
+    document.addEventListener("click", function (e) {
+      if (!root.contains(e.target)) setOpen(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") setOpen(false);
+    });
+    updatePlaceholder();
+  }
+})();
+</script>

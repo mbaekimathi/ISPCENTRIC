@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}ISPCENTRIC{% endblock %}</title>
   <meta name="description" content="ISPCENTRIC — ISP operations platform with billing, staff, network, and more.">
-  <meta name="theme-color" content="#0b1217" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#0a1118" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#0e7c86" media="(prefers-color-scheme: light)">
   <script>
     (function () {
@@ -21,7 +21,7 @@
           meta.setAttribute("name", "theme-color");
           document.head.appendChild(meta);
         }
-        meta.setAttribute("content", theme === "dark" ? "#0b1217" : "#0e7c86");
+        meta.setAttribute("content", theme === "dark" ? "#0a1118" : "#0e7c86");
       } catch (e) {
         document.documentElement.setAttribute("data-theme", "dark");
       }
@@ -31,7 +31,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" media="print" onload="this.media='all'">
   <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"></noscript>
-  <link rel="stylesheet" href="{% static 'css/main.css' %}?v=164">
+  <link rel="stylesheet" href="{% static 'css/main.css' %}?v=167">
   {% block extra_head %}{% endblock %}
 </head>
 <body class="isp-body">

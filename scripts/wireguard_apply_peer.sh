@@ -16,6 +16,17 @@ if [[ -z "$PUBKEY" || -z "$ADDR" ]]; then
   exit 1
 fi
 
+if ! wg show "$IFACE" >/dev/null 2>&1; then
+  if [[ -f "$CONF" ]]; then
+    echo "==> Bringing up $IFACE from $CONF"
+    wg-quick up "$IFACE"
+  else
+    echo "!! WireGuard interface $IFACE is down and $CONF is missing." >&2
+    echo "   Enable: sudo systemctl enable --now wg-quick@${IFACE}.service" >&2
+    exit 1
+  fi
+fi
+
 wg set "$IFACE" peer "$PUBKEY" allowed-ips "${ADDR}/32"
 
 if [[ -f "$CONF" ]] && ! grep -qF "$PUBKEY" "$CONF"; then

@@ -18,6 +18,14 @@ class Organization(models.Model):
 
     name = models.CharField(max_length=150)
     owner = models.OneToOneField(User, on_delete=models.CASCADE, related_name="organization")
+    login_code = models.CharField(
+        max_length=6,
+        unique=True,
+        db_index=True,
+        blank=True,
+        default="",
+        help_text="6-digit code the ISP owner uses to log in (separate from staff login codes).",
+    )
     phone = models.CharField(max_length=30, blank=True)
     join_code = models.CharField(
         max_length=6,
@@ -238,6 +246,22 @@ class Organization(models.Model):
                 return code
 
     @staticmethod
+    def generate_login_code():
+        """Unique 6-digit ISP client login code (accounts_organization.login_code)."""
+        while True:
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            if not Organization.objects.filter(login_code=code).exists():
+                return code
+
+    @staticmethod
+    def generate_owner_username():
+        """Internal Django username for an ISP owner (not used at sign-in)."""
+        while True:
+            candidate = f"isp-owner-{secrets.token_hex(8)}"
+            if not User.objects.filter(username=candidate).exists():
+                return candidate
+
+    @staticmethod
     def normalize_referral_phone(phone: str = "") -> str:
         """Strip to national phone digits used as the referral code."""
         import re
@@ -314,6 +338,8 @@ class Organization(models.Model):
     def save(self, *args, **kwargs):
         if not self.join_code:
             self.join_code = Organization.generate_join_code()
+        if not self.login_code:
+            self.login_code = Organization.generate_login_code()
         if self.phone and (
             not self.referral_code
             or not str(self.referral_code).isdigit()

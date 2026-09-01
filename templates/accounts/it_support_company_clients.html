@@ -39,7 +39,6 @@
     </div>
   </header>
 
-  {% if clients %}
   <div class="cc-toolbar">
     <label class="visually-hidden" for="org-search">Search ISP accounts</label>
     <div class="cc-search-wrap">
@@ -58,8 +57,12 @@
         spellcheck="false"
       >
     </div>
+    <button type="button" class="btn btn-primary cc-register-btn" data-open-modal="cc-register-isp-modal">
+      Register ISP client
+    </button>
   </div>
 
+  {% if clients %}
   <div class="cc-grid cc-list" id="org-table">
     {% for client in clients %}
     <article
@@ -96,7 +99,7 @@
           <dt>Login code</dt>
           <dd>
             {% if client.owner %}
-              <span class="org-code" title="Owner 6-digit login code">{{ client.owner.username }}</span>
+              <span class="org-code" title="Owner 6-digit login code">{{ client.login_code }}</span>
             {% else %}
               —
             {% endif %}
@@ -138,7 +141,7 @@
           data-join-code="{{ client.join_code }}"
           data-has-owner="{% if client.owner %}1{% else %}0{% endif %}"
           data-owner="{% if client.owner %}{{ client.owner.get_full_name|default:client.owner.username }}{% endif %}"
-          data-owner-username="{% if client.owner %}{{ client.owner.username }}{% endif %}"
+          data-owner-username="{% if client.owner %}{{ client.login_code }}{% endif %}"
           data-owner-email="{% if client.owner %}{{ client.owner.email }}{% endif %}"
           data-owner-first="{% if client.owner %}{{ client.owner.first_name }}{% endif %}"
           data-owner-last="{% if client.owner %}{{ client.owner.last_name }}{% endif %}"
@@ -170,9 +173,14 @@
   <div class="cc-empty cc-empty-panel">
     <p class="cc-empty-title">No ISP accounts yet</p>
     <p>No ISP accounts registered yet.</p>
+    <button type="button" class="btn btn-primary" data-open-modal="cc-register-isp-modal">
+      Register ISP client
+    </button>
   </div>
   {% endif %}
 </section>
+
+{% include "accounts/includes/it_support_register_isp_modal.html" %}
 
 {% if clients %}
 <div
@@ -308,7 +316,7 @@
               inputmode="numeric"
               autocomplete="username"
               placeholder="000000"
-              value="{% if edit_owner_form %}{{ edit_owner_form.username.value|default_if_none:'' }}{% elif edit_client and edit_client.owner %}{{ edit_client.owner.username }}{% endif %}"
+              value="{% if edit_owner_form %}{{ edit_owner_form.username.value|default_if_none:'' }}{% elif edit_client %}{{ edit_client.login_code }}{% endif %}"
             >
             <p class="field-hint">Exactly 6 digits. Used with the password on the ISP client login page.</p>
             {% if edit_owner_form and edit_owner_form.username.errors %}

@@ -110,6 +110,70 @@ def validate_account_password(
     return password1
 
 
+def normalize_six_digit_login_code(value: str) -> str:
+    """Require exactly six numeric digits (shared by ISP owners and staff login codes)."""
+    code = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(code) != 6:
+        raise forms.ValidationError("Enter a 6-digit login code.")
+    return code
+
+
+def isp_owner_login_code_taken(code: str, *, exclude_org_id=None) -> bool:
+    """True when an ISP client already uses this code in Organization.login_code."""
+    from accounts.models import Organization
+
+    qs = Organization.objects.filter(login_code=code)
+    if exclude_org_id:
+        qs = qs.exclude(pk=exclude_org_id)
+    return qs.exists()
+
+
+def employee_login_code_taken(code: str, *, exclude_employee_id=None) -> bool:
+    """True when a staff account already uses this code in Employee.login_code."""
+    from accounts.models import Employee
+
+    qs = Employee.objects.filter(login_code=code)
+    if exclude_employee_id:
+        qs = qs.exclude(pk=exclude_employee_id)
+    return qs.exists()
+
+
+def assert_owner_login_code_available(code: str, *, organization=None):
+    """Ensure a 6-digit code is free for Organization.login_code (ISP clients only)."""
+    if isp_owner_login_code_taken(
+        code, exclude_org_id=getattr(organization, "pk", None)
+    ):
+        raise forms.ValidationError("That login code is already taken.")
+
+
+def assert_employee_login_code_available(code: str, *, employee=None):
+    """Ensure a 6-digit code is free for Employee.login_code (staff only)."""
+    if employee_login_code_taken(
+        code, exclude_employee_id=getattr(employee, "pk", None)
+    ):
+        raise forms.ValidationError("This login code is not available. Choose another.")
+
+
+def validate_employee_password(
+    password1: str,
+    password2: str,
+    *,
+    required: bool = True,
+) -> str:
+    """Require a matching 6-digit numeric password for staff accounts."""
+    digits1 = "".join(ch for ch in (password1 or "") if ch.isdigit())
+    digits2 = "".join(ch for ch in (password2 or "") if ch.isdigit())
+    if not digits1 and not digits2:
+        if required:
+            raise forms.ValidationError("Enter a 6-digit password.")
+        return ""
+    if digits1 != digits2:
+        raise forms.ValidationError("Passwords do not match.")
+    if len(digits1) != 6:
+        raise forms.ValidationError("Enter a 6-digit numeric password.")
+    return digits1
+
+
 # Backward-compatible alias used by older imports/tests.
 def validate_flexible_password(
     password1: str,

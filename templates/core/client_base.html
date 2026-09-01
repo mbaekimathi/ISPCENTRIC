@@ -153,7 +153,7 @@
               {% endif %}
               <div>
                 <strong>{% if organization %}{{ organization.name }}{% else %}Client workspace{% endif %}</strong>
-                <p>{% if organization %}{{ organization.owner.username }}{% else %}{{ user.username }}{% endif %}</p>
+                <p>{% if organization %}{{ organization.login_code }}{% else %}{{ user.username }}{% endif %}</p>
               </div>
             </div>
 

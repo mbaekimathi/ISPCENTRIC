@@ -885,11 +885,57 @@ class RouterDialTargetTests(SimpleTestCase):
             host="192.168.10.2",
             vpn_address="10.9.0.28",
         )
-        hosts = _router_api_host_candidates(router, discover=False)
+        with patch(
+            "core.mikrotik_connect.operator_on_router_lan",
+            return_value=True,
+        ):
+            hosts = _router_api_host_candidates(router, discover=False)
+            self.assertEqual(hosts[0], "192.168.10.2")
+            self.assertIn("10.9.0.28", hosts)
+            self.assertEqual(router.api_host, "192.168.10.2")
 
-        self.assertEqual(hosts[0], "192.168.10.2")
-        self.assertIn("10.9.0.28", hosts)
-        self.assertEqual(router.api_host, "192.168.10.2")
+    @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_local_off_lan_prefers_tunnel_for_api_host(self):
+        from core.models import MikroTikRouter
+
+        router = MikroTikRouter(
+            id=9,
+            name="Site",
+            host="192.168.10.2",
+            vpn_address="10.9.0.28",
+        )
+        with patch(
+            "core.mikrotik_connect.operator_on_router_lan",
+            return_value=False,
+        ):
+            self.assertEqual(router.api_host, "10.9.0.28")
+
+    @override_settings(HOSTED=False, WIREGUARD_SUBNET="10.9.0.0/24")
+    def test_probe_plan_off_lan_uses_tunnel_only(self):
+        from core.models import MikroTikRouter
+        from core.mikrotik_status_samples import build_router_probe_plan
+
+        router = MikroTikRouter(
+            id=3,
+            name="Edge",
+            host="192.168.10.2",
+            vpn_address="10.9.0.33",
+        )
+        with (
+            patch(
+                "core.mikrotik_connect.operator_on_router_lan",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_discovery.discover_mikrotik_devices",
+                return_value=[{"ip": "192.168.10.50"}],
+            ),
+        ):
+            candidates, hosts, _tunnel, off_lan = build_router_probe_plan([router])
+        self.assertTrue(off_lan[3])
+        self.assertEqual(candidates[3], ["10.9.0.33"])
+        self.assertEqual(hosts, ["10.9.0.33"])
+        self.assertNotIn("192.168.10.2", hosts)
 
     @override_settings(HOSTED=True, WIREGUARD_SUBNET="10.9.0.0/24")
     def test_hosted_api_host_prefers_vpn(self):
@@ -4413,6 +4459,7 @@ class PppoeOnlyOneSessionTests(SimpleTestCase):
 
         adds: list[tuple] = []
         aaa_cmds: list[list] = []
+        profile_attempts: list[list[dict[str, str]]] = []
 
         def fake_print(sock, path, **kwargs):
             return []
@@ -4426,13 +4473,23 @@ class PppoeOnlyOneSessionTests(SimpleTestCase):
                 aaa_cmds.append(list(words))
             return [], {"_reply": "!done"}
 
+        def fake_add_or_set_attempts(sock, path, item_id, attempts, **kwargs):
+            if path == "/ppp/profile":
+                profile_attempts.append(list(attempts))
+            return {"_reply": "!done"}, "*1"
+
         with (
             patch("core.mikrotik_connect._print", side_effect=fake_print),
             patch("core.mikrotik_connect._add", side_effect=fake_add),
             patch("core.mikrotik_connect._set", return_value={"_reply": "!done"}),
             patch("core.mikrotik_connect._remove", return_value={"_reply": "!done"}),
             patch("core.mikrotik_connect._command", side_effect=fake_command),
-            patch("core.mikrotik_connect._add_or_set_attempts", return_value=({"_reply": "!done"}, "*1")),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set_attempts,
+            ),
+            patch("core.mikrotik_connect._ensure_pppoe_pool"),
+            patch("core.mikrotik_connect._ensure_pppoe_gateway_address"),
             patch("core.mikrotik_connect._ensure_pppoe_nat"),
             patch("core.mikrotik_connect._ensure_pppoe_expired_redirect", return_value=[]),
             patch("core.mikrotik_connect._add_filter_rule", return_value={"_reply": "!done"}),
@@ -4445,13 +4502,11 @@ class PppoeOnlyOneSessionTests(SimpleTestCase):
             )
 
         self.assertEqual(profile, PPPOE_PROFILE_NAME)
-        profile_adds = [props for path, props in adds if path == "/ppp/profile"]
-        self.assertTrue(profile_adds)
-        for props in profile_adds:
-            self.assertEqual(
-                props.get("only-one"),
-                "yes",
-                msg=f"profile {props.get('name')} must reject a second simultaneous dial",
+        self.assertTrue(profile_attempts)
+        for attempts in profile_attempts:
+            self.assertTrue(
+                any(props.get("only-one") == "yes" for props in attempts),
+                msg="PPP profile attempts must include only-one=yes",
             )
         self.assertTrue(aaa_cmds)
         self.assertIn("=use-one-session=yes", aaa_cmds[0])
@@ -4495,6 +4550,97 @@ class PppoeOnlyOneSessionTests(SimpleTestCase):
         }
         self.assertEqual(by_name[PPPOE_BLOCKED_PROFILE_NAME]["only-one"], "yes")
         self.assertEqual(by_name[speed_name]["only-one"], "yes")
+
+
+class PppoePoolRepairTests(SimpleTestCase):
+    """PPPoE pool must exist before profiles reference it."""
+
+    def test_ensure_pppoe_pool_repairs_empty_ranges(self):
+        from core.mikrotik_connect import (
+            PPPOE_POOL_NAME,
+            PPPOE_POOL_RANGES,
+            PPP_SECRET_TAG,
+            _ensure_pppoe_pool,
+        )
+
+        state = {
+            "/ip/pool": [
+                {
+                    ".id": "*pool1",
+                    "name": PPPOE_POOL_NAME,
+                    "ranges": "",
+                    "comment": PPP_SECRET_TAG,
+                }
+            ]
+        }
+        sets: list[tuple] = []
+
+        def fake_print(sock, path, **kwargs):
+            return list(state.get(path, []))
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append((path, item_id, dict(props)))
+            for row in state.get(path, []):
+                if row.get(".id") == item_id:
+                    row.update(props)
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect._add", return_value={"_reply": "!done", "ret": "*new"}),
+        ):
+            _ensure_pppoe_pool(object())
+
+        self.assertTrue(sets)
+        self.assertEqual(sets[0][2]["ranges"], PPPOE_POOL_RANGES)
+
+    def test_profile_attempts_fall_back_to_literal_range(self):
+        from core.mikrotik_connect import (
+            PPPOE_POOL_NAME,
+            PPPOE_POOL_RANGES,
+            PPPOE_PROFILE_NAME,
+            _ppp_profile_attempts,
+        )
+
+        remotes = {
+            props["remote-address"]
+            for props in _ppp_profile_attempts(name=PPPOE_PROFILE_NAME)
+        }
+        self.assertIn(PPPOE_POOL_NAME, remotes)
+        self.assertIn(PPPOE_POOL_RANGES, remotes)
+
+    def test_add_or_set_attempts_tries_next_remote_on_pool_trap(self):
+        from core.mikrotik_connect import PPPOE_POOL_RANGES, _add_or_set_attempts
+
+        attempts = [
+            {"name": "test-profile", "remote-address": "missing-pool"},
+            {"name": "test-profile", "remote-address": PPPOE_POOL_RANGES},
+        ]
+        calls: list[str] = []
+
+        def fake_add(sock, path, **props):
+            remote = props.get("remote-address", "")
+            calls.append(remote)
+            if remote == "missing-pool":
+                return {
+                    "_reply": "!trap",
+                    "message": "invalid value for argument remote-address: input does not match any value of pool",
+                }
+            return {"_reply": "!done", "ret": "*1"}
+
+        with patch("core.mikrotik_connect._add", side_effect=fake_add):
+            terminal, item_id = _add_or_set_attempts(
+                object(), "/ppp/profile", "", attempts, required=("name", "remote-address")
+            )
+
+        self.assertEqual(terminal.get("_reply"), "!done")
+        self.assertEqual(calls[0], "missing-pool")
+        self.assertEqual(calls[-1], PPPOE_POOL_RANGES)
+
+
+class PppoeOnlyOneSessionSecretTests(SimpleTestCase):
+    """PPP secret only-one enforcement."""
 
     def test_ppp_secret_writes_only_one_yes(self):
         from core.mikrotik_connect import _ensure_ppp_secret
@@ -7756,18 +7902,146 @@ class MikroTikStatusOfflineTests(TestCase):
         self.router.vpn_address = "10.9.0.12"
         self.router.save(update_fields=["vpn_address", "updated_at"])
         with (
-            patch("core.views.fetch_mikrotik_live_snapshot", return_value={"ok": False, "online": False, "error": "down"}) as snap,
+            patch(
+                "core.views.fetch_mikrotik_live_snapshot_for_router",
+                return_value={
+                    "ok": False,
+                    "online": False,
+                    "error": "down",
+                    "dial_host": "10.9.0.12",
+                },
+            ) as snap,
             patch("core.views.settings.HOSTED", True),
         ):
             response = self.client.get(
                 f"/app/mikrotik/{self.router.pk}/live/?refresh=1"
             )
         snap.assert_called_once()
-        self.assertEqual(snap.call_args.args[0], "10.9.0.12")
+        self.assertEqual(snap.call_args.args[0].pk, self.router.pk)
         body = response.json()
         self.assertEqual(body["api_host"], "10.9.0.12")
         self.assertEqual(body["host"], "192.168.88.1")
         self.assertFalse(body["online"])
+
+    @override_settings(HOSTED=False)
+    def test_live_endpoint_defers_when_off_lan_cable_unplugged(self):
+        from django.core.cache import cache
+
+        self.router.vpn_address = "10.9.0.12"
+        self.router.host = "192.168.10.5"
+        self.router.save(update_fields=["vpn_address", "host", "updated_at"])
+        cache.set(
+            f"mikrotik_live:{self.org.pk}:{self.router.pk}",
+            {
+                "ok": True,
+                "online": True,
+                "identity": "Edge",
+                "cpu_load": 12,
+                "memory_used_pct": 40,
+            },
+            60,
+        )
+        with (
+            patch(
+                "core.views.fetch_mikrotik_live_snapshot_for_router",
+                return_value={"ok": False, "online": False, "error": "timed out"},
+            ),
+            patch(
+                "core.mikrotik_connect.operator_on_router_lan",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect.operator_can_reach_tunnel",
+                return_value=False,
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            response = self.client.get(
+                f"/app/mikrotik/{self.router.pk}/live/?refresh=1"
+            )
+        body = response.json()
+        self.assertTrue(body.get("ok"))
+        self.assertTrue(body.get("online"))
+        self.assertTrue(body.get("remote_management_only"))
+        self.assertFalse(body.get("controls_live", True))
+        self.assertEqual(body.get("identity"), "Edge")
+
+    @override_settings(HOSTED=False)
+    def test_live_endpoint_short_circuits_off_lan_before_api(self):
+        from django.core.cache import cache
+
+        self.router.vpn_address = "10.9.0.12"
+        self.router.host = "192.168.10.5"
+        self.router.save(update_fields=["vpn_address", "host", "updated_at"])
+        cache.set(
+            f"mikrotik_live:{self.org.pk}:{self.router.pk}",
+            {"ok": True, "online": True, "identity": "Edge"},
+            60,
+        )
+        with (
+            patch("core.views.fetch_mikrotik_live_snapshot_for_router") as snap,
+            patch(
+                "core.mikrotik_connect.operator_on_router_lan",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect.resolve_router_management_mode",
+                return_value="remote_only",
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            response = self.client.get(
+                f"/app/mikrotik/{self.router.pk}/live/?refresh=1"
+            )
+        snap.assert_not_called()
+        body = response.json()
+        self.assertTrue(body.get("remote_management_only"))
+        self.assertEqual(body.get("management_mode"), "remote_only")
+
+    def test_live_snapshot_tries_tunnel_after_lan_failure(self):
+        from core.mikrotik_connect import fetch_mikrotik_live_snapshot_for_router
+
+        self.router.vpn_address = "10.9.0.12"
+        self.router.save(update_fields=["vpn_address", "updated_at"])
+        calls: list[str] = []
+
+        def fake_snapshot(host, username, password, **kwargs):
+            calls.append(host)
+            if host == "10.9.0.12":
+                return {
+                    "ok": True,
+                    "online": True,
+                    "wan_download_label": "1.0 Mbps",
+                    "wan_upload_label": "512 Kbps",
+                }
+            return {"ok": False, "online": False, "error": "timed out"}
+
+        with patch(
+            "core.mikrotik_connect.fetch_mikrotik_live_snapshot",
+            side_effect=fake_snapshot,
+        ):
+            snap = fetch_mikrotik_live_snapshot_for_router(self.router)
+        self.assertTrue(snap.get("ok"))
+        self.assertEqual(snap.get("dial_host"), "10.9.0.12")
+        self.assertIn("192.168.88.1", calls)
+        self.assertIn("10.9.0.12", calls)
+
+    def test_speed_byte_delta_uses_previous_sample(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_connect import _speed_from_byte_delta
+
+        cache.clear()
+        first = _speed_from_byte_delta("lab", "ether1", 1_000_000, 500_000)
+        self.assertIsNone(first)
+        import time
+
+        time.sleep(0.4)
+        second = _speed_from_byte_delta("lab", "ether1", 1_100_000, 550_000)
+        self.assertIsNotNone(second)
+        self.assertGreater(int(second.get("wan_download_bps") or 0), 0)
+        self.assertGreater(int(second.get("wan_upload_bps") or 0), 0)
+        self.assertEqual(second.get("wan_speed_source"), "delta")
 
     def test_outage_sample_bypasses_healthy_gate(self):
         from django.core.cache import cache
@@ -8099,6 +8373,44 @@ class MikroTikStatusOfflineTests(TestCase):
         confirmed = stabilize_live_status_row(self.org.pk, self.router.pk, fail_row)
         self.assertEqual(confirmed["status"], "disconnected")
 
+    def test_off_lan_tunnel_holds_connected_when_cable_unplugged(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import stabilize_live_status_row
+
+        cache.clear()
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(
+            self.org.pk,
+            self.router.pk,
+            connected,
+            tunnel=True,
+            off_lan_tunnel=True,
+        )
+        fail_row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+            "error": "timed out",
+        }
+        with (
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+        ):
+            held = stabilize_live_status_row(
+                self.org.pk,
+                self.router.pk,
+                fail_row,
+                tunnel=True,
+                off_lan_tunnel=True,
+            )
+        self.assertEqual(held["status"], "connected")
+        self.assertTrue(held.get("management_deferred"))
+
     def test_probe_mikrotik_hosts_retries_on_first_miss(self):
         from core.mikrotik_status_samples import probe_mikrotik_hosts
 
@@ -8185,4 +8497,484 @@ class MikroTikStatusOfflineTests(TestCase):
         self.assertTrue(outcome["passed"])
         self.assertTrue(outcome["flaky"])
         self.assertEqual(outcome["status_counts"].get("connected"), 2)
+
+
+class MikroTikOnboardNasRefreshTests(TestCase):
+    """Post-onboard NAS push keeps the onboarding guard until the job finishes."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+        from django.core.cache import cache
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("onboard-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Onboard ISP",
+            owner=self.owner,
+            join_code="889900",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="New Edge",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.10.1",
+            vpn_address="10.9.0.40",
+            username="admin",
+            password="secret",
+        )
+        cache.clear()
+        self.client.force_login(self.owner)
+
+    def _fake_thread_factory(self, started: list):
+        class FakeThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self.target = target
+                self.daemon = daemon
+                self.name = name
+
+            def start(self):
+                started.append(self)
+
+        return FakeThread
+
+    def test_post_onboard_guard_held_until_nas_job_completes(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_jobs import get_job
+        from core.mikrotik_status_samples import (
+            is_mikrotik_onboarding_active,
+            is_mikrotik_post_onboard_grace,
+            mark_mikrotik_onboarding_active,
+            mikrotik_onboarding_guard_key,
+        )
+        from core.mikrotik_jobs import schedule_post_onboard_nas_refresh
+
+        mark_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk, org_wide=True)
+        self.assertTrue(
+            is_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk)
+        )
+        self.assertFalse(is_mikrotik_post_onboard_grace(self.router.pk))
+        started = []
+        with (
+            patch("core.mikrotik_jobs.threading.Thread", self._fake_thread_factory(started)),
+            patch(
+                "core.mikrotik_jobs.run_nas_refresh_with_retry",
+                return_value={"ok": True, "message": "pppoe ok; hotspot ok"},
+            ) as nas_refresh,
+            patch("django.db.connection.close"),
+        ):
+            schedule_post_onboard_nas_refresh(
+                self.router,
+                organization_id=self.org.pk,
+                user_id=self.owner.pk,
+                tunnel=True,
+            )
+            self.assertEqual(len(started), 1)
+            started[0].target()
+
+        nas_refresh.assert_called_once()
+        job = get_job(self.router.pk, "nas_refresh")
+        self.assertEqual(job["status"], "ok")
+        self.assertFalse(
+            is_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk)
+        )
+        self.assertTrue(is_mikrotik_post_onboard_grace(self.router.pk))
+        cache.delete(mikrotik_onboarding_guard_key(self.org.pk, 0))
+
+    def test_nas_refresh_job_records_failure(self):
+        from core.mikrotik_jobs import get_job
+        from core.mikrotik_status_samples import (
+            clear_mikrotik_onboarding_active,
+            is_mikrotik_post_onboard_grace,
+            mark_mikrotik_onboarding_active,
+        )
+        from core.mikrotik_jobs import schedule_post_onboard_nas_refresh
+
+        mark_mikrotik_onboarding_active(self.org.pk, org_wide=True)
+        started = []
+        with (
+            patch("core.mikrotik_jobs.threading.Thread", self._fake_thread_factory(started)),
+            patch(
+                "core.mikrotik_jobs.run_nas_refresh_with_retry",
+                return_value={"ok": False, "error": "API login failed"},
+            ),
+            patch("django.db.connection.close"),
+        ):
+            schedule_post_onboard_nas_refresh(
+                self.router,
+                organization_id=self.org.pk,
+                user_id=self.owner.pk,
+                tunnel=False,
+            )
+            started[0].target()
+
+        job = get_job(self.router.pk, "nas_refresh")
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("login", job["error"].lower())
+        clear_mikrotik_onboarding_active(self.org.pk, org_wide=True)
+        self.assertTrue(is_mikrotik_post_onboard_grace(self.router.pk))
+
+    def test_status_holds_while_nas_job_pending(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import mark_mikrotik_onboarding_active
+        from core.mikrotik_jobs import schedule_post_onboard_nas_refresh
+
+        mark_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk, org_wide=True)
+        cache.set(
+            f"mikrotik_status:{self.org.pk}",
+            [
+                {
+                    "id": self.router.pk,
+                    "host": self.router.host,
+                    "name": self.router.name,
+                    "online": True,
+                    "status": "connected",
+                    "error": "",
+                }
+            ],
+            60,
+        )
+        started = []
+        with (
+            patch("core.mikrotik_jobs.threading.Thread", self._fake_thread_factory(started)),
+            patch(
+                "core.mikrotik_jobs.run_nas_refresh_with_retry",
+                return_value={"ok": True},
+            ),
+        ):
+            schedule_post_onboard_nas_refresh(
+                self.router,
+                organization_id=self.org.pk,
+                user_id=self.owner.pk,
+                tunnel=True,
+            )
+        with patch("core.views.check_mikrotik_reachable") as probe:
+            response = self.client.get("/app/mikrotik/status/")
+        probe.assert_not_called()
+        body = response.json()
+        self.assertTrue(body.get("onboarding_hold"))
+        self.assertEqual(body["routers"][0]["status"], "connected")
+
+    def test_auto_restore_skipped_during_post_onboard_grace(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            mark_mikrotik_post_onboard_grace,
+            maybe_auto_restore_router,
+        )
+
+        cache.clear()
+        mark_mikrotik_post_onboard_grace(self.router.pk, tunnel=True)
+        with patch("django.conf.settings.MIKROTIK_AUTO_RESTORE", True, create=True):
+            with patch(
+                "core.mikrotik_connect.attempt_mikrotik_auto_restore"
+            ) as restore:
+                row = {"id": self.router.pk, "status": "disconnected", "online": False}
+                for _ in range(5):
+                    outcome = maybe_auto_restore_router(self.router, row)
+                self.assertIsNone(outcome)
+        restore.assert_not_called()
+
+    def test_onboard_lifecycle_loop_until_stable(self):
+        """Simulate guard → NAS push → grace without probe/auto-restore interference."""
+        from django.core.cache import cache
+
+        from core.mikrotik_jobs import get_job
+        from core.mikrotik_status_samples import (
+            is_mikrotik_onboarding_active,
+            is_mikrotik_post_onboard_grace,
+            mark_mikrotik_onboarding_active,
+            maybe_auto_restore_router,
+            mikrotik_onboarding_guard_key,
+        )
+        from core.mikrotik_jobs import schedule_post_onboard_nas_refresh
+
+        cache.clear()
+        mark_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk, org_wide=True)
+        outage_row = {
+            "id": self.router.pk,
+            "status": "disconnected",
+            "online": False,
+            "error": "timed out",
+        }
+        started = []
+        with (
+            patch("core.mikrotik_jobs.threading.Thread", self._fake_thread_factory(started)),
+            patch(
+                "core.mikrotik_jobs.run_nas_refresh_with_retry",
+                return_value={"ok": True, "message": "stack ok"},
+            ),
+            patch("django.conf.settings.MIKROTIK_AUTO_RESTORE", True, create=True),
+            patch(
+                "core.mikrotik_connect.attempt_mikrotik_auto_restore"
+            ) as restore,
+            patch("django.db.connection.close"),
+        ):
+            schedule_post_onboard_nas_refresh(
+                self.router,
+                organization_id=self.org.pk,
+                user_id=self.owner.pk,
+                tunnel=True,
+            )
+            self.assertTrue(
+                is_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk)
+            )
+            self.assertIsNone(maybe_auto_restore_router(self.router, outage_row))
+            restore.assert_not_called()
+
+            started[0].target()
+
+            self.assertFalse(
+                is_mikrotik_onboarding_active(self.org.pk, user_id=self.owner.pk)
+            )
+            self.assertTrue(is_mikrotik_post_onboard_grace(self.router.pk))
+            self.assertIsNone(maybe_auto_restore_router(self.router, outage_row))
+            restore.assert_not_called()
+
+        job = get_job(self.router.pk, "nas_refresh")
+        self.assertEqual(job["status"], "ok")
+        cache.delete(mikrotik_onboarding_guard_key(self.org.pk, 0))
+
+
+class MikroTikNasRefreshRetryTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("nas-retry-owner", password="x")
+        self.org = Organization.objects.create(
+            name="NAS Retry ISP",
+            owner=self.owner,
+            join_code="990011",
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Retry NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.70",
+            username="admin",
+            password="secret",
+        )
+
+    def test_run_nas_refresh_with_retry_recovers_on_second_attempt(self):
+        from core.mikrotik_jobs import run_nas_refresh_with_retry
+
+        calls = {"n": 0}
+
+        def fake_refresh(router, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"ok": False, "error": "timed out"}
+            return {"ok": True, "message": "pppoe ok", "notes": ["pppoe ok"]}
+
+        with (
+            patch(
+                "core.mikrotik_connect.refresh_onboarded_router_config",
+                side_effect=fake_refresh,
+            ),
+            patch("core.mikrotik_jobs.time.sleep"),
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={"ok": True},
+            ),
+        ):
+            result = run_nas_refresh_with_retry(self.router)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["n"], 2)
+        self.assertIn("management verified", result.get("message", ""))
+
+    def test_run_nas_refresh_verification_failure_marks_not_ok(self):
+        from core.mikrotik_jobs import run_nas_refresh_with_retry
+
+        with (
+            patch(
+                "core.mikrotik_connect.refresh_onboarded_router_config",
+                return_value={"ok": True, "notes": ["hotspot ok"]},
+            ),
+            patch(
+                "core.connectivity_verification.evaluate_nas_connectivity",
+                return_value={
+                    "ok": False,
+                    "error": "API login failed",
+                    "hint": "Check credentials",
+                },
+            ),
+        ):
+            result = run_nas_refresh_with_retry(self.router)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("login", result["error"].lower())
+
+
+class MikroTikOnboardPeerGateTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.owner = User.objects.create_user("peer-gate-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Peer Gate ISP",
+            owner=self.owner,
+            join_code="112233",
+        )
+        self.client.force_login(self.owner)
+
+    @override_settings(HOSTED=True)
+    def test_connect_blocks_when_hosted_peer_missing(self):
+        from core.models import WireGuardReservation
+
+        WireGuardReservation.objects.create(
+            label="Site A",
+            address="10.9.0.81",
+            public_key=SERVER_PUBLIC_KEY,
+            private_key=SERVER_PUBLIC_KEY,
+            lan_address="192.168.15.1",
+        )
+        with patch(
+            "core.wireguard.inspect_server_peer",
+            return_value={"checked": True, "present": False},
+        ):
+            response = self.client.post(
+                "/app/mikrotik/connect/",
+                {
+                    "host": "10.9.0.81",
+                    "username": "admin",
+                    "password": "secret",
+                    "tunnel_host": "10.9.0.81",
+                },
+            )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertFalse(body.get("ok"))
+        self.assertTrue(body.get("peer_sync_required"))
+
+    @override_settings(HOSTED=True)
+    def test_connect_allows_when_hosted_peer_present(self):
+        from core.models import WireGuardReservation
+
+        WireGuardReservation.objects.create(
+            label="Site B",
+            address="10.9.0.82",
+            public_key=SERVER_PUBLIC_KEY,
+            private_key=SERVER_PUBLIC_KEY,
+            lan_address="192.168.16.1",
+        )
+        with (
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": True, "present": True},
+            ),
+            patch(
+                "core.views.test_mikrotik_api_login",
+                return_value={
+                    "ok": True,
+                    "serial_number": "SN123",
+                    "software_id": "SW123",
+                    "host": "10.9.0.82",
+                },
+            ),
+            patch("core.views._find_router_by_hardware", return_value=None),
+            patch("core.views._api_session") as session,
+        ):
+            session.return_value.__enter__.return_value = object()
+            response = self.client.post(
+                "/app/mikrotik/connect/",
+                {
+                    "host": "10.9.0.82",
+                    "username": "admin",
+                    "password": "secret",
+                    "tunnel_host": "10.9.0.82",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("ok"))
+
+    def test_onboard_tunnel_peer_ready_skips_local_mode(self):
+        from core.wireguard import onboard_tunnel_peer_ready
+
+        with override_settings(HOSTED=False):
+            result = onboard_tunnel_peer_ready("10.9.0.90")
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["required"])
+
+
+class HostedDetectionTests(SimpleTestCase):
+    def test_opt_ispcentric_path_is_hosted(self):
+        from pathlib import Path
+
+        from ispcentric.envutil import is_hosted
+
+        self.assertTrue(is_hosted(Path("/opt/ispcentric")))
+
+    def test_hosted_marker_file(self):
+        import tempfile
+        from pathlib import Path
+
+        from ispcentric.envutil import is_hosted
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertFalse(is_hosted(root))
+            (root / ".hosted").write_text("", encoding="utf-8")
+            self.assertTrue(is_hosted(root))
+
+    def test_django_hosted_override(self):
+        import os
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from ispcentric.envutil import is_hosted
+
+        with patch.dict(os.environ, {"DJANGO_HOSTED": "false"}, clear=False):
+            self.assertFalse(is_hosted(Path("/opt/ispcentric")))
+
+
+class HostedSystemCheckTests(SimpleTestCase):
+    def test_wireguard_without_hosted_warns(self):
+        from core.checks import check_hosted_wireguard_mismatch
+
+        with override_settings(
+            HOSTED=False,
+            WIREGUARD_ENDPOINT="isp.example.com:51820",
+            WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+        ):
+            issues = check_hosted_wireguard_mismatch(None)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0].id, "core.W001")
+
+    def test_hosted_missing_public_base_url_errors(self):
+        from core.checks import check_hosted_public_base_url
+
+        with override_settings(
+            HOSTED=True,
+            PUBLIC_BASE_URL="",
+            ALLOWED_HOSTS=["localhost", "127.0.0.1"],
+        ):
+            issues = check_hosted_public_base_url(None)
+        self.assertTrue(any(i.id == "core.E001" for i in issues))
+
+    def test_hosted_dashboard_url_uses_public_base(self):
+        from core.mikrotik_connect import hosted_dashboard_url
+
+        with override_settings(
+            HOSTED=True,
+            PUBLIC_BASE_URL="http://isp.richcom.co.ke",
+        ):
+            self.assertEqual(hosted_dashboard_url(), "http://isp.richcom.co.ke")
+
+    def test_hosted_dashboard_url_falls_back_to_http_endpoint(self):
+        from core.mikrotik_connect import hosted_dashboard_url
+
+        with override_settings(
+            HOSTED=True,
+            PUBLIC_BASE_URL="",
+            ALLOWED_HOSTS=["localhost", "127.0.0.1"],
+            WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+        ):
+            self.assertEqual(hosted_dashboard_url(), "http://isp.richcom.co.ke")
 

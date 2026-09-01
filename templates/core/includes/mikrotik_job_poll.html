@@ -21,6 +21,7 @@
   if (!banner || !textEl) return;
 
   var statusUrl = "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" + encodeURIComponent(jobType);
+  var recoverUrl = "{% url 'core:mikrotik_push_status' router_id=router.pk %}?job=" + encodeURIComponent(jobType) + "&recover=1";
   var labels = {
     credentials: "Updating credentials",
     wifi: "Updating Wi‑Fi",
@@ -32,8 +33,20 @@
     uplink_balance: "Applying load balance",
     uplink_smart_balance: "Applying smart balance",
     pppoe_push: "Pushing PPPoE policy",
-    hotspot_push: "Pushing Hotspot policy"
+    hotspot_push: "Pushing Hotspot policy",
+    nas_refresh: "Applying billing settings"
   };
+  var phaseText = {
+    queued: "Queued — waiting for background worker…",
+    start: "Starting background push…",
+    push: "Pushing PPPoE / Hotspot billing rules to the MikroTik…",
+    verify: "Verifying MikroTik management access…"
+  };
+
+  var startedAt = Date.now();
+  var unknownPolls = 0;
+  var recoverAttempted = false;
+  var maxWaitMs = 240000;
 
   function setBanner(kind, title, text) {
     banner.hidden = false;
@@ -43,8 +56,16 @@
     textEl.textContent = text;
   }
 
-  function poll() {
-    fetch(statusUrl, {
+  function jobDetail(job) {
+    var phase = (job.phase || "").toLowerCase();
+    if (job.message) return job.message;
+    if (phase && phaseText[phase]) return phaseText[phase];
+    return "Working over the billing tunnel — this can take up to 3 minutes.";
+  }
+
+  function poll(recover) {
+    var url = recover ? recoverUrl : statusUrl;
+    fetch(url, {
       headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin"
     })
@@ -53,9 +74,58 @@
         var job = (data && data.job) || {};
         var status = (job.status || "").toLowerCase();
         var label = labels[jobType] || "MikroTik update";
+        var elapsedMs = Date.now() - startedAt;
+
+        if (status === "unknown") {
+          unknownPolls += 1;
+          if (!recoverAttempted && unknownPolls >= 3) {
+            recoverAttempted = true;
+            setBanner(
+              "is-warn",
+              label + "…",
+              "Job status was lost — restarting the billing settings push…"
+            );
+            window.setTimeout(function () { poll(true); }, 800);
+            return;
+          }
+          setBanner(
+            "is-warn",
+            label + "…",
+            unknownPolls < 3
+              ? "Waiting for background push to register…"
+              : "Still waiting for job status. Check that the Django server is running."
+          );
+          if (elapsedMs < maxWaitMs) {
+            window.setTimeout(function () { poll(false); }, 2000);
+          } else {
+            setBanner(
+              "is-danger",
+              label + " failed",
+              "Billing settings push never started. Refresh this page or use MikroTik → Reconnect."
+            );
+          }
+          return;
+        }
+
         if (status === "pending" || status === "running") {
-          setBanner("is-info", label + "…", "Working over the billing tunnel — this can take up to a minute.");
-          window.setTimeout(poll, 2000);
+          setBanner("is-info", label + "…", jobDetail(job));
+          if (elapsedMs >= maxWaitMs) {
+            setBanner(
+              "is-danger",
+              label + " timed out",
+              "The push is taking too long. Check MikroTik connectivity, use Reconnect, then try again."
+            );
+            if (typeof window.showToast === "function") {
+              window.showToast({
+                type: "error",
+                title: label + " timed out",
+                text: "Open MikroTik → Reconnect, confirm the router is online, then retry.",
+                sticky: true
+              });
+            }
+            return;
+          }
+          window.setTimeout(function () { poll(false); }, 2000);
           return;
         }
         if (status === "ok") {
@@ -66,18 +136,30 @@
           return;
         }
         if (status === "failed") {
-          setBanner("is-danger", label + " failed", job.error || "Could not apply settings on the MikroTik.");
+          var detail = job.error || "Could not apply settings on the MikroTik.";
+          if (job.hint && detail.indexOf(job.hint) < 0) {
+            detail = detail + " " + job.hint;
+          }
+          setBanner("is-danger", label + " failed", detail);
+          if (typeof window.showToast === "function") {
+            window.showToast({
+              type: "error",
+              title: label + " failed",
+              text: detail,
+              sticky: true
+            });
+          }
           return;
         }
-        window.setTimeout(poll, 2500);
+        window.setTimeout(function () { poll(false); }, 2500);
       })
       .catch(function () {
         setBanner("is-warn", "Checking update status…", "Retrying in a few seconds.");
-        window.setTimeout(poll, 3000);
+        window.setTimeout(function () { poll(false); }, 3000);
       });
   }
 
   setBanner("is-info", (labels[jobType] || "MikroTik update") + "…", "Starting background push…");
-  poll();
+  poll(false);
 })();
 </script>

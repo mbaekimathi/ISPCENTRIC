@@ -218,18 +218,24 @@ class MikroTikRouter(models.Model):
         """Address the billing server dials for RouterOS API access.
 
         ``host`` is the on-site LAN gateway; ``vpn_address`` is the WireGuard
-        tunnel. Hosted servers prefer the tunnel; a local billing PC prefers LAN.
+        tunnel. Hosted servers prefer the tunnel. A local billing PC prefers LAN
+        while plugged into the site, otherwise the tunnel address.
         """
         host = (self.host or "").strip()
         tunnel = (self.vpn_address or "").strip()
         try:
             from django.conf import settings
 
-            if not bool(getattr(settings, "HOSTED", False)):
-                return host or tunnel
+            if bool(getattr(settings, "HOSTED", False)):
+                return tunnel or host
+            if tunnel:
+                from core.mikrotik_connect import operator_on_router_lan
+
+                if not operator_on_router_lan(self):
+                    return tunnel or host
         except Exception:
             return host or tunnel
-        return tunnel or host
+        return host or tunnel
 
     class Meta:
         db_table = "core_mikrotik_router"

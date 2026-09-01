@@ -445,6 +445,7 @@ def stabilize_live_status_row(
     *,
     force: bool = False,
     tunnel: bool = False,
+    off_lan_tunnel: bool = False,
 ) -> dict[str, Any]:
     """
     Hold the last Connected row through flaky polls so the UI does not flash
@@ -472,6 +473,25 @@ def stabilize_live_status_row(
 
     if status not in _SOFT_LIVE_OUTAGE:
         return row
+
+    if off_lan_tunnel:
+        try:
+            from core.wireguard import server_on_tunnel
+
+            if not server_on_tunnel():
+                last_good = cache.get(stable_key)
+                if isinstance(last_good, dict) and (
+                    last_good.get("status") or ""
+                ).strip().lower() == "connected":
+                    held = dict(last_good)
+                    held["stabilized"] = True
+                    held["probe_status"] = status
+                    held["management_deferred"] = True
+                    if row.get("error"):
+                        held["probe_error"] = row["error"]
+                    return held
+        except Exception:
+            pass
 
     last_good = cache.get(stable_key)
     if isinstance(last_good, dict) and (last_good.get("status") or "").strip().lower() == "connected":
@@ -503,10 +523,12 @@ def stabilize_live_status_rows(
     *,
     force: bool = False,
     tunnel_by_router: dict[int, bool] | None = None,
+    off_lan_tunnel_by_router: dict[int, bool] | None = None,
 ) -> list[dict[str, Any]]:
     if force or not organization_id or not rows:
         return rows
     tunnel_map = tunnel_by_router or {}
+    off_lan_map = off_lan_tunnel_by_router or {}
     stabilized: list[dict[str, Any]] = []
     for row in rows:
         rid = row.get("id")
@@ -521,6 +543,7 @@ def stabilize_live_status_rows(
                 row,
                 force=force,
                 tunnel=bool(tunnel_map.get(rid_int)),
+                off_lan_tunnel=bool(off_lan_map.get(rid_int)),
             )
         )
     return stabilized
@@ -673,27 +696,50 @@ def _internet_probe_cooldown_key(router_id: int) -> str:
 
 def build_router_probe_plan(
     routers: list[MikroTikRouter],
-) -> tuple[dict[int, list[str]], list[str], dict[int, bool]]:
+) -> tuple[dict[int, list[str]], list[str], dict[int, bool], dict[int, bool]]:
     """
     Map each router to dial candidates (tunnel + LAN + discovery) and unique hosts.
 
-    Returns (router_candidates, unique_hosts, tunnel_by_router).
+    Returns (router_candidates, unique_hosts, tunnel_by_router, off_lan_tunnel_by_router).
     """
     from core.mikrotik_connect import (
+        _is_wireguard_tunnel_host,
         _router_api_host_candidates,
         discover_local_mikrotik_host,
         on_router_lan,
+        operator_on_router_lan,
     )
 
     router_candidates: dict[int, list[str]] = {}
     unique_hosts: list[str] = []
     tunnel_by_router: dict[int, bool] = {}
+    off_lan_tunnel_by_router: dict[int, bool] = {}
 
+    billing_on_lan = on_router_lan()
     for router in routers:
-        candidates = _router_api_host_candidates(router, discover=on_router_lan())
-        if on_router_lan():
+        tunnel = (router.vpn_address or "").strip()
+        operator_reaches_lan = (
+            not billing_on_lan or not tunnel or operator_on_router_lan(router)
+        )
+        off_lan_tunnel_by_router[router.id] = bool(
+            billing_on_lan
+            and tunnel
+            and not operator_reaches_lan
+        )
+        discover = billing_on_lan and operator_reaches_lan
+        candidates = _router_api_host_candidates(router, discover=discover)
+        if off_lan_tunnel_by_router[router.id]:
+            tunnel_only = [
+                host
+                for host in candidates
+                if host == tunnel or _is_wireguard_tunnel_host(host)
+            ]
+            if tunnel and tunnel not in tunnel_only:
+                tunnel_only.insert(0, tunnel)
+            candidates = tunnel_only or ([tunnel] if tunnel else candidates)
+        elif billing_on_lan and operator_reaches_lan:
             discovered = discover_local_mikrotik_host(
-                tunnel_address=(router.vpn_address or "").strip(),
+                tunnel_address=tunnel,
                 prefer_host=(router.host or "").strip(),
             )
             if discovered and discovered not in candidates:
@@ -703,7 +749,7 @@ def build_router_probe_plan(
             candidates = [primary] if primary else []
         router_candidates[router.id] = candidates
         tunnel_by_router[router.id] = bool(
-            (router.vpn_address or "").strip()
+            tunnel
             or any(
                 (host or "").startswith("10.9.")
                 for host in candidates
@@ -712,7 +758,7 @@ def build_router_probe_plan(
         for host in candidates:
             if host and host not in unique_hosts:
                 unique_hosts.append(host)
-    return router_candidates, unique_hosts, tunnel_by_router
+    return router_candidates, unique_hosts, tunnel_by_router, off_lan_tunnel_by_router
 
 
 def probe_mikrotik_hosts(unique_hosts: list[str]) -> dict[str, dict[str, Any]]:
@@ -845,7 +891,7 @@ def run_router_status_stability_loop(
     status_counts: dict[str, int] = {}
 
     for attempt in range(1, loops + 1):
-        router_candidates, unique_hosts, _tunnel_map = build_router_probe_plan([router])
+        router_candidates, unique_hosts, _tunnel_map, _off_lan = build_router_probe_plan([router])
         probe_by_host = probe_mikrotik_hosts(unique_hosts)
         host, probe = pick_best_probe_for_router(
             router,
@@ -907,6 +953,10 @@ def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]
 
     org_id = getattr(router, "organization_id", None)
     if org_id and is_mikrotik_onboarding_active(org_id):
+        return None
+
+    # Freshly onboarded routers: manual Reconnect is safer than auto WAN touches.
+    if is_mikrotik_post_onboard_grace(router.pk):
         return None
 
     if not getattr(settings, "MIKROTIK_AUTO_RESTORE", False):
@@ -1041,7 +1091,7 @@ def collect_organization_status_payload(organization) -> list[dict[str, Any]]:
     if not routers:
         return []
 
-    router_candidates, unique_hosts, _tunnel_map = build_router_probe_plan(routers)
+    router_candidates, unique_hosts, _tunnel_map, _off_lan = build_router_probe_plan(routers)
     probe_by_host = probe_mikrotik_hosts(unique_hosts)
     results: dict[int, dict[str, Any]] = {}
 

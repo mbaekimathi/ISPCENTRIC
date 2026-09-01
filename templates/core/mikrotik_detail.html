@@ -260,12 +260,36 @@
 
   {% include "core/includes/mikrotik_detail_quicknav.html" %}
 
+  <div
+    class="mikrotik-tunnel-verify-banner is-warn{% if router_management_mode != 'remote_only' %} is-hidden{% endif %}"
+    id="mikrotik-remote-manage-banner"
+    role="status"
+    aria-live="polite"
+    {% if router_management_mode != 'remote_only' %}hidden{% endif %}
+  >
+    <span class="mikrotik-tunnel-verify-icon" aria-hidden="true"></span>
+    <div>
+      <strong class="mikrotik-tunnel-verify-title">Manage on the hosted dashboard</strong>
+      <span class="mikrotik-tunnel-verify-sub" id="mikrotik-remote-manage-copy">
+        This PC is off the router LAN and cannot open the WireGuard tunnel. The router stays online on the VPS — use the hosted ISPCENTRIC site for Restart, Reconnect, Hotspot, and PPPoE changes.
+        {% if hosted_dashboard_url %} Open <a href="{{ hosted_dashboard_url }}" target="_blank" rel="noopener noreferrer">{{ hosted_dashboard_url }}</a>.{% endif %}
+        If you run ISPCENTRIC locally, keep using <code>http://127.0.0.1:8000</code> after unplugging the cable (not the router LAN IP).
+      </span>
+      {% if hosted_dashboard_url %}
+      <a class="btn btn-primary btn-sm" href="{{ hosted_dashboard_url }}" target="_blank" rel="noopener noreferrer" style="margin-top:0.55rem;display:inline-flex;">Open hosted dashboard</a>
+      {% endif %}
+    </div>
+  </div>
+
   <section
     class="mk-surface mk-detail-surface mikrotik-live{% if not initial_live %} is-loading{% endif %}"
     id="mikrotik-live"
     aria-live="polite"
     data-live-url="{% url 'core:mikrotik_live' router.id %}"
     data-suspended="{% if is_suspended %}1{% else %}0{% endif %}"
+    data-tunnel-managed="{% if router.vpn_address %}1{% else %}0{% endif %}"
+    data-management-mode="{{ router_management_mode|default:'lan' }}"
+    data-hosted-url="{{ hosted_dashboard_url|default:'' }}"
   >
     <div class="mikrotik-live-loading" id="mikrotik-live-loading" {% if is_suspended or initial_live %}hidden{% endif %} role="status" aria-live="polite">
       <span class="mikrotik-page-spinner" aria-hidden="true"></span>
@@ -824,6 +848,12 @@
 
   var liveUrl = liveRoot.getAttribute("data-live-url");
   var suspended = liveRoot.getAttribute("data-suspended") === "1";
+  var tunnelManaged = liveRoot.getAttribute("data-tunnel-managed") === "1";
+  var managementMode = liveRoot.getAttribute("data-management-mode") || "lan";
+  var hostedDashboardUrl = liveRoot.getAttribute("data-hosted-url") || "";
+  var remoteBanner = document.getElementById("mikrotik-remote-manage-banner");
+  var detailRestart = document.getElementById("mikrotik-detail-restart");
+  var detailReconnect = document.getElementById("mikrotik-detail-reconnect");
   var refreshBtn = document.getElementById("mikrotik-live-refresh");
   var subEl = document.getElementById("mikrotik-live-sub");
   var stampEl = document.getElementById("mikrotik-live-stamp");
@@ -846,6 +876,7 @@
   var wasOnline = null;
   var liveToastDismiss = null;
   var initialLive = null;
+  var lastGoodLive = null;
   var initialEl = document.getElementById("mikrotik-initial-live");
   if (initialEl) {
     try {
@@ -853,6 +884,67 @@
     } catch (e) {
       initialLive = null;
     }
+  }
+
+  function cloneLiveData(data) {
+    try {
+      return JSON.parse(JSON.stringify(data || null));
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function persistLastGoodLive(data) {
+    if (!data || !data.ok || !data.online) return;
+    lastGoodLive = cloneLiveData(data);
+    if (!lastGoodLive || !liveUrl) return;
+    try {
+      sessionStorage.setItem("mikrotik-live:" + liveUrl, JSON.stringify(lastGoodLive));
+    } catch (e) {}
+  }
+
+  function loadPersistedLive() {
+    if (lastGoodLive) return lastGoodLive;
+    if (!liveUrl) return null;
+    try {
+      var raw = sessionStorage.getItem("mikrotik-live:" + liveUrl);
+      if (raw) lastGoodLive = JSON.parse(raw);
+    } catch (e) {
+      lastGoodLive = null;
+    }
+    return lastGoodLive;
+  }
+
+  function setRemoteControls(enabled) {
+    [detailReconnect, detailRestart].forEach(function (btn) {
+      if (!btn) return;
+      btn.disabled = !enabled || suspended;
+      btn.title = enabled ? "" : "Use the hosted ISPCENTRIC dashboard to control this router from off-site.";
+    });
+  }
+
+  function setRemoteBanner(visible, data) {
+    if (!remoteBanner) return;
+    remoteBanner.hidden = !visible;
+    remoteBanner.classList.toggle("is-hidden", !visible);
+    if (!visible) return;
+    var copy = document.getElementById("mikrotik-remote-manage-copy");
+    if (copy && data && data.deferred_reason) {
+      copy.textContent = data.deferred_reason;
+    }
+    var link = data && (data.remote_manage_url || hostedDashboardUrl);
+    if (link) {
+      var anchor = remoteBanner.querySelector("a[href]");
+      if (anchor) anchor.href = link;
+    }
+  }
+
+  function deferLiveConnectionLoss(data) {
+    if (data && data.remote_management_only) {
+      renderLive(data);
+      return true;
+    }
+    return false;
   }
 
   function formatAutoRestore(ar) {
@@ -905,13 +997,15 @@
     if (el.parentElement) el.parentElement.classList.toggle("is-hot", n >= 85);
   }
 
-  function setHero(online) {
+  function setHero(online, opts) {
+    opts = opts || {};
+    var label = opts.label || (online ? "Connected" : "Disconnected");
     [hero, pageHero].forEach(function (el) {
       if (!el) return;
       el.classList.remove("is-checking", "is-connected", "is-disconnected");
       el.classList.add(online ? "is-connected" : "is-disconnected");
-      var label = el.querySelector(".mikrotik-link-label");
-      if (label) label.textContent = online ? "Connected" : "Disconnected";
+      var heroLabel = el.querySelector(".mikrotik-link-label");
+      if (heroLabel) heroLabel.textContent = label;
     });
     if (detailHero) {
       detailHero.classList.toggle("is-online", online);
@@ -1034,22 +1128,33 @@
     if (data && data.auto_restore) applyAutoRestoreBadge(data.auto_restore);
     clearLiveLoading();
     if (!data || !data.ok || !data.online) {
+      if (deferLiveConnectionLoss(data)) return;
       var reason = friendlyReason(data || {});
       // After a healthy session, always reopen the notice on the next outage.
       if (wasOnline === true) noticeShownFor = "";
       wasOnline = false;
+      setRemoteBanner(false);
+      setRemoteControls(true);
       showBlocked(reason, true);
       return;
     }
+    var remoteOnly = !!(data && data.remote_management_only);
     wasOnline = true;
     noticeShownFor = "";
     closeLiveToast();
     showLiveLayout();
     liveRoot.classList.add("is-online");
     liveRoot.classList.remove("is-offline");
-    setHero(true);
-    setText('[data-live="status"]', "Online");
-    setText('[data-live="status-hint"]', "API connected");
+    setRemoteBanner(remoteOnly, data);
+    setRemoteControls(!remoteOnly && data.controls_live !== false);
+    setHero(true, { label: remoteOnly ? "View only" : "Connected" });
+    setText('[data-live="status"]', remoteOnly ? "Online (hosted)" : "Online");
+    setText(
+      '[data-live="status-hint"]',
+      remoteOnly
+        ? "Manage on hosted dashboard"
+        : (data.management_deferred ? "Tunnel-managed" : "API connected")
+    );
     setText('[data-live="wan-download"]', data.wan_download_label || "—");
     setText(
       '[data-live="wan-download-hint"]',
@@ -1103,8 +1208,9 @@
     );
     setBar('[data-live-bar="cpu"]', data.cpu_load);
     setBar('[data-live-bar="memory"]', data.memory_used_pct);
-    if (subEl) subEl.textContent = "Live data from the router — refreshes automatically.";
+    if (subEl) subEl.textContent = data.deferred_reason || "Live data from the router — refreshes automatically.";
     if (stampEl) stampEl.textContent = "Updated " + stampNow();
+    if (!remoteOnly) persistLastGoodLive(data);
   }
 
   function loadLive(force) {
@@ -1137,6 +1243,7 @@
       })
       .catch(function () {
         clearLiveLoading();
+        if (deferLiveConnectionLoss(lastGoodLive || loadPersistedLive() || initialLive)) return;
         showBlocked("ISPCENTRIC could not contact the live-data service. Refresh and try again.", true);
       })
       .finally(function () {
@@ -1155,7 +1262,11 @@
       showLiveToast(lastReason || "Live access is unavailable right now.");
     });
   }
-  var detailReconnect = document.getElementById("mikrotik-detail-reconnect");
+
+  if (managementMode === "remote_only") {
+    setRemoteControls(false);
+    setRemoteBanner(true, initialLive || null);
+  }
 
   function runReconnect(btn, onSuccess, credentials) {
     var url = btn.getAttribute("data-reconnect-url");
@@ -1439,6 +1550,7 @@
     renderLive(initialLive);
     if (initialLive.ok && initialLive.online) {
       wasOnline = true;
+      persistLastGoodLive(initialLive);
     }
   }
   loadLive(false);

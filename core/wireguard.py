@@ -742,6 +742,48 @@ def peer_sync_report(peer_sync: dict | None) -> dict:
     }
 
 
+def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
+    """
+    Return whether the VPS wg0 peer for a pending onboarding reservation exists.
+
+    Used to block Connect on hosted servers until the tunnel peer is registered.
+    """
+    address = (tunnel_address or "").strip()
+    if not address or not bool(getattr(settings, "HOSTED", False)):
+        return {"ok": True, "required": False}
+
+    try:
+        from core.models import WireGuardReservation
+
+        reservation = WireGuardReservation.objects.filter(address=address).first()
+    except Exception:
+        reservation = None
+
+    public_key = (getattr(reservation, "public_key", None) or "").strip()
+    if not reservation or not public_key:
+        return {"ok": True, "required": False}
+
+    peer = inspect_server_peer(public_key)
+    if peer.get("checked") and peer.get("present"):
+        return {"ok": True, "required": True, "peer_synced": True}
+
+    report = peer_sync_report(
+        {
+            "ok": False,
+            "skipped": not bool(peer.get("checked")),
+            "error": (peer.get("error") or "").strip(),
+            "reason": "peer_missing",
+        }
+    )
+    return {
+        "ok": False,
+        "required": True,
+        "peer_synced": False,
+        "error": report.get("peer_sync_hint") or report.get("peer_sync_error") or "",
+        **report,
+    }
+
+
 def inspect_server_peer(public_key: str) -> dict:
     """
     Read live WireGuard state for one peer on this host.

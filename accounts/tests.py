@@ -25,6 +25,7 @@ from billing.models import AccessVoucher, BillingPlan, Customer, StkPushRequest
 
 
 STRONG_PASSWORD = "CorrectHorseBattery9!"
+EMPLOYEE_PASSWORD = "445566"
 
 
 class AccountPasswordTests(TestCase):
@@ -50,7 +51,12 @@ class OwnerProfileFormTests(TestCase):
             email="owner@example.com",
             password="oldpass1-long!",
         )
-        Organization.objects.create(name="Test ISP", owner=self.user, join_code="998877")
+        Organization.objects.create(
+            name="Test ISP",
+            owner=self.user,
+            join_code="998877",
+            login_code="554433",
+        )
 
     def test_rejects_non_digit_login_code(self):
         form = OwnerProfileForm(
@@ -97,7 +103,8 @@ class OwnerProfileFormTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
         self.user.refresh_from_db()
-        self.assertEqual(self.user.username, "654321")
+        org = Organization.objects.get(owner=self.user)
+        self.assertEqual(org.login_code, "654321")
         self.assertTrue(self.user.check_password(STRONG_PASSWORD))
 
     def test_leave_password_blank_keeps_current(self):
@@ -180,14 +187,23 @@ class RegisterFormPasswordTests(TestCase):
         self.assertIn("username", form.errors)
 
 
-class EmployeeRegisterJoinCodeTests(TestCase):
+class EmployeeRegisterReferralCodeTests(TestCase):
     def setUp(self):
+        from accounts.models import ClientSettings
+
+        settings_obj = ClientSettings.get_solo()
+        settings_obj.referral_enabled = True
+        settings_obj.save(update_fields=["referral_enabled", "updated_at"])
         owner = User.objects.create_user("join-owner", password=STRONG_PASSWORD)
         self.org = Organization.objects.create(
-            name="Join ISP", owner=owner, join_code="112233"
+            name="Join ISP",
+            owner=owner,
+            join_code="112233",
+            phone="712345678",
         )
+        self.org.refresh_from_db()
 
-    def test_requires_valid_company_join_code(self):
+    def test_rejects_invalid_referral_code(self):
         form = EmployeeRegisterForm(
             {
                 "username": "STAFF1",
@@ -196,14 +212,32 @@ class EmployeeRegisterJoinCodeTests(TestCase):
                 "email": "sam@example.com",
                 "country_code": "254|Kenya",
                 "phone": "712345678",
-                "company_join_code": "000000",
+                "referral_code": "000000",
                 "login_code": "556677",
-                "password1": STRONG_PASSWORD,
-                "password2": STRONG_PASSWORD,
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
             }
         )
         self.assertFalse(form.is_valid())
-        self.assertIn("company_join_code", form.errors)
+        self.assertIn("referral_code", form.errors)
+
+    def test_registers_without_referral_code(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF1",
+                "first_name": "Sam",
+                "last_name": "Tech",
+                "email": "sam@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "referral_code": "",
+                "login_code": "556677",
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertNotIn("organization", form.cleaned_data)
 
     def test_registers_against_organization(self):
         form = EmployeeRegisterForm(
@@ -214,14 +248,32 @@ class EmployeeRegisterJoinCodeTests(TestCase):
                 "email": "sam@example.com",
                 "country_code": "254|Kenya",
                 "phone": "712345678",
-                "company_join_code": "112233",
+                "referral_code": self.org.referral_code,
                 "login_code": "556677",
-                "password1": STRONG_PASSWORD,
-                "password2": STRONG_PASSWORD,
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
             }
         )
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["organization"], self.org)
+
+    def test_rejects_non_six_digit_password(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF1",
+                "first_name": "Sam",
+                "last_name": "Tech",
+                "email": "sam@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "referral_code": "",
+                "login_code": "556677",
+                "password1": "12345",
+                "password2": "12345",
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("password2", form.errors)
 
 
 class EmployeeLoginEnumerationTests(TestCase):
@@ -244,7 +296,7 @@ class IspClientLoginTests(TestCase):
             "778899", email="isp@example.com", password=STRONG_PASSWORD
         )
         Organization.objects.create(
-            name="Login ISP", owner=self.owner, join_code="112233"
+            name="Login ISP", owner=self.owner, join_code="112233", login_code="778899"
         )
         self.staff = User.objects.create_user(
             "staffuser", email="staff@example.com", password=STRONG_PASSWORD
@@ -272,9 +324,6 @@ class IspClientLoginTests(TestCase):
         self.assertIn("username", form.errors)
 
     def test_employees_cannot_use_isp_client_login(self):
-        # Even if staff somehow share a 6-digit User.username, owner login requires org ownership.
-        self.staff.username = "334455"
-        self.staff.save(update_fields=["username"])
         form = LoginForm(
             data={"username": "334455", "password": STRONG_PASSWORD}
         )
@@ -289,6 +338,115 @@ class IspClientLoginTests(TestCase):
         self.assertContains(response, "ISP client login")
         self.assertContains(response, reverse("accounts:password_reset"))
         self.assertNotContains(response, reverse("accounts:employee_login"))
+
+
+class LoginCodeNamespaceTests(TestCase):
+    """ISP codes (Organization.login_code) and staff codes (Employee.login_code) are separate tables."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            "isp-owner-internal", email="isp@example.com", password=STRONG_PASSWORD
+        )
+        self.org = Organization.objects.create(
+            name="Namespace ISP",
+            owner=self.owner,
+            join_code="112233",
+            login_code="778899",
+        )
+        self.staff_user = User.objects.create_user(
+            "staffuser", email="staff@example.com", password=EMPLOYEE_PASSWORD
+        )
+        Employee.objects.create(
+            user=self.staff_user,
+            organization=None,
+            login_code="334455",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.SALES,
+        )
+
+    def test_same_code_allowed_for_both_roles(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF2",
+                "first_name": "Sam",
+                "last_name": "Staff",
+                "email": "sam2@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345679",
+                "login_code": "778899",
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_owner_register_rejects_duplicate_isp_code(self):
+        form = RegisterForm(
+            {
+                "username": "778899",
+                "email": "new@isp.com",
+                "company_name": "NEW ISP",
+                "country_code": "254|Kenya",
+                "phone": "712345678",
+                "password1": STRONG_PASSWORD,
+                "password2": STRONG_PASSWORD,
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("username", form.errors)
+
+    def test_employee_register_rejects_duplicate_staff_code(self):
+        form = EmployeeRegisterForm(
+            {
+                "username": "STAFF2",
+                "first_name": "Sam",
+                "last_name": "Staff",
+                "email": "sam2@example.com",
+                "country_code": "254|Kenya",
+                "phone": "712345679",
+                "login_code": "334455",
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("login_code", form.errors)
+
+    def test_check_login_code_ignores_isp_client_codes(self):
+        url = reverse("accounts:check_login_code")
+        response = self.client.get(url, {"code": "778899"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["available"])
+
+    def test_both_roles_can_share_code_at_login(self):
+        other_staff = User.objects.create_user("staff2", password=EMPLOYEE_PASSWORD)
+        Employee.objects.create(
+            user=other_staff,
+            organization=None,
+            login_code="778899",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        owner_form = LoginForm(
+            data={"username": "778899", "password": STRONG_PASSWORD}
+        )
+        self.assertTrue(owner_form.is_valid(), owner_form.errors)
+        self.assertEqual(owner_form.get_user(), self.owner)
+
+        staff_form = EmployeeLoginForm(
+            data={"username": "778899", "password": EMPLOYEE_PASSWORD}
+        )
+        self.assertTrue(staff_form.is_valid(), staff_form.errors)
+        self.assertEqual(staff_form.get_user(), other_staff)
+
+    def test_staff_cannot_use_isp_client_login_without_matching_org_code(self):
+        form = LoginForm(
+            data={"username": "334455", "password": EMPLOYEE_PASSWORD}
+        )
+        self.assertFalse(form.is_valid())
+        errors = " ".join(str(e) for e in form.non_field_errors())
+        self.assertIn("Invalid login code or password.", errors)
 
 
 @override_settings(OWNER_REGISTER_INVITE_KEY="")
@@ -319,6 +477,22 @@ class OwnerRegisterGateTests(TestCase):
         settings_obj.save(update_fields=["landing_register_enabled", "updated_at"])
         response = self.client.get(reverse("accounts:register"))
         self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Register company")
+
+    def test_login_hides_register_when_register_link_off(self):
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, reverse("accounts:register"))
+
+    def test_login_shows_register_when_register_link_on(self):
+        from accounts.models import ClientSettings
+
+        settings_obj = ClientSettings.get_solo()
+        settings_obj.landing_register_enabled = True
+        settings_obj.save(update_fields=["landing_register_enabled", "updated_at"])
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("accounts:register"))
         self.assertContains(response, "Register company")
 
 
@@ -547,7 +721,7 @@ class SalesCustomerRegistrationTests(TestCase):
         )
         self.assertEqual(response.status_code, 302)
         org = Organization.objects.get(name="NEW FIBER")
-        self.assertEqual(org.owner.username, "667788")
+        self.assertEqual(org.login_code, "667788")
         self.assertEqual(org.status, Organization.Status.REGISTERED)
         self.assertEqual(org.registered_by_id, self.sales_user.pk)
         self.assertEqual(self.sales_user, User.objects.get(username="salesperson"))
@@ -844,6 +1018,7 @@ class ITSupportCompanyClientsTests(TestCase):
             name="Drop Wireless",
             owner=self.drop_owner,
             join_code="222222",
+            login_code="665544",
             status=Organization.Status.ACTIVE,
         )
         self.keep_org.referred_by = self.drop_org
@@ -913,12 +1088,35 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertContains(response, "Keep Fiber")
         self.assertContains(response, "subscribers")
         self.assertContains(response, "packages")
+        self.assertContains(response, "Register ISP client")
+        self.assertContains(response, 'data-open-modal="cc-register-isp-modal"')
+        self.assertContains(response, 'id="cc-register-isp-modal"')
         self.assertContains(response, reverse(
             "roles:it_support_company_client_edit", args=[self.drop_org.pk]
         ))
         self.assertContains(response, reverse(
             "roles:it_support_company_client_delete", args=[self.drop_org.pk]
         ))
+
+    def test_register_isp_client_from_modal(self):
+        response = self.client.post(
+            reverse("roles:it_support_company_clients"),
+            {
+                "form_action": "register_isp",
+                "isp-username": "667788",
+                "isp-email": "owner@newisp.com",
+                "isp-company_name": "NEW FIBER",
+                "isp-country_code": "254|Kenya",
+                "isp-phone": "712345679",
+                "isp-password1": STRONG_PASSWORD,
+                "isp-password2": STRONG_PASSWORD,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        org = Organization.objects.get(name="NEW FIBER")
+        self.assertEqual(org.login_code, "667788")
+        self.assertEqual(org.status, Organization.Status.REGISTERED)
+        self.assertEqual(org.registered_by_id, self.staff_user.pk)
 
     def test_delete_page_lists_what_will_be_removed(self):
         url = reverse("roles:it_support_company_client_delete", args=[self.drop_org.pk])
@@ -944,15 +1142,18 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "drop-isp-owner")
         self.assertContains(response, "Login credentials")
-        self.assertContains(response, 'data-owner-username="drop-isp-owner"')
+        self.assertContains(
+            response, f'data-owner-username="{self.drop_org.login_code}"'
+        )
         self.assertContains(response, "id_cc_owner_username")
         self.assertContains(response, "id_cc_owner_password1")
         self.assertContains(response, "6-digit login code")
 
     def test_edit_updates_profile_only(self):
-        self.drop_owner.username = "221133"
+        self.drop_org.login_code = "221133"
+        self.drop_org.save(update_fields=["login_code"])
         self.drop_owner.email = "drop-owner@example.com"
-        self.drop_owner.save(update_fields=["username", "email"])
+        self.drop_owner.save(update_fields=["email"])
         url = reverse("roles:it_support_company_client_edit", args=[self.drop_org.pk])
         response = self.client.post(
             url,
@@ -976,7 +1177,7 @@ class ITSupportCompanyClientsTests(TestCase):
         self.assertEqual(self.drop_org.name, "DROP WIRELESS UPDATED")
         self.assertEqual(self.drop_org.status, Organization.Status.REGISTERED)
         self.drop_owner.refresh_from_db()
-        self.assertEqual(self.drop_owner.username, "221133")
+        self.assertEqual(self.drop_org.login_code, "221133")
         self.keep_org.refresh_from_db()
         self.assertEqual(self.keep_org.name, "Keep Fiber")
 
@@ -999,7 +1200,8 @@ class ITSupportCompanyClientsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.drop_owner.refresh_from_db()
-        self.assertEqual(self.drop_owner.username, "990011")
+        self.drop_org.refresh_from_db()
+        self.assertEqual(self.drop_org.login_code, "990011")
         self.assertEqual(self.drop_owner.email, "drop-login@example.com")
         self.assertEqual(self.drop_owner.first_name, "DROP")
         self.assertEqual(self.drop_owner.last_name, "OWNER")
@@ -1026,7 +1228,8 @@ class ITSupportCompanyClientsTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.drop_owner.refresh_from_db()
-        self.assertEqual(self.drop_owner.username, "445566")
+        self.drop_org.refresh_from_db()
+        self.assertEqual(self.drop_org.login_code, "445566")
         self.assertEqual(self.drop_owner.email, "")
 
     def test_edit_get_opens_list_popup(self):

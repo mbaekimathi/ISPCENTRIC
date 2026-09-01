@@ -10,10 +10,10 @@
       <a class="staff-logo" href="{% url 'core:landing' %}">ISP<span>CENTRIC</span></a>
       <h2 class="staff-rail-title">Create your staff login.</h2>
       <p class="staff-rail-copy">
-        Choose a unique 6-digit login code and a strong password. You need your company join code from an admin.
+        Choose a unique 6-digit login code and a 6-digit password. You can optionally enter a referral code if you were invited.
       </p>
       <ul class="staff-points">
-        <li>Enter company join code</li>
+        <li>Enter referral code (optional)</li>
         <li>Pick an available login code</li>
         <li>Await approval &amp; role</li>
       </ul>
@@ -24,7 +24,7 @@
     <div class="staff-card staff-card-wide">
       <div class="staff-badge">Employee</div>
       <h1>Register employee</h1>
-      <p class="lede">Join with your company code, then create a login code and strong password.</p>
+      <p class="lede">Create a 6-digit login code and password. Add a referral code if you have one.</p>
 
       <form method="post" enctype="multipart/form-data" novalidate id="register-form">
         {% csrf_token %}
@@ -64,11 +64,17 @@
               {{ form.country_code.errors }}
               {{ form.phone.errors }}
             </div>
-          {% elif field.name == 'company_join_code' %}
-            <div class="form-group">
-              <label for="{{ field.id_for_label }}">Company join code</label>
+          {% elif field.name == 'referral_code' %}
+            <div class="form-group referral-code-group{% if referrer_organization %} has-referrer{% endif %}">
+              <label for="{{ field.id_for_label }}">Referral code <span class="field-optional">(optional)</span></label>
               {{ field }}
-              <p class="field-hint">Ask your company admin for this 6-digit code (shown in company settings).</p>
+              {% if referrer_organization %}
+                <p class="field-hint referral-resolved-name">
+                  Company: <strong>{{ referrer_organization.name }}</strong>
+                </p>
+              {% else %}
+                <p class="field-hint">Enter the referrer's phone number if you were invited. Leave blank if you don't have one.</p>
+              {% endif %}
               {{ field.errors }}
             </div>
           {% elif field.name == 'login_code' %}
@@ -81,7 +87,7 @@
             </div>
           {% elif field.name == 'password1' %}
             <div class="form-group">
-              <label for="{{ form.password1.id_for_label }}">Password</label>
+              <label for="{{ form.password1.id_for_label }}">6-digit password</label>
               <div class="password-field">
                 {{ form.password1 }}
                 <button type="button" class="password-toggle" data-toggle-password="id_password1" aria-label="Show password">
@@ -91,14 +97,14 @@
               </div>
               {{ form.password1.errors }}
               <ul class="password-rules" id="password-rules" aria-live="polite">
-                <li data-rule="length">At least 12 characters</li>
-                <li data-rule="not-numeric">Not entirely numeric</li>
+                <li data-rule="length">Exactly 6 digits</li>
+                <li data-rule="numeric">Numbers only</li>
                 <li data-rule="match">Passwords match</li>
               </ul>
             </div>
           {% elif field.name == 'password2' %}
             <div class="form-group">
-              <label for="{{ form.password2.id_for_label }}">Confirm password</label>
+              <label for="{{ form.password2.id_for_label }}">Confirm 6-digit password</label>
               <div class="password-field">
                 {{ form.password2 }}
                 <button type="button" class="password-toggle" data-toggle-password="id_password2" aria-label="Show password">
@@ -262,6 +268,11 @@
     var p1 = document.getElementById("id_password1");
     var p2 = document.getElementById("id_password2");
     var rules = document.getElementById("password-rules");
+    function normalizePinInput(input) {
+      if (!input) return;
+      var digits = (input.value || "").replace(/\D/g, "").slice(0, 6);
+      if (input.value !== digits) input.value = digits;
+    }
     function setRule(name, ok) {
       if (!rules) return;
       var item = rules.querySelector('[data-rule="' + name + '"]');
@@ -271,11 +282,13 @@
     }
     function checkPasswords() {
       if (!p1 || !rules) return;
+      normalizePinInput(p1);
+      normalizePinInput(p2);
       var password = p1.value || "";
       var confirm = p2 ? p2.value || "" : "";
       rules.classList.toggle("is-active", password.length > 0 || confirm.length > 0);
-      setRule("length", password.length >= 12);
-      setRule("not-numeric", password.length > 0 && !/^\d+$/.test(password));
+      setRule("length", password.length === 6);
+      setRule("numeric", password.length > 0 && /^\d+$/.test(password));
       setRule("match", password.length > 0 && confirm.length > 0 && password === confirm);
     }
     [p1, p2].forEach(function (el) {

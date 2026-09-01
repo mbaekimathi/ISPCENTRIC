@@ -1,5 +1,7 @@
 from django.contrib import messages
 from django.contrib.auth import login, update_session_auth_hash
+from django.contrib.auth.models import User
+from django.contrib.auth.forms import PasswordResetForm
 from django.contrib.auth.views import (
     LoginView,
     LogoutView,
@@ -29,6 +31,7 @@ from .security import (
     AuthRateLimitExceeded,
     assert_auth_allowed,
     clear_auth_failures,
+    employee_login_code_taken,
     owner_invite_required,
     owner_registration_open,
     record_auth_failure,
@@ -100,6 +103,14 @@ def _logout_farewell(name):
     if hour < 21:
         return f"Goodbye, {name}. Have a lovely evening."
     return f"Good night, {name}. Rest well."
+
+
+def _employee_register_form(request, data=None, files=None):
+    _capture_referral_code(request)
+    kwargs = {"initial_referral": _session_referral_code(request)}
+    if data is not None:
+        return EmployeeRegisterForm(data, files, **kwargs)
+    return EmployeeRegisterForm(**kwargs)
 
 
 def _rate_limited_response(request, template_name, form):
@@ -175,6 +186,7 @@ class RegisterView(View):
             org_kwargs = {
                 "name": form.cleaned_data["company_name"],
                 "owner": user,
+                "login_code": form.cleaned_data["username"],
                 "phone": form.cleaned_data.get("phone", ""),
                 "profile_photo": form.cleaned_data.get("profile_photo"),
                 "status": Organization.Status.REGISTERED,
@@ -265,6 +277,18 @@ class UserLogoutView(LogoutView):
 class EmployeeRegisterView(View):
     template_name = "accounts/employee_register.html"
 
+    def _render(self, request, form, status=200):
+        referrer = _resolve_referrer(request, form.initial.get("referral_code"))
+        return render(
+            request,
+            self.template_name,
+            {
+                "form": form,
+                "referrer_organization": referrer,
+            },
+            status=status,
+        )
+
     def get(self, request):
         if request.user.is_authenticated and hasattr(request.user, "employee_profile"):
             return redirect(home_url_for_user(request.user))
@@ -272,18 +296,18 @@ class EmployeeRegisterView(View):
             assert_auth_allowed("employee_register", request, limit=10, window=3600)
         except AuthRateLimitExceeded:
             return _rate_limited_response(
-                request, self.template_name, EmployeeRegisterForm()
+                request, self.template_name, _employee_register_form(request)
             )
-        return render(request, self.template_name, {"form": EmployeeRegisterForm()})
+        return self._render(request, _employee_register_form(request))
 
     def post(self, request):
         try:
             assert_auth_allowed("employee_register", request, limit=10, window=3600)
         except AuthRateLimitExceeded:
             return _rate_limited_response(
-                request, self.template_name, EmployeeRegisterForm()
+                request, self.template_name, _employee_register_form(request)
             )
-        form = EmployeeRegisterForm(request.POST, request.FILES)
+        form = _employee_register_form(request, data=request.POST, files=request.FILES)
         if form.is_valid():
             user = form.save(commit=False)
             user.email = form.cleaned_data["email"]
@@ -309,7 +333,7 @@ class EmployeeRegisterView(View):
             )
             return redirect("accounts:employee_login")
         record_auth_failure("employee_register", request, limit=10, window=3600)
-        return render(request, self.template_name, {"form": form})
+        return self._render(request, form)
 
 
 class EmployeeLoginView(LoginView):
@@ -409,7 +433,7 @@ class CheckLoginCodeView(View):
                     "message": "Enter all 6 digits",
                 }
             )
-        taken = Employee.objects.filter(login_code=code).exists()
+        taken = employee_login_code_taken(code)
         if taken:
             return JsonResponse(
                 {
@@ -488,11 +512,24 @@ class EmployeeProfileView(View):
         )
 
 
+class OwnerPasswordResetForm(PasswordResetForm):
+    """Password reset is only for ISP client (organization owner) accounts."""
+
+    def get_users(self, email):
+        active_users = User.objects.filter(email__iexact=email, is_active=True)
+        return (
+            user
+            for user in active_users
+            if Organization.objects.filter(owner=user).exists()
+        )
+
+
 class OwnerPasswordResetView(PasswordResetView):
     template_name = "accounts/password_reset_form.html"
     email_template_name = "accounts/password_reset_email.txt"
     subject_template_name = "accounts/password_reset_subject.txt"
     success_url = reverse_lazy("accounts:password_reset_done")
+    form_class = OwnerPasswordResetForm
 
     def dispatch(self, request, *args, **kwargs):
         try:

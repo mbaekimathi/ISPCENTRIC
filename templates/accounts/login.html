@@ -40,6 +40,12 @@
     <p class="auth-footer">
       <a href="{% url 'accounts:password_reset' %}">Forgot password?</a>
     </p>
+    {% if landing_register_enabled %}
+    <p class="auth-footer">
+      New ISP?
+      <a href="{% url 'accounts:register' %}">Register company</a>
+    </p>
+    {% endif %}
   </div>
 </div>
 <script>

@@ -19,8 +19,12 @@ from .models import (
     RoleCommission,
 )
 from .security import (
+    assert_employee_login_code_available,
+    assert_owner_login_code_available,
+    normalize_six_digit_login_code,
     owner_invite_required,
     validate_account_password,
+    validate_employee_password,
     validate_flexible_password,
 )
 
@@ -132,23 +136,7 @@ def is_six_digit_code(value: str) -> bool:
 
 def normalize_owner_login_code(value: str) -> str:
     """Require a 6-digit ISP owner login code (digits only)."""
-    code = "".join(ch for ch in str(value or "") if ch.isdigit())
-    if len(code) != 6:
-        raise forms.ValidationError("Enter a 6-digit login code.")
-    return code
-
-
-def assert_owner_login_code_available(code: str, *, user=None):
-    """Ensure a 6-digit code is free for an ISP owner User.username."""
-    qs = User.objects.filter(username=code)
-    if user is not None:
-        qs = qs.exclude(pk=user.pk)
-    if qs.exists():
-        raise forms.ValidationError("That login code is already taken.")
-    if Employee.objects.filter(login_code=code).exists():
-        raise forms.ValidationError(
-            "That login code is already used by a staff account."
-        )
+    return normalize_six_digit_login_code(value)
 
 
 class RegisterForm(UserCreationForm):
@@ -327,6 +315,16 @@ class RegisterForm(UserCreationForm):
         assert_owner_login_code_available(code)
         return code
 
+    def save(self, commit=True):
+        login_code = self.cleaned_data["username"]
+        user = super(UserCreationForm, self).save(commit=False)
+        user.username = Organization.generate_owner_username()
+        user.set_password(self.cleaned_data["password1"])
+        if commit:
+            user.save()
+        self.isp_login_code = login_code
+        return user
+
     def clean_invite_key(self):
         if not self.require_invite:
             return ""
@@ -399,7 +397,14 @@ class LoginForm(AuthenticationForm):
         )
 
     def clean_username(self):
-        return normalize_owner_login_code(self.cleaned_data.get("username"))
+        code = normalize_owner_login_code(self.cleaned_data.get("username"))
+        organization = (
+            Organization.objects.filter(login_code=code).select_related("owner").first()
+        )
+        self._organization = organization
+        if organization and organization.owner_id:
+            return organization.owner.get_username()
+        return f"__missing_isp_login_code_{code}__"
 
     def confirm_login_allowed(self, user):
         super().confirm_login_allowed(user)
@@ -482,20 +487,17 @@ class EmployeeRegisterForm(UserCreationForm):
             }
         ),
     )
-    company_join_code = forms.CharField(
-        min_length=6,
-        max_length=6,
-        label="Company join code",
-        help_text="Ask your company admin for the 6-digit company join code.",
+    referral_code = forms.CharField(
+        required=False,
+        label="Referral code",
+        help_text="Optional. Enter the referrer's phone number if you were invited.",
         widget=forms.TextInput(
             attrs={
-                "placeholder": "000000",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
+                "placeholder": "Referrer phone number",
                 "autocomplete": "off",
-                "class": "form-control join-code-input",
-                "id": "id_company_join_code",
+                "inputmode": "tel",
+                "class": "form-control",
+                "id": "id_referral_code",
             }
         ),
     )
@@ -519,7 +521,7 @@ class EmployeeRegisterForm(UserCreationForm):
             "email",
             "country_code",
             "phone",
-            "company_join_code",
+            "referral_code",
             "login_code",
             "password1",
             "password2",
@@ -538,27 +540,40 @@ class EmployeeRegisterForm(UserCreationForm):
             "username": "Username",
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, initial_referral: str = "", **kwargs):
+        initial = kwargs.setdefault("initial", {})
+        if initial_referral and "referral_code" not in initial:
+            initial["referral_code"] = initial_referral
         super().__init__(*args, **kwargs)
+        from accounts.models import ClientSettings
+
+        if not ClientSettings.get_solo().referral_enabled:
+            self.fields.pop("referral_code", None)
         self.fields["username"].label = "Username"
-        self.fields["password1"].label = "Password"
-        self.fields["password2"].label = "Confirm password"
-        self.fields["password1"].help_text = (
-            "At least 12 characters, not entirely numeric, and not a common password."
-        )
+        self.fields["password1"].label = "6-digit password"
+        self.fields["password2"].label = "Confirm 6-digit password"
+        self.fields["password1"].help_text = "Choose a 6-digit numeric password for staff sign-in."
         self.fields["password2"].help_text = ""
+        self.fields["password1"].validators = []
+        self.fields["password2"].validators = []
         self.fields["password1"].widget.attrs.update(
             {
-                "placeholder": "Create a strong password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         )
         self.fields["password2"].widget.attrs.update(
             {
-                "placeholder": "Confirm password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         )
         self.country_options = get_country_options()
@@ -578,29 +593,49 @@ class EmployeeRegisterForm(UserCreationForm):
     def clean_email(self):
         return self.cleaned_data["email"].strip().lower()
 
+    def clean_password1(self):
+        return "".join(
+            ch for ch in (self.cleaned_data.get("password1") or "") if ch.isdigit()
+        )
+
+    def clean_password2(self):
+        return validate_employee_password(
+            self.cleaned_data.get("password1") or "",
+            self.cleaned_data.get("password2") or "",
+            required=True,
+        )
+
+    def validate_password_for_user(self, user, password_field_name="password2"):
+        return
+
+    def _post_clean(self):
+        # Skip BaseUserCreationForm password validators (12-char / not-numeric rules).
+        super(forms.ModelForm, self)._post_clean()
+
     def clean_login_code(self):
         code = "".join(ch for ch in (self.cleaned_data.get("login_code") or "") if ch.isdigit())
         if len(code) != 6:
             raise forms.ValidationError("Enter a 6-digit login code.")
-        if Employee.objects.filter(login_code=code).exists():
-            raise forms.ValidationError("This login code is not available. Choose another.")
-        if User.objects.filter(username=code).exists():
-            raise forms.ValidationError("This login code is not available. Choose another.")
+        assert_employee_login_code_available(code)
         return code
 
-    def clean_company_join_code(self):
-        code = "".join(
-            ch for ch in (self.cleaned_data.get("company_join_code") or "") if ch.isdigit()
-        )
-        if len(code) != 6:
-            raise forms.ValidationError("Enter your company's 6-digit join code.")
-        organization = Organization.objects.filter(join_code=code).first()
+    def clean_referral_code(self):
+        if "referral_code" not in self.fields:
+            return ""
+        raw = (self.cleaned_data.get("referral_code") or "").strip()
+        if not raw:
+            return ""
+        organization = Organization.lookup_by_referral_code(raw)
         if organization is None:
-            raise forms.ValidationError("Invalid company join code.")
+            raise forms.ValidationError(
+                "No company found for that referral code. Check the phone number or leave it blank."
+            )
         if organization.status == Organization.Status.SUSPENDED:
             raise forms.ValidationError("This company account is suspended.")
         self._organization = organization
-        return code
+        return organization.referral_code or Organization.normalize_referral_phone(
+            organization.phone
+        )
 
     def clean(self):
         cleaned = super().clean()
@@ -628,10 +663,14 @@ class EmployeeLoginForm(AuthenticationForm):
                 "autocomplete": "username",
             }
         )
+        self.fields["password"].label = "6-digit password"
         self.fields["password"].widget.attrs.update(
             {
-                "class": "form-control password-input",
-                "placeholder": "Password",
+                "class": "form-control join-code-input password-input",
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
                 "autocomplete": "current-password",
             }
         )
@@ -893,16 +932,28 @@ class OwnerProfileForm(forms.Form):
         ),
     )
 
-    def __init__(self, *args, user=None, id_prefix="owner", **kwargs):
+    def __init__(self, *args, user=None, organization=None, id_prefix="owner", **kwargs):
         self.user = user
+        self._organization = organization
         self.id_prefix = (id_prefix or "owner").strip() or "owner"
         super().__init__(*args, **kwargs)
         for name, field in self.fields.items():
             field.widget.attrs["id"] = f"id_{self.id_prefix}_{name}"
+        org = self.organization
+        if org is not None and not self.is_bound:
+            self.fields["username"].initial = org.login_code
+
+    @property
+    def organization(self):
+        if self._organization is not None:
+            return self._organization
+        if self.user is not None:
+            return Organization.objects.filter(owner=self.user).first()
+        return None
 
     def clean_username(self):
         code = normalize_owner_login_code(self.cleaned_data.get("username"))
-        assert_owner_login_code_available(code, user=self.user)
+        assert_owner_login_code_available(code, organization=self.organization)
         return code
 
     def clean_first_name(self):
@@ -937,13 +988,16 @@ class OwnerProfileForm(forms.Form):
 
     def save(self):
         user = self.user
-        user.username = self.cleaned_data["username"]
         user.first_name = self.cleaned_data.get("first_name") or ""
         user.last_name = self.cleaned_data.get("last_name") or ""
         user.email = self.cleaned_data.get("email") or ""
         if self.cleaned_data.get("password1"):
             user.set_password(self.cleaned_data["password1"])
         user.save()
+        org = self.organization
+        if org is not None:
+            org.login_code = self.cleaned_data["username"]
+            org.save(update_fields=["login_code"])
         return user
 
 

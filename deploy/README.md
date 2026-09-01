@@ -1,5 +1,7 @@
 # Deploying ISPCENTRIC to an Ubuntu + nginx VPS
 
+**Quick start for isp.richcom.co.ke:** see [DEPLOY_NOW.md](DEPLOY_NOW.md) — production `.env` and one-shot bootstrap script are ready.
+
 Target: `http://isp.richcom.co.ke`, app at `/opt/ispcentric`, served by gunicorn
 behind nginx, expiry sweep driven by a systemd timer.
 
@@ -8,9 +10,8 @@ behind nginx, expiry sweep driven by a systemd timer.
 Two things must be true or the deployment will look healthy while doing nothing
 useful:
 
-1. **DNS.** `isp.richcom.co.ke` must have an A record pointing at the VPS. At the
-   time of writing it does not exist (`NXDOMAIN`); only the apex `richcom.co.ke`
-   resolves.
+1. **DNS.** `isp.richcom.co.ke` must have an A record pointing at the VPS
+   (`178.162.241.99` as of Sep 2026).
 2. **The VPS must be able to reach each MikroTik on TCP 8728.** Every
    provisioning action — Hotspot push, PPPoE secrets, authorising a paid MAC,
    the expiry sweep — connects *out* to `router.host`. Those are private

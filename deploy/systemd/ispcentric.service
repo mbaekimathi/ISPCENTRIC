@@ -1,7 +1,7 @@
 [Unit]
 Description=ISPCENTRIC billing (gunicorn)
-After=network-online.target mysql.service
-Wants=network-online.target
+After=network-online.target mysql.service wg-quick@wg0.service
+Wants=network-online.target wg-quick@wg0.service
 
 [Service]
 User=www-data

@@ -6236,7 +6236,79 @@ def _bits_per_sec_label(bps: int | float | None) -> str:
     return f"{value / 1_000_000_000:.2f} Gbps"
 
 
-def _monitor_interface_speed(sock: socket.socket, interface: str) -> dict[str, Any]:
+def _interface_byte_counters(sock: socket.socket, interface: str) -> tuple[int, int]:
+    """Return cumulative rx/tx bytes for one interface name."""
+    interface = (interface or "").strip()
+    if not interface:
+        return 0, 0
+    try:
+        for row in _print(sock, "/interface", props="name,rx-byte,tx-byte"):
+            if (row.get("name") or "").strip() == interface:
+                return (
+                    max(0, _parse_int(row.get("rx-byte"))),
+                    max(0, _parse_int(row.get("tx-byte"))),
+                )
+    except (TimeoutError, OSError, ConnectionError):
+        pass
+    return 0, 0
+
+
+def _speed_from_byte_delta(
+    sample_key: str,
+    interface: str,
+    rx_bytes: int,
+    tx_bytes: int,
+) -> dict[str, Any] | None:
+    """Derive bit rates from the last stored byte counters (poll-to-poll)."""
+    sample_key = (sample_key or "").strip()
+    interface = (interface or "").strip()
+    if not sample_key or not interface:
+        return None
+    try:
+        from django.core.cache import cache
+    except Exception:
+        return None
+
+    now = time.time()
+    cache_key = f"mikrotik_speed_sample:{sample_key}:{interface}"
+    previous = cache.get(cache_key)
+    cache.set(
+        cache_key,
+        {"t": now, "rx": int(rx_bytes), "tx": int(tx_bytes)},
+        45,
+    )
+    if not isinstance(previous, dict) or previous.get("t") is None:
+        return None
+    try:
+        dt = max(0.0, now - float(previous["t"]))
+    except (TypeError, ValueError):
+        return None
+    if dt < 0.35 or dt > 20.0:
+        return None
+    prev_rx = max(0, _parse_int(previous.get("rx")))
+    prev_tx = max(0, _parse_int(previous.get("tx")))
+    delta_rx = max(0, int(rx_bytes) - prev_rx)
+    delta_tx = max(0, int(tx_bytes) - prev_tx)
+    if delta_rx <= 0 and delta_tx <= 0:
+        return None
+    rx_bps = int(round((float(delta_rx) * 8.0) / dt))
+    tx_bps = int(round((float(delta_tx) * 8.0) / dt))
+    return {
+        "wan_download_bps": rx_bps,
+        "wan_upload_bps": tx_bps,
+        "wan_download_label": _bits_per_sec_label(rx_bps),
+        "wan_upload_label": _bits_per_sec_label(tx_bps),
+        "wan_speed_interface": interface,
+        "wan_speed_source": "delta",
+    }
+
+
+def _monitor_interface_speed(
+    sock: socket.socket,
+    interface: str,
+    *,
+    sample_key: str = "",
+) -> dict[str, Any]:
     """Read live rx/tx bit rates for one interface via monitor-traffic."""
     interface = (interface or "").strip()
     empty = {
@@ -6261,20 +6333,34 @@ def _monitor_interface_speed(sock: socket.socket, interface: str) -> dict[str, A
             ],
         )
         if terminal.get("_reply") in {"!trap", "!fatal"} or not replies:
-            return empty
-        row = replies[0]
-        # On the WAN/uplink port: RX = download, TX = upload.
-        rx = _parse_int(row.get("rx-bits-per-second"))
-        tx = _parse_int(row.get("tx-bits-per-second"))
-        return {
-            "wan_download_bps": rx,
-            "wan_upload_bps": tx,
-            "wan_download_label": _bits_per_sec_label(rx),
-            "wan_upload_label": _bits_per_sec_label(tx),
-            "wan_speed_interface": interface,
-        }
+            monitor = empty
+        else:
+            row = replies[0]
+            # On the WAN/uplink port: RX = download, TX = upload.
+            rx = _parse_int(row.get("rx-bits-per-second"))
+            tx = _parse_int(row.get("tx-bits-per-second"))
+            monitor = {
+                "wan_download_bps": rx,
+                "wan_upload_bps": tx,
+                "wan_download_label": _bits_per_sec_label(rx),
+                "wan_upload_label": _bits_per_sec_label(tx),
+                "wan_speed_interface": interface,
+                "wan_speed_source": "monitor",
+            }
+        if int(monitor.get("wan_download_bps") or 0) > 0 or int(
+            monitor.get("wan_upload_bps") or 0
+        ) > 0:
+            return monitor
+
+        rx_bytes, tx_bytes = _interface_byte_counters(sock, interface)
+        delta = _speed_from_byte_delta(sample_key, interface, rx_bytes, tx_bytes)
+        if delta:
+            return delta
+        return monitor if monitor.get("wan_speed_interface") else empty
     except (TimeoutError, OSError):
-        return empty
+        rx_bytes, tx_bytes = _interface_byte_counters(sock, interface)
+        delta = _speed_from_byte_delta(sample_key, interface, rx_bytes, tx_bytes)
+        return delta or empty
     finally:
         sock.settimeout(previous)
 
@@ -6948,7 +7034,11 @@ def fetch_mikrotik_live_snapshot(
             # Detect WAN / internet entry before optional wireless probes.
             uplink = _read_internet_uplink(sock)
             speed_iface = (uplink.get("wan_port") or uplink.get("wan_interface") or "").strip()
-            speed = _monitor_interface_speed(sock, speed_iface)
+            speed = _monitor_interface_speed(
+                sock,
+                speed_iface,
+                sample_key=f"{host}:{speed_iface}" if speed_iface else "",
+            )
             uplink.update(speed)
 
             interfaces = _print(
@@ -7059,6 +7149,119 @@ def fetch_mikrotik_live_snapshot(
             "online": False,
             "error": str(exc) or "Could not read live data from the router.",
         }
+
+
+def fetch_mikrotik_live_snapshot_for_router(
+    router,
+    *,
+    timeout: float = 5.0,
+    discover: bool = False,
+) -> dict[str, Any]:
+    """
+    Live snapshot with multi-host fallback (LAN + tunnel), matching status probes.
+
+    ``discover`` stays off for dashboard polls — discovery scans are too slow.
+    """
+    username = (getattr(router, "username", None) or "").strip()
+    password = getattr(router, "password", None) or ""
+    candidates = _router_api_host_candidates(router, discover=discover)
+    if not candidates:
+        primary = (
+            getattr(router, "api_host", None) or getattr(router, "host", None) or ""
+        ).strip()
+        candidates = [primary] if primary else []
+    if not candidates or not username:
+        return {
+            "ok": False,
+            "online": False,
+            "error": "Missing router credentials.",
+        }
+
+    last_snap: dict[str, Any] = {
+        "ok": False,
+        "online": False,
+        "error": "Could not reach the MikroTik API on any saved address.",
+    }
+    for host in candidates:
+        snap = fetch_mikrotik_live_snapshot(
+            host,
+            username,
+            password,
+            timeout=timeout,
+        )
+        if snap.get("ok"):
+            snap["dial_host"] = host
+            return snap
+        last_snap = snap
+    return last_snap
+
+
+def run_mikrotik_live_stability_loop(
+    router,
+    *,
+    loops: int = 5,
+    settle: float = 2.0,
+    sleep_fn=None,
+    log_fn=None,
+) -> dict[str, Any]:
+    """Repeat live snapshot reads to catch flaky speeds or host selection."""
+    loops = max(1, int(loops))
+    settle = max(0.0, float(settle))
+    sleep = sleep_fn or time.sleep
+    log = log_fn or (lambda _msg: None)
+
+    attempts: list[dict[str, Any]] = []
+    failures = 0
+    zero_speeds = 0
+    hosts_seen: set[str] = set()
+
+    for attempt in range(1, loops + 1):
+        snap = fetch_mikrotik_live_snapshot_for_router(router, timeout=5.0)
+        dial = (snap.get("dial_host") or "").strip()
+        if dial:
+            hosts_seen.add(dial)
+        ok = bool(snap.get("ok"))
+        dl = int(snap.get("wan_download_bps") or 0)
+        ul = int(snap.get("wan_upload_bps") or 0)
+        if not ok:
+            failures += 1
+        elif dl <= 0 and ul <= 0:
+            zero_speeds += 1
+        attempts.append(
+            {
+                "attempt": attempt,
+                "ok": ok,
+                "dial_host": dial,
+                "download_bps": dl,
+                "upload_bps": ul,
+                "download_label": snap.get("wan_download_label") or "—",
+                "upload_label": snap.get("wan_upload_label") or "—",
+                "speed_source": snap.get("wan_speed_source") or "",
+                "iface": snap.get("wan_speed_interface") or "",
+                "error": snap.get("error") or "",
+            }
+        )
+        log(
+            f"  attempt {attempt}/{loops}: host={dial or '-'} ok={ok} "
+            f"dl={snap.get('wan_download_label') or '—'} "
+            f"ul={snap.get('wan_upload_label') or '—'} "
+            f"src={snap.get('wan_speed_source') or '-'}"
+        )
+        if not ok:
+            log(f"    error={snap.get('error') or 'unknown'}")
+        if attempt < loops and settle > 0:
+            sleep(settle)
+
+    passed = failures == 0
+    flaky = len(hosts_seen) > 1 or failures not in (0, loops)
+    return {
+        "passed": passed,
+        "flaky": flaky,
+        "failures": failures,
+        "zero_speeds": zero_speeds,
+        "hosts_seen": sorted(hosts_seen),
+        "attempts": attempts,
+    }
 
 
 def fetch_customer_pppoe_usage(
@@ -9771,6 +9974,117 @@ def _interface_mismatch_error(sock: socket.socket, message: str, interface: str)
     )
 
 
+def _ensure_pppoe_pool(sock: socket.socket) -> None:
+    """Create or repair the ISP PPPoE client pool before profiles reference it."""
+    pool_id = ""
+    for row in _print(sock, "/ip/pool", props=".id,name,ranges,comment"):
+        name = (row.get("name") or "").strip()
+        comment = row.get("comment") or ""
+        if name == PPPOE_POOL_NAME or PPP_SECRET_TAG in comment:
+            pool_id = (row.get(".id") or "").strip()
+            break
+
+    props = {
+        "name": PPPOE_POOL_NAME,
+        "ranges": PPPOE_POOL_RANGES,
+        "comment": PPP_SECRET_TAG,
+    }
+    if pool_id:
+        terminal = _set(sock, "/ip/pool", pool_id, **props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(terminal, "Could not update the PPPoE IP pool on the MikroTik.")
+            )
+    else:
+        terminal = _add(sock, "/ip/pool", **props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(terminal, "Could not create the PPPoE IP pool on the MikroTik.")
+            )
+
+    for row in _print(sock, "/ip/pool", props="name,ranges"):
+        if (row.get("name") or "").strip() != PPPOE_POOL_NAME:
+            continue
+        if (row.get("ranges") or "").strip():
+            return
+    raise ConnectionError(
+        f"PPPoE pool “{PPPOE_POOL_NAME}” is missing or has no ranges on the MikroTik."
+    )
+
+
+def _ensure_pppoe_gateway_address(sock: socket.socket, *, interface: str) -> None:
+    """Assign the PPPoE gateway on the LAN bridge so profile local-address is valid."""
+    iface = (interface or "").strip()
+    if not iface:
+        return
+    _ensure_tagged_ip_address(
+        sock,
+        address=f"{PPPOE_LOCAL_ADDRESS}/24",
+        interface=iface,
+        comment=f"{PPP_SECRET_TAG} pppoe-gateway",
+    )
+
+
+def _ppp_profile_remote_variants() -> list[str]:
+    """RouterOS accepts a pool name or a literal range for remote-address."""
+    return [PPPOE_POOL_NAME, PPPOE_POOL_RANGES]
+
+
+def _ppp_profile_attempts(
+    *,
+    name: str,
+    dns_server: str = "8.8.8.8,1.1.1.1",
+    address_list: str = "",
+    rate_limit: str = "",
+    comment: str = "",
+) -> list[dict[str, str]]:
+    """Build PPP profile add/set attempts with pool-name and range fallbacks."""
+    attempts: list[dict[str, str]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    tag = (comment or "").strip() or PPP_SECRET_TAG
+
+    for remote in _ppp_profile_remote_variants():
+        full = {
+            "name": name,
+            "local-address": PPPOE_LOCAL_ADDRESS,
+            "remote-address": remote,
+            "dns-server": dns_server,
+            "change-tcp-mss": "yes",
+            "use-encryption": "no",
+            "only-one": "yes",
+            "comment": tag,
+        }
+        if address_list:
+            full["address-list"] = address_list
+        if rate_limit:
+            full["rate-limit"] = rate_limit
+        for props in (
+            full,
+            {k: v for k, v in full.items() if k != "change-tcp-mss"},
+            {k: v for k, v in full.items() if k not in {"change-tcp-mss", "only-one"}},
+        ):
+            key = tuple(sorted((k, str(v)) for k, v in props.items()))
+            if key in seen:
+                continue
+            seen.add(key)
+            attempts.append(props)
+    return attempts
+
+
+def _address_on_interface(sock: socket.socket, address: str, interface: str) -> bool:
+    want = (address or "").split("/", 1)[0].strip()
+    iface = (interface or "").strip().lower()
+    if not want or not iface:
+        return False
+    for row in _print(sock, "/ip/address", props="address,interface"):
+        if (row.get("interface") or "").strip().lower() != iface:
+            continue
+        current = (row.get("address") or "").split("/", 1)[0].strip()
+        if current == want:
+            return True
+    return False
+
+
 def _ensure_pppoe_stack(
     sock: socket.socket,
     *,
@@ -9797,25 +10111,12 @@ def _ensure_pppoe_stack(
     if requested_lan and requested_lan != lan_interface:
         notes.append(f"LAN interface {requested_lan} not found; using {lan_interface}")
 
-    pool_names = {
-        (row.get("name") or "").strip()
-        for row in _print(sock, "/ip/pool", props="name")
-    }
-    if PPPOE_POOL_NAME not in pool_names:
-        terminal = _add(
-            sock,
-            "/ip/pool",
-            name=PPPOE_POOL_NAME,
-            ranges=PPPOE_POOL_RANGES,
-            comment=PPP_SECRET_TAG,
-        )
-        if terminal.get("_reply") == "!trap":
-            raise ConnectionError(
-                _trap_message(terminal, "Could not create the PPPoE IP pool on the MikroTik.")
-            )
-        notes.append("created PPPoE IP pool")
+    _ensure_pppoe_gateway_address(sock, interface=lan_interface)
+    _ensure_pppoe_pool(sock)
+    notes.append("ensured PPPoE IP pool")
 
     profile_id = ""
+    had_profile = False
     for row in _print(
         sock,
         "/ppp/profile",
@@ -9823,57 +10124,22 @@ def _ensure_pppoe_stack(
     ):
         if (row.get("name") or "").strip() == PPPOE_PROFILE_NAME:
             profile_id = (row.get(".id") or "").strip()
+            had_profile = bool(profile_id)
             break
 
-    # use-encryption=no: many CPE routers fail PPPoE when MPPE is required.
-    # only-one=yes: local secrets reject a second dial while the first session
-    # is still up (credential sharing / multi-device use is blocked).
-    profile_props = {
-        "name": PPPOE_PROFILE_NAME,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        "dns-server": "8.8.8.8,1.1.1.1",
-        "change-tcp-mss": "yes",
-        "use-encryption": "no",
-        "only-one": "yes",
-        "comment": PPP_SECRET_TAG,
-    }
-    if profile_id:
-        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
-        if terminal.get("_reply") == "!trap":
-            soft = {
-                "name": PPPOE_PROFILE_NAME,
-                "local-address": PPPOE_LOCAL_ADDRESS,
-                "remote-address": PPPOE_POOL_NAME,
-                "dns-server": "8.8.8.8,1.1.1.1",
-                "use-encryption": "no",
-                "only-one": "yes",
-                "comment": PPP_SECRET_TAG,
-            }
-            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
-            if terminal.get("_reply") == "!trap":
-                raise ConnectionError(
-                    _trap_message(terminal, "Could not update the PPPoE profile on the MikroTik.")
-                )
-        notes.append("updated PPPoE profile")
-    else:
-        terminal = _add(sock, "/ppp/profile", **profile_props)
-        if terminal.get("_reply") == "!trap":
-            soft = {
-                "name": PPPOE_PROFILE_NAME,
-                "local-address": PPPOE_LOCAL_ADDRESS,
-                "remote-address": PPPOE_POOL_NAME,
-                "dns-server": "8.8.8.8,1.1.1.1",
-                "use-encryption": "no",
-                "only-one": "yes",
-                "comment": PPP_SECRET_TAG,
-            }
-            terminal = _add(sock, "/ppp/profile", **soft)
-            if terminal.get("_reply") == "!trap":
-                raise ConnectionError(
-                    _trap_message(terminal, "Could not create the PPPoE profile on the MikroTik.")
-                )
-        notes.append("created PPPoE profile")
+    profile_attempts = _ppp_profile_attempts(name=PPPOE_PROFILE_NAME)
+    terminal, profile_id = _add_or_set_attempts(
+        sock,
+        "/ppp/profile",
+        profile_id,
+        profile_attempts,
+        required=("name", "local-address", "remote-address"),
+    )
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(terminal, "Could not create or update the PPPoE profile on the MikroTik.")
+        )
+    notes.append("updated PPPoE profile" if had_profile else "created PPPoE profile")
 
     notes.extend(_ensure_pppoe_blocked_profile(sock))
 
@@ -10708,7 +10974,9 @@ def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
     an address-list that the NAS firewall drops to WAN.
     """
     notes: list[str] = []
+    _ensure_pppoe_pool(sock)
     profile_id = ""
+    had_profile = False
     for row in _print(
         sock,
         "/ppp/profile",
@@ -10716,56 +10984,34 @@ def _ensure_pppoe_blocked_profile(sock: socket.socket) -> list[str]:
     ):
         if (row.get("name") or "").strip() == PPPOE_BLOCKED_PROFILE_NAME:
             profile_id = (row.get(".id") or "").strip()
+            had_profile = bool(profile_id)
             break
 
-    profile_props = {
-        "name": PPPOE_BLOCKED_PROFILE_NAME,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        # Point DNS at the NAS itself. External resolvers are unreachable once
-        # the blocked address-list is dropped to WAN, and a browser that cannot
-        # resolve a hostname never sends the HTTP request we intercept.
-        "dns-server": PPPOE_LOCAL_ADDRESS,
-        "change-tcp-mss": "yes",
-        "use-encryption": "no",
-        "only-one": "yes",
-        "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
-        "comment": f"{PPP_SECRET_TAG} no-internet",
-    }
-    soft = {
-        "name": PPPOE_BLOCKED_PROFILE_NAME,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        "dns-server": PPPOE_LOCAL_ADDRESS,
-        "use-encryption": "no",
-        "only-one": "yes",
-        "address-list": PPPOE_BLOCKED_ADDRESS_LIST,
-        "comment": f"{PPP_SECRET_TAG} no-internet",
-    }
-    if profile_id:
-        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
-        if terminal.get("_reply") == "!trap":
-            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
-            if terminal.get("_reply") == "!trap":
-                raise ConnectionError(
-                    _trap_message(
-                        terminal,
-                        "Could not update the blocked PPPoE profile on the MikroTik.",
-                    )
-                )
-        notes.append("updated blocked PPPoE profile")
-    else:
-        terminal = _add(sock, "/ppp/profile", **profile_props)
-        if terminal.get("_reply") == "!trap":
-            terminal = _add(sock, "/ppp/profile", **soft)
-            if terminal.get("_reply") == "!trap":
-                raise ConnectionError(
-                    _trap_message(
-                        terminal,
-                        "Could not create the blocked PPPoE profile on the MikroTik.",
-                    )
-                )
-        notes.append("created blocked PPPoE profile")
+    profile_attempts = _ppp_profile_attempts(
+        name=PPPOE_BLOCKED_PROFILE_NAME,
+        dns_server=PPPOE_LOCAL_ADDRESS,
+        address_list=PPPOE_BLOCKED_ADDRESS_LIST,
+        comment=f"{PPP_SECRET_TAG} no-internet",
+    )
+    terminal, _profile_id = _add_or_set_attempts(
+        sock,
+        "/ppp/profile",
+        profile_id,
+        profile_attempts,
+        required=("name", "local-address", "remote-address"),
+    )
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                "Could not create or update the blocked PPPoE profile on the MikroTik.",
+            )
+        )
+    notes.append(
+        "updated blocked PPPoE profile"
+        if had_profile
+        else "created blocked PPPoE profile"
+    )
     return notes
 
 
@@ -11000,7 +11246,9 @@ def _ensure_pppoe_rate_profile(
 
     name = _pppoe_speed_profile_name(upload, download)
     rate_limit = _rate_limit_string(upload, download)
+    _ensure_pppoe_pool(sock)
     profile_id = ""
+    had_profile = False
     for row in _print(
         sock,
         "/ppp/profile",
@@ -11008,52 +11256,28 @@ def _ensure_pppoe_rate_profile(
     ):
         if (row.get("name") or "").strip() == name:
             profile_id = (row.get(".id") or "").strip()
+            had_profile = bool(profile_id)
             break
 
-    profile_props = {
-        "name": name,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        "dns-server": "8.8.8.8,1.1.1.1",
-        "change-tcp-mss": "yes",
-        "use-encryption": "no",
-        "only-one": "yes",
-        "rate-limit": rate_limit,
-        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
-    }
-    soft = {
-        "name": name,
-        "local-address": PPPOE_LOCAL_ADDRESS,
-        "remote-address": PPPOE_POOL_NAME,
-        "dns-server": "8.8.8.8,1.1.1.1",
-        "use-encryption": "no",
-        "only-one": "yes",
-        "rate-limit": rate_limit,
-        "comment": f"{PPP_SECRET_TAG} {rate_limit}",
-    }
-
-    if profile_id:
-        terminal = _set(sock, "/ppp/profile", profile_id, **profile_props)
-        if terminal.get("_reply") == "!trap":
-            terminal = _set(sock, "/ppp/profile", profile_id, **soft)
-        if terminal.get("_reply") == "!trap":
-            raise ConnectionError(
-                _trap_message(
-                    terminal,
-                    f"Could not update PPPoE speed profile “{name}” on the MikroTik.",
-                )
+    profile_attempts = _ppp_profile_attempts(
+        name=name,
+        rate_limit=rate_limit,
+        comment=f"{PPP_SECRET_TAG} {rate_limit}",
+    )
+    terminal, _profile_id = _add_or_set_attempts(
+        sock,
+        "/ppp/profile",
+        profile_id,
+        profile_attempts,
+        required=("name", "local-address", "remote-address"),
+    )
+    if terminal.get("_reply") == "!trap":
+        raise ConnectionError(
+            _trap_message(
+                terminal,
+                f"Could not create or update PPPoE speed profile “{name}” on the MikroTik.",
             )
-    else:
-        terminal = _add(sock, "/ppp/profile", **profile_props)
-        if terminal.get("_reply") == "!trap":
-            terminal = _add(sock, "/ppp/profile", **soft)
-        if terminal.get("_reply") == "!trap":
-            raise ConnectionError(
-                _trap_message(
-                    terminal,
-                    f"Could not create PPPoE speed profile “{name}” on the MikroTik.",
-                )
-            )
+        )
     _verify_profile_rate_limit(
         sock,
         path="/ppp/profile",
@@ -11777,6 +12001,89 @@ def on_router_lan() -> bool:
     return not bool(getattr(settings, "HOSTED", False))
 
 
+def operator_on_router_lan(router) -> bool:
+    """
+    True when this billing PC is on the same LAN subnet as the router gateway.
+
+    When False (e.g. Ethernet unplugged), LAN probes must not drive fleet status
+    for tunnel-onboarded routers — management is via WireGuard from the VPS.
+    """
+    if not on_router_lan():
+        return False
+    host = (getattr(router, "host", None) or "").strip()
+    if not host:
+        return False
+    try:
+        from core.hotspot_portal import local_ipv4_shares_subnet
+
+        same_subnet, _local_ip = local_ipv4_shares_subnet(host)
+        return bool(same_subnet)
+    except Exception:
+        return True
+
+
+def is_off_lan_tunnel_managed(router) -> bool:
+    """True when this PC is off-site but the router has a WireGuard tunnel."""
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    return bool(on_router_lan() and tunnel and not operator_on_router_lan(router))
+
+
+def hosted_dashboard_url() -> str:
+    """Best URL for managing routers when this PC cannot dial the tunnel."""
+    from core.hotspot_portal import public_base_url
+
+    url = (public_base_url() or "").strip().rstrip("/")
+    if url:
+        return url
+    endpoint = (getattr(settings, "WIREGUARD_ENDPOINT", "") or "").strip()
+    if endpoint and ":" in endpoint:
+        host = endpoint.rsplit(":", 1)[0].strip()
+        if host and not host.startswith("["):
+            # Captive portal and operator links stay on plain HTTP until TLS is issued.
+            return f"http://{host}"
+    return ""
+
+
+def operator_can_reach_tunnel(router, *, timeout: float = 2.0) -> bool:
+    """True when this billing PC can open API :8728 on the router tunnel IP."""
+    from django.core.cache import cache
+
+    from core.wireguard import server_on_tunnel
+
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    if not tunnel:
+        return False
+    if server_on_tunnel():
+        return True
+    cache_key = f"mikrotik_tunnel_reach:{getattr(router, 'pk', 0)}:{tunnel}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return bool(cached)
+    probe = check_mikrotik_reachable(tunnel, timeout=timeout)
+    ok = bool(probe.get("online"))
+    cache.set(cache_key, ok, 30 if ok else 8)
+    return ok
+
+
+def resolve_router_management_mode(router) -> str:
+    """
+    How this billing PC should manage one router right now.
+
+    lan — on the router LAN subnet (full local control)
+    tunnel — off LAN but tunnel API reachable from this PC
+    remote_only — router is on VPS WireGuard; use hosted dashboard from this PC
+    """
+    if not on_router_lan():
+        return "tunnel" if (getattr(router, "vpn_address", None) or "").strip() else "lan"
+    if operator_on_router_lan(router):
+        return "lan"
+    if not (getattr(router, "vpn_address", None) or "").strip():
+        return "lan"
+    if operator_can_reach_tunnel(router):
+        return "tunnel"
+    return "remote_only"
+
+
 def discover_local_mikrotik_host(
     *,
     tunnel_address: str = "",
@@ -12358,11 +12665,26 @@ def _ensure_tagged_pool(sock: socket.socket, *, name: str, ranges: str, comment:
             break
     props = {"name": name, "ranges": ranges, "comment": comment}
     if pool_id:
-        _set(sock, "/ip/pool", pool_id, **props)
+        terminal = _set(sock, "/ip/pool", pool_id, **props)
+        if terminal.get("_reply") == "!trap":
+            raise ConnectionError(
+                _trap_message(terminal, f"Could not update IP pool “{name}”.")
+            )
     else:
         terminal = _add(sock, "/ip/pool", **props)
         if terminal.get("_reply") == "!trap":
-            raise ConnectionError(_trap_message(terminal, "Could not create renew hotspot pool."))
+            raise ConnectionError(
+                _trap_message(terminal, f"Could not create IP pool “{name}”.")
+            )
+
+    for row in _print(sock, "/ip/pool", props="name,ranges"):
+        if (row.get("name") or "").strip() != name:
+            continue
+        if (row.get("ranges") or "").strip():
+            return
+    raise ConnectionError(
+        f"IP pool “{name}” is missing or has no ranges on the MikroTik."
+    )
 
 
 def _ensure_tagged_ip_address(
@@ -12383,12 +12705,27 @@ def _ensure_tagged_ip_address(
         "comment": comment,
     }
     if item_id:
-        _set(sock, "/ip/address", item_id, **props)
+        terminal = _set(sock, "/ip/address", item_id, **props)
+        if terminal.get("_reply") == "!trap" and not _address_on_interface(
+            sock, address, interface
+        ):
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not assign {address} on interface {interface}.",
+                )
+            )
     else:
         terminal = _add(sock, "/ip/address", **props)
         if terminal.get("_reply") == "!trap":
-            # Address may already exist on the bridge from the CPE LAN — fine.
-            pass
+            if _address_on_interface(sock, address, interface):
+                return
+            raise ConnectionError(
+                _trap_message(
+                    terminal,
+                    f"Could not assign {address} on interface {interface}.",
+                )
+            )
 
 
 # Keep in sync with ispcentric.middleware.CAPTIVE_PROBE_HOSTS / ALLOWED_HOSTS.
@@ -13550,6 +13887,15 @@ def refresh_onboarded_router_config(
             router_ok = False
             notes.append(hotspot_result.get("error") or "hotspot refresh failed")
 
+    error = ""
+    if not router_ok:
+        error = _nas_refresh_failure_message(
+            notes=notes,
+            pppoe_result=pppoe_result,
+            hotspot_result=hotspot_result,
+            redirect_result=redirect_result,
+        )
+
     return {
         "ok": router_ok,
         "skipped": False,
@@ -13561,6 +13907,7 @@ def refresh_onboarded_router_config(
         "hotspot": hotspot_result,
         "redirect": redirect_result,
         "notes": notes,
+        "error": error,
         "message": "; ".join(notes) if notes else "NAS config refreshed",
     }
 
@@ -14765,11 +15112,57 @@ def _hotspot_portal_urls_for_org(organization) -> dict[str, str]:
     if not join_code:
         return {}
     try:
-        from core.hotspot_portal import hotspot_portal_urls
+        from core.hotspot_portal import hotspot_portal_urls, recall_org_portal_base
 
-        return hotspot_portal_urls(join_code)
+        urls = hotspot_portal_urls(join_code)
     except Exception:
         return {}
+
+    pay_url = (urls.get("pay_url") or "").strip()
+    if not pay_url or not urlparse(pay_url).scheme:
+        cached_base = recall_org_portal_base(getattr(organization, "pk", 0) or 0)
+        if cached_base:
+            for kind in ("login", "alogin", "welcome", "pay"):
+                path = (urls.get(f"{kind}_path") or "").strip()
+                if path:
+                    urls[f"{kind}_url"] = f"{cached_base.rstrip('/')}{path}"
+            urls["base_url"] = cached_base
+    return urls
+
+
+def _nas_refresh_failure_message(
+    *,
+    notes: list[str],
+    pppoe_result: dict[str, Any] | None,
+    hotspot_result: dict[str, Any] | None,
+    redirect_result: dict[str, Any] | None,
+) -> str:
+    for part in (pppoe_result, hotspot_result, redirect_result):
+        if isinstance(part, dict):
+            err = (part.get("error") or "").strip()
+            if err:
+                return err
+    for note in reversed(notes):
+        text = (note or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if any(
+            token in lower
+            for token in (
+                "failed",
+                "cannot ",
+                "missing",
+                "without an absolute",
+                "unreachable",
+                "timed out",
+                "login",
+            )
+        ):
+            return text
+    if notes:
+        return "; ".join(str(note) for note in notes if note)
+    return "Could not apply billing settings on the MikroTik."
 
 
 def apply_pppoe_enforcement_on_router(

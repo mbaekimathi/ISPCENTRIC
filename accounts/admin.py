@@ -23,6 +23,7 @@ class OrganizationAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "status",
+        "login_code",
         "join_code",
         "owner",
         "phone",
@@ -32,7 +33,7 @@ class OrganizationAdmin(admin.ModelAdmin):
         "created_at",
     )
     list_filter = ("status", "referral_status", "daraja_enabled", "mpesa_payment_type", "daraja_environment")
-    search_fields = ("name", "join_code", "referral_code", "owner__username", "phone", "mpesa_number")
+    search_fields = ("name", "login_code", "join_code", "referral_code", "owner__username", "phone", "mpesa_number")
     list_editable = ("status",)
     readonly_fields = ("join_code", "referral_code", "created_at")
     raw_id_fields = ("referred_by",)

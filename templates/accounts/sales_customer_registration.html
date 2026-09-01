@@ -98,7 +98,7 @@
           {% for org in recent_isps %}
             <tr>
               <td><strong>{{ org.name }}</strong></td>
-              <td>{{ org.owner.username }}</td>
+              <td>{{ org.login_code }}</td>
               <td><span class="org-status org-status-{{ org.status }}">{{ org.get_status_display }}</span></td>
             </tr>
           {% endfor %}

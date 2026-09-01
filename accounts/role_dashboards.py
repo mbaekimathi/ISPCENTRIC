@@ -1348,6 +1348,11 @@ def _render_it_support_company_clients(request, **extra):
             open_edit_id = int(raw) if raw else None
         except ValueError:
             open_edit_id = None
+    extra.setdefault(
+        "register_form",
+        RegisterForm(prefix="isp", require_invite=False),
+    )
+    extra.setdefault("open_register_modal", False)
     return render(
         request,
         "accounts/it_support_company_clients.html",
@@ -1363,14 +1368,60 @@ def _render_it_support_company_clients(request, **extra):
     )
 
 
+def _create_isp_organization_from_register_form(register_form, *, registered_by):
+    user = register_form.save(commit=False)
+    user.email = register_form.cleaned_data["email"]
+    user.save()
+    return Organization.objects.create(
+        name=register_form.cleaned_data["company_name"],
+        owner=user,
+        login_code=register_form.cleaned_data["username"],
+        phone=register_form.cleaned_data.get("phone", ""),
+        profile_photo=register_form.cleaned_data.get("profile_photo"),
+        status=Organization.Status.REGISTERED,
+        registered_by=registered_by,
+    )
+
+
 @role_required(Employee.Role.IT_SUPPORT)
+@require_http_methods(["GET", "POST"])
 def it_support_company_clients(request):
-    return _render_it_support_company_clients(request)
+    register_form = RegisterForm(prefix="isp", require_invite=False)
+    open_register_modal = request.GET.get("register") == "1"
+
+    if request.method == "POST" and request.POST.get("form_action") == "register_isp":
+        open_register_modal = True
+        register_form = RegisterForm(
+            request.POST,
+            request.FILES,
+            prefix="isp",
+            require_invite=False,
+        )
+        if register_form.is_valid():
+            with transaction.atomic():
+                org = _create_isp_organization_from_register_form(
+                    register_form,
+                    registered_by=request.user,
+                )
+            messages.success(
+                request,
+                (
+                    f"ISP client “{org.name}” registered. "
+                    f"Owner login code: {org.login_code}."
+                ),
+            )
+            return redirect("roles:it_support_company_clients")
+
+    return _render_it_support_company_clients(
+        request,
+        register_form=register_form,
+        open_register_modal=open_register_modal,
+    )
 
 
-def _company_client_owner_form(owner, data=None):
+def _company_client_owner_form(owner, organization, data=None):
     """Owner login form for IT Support company-client edits."""
-    kwargs = {"user": owner, "id_prefix": "cc_owner"}
+    kwargs = {"user": owner, "organization": organization, "id_prefix": "cc_owner"}
     form = OwnerProfileForm(data, **kwargs) if data is not None else OwnerProfileForm(**kwargs)
     form.fields["username"].label = "6-digit login code"
     form.fields["username"].help_text = (
@@ -1402,7 +1453,7 @@ def it_support_company_client_edit(request, pk):
     )
     owner_form = None
     if client.owner_id:
-        owner_form = _company_client_owner_form(client.owner, request.POST)
+        owner_form = _company_client_owner_form(client.owner, client, request.POST)
 
     org_ok = form.is_valid()
     owner_ok = owner_form.is_valid() if owner_form is not None else True
@@ -2247,22 +2298,15 @@ def sales_customer_registration(request):
             )
             if isp_form.is_valid():
                 with transaction.atomic():
-                    user = isp_form.save(commit=False)
-                    user.email = isp_form.cleaned_data["email"]
-                    user.save()
-                    org = Organization.objects.create(
-                        name=isp_form.cleaned_data["company_name"],
-                        owner=user,
-                        phone=isp_form.cleaned_data.get("phone", ""),
-                        profile_photo=isp_form.cleaned_data.get("profile_photo"),
-                        status=Organization.Status.REGISTERED,
+                    org = _create_isp_organization_from_register_form(
+                        isp_form,
                         registered_by=request.user,
                     )
                 messages.success(
                     request,
                     (
                         f"Business (ISP) “{org.name}” registered. "
-                        f"Owner login: {user.username}."
+                        f"Owner login: {org.login_code}."
                     ),
                 )
                 return redirect("roles:sales_customer_registration")

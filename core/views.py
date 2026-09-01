@@ -110,7 +110,6 @@ from core.mikrotik_connect import (
     discover_local_mikrotik_host,
     pick_local_onboard_connect_host,
     finalize_onboard_addresses,
-    refresh_onboarded_router_config,
     suggest_unique_mikrotik_lan_ip,
     apply_mikrotik_uplink_bond,
     apply_mikrotik_uplink_failover,
@@ -143,7 +142,7 @@ from core.mikrotik_connect import (
     fetch_customer_hotspot_usage,
     fetch_customer_pppoe_usage,
     fetch_hotspot_client_macs,
-    fetch_mikrotik_live_snapshot,
+    fetch_mikrotik_live_snapshot_for_router,
     find_hotspot_router_for_mac,
     find_pppoe_customer_for_ip,
     list_mikrotik_ports,
@@ -175,7 +174,16 @@ from core.mikrotik_connect import (
     _ensure_hotspot_management_access,
     _router_api_host_candidates,
 )
-from core.mikrotik_jobs import get_job, get_router_jobs, set_job
+from core.mikrotik_jobs import (
+    NAS_REFRESH_JOB,
+    ensure_nas_refresh_job,
+    get_job,
+    get_router_jobs,
+    schedule_mikrotik_job,
+    schedule_nas_refresh,
+    schedule_post_onboard_nas_refresh,
+    set_job,
+)
 from core.mikrotik_discovery import annotate_onboarded, discover_mikrotik_devices, guess_model
 from core.models import MikroTikRouter, WireGuardReservation
 from core.places import resolve_location, search_locations
@@ -418,56 +426,6 @@ def client_workspace_required(view_func):
     return _wrapped
 
 
-def _schedule_mikrotik_job(
-    target,
-    *,
-    name: str = "mikrotik-bg",
-    router_id: int | None = None,
-    job_type: str = "",
-) -> None:
-    """Run RouterOS work off the request thread so nginx does not 504."""
-    logger = logging.getLogger(__name__)
-
-    def _runner():
-        from django.db import connection
-
-        if router_id and job_type:
-            set_job(router_id, job_type, "running")
-        try:
-            result = target()
-            if router_id and job_type:
-                if isinstance(result, dict) and result.get("ok") is False:
-                    set_job(
-                        router_id,
-                        job_type,
-                        "failed",
-                        error=(result.get("error") or "Could not apply settings on the MikroTik."),
-                    )
-                else:
-                    message = ""
-                    if isinstance(result, dict):
-                        message = (result.get("message") or "").strip()
-                    set_job(
-                        router_id,
-                        job_type,
-                        "ok",
-                        message=message or "Settings applied on the MikroTik.",
-                    )
-        except Exception:
-            logger.exception("MikroTik background job %s failed", name)
-            if router_id and job_type:
-                set_job(
-                    router_id,
-                    job_type,
-                    "failed",
-                    error="Unexpected error while updating the MikroTik.",
-                )
-        finally:
-            connection.close()
-
-    threading.Thread(target=_runner, name=name, daemon=True).start()
-
-
 def _background_mikrotik_ops() -> bool:
     """Heavy RouterOS pushes run in the background on hosted servers."""
     return bool(getattr(settings, "HOSTED", False))
@@ -708,6 +666,91 @@ def _cached_mikrotik_live_snapshot(org_pk: int, router_pk: int) -> dict | None:
     return dict(cached)
 
 
+def _apply_remote_live_fallback(router, org, failed: dict) -> dict:
+    """
+    When the router is tunnel-managed on the VPS but this PC cannot dial it,
+    return cached read-only data plus a hosted dashboard link for real control.
+    """
+    from core.mikrotik_connect import (
+        hosted_dashboard_url,
+        resolve_router_management_mode,
+    )
+
+    if failed.get("ok"):
+        return failed
+    if resolve_router_management_mode(router) != "remote_only":
+        return failed
+
+    hosted = hosted_dashboard_url()
+    deferred_reason = (
+        "This PC is off the router LAN and cannot open the WireGuard tunnel. "
+        "The router stays online — open the hosted ISPCENTRIC dashboard to "
+        "change settings, push Hotspot/PPPoE, and reconnect."
+    )
+    if hosted:
+        deferred_reason += f" Manage at {hosted}"
+
+    cached = _cached_mikrotik_live_snapshot(org.pk, router.pk)
+    base = dict(cached) if cached and cached.get("ok") else {
+        "identity": router.name,
+        "board": "",
+        "serial_number": router.serial_number or "",
+        "software_id": router.software_id or "",
+        "version": "",
+        "uptime": "—",
+        "cpu_load": None,
+        "memory_used_pct": None,
+        "memory_free": "—",
+        "memory_total": "—",
+        "ports_up": None,
+        "ports_total": None,
+        "online_users": None,
+        "pppoe_active": 0,
+        "hotspot_active": 0,
+        "wifi_label": "—",
+        "wan_summary": "Router is online on WireGuard — use the hosted dashboard to control it.",
+    }
+    out = {
+        **base,
+        "ok": True,
+        "online": True,
+        "remote_management_only": True,
+        "management_deferred": True,
+        "controls_live": False,
+        "remote_manage_url": hosted,
+        "deferred_reason": deferred_reason,
+        "router_id": router.pk,
+        "host": router.host,
+        "api_host": (router.api_host or router.host or "").strip(),
+        "management_mode": "remote_only",
+    }
+    return out
+
+
+def _remote_management_only_response(router):
+    """Block router control actions when this PC must use the hosted dashboard."""
+    from core.mikrotik_connect import hosted_dashboard_url, resolve_router_management_mode
+
+    if resolve_router_management_mode(router) != "remote_only":
+        return None
+    hosted = hosted_dashboard_url()
+    message = (
+        "This PC is off the router LAN and cannot open the WireGuard tunnel. "
+        "Open the hosted ISPCENTRIC dashboard to control this MikroTik."
+    )
+    if hosted:
+        message += f" Manage at {hosted}"
+    return JsonResponse(
+        {
+            "ok": False,
+            "error": message,
+            "remote_management_only": True,
+            "remote_manage_url": hosted,
+        },
+        status=409,
+    )
+
+
 def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
     cache.delete_many(
         [
@@ -839,7 +882,7 @@ def _schedule_mikrotik_login_credentials(
             new_password=new_password,
         )
 
-    _schedule_mikrotik_job(
+    schedule_mikrotik_job(
         _apply_login,
         name=f"credentials-{router.pk}",
         router_id=router.pk,
@@ -2652,8 +2695,9 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
     if owner_profile_form is None:
         owner_profile_form = OwnerProfileForm(
             user=request.user,
+            organization=org,
             initial={
-                "username": request.user.username,
+                "username": org.login_code if org else "",
                 "first_name": request.user.first_name,
                 "last_name": request.user.last_name,
                 "email": request.user.email,
@@ -3764,17 +3808,18 @@ def mikrotik(request):
                     )
             router_pk = router.pk
 
-            def _bg_refresh_nas(pk: int = router_pk) -> None:
-                try:
-                    live = MikroTikRouter.objects.select_related("organization").get(
-                        pk=pk
-                    )
-                    refresh_onboarded_router_config(live, reauthenticate=True)
-                except Exception:
-                    pass
+            try:
+                from core.hotspot_portal import public_base_url, remember_org_portal_base
 
-            _schedule_mikrotik_job(
-                _bg_refresh_nas, name=f"nas-refresh-{router_pk}"
+                remember_org_portal_base(org.pk, public_base_url(request))
+            except Exception:
+                pass
+
+            schedule_post_onboard_nas_refresh(
+                router,
+                organization_id=org.pk,
+                user_id=request.user.pk,
+                tunnel=bool((router.vpn_address or tunnel_host or "").strip()),
             )
             if org and getattr(org, "pppoe_compulsory", False):
                 messages.info(
@@ -3789,28 +3834,9 @@ def mikrotik(request):
                     "Latest Hotspot settings are being applied on this MikroTik in the "
                     "background.",
                 )
-            # Drop stale discovery/status caches for this org after onboard.
-            if org:
-                from core.mikrotik_status_samples import (
-                    clear_mikrotik_onboarding_active,
-                    mark_mikrotik_post_onboard_grace,
-                )
-
-                clear_mikrotik_onboarding_active(
-                    org.pk, user_id=request.user.pk, org_wide=True
-                )
-                mark_mikrotik_post_onboard_grace(
-                    router.pk,
-                    tunnel=bool((router.vpn_address or tunnel_host or "").strip()),
-                )
-                cache.delete_many(
-                    [
-                        f"mikrotik_discover:{org.pk}:quick",
-                        f"mikrotik_discover:{org.pk}:full",
-                        f"mikrotik_status:{org.pk}",
-                    ]
-                )
-            return redirect("core:mikrotik")
+            return _redirect_with_mikrotik_job(
+                request, "core:mikrotik_detail", router.pk, "nas_refresh"
+            )
         open_onboard = True
         first_error = next(iter(form.errors.values()), None)
         detail = first_error[0] if first_error else "Check the onboard form and try again."
@@ -4029,6 +4055,11 @@ def mikrotik_detail(request, router_id: int):
 
     router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
     is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+
+    job_type = (request.GET.get("job") or "").strip()
+    if request.method == "GET" and job_type == NAS_REFRESH_JOB and not is_suspended:
+        ensure_nas_refresh_job(router.pk)
+
     # Live Wi‑Fi probe is deferred to mikrotik_wifi (AJAX) so the page paints fast.
     wifi_enabled = False
     wifi_ssid_display = (router.wifi_ssid or "").strip()
@@ -4155,7 +4186,7 @@ def mikrotik_detail(request, router_id: int):
 
                 if _background_mikrotik_ops():
                     set_job(router.pk, "credentials", "pending")
-                    _schedule_mikrotik_job(
+                    schedule_mikrotik_job(
                         _apply_wifi_credentials,
                         name=f"credentials-{router.pk}",
                         router_id=router.pk,
@@ -4231,7 +4262,7 @@ def mikrotik_detail(request, router_id: int):
 
                 if _background_mikrotik_ops():
                     set_job(router.pk, "wifi", "pending")
-                    _schedule_mikrotik_job(
+                    schedule_mikrotik_job(
                         _toggle_wifi,
                         name=f"wifi-{router.pk}",
                         router_id=router.pk,
@@ -4309,6 +4340,10 @@ def mikrotik_detail(request, router_id: int):
         if initial_live is not None:
             initial_live["auto_restore"] = ctx["auto_restore"]
     ctx["initial_live"] = initial_live
+    from core.mikrotik_connect import hosted_dashboard_url, resolve_router_management_mode
+
+    ctx["hosted_dashboard_url"] = hosted_dashboard_url()
+    ctx["router_management_mode"] = resolve_router_management_mode(router)
     return render(request, "core/mikrotik_detail.html", ctx)
 
 
@@ -4990,7 +5025,7 @@ def mikrotik_ports(request, router_id: int):
 
             if _background_mikrotik_ops():
                 set_job(router.pk, "uplink_bond", "pending")
-                _schedule_mikrotik_job(
+                schedule_mikrotik_job(
                     _apply_bond_job,
                     name=f"uplink-bond-{router.pk}",
                     router_id=router.pk,
@@ -5149,7 +5184,7 @@ def mikrotik_ports(request, router_id: int):
 
             if _background_mikrotik_ops():
                 set_job(router.pk, "uplink_failover", "pending")
-                _schedule_mikrotik_job(
+                schedule_mikrotik_job(
                     _apply_failover_job,
                     name=f"uplink-failover-{router.pk}",
                     router_id=router.pk,
@@ -5331,7 +5366,7 @@ def mikrotik_ports(request, router_id: int):
             job_type = "uplink_smart_balance" if smart_balance else "uplink_balance"
             if _background_mikrotik_ops():
                 set_job(router.pk, job_type, "pending")
-                _schedule_mikrotik_job(
+                schedule_mikrotik_job(
                     _apply_balance_job,
                     name=f"{job_type}-{router.pk}",
                     router_id=router.pk,
@@ -5700,7 +5735,7 @@ def mikrotik_clean_uplink(request, router_id: int):
 
             if _background_mikrotik_ops():
                 set_job(router.pk, "clean_uplink", "pending")
-                _schedule_mikrotik_job(
+                schedule_mikrotik_job(
                     _apply_clean_uplink,
                     name=f"clean-uplink-{router.pk}",
                     router_id=router.pk,
@@ -6162,6 +6197,9 @@ def mikrotik_reconnect(request, router_id: int):
             },
             status=400,
         )
+    blocked = _remote_management_only_response(router)
+    if blocked is not None:
+        return blocked
 
     candidate_hosts: list[str] = []
     devices = []
@@ -6321,14 +6359,14 @@ def mikrotik_reconnect(request, router_id: int):
 
     router_pk = router.pk
 
-    def _bg_refresh_nas(pk: int = router_pk) -> None:
-        try:
-            live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
-            refresh_onboarded_router_config(live, reauthenticate=True)
-        except Exception:
-            pass
+    try:
+        from core.hotspot_portal import public_base_url, remember_org_portal_base
 
-    _schedule_mikrotik_job(_bg_refresh_nas, name=f"nas-refresh-{router_pk}")
+        remember_org_portal_base(org.pk, public_base_url(request))
+    except Exception:
+        pass
+
+    schedule_nas_refresh(router_pk)
 
     return JsonResponse(
         {
@@ -6366,6 +6404,9 @@ def mikrotik_reboot(request, router_id: int):
             },
             status=400,
         )
+    blocked = _remote_management_only_response(router)
+    if blocked is not None:
+        return blocked
 
     dial = (router.api_host or router.host or "").strip()
     if not dial:
@@ -6457,12 +6498,16 @@ def mikrotik_live(request, router_id: int):
     router = get_object_or_404(
         MikroTikRouter.objects.only(
             "id",
+            "name",
             "host",
             "username",
             "password",
             "account_status",
             "organization_id",
             "internet_provider",
+            "vpn_address",
+            "serial_number",
+            "software_id",
         ),
         pk=router_id,
         organization=org,
@@ -6487,14 +6532,32 @@ def mikrotik_live(request, router_id: int):
             cached["auto_restore"] = get_auto_restore_record(router.pk)
             return JsonResponse(cached)
 
-    # Dial the same address status probes use (tunnel when present).
-    dial = (router.api_host or router.host or "").strip()
-    snapshot = fetch_mikrotik_live_snapshot(
-        dial,
-        router.username,
-        router.password,
+    from core.mikrotik_connect import is_off_lan_tunnel_managed, resolve_router_management_mode
+    from core.wireguard import server_on_tunnel
+
+    if is_off_lan_tunnel_managed(router) and not server_on_tunnel():
+        if resolve_router_management_mode(router) == "remote_only":
+            snapshot = _apply_remote_live_fallback(
+                router, org, {"ok": False, "error": "off-lan"}
+            )
+            snapshot["router_id"] = router.pk
+            snapshot["host"] = router.host
+            snapshot["api_host"] = (router.api_host or router.host or "").strip()
+            from core.mikrotik_auto_restore import get_auto_restore_record
+
+            snapshot["auto_restore"] = get_auto_restore_record(router.pk)
+            cache.set(cache_key, snapshot, 60)
+            return JsonResponse(snapshot)
+
+    # Try LAN + tunnel candidates (same order as dashboard status probes).
+    snapshot = fetch_mikrotik_live_snapshot_for_router(
+        router,
         timeout=5.0,
+        discover=False,
     )
+    dial = (snapshot.get("dial_host") or router.api_host or router.host or "").strip()
+    if not snapshot.get("ok"):
+        snapshot = _apply_remote_live_fallback(router, org, snapshot)
     snapshot["router_id"] = router.pk
     snapshot["host"] = router.host
     snapshot["api_host"] = dial
@@ -6551,8 +6614,11 @@ def mikrotik_live(request, router_id: int):
     from core.mikrotik_auto_restore import get_auto_restore_record
 
     snapshot["auto_restore"] = get_auto_restore_record(router.pk)
-    # Align TTL with the detail-page poll interval so open tabs share one probe.
-    cache.set(cache_key, snapshot, 10 if snapshot.get("ok") else 4)
+    # Shorter than the 10s UI poll so each refresh gets fresh WAN speeds.
+    ttl = 4
+    if snapshot.get("management_deferred"):
+        ttl = 60
+    cache.set(cache_key, snapshot, ttl)
     return JsonResponse(snapshot)
 
 
@@ -7271,6 +7337,22 @@ def mikrotik_connect(request):
     script_lan = normalize_mikrotik_host(request.POST.get("script_lan") or "")
     tunnel_host = normalize_mikrotik_host(request.POST.get("tunnel_host") or "")
 
+    if tunnel_host:
+        peer_gate = wireguard.onboard_tunnel_peer_ready(tunnel_host)
+        if peer_gate.get("required") and not peer_gate.get("ok"):
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "peer_sync_required": True,
+                    "error": (
+                        peer_gate.get("error")
+                        or peer_gate.get("peer_sync_hint")
+                        or "WireGuard peer is not registered on the VPS yet."
+                    ),
+                },
+                status=400,
+            )
+
     if on_router_lan():
         connect_host = pick_local_onboard_connect_host(
             tunnel_address=tunnel_host,
@@ -7434,6 +7516,8 @@ def mikrotik_push_status(request, router_id: int):
 
     job_type = (request.GET.get("job") or "").strip()
     if job_type:
+        if request.GET.get("recover") == "1" and job_type == NAS_REFRESH_JOB:
+            ensure_nas_refresh_job(router_id)
         job = get_job(router_id, job_type) or {"status": "unknown"}
         return JsonResponse({"ok": True, "job": job})
     return JsonResponse({"ok": True, "jobs": get_router_jobs(router_id)})
@@ -7501,7 +7585,7 @@ def mikrotik_status(request):
 
     results = {}
 
-    router_candidates, unique_hosts, tunnel_by_router = build_router_probe_plan(routers)
+    router_candidates, unique_hosts, tunnel_by_router, off_lan_tunnel_by_router = build_router_probe_plan(routers)
     probe_by_host = probe_mikrotik_hosts(unique_hosts)
 
     def _best_probe_for_router(router):
@@ -7591,6 +7675,7 @@ def mikrotik_status(request):
         payload,
         force=force_refresh,
         tunnel_by_router=tunnel_by_router,
+        off_lan_tunnel_by_router=off_lan_tunnel_by_router,
     )
     from core.mikrotik_auto_restore import attach_auto_restore_to_rows
 
@@ -7604,9 +7689,14 @@ def mikrotik_status(request):
     cache.set(cache_key, payload, _mikrotik_status_cache_ttl(all_connected))
     # Drop stale live snapshots so the detail page cannot keep showing Online
     # after status has already marked the router down.
-    for item in probe_payload:
-        if (item.get("status") or "") != "connected" and item.get("id") is not None:
-            cache.delete(f"mikrotik_live:{org.pk}:{item['id']}")
+    for item in payload:
+        rid = item.get("id")
+        if rid is None:
+            continue
+        if item.get("management_deferred"):
+            continue
+        if (item.get("status") or "") != "connected":
+            cache.delete(f"mikrotik_live:{org.pk}:{rid}")
     if not onboarding_hold:
         try:
             from core.mikrotik_status_samples import record_mikrotik_status_samples
@@ -10689,7 +10779,7 @@ def mikrotik_pppoe_settings(request, router_id: int):
                 return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
 
             set_job(router_pk, "pppoe_push", "pending")
-            _schedule_mikrotik_job(
+            schedule_mikrotik_job(
                 _bg_push,
                 name=f"pppoe-push-{router_pk}",
                 router_id=router_pk,
@@ -10714,7 +10804,7 @@ def mikrotik_pppoe_settings(request, router_id: int):
                 return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
 
             set_job(router_pk, "pppoe_push", "pending")
-            _schedule_mikrotik_job(
+            schedule_mikrotik_job(
                 _bg_save_push,
                 name=f"pppoe-save-{router_pk}",
                 router_id=router_pk,
@@ -10883,7 +10973,7 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 )
 
             set_job(router_pk, "hotspot_push", "pending")
-            _schedule_mikrotik_job(
+            schedule_mikrotik_job(
                 _bg_hotspot_push,
                 name=f"hotspot-push-{router_pk}",
                 router_id=router_pk,
@@ -10953,7 +11043,7 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 )
 
             set_job(router_pk, "hotspot_push", "pending")
-            _schedule_mikrotik_job(
+            schedule_mikrotik_job(
                 _bg_hotspot_save,
                 name=f"hotspot-save-{router_pk}",
                 router_id=router_pk,
@@ -11431,7 +11521,7 @@ def _prefetch_daraja_oauth(organization) -> None:
         except Exception:
             pass
 
-    _schedule_mikrotik_job(_warm, name=f"prefetch-daraja-{org_pk}")
+    schedule_mikrotik_job(_warm, name=f"prefetch-daraja-{org_pk}")
 
 
 def _set_hotspot_mac_cookie(response, mac: str):
@@ -11995,7 +12085,7 @@ def hotspot_pay(request, join_code: str):
                     customer = Customer.objects.filter(pk=customer_id).first()
                 block_hotspot_mac_until_paid(organization, mac, customer=customer)
 
-            _schedule_mikrotik_job(
+            schedule_mikrotik_job(
                 _block_unpaid_mac,
                 name=f"hotspot-block-{hotspot_mac[-8:]}",
             )
@@ -12603,7 +12693,7 @@ def save_owner_profile(request):
     if not next_url.startswith("/"):
         next_url = reverse("core:my_account")
 
-    form = OwnerProfileForm(request.POST, user=request.user)
+    form = OwnerProfileForm(request.POST, user=request.user, organization=org)
     if form.is_valid():
         form.save()
         if form.cleaned_data.get("password1"):
@@ -12642,12 +12732,13 @@ def save_owner_profile(request):
     )
 
 
-def _owner_profile_form(user, data=None, *, id_prefix="owner"):
+def _owner_profile_form(user, organization, data=None, *, id_prefix="owner"):
     kwargs = {
         "user": user,
+        "organization": organization,
         "id_prefix": id_prefix,
         "initial": {
-            "username": user.username,
+            "username": organization.login_code if organization else "",
             "first_name": user.first_name,
             "last_name": user.last_name,
             "email": user.email,
@@ -12713,7 +12804,7 @@ def my_account(request):
         else None
     )
     account_profile_form = (
-        _owner_profile_form(request.user, id_prefix="account")
+        _owner_profile_form(request.user, org, id_prefix="account")
         if can_edit_profile
         else None
     )
@@ -12735,7 +12826,7 @@ def my_account(request):
                 org_ok = form.is_valid()
             if can_edit_profile:
                 account_profile_form = _owner_profile_form(
-                    request.user, request.POST, id_prefix="account"
+                    request.user, org, request.POST, id_prefix="account"
                 )
                 profile_ok = account_profile_form.is_valid()
 

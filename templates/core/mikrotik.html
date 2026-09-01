@@ -2109,7 +2109,7 @@
     onboardingGuardTimer = setInterval(function () {
       if (modal.hidden) return;
       postOnboardingGuard("ping");
-    }, 120000);
+    }, 60000);
   }
 
   function stopOnboardingGuard() {
@@ -2788,6 +2788,16 @@
     if (wireguardReady && tunnelStatusToken && !tunnelApiReady) {
       showConnectStatus(
         "Paste the ISPCENTRIC script in Winbox first, wait for [ISPCENTRIC OK], then Check now.",
+        true
+      );
+      if (tunnelCheckNow) {
+        try { tunnelCheckNow.focus(); } catch (err) {}
+      }
+      return;
+    }
+    if (wireguardReady && tunnelPeerSyncRequired) {
+      showConnectStatus(
+        "Register the WireGuard peer on the VPS first (panel below the script), then Check now before Connect.",
         true
       );
       if (tunnelCheckNow) {

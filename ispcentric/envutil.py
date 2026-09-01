@@ -12,10 +12,11 @@ def env_flag(name: str, default: str = "false") -> bool:
 
 def is_hosted(base_dir: Path | None = None) -> bool:
     """
-    Detect cPanel / Passenger hosting.
+    Detect cPanel / Passenger / VPS hosting.
 
     DJANGO_HOSTED=true|false overrides auto-detection.
-    DJANGO_HOSTED=auto (default) uses Passenger env or /home* paths.
+    DJANGO_HOSTED=auto (default) uses Passenger env, /home* paths, /opt/ispcentric,
+    or a `.hosted` marker file in the project root.
     """
     mode = (os.getenv("DJANGO_HOSTED", "auto") or "auto").strip().lower()
     if mode in ("1", "true", "yes", "on", "hosted", "production", "prod"):
@@ -30,6 +31,13 @@ def is_hosted(base_dir: Path | None = None) -> bool:
 
     root = base_dir or Path(__file__).resolve().parent.parent
     path = str(root).replace("\\", "/")
+
+    # Standard Ubuntu VPS install (deploy/README.md) and explicit marker file.
+    if path == "/opt/ispcentric" or path.startswith("/opt/ispcentric/"):
+        return True
+    if (root / ".hosted").is_file():
+        return True
+
     if path.startswith("/home/") or path.startswith("/home3/") or path.startswith("/home2/"):
         return True
     return False

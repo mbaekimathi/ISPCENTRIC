@@ -228,6 +228,13 @@ CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV = {
     "query": "register=1",
 }
 
+IT_SUPPORT_REGISTER_ISP_NAV = {
+    "key": "register_isp",
+    "label": "Register ISP client",
+    "action": "open_modal",
+    "modal_id": "cc-register-isp-modal",
+}
+
 
 def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
     """Dashboard at top, page-only module links on the dashboard, Logout at the bottom.
@@ -258,6 +265,17 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
         if current_page in {"network_equipment", "register_equipment"}:
             equipment_nav.insert(1, CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV)
         items.extend(equipment_nav)
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_clients":
+        items.extend(
+            [
+                {
+                    "key": "company_clients",
+                    "label": "Company clients",
+                    "url_name": "roles:it_support_company_clients",
+                },
+                IT_SUPPORT_REGISTER_ISP_NAV,
+            ]
+        )
     return {
         "main": items,
         "before_meta": list(ROLE_NAV_BEFORE_META.get(role, [])),
