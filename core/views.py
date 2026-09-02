@@ -3463,7 +3463,7 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     org = resolve_organization(request.user, request)
     is_owner = bool(org and (org.owner_id == request.user.id or viewing_client))
-    # Anyone in the client workspace can edit their own login via the popup.
+    # Org owners can edit their login via the topbar popup.
     can_edit_owner_profile = True
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
@@ -3471,7 +3471,7 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
 
     owner_profile_form = extra.pop("owner_profile_form", None)
     open_owner_profile_modal = bool(extra.pop("open_owner_profile_modal", False))
-    if owner_profile_form is None:
+    if owner_profile_form is None and org and org.owner_id == request.user.id:
         owner_profile_form = OwnerProfileForm(
             user=request.user,
             organization=org,
@@ -3497,7 +3497,7 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
         "can_access_client_portal": (
             can_access_client_portal(employee) if employee else False
         ),
-        "can_edit_owner_profile": can_edit_owner_profile,
+        "can_edit_owner_profile": bool(owner_profile_form),
         "owner_profile_form": owner_profile_form,
         "open_owner_profile_modal": open_owner_profile_modal,
         "employee_profile": employee,
@@ -13888,11 +13888,13 @@ def hotspot_alogin_page(request, join_code: str):
 def save_owner_profile(request):
     """Save login profile from the Edit profile popup (available on any /app page)."""
     org = resolve_organization(request.user, request)
-    employee = getattr(request.user, "employee_profile", None)
-    viewing_client = bool(employee and is_viewing_as_client(request, employee))
     next_url = (request.POST.get("next") or "").strip() or reverse("core:my_account")
     if not next_url.startswith("/"):
         next_url = reverse("core:my_account")
+
+    if not org or org.owner_id != request.user.id:
+        messages.error(request, "You can only edit your own login profile here.")
+        return redirect(next_url)
 
     form = OwnerProfileForm(request.POST, user=request.user, organization=org)
     if form.is_valid():
@@ -13921,7 +13923,7 @@ def save_owner_profile(request):
             )
             if org
             else None,
-            can_edit=bool(org and (org.owner_id == request.user.id or viewing_client)),
+            can_edit=bool(org and org.owner_id == request.user.id),
             can_edit_profile=True,
             owner_profile_form=form,
             open_owner_profile_modal=True,
@@ -13950,17 +13952,24 @@ def _owner_profile_form(user, organization, data=None, *, id_prefix="owner"):
     return OwnerProfileForm(**kwargs)
 
 
+def _account_profile_user(request, org):
+    """User whose login code and password are edited on the account page."""
+    if not org:
+        return None
+    if org.owner_id == request.user.id:
+        return request.user
+    employee = getattr(request.user, "employee_profile", None)
+    if employee and is_viewing_as_client(request, employee):
+        return org.owner
+    return None
+
+
 def _account_org_context(request, org):
     employee = getattr(request.user, "employee_profile", None)
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     can_edit = bool(org and (org.owner_id == request.user.id or viewing_client))
-    can_edit_profile = bool(
-        not viewing_client
-        and (
-            (org and org.owner_id == request.user.id)
-            or Organization.objects.filter(owner_id=request.user.id).exists()
-        )
-    )
+    profile_user = _account_profile_user(request, org)
+    can_edit_profile = profile_user is not None
     platform_gateway = PaymentGateway.get_solo() if org else None
     return {
         "can_edit": can_edit,
@@ -13999,14 +14008,15 @@ def my_account(request):
     extra = _account_org_context(request, org)
     can_edit = extra["can_edit"]
     can_edit_profile = extra["can_edit_profile"]
+    profile_user = _account_profile_user(request, org)
     form = (
         OrganizationEditForm(instance=org, section=OrganizationEditForm.SECTION_PROFILE)
         if org and can_edit
         else None
     )
     account_profile_form = (
-        _owner_profile_form(request.user, org, id_prefix="account")
-        if can_edit_profile
+        _owner_profile_form(profile_user, org, id_prefix="account")
+        if can_edit_profile and profile_user
         else None
     )
     account_editing = False
@@ -14025,9 +14035,9 @@ def my_account(request):
                     section=OrganizationEditForm.SECTION_PROFILE,
                 )
                 org_ok = form.is_valid()
-            if can_edit_profile:
+            if can_edit_profile and profile_user:
                 account_profile_form = _owner_profile_form(
-                    request.user, org, request.POST, id_prefix="account"
+                    profile_user, org, request.POST, id_prefix="account"
                 )
                 profile_ok = account_profile_form.is_valid()
 
@@ -14041,7 +14051,11 @@ def my_account(request):
                 if can_edit_profile and account_profile_form is not None:
                     account_profile_form.save()
                     saved_profile = True
-                    if account_profile_form.cleaned_data.get("password1"):
+                    if (
+                        account_profile_form.cleaned_data.get("password1")
+                        and profile_user
+                        and profile_user.pk == request.user.pk
+                    ):
                         update_session_auth_hash(request, request.user)
                         saved_password = True
                 if saved_profile and saved_company and saved_password:

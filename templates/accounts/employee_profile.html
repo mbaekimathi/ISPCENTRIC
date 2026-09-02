@@ -4,145 +4,186 @@
 
 {% block topbar_title %}
   <p class="staff-topbar-kicker">Account</p>
-  <h1 class="staff-topbar-heading">My profile settings</h1>
+  <h1 class="staff-topbar-heading">My profile</h1>
 {% endblock %}
 
 {% block staff_content %}
-<section class="org-edit">
-  <div class="org-edit-intro">
+<div class="emp-profile-shell">
+  <header class="emp-profile-intro">
+    <p class="emp-profile-kicker">My account</p>
+    <h2 class="emp-profile-title">Profile settings</h2>
+    <p class="emp-profile-lead">Update your photo, contact details, and sign-in password.</p>
     {% if dashboard_url_name %}
-    <a class="org-edit-back" href="{% url dashboard_url_name %}">← Back to dashboard</a>
+      <a class="emp-profile-back" href="{% url dashboard_url_name %}">← Back to dashboard</a>
     {% endif %}
-    <div class="org-edit-hero">
+  </header>
+
+  <section class="panel emp-profile-hero">
+    <div class="emp-profile-hero-main">
       {% if employee.profile_photo %}
-        <img class="org-edit-avatar" src="{{ employee.profile_photo.url }}" alt="" width="76" height="76" decoding="async">
+        <img class="emp-profile-avatar" src="{{ employee.profile_photo.url }}" alt="" width="84" height="84" loading="lazy" decoding="async">
       {% else %}
-        <span class="org-edit-avatar org-edit-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+        <span class="emp-profile-avatar emp-profile-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
       {% endif %}
-      <div class="org-edit-hero-copy">
-        <p class="org-edit-kicker">Your account</p>
-        <h2>{{ user.get_full_name|default:user.username }}</h2>
-        <div class="org-edit-meta">
-          <span class="org-status org-status-{{ employee.status }}">{{ employee.get_status_display }}</span>
-          <span class="org-code">{{ employee.login_code }}</span>
-          <span class="org-edit-meta-item">{{ employee.get_role_display }}</span>
-        </div>
-        <p class="org-edit-owner">
+      <div class="emp-profile-hero-copy">
+        <p class="emp-profile-kicker">Staff account</p>
+        <h3>{{ user.get_full_name|default:user.username }}</h3>
+        <div class="emp-profile-meta">
+          <span class="emp-profile-chip emp-profile-chip--status org-status org-status-{{ employee.status }}">{{ employee.get_status_display }}</span>
+          <span class="emp-profile-chip">{{ employee.get_role_display }}</span>
           {% if employee.organization %}
-            {{ employee.organization.name }}
-          {% else %}
-            No organization
+            <span class="emp-profile-chip">{{ employee.organization.name }}</span>
           {% endif %}
-          {% if user.email %}<span>{{ user.email }}</span>{% endif %}
-        </p>
+        </div>
       </div>
     </div>
-  </div>
+    <aside class="emp-profile-signin-aside">
+      <p class="emp-profile-signin-label">Login code</p>
+      <strong class="emp-profile-signin-code">{{ employee.login_code|default:"—" }}</strong>
+      <p class="emp-profile-signin-hint">Use with your 6-digit password at staff sign-in.</p>
+    </aside>
+  </section>
 
-  <form method="post" enctype="multipart/form-data" class="org-edit-form" novalidate>
+  <form method="post" enctype="multipart/form-data" class="emp-profile-form" id="emp-profile-form" novalidate>
     {% csrf_token %}
 
     {% if form.non_field_errors %}
       <div class="notice notice-error">{{ form.non_field_errors }}</div>
     {% endif %}
 
-    <div class="org-edit-panel">
-      <header class="org-edit-panel-head">
-        <h3>Profile photo</h3>
-        <p>Shown in the account menu and staff directory.</p>
+    <section class="panel emp-profile-card">
+      <header class="emp-profile-card-head">
+        <span class="emp-profile-card-icon emp-profile-card-icon--photo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm-7 9a7 7 0 0 1 14 0H5z"/></svg>
+        </span>
+        <div>
+          <h4>Profile photo</h4>
+          <p>Shown in the account menu and staff directory.</p>
+        </div>
       </header>
-      <div class="org-edit-photo">
+      <div class="emp-profile-photo-row">
         {% if employee.profile_photo %}
-          <img class="org-edit-photo-preview" src="{{ employee.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
+          <img class="emp-profile-photo-preview" data-photo-preview src="{{ employee.profile_photo.url }}" alt="Current photo" width="76" height="76" loading="lazy" decoding="async">
         {% else %}
-          <span class="org-edit-photo-preview org-edit-avatar-fallback" aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+          <span class="emp-profile-photo-preview emp-profile-avatar-fallback" data-photo-fallback aria-hidden="true">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+          <img class="emp-profile-photo-preview" data-photo-preview hidden alt="" width="76" height="76">
         {% endif %}
-        <div class="org-edit-photo-fields">
-          <label class="org-edit-file" for="{{ form.profile_photo.id_for_label }}">
-            <span class="org-edit-file-btn">Choose image</span>
-            <span class="org-edit-file-hint" id="org-edit-file-name">PNG or JPG, optional</span>
-          </label>
+        <div class="emp-profile-photo-picker">
+          <label class="btn btn-ghost emp-profile-photo-btn" for="{{ form.profile_photo.id_for_label }}">Choose photo</label>
+          <p class="emp-profile-photo-hint" id="emp-profile-file-name">Square PNG or JPG, optional</p>
           {{ form.profile_photo }}
           {% if form.profile_photo.errors %}<div class="field-error">{{ form.profile_photo.errors|striptags }}</div>{% endif %}
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="org-edit-panel">
-      <header class="org-edit-panel-head">
-        <h3>Identity</h3>
-        <p>Update the name others see across ISPCENTRIC.</p>
+    <section class="panel emp-profile-card emp-profile-card--identity">
+      <header class="emp-profile-card-head">
+        <span class="emp-profile-card-icon emp-profile-card-icon--identity" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm-7 18a7 7 0 0 1 14 0H5z"/></svg>
+        </span>
+        <div>
+          <h4>Identity</h4>
+          <p>The name others see across ISPCENTRIC.</p>
+        </div>
       </header>
-      <div class="org-edit-grid">
-        <div class="form-group">
+      <div class="emp-profile-grid">
+        <div class="field">
           <label for="{{ form.first_name.id_for_label }}">{{ form.first_name.label }}</label>
           {{ form.first_name }}
           {% if form.first_name.errors %}<div class="field-error">{{ form.first_name.errors|striptags }}</div>{% endif %}
         </div>
-        <div class="form-group">
+        <div class="field">
           <label for="{{ form.last_name.id_for_label }}">{{ form.last_name.label }}</label>
           {{ form.last_name }}
           {% if form.last_name.errors %}<div class="field-error">{{ form.last_name.errors|striptags }}</div>{% endif %}
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="org-edit-panel">
-      <header class="org-edit-panel-head">
-        <h3>Contact</h3>
-        <p>Email and phone used for account recovery and notices.</p>
+    <section class="panel emp-profile-card emp-profile-card--contact">
+      <header class="emp-profile-card-head">
+        <span class="emp-profile-card-icon emp-profile-card-icon--contact" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 4-8 5L4 8V6l8 5 8-5v2z"/></svg>
+        </span>
+        <div>
+          <h4>Contact</h4>
+          <p>Email and phone for account recovery and notices.</p>
+        </div>
       </header>
-      <div class="org-edit-grid">
-        <div class="form-group">
+      <div class="emp-profile-grid">
+        <div class="field">
           <label for="{{ form.email.id_for_label }}">{{ form.email.label }}</label>
           {{ form.email }}
           {% if form.email.errors %}<div class="field-error">{{ form.email.errors|striptags }}</div>{% endif %}
         </div>
-        <div class="form-group">
+        <div class="field">
           <label for="{{ form.phone.id_for_label }}">{{ form.phone.label }}</label>
           {{ form.phone }}
           {% if form.phone.errors %}<div class="field-error">{{ form.phone.errors|striptags }}</div>{% endif %}
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="org-edit-panel">
-      <header class="org-edit-panel-head">
-        <h3>Change password</h3>
-        <p>Optional — leave blank to keep your current password. Use at least 12 characters (not entirely numeric).</p>
+    <section class="panel emp-profile-card emp-profile-card--security">
+      <header class="emp-profile-card-head">
+        <span class="emp-profile-card-icon emp-profile-card-icon--security" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 8a8 8 0 0 1 16 0v2h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h1V8zm2 2h12V8a6 6 0 0 0-12 0v2zm6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+        </span>
+        <div>
+          <h4>Password</h4>
+          <p>Leave blank to keep your current 6-digit password.</p>
+        </div>
       </header>
-      <div class="org-edit-grid">
-        <div class="form-group">
+      <div class="emp-profile-grid">
+        <div class="field">
           <label for="{{ form.password1.id_for_label }}">{{ form.password1.label }}</label>
           {{ form.password1 }}
+          {% if form.password1.help_text %}<p class="field-hint">{{ form.password1.help_text }}</p>{% endif %}
           {% if form.password1.errors %}<div class="field-error">{{ form.password1.errors|striptags }}</div>{% endif %}
         </div>
-        <div class="form-group">
+        <div class="field">
           <label for="{{ form.password2.id_for_label }}">{{ form.password2.label }}</label>
           {{ form.password2 }}
           {% if form.password2.errors %}<div class="field-error">{{ form.password2.errors|striptags }}</div>{% endif %}
         </div>
       </div>
-    </div>
+    </section>
 
-    <div class="org-edit-actions">
-      <button type="submit" class="btn btn-primary">Save settings</button>
-      {% if dashboard_url_name %}
-      <a class="btn btn-ghost" href="{% url dashboard_url_name %}">Cancel</a>
-      {% endif %}
+    <div class="emp-profile-actions emp-profile-actions--sticky">
+      <p class="emp-profile-actions-hint">Your login code stays the same unless an admin updates it.</p>
+      <div class="emp-profile-actions-buttons">
+        {% if dashboard_url_name %}
+          <a class="btn btn-ghost" href="{% url dashboard_url_name %}">Cancel</a>
+        {% endif %}
+        <button type="submit" class="btn btn-primary">Save settings</button>
+      </div>
     </div>
   </form>
-</section>
+</div>
 <script>
 (function () {
-  var input = document.getElementById("{{ form.profile_photo.id_for_label }}");
-  var nameEl = document.getElementById("org-edit-file-name");
-  if (!input || !nameEl) return;
-  input.addEventListener("change", function () {
-    nameEl.textContent = input.files && input.files[0]
-      ? input.files[0].name
-      : "PNG or JPG, optional";
-  });
+  var form = document.getElementById("emp-profile-form");
+  if (!form) return;
+
+  var photoInput = document.getElementById("{{ form.profile_photo.id_for_label }}");
+  var photoPreview = form.querySelector("[data-photo-preview]");
+  var photoFallback = form.querySelector("[data-photo-fallback]");
+  var nameEl = document.getElementById("emp-profile-file-name");
+
+  if (photoInput) {
+    photoInput.addEventListener("change", function () {
+      var file = photoInput.files && photoInput.files[0];
+      if (nameEl) {
+        nameEl.textContent = file ? file.name : "Square PNG or JPG, optional";
+      }
+      if (!file || !photoPreview) return;
+      var url = URL.createObjectURL(file);
+      photoPreview.src = url;
+      photoPreview.hidden = false;
+      if (photoFallback) photoFallback.hidden = true;
+    });
+  }
 })();
 </script>
 {% endblock %}

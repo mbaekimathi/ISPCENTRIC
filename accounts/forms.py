@@ -283,21 +283,31 @@ class RegisterForm(UserCreationForm):
                 "class": "form-control join-code-input",
             }
         )
+        self.fields["password1"].label = "6-digit password"
+        self.fields["password2"].label = "Confirm 6-digit password"
         self.fields["password1"].help_text = (
-            "At least 12 characters, not entirely numeric, and not a common password."
+            "Choose a 6-digit numeric password for sign-in."
         )
+        self.fields["password1"].validators = []
+        self.fields["password2"].validators = []
         self.fields["password1"].widget.attrs.update(
             {
-                "placeholder": "Create a strong password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         )
         self.fields["password2"].widget.attrs.update(
             {
-                "placeholder": "Confirm password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         )
         self.country_options = get_country_options()
@@ -314,6 +324,24 @@ class RegisterForm(UserCreationForm):
         code = normalize_owner_login_code(self.cleaned_data.get("username"))
         assert_owner_login_code_available(code)
         return code
+
+    def clean_password1(self):
+        return "".join(
+            ch for ch in (self.cleaned_data.get("password1") or "") if ch.isdigit()
+        )
+
+    def clean_password2(self):
+        return validate_account_password(
+            self.cleaned_data.get("password1") or "",
+            self.cleaned_data.get("password2") or "",
+            required=True,
+        )
+
+    def validate_password_for_user(self, user, password_field_name="password2"):
+        return
+
+    def _post_clean(self):
+        super(forms.ModelForm, self)._post_clean()
 
     def save(self, commit=True):
         login_code = self.cleaned_data["username"]
@@ -385,10 +413,14 @@ class LoginForm(AuthenticationForm):
                 "maxlength": "6",
             }
         )
+        self.fields["password"].label = "6-digit password"
         self.fields["password"].widget.attrs.update(
             {
-                "class": "form-control password-input",
-                "placeholder": "Password",
+                "class": "form-control join-code-input password-input",
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
                 "autocomplete": "current-password",
             }
         )
@@ -770,24 +802,30 @@ class EmployeeProfileForm(forms.Form):
     )
     password1 = forms.CharField(
         required=False,
-        label="New password",
-        help_text="Leave blank to keep your current password. At least 12 characters; not entirely numeric.",
+        label="6-digit password",
+        help_text="Leave blank to keep your current password. Enter a 6-digit numeric password.",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "New strong password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         ),
     )
     password2 = forms.CharField(
         required=False,
-        label="Confirm new password",
+        label="Confirm 6-digit password",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "Confirm new password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
             }
         ),
     )
@@ -908,25 +946,31 @@ class OwnerProfileForm(forms.Form):
     )
     password1 = forms.CharField(
         required=False,
-        label="New password",
-        help_text="Leave blank to keep your current password. At least 12 characters; not entirely numeric.",
+        label="6-digit password",
+        help_text="Leave blank to keep your current password. Enter a 6-digit numeric password.",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "New strong password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
                 "id": "id_owner_password1",
             }
         ),
     )
     password2 = forms.CharField(
         required=False,
-        label="Confirm new password",
+        label="Confirm 6-digit password",
         widget=forms.PasswordInput(
             attrs={
-                "placeholder": "Confirm new password",
+                "placeholder": "000000",
                 "autocomplete": "new-password",
-                "class": "form-control password-input",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
                 "id": "id_owner_password2",
             }
         ),
@@ -999,6 +1043,56 @@ class OwnerProfileForm(forms.Form):
             org.login_code = self.cleaned_data["username"]
             org.save(update_fields=["login_code"])
         return user
+
+
+class OwnerSetPasswordForm(forms.Form):
+    """Password reset confirm form — accepts 6-digit numeric passwords."""
+
+    new_password1 = forms.CharField(
+        label="6-digit password",
+        widget=forms.PasswordInput(
+            attrs={
+                "placeholder": "000000",
+                "autocomplete": "new-password",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
+            }
+        ),
+    )
+    new_password2 = forms.CharField(
+        label="Confirm 6-digit password",
+        widget=forms.PasswordInput(
+            attrs={
+                "placeholder": "000000",
+                "autocomplete": "new-password",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "class": "form-control join-code-input password-input",
+            }
+        ),
+    )
+
+    def __init__(self, user, *args, **kwargs):
+        self.user = user
+        super().__init__(*args, **kwargs)
+
+    def clean_new_password2(self):
+        return validate_account_password(
+            self.cleaned_data.get("new_password1") or "",
+            self.cleaned_data.get("new_password2") or "",
+            user=self.user,
+            required=True,
+        )
+
+    def save(self, commit=True):
+        password = self.cleaned_data["new_password2"]
+        self.user.set_password(password)
+        if commit:
+            self.user.save()
+        return self.user
 
 
 class OrganizationEditForm(forms.ModelForm):
@@ -2444,6 +2538,51 @@ class EmployeeAdminEditForm(forms.Form):
             }
         ),
     )
+    login_code = forms.CharField(
+        min_length=6,
+        max_length=6,
+        label="6-digit login code",
+        help_text="The code this employee uses to sign in at the staff login page.",
+        widget=forms.TextInput(
+            attrs={
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "autocomplete": "off",
+                "class": "form-control join-code-input",
+            }
+        ),
+    )
+    password1 = forms.CharField(
+        required=False,
+        label="6-digit password",
+        help_text="Leave blank to keep the current password.",
+        widget=forms.PasswordInput(
+            attrs={
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "autocomplete": "new-password",
+                "class": "form-control join-code-input password-input",
+            }
+        ),
+    )
+    password2 = forms.CharField(
+        required=False,
+        label="Confirm 6-digit password",
+        widget=forms.PasswordInput(
+            attrs={
+                "placeholder": "000000",
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "maxlength": "6",
+                "autocomplete": "new-password",
+                "class": "form-control join-code-input password-input",
+            }
+        ),
+    )
     organization = forms.ModelChoiceField(
         queryset=Organization.objects.none(),
         required=False,
@@ -2484,6 +2623,7 @@ class EmployeeAdminEditForm(forms.Form):
             self.fields["last_name"].initial = user.last_name
             self.fields["email"].initial = user.email
             self.fields["phone"].initial = employee.phone
+            self.fields["login_code"].initial = employee.login_code
             self.fields["organization"].initial = employee.organization_id
             self.fields["role"].initial = employee.role
             self.fields["status"].initial = employee.status
@@ -2506,8 +2646,26 @@ class EmployeeAdminEditForm(forms.Form):
     def clean_phone(self):
         return (self.cleaned_data.get("phone") or "").strip()
 
+    def clean_login_code(self):
+        code = "".join(
+            ch for ch in (self.cleaned_data.get("login_code") or "") if ch.isdigit()
+        )
+        if len(code) != 6:
+            raise forms.ValidationError("Enter a 6-digit login code.")
+        assert_employee_login_code_available(code, employee=self.employee)
+        return code
+
     def clean(self):
         cleaned = super().clean()
+        p1 = cleaned.get("password1") or ""
+        p2 = cleaned.get("password2") or ""
+        if p1 or p2:
+            try:
+                cleaned["password1"] = validate_employee_password(
+                    p1, p2, required=bool(p1 or p2)
+                )
+            except forms.ValidationError as exc:
+                self.add_error("password1", exc)
         role = cleaned.get("role")
         organization = cleaned.get("organization")
         company_scoped = {
@@ -2528,8 +2686,11 @@ class EmployeeAdminEditForm(forms.Form):
         user.first_name = self.cleaned_data["first_name"]
         user.last_name = self.cleaned_data["last_name"]
         user.email = self.cleaned_data["email"]
+        if self.cleaned_data.get("password1"):
+            user.set_password(self.cleaned_data["password1"])
         user.save()
         employee.phone = self.cleaned_data["phone"]
+        employee.login_code = self.cleaned_data["login_code"]
         employee.organization = self.cleaned_data.get("organization")
         employee.role = self.cleaned_data["role"]
         employee.status = self.cleaned_data["status"]

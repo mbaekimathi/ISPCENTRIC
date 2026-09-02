@@ -8839,6 +8839,457 @@ body.staff-nav-lock {
   line-height: 1.4;
 }
 
+.org-edit-panel--credentials {
+  border-color: color-mix(in srgb, var(--sea) 24%, var(--border-strong));
+  background:
+    radial-gradient(ellipse 70% 55% at 0% 0%, color-mix(in srgb, var(--sea) 9%, transparent), transparent 58%),
+    linear-gradient(180deg, color-mix(in srgb, var(--sea) 4%, var(--surface)), var(--surface));
+}
+
+.org-edit-credentials-code {
+  margin-bottom: 1rem;
+}
+
+.org-edit-credentials-code .form-group {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.org-edit-code-input-wrap {
+  width: min(100%, 14rem);
+}
+
+.org-edit-code-input-wrap .join-code-input {
+  width: 100%;
+  min-height: 3rem;
+  text-align: center;
+  font-size: 1.25rem;
+  letter-spacing: 0.38em;
+  border-radius: 12px;
+}
+
+.org-edit-panel--credentials .join-code-input.password-input {
+  letter-spacing: 0.28em;
+  font-size: 1.05rem;
+  text-align: center;
+}
+
+/* Employee self-service profile */
+.emp-profile-shell {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  animation: uiRise 0.45s var(--ease-out) both;
+}
+
+.emp-profile-intro {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 1.15rem;
+}
+
+.emp-profile-kicker {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--sea);
+}
+
+.emp-profile-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.8vw, 1.75rem);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+}
+
+.emp-profile-lead {
+  margin: 0;
+  max-width: 36rem;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+
+.emp-profile-back {
+  display: inline-flex;
+  margin-top: 0.35rem;
+  color: var(--sea-deep);
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.emp-profile-back:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.emp-profile-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  padding: 1.25rem 1.35rem;
+  margin-bottom: 1.15rem;
+  background:
+    radial-gradient(ellipse 70% 80% at 0% 0%, color-mix(in srgb, var(--sea) 18%, transparent), transparent 55%),
+    radial-gradient(ellipse 50% 60% at 100% 100%, color-mix(in srgb, var(--signal) 12%, transparent), transparent 50%),
+    var(--surface-solid, var(--surface));
+}
+
+.emp-profile-hero-main {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  min-width: 0;
+}
+
+.emp-profile-avatar,
+.emp-profile-photo-preview {
+  width: 84px;
+  height: 84px;
+  border-radius: 22px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--sea) 22%, transparent);
+}
+
+.emp-profile-avatar-fallback,
+.emp-profile-photo-preview.emp-profile-avatar-fallback {
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-size: 1.85rem;
+  font-weight: 700;
+  letter-spacing: var(--tracking-tight);
+  color: var(--sea-deep);
+  background: color-mix(in srgb, var(--sea) 14%, var(--surface-solid));
+  border: 1px solid color-mix(in srgb, var(--sea) 28%, transparent);
+}
+
+.emp-profile-hero-copy {
+  min-width: 0;
+}
+
+.emp-profile-hero-copy h3 {
+  margin: 0.2rem 0 0.55rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.2rem, 1rem + 0.6vw, 1.55rem);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  word-break: break-word;
+}
+
+.emp-profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.emp-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface-solid) 80%, var(--sea) 8%);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.emp-profile-chip--status {
+  border-color: transparent;
+}
+
+.emp-profile-signin-aside {
+  min-width: min(220px, 100%);
+  padding: 0.95rem 1.05rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--sea) 22%, transparent);
+  background: color-mix(in srgb, var(--sea) 8%, var(--surface-solid));
+  text-align: center;
+}
+
+.emp-profile-signin-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.emp-profile-signin-code {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  font-variant-numeric: tabular-nums;
+  color: var(--sea-deep);
+}
+
+.emp-profile-signin-hint {
+  margin: 0.45rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.emp-profile-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.emp-profile-card {
+  padding: clamp(1.1rem, 2.5vw, 1.35rem);
+  animation: uiRise 0.45s var(--ease-out) both;
+}
+
+.emp-profile-form > .emp-profile-card:nth-child(2) { animation-delay: 0.04s; }
+.emp-profile-form > .emp-profile-card:nth-child(3) { animation-delay: 0.08s; }
+.emp-profile-form > .emp-profile-card:nth-child(4) { animation-delay: 0.12s; }
+.emp-profile-form > .emp-profile-card:nth-child(5) { animation-delay: 0.16s; }
+
+.emp-profile-card--identity {
+  border-color: color-mix(in srgb, var(--sea) 22%, var(--border-strong));
+  background:
+    radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--sea) 8%, transparent), transparent 58%),
+    var(--surface-solid, var(--surface));
+}
+
+.emp-profile-card--contact {
+  border-color: color-mix(in srgb, var(--signal) 18%, var(--border-strong));
+  background:
+    radial-gradient(ellipse 70% 55% at 100% 0%, color-mix(in srgb, var(--signal) 7%, transparent), transparent 55%),
+    var(--surface-solid, var(--surface));
+}
+
+.emp-profile-card--security {
+  border-color: color-mix(in srgb, var(--sea) 20%, var(--border-strong));
+  background:
+    linear-gradient(165deg, color-mix(in srgb, var(--sea) 6%, var(--surface-solid)), var(--surface-solid));
+}
+
+.emp-profile-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.emp-profile-card-head h4 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.02rem, 0.96rem + 0.25vw, 1.15rem);
+  letter-spacing: var(--tracking-tight);
+}
+
+.emp-profile-card-head p {
+  margin: 0.3rem 0 0;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+
+.emp-profile-card-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface-3) 70%, transparent);
+  color: var(--ink-soft);
+}
+
+.emp-profile-card-icon--photo {
+  border-color: color-mix(in srgb, var(--signal) 24%, transparent);
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface-solid));
+  color: color-mix(in srgb, var(--signal) 72%, var(--ink));
+}
+
+.emp-profile-card-icon--identity {
+  border-color: color-mix(in srgb, var(--sea) 28%, transparent);
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface-solid));
+  color: var(--sea-deep);
+}
+
+.emp-profile-card-icon--contact {
+  border-color: color-mix(in srgb, var(--signal) 26%, transparent);
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface-solid));
+  color: color-mix(in srgb, var(--signal) 72%, var(--ink));
+}
+
+.emp-profile-card-icon--security {
+  border-color: color-mix(in srgb, var(--sea) 28%, transparent);
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface-solid));
+  color: var(--sea-deep);
+}
+
+.emp-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+}
+
+.emp-profile-photo-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.95rem 1rem;
+  border-radius: 16px;
+  border: 1px dashed color-mix(in srgb, var(--sea) 28%, var(--border-strong));
+  background: color-mix(in srgb, var(--sea) 5%, var(--surface-solid));
+}
+
+.emp-profile-photo-picker {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.emp-profile-photo-btn {
+  cursor: pointer;
+  margin: 0;
+}
+
+.emp-profile-photo-hint {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.emp-profile-form .org-edit-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.emp-profile-card--security .join-code-input {
+  text-align: center;
+  letter-spacing: 0.28em;
+  font-size: 1.05rem;
+}
+
+.emp-profile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem 1rem;
+  flex-wrap: wrap;
+}
+
+.emp-profile-actions--sticky {
+  position: sticky;
+  bottom: 0.75rem;
+  z-index: 5;
+  margin-top: 0.15rem;
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface-solid, #fff) 88%, transparent);
+  box-shadow: 0 12px 36px color-mix(in srgb, var(--ink) 14%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+}
+
+.emp-profile-actions-hint {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: min(100%, 12rem);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.emp-profile-actions-buttons {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.emp-profile-actions--sticky .btn-primary {
+  min-width: min(100%, 11rem);
+}
+
+@media (max-width: 720px) {
+  .emp-profile-hero {
+    align-items: flex-start;
+    padding: 1.1rem;
+  }
+
+  .emp-profile-hero-main {
+    width: 100%;
+  }
+
+  .emp-profile-avatar,
+  .emp-profile-photo-preview {
+    width: 72px;
+    height: 72px;
+    border-radius: 18px;
+  }
+
+  .emp-profile-signin-aside {
+    width: 100%;
+  }
+
+  .emp-profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .emp-profile-actions--sticky {
+    flex-direction: column;
+    align-items: stretch;
+    bottom: 0.5rem;
+    padding: 0.75rem;
+  }
+
+  .emp-profile-actions-hint {
+    text-align: center;
+  }
+
+  .emp-profile-actions-buttons {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .emp-profile-actions--sticky .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+[data-theme="dark"] .emp-profile-signin-aside,
+[data-theme="dark"] .emp-profile-card--identity,
+[data-theme="dark"] .emp-profile-card--contact,
+[data-theme="dark"] .emp-profile-card--security {
+  background: color-mix(in srgb, var(--surface-solid) 92%, #000 8%);
+}
+
+[data-theme="dark"] .emp-profile-actions--sticky {
+  background: color-mix(in srgb, var(--surface-solid) 82%, transparent);
+}
+
 .org-edit-photo {
   display: flex;
   align-items: center;
@@ -19020,6 +19471,196 @@ a.packages-stat:focus-visible {
   gap: 1.15rem;
 }
 
+.account-page-shell--edit {
+  max-width: min(760px, 100%);
+}
+
+.account-page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.8vw, 1.75rem);
+  line-height: var(--leading-tight);
+  letter-spacing: var(--tracking-tight);
+  color: var(--ink);
+}
+
+.account-hero--compact {
+  padding: 1.05rem 1.2rem;
+}
+
+.account-hero-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.account-edit-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--signal) 34%, transparent);
+  background: color-mix(in srgb, var(--signal) 12%, var(--surface-solid));
+  color: color-mix(in srgb, var(--signal) 78%, var(--ink));
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.account-card--credentials {
+  border-color: color-mix(in srgb, var(--sea) 26%, var(--border-strong));
+  background:
+    radial-gradient(ellipse 80% 60% at 0% 0%, color-mix(in srgb, var(--sea) 10%, transparent), transparent 58%),
+    var(--surface-solid, var(--surface));
+}
+
+.account-card--company {
+  border-color: color-mix(in srgb, var(--signal) 20%, var(--border-strong));
+  background:
+    radial-gradient(ellipse 70% 55% at 100% 0%, color-mix(in srgb, var(--signal) 8%, transparent), transparent 55%),
+    var(--surface-solid, var(--surface));
+}
+
+.account-card-icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  margin-top: 0.05rem;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--surface-3) 70%, transparent);
+  color: var(--ink-soft);
+}
+
+.account-card-icon--login {
+  border-color: color-mix(in srgb, var(--sea) 28%, transparent);
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface-solid));
+  color: var(--sea-deep);
+}
+
+.account-card-icon--company {
+  border-color: color-mix(in srgb, var(--signal) 26%, transparent);
+  background: color-mix(in srgb, var(--signal) 10%, var(--surface-solid));
+  color: color-mix(in srgb, var(--signal) 72%, var(--ink));
+}
+
+.account-form-blocks {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.account-form-block {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem 1.05rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-3) 45%, transparent);
+}
+
+.account-form-block-title {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.account-form-block-lead {
+  margin: -0.35rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.account-form-block-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+}
+
+.account-form-block--signin {
+  border-color: color-mix(in srgb, var(--sea) 22%, var(--border));
+  background:
+    linear-gradient(165deg, color-mix(in srgb, var(--sea) 7%, var(--surface-solid)), color-mix(in srgb, var(--surface-3) 50%, transparent));
+}
+
+.account-form-block--security {
+  border-color: color-mix(in srgb, var(--signal) 18%, var(--border));
+  background:
+    linear-gradient(165deg, color-mix(in srgb, var(--signal) 5%, var(--surface-solid)), color-mix(in srgb, var(--surface-3) 50%, transparent));
+}
+
+.account-code-field {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.account-code-field > label {
+  width: 100%;
+  text-align: left;
+}
+
+.account-code-field .field-hint,
+.account-code-field .field-error {
+  width: 100%;
+  text-align: left;
+}
+
+.account-code-input-wrap {
+  width: min(100%, 15rem);
+}
+
+.account-page-form .account-code-input-wrap .join-code-input {
+  width: 100%;
+  min-height: 3.1rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--sea) 35%, var(--border-strong));
+  background: var(--surface-solid, #fff);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent);
+  font-size: 1.35rem;
+  letter-spacing: 0.42em;
+}
+
+.account-page-form .account-form-block--security .join-code-input {
+  letter-spacing: 0.28em;
+  font-size: 1.05rem;
+  text-align: center;
+}
+
+.account-page-actions-hint {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: min(100%, 12rem);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.account-page-actions-buttons {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.account-page-actions--sticky {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem 1rem;
+  flex-wrap: wrap;
+}
+
 .account-card {
   padding: clamp(1.1rem, 2.5vw, 1.45rem);
 }
@@ -19467,6 +20108,10 @@ a.packages-stat:focus-visible {
   -webkit-backdrop-filter: blur(14px) saturate(1.2);
 }
 
+.account-page-actions--sticky .account-page-actions-buttons {
+  margin-left: auto;
+}
+
 .account-page-actions--sticky .btn-primary {
   min-width: min(100%, 12rem);
 }
@@ -19571,9 +20216,35 @@ a.packages-stat:focus-visible {
   }
 
   .account-card-grid,
+  .account-form-block-grid,
   .account-summary-grid,
   .account-receive-options {
     grid-template-columns: 1fr;
+  }
+
+  .account-page-actions--sticky {
+    bottom: 0.5rem;
+    padding: 0.75rem;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .account-page-actions-hint {
+    text-align: center;
+  }
+
+  .account-page-actions--sticky .account-page-actions-buttons {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .account-page-actions--sticky .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .account-card-head-main {
+    flex-wrap: wrap;
   }
 
   .account-card-head {
@@ -19583,16 +20254,6 @@ a.packages-stat:focus-visible {
   .account-page .account-session-row {
     grid-template-columns: 1fr;
     gap: 0.25rem;
-  }
-
-  .account-page-actions--sticky {
-    bottom: 0.5rem;
-    padding: 0.75rem;
-  }
-
-  .account-page-actions--sticky .btn {
-    width: 100%;
-    justify-content: center;
   }
 }
 
@@ -31304,6 +31965,21 @@ a.module-card:focus-visible {
 
 [data-theme="dark"] .account-page-kicker {
   color: var(--sea);
+}
+
+[data-theme="dark"] .account-page-form .account-code-input-wrap .join-code-input {
+  background: color-mix(in srgb, var(--surface-solid) 92%, #000 8%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 6%, transparent);
+}
+
+[data-theme="dark"] .account-form-block,
+[data-theme="dark"] .account-form-block--signin,
+[data-theme="dark"] .account-form-block--security {
+  background: color-mix(in srgb, var(--surface-3) 35%, transparent);
+}
+
+[data-theme="dark"] .account-page-actions--sticky {
+  background: color-mix(in srgb, var(--surface-solid) 82%, transparent);
 }
 
 /* Table shells ? subtle edge fade + denser mobile */

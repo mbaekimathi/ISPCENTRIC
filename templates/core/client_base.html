@@ -197,7 +197,11 @@
             </div>
 
             <div class="account-menu-links">
+              {% if can_edit_owner_profile %}
               <a href="#edit-profile" id="open-owner-profile" role="menuitem" aria-haspopup="dialog" aria-controls="owner-profile-modal" data-open-owner-profile>Edit my profile</a>
+              {% elif employee_profile %}
+              <a href="{% url 'accounts:employee_profile' %}" role="menuitem">Edit my profile</a>
+              {% endif %}
               <a href="{% url 'core:my_account' %}" role="menuitem" class="{% if active_nav == 'account' %}is-active{% endif %}">My account</a>
               <a href="{% url 'core:system_settings' %}" role="menuitem" class="{% if active_nav == 'settings' %}is-active{% endif %}">System settings</a>
               {% if can_switch_roles %}

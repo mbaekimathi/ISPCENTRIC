@@ -23,6 +23,7 @@ from .forms import (
     EmployeeProfileForm,
     EmployeeRegisterForm,
     LoginForm,
+    OwnerSetPasswordForm,
     RegisterForm,
 )
 from .models import ClientSettings, Employee, Organization
@@ -559,6 +560,7 @@ class OwnerPasswordResetDoneView(PasswordResetDoneView):
 class OwnerPasswordResetConfirmView(PasswordResetConfirmView):
     template_name = "accounts/password_reset_confirm.html"
     success_url = reverse_lazy("accounts:password_reset_complete")
+    form_class = OwnerSetPasswordForm
 
 
 class OwnerPasswordResetCompleteView(PasswordResetCompleteView):

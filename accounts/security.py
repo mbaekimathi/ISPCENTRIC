@@ -91,7 +91,8 @@ def validate_account_password(
     required: bool = False,
 ) -> str:
     """
-    Enforce Django AUTH_PASSWORD_VALIDATORS (min length, not numeric-only, etc.).
+    Accept a matching 6-digit numeric password or a longer password that passes
+    Django AUTH_PASSWORD_VALIDATORS.
 
     Blank passwords are allowed when required=False (profile edit leave-unchanged).
     """
@@ -103,6 +104,12 @@ def validate_account_password(
         return ""
     if password1 != password2:
         raise forms.ValidationError("Passwords do not match.")
+
+    digits1 = "".join(ch for ch in password1 if ch.isdigit())
+    digits2 = "".join(ch for ch in password2 if ch.isdigit())
+    if len(digits1) == 6 and digits1 == digits2:
+        return digits1
+
     try:
         validate_password(password1, user=user)
     except DjangoValidationError as exc:

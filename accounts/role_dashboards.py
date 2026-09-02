@@ -1428,11 +1428,10 @@ def _company_client_owner_form(owner, organization, data=None):
         "ISP clients sign in with this code and their password."
     )
     form.fields["password1"].help_text = (
-        "Leave blank to keep the current password. "
-        "At least 12 characters; not entirely numeric."
+        "Leave blank to keep the current password. Enter a 6-digit numeric password."
     )
-    form.fields["password1"].label = "New password"
-    form.fields["password2"].label = "Confirm new password"
+    form.fields["password1"].label = "6-digit password"
+    form.fields["password2"].label = "Confirm 6-digit password"
     return form
 
 

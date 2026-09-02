@@ -29,9 +29,11 @@ EMPLOYEE_PASSWORD = "445566"
 
 
 class AccountPasswordTests(TestCase):
-    def test_rejects_six_digit_code(self):
-        with self.assertRaises(forms.ValidationError):
-            validate_account_password("123456", "123456", required=True)
+    def test_accepts_six_digit_code(self):
+        self.assertEqual(
+            validate_account_password("123456", "123456", required=True),
+            "123456",
+        )
 
     def test_rejects_short_password(self):
         with self.assertRaises(forms.ValidationError):
@@ -73,7 +75,7 @@ class OwnerProfileFormTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("username", form.errors)
 
-    def test_rejects_six_digit_password(self):
+    def test_accepts_six_digit_password(self):
         form = OwnerProfileForm(
             {
                 "username": "654321",
@@ -85,8 +87,10 @@ class OwnerProfileFormTests(TestCase):
             },
             user=self.user,
         )
-        self.assertFalse(form.is_valid())
-        self.assertIn("password1", form.errors)
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("112233"))
 
     def test_can_set_strong_password(self):
         form = OwnerProfileForm(
@@ -143,7 +147,7 @@ class OwnerProfileFormTests(TestCase):
 
 
 class RegisterFormPasswordTests(TestCase):
-    def test_rejects_six_digit_password(self):
+    def test_accepts_six_digit_password(self):
         form = RegisterForm(
             {
                 "username": "777888",
@@ -155,7 +159,7 @@ class RegisterFormPasswordTests(TestCase):
                 "password2": "445566",
             }
         )
-        self.assertFalse(form.is_valid())
+        self.assertTrue(form.is_valid(), form.errors)
 
     def test_register_with_strong_password(self):
         form = RegisterForm(
@@ -778,6 +782,9 @@ class EmployeeAdminOrgOptionalTests(TestCase):
                 "last_name": "Staff",
                 "email": "staff@example.com",
                 "phone": "",
+                "login_code": "778899",
+                "password1": "",
+                "password2": "",
                 "organization": "",
                 "role": Employee.Role.SALES,
                 "status": Employee.Status.ACTIVE,
@@ -799,6 +806,9 @@ class EmployeeAdminOrgOptionalTests(TestCase):
                 "last_name": "Staff",
                 "email": "staff@example.com",
                 "phone": "",
+                "login_code": "778899",
+                "password1": "",
+                "password2": "",
                 "organization": "",
                 "role": Employee.Role.TECHNICIAN,
                 "status": Employee.Status.ACTIVE,
@@ -820,6 +830,9 @@ class EmployeeAdminOrgOptionalTests(TestCase):
                 "last_name": "Staff",
                 "email": "staff@example.com",
                 "phone": "",
+                "login_code": "778899",
+                "password1": "",
+                "password2": "",
                 "organization": "",
                 "role": Employee.Role.ADMINISTRATOR,
                 "status": Employee.Status.ACTIVE,
@@ -828,6 +841,31 @@ class EmployeeAdminOrgOptionalTests(TestCase):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("organization", form.errors)
+
+    def test_can_update_login_code_and_password(self):
+        from accounts.forms import EmployeeAdminEditForm
+
+        form = EmployeeAdminEditForm(
+            {
+                "first_name": "Ann",
+                "last_name": "Staff",
+                "email": "staff@example.com",
+                "phone": "",
+                "login_code": "334455",
+                "password1": EMPLOYEE_PASSWORD,
+                "password2": EMPLOYEE_PASSWORD,
+                "organization": "",
+                "role": Employee.Role.SALES,
+                "status": Employee.Status.ACTIVE,
+            },
+            employee=self.employee,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        self.employee.refresh_from_db()
+        self.user.refresh_from_db()
+        self.assertEqual(self.employee.login_code, "334455")
+        self.assertTrue(self.user.check_password(EMPLOYEE_PASSWORD))
 
 
 class DarajaTokenCacheTests(SimpleTestCase):

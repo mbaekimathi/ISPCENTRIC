@@ -99,10 +99,8 @@
             </div>
             {{ form.password1.errors }}
             <ul class="password-rules" id="password-rules" aria-live="polite">
-              <li data-rule="length">At least 12 characters</li>
-              <li data-rule="not-numeric">Not entirely numeric</li>
-              <li data-rule="not-common">Not a commonly used password</li>
-              <li data-rule="not-similar">Not too similar to your username, email, or company</li>
+              <li data-rule="length">Exactly 6 digits</li>
+              <li data-rule="numeric">Numbers only</li>
               <li data-rule="match">Passwords match</li>
             </ul>
           </div>
@@ -248,21 +246,9 @@
     });
 
     /* Live password criteria */
-    var COMMON = {
-      "password":1,"password1":1,"password123":1,"12345678":1,"123456789":1,"1234567890":1,
-      "qwerty":1,"qwerty123":1,"abc123":1,"abcdef":1,"iloveyou":1,"admin":1,"admin123":1,
-      "welcome":1,"welcome1":1,"letmein":1,"monkey":1,"dragon":1,"master":1,"login":1,
-      "passw0rd":1,"password!":1,"password1!":1,"changeme":1,"football":1,"baseball":1,
-      "princess":1,"sunshine":1,"whatever":1,"trustno1":1,"11111111":1,"00000000":1,
-      "asdfasdf":1,"zxcvbnm":1,"1q2w3e4r":1,"qwertyuiop":1,"pass1234":1,"ispcentric":1
-    };
-
     var p1 = document.getElementById("id_password1");
     var p2 = document.getElementById("id_password2");
     var rules = document.getElementById("password-rules");
-    var username = document.getElementById("id_username");
-    var email = document.getElementById("id_email");
-    var company = document.getElementById("id_company_name");
 
     function setRule(name, ok) {
       if (!rules) return;
@@ -270,17 +256,6 @@
       if (!item) return;
       item.classList.toggle("is-ok", ok);
       item.classList.toggle("is-bad", !ok);
-    }
-
-    function similar(password, value) {
-      if (!value) return false;
-      var p = password.toLowerCase();
-      var v = String(value).toLowerCase().trim();
-      if (v.length < 3) return false;
-      if (p.indexOf(v) !== -1 || v.indexOf(p) !== -1) return true;
-      var local = v.split("@")[0];
-      if (local && local.length >= 3 && p.indexOf(local) !== -1) return true;
-      return false;
     }
 
     function checkPasswords() {
@@ -291,29 +266,21 @@
 
       rules.classList.toggle("is-active", hasInput || confirm.length > 0);
 
-      var lengthOk = password.length >= 12;
-      var notNumeric = password.length > 0 && !/^\d+$/.test(password);
-      var notCommon = password.length > 0 && !COMMON[password.toLowerCase()];
-      var notSimilar =
-        password.length > 0 &&
-        !similar(password, username && username.value) &&
-        !similar(password, email && email.value) &&
-        !similar(password, company && company.value);
+      var lengthOk = /^\d{6}$/.test(password);
+      var numericOk = password.length === 0 || /^\d+$/.test(password);
       var matchOk = password.length > 0 && confirm.length > 0 && password === confirm;
 
       setRule("length", lengthOk);
-      setRule("not-numeric", notNumeric);
-      setRule("not-common", notCommon);
-      setRule("not-similar", notSimilar);
+      setRule("numeric", numericOk);
       setRule("match", matchOk);
 
-      if (p1) p1.classList.toggle("is-valid", lengthOk && notNumeric && notCommon && notSimilar);
-      if (p1) p1.classList.toggle("is-invalid", hasInput && !(lengthOk && notNumeric && notCommon && notSimilar));
+      if (p1) p1.classList.toggle("is-valid", lengthOk && numericOk);
+      if (p1) p1.classList.toggle("is-invalid", hasInput && !(lengthOk && numericOk));
       if (p2) p2.classList.toggle("is-valid", matchOk);
       if (p2) p2.classList.toggle("is-invalid", confirm.length > 0 && !matchOk);
     }
 
-    [p1, p2, username, email, company].forEach(function (el) {
+    [p1, p2].forEach(function (el) {
       if (!el) return;
       el.addEventListener("input", checkPasswords);
       el.addEventListener("change", checkPasswords);

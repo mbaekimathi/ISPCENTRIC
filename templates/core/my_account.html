@@ -3,10 +3,15 @@
 {% block title %}Company profile — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="account-page-shell">
+<div class="account-page-shell{% if account_editing %} account-page-shell--edit{% endif %}">
   <header class="account-page-intro">
     <p class="account-page-kicker">My account</p>
-    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+    {% if account_editing %}
+      <h1 class="account-page-title">Edit profile</h1>
+      <p class="page-sub client-page-lead">Update sign-in credentials and company details, then save your changes.</p>
+    {% else %}
+      <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+    {% endif %}
   </header>
 
   {% if not organization %}
@@ -16,7 +21,7 @@
   {% else %}
     <div class="account-page" id="account-page"{% if account_editing %} data-editing="1"{% endif %}>
 
-      <section class="panel account-card account-hero">
+      <section class="panel account-card account-hero{% if account_editing %} account-hero--compact{% endif %}">
         <div class="account-hero-main">
           {% if organization.profile_photo %}
             <img class="account-hero-avatar" src="{{ organization.profile_photo.url }}" alt="" width="84" height="84" loading="lazy" decoding="async">
@@ -24,7 +29,12 @@
             <span class="account-hero-avatar-fallback" aria-hidden="true">{{ organization.name|slice:":1"|upper }}</span>
           {% endif %}
           <div class="account-hero-copy">
-            <p class="account-page-kicker">Company</p>
+            <div class="account-hero-title-row">
+              <p class="account-page-kicker">Company</p>
+              {% if account_editing %}
+                <span class="account-edit-badge">Editing</span>
+              {% endif %}
+            </div>
             <h2>{{ organization.name }}</h2>
             <div class="account-hero-meta">
               <span class="account-chip account-chip--sea">{{ organization.get_status_display }}</span>
@@ -35,10 +45,12 @@
             </div>
           </div>
         </div>
+        {% if not account_editing %}
         <aside class="account-hero-aside">
           <p class="account-hero-aside-label">Owner</p>
           <strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong>
         </aside>
+        {% endif %}
       </section>
 
       {% if account_editing and form or account_editing and account_profile_form %}
@@ -54,60 +66,87 @@
           {% endif %}
 
           {% if account_profile_form %}
-            <section class="panel account-card" id="login-profile">
+            <section class="panel account-card account-card--credentials" id="login-profile">
               <header class="account-card-head">
                 <div class="account-card-head-main">
-                  <span class="account-step" aria-hidden="true">1</span>
+                  <span class="account-card-icon account-card-icon--login" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 8a8 8 0 0 1 16 0v2h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h1V8zm2 2h12V8a6 6 0 0 0-12 0v2zm6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
+                  </span>
                   <div>
-                    <h3>Your login profile</h3>
-                    <p>Username or 6-digit code, email, and password used to sign in.</p>
+                    {% if is_viewing_as_client %}
+                      <h3>Client login credentials</h3>
+                      <p>6-digit login code and password the ISP client owner uses to sign in.</p>
+                    {% else %}
+                      <h3>Your login profile</h3>
+                      <p>6-digit login code and password used to sign in.</p>
+                    {% endif %}
                   </div>
                 </div>
               </header>
-              <div class="account-card-grid">
-                <div class="field">
-                  <label for="{{ account_profile_form.username.id_for_label }}">{{ account_profile_form.username.label }}</label>
-                  {{ account_profile_form.username }}
-                  {% if account_profile_form.username.help_text %}<p class="field-hint">{{ account_profile_form.username.help_text }}</p>{% endif %}
-                  {% if account_profile_form.username.errors %}<div class="field-error">{{ account_profile_form.username.errors|striptags }}</div>{% endif %}
+
+              <div class="account-form-blocks">
+                <div class="account-form-block account-form-block--signin">
+                  <p class="account-form-block-title">Sign-in code</p>
+                  <div class="account-code-field">
+                    <label for="{{ account_profile_form.username.id_for_label }}">{{ account_profile_form.username.label }}</label>
+                    <div class="account-code-input-wrap">
+                      {{ account_profile_form.username }}
+                    </div>
+                    {% if account_profile_form.username.help_text %}<p class="field-hint">{{ account_profile_form.username.help_text }}</p>{% endif %}
+                    {% if account_profile_form.username.errors %}<div class="field-error">{{ account_profile_form.username.errors|striptags }}</div>{% endif %}
+                  </div>
+                  <div class="account-form-block-grid">
+                    <div class="field">
+                      <label for="{{ account_profile_form.email.id_for_label }}">{{ account_profile_form.email.label }}</label>
+                      {{ account_profile_form.email }}
+                      {% if account_profile_form.email.errors %}<div class="field-error">{{ account_profile_form.email.errors|striptags }}</div>{% endif %}
+                    </div>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="{{ account_profile_form.email.id_for_label }}">{{ account_profile_form.email.label }}</label>
-                  {{ account_profile_form.email }}
-                  {% if account_profile_form.email.errors %}<div class="field-error">{{ account_profile_form.email.errors|striptags }}</div>{% endif %}
+
+                <div class="account-form-block account-form-block--identity">
+                  <p class="account-form-block-title">Display name</p>
+                  <div class="account-form-block-grid">
+                    <div class="field">
+                      <label for="{{ account_profile_form.first_name.id_for_label }}">{{ account_profile_form.first_name.label }}</label>
+                      {{ account_profile_form.first_name }}
+                      {% if account_profile_form.first_name.errors %}<div class="field-error">{{ account_profile_form.first_name.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field">
+                      <label for="{{ account_profile_form.last_name.id_for_label }}">{{ account_profile_form.last_name.label }}</label>
+                      {{ account_profile_form.last_name }}
+                      {% if account_profile_form.last_name.errors %}<div class="field-error">{{ account_profile_form.last_name.errors|striptags }}</div>{% endif %}
+                    </div>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="{{ account_profile_form.first_name.id_for_label }}">{{ account_profile_form.first_name.label }}</label>
-                  {{ account_profile_form.first_name }}
-                  {% if account_profile_form.first_name.errors %}<div class="field-error">{{ account_profile_form.first_name.errors|striptags }}</div>{% endif %}
-                </div>
-                <div class="field">
-                  <label for="{{ account_profile_form.last_name.id_for_label }}">{{ account_profile_form.last_name.label }}</label>
-                  {{ account_profile_form.last_name }}
-                  {% if account_profile_form.last_name.errors %}<div class="field-error">{{ account_profile_form.last_name.errors|striptags }}</div>{% endif %}
-                </div>
-                <div class="field">
-                  <label for="{{ account_profile_form.password1.id_for_label }}">{{ account_profile_form.password1.label }}</label>
-                  {{ account_profile_form.password1 }}
-                  {% if account_profile_form.password1.help_text %}<p class="field-hint">{{ account_profile_form.password1.help_text }}</p>{% endif %}
-                  {% if account_profile_form.password1.errors %}<div class="field-error">{{ account_profile_form.password1.errors|striptags }}</div>{% endif %}
-                </div>
-                <div class="field">
-                  <label for="{{ account_profile_form.password2.id_for_label }}">{{ account_profile_form.password2.label }}</label>
-                  {{ account_profile_form.password2 }}
-                  {% if account_profile_form.password2.errors %}<div class="field-error">{{ account_profile_form.password2.errors|striptags }}</div>{% endif %}
+
+                <div class="account-form-block account-form-block--security">
+                  <p class="account-form-block-title">Password</p>
+                  <p class="account-form-block-lead">Leave blank to keep your current password.</p>
+                  <div class="account-form-block-grid">
+                    <div class="field">
+                      <label for="{{ account_profile_form.password1.id_for_label }}">{{ account_profile_form.password1.label }}</label>
+                      {{ account_profile_form.password1 }}
+                      {% if account_profile_form.password1.errors %}<div class="field-error">{{ account_profile_form.password1.errors|striptags }}</div>{% endif %}
+                    </div>
+                    <div class="field">
+                      <label for="{{ account_profile_form.password2.id_for_label }}">{{ account_profile_form.password2.label }}</label>
+                      {{ account_profile_form.password2 }}
+                      {% if account_profile_form.password2.errors %}<div class="field-error">{{ account_profile_form.password2.errors|striptags }}</div>{% endif %}
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
           {% endif %}
 
           {% if form %}
-            <section class="panel account-card">
+            <section class="panel account-card account-card--company">
               <header class="account-card-head">
                 <div class="account-card-head-main">
-                  {% if account_profile_form %}
-                    <span class="account-step" aria-hidden="true">2</span>
-                  {% endif %}
+                  <span class="account-card-icon account-card-icon--company" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 2 7v2h20V7L12 2zm0 3.2L18.5 9H5.5L12 5.2zM4 11v8h6v-5h4v5h6v-8H4z"/></svg>
+                  </span>
                   <div>
                     <h3>Company details</h3>
                     <p>Name, contact details, and logo shown across your workspace.</p>
@@ -152,8 +191,11 @@
           {% endif %}
 
           <div class="account-page-actions account-page-actions--sticky">
-            <a class="btn btn-ghost" href="{% url 'core:my_account' %}">Cancel</a>
-            <button type="submit" class="btn btn-primary">Save profile</button>
+            <p class="account-page-actions-hint">Changes apply immediately after you save.</p>
+            <div class="account-page-actions-buttons">
+              <a class="btn btn-ghost" href="{% url 'core:my_account' %}">Cancel</a>
+              <button type="submit" class="btn btn-primary">Save profile</button>
+            </div>
           </div>
         </form>
       {% else %}
@@ -170,9 +212,9 @@
             {% endif %}
           </header>
           <dl class="account-session-rows">
-            <div class="account-session-row"><span>Username / code</span><strong>{{ user.username }}</strong></div>
-            <div class="account-session-row"><span>Name</span><strong>{{ user.get_full_name|default:"—" }}</strong></div>
-            <div class="account-session-row"><span>Email</span><strong>{{ user.email|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Login code</span><strong>{{ organization.login_code|default:"—" }}</strong></div>
+            <div class="account-session-row"><span>Name</span><strong>{% if is_viewing_as_client %}{{ organization.owner.get_full_name|default:"—" }}{% else %}{{ user.get_full_name|default:"—" }}{% endif %}</strong></div>
+            <div class="account-session-row"><span>Email</span><strong>{% if is_viewing_as_client %}{{ organization.owner.email|default:"—" }}{% else %}{{ user.email|default:"—" }}{% endif %}</strong></div>
             <div class="account-session-row"><span>Password</span><strong>••••••</strong></div>
             <div class="account-session-row"><span>Organization</span><strong>{{ organization.name }}</strong></div>
             <div class="account-session-row"><span>Contact phone</span><strong>{{ organization.phone|default:"—" }}</strong></div>
@@ -188,7 +230,7 @@
       {% endif %}
     </div>
 
-    {% if account_editing and form %}
+    {% if account_editing %}
     <script>
     (function () {
       var form = document.getElementById("org-account-form");

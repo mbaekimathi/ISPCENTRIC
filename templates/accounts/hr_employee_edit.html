@@ -100,6 +100,38 @@
       </div>
     </div>
 
+    <div class="org-edit-panel org-edit-panel--credentials">
+      <header class="org-edit-panel-head">
+        <h3>Login credentials</h3>
+        <p>6-digit code and password the employee uses at the staff sign-in page.</p>
+      </header>
+
+      <div class="org-edit-credentials-code">
+        <div class="form-group">
+          <label for="{{ form.login_code.id_for_label }}">{{ form.login_code.label }}</label>
+          <div class="org-edit-code-input-wrap">
+            {{ form.login_code }}
+          </div>
+          {% if form.login_code.help_text %}<p class="field-hint">{{ form.login_code.help_text }}</p>{% endif %}
+          {% if form.login_code.errors %}<div class="field-error">{{ form.login_code.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="org-edit-grid">
+        <div class="form-group">
+          <label for="{{ form.password1.id_for_label }}">{{ form.password1.label }}</label>
+          {{ form.password1 }}
+          {% if form.password1.help_text %}<p class="field-hint">{{ form.password1.help_text }}</p>{% endif %}
+          {% if form.password1.errors %}<div class="field-error">{{ form.password1.errors|striptags }}</div>{% endif %}
+        </div>
+        <div class="form-group">
+          <label for="{{ form.password2.id_for_label }}">{{ form.password2.label }}</label>
+          {{ form.password2 }}
+          {% if form.password2.errors %}<div class="field-error">{{ form.password2.errors|striptags }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
     <div class="org-edit-panel">
       <header class="org-edit-panel-head">
         <h3>Access</h3>
