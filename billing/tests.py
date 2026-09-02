@@ -1692,6 +1692,56 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(result.get("voucher_redeemable"))
         self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
 
+    def test_manual_redeem_keeps_voucher_when_nas_fails(self):
+        from billing.models import AccessVoucher
+        from billing.stk import fulfill_successful_stk
+        from billing.vouchers import redeem_access_voucher
+
+        stk = self._stk()
+        fulfill_successful_stk(
+            stk, result_code=0, result_desc="ok", mpesa_receipt="MANUALNAS1"
+        )
+        voucher = AccessVoucher.objects.get(stk_request=stk)
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": False, "allowed": False, "offline": True},
+        ):
+            result = redeem_access_voucher(
+                organization=self.org,
+                code=voucher.code,
+                customer=self.customer,
+                mac=self.customer.hotspot_mac,
+            )
+
+        voucher.refresh_from_db()
+        stk.refresh_from_db()
+        self.customer.refresh_from_db()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["activated"])
+        self.assertFalse(result["authorized"])
+        self.assertTrue(result["can_retry_authorize"])
+        self.assertTrue(result["voucher_fallback"])
+        self.assertTrue(result["voucher_redeemable"])
+        self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
+        self.assertIsNotNone(self.customer.package_end)
+        self.assertTrue(stk.subscription_applied)
+
+        with patch(
+            "core.subscription_sync.enqueue_customer_subscription_sync",
+            return_value={"ok": True, "allowed": True},
+        ):
+            retry = redeem_access_voucher(
+                organization=self.org,
+                code=voucher.code,
+                customer=self.customer,
+                mac=self.customer.hotspot_mac,
+            )
+
+        voucher.refresh_from_db()
+        self.assertTrue(retry["ok"])
+        self.assertTrue(retry["authorized"])
+        self.assertEqual(voucher.status, AccessVoucher.Status.INVALID)
+
     def test_auto_connect_treats_pending_cpe_as_authorized(self):
         from billing.stk import fulfill_successful_stk, refresh_stk_status
 

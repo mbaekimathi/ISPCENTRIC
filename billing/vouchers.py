@@ -278,7 +278,9 @@ def redeem_access_voucher(
 
     Device attach runs before package renewal so a failed link (at-cap / MAC clash)
     leaves the voucher VALID with no subscription extension. Marks the voucher
-    INVALID (used) only after a successful path. ``provision=False`` skips MikroTik.
+    INVALID (used) only after NAS authorize succeeds (or when ``provision=False``
+    skips MikroTik). If the router is offline, the package is applied but the
+    voucher stays redeemable for retry.
     """
     compact = normalize_voucher_code(code)
     if len(compact) < 5:
@@ -370,8 +372,6 @@ def redeem_access_voucher(
                 subscription_applied=True
             )
 
-    _mark_voucher_used(voucher, mac=mac)
-
     if stk is not None and not stk.subscription_applied:
         stk.subscription_applied = True
         stk.save(update_fields=["subscription_applied"])
@@ -402,7 +402,11 @@ def redeem_access_voucher(
     target.refresh_from_db()
     from core.subscription_sync import nas_access_ready
 
-    authorized = nas_access_ready(nas) if nas else False
+    authorized = nas_access_ready(nas) if provision else False
+    if (not provision or authorized) and voucher.status == AccessVoucher.Status.VALID:
+        _mark_voucher_used(voucher, mac=mac)
+
+    voucher.refresh_from_db()
     siblings = vouchers_for_batch(voucher)
     return {
         "ok": True,
@@ -419,10 +423,11 @@ def redeem_access_voucher(
             else (nas.get("message") or "Package activated; router authorize retry needed.")
         ),
         "can_retry_authorize": not authorized,
+        "voucher_fallback": bool(
+            voucher.status == AccessVoucher.Status.VALID and not authorized
+        ),
         "stk_id": stk.pk if stk else None,
         **voucher_payload(voucher, all_vouchers=siblings),
-        "voucher_status": AccessVoucher.Status.INVALID,
-        "voucher_redeemable": False,
     }
 
 
