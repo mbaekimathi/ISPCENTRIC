@@ -15,6 +15,7 @@ from accounts.forms import (
     RegisterForm,
     validate_account_password,
 )
+from accounts.security import validate_employee_password
 from accounts.models import (
     CommunicationSettings,
     Employee,
@@ -44,6 +45,28 @@ class AccountPasswordTests(TestCase):
             validate_account_password(STRONG_PASSWORD, STRONG_PASSWORD, required=True),
             STRONG_PASSWORD,
         )
+
+
+class EmployeePasswordTests(TestCase):
+    def test_accepts_six_digit_staff_password(self):
+        self.assertEqual(
+            validate_employee_password(EMPLOYEE_PASSWORD, EMPLOYEE_PASSWORD, required=True),
+            EMPLOYEE_PASSWORD,
+        )
+
+    def test_accepts_long_staff_password(self):
+        self.assertEqual(
+            validate_employee_password(
+                STRONG_PASSWORD,
+                STRONG_PASSWORD,
+                required=True,
+            ),
+            STRONG_PASSWORD,
+        )
+
+    def test_rejects_short_non_digit_staff_password(self):
+        with self.assertRaises(forms.ValidationError):
+            validate_employee_password("secret1", "secret1", required=True)
 
 
 class OwnerProfileFormTests(TestCase):

@@ -166,19 +166,34 @@ def validate_employee_password(
     password2: str,
     *,
     required: bool = True,
+    user=None,
 ) -> str:
-    """Require a matching 6-digit numeric password for staff accounts."""
-    digits1 = "".join(ch for ch in (password1 or "") if ch.isdigit())
-    digits2 = "".join(ch for ch in (password2 or "") if ch.isdigit())
-    if not digits1 and not digits2:
-        if required:
-            raise forms.ValidationError("Enter a 6-digit password.")
-        return ""
-    if digits1 != digits2:
-        raise forms.ValidationError("Passwords do not match.")
-    if len(digits1) != 6:
-        raise forms.ValidationError("Enter a 6-digit numeric password.")
-    return digits1
+    """Accept a 6-digit numeric password or a longer password for staff accounts."""
+    return validate_account_password(
+        password1,
+        password2,
+        user=user,
+        required=required,
+    )
+
+
+EMPLOYEE_PASSWORD_LABEL = "Password"
+EMPLOYEE_PASSWORD_CONFIRM_LABEL = "Confirm password"
+EMPLOYEE_PASSWORD_LOGIN_HELP = (
+    "Use your 6-digit code or a longer password (at least 8 characters)."
+)
+EMPLOYEE_PASSWORD_SET_HELP = (
+    "Choose a 6-digit code or a longer password that meets the strength rules."
+)
+
+
+def employee_password_field_attrs(*, placeholder="Password", autocomplete="new-password"):
+    """Widget attrs for staff password fields that accept PIN or passphrase."""
+    return {
+        "placeholder": placeholder,
+        "autocomplete": autocomplete,
+        "class": "form-control password-input",
+    }
 
 
 # Backward-compatible alias used by older imports/tests.

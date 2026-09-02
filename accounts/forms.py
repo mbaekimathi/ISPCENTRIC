@@ -23,6 +23,11 @@ from .security import (
     assert_owner_login_code_available,
     normalize_six_digit_login_code,
     owner_invite_required,
+    EMPLOYEE_PASSWORD_CONFIRM_LABEL,
+    EMPLOYEE_PASSWORD_LABEL,
+    EMPLOYEE_PASSWORD_LOGIN_HELP,
+    EMPLOYEE_PASSWORD_SET_HELP,
+    employee_password_field_attrs,
     validate_account_password,
     validate_employee_password,
     validate_flexible_password,
@@ -582,31 +587,17 @@ class EmployeeRegisterForm(UserCreationForm):
         if not ClientSettings.get_solo().referral_enabled:
             self.fields.pop("referral_code", None)
         self.fields["username"].label = "Username"
-        self.fields["password1"].label = "6-digit password"
-        self.fields["password2"].label = "Confirm 6-digit password"
-        self.fields["password1"].help_text = "Choose a 6-digit numeric password for staff sign-in."
+        self.fields["password1"].label = EMPLOYEE_PASSWORD_LABEL
+        self.fields["password2"].label = EMPLOYEE_PASSWORD_CONFIRM_LABEL
+        self.fields["password1"].help_text = EMPLOYEE_PASSWORD_SET_HELP
         self.fields["password2"].help_text = ""
         self.fields["password1"].validators = []
         self.fields["password2"].validators = []
         self.fields["password1"].widget.attrs.update(
-            {
-                "placeholder": "000000",
-                "autocomplete": "new-password",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "class": "form-control join-code-input password-input",
-            }
+            employee_password_field_attrs(placeholder="000000 or passphrase")
         )
         self.fields["password2"].widget.attrs.update(
-            {
-                "placeholder": "000000",
-                "autocomplete": "new-password",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "class": "form-control join-code-input password-input",
-            }
+            employee_password_field_attrs(placeholder="Confirm password")
         )
         self.country_options = get_country_options()
         selected = self.data.get("country_code") if self.is_bound else self.fields["country_code"].initial
@@ -624,11 +615,6 @@ class EmployeeRegisterForm(UserCreationForm):
 
     def clean_email(self):
         return self.cleaned_data["email"].strip().lower()
-
-    def clean_password1(self):
-        return "".join(
-            ch for ch in (self.cleaned_data.get("password1") or "") if ch.isdigit()
-        )
 
     def clean_password2(self):
         return validate_employee_password(
@@ -695,16 +681,13 @@ class EmployeeLoginForm(AuthenticationForm):
                 "autocomplete": "username",
             }
         )
-        self.fields["password"].label = "6-digit password"
+        self.fields["password"].label = EMPLOYEE_PASSWORD_LABEL
+        self.fields["password"].help_text = EMPLOYEE_PASSWORD_LOGIN_HELP
         self.fields["password"].widget.attrs.update(
-            {
-                "class": "form-control join-code-input password-input",
-                "placeholder": "000000",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "autocomplete": "current-password",
-            }
+            employee_password_field_attrs(
+                placeholder="000000 or passphrase",
+                autocomplete="current-password",
+            )
         )
         self.error_messages["invalid_login"] = (
             "Invalid login code or password."
@@ -802,31 +785,17 @@ class EmployeeProfileForm(forms.Form):
     )
     password1 = forms.CharField(
         required=False,
-        label="6-digit password",
-        help_text="Leave blank to keep your current password. Enter a 6-digit numeric password.",
+        label=EMPLOYEE_PASSWORD_LABEL,
+        help_text=f"Leave blank to keep your current password. {EMPLOYEE_PASSWORD_SET_HELP}",
         widget=forms.PasswordInput(
-            attrs={
-                "placeholder": "000000",
-                "autocomplete": "new-password",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "class": "form-control join-code-input password-input",
-            }
+            attrs=employee_password_field_attrs(placeholder="000000 or passphrase")
         ),
     )
     password2 = forms.CharField(
         required=False,
-        label="Confirm 6-digit password",
+        label=EMPLOYEE_PASSWORD_CONFIRM_LABEL,
         widget=forms.PasswordInput(
-            attrs={
-                "placeholder": "000000",
-                "autocomplete": "new-password",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "class": "form-control join-code-input password-input",
-            }
+            attrs=employee_password_field_attrs(placeholder="Confirm password")
         ),
     )
 
@@ -2556,31 +2525,17 @@ class EmployeeAdminEditForm(forms.Form):
     )
     password1 = forms.CharField(
         required=False,
-        label="6-digit password",
-        help_text="Leave blank to keep the current password.",
+        label=EMPLOYEE_PASSWORD_LABEL,
+        help_text=f"Leave blank to keep the current password. {EMPLOYEE_PASSWORD_SET_HELP}",
         widget=forms.PasswordInput(
-            attrs={
-                "placeholder": "000000",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "autocomplete": "new-password",
-                "class": "form-control join-code-input password-input",
-            }
+            attrs=employee_password_field_attrs(placeholder="000000 or passphrase")
         ),
     )
     password2 = forms.CharField(
         required=False,
-        label="Confirm 6-digit password",
+        label=EMPLOYEE_PASSWORD_CONFIRM_LABEL,
         widget=forms.PasswordInput(
-            attrs={
-                "placeholder": "000000",
-                "inputmode": "numeric",
-                "pattern": "[0-9]{6}",
-                "maxlength": "6",
-                "autocomplete": "new-password",
-                "class": "form-control join-code-input password-input",
-            }
+            attrs=employee_password_field_attrs(placeholder="Confirm password")
         ),
     )
     organization = forms.ModelChoiceField(
@@ -2662,7 +2617,10 @@ class EmployeeAdminEditForm(forms.Form):
         if p1 or p2:
             try:
                 cleaned["password1"] = validate_employee_password(
-                    p1, p2, required=bool(p1 or p2)
+                    p1,
+                    p2,
+                    required=bool(p1 or p2),
+                    user=getattr(self.employee, "user", None),
                 )
             except forms.ValidationError as exc:
                 self.add_error("password1", exc)

@@ -24,7 +24,7 @@
     <div class="staff-card">
       <div class="staff-badge">Employee</div>
       <h1>Staff sign in</h1>
-      <p class="lede">Use your 6-digit login code and 6-digit password.</p>
+      <p class="lede">Use your 6-digit login code and your password (6-digit code or longer passphrase).</p>
 
       <form method="post" novalidate>
         {% csrf_token %}
@@ -35,6 +35,9 @@
         {% for field in form %}
           <div class="form-group">
             <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+            {% if field.help_text %}
+              <p class="field-hint">{{ field.help_text }}</p>
+            {% endif %}
             {% if field.name == 'password' %}
               <div class="password-field">
                 {{ field }}
