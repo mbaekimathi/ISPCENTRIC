@@ -217,51 +217,13 @@ class Command(BaseCommand):
             result = sync_customer_subscription_access(
                 customer,
                 provision=True,
+                # Fleet sweep: restore/block on the ISP NAS immediately.
+                # Do not stall the whole org on offline CPE SSH/proxy (Ctrl+C
+                # traces). Pending CPE renew clear is finished when they redial.
+                quick=True,
             )
             if result.get("allowed"):
                 allowed += 1
-                # Paid clients whose CPE was offline at restore time still need
-                # the renew Hotspot cleared once they redial.
-                if (
-                    customer.service_type == Customer.ServiceType.PPPOE
-                    and result.get("cpe_renew_clear_pending")
-                    and not dry_run
-                ):
-                    try:
-                        from core.mikrotik_connect import (
-                            _clear_cpe_renew_with_retries,
-                            _pppoe_pay_portal_url,
-                        )
-
-                        pay_url = _pppoe_pay_portal_url(
-                            customer.organization, customer=customer
-                        )
-                        clear = _clear_cpe_renew_with_retries(
-                            customer,
-                            pay_url=pay_url,
-                            attempts=2,
-                            settle_seconds=1.0,
-                        )
-                        if clear.get("ok"):
-                            self._write(
-                                self.stdout,
-                                f"{customer.account_number}: cpe-renew cleared",
-                            )
-                        elif not clear.get("skipped"):
-                            errors += 1
-                            self._write(
-                                self.stderr,
-                                f"{customer.account_number}: cpe-clear "
-                                f"{clear.get('error') or 'failed'}",
-                                style=self.style.WARNING,
-                            )
-                    except Exception as exc:  # noqa: BLE001
-                        errors += 1
-                        self._write(
-                            self.stderr,
-                            f"{customer.account_number}: cpe-clear {exc}",
-                            style=self.style.WARNING,
-                        )
             else:
                 blocked += 1
                 # Re-push CPE renew only when the earlier attempt actually failed
@@ -275,6 +237,7 @@ class Command(BaseCommand):
                 ):
                     try:
                         from core.mikrotik_connect import (
+                            _CAPTIVE_API_TIMEOUT,
                             _pppoe_pay_portal_url,
                             apply_cpe_renew_portal,
                         )
@@ -283,7 +246,10 @@ class Command(BaseCommand):
                             customer.organization, customer=customer
                         )
                         retry = apply_cpe_renew_portal(
-                            customer, enabled=True, portal_url=pay_url
+                            customer,
+                            enabled=True,
+                            portal_url=pay_url,
+                            timeout=_CAPTIVE_API_TIMEOUT,
                         )
                         if retry.get("ok"):
                             self._write(
@@ -310,10 +276,17 @@ class Command(BaseCommand):
                 provision = result.get("provision") or {}
                 cpe_offline = bool(portal.get("skipped")) and not portal.get("ok")
                 nas_ok = bool(provision.get("ok"))
-                # CPE offline with NAS already correct is a notice, not a sweep error.
-                if cpe_offline and nas_ok:
+                # CPE offline / pending clear with NAS already correct is a
+                # notice, not a sweep error — surfing is decided on the NAS.
+                if nas_ok and (
+                    cpe_offline or result.get("cpe_renew_clear_pending")
+                ):
                     state = "allowed" if result.get("allowed") else "blocked"
-                    note = " (CPE offline — NAS ok)"
+                    note = (
+                        " (CPE renew clear pending)"
+                        if result.get("cpe_renew_clear_pending")
+                        else " (CPE offline — NAS ok)"
+                    )
                     self._write(
                         self.stdout,
                         f"{customer.account_number}: {state}{note}",
@@ -332,7 +305,10 @@ class Command(BaseCommand):
                     )
             else:
                 state = "allowed" if result.get("allowed") else "blocked"
-                self._write(self.stdout, f"{customer.account_number}: {state}")
+                note = ""
+                if result.get("allowed") and result.get("cpe_renew_clear_pending"):
+                    note = " (CPE renew clear pending)"
+                self._write(self.stdout, f"{customer.account_number}: {state}{note}")
 
         if expired_hotspot and not dry_run:
             try:

@@ -14106,6 +14106,7 @@ def apply_cpe_renew_portal(
     enabled: bool,
     portal_url: str = "",
     timeout: float = 8.0,
+    auto_prepare: bool | None = None,
 ) -> dict[str, Any]:
     """
     Enable or disable the Wi‑Fi captive renew popup on the subscriber CPE.
@@ -14137,6 +14138,14 @@ def apply_cpe_renew_portal(
             or "CPE is offline — renew Wi‑Fi popup will apply next time they are online before cut-off.",
         }
 
+    # Short timeouts (fleet sweep / quick restore) must not fall into NAS→CPE
+    # SSH prepare — that can block for tens of seconds on offline CPEs.
+    prepare = (
+        bool(auto_prepare)
+        if auto_prepare is not None
+        else float(timeout) > 3.0
+    )
+
     cpe_host = (session.get("address") or "").strip()
     last_error = ""
     for user, password in _cpe_credential_candidates(
@@ -14154,6 +14163,7 @@ def apply_cpe_renew_portal(
                 password,
                 timeout=timeout,
                 proxy_scope=pppoe_username,
+                auto_prepare=prepare,
             ) as sock:
                 notes = (
                     _enable_cpe_renew_hotspot(
@@ -15051,10 +15061,16 @@ def sync_customer_subscription_access(
                 # routers; without retries phones stay on "no internet" with no popup.
                 portal_result = {"ok": False, "skipped": True}
                 portal_attempts = 1 if quick else _CAPTIVE_REPAIR_ATTEMPTS
+                portal_timeout = (
+                    _CAPTIVE_API_TIMEOUT if quick else _CAPTIVE_RESTORE_TIMEOUT
+                )
                 for attempt in range(1, portal_attempts + 1):
                     try:
                         portal_result = apply_cpe_renew_portal(
-                            customer, enabled=True, portal_url=pay_url
+                            customer,
+                            enabled=True,
+                            portal_url=pay_url,
+                            timeout=portal_timeout,
                         )
                     except Exception as exc:  # noqa: BLE001
                         portal_result = {
@@ -15080,7 +15096,10 @@ def sync_customer_subscription_access(
                     for attempt in range(1, _CAPTIVE_REPAIR_ATTEMPTS + 1):
                         try:
                             retry = apply_cpe_renew_portal(
-                                customer, enabled=True, portal_url=pay_url
+                                customer,
+                                enabled=True,
+                                portal_url=pay_url,
+                                timeout=_CAPTIVE_RESTORE_TIMEOUT,
                             )
                             portal_result = retry
                             if retry.get("ok") or retry.get("skipped"):
