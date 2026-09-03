@@ -142,7 +142,7 @@ class ClientRouterProxyTests(TestCase):
         response = self.client.get(f"/app/clients/{self.customer.pk}/")
 
         self.assertContains(response, f"/app/clients/{self.customer.pk}/wifi-settings/")
-        self.assertContains(response, "Wi‑Fi")
+        self.assertContains(response, "Open client router")
         html = response.content.decode()
         self.assertNotRegex(
             html,
@@ -158,7 +158,7 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             response.url,
-            f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
+            f"/app/clients/{self.customer.pk}/wifi-settings/",
         )
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
@@ -189,14 +189,15 @@ class ClientRouterProxyTests(TestCase):
     def test_router_login_page_loads_without_blocking_on_probe(self):
         with patch("core.views.probe_customer_cpe_web") as probe:
             response = self.client.get(
-                f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
+                f"/app/clients/{self.customer.pk}/wifi-settings/",
             )
 
         probe.assert_not_called()
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "core/client_cpe_access.html")
         self.assertContains(response, "Opening the client router")
-        self.assertContains(response, "Router admin")
+        self.assertContains(response, "Advanced router admin")
+        self.assertNotContains(response, "Wi‑Fi settings")
         self.assertContains(
             response,
             f"/app/clients/{self.customer.pk}/router-login/start/",
@@ -590,19 +591,51 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(login.call_args.kwargs.get("cpe_password"), "")
 
     def test_router_tab_surfaces_nas_default_password_for_autofill(self):
+        self.nas.default_cpe_username = "cpeadmin"
         self.nas.default_cpe_password = "fleet-default"
-        self.nas.save(update_fields=["default_cpe_password"])
+        self.nas.save(update_fields=["default_cpe_username", "default_cpe_password"])
         self.customer.cpe_password = ""
-        self.customer.save(update_fields=["cpe_password"])
+        self.customer.cpe_username = ""
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
 
         response = self.client.get(
-            f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
+            f"/app/clients/{self.customer.pk}/wifi-settings/",
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-cpe-pass="fleet-default"')
+        self.assertContains(response, 'data-cpe-user="cpeadmin"')
+        self.assertContains(response, 'name="cpe_username"')
+        self.assertContains(response, 'value="cpeadmin"')
+        self.assertContains(response, 'value="fleet-default"')
         self.assertContains(response, "From NAS default")
+        self.assertContains(response, "Save &amp; connect")
         self.assertContains(response, "requestSubmit")
+
+    def test_start_saves_username_and_password_from_operator(self):
+        with patch(
+            "core.views.probe_customer_cpe_web",
+            return_value={
+                "ok": True,
+                "session_active": True,
+                "cpe_host": "10.20.0.55",
+                "port": 80,
+                "reachable": True,
+                "ping_ok": True,
+            },
+        ) as probe:
+            response = self.client.post(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+                {"cpe_username": "root", "cpe_password": "house-secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_username, "root")
+        self.assertEqual(self.customer.cpe_password, "house-secret")
+        self.assertEqual(probe.call_args.kwargs.get("cpe_username"), "root")
+        self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "house-secret")
 
     def test_start_auto_login_seeds_proxy_cookies_and_basic_auth(self):
         from django.core.cache import cache
@@ -805,6 +838,22 @@ class CpeWebAutoLoginTests(TestCase):
             mikrotik_connect._html_looks_like_login_page(
                 "<html><title>WebFig</title><div id=app></div></html>"
             )
+        )
+
+    def test_credential_candidates_include_nas_default(self):
+        pairs = mikrotik_connect._cpe_credential_candidates(
+            cpe_username="admin",
+            cpe_password="",
+            pppoe_password="pppoe-secret",
+            default_cpe_username="admin",
+            default_cpe_password="nas-default",
+        )
+        self.assertIn(("admin", "nas-default"), pairs)
+        self.assertIn(("admin", "pppoe-secret"), pairs)
+        # NAS default is tried before the PPPoE password.
+        self.assertLess(
+            pairs.index(("admin", "nas-default")),
+            pairs.index(("admin", "pppoe-secret")),
         )
 
     @patch.object(mikrotik_connect, "customer_cpe_web_proxy")

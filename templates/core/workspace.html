@@ -217,7 +217,8 @@
 {% endblock %}
 
 {% block client_extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+{% load static %}
+<script src="{% static 'vendor/chart.umd.min.js' %}"></script>
 <script>
 (function () {
   var root = document.querySelector("[data-workspace-dash]");

@@ -8187,6 +8187,55 @@ button.clients-list-table-action {
   border-radius: 12px;
 }
 
+.client-router-credentials-form {
+  margin-top: 1rem;
+}
+
+.client-router-credentials-title {
+  margin: 0 0 0.25rem;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.client-router-credentials-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 0.65rem 0.75rem;
+  align-items: end;
+}
+
+.client-router-credentials-grid .form-field {
+  margin: 0;
+}
+
+.client-router-credentials-grid .form-field label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.client-router-credentials-grid .password-field {
+  position: relative;
+}
+
+.client-router-credentials-grid .password-field .form-control {
+  width: 100%;
+  padding-right: 2.5rem;
+}
+
+.client-router-credentials-grid .password-field .password-toggle {
+  position: absolute;
+  right: 0.55rem;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.client-router-credentials-actions {
+  display: flex;
+  align-items: flex-end;
+}
+
 .client-router-password-form label {
   display: block;
   margin-bottom: 0.4rem;
@@ -22111,6 +22160,23 @@ a.packages-stat:focus-visible {
   line-height: 1.45;
 }
 
+.client-usage-chart-error {
+  margin: 0 0 0.75rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, #c0392b 35%, var(--border-strong));
+  background: color-mix(in srgb, #c0392b 10%, transparent);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.client-usage-chart-wrap canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .client-usage-chart-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -23088,6 +23154,14 @@ a.packages-stat:focus-visible {
   }
 
   .client-cpe-access-page .client-router-password-row .btn {
+    width: 100%;
+  }
+
+  .client-cpe-access-page .client-router-credentials-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .client-cpe-access-page .client-router-credentials-actions .btn {
     width: 100%;
   }
 

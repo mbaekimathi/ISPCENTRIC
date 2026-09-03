@@ -1226,7 +1226,7 @@ def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[
         nav.append(
             {
                 "key": "router_wifi",
-                "label": "Router & Wi‑Fi",
+                "label": "Router admin",
                 "href": reverse(
                     "core:client_wifi_settings",
                     kwargs={"customer_id": customer.pk},
@@ -9427,6 +9427,7 @@ def client_detail(request, customer_id: int):
     if request.method == "POST":
         action = (request.POST.get("action") or "").strip()
         if action == "update_router_password":
+            router_username = (request.POST.get("cpe_username") or "").strip() or "admin"
             router_password = (request.POST.get("cpe_password") or "").strip()
             if not router_password:
                 if is_ajax:
@@ -9438,15 +9439,14 @@ def client_detail(request, customer_id: int):
                 return redirect("core:client_detail", customer_id=customer.pk)
 
             customer.cpe_password = router_password
-            if not (customer.cpe_username or "").strip():
-                customer.cpe_username = "admin"
+            customer.cpe_username = router_username
             customer.save(update_fields=["cpe_password", "cpe_username"])
             # A new credential invalidates the cached failure and stale snapshot.
             cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
 
             if is_ajax:
-                return JsonResponse({"ok": True, "message": "Router password saved."})
-            messages.success(request, "Router password saved.")
+                return JsonResponse({"ok": True, "message": "Router login saved."})
+            messages.success(request, "Router login saved.")
             return redirect("core:client_detail", customer_id=customer.pk)
 
         if action == "update_client_details":
@@ -9697,6 +9697,12 @@ def client_detail(request, customer_id: int):
     payment_count = Payment.objects.filter(invoice__customer=customer).count()
     voucher_count = AccessVoucher.objects.filter(customer=customer).count()
 
+    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
+    saved_cpe_user = (customer.cpe_username or "").strip()
+    saved_cpe_pass = (customer.cpe_password or "").strip()
+    cpe_username = saved_cpe_user or default_cpe_user or "admin"
+    cpe_password = saved_cpe_pass or default_cpe_pass
+
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -9713,6 +9719,8 @@ def client_detail(request, customer_id: int):
         can_access_wifi=can_access_wifi,
         wifi_ssid_display=wifi_ssid_display,
         wifi_password_display=wifi_password_display,
+        cpe_username=cpe_username,
+        cpe_password=cpe_password,
         recharge_form=recharge_form,
         details_form=details_form,
         package_duration=getattr(customer.plan, "duration", "") or "",
@@ -10000,21 +10008,14 @@ def _normalize_proxied_path(router_path: str, prefix: str) -> str:
     return "/" + path if path else "/"
 
 
-def _client_cpe_access_tab(request) -> str:
-    tab = (request.GET.get("tab") or "").strip().lower()
-    return "router" if tab == "router" else "wifi"
-
-
 def _client_cpe_access_context(
     request,
     customer,
     org,
     *,
     can_access_wifi: bool,
-    wifi_form=None,
-    active_tab: str = "wifi",
 ) -> dict:
-    """Shared template context for the combined router + Wi‑Fi page."""
+    """Shared template context for the advanced client router admin page."""
     nas = customer.router
     via_tunnel = _router_uses_tunnel(nas) if nas else False
     dial = _router_api_host(nas) if nas else ""
@@ -10024,21 +10025,20 @@ def _client_cpe_access_context(
     default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
     saved_cpe_user = (customer.cpe_username or "").strip()
     saved_cpe_pass = (customer.cpe_password or "").strip()
-    # Prefer the password saved on the client; otherwise use the NAS default so
-    # the iframe can autofill/sign in when the PPPoE session is online.
+    # Prefer credentials saved on the client; otherwise prefill the MikroTik NAS
+    # defaults so staff can edit and connect without retyping the fleet password.
     cpe_username = saved_cpe_user or default_cpe_user or "admin"
     cpe_password = saved_cpe_pass or default_cpe_pass
+    uses_nas_default = (not saved_cpe_pass and bool(default_cpe_pass)) or (
+        not saved_cpe_user and bool(default_cpe_user)
+    )
     ctx = client_page_context(
         request,
         active_nav="client_detail",
         sidebar_active="router_wifi",
-        page_title=f"Router & Wi‑Fi · {customer.full_name}",
+        page_title=f"Router admin · {customer.full_name}",
         customer=customer,
         can_access_wifi=can_access_wifi,
-        active_tab=active_tab,
-        wifi_form=wifi_form,
-        wifi_ssid_display=(customer.cpe_wifi_ssid or "").strip(),
-        wifi_password_display=customer.cpe_wifi_password or "",
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
         wifi_url=reverse("core:client_cpe_wifi", kwargs={"customer_id": customer.pk}),
         router_data_url=reverse(
@@ -10051,6 +10051,7 @@ def _client_cpe_access_context(
         cpe_password=cpe_password,
         has_cpe_password=bool(saved_cpe_pass),
         uses_nas_default_password=bool(default_cpe_pass) and not bool(saved_cpe_pass),
+        uses_nas_default_credentials=uses_nas_default,
         nas_name=(nas.name if nas else ""),
         nas_url=nas_url,
         nas_dial=dial,
@@ -10071,7 +10072,7 @@ def _client_cpe_access_context(
 @client_workspace_required
 @require_GET
 def client_router_login(request, customer_id: int):
-    """Legacy URL — opens the combined router + Wi‑Fi page on the Router tab."""
+    """Legacy URL — opens the advanced client router admin page."""
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
         Customer.objects.select_related("router", "plan", "organization"),
@@ -10085,8 +10086,7 @@ def client_router_login(request, customer_id: int):
         )
         return redirect("core:client_detail", customer_id=customer.pk)
 
-    url = reverse("core:client_wifi_settings", kwargs={"customer_id": customer.pk})
-    return redirect(f"{url}?tab=router")
+    return redirect("core:client_wifi_settings", customer_id=customer.pk)
 
 
 @client_workspace_required
@@ -10117,14 +10117,17 @@ def client_router_login_start(request, customer_id: int):
         )
 
     if request.method == "POST":
+        router_username = (request.POST.get("cpe_username") or "").strip() or "admin"
         router_password = (request.POST.get("cpe_password") or "").strip()
         if router_password:
             customer.cpe_password = router_password
-            if not (customer.cpe_username or "").strip():
-                customer.cpe_username = "admin"
+            customer.cpe_username = router_username
             customer.save(update_fields=["cpe_password", "cpe_username"])
             cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
             cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+        elif router_username and router_username != (customer.cpe_username or "").strip():
+            customer.cpe_username = router_username
+            customer.save(update_fields=["cpe_username"])
 
     nas = customer.router
     nas_host = _router_api_host(nas)
@@ -10132,8 +10135,16 @@ def client_router_login_start(request, customer_id: int):
     access_mode = customer_cpe_access_mode(customer)
     nas_url = reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk})
     default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
+    # After a POST, prefer the just-saved values; otherwise fall back to NAS defaults.
     cpe_user = (customer.cpe_username or "").strip() or default_cpe_user or "admin"
     cpe_pass = (customer.cpe_password or "").strip()
+    if request.method == "POST":
+        posted_user = (request.POST.get("cpe_username") or "").strip()
+        posted_pass = (request.POST.get("cpe_password") or "").strip()
+        if posted_user:
+            cpe_user = posted_user
+        if posted_pass:
+            cpe_pass = posted_pass
     # When the client row has no admin password, fall back to the NAS default
     # so online sessions can still open the router without a manual re-entry.
     probe_password = cpe_pass or default_cpe_pass
@@ -10289,8 +10300,9 @@ def client_router_login_start(request, customer_id: int):
     authenticated = bool(login.get("authenticated"))
     # Only persist passwords the operator entered (POST) or that were already empty —
     # never store guessed factory defaults from auto-login.
-    password_from_operator = request.method == "POST" and bool(
-        (request.POST.get("cpe_password") or "").strip()
+    password_from_operator = request.method == "POST" and (
+        bool((request.POST.get("cpe_password") or "").strip())
+        or bool((request.POST.get("cpe_username") or "").strip())
     )
     if (
         authenticated
@@ -10298,7 +10310,7 @@ def client_router_login_start(request, customer_id: int):
         and not login.get("support_user")
         and password_from_operator
     ):
-        # Operator explicitly entered the password — keep it as the saved CPE admin login.
+        # Operator explicitly entered credentials — keep them as the saved CPE login.
         update_fields: list[str] = []
         if working_pass != (customer.cpe_password or ""):
             customer.cpe_password = working_pass
@@ -10310,13 +10322,13 @@ def client_router_login_start(request, customer_id: int):
             customer.save(update_fields=update_fields)
 
     login_error = (login.get("error") or "").strip()
-    # Web UI is open but auto-sign-in failed — ask for the admin password so the
-    # operator can correct a wrong/outdated saved credential and reconnect.
-    needs_password = (not authenticated) and (
-        not bool(probe_password)
-        or bool(login_error)
-        or password_from_operator
-    )
+    # Web UI is reachable but auto-sign-in failed — always offer Save & connect
+    # so a wrong/outdated saved (or NAS-default) password can be corrected.
+    needs_password = not authenticated
+    if needs_password and not login_error:
+        login_error = (
+            "Could not sign in automatically. Enter the client router admin password."
+        )
     guidance = []
     if needs_password:
         guidance = _cpe_router_guidance(failure_class="needs_password")
@@ -10843,153 +10855,36 @@ def client_cpe_wifi(request, customer_id: int):
 
 
 @client_workspace_required
+@require_http_methods(["GET", "POST"])
 def client_wifi_settings(request, customer_id: int):
-    """Dedicated page: live CPE Wi‑Fi settings and update form."""
+    """Advanced remote client-router admin page (legacy wifi-settings URL)."""
     org = resolve_organization(request.user, request)
     customer = get_object_or_404(
         Customer.objects.select_related("plan", "router", "organization"),
         pk=customer_id,
         organization=org,
     )
-    nas = customer.router
     can_access_wifi = customer_can_access_router(customer, org)
-    wifi_form = MikroTikWifiSettingsForm(
-        initial={
-            "wifi_ssid": (customer.cpe_wifi_ssid or "").strip(),
-            "wifi_password": customer.cpe_wifi_password or "",
-        }
-    )
 
     if request.method == "POST" and can_access_wifi:
-        action = (request.POST.get("action") or "").strip()
-        if action == "update_router_password":
-            router_password = (request.POST.get("cpe_password") or "").strip()
-            if not router_password:
-                messages.error(request, "Enter the client router admin password.")
-            else:
-                customer.cpe_password = router_password
-                if not (customer.cpe_username or "").strip():
-                    customer.cpe_username = "admin"
-                customer.save(update_fields=["cpe_password", "cpe_username"])
-                cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
-                cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
-                messages.success(request, "Router password saved.")
-            return redirect("core:client_wifi_settings", customer_id=customer.pk)
-
-        wifi_form = MikroTikWifiSettingsForm(request.POST)
-        if wifi_form.is_valid():
-            new_ssid = wifi_form.cleaned_data.get("wifi_ssid") or ""
-            new_password = wifi_form.cleaned_data.get("wifi_password") or ""
-            apply_ssid = bool(new_ssid)
-            apply_password = bool(new_password)
-            result: dict = {"ok": False, "error": "Could not reach the client router."}
-
-            nas_host = _router_api_host(nas)
-            probe = probe_customer_cpe_web(
-                nas_host,
-                nas.username,
-                nas.password or "",
-                customer=customer,
-                timeout=8.0,
-            )
-            if probe.get("reachable") and probe.get("port"):
-                result = configure_customer_cpe_web_wifi(
-                    nas_host,
-                    nas.username,
-                    nas.password or "",
-                    customer=customer,
-                    cpe_password=customer.cpe_password or "",
-                    wifi_ssid=new_ssid,
-                    wifi_password=new_password,
-                    apply_ssid=apply_ssid,
-                    apply_password=apply_password,
-                    session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
-                    cpe_port=int(probe["port"]),
-                    timeout=15.0,
-                )
-            elif not result.get("ok"):
-                # MikroTik CPE path: prepare API access, then configure Wi‑Fi.
-                prep = access_customer_cpe_wifi(
-                    nas_host,
-                    nas.username,
-                    nas.password or "",
-                    customer=customer,
-                    cpe_username=customer.cpe_username or "admin",
-                    cpe_password=customer.cpe_password or "",
-                    pppoe_password=customer.pppoe_password or "",
-                    timeout=10.0,
-                    auto_enable=True,
-                )
-                if prep.get("auth_ok") and prep.get("cpe_host"):
-                    result = configure_mikrotik_wifi(
-                        prep["cpe_host"],
-                        prep.get("cpe_username") or customer.cpe_username or "admin",
-                        prep.get("cpe_password")
-                        if prep.get("cpe_password") is not None
-                        else (customer.cpe_password or ""),
-                        wifi_ssid=new_ssid,
-                        wifi_password=new_password,
-                        apply_ssid=apply_ssid,
-                        apply_password=apply_password,
-                        nas_host=nas_host,
-                        nas_username=nas.username,
-                        nas_password=nas.password or "",
-                        timeout=20.0,
-                    )
-                    if result.get("ok"):
-                        result["wifi"] = {
-                            "ssid": result.get("wifi_ssid") or new_ssid,
-                            "password": result.get("wifi_password") or new_password,
-                        }
-                else:
-                    result = {
-                        "ok": False,
-                        "error": prep.get("error")
-                        or prep.get("hint")
-                        or "Could not sign in to the client router to update Wi‑Fi.",
-                        "needs_password": "password" in (
-                            (prep.get("error") or "") + (prep.get("hint") or "")
-                        ).lower(),
-                    }
-
-            if result.get("ok"):
-                wifi = result.get("wifi") or {}
-                saved_ssid = (wifi.get("ssid") or new_ssid or "").strip()
-                saved_password = wifi.get("password") or new_password or ""
-                update_fields = []
-                if saved_ssid and saved_ssid != (customer.cpe_wifi_ssid or ""):
-                    customer.cpe_wifi_ssid = saved_ssid
-                    update_fields.append("cpe_wifi_ssid")
-                if saved_password and saved_password != (customer.cpe_wifi_password or ""):
-                    customer.cpe_wifi_password = saved_password
-                    update_fields.append("cpe_wifi_password")
-                if update_fields:
-                    customer.save(update_fields=update_fields)
-                cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
-                cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
-                messages.success(
-                    request,
-                    result.get("message")
-                    or (
-                        "Wi‑Fi updated on the client router."
-                        if result.get("updated", True)
-                        else "Wi‑Fi already matched."
-                    ),
-                )
-                return redirect("core:client_wifi_settings", customer_id=customer.pk)
-
-            wifi_form.add_error(
-                None,
-                result.get("error") or "Could not apply Wi‑Fi settings on the client router.",
-            )
+        router_username = (request.POST.get("cpe_username") or "").strip() or "admin"
+        router_password = (request.POST.get("cpe_password") or "").strip()
+        if not router_password:
+            messages.error(request, "Enter the client router admin password.")
+        else:
+            customer.cpe_password = router_password
+            customer.cpe_username = router_username
+            customer.save(update_fields=["cpe_password", "cpe_username"])
+            cache.delete(f"client_cpe_router_data:{org.pk}:{customer.pk}")
+            cache.delete(f"client_cpe_wifi:{org.pk}:{customer.pk}")
+            messages.success(request, "Router login saved.")
+        return redirect("core:client_wifi_settings", customer_id=customer.pk)
 
     ctx = _client_cpe_access_context(
         request,
         customer,
         org,
         can_access_wifi=can_access_wifi,
-        wifi_form=wifi_form,
-        active_tab=_client_cpe_access_tab(request),
     )
     return render(request, "core/client_cpe_access.html", ctx)
 

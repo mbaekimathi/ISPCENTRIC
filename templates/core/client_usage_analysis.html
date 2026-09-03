@@ -1,4 +1,5 @@
 {% extends "core/client_base.html" %}
+{% load static %}
 
 {% block title %}Usage — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
 
@@ -85,6 +86,10 @@
     </p>
   </div>
 
+  <p class="client-usage-chart-error" data-usage-chart-error hidden role="alert">
+    Charts could not load. Refresh the page or check that static assets are available.
+  </p>
+
   <div class="client-usage-chart-grid" data-usage-charts {% if not trends.sample_count %}hidden{% endif %}>
     <article class="client-usage-chart-card">
       <header>
@@ -93,7 +98,7 @@
         <p>Green = surfing. Gaps = offline. Orange dots = dropped.</p>
       </header>
       <div class="client-usage-chart-wrap">
-        <canvas id="chart-online" height="200"></canvas>
+        <canvas id="chart-online" height="200" aria-label="Online presence over time"></canvas>
       </div>
     </article>
 
@@ -104,7 +109,7 @@
         <p>Blue = download · Amber = upload. Red mark = fastest moment.</p>
       </header>
       <div class="client-usage-chart-wrap">
-        <canvas id="chart-throughput" height="200"></canvas>
+        <canvas id="chart-throughput" height="200" aria-label="Download and upload speed over time"></canvas>
       </div>
     </article>
 
@@ -115,7 +120,7 @@
         <p>Megabytes used in each time slot.</p>
       </header>
       <div class="client-usage-chart-wrap client-usage-chart-wrap-tall">
-        <canvas id="chart-data" height="220"></canvas>
+        <canvas id="chart-data" height="220" aria-label="Data used over time"></canvas>
       </div>
     </article>
   </div>
@@ -144,7 +149,7 @@
 {% endblock %}
 
 {% block client_extra_js %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+<script src="{% static 'vendor/chart.umd.min.js' %}"></script>
 <script>
 (function () {
   var root = document.getElementById("usage-charts");
@@ -158,11 +163,13 @@
   var emptyTitle = document.querySelector("[data-usage-empty-title]");
   var emptyText = document.querySelector("[data-usage-empty-text]");
   var chartsBox = document.querySelector("[data-usage-charts]");
+  var chartError = document.querySelector("[data-usage-chart-error]");
   var statusCard = document.querySelector('[data-stat="status"]');
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
   var pollTimer = null;
+  var chartReady = false;
 
   function fmtBps(bps) {
     var n = Number(bps) || 0;
@@ -193,24 +200,69 @@
     for (var i = 0; i < len; i++) {
       if (i === peak) { radius.push(6); colors.push("#e74c3c"); }
       else if (stops[i]) { radius.push(5); colors.push("#e8a317"); }
-      else { radius.push(len > 36 ? 0 : 2); colors.push(null); }
+      else { radius.push(len > 40 ? 0 : 2.5); colors.push(null); }
     }
     return { radius: radius, colors: colors };
   }
 
+  function seriesPeak(values) {
+    var peak = 0;
+    (values || []).forEach(function (v) {
+      if (v == null) return;
+      var n = Number(v);
+      if (n > peak) peak = n;
+    });
+    return peak;
+  }
+
   function speedSeries(series) {
+    var downKbps = series.download_kbps || [];
+    var upKbps = series.upload_kbps || [];
+    var peakKbps = Math.max(seriesPeak(downKbps), seriesPeak(upKbps));
+    // Prefer Kbps when traffic is sub-Mbps so the trend is readable.
+    if (peakKbps > 0 && peakKbps < 1000) {
+      return {
+        down: downKbps.map(function (v) { return v == null ? null : Number(v); }),
+        up: upKbps.map(function (v) { return v == null ? null : Number(v); }),
+        unit: "Kbps",
+        labelDown: "Download (Kbps)",
+        labelUp: "Upload (Kbps)"
+      };
+    }
     var down = series.download_mbps;
     var up = series.upload_mbps;
-    if (down && down.length) return { down: down, up: up || [], unit: "Mbps" };
+    if (down && down.length) {
+      return {
+        down: down.map(function (v) { return v == null ? null : Number(v); }),
+        up: (up || []).map(function (v) { return v == null ? null : Number(v); }),
+        unit: "Mbps",
+        labelDown: "Download (Mbps)",
+        labelUp: "Upload (Mbps)"
+      };
+    }
     return {
-      down: (series.download_kbps || []).map(function (v) {
-        return v == null ? null : Number(v) / 1000;
-      }),
-      up: (series.upload_kbps || []).map(function (v) {
-        return v == null ? null : Number(v) / 1000;
-      }),
-      unit: "Mbps"
+      down: downKbps.map(function (v) { return v == null ? null : Number(v) / 1000; }),
+      up: upKbps.map(function (v) { return v == null ? null : Number(v) / 1000; }),
+      unit: "Mbps",
+      labelDown: "Download (Mbps)",
+      labelUp: "Upload (Mbps)"
     };
+  }
+
+  function barSeries(values) {
+    var nums = (values || []).map(function (v) {
+      if (v == null) return 0;
+      return Number(v) || 0;
+    });
+    var peak = seriesPeak(nums);
+    if (peak > 0 && peak < 1) {
+      return {
+        data: nums.map(function (v) { return Math.round(v * 1024 * 10) / 10; }),
+        unit: "KB",
+        label: "Data (KB)"
+      };
+    }
+    return { data: nums, unit: "MB", label: "Data (MB)" };
   }
 
   function applySummary(data) {
@@ -282,7 +334,7 @@
     return {
       responsive: true,
       maintainAspectRatio: false,
-      animation: false,
+      animation: { duration: 280, easing: "easeOutQuart" },
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: {
@@ -290,13 +342,17 @@
         },
         tooltip: {
           backgroundColor: dark ? "#141c22" : "#0b1f2a",
+          titleFont: { weight: "700" },
+          padding: 10,
           callbacks: {
             label: function (ctx) {
               var label = ctx.dataset.label || "";
               var raw = ctx.parsed && ctx.parsed.y;
               if (raw == null) return label + ": —";
-              if (label.indexOf("Mbps") >= 0) return label.replace(" (Mbps)", "") + ": " + Number(raw).toFixed(2) + " Mbps";
-              if (label.indexOf("MB") >= 0) return "Data: " + Number(raw).toFixed(2) + " MB";
+              if (label.indexOf("Mbps") >= 0) return label.replace(" (Mbps)", "") + ": " + Number(raw).toFixed(3) + " Mbps";
+              if (label.indexOf("Kbps") >= 0) return label.replace(" (Kbps)", "") + ": " + Number(raw).toFixed(1) + " Kbps";
+              if (label.indexOf("KB") >= 0) return "Data: " + Number(raw).toFixed(1) + " KB";
+              if (label.indexOf("MB") >= 0) return "Data: " + Number(raw).toFixed(3) + " MB";
               if (label === "Online") return raw ? "Online" : "Offline";
               return label + ": " + raw;
             }
@@ -305,7 +361,13 @@
       },
       scales: {
         x: {
-          ticks: { color: dark ? "#8aa0ab" : "#64748b", maxRotation: 0, autoSkipPadding: 14 },
+          ticks: {
+            color: dark ? "#8aa0ab" : "#64748b",
+            maxRotation: 0,
+            autoSkip: true,
+            autoSkipPadding: 12,
+            maxTicksLimit: 8
+          },
           grid: { color: dark ? "rgba(255,255,255,0.06)" : "rgba(11,31,42,0.06)" }
         },
         y: {
@@ -317,11 +379,26 @@
     };
   }
 
+  function showChartError(show) {
+    if (chartError) chartError.hidden = !show;
+  }
+
   function ensureCharts() {
-    if (!window.Chart || charts.online) return !!charts.online;
+    if (!window.Chart) {
+      showChartError(true);
+      return false;
+    }
+    showChartError(false);
+    if (charts.online) return true;
+
+    var onlineEl = document.getElementById("chart-online");
+    var speedEl = document.getElementById("chart-throughput");
+    var dataEl = document.getElementById("chart-data");
+    if (!onlineEl || !speedEl || !dataEl) return false;
+
     var empty = { labels: [], datasets: [] };
     var base = chartDefaults();
-    charts.online = new Chart(document.getElementById("chart-online"), {
+    charts.online = new Chart(onlineEl, {
       type: "line",
       data: empty,
       options: Object.assign({}, base, {
@@ -337,19 +414,27 @@
         })
       })
     });
-    charts.throughput = new Chart(document.getElementById("chart-throughput"), {
+    charts.throughput = new Chart(speedEl, {
       type: "line",
       data: empty,
       options: base
     });
-    charts.data = new Chart(document.getElementById("chart-data"), {
+    charts.data = new Chart(dataEl, {
       type: "bar",
       data: empty,
       options: Object.assign({}, base, {
         plugins: Object.assign({}, base.plugins, { legend: { display: false } })
       })
     });
+    chartReady = true;
     return true;
+  }
+
+  function resizeCharts() {
+    if (!chartReady) return;
+    Object.keys(charts).forEach(function (key) {
+      try { charts[key].resize(); } catch (e) {}
+    });
   }
 
   function paintCharts(data) {
@@ -361,8 +446,12 @@
     var len = labels.length;
     var marks = markPoints(len, markers);
     var speed = speedSeries(series);
+    var dataBars = barSeries(series.data_used_mb);
     var downColors = marks.colors.map(function (c) { return c || "#4f8cff"; });
     var upColors = marks.colors.map(function (c) { return c || "#e8a317"; });
+    var hasSpeed = speed.down.some(function (v) { return v != null && Number(v) > 0; }) ||
+      speed.up.some(function (v) { return v != null && Number(v) > 0; });
+    var ySuggested = hasSpeed ? undefined : (speed.unit === "Kbps" ? 100 : 0.25);
 
     charts.online.data = {
       labels: labels,
@@ -370,60 +459,87 @@
         label: "Online",
         data: series.online || [],
         borderColor: "#2ecc71",
-        backgroundColor: "rgba(46,204,113,0.18)",
+        backgroundColor: "rgba(46,204,113,0.22)",
+        borderWidth: 2,
         fill: true,
-        tension: 0.15,
+        tension: 0.05,
         spanGaps: false,
-        stepped: true,
+        stepped: "before",
         pointRadius: marks.radius,
-        pointBackgroundColor: marks.colors.map(function (c) { return c || "#2ecc71"; })
+        pointHoverRadius: 5,
+        pointBackgroundColor: marks.colors.map(function (c) { return c || "#2ecc71"; }),
+        pointBorderColor: "#fff",
+        pointBorderWidth: 1
       }]
     };
     charts.throughput.data = {
       labels: labels,
       datasets: [
         {
-          label: "Download (Mbps)",
+          label: speed.labelDown || ("Download (" + speed.unit + ")"),
           data: speed.down,
           borderColor: "#4f8cff",
-          backgroundColor: "rgba(79,140,255,0.12)",
+          backgroundColor: "rgba(79,140,255,0.16)",
+          borderWidth: 2,
           fill: true,
-          tension: 0.3,
+          tension: 0.35,
           spanGaps: true,
           pointRadius: marks.radius,
-          pointBackgroundColor: downColors
+          pointHoverRadius: 5,
+          pointBackgroundColor: downColors,
+          pointBorderColor: "#fff",
+          pointBorderWidth: 1
         },
         {
-          label: "Upload (Mbps)",
+          label: speed.labelUp || ("Upload (" + speed.unit + ")"),
           data: speed.up,
           borderColor: "#e8a317",
-          backgroundColor: "rgba(232,163,23,0.10)",
+          backgroundColor: "rgba(232,163,23,0.12)",
+          borderWidth: 2,
           fill: true,
-          tension: 0.3,
+          tension: 0.35,
           spanGaps: true,
           pointRadius: marks.radius,
-          pointBackgroundColor: upColors
+          pointHoverRadius: 5,
+          pointBackgroundColor: upColors,
+          pointBorderColor: "#fff",
+          pointBorderWidth: 1
         }
       ]
+    };
+    charts.throughput.options.scales.y.suggestedMax = ySuggested;
+    charts.throughput.options.scales.y.ticks.callback = function (v) {
+      if (speed.unit === "Kbps") return Number(v).toFixed(v >= 10 ? 0 : 1);
+      return Number(v).toFixed(v >= 1 ? 2 : 3);
     };
     charts.data.data = {
       labels: labels,
       datasets: [{
-        label: "Data (MB)",
-        data: series.data_used_mb || [],
-        backgroundColor: "rgba(79,140,255,0.55)",
+        label: dataBars.label || "Data (MB)",
+        data: dataBars.data,
+        backgroundColor: dataBars.data.map(function (v) {
+          return v > 0 ? "rgba(79,140,255,0.65)" : "rgba(79,140,255,0.08)";
+        }),
+        borderColor: "rgba(79,140,255,0.9)",
+        borderWidth: 0,
         borderRadius: 5,
-        maxBarThickness: 28
+        maxBarThickness: 26
       }]
     };
-    charts.online.update("none");
-    charts.throughput.update("none");
-    charts.data.update("none");
+
+    requestAnimationFrame(function () {
+      charts.online.update();
+      charts.throughput.update();
+      charts.data.update();
+      resizeCharts();
+    });
   }
 
   function paint(data) {
     applySummary(data);
-    paintCharts(data);
+    requestAnimationFrame(function () {
+      paintCharts(data);
+    });
   }
 
   function loadTrends(opts) {
@@ -456,24 +572,9 @@
     }, fast ? 20000 : 45000);
   }
 
-  // Summary paints immediately from server data — do not wait for Chart.js.
   applySummary(initial);
-  function bootCharts() {
-    paintCharts(initial);
-    sampleLive(true);
-  }
-  if (window.Chart) bootCharts();
-  else {
-    var wait = setInterval(function () {
-      if (!window.Chart) return;
-      clearInterval(wait);
-      bootCharts();
-    }, 50);
-    // Keep collecting even if the chart CDN is blocked.
-    setTimeout(function () {
-      if (!window.Chart) sampleLive(true);
-    }, 1500);
-  }
+  paintCharts(initial);
+  sampleLive(true);
 
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () { sampleLive(true); });
@@ -481,6 +582,9 @@
   schedulePoll(true);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) sampleLive(true);
+  });
+  window.addEventListener("resize", function () {
+    resizeCharts();
   });
 })();
 </script>
