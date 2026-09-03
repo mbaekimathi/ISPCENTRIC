@@ -757,6 +757,63 @@ class WireGuardKeyTests(SimpleTestCase):
 
         self.assertGreaterEqual(_subscription_sweep_startup_delay_sec(), 15)
 
+    def test_subscription_sweep_lock_skips_concurrent_run(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from core.subscription_sync import (
+            release_subscription_sweep_lock,
+            try_acquire_subscription_sweep_lock,
+        )
+
+        release_subscription_sweep_lock()
+        self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        try:
+            out = StringIO()
+            call_command("sync_subscription_access", stdout=out, stderr=out)
+            text = out.getvalue()
+            self.assertIn("Skipped", text)
+            self.assertIn("already running", text)
+        finally:
+            release_subscription_sweep_lock()
+
+    def test_subscription_sweep_force_bypasses_lock(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from core.subscription_sync import (
+            release_subscription_sweep_lock,
+            try_acquire_subscription_sweep_lock,
+        )
+
+        release_subscription_sweep_lock()
+        self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        try:
+            with (
+                patch(
+                    "billing.management.commands.sync_subscription_access."
+                    "try_acquire_subscription_sweep_lock"
+                ) as acquire,
+                patch(
+                    "billing.management.commands.sync_subscription_access."
+                    "Command._sync_all"
+                ) as sync_all,
+            ):
+                out = StringIO()
+                call_command(
+                    "sync_subscription_access",
+                    force=True,
+                    stdout=out,
+                    stderr=out,
+                )
+            acquire.assert_not_called()
+            sync_all.assert_called_once()
+            self.assertNotIn("Skipped", out.getvalue())
+        finally:
+            release_subscription_sweep_lock()
+
     def test_usage_sample_interval_defaults(self):
         from core.boot import (
             _usage_sample_enabled,
@@ -1358,6 +1415,19 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
                 return_value=PPPOE_PROFILE_NAME,
             ),
             patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=False),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
+                return_value=[],
+            ),
         ):
             synced = _sync_organization_pppoe_secrets_on_socket(object(), router)
 
@@ -1365,6 +1435,79 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
         by_user = {item["username"]: item["profile"] for item in captured}
         self.assertEqual(by_user["paid"], PPPOE_PROFILE_NAME)
         self.assertEqual(by_user["unpaid"], PPPOE_BLOCKED_PROFILE_NAME)
+
+    def test_bulk_sync_clears_blocked_list_when_paid_session_stuck(self):
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            PPPOE_PROFILE_NAME,
+            _sync_organization_pppoe_secrets_on_socket,
+        )
+
+        paid = type(
+            "Customer",
+            (),
+            {
+                "pppoe_username": "paid",
+                "pppoe_password": "pw",
+                "account_number": "A1",
+                "status": "active",
+                "package_end": timezone_aware_future(),
+                "plan": None,
+                "organization": type("Org", (), {"pppoe_compulsory": True})(),
+                "service_type": "pppoe",
+                "router_id": 1,
+            },
+        )()
+
+        clear = MagicMock(return_value=["10.10.0.50"])
+        kick = MagicMock(return_value=1)
+        router = type("Router", (), {"pk": 1})()
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[paid],
+            ),
+            patch("core.mikrotik_connect._ensure_ppp_secret", return_value="updated"),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value=PPPOE_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=True),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
+                clear,
+            ),
+            patch("core.mikrotik_connect._disconnect_pppoe_sessions", kick),
+            patch(
+                "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value=PPPOE_PROFILE_NAME,
+            ),
+        ):
+            synced = _sync_organization_pppoe_secrets_on_socket(object(), router)
+
+        self.assertEqual(synced, 1)
+        clear.assert_called_once()
+        kick.assert_called_once()
+        # Sanity: blocked profile name still distinct from paid.
+        self.assertNotEqual(PPPOE_PROFILE_NAME, PPPOE_BLOCKED_PROFILE_NAME)
 
 
 def timezone_aware_future():
@@ -5326,6 +5469,15 @@ class PackageSpeedLimitTests(SimpleTestCase):
                 "core.mikrotik_connect._customer_pppoe_secret_disabled",
                 return_value=False,
             ),
+            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=False),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
                 return_value=[],
@@ -7217,6 +7369,61 @@ class DynamicAccessEnforcementLoopTests(TestCase):
         self.assertEqual(mac, "AA:BB:CC:DD:EE:99")
         self.assertTrue(disabled)
         self.assertEqual(limit_uptime, "")
+
+    def test_ros_duration_parse_and_format(self):
+        from core.mikrotik_connect import _format_ros_duration, _parse_ros_duration
+
+        self.assertEqual(_parse_ros_duration("1h30m"), 5400)
+        self.assertEqual(_parse_ros_duration("3600s"), 3600)
+        self.assertEqual(_parse_ros_duration("2d"), 172800)
+        self.assertEqual(_format_ros_duration(90), "90s")
+
+    def test_hotspot_limit_uptime_adds_used_so_deploy_does_not_cut(self):
+        """Wholesale sync must not set limit-uptime below used+remaining."""
+        from unittest.mock import MagicMock, patch
+
+        from core.mikrotik_connect import _ensure_hotspot_user
+
+        sock = MagicMock()
+        captured = {}
+
+        def fake_add_or_set(sock_arg, path, user_id, attempts):
+            captured["user_id"] = user_id
+            captured["attempts"] = attempts
+            return {"_reply": "!done"}, None
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                return_value=[
+                    {
+                        ".id": "*1",
+                        "name": "AA:BB:CC:DD:EE:01",
+                        "uptime": "2h",
+                        "limit-uptime": "1h",
+                        "disabled": "no",
+                    }
+                ],
+            ),
+            patch(
+                "core.mikrotik_connect._add_or_set_attempts",
+                side_effect=fake_add_or_set,
+            ),
+        ):
+            # Billing remaining wall-clock = 1h; used = 2h → cap must be 3h.
+            action = _ensure_hotspot_user(
+                sock,
+                username="AA:BB:CC:DD:EE:01",
+                password="",
+                comment="ispcentric-hs",
+                disabled=False,
+                limit_uptime="1h",
+                profile="ispcentric-hs",
+            )
+
+        self.assertEqual(action, "updated")
+        self.assertEqual(captured["user_id"], "*1")
+        self.assertEqual(captured["attempts"][0]["limit-uptime"], "10800s")
 
     def test_hotspot_authorize_loop_after_package_applied(self):
         from datetime import timedelta

@@ -2,9 +2,65 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Cross-process locks so gunicorn workers + the systemd timer never rewrite the
+# same MikroTik fleet at once (partial secret/user updates = some clients offline).
+_SWEEP_LOCK_NAME = "subscription_sweep_lock"
+_EXPIRY_WATCH_LOCK_NAME = "subscription_expiry_watch_lock"
+
+
+def _jobs_cache():
+    """File-backed cache shared across workers (even when default is locmem)."""
+    from django.core.cache import caches
+
+    try:
+        return caches["jobs"]
+    except Exception:
+        from django.core.cache import cache
+
+        return cache
+
+
+def try_acquire_subscription_sweep_lock(*, ttl_sec: int = 600) -> bool:
+    """
+    True when this process should run a full subscription/NAS sweep.
+
+    Uses the jobs FileBasedCache so locks work across gunicorn workers and the
+    systemd oneshot timer. Stale locks expire via TTL if a process dies mid-run.
+    """
+    ttl = max(60, int(ttl_sec))
+    try:
+        return bool(_jobs_cache().add(_SWEEP_LOCK_NAME, os.getpid(), timeout=ttl))
+    except Exception:
+        logger.exception("subscription sweep lock acquire failed")
+        # Fail open only if cache is broken — better a rare race than no expiry.
+        return True
+
+
+def release_subscription_sweep_lock() -> None:
+    try:
+        _jobs_cache().delete(_SWEEP_LOCK_NAME)
+    except Exception:
+        logger.exception("subscription sweep lock release failed")
+
+
+def try_acquire_expiry_watch_lock(*, ttl_sec: int = 25) -> bool:
+    """One near-deadline expiry pass at a time across workers."""
+    ttl = max(10, int(ttl_sec))
+    try:
+        return bool(
+            _jobs_cache().add(_EXPIRY_WATCH_LOCK_NAME, os.getpid(), timeout=ttl)
+        )
+    except Exception:
+        logger.exception("expiry watch lock acquire failed")
+        return True
 
 
 def nas_access_ready(result: dict[str, Any] | None) -> bool:

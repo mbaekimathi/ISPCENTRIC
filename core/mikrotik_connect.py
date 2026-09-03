@@ -12028,12 +12028,26 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             disabled=disabled,
             rate_limit=_pppoe_rate_limit_for_customer(customer),
         )
-        if (
-            previous_profile
-            and previous_profile != profile
-            and not disabled
+        restoring = (
+            not disabled
+            and profile != PPPOE_BLOCKED_PROFILE_NAME
+            and _customer_internet_allowed(customer)
+        )
+        profile_changed = bool(previous_profile and previous_profile != profile)
+        session_blocked = False
+        if restoring and (
+            profile_changed
+            or previous_profile == PPPOE_BLOCKED_PROFILE_NAME
+            or _pppoe_has_active_session(sock, username)
         ):
-            # Profile flip only takes effect after the CPE redials.
+            session_blocked = _active_pppoe_session_is_blocked(sock, username)
+        # Restore path: clear leftover ispcentric-blocked address-list rows and
+        # kick so the CPE redials onto the paid profile. Without this, a deploy
+        # bulk rewrite leaves some clients "PPPoE active, no surf".
+        if restoring and (profile_changed or session_blocked):
+            _clear_pppoe_blocked_address_list(sock, username)
+            _disconnect_pppoe_sessions(sock, username)
+        elif profile_changed:
             _disconnect_pppoe_sessions(sock, username)
         synced += 1
     orphan_notes = _block_orphan_pppoe_secrets_on_socket(sock, router)
@@ -16321,6 +16335,35 @@ def _ensure_hotspot_rate_profile(
     return name
 
 
+def _parse_ros_duration(value: str | None) -> int:
+    """Parse RouterOS duration (``1w2d3h4m5s`` / ``3600s``) to whole seconds."""
+    text = (value or "").strip().lower()
+    if not text or text in {"none", "unlimited"}:
+        return 0
+    if text.isdigit():
+        return int(text)
+    total = 0
+    num = ""
+    units = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+    for ch in text:
+        if ch.isdigit():
+            num += ch
+            continue
+        if ch in units and num:
+            total += int(num) * units[ch]
+            num = ""
+            continue
+        num = ""
+    if num.isdigit():
+        total += int(num)
+    return max(total, 0)
+
+
+def _format_ros_duration(seconds: int) -> str:
+    """Emit a RouterOS-friendly whole-second duration."""
+    return f"{max(int(seconds), 0)}s"
+
+
 def _ensure_hotspot_user(
     sock: socket.socket,
     *,
@@ -16337,19 +16380,25 @@ def _ensure_hotspot_user(
         raise ConnectionError("Hotspot device identity is empty.")
 
     user_id = ""
+    used_uptime = 0
     # Filter server-side by name so a router with thousands of MAC users does
     # not stream its whole /ip/hotspot/user table for a single authorization.
     rows = _print(
         sock,
         "/ip/hotspot/user",
-        props=".id,name,comment,disabled",
+        props=".id,name,comment,disabled,uptime,limit-uptime",
         query={"name": username},
     )
     if not rows:
-        rows = _print(sock, "/ip/hotspot/user", props=".id,name,comment,disabled")
+        rows = _print(
+            sock,
+            "/ip/hotspot/user",
+            props=".id,name,comment,disabled,uptime,limit-uptime",
+        )
     for row in rows:
         if (row.get("name") or "").strip().lower() == username.lower():
             user_id = (row.get(".id") or "").strip()
+            used_uptime = _parse_ros_duration(row.get("uptime"))
             break
 
     disabled_value = "yes" if disabled else "no"
@@ -16359,7 +16408,17 @@ def _ensure_hotspot_user(
     # cumulative across sessions, so reconnecting cannot extend the package, and
     # it survives the billing server going offline. RouterOS reads "0s" as
     # "no cap", which is only ever passed for a user that is also disabled.
+    #
+    # Billing passes *remaining wall-clock* surfing time. Because RouterOS
+    # compares that cap against already-used uptime, a deploy/sweep that rewrote
+    # limit-uptime to "seconds left" alone would cut mid-package clients whose
+    # used uptime already exceeded the new smaller cap. Add used uptime so the
+    # net remaining online time matches billing.
     uptime_cap = (limit_uptime or "").strip() or "0s"
+    if not disabled and uptime_cap not in {"", "0s"}:
+        remaining = _parse_ros_duration(uptime_cap)
+        if remaining > 0:
+            uptime_cap = _format_ros_duration(used_uptime + remaining)
     attempts = [
         {
             "name": username,

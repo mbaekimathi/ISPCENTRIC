@@ -119,6 +119,8 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
 
     out = StringIO()
     try:
+        # The management command holds a cross-process lock so only one of
+        # gunicorn workers / systemd timer rewrites MikroTiks at a time.
         call_command("sync_subscription_access", stdout=out, stderr=out)
         text = out.getvalue().strip()
         if text:
@@ -137,6 +139,11 @@ def _run_near_deadline_expiry_sync() -> None:
     """
     from billing.services import customers_near_access_deadline
     from core.mikrotik_connect import sync_customer_subscription_access
+    from core.subscription_sync import try_acquire_expiry_watch_lock
+
+    watch_interval = int(_expiry_watch_interval_sec())
+    if not try_acquire_expiry_watch_lock(ttl_sec=max(15, watch_interval - 5)):
+        return
 
     near = list(customers_near_access_deadline(past_seconds=90, future_seconds=45))
     if not near:
@@ -166,6 +173,9 @@ def _start_subscription_sweep_loop() -> None:
 
     def _loop() -> None:
         delay = _subscription_sweep_startup_delay_sec()
+        # Spread gunicorn workers so they do not all contend for the sweep lock
+        # at the same second after a VPS restart / deploy.
+        delay += float(os.getpid() % 11)
         if delay:
             logger.info(
                 "Subscription sweep startup delayed %.0fs so pay/recharge is not blocked.",

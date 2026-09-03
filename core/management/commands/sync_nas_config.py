@@ -114,6 +114,7 @@ class Command(BaseCommand):
                 router,
                 skip_pppoe=skip_pppoe,
                 skip_hotspot=skip_hotspot,
+                reauthenticate=False,
             )
             if result.get("ok"):
                 ok += 1
