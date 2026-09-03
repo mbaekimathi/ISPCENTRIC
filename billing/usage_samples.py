@@ -107,11 +107,14 @@ def _as_int(value, default=0) -> int:
         return default
 
 
-def record_customer_usage_sample(customer: Customer, payload: dict[str, Any]) -> bool:
+def record_customer_usage_sample(
+    customer: Customer, payload: dict[str, Any], *, force: bool = False
+) -> bool:
     """
     Persist a live usage snapshot when enough time has passed since the last one.
 
-    Returns True when a row was written.
+    Returns True when a row was written. ``force=True`` bypasses write throttles
+    (used when an operator opens/refreshes the analysis page).
     """
     if not customer or not customer.pk or not customer.organization_id:
         return False
@@ -128,14 +131,14 @@ def record_customer_usage_sample(customer: Customer, payload: dict[str, Any]) ->
     # counter continuity when treated as session resets.
     if not session_active and bytes_in == 0 and bytes_out == 0:
         throttle_key = f"usage_sample_offline:{customer.pk}"
-        if cache.get(throttle_key):
+        if not force and cache.get(throttle_key):
             return False
         # Still record a sparse offline marker for presence charts (throttled).
         interval = _OFFLINE_SAMPLE_MIN_INTERVAL
     else:
         throttle_key = f"usage_sample_throttle:{customer.pk}"
         interval = _SAMPLE_MIN_INTERVAL
-        if cache.get(throttle_key):
+        if not force and cache.get(throttle_key):
             return False
 
     now = timezone.now()

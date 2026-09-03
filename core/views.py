@@ -126,6 +126,7 @@ from core.mikrotik_connect import (
     customer_cpe_web_proxy,
     customer_cpe_access_eligible,
     customer_cpe_access_mode,
+    customer_cpe_default_credentials,
     customer_cpe_proxy_scope,
     dial_host,
     resolve_customer_cpe_target,
@@ -10020,6 +10021,13 @@ def _client_cpe_access_context(
     nas_url = (
         reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk}) if nas else ""
     )
+    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
+    saved_cpe_user = (customer.cpe_username or "").strip()
+    saved_cpe_pass = (customer.cpe_password or "").strip()
+    # Prefer the password saved on the client; otherwise use the NAS default so
+    # the iframe can autofill/sign in when the PPPoE session is online.
+    cpe_username = saved_cpe_user or default_cpe_user or "admin"
+    cpe_password = saved_cpe_pass or default_cpe_pass
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -10039,9 +10047,10 @@ def _client_cpe_access_context(
         start_url=reverse(
             "core:client_router_login_start", kwargs={"customer_id": customer.pk}
         ),
-        cpe_username=(customer.cpe_username or "").strip() or "admin",
-        cpe_password=customer.cpe_password or "",
-        has_cpe_password=bool((customer.cpe_password or "").strip()),
+        cpe_username=cpe_username,
+        cpe_password=cpe_password,
+        has_cpe_password=bool(saved_cpe_pass),
+        uses_nas_default_password=bool(default_cpe_pass) and not bool(saved_cpe_pass),
         nas_name=(nas.name if nas else ""),
         nas_url=nas_url,
         nas_dial=dial,
@@ -10122,6 +10131,12 @@ def client_router_login_start(request, customer_id: int):
     via_tunnel = _router_uses_tunnel(nas)
     access_mode = customer_cpe_access_mode(customer)
     nas_url = reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk})
+    default_cpe_user, default_cpe_pass = customer_cpe_default_credentials(customer)
+    cpe_user = (customer.cpe_username or "").strip() or default_cpe_user or "admin"
+    cpe_pass = (customer.cpe_password or "").strip()
+    # When the client row has no admin password, fall back to the NAS default
+    # so online sessions can still open the router without a manual re-entry.
+    probe_password = cpe_pass or default_cpe_pass
     base_meta = {
         "nas_name": nas.name or "",
         "nas_dial": nas_host,
@@ -10130,8 +10145,8 @@ def client_router_login_start(request, customer_id: int):
         "access_mode": access_mode,
         "gateway": MK_PPPOE_LOCAL_ADDRESS,
         "checked_ports": [str(p) for p in CPE_WEB_PORTS],
-        "cpe_username": (customer.cpe_username or "").strip() or "admin",
-        "needs_password": not (customer.cpe_password or "").strip(),
+        "cpe_username": cpe_user,
+        "needs_password": not bool(probe_password),
     }
 
     # Fail fast when the ISP NAS (LAN or WireGuard) is unreachable — otherwise
@@ -10175,8 +10190,8 @@ def client_router_login_start(request, customer_id: int):
         nas.username,
         nas.password or "",
         customer=customer,
-        cpe_username=customer.cpe_username or "admin",
-        cpe_password=customer.cpe_password or "",
+        cpe_username=cpe_user,
+        cpe_password=probe_password,
         pppoe_password=customer.pppoe_password or "",
         timeout=20.0,
         auto_enable_www=True,
@@ -10244,9 +10259,11 @@ def client_router_login_start(request, customer_id: int):
         nas.username,
         nas.password or "",
         customer=customer,
-        cpe_username=customer.cpe_username or "admin",
-        cpe_password=customer.cpe_password or "",
+        cpe_username=cpe_user,
+        cpe_password=cpe_pass,
         pppoe_password=customer.pppoe_password or "",
+        default_cpe_username=default_cpe_user,
+        default_cpe_password=default_cpe_pass,
         cpe_port=int(probe.get("port") or 80),
         cpe_address=probe.get("cpe_host") or "",
         gateway_ip=gateway,
@@ -10296,7 +10313,7 @@ def client_router_login_start(request, customer_id: int):
     # Web UI is open but auto-sign-in failed — ask for the admin password so the
     # operator can correct a wrong/outdated saved credential and reconnect.
     needs_password = (not authenticated) and (
-        not (customer.cpe_password or "").strip()
+        not bool(probe_password)
         or bool(login_error)
         or password_from_operator
     )
@@ -11585,9 +11602,23 @@ def client_usage_analysis(request, customer_id: int):
     from billing.usage_samples import clamp_usage_hours, usage_range_label, usage_trend_payload
 
     hours = clamp_usage_hours(request.GET.get("hours"), default=24)
+    live_error = ""
 
     if can_live:
-        trends = usage_trend_payload(customer, hours=hours)
+        # Seed a live reading when history is empty so the first visit is not
+        # stuck on “Collecting…”. When history already exists, stay fast and
+        # let JS / the background sampler continue the trend.
+        trends = usage_trend_payload(customer, hours=hours, use_cache=False)
+        if int(trends.get("sample_count") or 0) <= 0:
+            try:
+                sample_result = _record_live_usage_sample(customer, org, force=True)
+                if isinstance(sample_result, dict) and sample_result.get("error"):
+                    live_error = str(sample_result.get("error") or "")
+                trends = usage_trend_payload(customer, hours=hours, use_cache=False)
+            except Exception:
+                live_error = "Could not reach the MikroTik for a live reading."
+        if live_error:
+            trends = {**trends, "live_error": live_error}
     else:
         if customer.service_type == Customer.ServiceType.HOTSPOT:
             has_mac = bool(_hotspot_macs_for_usage(customer))
@@ -11781,36 +11812,55 @@ def client_usage_trends(request, customer_id: int):
     hours = clamp_usage_hours(request.GET.get("hours"), default=24)
     sample = (request.GET.get("sample") or "").strip() in {"1", "true", "yes"}
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    live_error = ""
     if sample or force:
         # Collect a fresh MikroTik snapshot so the open analysis page builds
         # history while it is watched (throttled inside record_customer_usage_sample).
         try:
-            _record_live_usage_sample(customer, org, force=force)
+            sample_result = _record_live_usage_sample(customer, org, force=force)
+            if isinstance(sample_result, dict) and sample_result.get("error"):
+                live_error = str(sample_result.get("error") or "")
         except Exception:
-            pass
-    return JsonResponse(
-        usage_trend_payload(customer, hours=hours, use_cache=not force)
+            live_error = "Could not reach the MikroTik for a live reading."
+    # Always rebuild after a sample attempt so a just-written row is visible.
+    payload = usage_trend_payload(
+        customer, hours=hours, use_cache=not (sample or force)
     )
+    if live_error:
+        payload = {**payload, "live_error": live_error}
+    return JsonResponse(payload)
 
 
-def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
+def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
     """Probe this client's NAS/Hotspot session and persist a trend sample."""
     from billing.usage_samples import record_customer_usage_sample
 
     router = resolve_client_usage_router(customer, org)
     if not router or router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
-        return False
+        return {
+            "ok": False,
+            "written": False,
+            "error": "No active MikroTik router is available for this client.",
+        }
 
     cache_key = f"client_usage:v2:{org.pk}:{customer.pk}"
     if not force:
         cached = cache.get(cache_key)
         if isinstance(cached, dict) and cached.get("ok"):
-            return bool(record_customer_usage_sample(customer, cached))
+            written = bool(
+                record_customer_usage_sample(customer, cached, force=False)
+            )
+            return {"ok": True, "written": written, "error": ""}
 
+    last_error = ""
     if customer.service_type == Customer.ServiceType.HOTSPOT:
         macs = _hotspot_macs_for_usage(customer)
         if not macs:
-            return False
+            return {
+                "ok": False,
+                "written": False,
+                "error": "This client has no Hotspot device MAC.",
+            }
         best = None
         best_total = -1
         peak_down = 0
@@ -11824,6 +11874,11 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
                 hotspot_mac=mac,
             )
             if not candidate.get("ok"):
+                last_error = (
+                    candidate.get("error")
+                    or last_error
+                    or "Could not reach the MikroTik for Hotspot usage."
+                )
                 continue
             if candidate.get("session_active"):
                 active_count += 1
@@ -11836,8 +11891,15 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
                     best = candidate
             elif best is None and candidate.get("connected"):
                 best = candidate
+            elif best is None:
+                best = candidate
         if not best or not best.get("ok"):
-            return False
+            return {
+                "ok": False,
+                "written": False,
+                "error": last_error
+                or "Could not read Hotspot usage from the MikroTik.",
+            }
         payload = best
         if active_count > 1 and payload.get("session_active"):
             if peak_down:
@@ -11855,7 +11917,11 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
             pass
     elif customer.service_type == Customer.ServiceType.PPPOE:
         if not customer.pppoe_username:
-            return False
+            return {
+                "ok": False,
+                "written": False,
+                "error": "This client has no PPPoE username.",
+            }
         payload = fetch_customer_pppoe_usage(
             router.host,
             router.username,
@@ -11863,15 +11929,25 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
             pppoe_username=customer.pppoe_username,
         )
         if not payload.get("ok"):
-            return False
+            return {
+                "ok": False,
+                "written": False,
+                "error": payload.get("error")
+                or "Could not read PPPoE usage from the MikroTik.",
+            }
     else:
-        return False
+        return {
+            "ok": False,
+            "written": False,
+            "error": "Usage trends are available for PPPoE and Hotspot clients.",
+        }
 
     payload["customer_id"] = customer.pk
     payload["router_id"] = router.pk
     payload["router_name"] = router.name
     cache.set(cache_key, payload, 8 if payload.get("session_active") else 4)
-    return bool(record_customer_usage_sample(customer, payload))
+    written = bool(record_customer_usage_sample(customer, payload, force=force))
+    return {"ok": True, "written": written, "error": ""}
 
 
 @client_workspace_required

@@ -535,6 +535,75 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(self.customer.cpe_password, "newsecret")
         self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "newsecret")
 
+    def test_start_uses_nas_default_cpe_password_when_client_has_none(self):
+        """Online clients without a saved CPE password still try the NAS default."""
+        self.nas.default_cpe_username = "admin"
+        self.nas.default_cpe_password = "nas-default-secret"
+        self.nas.save(
+            update_fields=["default_cpe_username", "default_cpe_password"]
+        )
+        self.customer.cpe_password = ""
+        self.customer.cpe_username = ""
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
+
+        self.cpe_login_patcher.stop()
+        self.addCleanup(self.cpe_login_patcher.start)
+        with (
+            patch(
+                "core.views.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "port": 80,
+                    "reachable": True,
+                    "ping_ok": True,
+                    "steps": ["found client IP"],
+                },
+            ) as probe,
+            patch(
+                "core.views.login_customer_cpe_web_session",
+                return_value={
+                    "ok": True,
+                    "authenticated": True,
+                    "cookies": {"stok": "from-nas-default"},
+                    "basic_header": "",
+                    "vendor": "tenda",
+                    "cpe_username": "admin",
+                    "cpe_password": "nas-default-secret",
+                    "support_user": False,
+                    "error": "",
+                    "steps": ["signed in with NAS default"],
+                },
+            ) as login,
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["authenticated"])
+        self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "nas-default-secret")
+        self.assertEqual(login.call_args.kwargs.get("default_cpe_password"), "nas-default-secret")
+        self.assertEqual(login.call_args.kwargs.get("cpe_password"), "")
+
+    def test_router_tab_surfaces_nas_default_password_for_autofill(self):
+        self.nas.default_cpe_password = "fleet-default"
+        self.nas.save(update_fields=["default_cpe_password"])
+        self.customer.cpe_password = ""
+        self.customer.save(update_fields=["cpe_password"])
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/wifi-settings/?tab=router",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-cpe-pass="fleet-default"')
+        self.assertContains(response, "From NAS default")
+        self.assertContains(response, "requestSubmit")
+
     def test_start_auto_login_seeds_proxy_cookies_and_basic_auth(self):
         from django.core.cache import cache
 

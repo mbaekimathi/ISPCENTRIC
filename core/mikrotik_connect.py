@@ -3199,6 +3199,8 @@ def login_customer_cpe_web_session(
     cpe_username: str = "",
     cpe_password: str = "",
     pppoe_password: str = "",
+    default_cpe_username: str = "",
+    default_cpe_password: str = "",
     cpe_port: int = 80,
     timeout: float = 10.0,
     session_cookies: dict[str, str] | None = None,
@@ -3207,10 +3209,17 @@ def login_customer_cpe_web_session(
     """
     Authenticate to the CPE web UI and return cookies / Basic auth for the proxy.
 
-    Staff then open the router already signed in. Tries saved credentials, PPPoE
-    password, factory defaults, Tenda `/login/Auth`, MikroTik WebFig, and — when
-    RouterOS API is available — a dedicated ISP support user.
+    Staff then open the router already signed in. Tries saved credentials, NAS
+    default client-router login, PPPoE password, factory defaults, Tenda
+    `/login/Auth`, MikroTik WebFig, and — when RouterOS API is available — a
+    dedicated ISP support user.
     """
+    if customer is not None and not (
+        (default_cpe_username or "").strip() or (default_cpe_password or "").strip()
+    ):
+        default_cpe_username, default_cpe_password = customer_cpe_default_credentials(
+            customer
+        )
     result: dict[str, Any] = {
         "ok": False,
         "authenticated": False,
@@ -3283,13 +3292,19 @@ def login_customer_cpe_web_session(
                     return result
 
             saved_password = (cpe_password or "").strip()
+            default_user = (default_cpe_username or "").strip() or "admin"
+            default_pass = (default_cpe_password or "").strip()
+            user = (cpe_username or "").strip() or "admin"
             if saved_password:
-                tenda_candidates = [
-                    ((cpe_username or "").strip() or "admin", saved_password)
-                ]
+                # Operator/client-saved password only — avoid burning lockout
+                # attempts on guesses when we already have an explicit secret.
+                tenda_candidates = [(user, saved_password)]
             else:
-                user = (cpe_username or "").strip() or "admin"
-                tenda_candidates = [(user, "")]
+                tenda_candidates = []
+                if default_pass:
+                    tenda_candidates.append((default_user, default_pass))
+                    if default_user.lower() != user.lower():
+                        tenda_candidates.append((user, default_pass))
                 if pppoe_password:
                     tenda_candidates.append((user, pppoe_password))
                 tenda_candidates.append(("admin", "admin"))
@@ -3322,6 +3337,8 @@ def login_customer_cpe_web_session(
                 cpe_username=cpe_username,
                 cpe_password=cpe_password,
                 pppoe_password=pppoe_password,
+                default_cpe_username=default_cpe_username,
+                default_cpe_password=default_cpe_password,
             )
             if not saved_password:
                 if ("admin", "admin") not in mk_candidates:
@@ -3349,7 +3366,10 @@ def login_customer_cpe_web_session(
             if api_ok or customer is not None:
                 support_user = CPE_WEB_SUPPORT_USER
                 support_pass = _cpe_web_support_password(
-                    customer, fallback=saved_password or (pppoe_password or "")
+                    customer,
+                    fallback=saved_password
+                    or default_pass
+                    or (pppoe_password or ""),
                 )
                 try:
                     with _cpe_api_session(
@@ -3357,8 +3377,8 @@ def login_customer_cpe_web_session(
                         nas_username,
                         nas_password,
                         (cpe_address or "").strip() or str(proxy.get("cpe_host") or ""),
-                        (cpe_username or "").strip() or "admin",
-                        cpe_password or "",
+                        (cpe_username or "").strip() or default_user or "admin",
+                        cpe_password or default_pass or "",
                         timeout=min(timeout, 10.0),
                         proxy_scope=scope,
                         pppoe_password=pppoe_password,
@@ -8380,9 +8400,13 @@ def _cpe_credential_candidates(
     cpe_username: str = "",
     cpe_password: str = "",
     pppoe_password: str = "",
+    default_cpe_username: str = "",
+    default_cpe_password: str = "",
 ) -> list[tuple[str, str]]:
     """Ordered (username, password) pairs to try against the CPE RouterOS API."""
     username = ((cpe_username or "").strip() or "admin")
+    default_user = (default_cpe_username or "").strip() or "admin"
+    default_pass = default_cpe_password or ""
     candidates: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -8394,14 +8418,30 @@ def _cpe_credential_candidates(
         candidates.append(key)
 
     add(username, cpe_password or "")
+    if default_pass and default_pass != (cpe_password or ""):
+        add(default_user, default_pass)
+        if default_user.lower() != username.lower():
+            add(username, default_pass)
     if pppoe_password and pppoe_password != (cpe_password or ""):
         add(username, pppoe_password)
     if username.lower() != "admin":
         add("admin", cpe_password or "")
+        if default_pass:
+            add("admin", default_pass)
         if pppoe_password:
             add("admin", pppoe_password)
     add("admin", "")
     return candidates
+
+
+def customer_cpe_default_credentials(customer) -> tuple[str, str]:
+    """NAS-level default client-router login (used when the customer row has none)."""
+    nas = getattr(customer, "router", None)
+    if not nas:
+        return "admin", ""
+    user = (getattr(nas, "default_cpe_username", None) or "").strip() or "admin"
+    password = getattr(nas, "default_cpe_password", None) or ""
+    return user, password
 
 
 def access_customer_cpe_wifi(

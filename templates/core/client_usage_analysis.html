@@ -24,17 +24,29 @@
       <p class="panel-sub">Simple picture of online time, speed, and data for the last {{ range_label|default:trend_hours }}.</p>
     </div>
     <div class="mikrotik-detail-actions">
-      <span class="mikrotik-live-stamp" data-usage-stamp>—</span>
+      <span class="mikrotik-live-stamp" data-usage-stamp>
+        {% if trends.sample_count %}{{ trends.sample_count }} reading{{ trends.sample_count|pluralize }}{% else %}Waiting for readings{% endif %}
+      </span>
       <button type="button" class="btn btn-ghost" data-usage-refresh>Refresh</button>
     </div>
   </div>
 
-  <p class="client-usage-insight" data-usage-insight role="status">Reading usage…</p>
+  <p class="client-usage-insight" data-usage-insight role="status" data-tracking="{{ trends.summary.tracking|default:'empty' }}">
+    {% if trends.live_error and not trends.sample_count %}
+      {{ trends.live_error }}
+    {% elif trends.summary.insight %}
+      {{ trends.summary.insight }}
+    {% elif can_live_usage %}
+      Collecting the first reading…
+    {% else %}
+      Usage trends need a live PPPoE or Hotspot client with a reachable router.
+    {% endif %}
+  </p>
 
   <dl class="client-kv-row client-usage-stats" id="usage-summary">
-    <div class="client-kv client-usage-stat" data-ico="status" data-stat="status">
+    <div class="client-kv client-usage-stat{% if trends.summary.latest_active %} is-online{% elif trends.summary.tracking == 'empty' or trends.summary.tracking == 'warming' or not trends.sample_count %} is-waiting{% elif trends.sample_count %} is-offline{% endif %}" data-ico="status" data-stat="status">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Now</dt>
-      <dd><strong data-sum="status">—</strong><span data-sum="status-hint">Current connection</span></dd>
+      <dd><strong data-sum="status">{{ trends.summary.status|default:"—" }}</strong><span data-sum="status-hint">{{ trends.summary.status_hint|default:"Current connection" }}</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="data">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
@@ -42,11 +54,11 @@
     </div>
     <div class="client-kv client-usage-stat" data-ico="prime">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Fastest</dt>
-      <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">Peak download</span></dd>
+      <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">{% if trends.summary.prime_point %}Around {{ trends.summary.prime_point.at_label }}{% else %}Peak download{% endif %}</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="uptime">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
-      <dd><strong data-sum="online-time">—</strong><span data-sum="online-meta">Share of this period</span></dd>
+      <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
     </div>
   </dl>
 </section>
@@ -60,14 +72,20 @@
   data-usage-url="{{ usage_url }}"
   data-hours="{{ trend_hours }}"
 >
-  <div class="client-usage-empty" data-usage-empty hidden>
-    <p class="client-usage-empty-title" data-usage-empty-title>Collecting usage…</p>
+  <div class="client-usage-empty" data-usage-empty {% if trends.sample_count %}hidden{% endif %}>
+    <p class="client-usage-empty-title" data-usage-empty-title>
+      {% if trends.live_error %}Router not reachable{% else %}Collecting usage…{% endif %}
+    </p>
     <p class="client-usage-empty-text" data-usage-empty-text>
-      The app saves usage in the background. Charts fill in as readings arrive.
+      {% if trends.live_error %}
+        {{ trends.live_error }} Charts will fill in once the MikroTik answers again.
+      {% else %}
+        The app saves usage automatically. Charts fill in as readings arrive.
+      {% endif %}
     </p>
   </div>
 
-  <div class="client-usage-chart-grid" data-usage-charts>
+  <div class="client-usage-chart-grid" data-usage-charts {% if not trends.sample_count %}hidden{% endif %}>
     <article class="client-usage-chart-card">
       <header>
         <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</p>
@@ -137,11 +155,14 @@
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var insightEl = document.querySelector("[data-usage-insight]");
   var emptyBox = document.querySelector("[data-usage-empty]");
+  var emptyTitle = document.querySelector("[data-usage-empty-title]");
+  var emptyText = document.querySelector("[data-usage-empty-text]");
   var chartsBox = document.querySelector("[data-usage-charts]");
   var statusCard = document.querySelector('[data-stat="status"]');
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
+  var pollTimer = null;
 
   function fmtBps(bps) {
     var n = Number(bps) || 0;
@@ -197,8 +218,9 @@
     var prime = summary.prime_point;
     var tracking = summary.tracking || ((data && data.sample_count) ? "ready" : "empty");
     var latest = !!summary.latest_active;
+    var liveError = (data && data.live_error) || "";
 
-    setSum("status", summary.status || (latest ? "Online now" : "Offline now"));
+    setSum("status", summary.status || (latest ? "Online now" : (tracking === "empty" ? "Waiting" : "Offline now")));
     setSum("status-hint", summary.status_hint || (latest ? "Connected" : "Not connected"));
     setSum("data", fmtBytes(summary.data_used_bytes));
     setSum(
@@ -222,23 +244,37 @@
     }
 
     if (insightEl) {
-      insightEl.textContent = summary.insight || "Usage updates automatically while the app is running.";
+      insightEl.textContent =
+        liveError && !(data && data.sample_count)
+          ? liveError
+          : (summary.insight || "Usage updates automatically while the app is running.");
       insightEl.setAttribute("data-tracking", tracking);
     }
 
-    var showEmpty = tracking === "empty" || (tracking === "warming" && !(data && data.sample_count));
+    var showEmpty = tracking === "empty" || (!(data && data.sample_count) && !!liveError);
     if (emptyBox) emptyBox.hidden = !showEmpty;
-    if (chartsBox) chartsBox.hidden = !!showEmpty && tracking === "empty";
+    if (chartsBox) chartsBox.hidden = showEmpty;
+    if (showEmpty && emptyTitle && emptyText) {
+      if (liveError) {
+        emptyTitle.textContent = "Router not reachable";
+        emptyText.textContent = liveError + " Charts will fill in once the MikroTik answers again.";
+      } else {
+        emptyTitle.textContent = "Collecting usage…";
+        emptyText.textContent = "The app saves usage automatically. Charts fill in as readings arrive.";
+      }
+    }
 
     if (stamp) {
       var n = Number((data && data.sample_count) || 0);
       stamp.textContent =
-        (n ? n + " reading" + (n === 1 ? "" : "s") + " · " : "") +
+        (n ? n + " reading" + (n === 1 ? "" : "s") + " · " : "Waiting · ") +
         "Updated " +
         new Date().toLocaleTimeString([], {
           hour: "2-digit", minute: "2-digit", second: "2-digit"
         });
     }
+
+    schedulePoll(tracking === "empty" || tracking === "warming");
   }
 
   function chartDefaults() {
@@ -282,7 +318,7 @@
   }
 
   function ensureCharts() {
-    if (!window.Chart || charts.online) return;
+    if (!window.Chart || charts.online) return !!charts.online;
     var empty = { labels: [], datasets: [] };
     var base = chartDefaults();
     charts.online = new Chart(document.getElementById("chart-online"), {
@@ -313,12 +349,11 @@
         plugins: Object.assign({}, base.plugins, { legend: { display: false } })
       })
     });
+    return true;
   }
 
-  function paint(data) {
-    ensureCharts();
-    applySummary(data);
-    if (!charts.online) return;
+  function paintCharts(data) {
+    if (!ensureCharts()) return;
 
     var labels = (data && data.labels) || [];
     var series = (data && data.series) || {};
@@ -386,6 +421,11 @@
     charts.data.update("none");
   }
 
+  function paint(data) {
+    applySummary(data);
+    paintCharts(data);
+  }
+
   function loadTrends(opts) {
     opts = opts || {};
     if (!trendsUrl || inFlight) return Promise.resolve();
@@ -409,27 +449,36 @@
     loadTrends({ sample: true, refresh: !!force });
   }
 
-  function boot() {
-    ensureCharts();
-    paint(initial);
-    sampleLive(true);
+  function schedulePoll(fast) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(function () {
+      if (!document.hidden) sampleLive(false);
+    }, fast ? 20000 : 45000);
   }
 
-  if (window.Chart) boot();
+  // Summary paints immediately from server data — do not wait for Chart.js.
+  applySummary(initial);
+  function bootCharts() {
+    paintCharts(initial);
+    sampleLive(true);
+  }
+  if (window.Chart) bootCharts();
   else {
     var wait = setInterval(function () {
       if (!window.Chart) return;
       clearInterval(wait);
-      boot();
+      bootCharts();
     }, 50);
+    // Keep collecting even if the chart CDN is blocked.
+    setTimeout(function () {
+      if (!window.Chart) sampleLive(true);
+    }, 1500);
   }
 
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () { sampleLive(true); });
   }
-  setInterval(function () {
-    if (!document.hidden) sampleLive(false);
-  }, 45000);
+  schedulePoll(true);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) sampleLive(true);
   });

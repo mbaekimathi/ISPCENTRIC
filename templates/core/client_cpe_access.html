@@ -253,13 +253,13 @@
       <dt>Admin login</dt>
       <dd>
         <strong data-router-user>{{ cpe_username|default:"admin" }}</strong>
-        <span>Saved on this client</span>
+        <span>{% if uses_nas_default_password %}From NAS default{% else %}Saved on this client{% endif %}</span>
       </dd>
     </div>
     <div class="client-kv" data-ico="wifi">
       <dt>Admin password</dt>
       <dd>
-        <strong class="mikrotik-secret" data-router-secret {% if not has_cpe_password %}hidden{% endif %}>
+        <strong class="mikrotik-secret" data-router-secret {% if not cpe_password %}hidden{% endif %}>
           <span class="mikrotik-secret-mask" data-secret-mask>•</span>
           <span class="mikrotik-secret-value" data-secret-value data-router-password hidden>{{ cpe_password }}</span>
           <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show router password">
@@ -268,8 +268,8 @@
           </button>
           <button type="button" class="pppoe-mini-btn" data-copy-password>Copy</button>
         </strong>
-        <span data-router-password-empty {% if has_cpe_password %}hidden{% endif %}>Not saved — enter it below if connect fails</span>
-        <span {% if not has_cpe_password %}hidden{% endif %} data-router-password-hint>Tap the eye icon to reveal</span>
+        <span data-router-password-empty {% if cpe_password %}hidden{% endif %}>Not saved — enter it below if connect fails</span>
+        <span {% if not cpe_password %}hidden{% endif %} data-router-password-hint>{% if uses_nas_default_password %}NAS default · tap the eye to reveal{% else %}Tap the eye icon to reveal{% endif %}</span>
       </dd>
     </div>
     <div class="client-kv" data-ico="shield">
@@ -662,6 +662,21 @@
     } catch (err) {
       return false;
     }
+    // Click the real submit control so vendor onsubmit handlers (Tenda MD5,
+    // WebFig, etc.) still run — form.submit() would skip them.
+    if (cpePass) {
+      try {
+        var form = pass.form || pass.closest("form");
+        var submitBtn = form && form.querySelector(
+          "button[type='submit'], input[type='submit'], button.login, #loginBtn, .btn-login, button:not([type])"
+        );
+        if (submitBtn) {
+          submitBtn.click();
+        } else if (form && typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        }
+      } catch (err) {}
+    }
     return true;
   }
 
@@ -672,16 +687,17 @@
     fillTimer = setInterval(function () {
       tries += 1;
       try {
-        if (fillLogin(frame.contentDocument)) {
+        var doc = frame.contentDocument;
+        if (doc && fillLogin(doc)) {
           clearInterval(fillTimer);
           fillTimer = null;
         }
       } catch (err) {}
-      if (tries >= 20) {
+      if (tries >= 25) {
         clearInterval(fillTimer);
         fillTimer = null;
       }
-    }, 400);
+    }, 350);
   }
 
   function showProxy(url, data) {
@@ -732,7 +748,9 @@
     if (frame) {
       frame.hidden = false;
       frame.src = url;
-      if (!data.authenticated) {
+      // Autofill + submit even after a server-side login — some CPE UIs still
+      // render a login form when the cookie jar did not stick on first paint.
+      if (cpePass) {
         frame.addEventListener("load", watchFrame, { once: true });
       }
     }

@@ -202,6 +202,24 @@ class UsageTrendPayloadTests(TestCase):
         self.assertFalse(written)
         self.assertEqual(CustomerUsageSample.objects.filter(customer=self.customer).count(), 0)
 
+    def test_force_bypasses_offline_throttle(self):
+        from django.core.cache import cache
+        from billing.usage_samples import record_customer_usage_sample
+
+        cache.set(f"usage_sample_offline:{self.customer.pk}", 1, 300)
+        blocked = record_customer_usage_sample(
+            self.customer,
+            {"ok": True, "session_active": False, "bytes_in": 0, "bytes_out": 0},
+        )
+        self.assertFalse(blocked)
+        written = record_customer_usage_sample(
+            self.customer,
+            {"ok": True, "session_active": False, "bytes_in": 0, "bytes_out": 0},
+            force=True,
+        )
+        self.assertTrue(written)
+        self.assertEqual(CustomerUsageSample.objects.filter(customer=self.customer).count(), 1)
+
     def setUp(self):
         owner = User.objects.create_user("net-trend-owner", password="x")
         self.org = Organization.objects.create(name="Net Trend Org", owner=owner, join_code="NET001")
