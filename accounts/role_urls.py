@@ -359,6 +359,16 @@ urlpatterns = [
         name="technician_installation_reject",
     ),
     path(
+        "technician/tickets/",
+        role_dashboards.technician_tickets,
+        name="technician_tickets",
+    ),
+    path(
+        "technician/tickets/connected/",
+        role_dashboards.technician_tickets_connected,
+        name="technician_tickets_connected",
+    ),
+    path(
         "technician/fault-tickets/",
         role_dashboards.technician_fault_tickets,
         name="technician_fault_tickets",

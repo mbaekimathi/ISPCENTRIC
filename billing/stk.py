@@ -918,7 +918,7 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
             customer=customer,
             organization=stk.organization,
             amount=stk.amount,
-            reference=stk.mpesa_receipt or stk.checkout_request_id,
+            reference=(stk.mpesa_receipt or "").strip(),
             recorded_by=stk.initiated_by,
             notes="M-Pesa STK Push lead allocation",
             invoice_prefix="LEAD",
@@ -1143,7 +1143,7 @@ def fulfill_successful_stk(
             customer=customer,
             organization=stk.organization,
             amount=stk.amount,
-            reference=stk.mpesa_receipt or stk.checkout_request_id,
+            reference=(stk.mpesa_receipt or "").strip(),
             recorded_by=stk.initiated_by,
         )
         stk.invoice = invoice

@@ -6253,6 +6253,70 @@ def _interface_byte_counters(sock: socket.socket, interface: str) -> tuple[int, 
     return 0, 0
 
 
+def _hotspot_rates_from_bytes(
+    sample_key: str,
+    bytes_in: int,
+    bytes_out: int,
+) -> dict[str, Any]:
+    """
+    Derive live Hotspot download/upload from poll-to-poll byte counters.
+
+    RouterOS Hotspot: bytes-in = from client (upload), bytes-out = to client
+    (download). Window is wider than WAN monitor deltas so 30s analysis-page
+    polls still produce usable rates.
+    """
+    empty = {
+        "download_bps": None,
+        "upload_bps": None,
+        "download_label": "—",
+        "upload_label": "—",
+    }
+    sample_key = (sample_key or "").strip()
+    if not sample_key:
+        return empty
+    try:
+        from django.core.cache import cache
+    except Exception:
+        return empty
+
+    now = time.time()
+    cache_key = f"hotspot_usage_rate:{sample_key}"
+    previous = cache.get(cache_key)
+    bi = max(0, int(bytes_in or 0))
+    bo = max(0, int(bytes_out or 0))
+    cache.set(cache_key, {"t": now, "bi": bi, "bo": bo}, 150)
+    if not isinstance(previous, dict) or previous.get("t") is None:
+        return empty
+    try:
+        dt = max(0.0, now - float(previous["t"]))
+    except (TypeError, ValueError):
+        return empty
+    if dt < 0.5 or dt > 120.0:
+        return empty
+    prev_bi = max(0, _parse_int(previous.get("bi")))
+    prev_bo = max(0, _parse_int(previous.get("bo")))
+    # Counter reset (new Hotspot login) — wait for the next pair.
+    if bi < prev_bi or bo < prev_bo:
+        return empty
+    delta_in = bi - prev_bi
+    delta_out = bo - prev_bo
+    if delta_in <= 0 and delta_out <= 0:
+        return {
+            "download_bps": 0,
+            "upload_bps": 0,
+            "download_label": _bits_per_sec_label(0),
+            "upload_label": _bits_per_sec_label(0),
+        }
+    download_bps = int(round((float(delta_out) * 8.0) / dt))
+    upload_bps = int(round((float(delta_in) * 8.0) / dt))
+    return {
+        "download_bps": download_bps,
+        "upload_bps": upload_bps,
+        "download_label": _bits_per_sec_label(download_bps),
+        "upload_label": _bits_per_sec_label(upload_bps),
+    }
+
+
 def _speed_from_byte_delta(
     sample_key: str,
     interface: str,
@@ -7314,8 +7378,16 @@ def fetch_customer_pppoe_usage(
                 props="name,service,caller-id,address,uptime,encoding",
             )
             session = None
+            want = pppoe_username.lower()
+            want_alts = {want}
+            # Phone-style usernames are often stored with/without a leading +.
+            if want.startswith("+"):
+                want_alts.add(want[1:])
+            elif want.isdigit():
+                want_alts.add(f"+{want}")
             for row in active_rows:
-                if (row.get("name") or "").strip().lower() == pppoe_username.lower():
+                name = (row.get("name") or "").strip().lower()
+                if name in want_alts:
                     session = row
                     break
 
@@ -7333,11 +7405,17 @@ def fetch_customer_pppoe_usage(
             iface_name = ""
             bytes_in = 0
             bytes_out = 0
+            session_name = (session.get("name") or pppoe_username).strip()
             candidates = [
+                f"<pppoe-{session_name}>",
                 f"<pppoe-{pppoe_username}>",
-                f"<pppoe-{session.get('name') or pppoe_username}>",
+                session_name,
                 pppoe_username,
             ]
+            if session_name.startswith("+"):
+                candidates.append(f"<pppoe-{session_name[1:]}>")
+            elif session_name and not session_name.startswith("+"):
+                candidates.append(f"<pppoe-+{session_name}>")
             try:
                 interfaces = _print(
                     sock,
@@ -7370,6 +7448,13 @@ def fetch_customer_pppoe_usage(
                 "wan_download_label": "—",
                 "wan_upload_label": "—",
             }
+            # monitor-traffic / byte-delta helpers label RX=download for WAN ports.
+            # On a <pppoe-user> interface RX is traffic from the client (upload)
+            # and TX is traffic to the client (download) — swap for subscriber view.
+            download_bps = speed.get("wan_upload_bps")
+            upload_bps = speed.get("wan_download_bps")
+            download_label = speed.get("wan_upload_label") or "—"
+            upload_label = speed.get("wan_download_label") or "—"
 
             uptime_raw = (session.get("uptime") or "").strip()
             return {
@@ -7386,10 +7471,10 @@ def fetch_customer_pppoe_usage(
                 "bytes_out": bytes_out,
                 "bytes_in_label": _bytes_label(bytes_in) if bytes_in or iface_name else "—",
                 "bytes_out_label": _bytes_label(bytes_out) if bytes_out or iface_name else "—",
-                "download_bps": speed.get("wan_download_bps"),
-                "upload_bps": speed.get("wan_upload_bps"),
-                "download_label": speed.get("wan_download_label") or "—",
-                "upload_label": speed.get("wan_upload_label") or "—",
+                "download_bps": download_bps,
+                "upload_bps": upload_bps,
+                "download_label": download_label,
+                "upload_label": upload_label,
                 "interface": iface_name,
                 "error": "",
             }
@@ -7531,6 +7616,11 @@ def fetch_customer_hotspot_usage(
             bytes_in = _parse_int(session.get("bytes-in"))
             bytes_out = _parse_int(session.get("bytes-out"))
             uptime_raw = (session.get("uptime") or "").strip()
+            rates = _hotspot_rates_from_bytes(
+                f"{host}:{mac_compact}",
+                bytes_in,
+                bytes_out,
+            )
             return {
                 "ok": True,
                 "online": True,
@@ -7543,15 +7633,20 @@ def fetch_customer_hotspot_usage(
                 "service": "hotspot",
                 "uptime": _human_uptime(uptime_raw),
                 "uptime_raw": uptime_raw,
+                # Keep RouterOS orientation for trend math (in=upload, out=download).
                 "bytes_in": bytes_in,
                 "bytes_out": bytes_out,
-                "bytes_in_label": _bytes_label(bytes_in),
-                "bytes_out_label": _bytes_label(bytes_out),
-                "download_bps": None,
-                "upload_bps": None,
-                "download_label": "—",
-                "upload_label": "—",
+                # Subscriber-facing labels: Downloaded / Uploaded on the client UI.
+                "bytes_in_label": _bytes_label(bytes_out),
+                "bytes_out_label": _bytes_label(bytes_in),
+                "download_bytes": bytes_out,
+                "upload_bytes": bytes_in,
+                "download_bps": rates.get("download_bps"),
+                "upload_bps": rates.get("upload_bps"),
+                "download_label": rates.get("download_label") or "—",
+                "upload_label": rates.get("upload_label") or "—",
                 "interface": (session.get("server") or "").strip(),
+                "speed_source": "hotspot",
                 "error": "",
             }
     except TimeoutError:
@@ -7698,16 +7793,24 @@ def fetch_router_bulk_hotspot_usage(
                 if len(mac_compact) != 12:
                     continue
                 uptime_raw = (row.get("uptime") or "").strip()
+                bytes_in = _parse_int(row.get("bytes-in"))
+                bytes_out = _parse_int(row.get("bytes-out"))
+                rates = _hotspot_rates_from_bytes(
+                    f"{host}:{mac_compact}",
+                    bytes_in,
+                    bytes_out,
+                )
                 sessions[mac_compact] = {
+                    "ok": True,
                     "session_active": True,
                     "hotspot_mac": mac_compact,
                     "address": (row.get("address") or "").strip(),
                     "uptime": _human_uptime(uptime_raw),
                     "uptime_raw": uptime_raw,
-                    "bytes_in": _parse_int(row.get("bytes-in")),
-                    "bytes_out": _parse_int(row.get("bytes-out")),
-                    "download_bps": None,
-                    "upload_bps": None,
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
+                    "download_bps": rates.get("download_bps"),
+                    "upload_bps": rates.get("upload_bps"),
                     "interface": (row.get("server") or "").strip(),
                 }
             return {"ok": True, "sessions": sessions, "error": ""}

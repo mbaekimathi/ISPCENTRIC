@@ -757,6 +757,17 @@ class WireGuardKeyTests(SimpleTestCase):
 
         self.assertGreaterEqual(_subscription_sweep_startup_delay_sec(), 15)
 
+    def test_usage_sample_interval_defaults(self):
+        from core.boot import (
+            _usage_sample_enabled,
+            _usage_sample_interval_sec,
+            _usage_sample_startup_delay_sec,
+        )
+
+        self.assertTrue(_usage_sample_enabled())
+        self.assertGreaterEqual(_usage_sample_interval_sec(), 30)
+        self.assertGreaterEqual(_usage_sample_startup_delay_sec(), 0)
+
     def test_nas_access_ready_ignores_pending_cpe(self):
         from core.subscription_sync import nas_access_ready
 
@@ -2561,6 +2572,8 @@ class PppoeClientRegisterFormTests(TestCase):
                 "address": "ngong road",
                 "house_number": "a-14",
                 "plan": "",
+                "activate_account": "1",
+                "activation_date": "2026-09-04",
                 "pppoe_username": "",
                 "pppoe_password": "secret1",
                 "cpe_username": "admin",
@@ -2578,6 +2591,205 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertEqual(customer.pppoe_username, "0711223344")
         self.assertEqual(customer.router_id, self.router.pk)
         self.assertEqual(customer.service_type, Customer.ServiceType.PPPOE)
+        self.assertEqual(customer.status, Customer.Status.ACTIVE)
+        self.assertIsNotNone(customer.package_start)
+
+    def test_inactive_registration_skips_package_window(self):
+        from billing.forms import PppoeClientRegisterForm
+        from billing.models import Customer
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "tech client",
+                "phone": "0711998877",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organization=self.org,
+            default_activate=False,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        customer = form.save()
+        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertIsNone(customer.package_start)
+        self.assertIsNone(customer.package_end)
+
+    def test_allow_activate_false_ignores_activate_post(self):
+        """Technician registrations cannot activate even if POST tampers."""
+        from billing.forms import PppoeClientRegisterForm
+        from billing.models import Customer
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "forced pending",
+                "phone": "0711887766",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "1",
+                "activation_date": "2026-09-04",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organization=self.org,
+            default_activate=False,
+            allow_activate=False,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertFalse(form.cleaned_data["activate_account"])
+        customer = form.save()
+        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertIsNone(customer.package_start)
+        self.assertIsNone(customer.package_end)
+
+    def test_cpe_password_uses_mikrotik_default_not_pppoe_password(self):
+        from billing.forms import PppoeClientRegisterForm
+        from billing.models import Customer
+
+        self.router.default_cpe_username = "cpeadmin"
+        self.router.default_cpe_password = "mikrotik-default-pass"
+        self.router.save(
+            update_fields=["default_cpe_username", "default_cpe_password"]
+        )
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "cpe client",
+                "phone": "0711556677",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "pppoe-only-secret",
+                "cpe_username": "",
+                "cpe_password": "",
+            },
+            organization=self.org,
+            default_activate=False,
+            allow_activate=False,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["cpe_username"], "cpeadmin")
+        self.assertEqual(form.cleaned_data["cpe_password"], "mikrotik-default-pass")
+        customer = form.save()
+        self.assertEqual(customer.cpe_username, "cpeadmin")
+        self.assertEqual(customer.cpe_password, "mikrotik-default-pass")
+        self.assertNotEqual(customer.cpe_password, customer.pppoe_password)
+        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+
+    def test_organizations_mode_requires_isp_and_scopes_router(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from billing.forms import PppoeClientRegisterForm
+        from billing.models import Customer
+
+        other_owner = User.objects.create_user("form-pppoe-other", password="x")
+        other_org = Organization.objects.create(
+            name="Other Form ISP",
+            owner=other_owner,
+            join_code="887766",
+        )
+        other_router = MikroTikRouter.objects.create(
+            organization=other_org,
+            name="Other NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.9.0.11",
+            username="admin",
+            password="secret",
+        )
+
+        missing_org = PppoeClientRegisterForm(
+            {
+                "full_name": "tech client",
+                "phone": "0711001122",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organizations=[self.org, other_org],
+            default_activate=False,
+            allow_activate=False,
+        )
+        self.assertFalse(missing_org.is_valid())
+        self.assertIn("organization", missing_org.errors)
+
+        wrong_router = PppoeClientRegisterForm(
+            {
+                "organization": str(self.org.pk),
+                "full_name": "tech client",
+                "phone": "0711001122",
+                "email": "",
+                "router": str(other_router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organizations=[self.org, other_org],
+            default_activate=False,
+            allow_activate=False,
+        )
+        self.assertFalse(wrong_router.is_valid())
+        self.assertIn("router", wrong_router.errors)
+
+        form = PppoeClientRegisterForm(
+            {
+                "organization": str(self.org.pk),
+                "full_name": "tech client",
+                "phone": "0711001122",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organizations=[self.org, other_org],
+            default_activate=False,
+            allow_activate=False,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        customer = form.save()
+        self.assertEqual(customer.organization_id, self.org.pk)
+        self.assertEqual(customer.router_id, self.router.pk)
+        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertIn("organization", form.fields)
 
 
 class MyClientsRegisterViewTests(TestCase):
@@ -2633,6 +2845,8 @@ class MyClientsRegisterViewTests(TestCase):
                     "address": "westlands",
                     "house_number": "12b",
                     "plan": "",
+                    "activate_account": "1",
+                    "activation_date": "2026-09-04",
                     "pppoe_username": "",
                     "pppoe_password": "pass1234",
                     "cpe_username": "admin",

@@ -129,6 +129,11 @@ ROLE_DASHBOARD_ONLY_NAV = {
             "url_name": "roles:technician_installations",
         },
         {
+            "key": "tickets",
+            "label": "Tickets",
+            "url_name": "roles:technician_tickets",
+        },
+        {
             "key": "fault_tickets",
             "label": "Fault Tickets",
             "url_name": "roles:technician_fault_tickets",
@@ -140,6 +145,20 @@ ROLE_DASHBOARD_ONLY_NAV = {
         },
     ],
 }
+
+# Tickets section links (pending activation + connected tickets).
+TECHNICIAN_TICKETS_NAV = [
+    {
+        "key": "tickets",
+        "label": "Pending activation",
+        "url_name": "roles:technician_tickets",
+    },
+    {
+        "key": "tickets_connected",
+        "label": "My connected tickets",
+        "url_name": "roles:technician_tickets_connected",
+    },
+]
 
 # Sidebar links shown while inside IT Support company hub pages
 # (communications, payment gateway, commissions). Company profile lives under
@@ -250,6 +269,11 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
             items.insert(0, {"key": "dashboard", "label": "Dashboard", "url_name": dash})
     if current_page == "dashboard":
         items.extend(ROLE_DASHBOARD_ONLY_NAV.get(role, []))
+    elif role == Employee.Role.TECHNICIAN and current_page in {
+        "tickets",
+        "tickets_connected",
+    }:
+        items.extend(TECHNICIAN_TICKETS_NAV)
     elif role == Employee.Role.MANAGER and current_page in {
         "sales",
         "approved_sales",
@@ -314,6 +338,10 @@ def page_key_from_path(path: str) -> str | None:
         return "company_system_settings"
     if "/installations/" in path:
         return "installations"
+    if "/tickets/connected/" in path:
+        return "tickets_connected"
+    if "/tickets/" in path:
+        return "tickets"
     if "/fault-tickets/" in path:
         return "fault_tickets"
     if "/network-equipment/" in path:

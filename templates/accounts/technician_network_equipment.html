@@ -1,0 +1,120 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="tech-install-page tech-gear-page">
+  <header class="tech-install-head">
+    <div class="tech-install-head-copy">
+      <p class="tech-install-kicker">{{ page_kicker }}</p>
+      <h2 class="tech-install-title">Network equipment</h2>
+      <p class="tech-install-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="tech-install-head-actions">
+      <a class="btn btn-ghost tech-fault-back" href="{% url 'roles:technician' %}">
+        ← Dashboard
+      </a>
+    </div>
+  </header>
+
+  <div class="tech-install-stats" aria-label="Equipment summary">
+    <div class="tech-install-stat is-assigned">
+      <strong>{{ assigned_count|default:0 }}</strong>
+      <span>Assigned to you</span>
+    </div>
+    <div class="tech-install-stat">
+      <strong>{{ serial_count|default:0 }}</strong>
+      <span>Serial units</span>
+    </div>
+    <div class="tech-install-stat is-open">
+      <strong>{{ catalog_count|default:0 }}</strong>
+      <span>In catalog</span>
+    </div>
+  </div>
+
+  {% if allocations %}
+    <div class="tech-install-list">
+      {% for row in allocations %}
+        <article class="tech-install-card is-mine tech-gear-card">
+          <header class="tech-install-card-head">
+            <div class="tech-gear-card-id">
+              {% if row.equipment.image %}
+                <img
+                  class="tech-gear-thumb"
+                  src="{{ row.equipment.image.url }}"
+                  alt=""
+                  width="48"
+                  height="48"
+                  loading="lazy"
+                  decoding="async"
+                >
+              {% else %}
+                <span class="tech-gear-thumb is-empty" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                    <rect x="4" y="6" width="16" height="12" rx="2"/>
+                    <path d="M8 10h8M8 13h5" stroke-linecap="round"/>
+                  </svg>
+                </span>
+              {% endif %}
+              <div class="tech-install-card-id">
+                <span class="tech-install-ticket">{{ row.equipment.get_equipment_type_display }}</span>
+                <strong class="tech-install-client">{{ row.equipment.name }}</strong>
+              </div>
+            </div>
+            <div class="tech-install-card-badges">
+              <span class="tech-install-chip is-yours">Assigned to you</span>
+              {% if row.serial %}
+                <span class="tech-install-chip">S/N {{ row.serial.serial_number }}</span>
+              {% else %}
+                <span class="tech-install-chip">Qty {{ row.quantity }}</span>
+              {% endif %}
+            </div>
+          </header>
+
+          <div class="tech-install-card-body">
+            <div class="tech-install-meta">
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">Allocated</span>
+                <span class="tech-install-meta-value">{{ row.allocated_at|date:"d M Y, H:i" }}</span>
+              </div>
+              {% if row.allocated_by %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Issued by</span>
+                  <span class="tech-install-meta-value">
+                    {{ row.allocated_by.get_full_name|default:row.allocated_by.username }}
+                  </span>
+                </div>
+              {% endif %}
+              {% if row.notes %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Notes</span>
+                  <span class="tech-install-meta-value">{{ row.notes }}</span>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="tech-install-empty tech-gear-empty">
+      <span class="tech-gear-empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="3.5" y="7" width="17" height="11" rx="2.2"/>
+          <path d="M8 4.8h8M7.5 11.5h9M7.5 14.5h5.5" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <strong>No equipment assigned</strong>
+      <p>{{ empty_text }}</p>
+      <a class="btn btn-ghost" href="{% url 'roles:technician_installations' %}">
+        View installations
+      </a>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

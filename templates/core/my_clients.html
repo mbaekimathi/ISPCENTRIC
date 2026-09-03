@@ -16,30 +16,53 @@
         </p>
       </div>
       <div class="clients-workspace-actions">
+        {% if active_tab == 'pppoe' %}
+          {% if pending_view %}
+            <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'core:my_clients' %}?tab=pppoe">
+              All PPPoE clients
+            </a>
+          {% else %}
+            <a
+              class="btn btn-ghost btn-sm clients-hero-btn{% if pending_activation_count %} is-pending-link{% endif %}"
+              href="{% url 'core:my_clients' %}?tab=pppoe&amp;view=pending"
+            >
+              Pending activation{% if pending_activation_count %} ({{ pending_activation_count }}){% endif %}
+            </a>
+            <button type="button" class="btn btn-primary btn-sm clients-hero-btn" data-open-modal="pppoe-register-modal">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+              Register PPPoE client
+            </button>
+          {% endif %}
+        {% endif %}
         <a class="btn btn-ghost btn-sm clients-hero-btn" href="{% url 'billing:dashboard' %}">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
           Billing
         </a>
-        {% if active_tab == 'pppoe' %}
-          <button type="button" class="btn btn-primary btn-sm clients-hero-btn" data-open-modal="pppoe-register-modal">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-            Register PPPoE client
-          </button>
-        {% endif %}
       </div>
     </header>
 
     <nav class="clients-seg" aria-label="Client type">
       <a
-        class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
+        class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' and not pending_view %} is-active{% endif %}"
         href="?tab=pppoe{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
-        {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
+        {% if active_tab == 'pppoe' and not pending_view %}aria-current="page"{% endif %}
       >
         <span class="clients-seg-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
         </span>
         <span class="clients-seg-label">PPPoE</span>
         <span class="clients-seg-count">{{ pppoe_count }}</span>
+      </a>
+      <a
+        class="clients-seg-item tone-pending{% if pending_view %} is-active{% endif %}"
+        href="?tab=pppoe&amp;view=pending{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+        {% if pending_view %}aria-current="page"{% endif %}
+      >
+        <span class="clients-seg-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v6l4 2.2-.8 1.4L11 14V7Z"/></svg>
+        </span>
+        <span class="clients-seg-label">Pending activation</span>
+        <span class="clients-seg-count">{{ pending_activation_count }}</span>
       </a>
       <a
         class="clients-seg-item tone-static{% if active_tab == 'static' %} is-active{% endif %}"
@@ -68,6 +91,7 @@
     <div class="clients-workspace-tools">
       <form class="clients-router-filter" method="get" action="{% url 'core:my_clients' %}">
         <input type="hidden" name="tab" value="{{ active_tab }}">
+        {% if pending_view %}<input type="hidden" name="view" value="pending">{% endif %}
         {% if clients_query %}<input type="hidden" name="q" value="{{ clients_query }}">{% endif %}
         <label class="clients-router-filter-label" for="clients-router-filter">Router</label>
         <div class="clients-router-select">
@@ -132,13 +156,15 @@
           {% endif %}
         </span>
         {% if clients_router_param %}
-          <a class="clients-filter-clear" href="?tab={{ active_tab }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}">Clear router</a>
+          <a class="clients-filter-clear" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}">Clear router</a>
         {% endif %}
       </div>
     </div>
 
     <div id="clients-list-host" class="clients-list-host" data-clients-list-host>
-      {% if active_tab == 'pppoe' %}
+      {% if pending_view %}
+        {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No pending PPPoE activations" empty_text="Technician-registered clients awaiting activation will appear here." empty_search_title="No pending clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 pending_activation=1 clients_query=clients_query %}
+      {% elif active_tab == 'pppoe' %}
         {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." empty_search_title="No PPPoE clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 clients_query=clients_query %}
       {% elif active_tab == 'static' %}
         {% include "core/includes/client_type_table.html" with customers=static_customers empty_title="No static clients yet" empty_text="Static IP subscribers for this organization will appear here." empty_search_title="No static clients match your search" empty_search_text="Try another name or phone number." service_label="Static" show_router=1 clients_query=clients_query %}
@@ -149,13 +175,13 @@
       {% if clients_page and clients_page.paginator.num_pages > 1 %}
         <nav class="clients-pagination" aria-label="Client pages">
           {% if clients_page.has_previous %}
-            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.previous_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Previous</a>
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.previous_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Previous</a>
           {% endif %}
           <span class="clients-pagination-meta">
             Page {{ clients_page.number }} of {{ clients_page.paginator.num_pages }}
           </span>
           {% if clients_page.has_next %}
-            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}&amp;page={{ clients_page.next_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Next</a>
+            <a class="btn btn-ghost btn-sm" href="?tab={{ active_tab }}{% if pending_view %}&amp;view=pending{% endif %}&amp;page={{ clients_page.next_page_number }}{% if clients_query %}&amp;q={{ clients_query|urlencode }}{% endif %}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">Next</a>
           {% endif %}
         </nav>
       {% endif %}
@@ -163,168 +189,56 @@
   </section>
 </div>
 
-{# —— Register PPPoE client —— #}
-<div class="role-modal client-action-modal pppoe-modal pppoe-modal--register" id="pppoe-register-modal" {% if open_client_modal != "pppoe-register-modal" %}hidden{% endif %} aria-hidden="{% if open_client_modal == "pppoe-register-modal" %}false{% else %}true{% endif %}">
-  <div class="role-modal-backdrop" data-close-client-modal></div>
-  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="pppoe-register-title">
+{% include "core/includes/pppoe_register_modal.html" %}
+
+{# —— Activate pending PPPoE client —— #}
+<div class="role-modal client-action-modal pppoe-modal" id="pppoe-activate-modal" hidden aria-hidden="true">
+  <div class="role-modal-backdrop" data-close-activate-pppoe></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="pppoe-activate-title">
     <header class="role-modal-head pppoe-head">
       <div class="pppoe-head-text">
         <div class="pppoe-head-badges">
-          <p class="role-modal-kicker pppoe-kicker">New client</p>
+          <p class="role-modal-kicker pppoe-kicker">Pending activation</p>
           <span class="pppoe-service-chip">PPPoE</span>
         </div>
-        <h2 id="pppoe-register-title">Register PPPoE client</h2>
-        <p class="role-modal-sub pppoe-sub">Credentials are pushed to the MikroTik so the client router can dial in immediately.</p>
+        <h2 id="pppoe-activate-title">Activate PPPoE account</h2>
+        <p class="role-modal-sub pppoe-sub">Enable this technician-registered client and choose when the package starts.</p>
       </div>
-      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+      <button type="button" class="role-modal-close pppoe-close" data-close-activate-pppoe aria-label="Close">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
     </header>
-
-    <form method="post" class="pppoe-form" novalidate>
+    <form method="post" class="pppoe-form" id="pppoe-activate-form" novalidate>
       {% csrf_token %}
-      <input type="hidden" name="action" value="register_pppoe">
-
+      <input type="hidden" name="action" value="activate_pppoe">
+      <input type="hidden" name="customer_id" id="pppoe-activate-customer-id" value="">
       <div class="pppoe-body">
-        {% if pppoe_form.non_field_errors %}
-          <div class="field-error pppoe-banner">{{ pppoe_form.non_field_errors|striptags }}</div>
-        {% endif %}
-
-        <section class="pppoe-section">
-          <div class="pppoe-section-head">
-            <span class="pppoe-section-icon pppoe-section-icon--profile" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm-7 9a7 7 0 0 1 14 0H5z"/></svg>
-            </span>
-            <div class="pppoe-section-head-text">
-              <h3 class="pppoe-section-title">Client details</h3>
-              <p class="pppoe-section-desc">Contact info and install location.</p>
-            </div>
-            <span class="pppoe-step-badge" aria-hidden="true">1</span>
+        <dl class="lead-stk-summary">
+          <div class="lead-stk-summary-item">
+            <dt>Client</dt>
+            <dd id="pppoe-activate-customer-name">—</dd>
           </div>
-          <div class="pppoe-grid">
-            <div class="field field-span-2">
-              <label for="{{ pppoe_form.full_name.id_for_label }}">{{ pppoe_form.full_name.label }}</label>
-              {{ pppoe_form.full_name }}
-              {% if pppoe_form.full_name.errors %}<div class="field-error">{{ pppoe_form.full_name.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ pppoe_form.phone.id_for_label }}">{{ pppoe_form.phone.label }}</label>
-              {{ pppoe_form.phone }}
-              <p class="field-hint">Account number and PPPoE username come from this phone.</p>
-              {% if pppoe_form.phone.errors %}<div class="field-error">{{ pppoe_form.phone.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ pppoe_form.email.id_for_label }}">{{ pppoe_form.email.label }} <span class="pppoe-optional">optional</span></label>
-              {{ pppoe_form.email }}
-              {% if pppoe_form.email.errors %}<div class="field-error">{{ pppoe_form.email.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field field-span-2">
-              <label for="{{ pppoe_form.router.id_for_label }}">{{ pppoe_form.router.label }}</label>
-              <div class="pppoe-select">{{ pppoe_form.router }}</div>
-              {% if pppoe_form.router.errors %}<div class="field-error">{{ pppoe_form.router.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ pppoe_form.address.id_for_label }}">{{ pppoe_form.address.label }} <span class="pppoe-optional">optional</span></label>
-              {{ pppoe_form.address }}
-              <p class="field-hint">Pre-filled from the MikroTik site location — change if needed.</p>
-              {% if pppoe_form.address.errors %}<div class="field-error">{{ pppoe_form.address.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ pppoe_form.house_number.id_for_label }}">{{ pppoe_form.house_number.label }} <span class="pppoe-optional">optional</span></label>
-              {{ pppoe_form.house_number }}
-              {% if pppoe_form.house_number.errors %}<div class="field-error">{{ pppoe_form.house_number.errors|striptags }}</div>{% endif %}
-            </div>
+          <div class="lead-stk-summary-item">
+            <dt>Account</dt>
+            <dd id="pppoe-activate-customer-account">—</dd>
           </div>
-        </section>
-
-        <section class="pppoe-section pppoe-section--credentials">
-          <div class="pppoe-section-head">
-            <span class="pppoe-section-icon pppoe-section-icon--connection" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 8a8 8 0 0 1 16 0v2h1a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h1V8zm2 2h12V8a6 6 0 0 0-12 0v2zm6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/></svg>
-            </span>
-            <div class="pppoe-section-head-text">
-              <h3 class="pppoe-section-title">PPPoE login</h3>
-              <p class="pppoe-section-desc">Dial-in username and password for the client CPE.</p>
-            </div>
-            <span class="pppoe-step-badge" aria-hidden="true">2</span>
-          </div>
-          <div class="pppoe-credential-panel">
-          <div class="pppoe-grid">
-            <div class="field field-span-2">
-              <label for="{{ pppoe_form.plan.id_for_label }}">{{ pppoe_form.plan.label }} <span class="pppoe-optional">optional</span></label>
-              <div class="pppoe-select">{{ pppoe_form.plan }}</div>
-              {% if pppoe_form.plan.errors %}<div class="field-error">{{ pppoe_form.plan.errors|striptags }}</div>{% endif %}
-              {% if not billing_plans_exist %}
-                <p class="field-hint">No active billing plans yet — assign one later.</p>
-              {% endif %}
-            </div>
-            <div class="field">
-              <label for="{{ pppoe_form.pppoe_username.id_for_label }}">{{ pppoe_form.pppoe_username.label }}</label>
-              {{ pppoe_form.pppoe_username }}
-              {% if pppoe_form.pppoe_username.errors %}<div class="field-error">{{ pppoe_form.pppoe_username.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <div class="pppoe-label-row">
-                <label for="{{ pppoe_form.pppoe_password.id_for_label }}">{{ pppoe_form.pppoe_password.label }}</label>
-                <button type="button" class="pppoe-mini-btn" data-generate-password="{{ pppoe_form.pppoe_password.id_for_label }}">Generate</button>
-              </div>
-              <div class="password-field">
-                {{ pppoe_form.pppoe_password }}
-                <button type="button" class="password-toggle" data-toggle-password="{{ pppoe_form.pppoe_password.id_for_label }}" aria-label="Show password">
-                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-                </button>
-              </div>
-              {% if pppoe_form.pppoe_password.errors %}<div class="field-error">{{ pppoe_form.pppoe_password.errors|striptags }}</div>{% endif %}
-            </div>
-          </div>
-          </div>
-        </section>
-
-        <section class="pppoe-section pppoe-section--credentials pppoe-section--remote">
-          <div class="pppoe-section-head">
-            <span class="pppoe-section-icon pppoe-section-icon--remote" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M4 6h16v10H4V6zm2 2v6h12V8H6zm8 9a1 1 0 1 0 0 2H8a1 1 0 1 0 0-2h6z"/></svg>
-            </span>
-            <div class="pppoe-section-head-text">
-              <h3 class="pppoe-section-title">Remote router access</h3>
-              <p class="pppoe-section-desc" id="pppoe-remote-desc">Pre-filled from the selected MikroTik's default client-router login — edit if this client uses different credentials.</p>
-            </div>
-            <span class="pppoe-step-badge" aria-hidden="true">3</span>
-            <span class="pppoe-status-badge pppoe-status-badge--prefill">Pre-filled</span>
-          </div>
-          <div class="pppoe-credential-panel">
-          <div class="pppoe-grid">
-            <div class="field">
-              <label for="{{ pppoe_form.cpe_username.id_for_label }}">{{ pppoe_form.cpe_username.label }}</label>
-              {{ pppoe_form.cpe_username }}
-              {% if pppoe_form.cpe_username.errors %}<div class="field-error">{{ pppoe_form.cpe_username.errors|striptags }}</div>{% endif %}
-            </div>
-            <div class="field">
-              <div class="pppoe-label-row">
-                <label for="{{ pppoe_form.cpe_password.id_for_label }}">{{ pppoe_form.cpe_password.label }}</label>
-                <button type="button" class="pppoe-mini-btn" data-generate-password="{{ pppoe_form.cpe_password.id_for_label }}">Generate</button>
-              </div>
-              <div class="password-field">
-                {{ pppoe_form.cpe_password }}
-                <button type="button" class="password-toggle" data-toggle-password="{{ pppoe_form.cpe_password.id_for_label }}" aria-label="Show router password">
-                  <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                  <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-                </button>
-              </div>
-              {% if pppoe_form.cpe_password.help_text %}<p class="field-hint">{{ pppoe_form.cpe_password.help_text }}</p>{% endif %}
-              {% if pppoe_form.cpe_password.errors %}<div class="field-error">{{ pppoe_form.cpe_password.errors|striptags }}</div>{% endif %}
-            </div>
-          </div>
-          </div>
-        </section>
+        </dl>
+        <div class="field">
+          <label for="pppoe-activate-date">Activate from</label>
+          <input
+            type="date"
+            id="pppoe-activate-date"
+            name="activation_date"
+            class="form-control"
+            value="{{ today_iso }}"
+            required
+          >
+          <p class="field-hint">Package period starts on this date.</p>
+        </div>
       </div>
-
       <footer class="pppoe-foot">
-        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary" data-pppoe-submit>
-          <span class="pppoe-foot-btn-label">Register client</span>
-        </button>
+        <button type="button" class="btn btn-ghost" data-close-activate-pppoe>Cancel</button>
+        <button type="submit" class="btn btn-primary">Activate account</button>
       </footer>
     </form>
   </div>
@@ -341,6 +255,7 @@
   var meta = document.querySelector("[data-clients-search-meta]");
   var summary = document.querySelector("[data-clients-search-summary]");
   var activeTab = dash ? (dash.getAttribute("data-active-tab") || "pppoe") : "pppoe";
+  var clientsView = "{% if clients_view %}{{ clients_view|escapejs }}{% endif %}";
   var routerFilter = "{% if clients_router_param %}{{ clients_router_param|escapejs }}{% endif %}";
   var debounceTimer = null;
   var fetchSeq = 0;
@@ -410,6 +325,8 @@
     var seq = ++fetchSeq;
     var url = new URL(window.location.href);
     url.searchParams.set("tab", activeTab);
+    if (clientsView) url.searchParams.set("view", clientsView);
+    else url.searchParams.delete("view");
     if (q) url.searchParams.set("q", q);
     else url.searchParams.delete("q");
     if (routerFilter) url.searchParams.set("router", routerFilter);
@@ -476,313 +393,9 @@
   }
 })();
 </script>
+{% include "core/includes/pppoe_register_scripts.html" %}
 <script>
 (function () {
-  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
-  var lastTrigger = null;
-
-  function focusables(modal) {
-    return Array.prototype.filter.call(modal.querySelectorAll(FOCUSABLE), function (el) {
-      return el.offsetParent !== null || el === document.activeElement;
-    });
-  }
-
-  function openModal(id, trigger) {
-    var modal = document.getElementById(id);
-    if (!modal) return;
-    closeAll();
-    lastTrigger = trigger || null;
-    modal.hidden = false;
-    modal.setAttribute("aria-hidden", "false");
-    document.body.classList.add("role-modal-open");
-    if (id === "pppoe-register-modal") {
-      cpePassEdited = false;
-      cpeUserEdited = false;
-      addressEdited = false;
-    }
-    ensureRegisterDefaults(modal);
-
-    var firstError = modal.querySelector(".field-error");
-    var target = firstError
-      ? firstError.parentNode.querySelector("input, select, textarea")
-      : modal.querySelector(".pppoe-body input, .pppoe-body select");
-    if (target) {
-      target.focus({ preventScroll: !!firstError });
-      if (firstError) firstError.scrollIntoView({ block: "center" });
-    }
-  }
-
-  function closeModal(modal) {
-    if (!modal || modal.hidden) return;
-    modal.hidden = true;
-    modal.setAttribute("aria-hidden", "true");
-    if (!document.querySelector(".client-action-modal:not([hidden])")) {
-      document.body.classList.remove("role-modal-open");
-    }
-    if (lastTrigger) {
-      lastTrigger.focus();
-      lastTrigger = null;
-    }
-  }
-
-  function closeAll() {
-    document.querySelectorAll(".client-action-modal").forEach(closeModal);
-  }
-
-  document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      openModal(btn.getAttribute("data-open-modal"), btn);
-    });
-  });
-
-  document.querySelectorAll("[data-close-client-modal]").forEach(function (el) {
-    el.addEventListener("click", function () {
-      closeModal(el.closest(".client-action-modal"));
-    });
-  });
-
-  document.addEventListener("keydown", function (e) {
-    var open = document.querySelector(".client-action-modal:not([hidden])");
-    if (!open) return;
-    if (e.key === "Escape") {
-      closeModal(open);
-      return;
-    }
-    if (e.key !== "Tab") return;
-    var items = focusables(open);
-    if (!items.length) return;
-    var first = items[0];
-    var last = items[items.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  });
-
-  var phoneInput = document.getElementById("{{ pppoe_form.phone.id_for_label|escapejs }}");
-  var userInput = document.getElementById("{{ pppoe_form.pppoe_username.id_for_label|escapejs }}");
-  var userEdited = false;
-  if (phoneInput && userInput) {
-    userEdited = !!(userInput.value && userInput.value !== (phoneInput.value || "").toUpperCase());
-    userInput.addEventListener("input", function () {
-      userEdited = true;
-    });
-    function syncUsernameFromPhone() {
-      if (userEdited) return;
-      userInput.value = (phoneInput.value || "").toUpperCase();
-    }
-    phoneInput.addEventListener("input", syncUsernameFromPhone);
-    syncUsernameFromPhone();
-  }
-
-  document.querySelectorAll(".pppoe-form input.text-upper, .pppoe-form textarea.text-upper").forEach(function (el) {
-    el.addEventListener("input", function () {
-      var start = el.selectionStart;
-      var end = el.selectionEnd;
-      var next = el.value.toUpperCase();
-      if (el.value !== next) {
-        el.value = next;
-        if (typeof start === "number") el.setSelectionRange(start, end);
-      }
-      if (phoneInput && userInput && el === phoneInput && !userEdited) {
-        userInput.value = next;
-      }
-    });
-  });
-
-  function randomPassword() {
-    var chars = "abcdefghjkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ";
-    var out = "";
-    var i;
-    if (window.crypto && window.crypto.getRandomValues) {
-      var buf = new Uint32Array(10);
-      window.crypto.getRandomValues(buf);
-      for (i = 0; i < buf.length; i++) out += chars.charAt(buf[i] % chars.length);
-    } else {
-      for (i = 0; i < 10; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return out;
-  }
-
-  var cpePassEdited = false;
-  var cpeUserEdited = false;
-  var addressEdited = false;
-  var pppoePassInput = document.getElementById("id_pppoe_password");
-  var cpePassInput = document.getElementById("id_pppoe_cpe_password");
-  var cpeUserInput = document.getElementById("id_pppoe_cpe_username");
-  var addressInput = document.getElementById("id_pppoe_address");
-  var routerSelect = document.getElementById("id_pppoe_router");
-  var routerCpeDefaults = {{ router_cpe_defaults_json|default:"{}"|safe }};
-  var remoteDesc = document.getElementById("pppoe-remote-desc");
-
-  function selectedRouterDefaults() {
-    if (!routerSelect || !routerSelect.value) return null;
-    return routerCpeDefaults[routerSelect.value] || null;
-  }
-
-  function routerHasDefaultPassword() {
-    var defs = selectedRouterDefaults();
-    return !!(defs && defs.has_password);
-  }
-
-  function updateRemoteDesc() {
-    if (!remoteDesc) return;
-    var defs = selectedRouterDefaults();
-    if (defs && defs.router_name) {
-      remoteDesc.textContent =
-        "Pre-filled from " + defs.router_name + "'s default client-router login — edit if this client uses different credentials.";
-    } else {
-      remoteDesc.textContent =
-        "Pre-filled from the selected MikroTik's default client-router login — edit if this client uses different credentials.";
-    }
-  }
-
-  function syncCpePasswordFromPppoe(force) {
-    if (!cpePassInput || !pppoePassInput) return;
-    if (!force && cpePassEdited) return;
-    if (routerHasDefaultPassword()) return;
-    if (pppoePassInput.value) cpePassInput.value = pppoePassInput.value;
-  }
-
-  function applyRouterCpeDefaults(force) {
-    if (!routerSelect) return;
-    if (routerSelect.options.length === 2 && !routerSelect.value) {
-      routerSelect.selectedIndex = 1;
-    }
-    var defs = selectedRouterDefaults();
-    if (!defs) {
-      updateRemoteDesc();
-      return;
-    }
-    if (cpeUserInput && (force || !cpeUserEdited)) {
-      cpeUserInput.value = defs.username || "admin";
-    }
-    if (cpePassInput && (force || !cpePassEdited)) {
-      if (defs.has_password && defs.password) {
-        cpePassInput.value = defs.password;
-      } else {
-        syncCpePasswordFromPppoe(true);
-      }
-    }
-    if (addressInput && defs.address && (force || !addressEdited)) {
-      addressInput.value = defs.address;
-    }
-    updateRemoteDesc();
-  }
-
-  function ensureRegisterDefaults(modal) {
-    if (!modal || modal.id !== "pppoe-register-modal") return;
-    if (modal.querySelector(".field-error")) return;
-    if (pppoePassInput && !pppoePassInput.value.trim()) {
-      pppoePassInput.value = randomPassword();
-    }
-    applyRouterCpeDefaults(true);
-    if (cpeUserInput && !cpeUserInput.value.trim()) {
-      cpeUserInput.value = "admin";
-    }
-    if (cpePassInput && !cpePassInput.value.trim()) {
-      syncCpePasswordFromPppoe(true);
-    }
-    if (phoneInput && userInput && !userEdited) {
-      userInput.value = (phoneInput.value || "").toUpperCase();
-    }
-  }
-
-  if (cpePassInput) {
-    cpePassInput.addEventListener("input", function () {
-      cpePassEdited = true;
-    });
-  }
-  if (cpeUserInput) {
-    cpeUserInput.addEventListener("input", function () {
-      cpeUserEdited = true;
-    });
-  }
-  if (addressInput) {
-    addressInput.addEventListener("input", function () {
-      addressEdited = true;
-    });
-  }
-  if (routerSelect) {
-    routerSelect.addEventListener("change", function () {
-      cpePassEdited = false;
-      cpeUserEdited = false;
-      addressEdited = false;
-      applyRouterCpeDefaults(true);
-    });
-    if (routerSelect.value) {
-      applyRouterCpeDefaults(true);
-    }
-  }
-  if (pppoePassInput) {
-    pppoePassInput.addEventListener("input", function () {
-      syncCpePasswordFromPppoe(false);
-    });
-  }
-
-  document.querySelectorAll("[data-generate-password]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var input = document.getElementById(btn.getAttribute("data-generate-password"));
-      if (!input) return;
-      var syncFrom = btn.getAttribute("data-sync-from");
-      if (syncFrom) {
-        var source = document.getElementById(syncFrom);
-        if (source && source.value) {
-          input.value = source.value;
-        } else {
-          input.value = randomPassword();
-        }
-      } else {
-        input.value = randomPassword();
-      }
-      if (input.id === "id_pppoe_password") {
-        syncCpePasswordFromPppoe(false);
-      } else if (input.id === "id_pppoe_cpe_password") {
-        cpePassEdited = true;
-      }
-      input.type = "text";
-      var toggle = input.parentNode.querySelector("[data-toggle-password]");
-      if (toggle) {
-        var eye = toggle.querySelector(".icon-eye");
-        var eyeOff = toggle.querySelector(".icon-eye-off");
-        if (eye && eyeOff) {
-          eye.hidden = true;
-          eyeOff.hidden = false;
-        }
-        toggle.setAttribute("aria-label", "Hide password");
-      }
-      input.focus();
-    });
-  });
-
-  document.querySelectorAll(".pppoe-form").forEach(function (form) {
-    form.addEventListener("submit", function () {
-      var submit = form.querySelector("[data-pppoe-submit]");
-      if (!submit || submit.disabled) return;
-      submit.textContent = "Saving…";
-      window.setTimeout(function () { submit.disabled = true; }, 0);
-    });
-  });
-
-  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
-      if (!input) return;
-      var show = input.type === "password";
-      input.type = show ? "text" : "password";
-      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
-      var eye = btn.querySelector(".icon-eye");
-      var eyeOff = btn.querySelector(".icon-eye-off");
-      if (eye && eyeOff) {
-        eye.hidden = show;
-        eyeOff.hidden = !show;
-      }
-    });
-  });
-
   window.__clientsBindSecrets = function (root) {
     (root || document).querySelectorAll(".clients-pppoe-secret").forEach(function (wrap) {
       var mask = wrap.querySelector("[data-secret-mask]");
@@ -808,10 +421,61 @@
     });
   };
   window.__clientsBindSecrets(document);
+})();
+</script>
+<script>
+(function () {
+  var modal = document.getElementById("pppoe-activate-modal");
+  var form = document.getElementById("pppoe-activate-form");
+  if (!modal || !form) return;
 
-  {% if open_client_modal %}
-  openModal("{{ open_client_modal|escapejs }}");
-  {% endif %}
+  var idInput = document.getElementById("pppoe-activate-customer-id");
+  var nameEl = document.getElementById("pppoe-activate-customer-name");
+  var accountEl = document.getElementById("pppoe-activate-customer-account");
+  var dateInput = document.getElementById("pppoe-activate-date");
+  var todayIso = "{{ today_iso|escapejs }}";
+
+  function openActivate(btn) {
+    if (idInput) idInput.value = btn.getAttribute("data-customer-id") || "";
+    if (nameEl) nameEl.textContent = btn.getAttribute("data-customer-name") || "—";
+    if (accountEl) accountEl.textContent = btn.getAttribute("data-customer-account") || "—";
+    if (dateInput && !dateInput.value) dateInput.value = todayIso;
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (dateInput) dateInput.focus();
+  }
+
+  function closeActivate() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  document.addEventListener("click", function (event) {
+    var btn = event.target.closest("[data-open-activate-pppoe]");
+    if (btn) {
+      event.preventDefault();
+      openActivate(btn);
+    }
+  });
+
+  modal.querySelectorAll("[data-close-activate-pppoe]").forEach(function (el) {
+    el.addEventListener("click", closeActivate);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.hidden) closeActivate();
+  });
+
+  form.addEventListener("submit", function () {
+    var submit = form.querySelector('button[type="submit"]');
+    if (!submit || submit.disabled) return;
+    submit.textContent = "Activating…";
+    window.setTimeout(function () { submit.disabled = true; }, 0);
+  });
 })();
 </script>
 {% if active_tab == 'pppoe' or active_tab == 'static' or active_tab == 'hotspot' %}

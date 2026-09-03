@@ -8,155 +8,270 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<section class="tech-install-page">
+  <header class="tech-install-head">
+    <div class="tech-install-head-copy">
+      <p class="tech-install-kicker">{{ page_kicker }}</p>
+      <h2 class="tech-install-title">Installations</h2>
+      <p class="tech-install-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="tech-install-head-actions">
+      <button type="button" class="btn btn-primary tech-install-register" data-open-modal="pppoe-register-modal">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+        Register PPPoE client
+      </button>
+    </div>
+  </header>
 
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Installations{% if tickets %} ({{ tickets|length }}){% endif %}</h2>
-      <p class="panel-sub">Open technician requests and tickets assigned to you.</p>
+  <div class="tech-install-stats" aria-label="Registration summary">
+    <div class="tech-install-stat">
+      <strong>{{ registered_count|default:0 }}</strong>
+      <span>Registered</span>
+    </div>
+    <div class="tech-install-stat is-open">
+      <strong>{{ inactive_count|default:0 }}</strong>
+      <span>Inactive / pending</span>
+    </div>
+    <div class="tech-install-stat is-assigned">
+      <strong>{{ active_count|default:0 }}</strong>
+      <span>Active</span>
     </div>
   </div>
 
-  {% if tickets %}
-    <div class="org-table-shell">
-      <table class="org-table org-table-leads">
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Location</th>
-            <th>ISP phone</th>
-            <th>ISP</th>
-            <th>Status</th>
-            <th>Assignment</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for ticket in tickets %}
-            <tr>
-              <td><span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span></td>
-              <td>
-                {% if ticket.location_lat and ticket.location_lng %}
-                  {% with maps_label=ticket.building_name|default:ticket.address %}
-                  <a
-                    class="lead-maps-link"
-                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <span class="lead-maps-label">
-                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+  <section class="tech-install-block" aria-labelledby="tech-my-clients-heading">
+    <div class="tech-install-block-head">
+      <h3 id="tech-my-clients-heading" class="tech-install-block-title">My registered clients</h3>
+      <p class="tech-install-block-sub">Subscribers you registered in this session account.</p>
+    </div>
+
+    {% if my_clients %}
+      <div class="tech-install-list">
+        {% for client in my_clients %}
+          <article class="tech-install-card is-registered">
+            <header class="tech-install-card-head">
+              <div class="tech-install-card-id">
+                <span class="tech-install-ticket">{{ client.account_number }}</span>
+                <strong class="tech-install-client">{{ client.full_name }}</strong>
+              </div>
+              <div class="tech-install-card-badges">
+                <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+              </div>
+            </header>
+
+            <div class="tech-install-card-body">
+              <div class="tech-install-meta">
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Phone</span>
+                  {% if client.phone %}
+                    <a class="tech-install-phone" href="tel:{{ client.phone }}">{{ client.phone }}</a>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">ISP</span>
+                  {% if client.organization %}
+                    <span class="tech-install-meta-value">{{ client.organization.name }}</span>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">MikroTik</span>
+                  {% if client.router %}
+                    <span class="tech-install-meta-value">{{ client.router.name }}</span>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                {% if client.plan %}
+                  <div class="tech-install-meta-item">
+                    <span class="tech-install-meta-label">Plan</span>
+                    <span class="tech-install-meta-value">{{ client.plan.name }}</span>
+                  </div>
+                {% endif %}
+                {% if client.address or client.house_number %}
+                  <div class="tech-install-meta-item">
+                    <span class="tech-install-meta-label">Location</span>
+                    <span class="tech-install-meta-value">
+                      {{ client.address }}{% if client.address and client.house_number %}, {% endif %}{{ client.house_number }}
                     </span>
-                    {% if ticket.address %}
-                      <small class="lead-location-line">{{ ticket.address }}</small>
-                    {% endif %}
-                  </a>
-                  {% endwith %}
-                {% elif ticket.address or ticket.building_name %}
-                  {{ ticket.building_name|default:ticket.address }}
-                {% else %}
-                  —
+                  </div>
                 {% endif %}
-              </td>
-              <td>
-                {% if ticket.assigned_technician_id == employee_profile.id %}
-                  {% if ticket.organization and ticket.organization.phone %}
-                    <a href="tel:{{ ticket.organization.phone }}">{{ ticket.organization.phone }}</a>
-                  {% else %}
-                    —
-                  {% endif %}
-                {% else %}
-                  <span class="lead-action-muted">Hidden until accepted</span>
-                {% endif %}
-              </td>
-              <td>
-                {% if ticket.assigned_technician_id == employee_profile.id %}
-                  {% if ticket.organization %}
-                    {{ ticket.organization.name }}
-                  {% else %}
-                    —
-                  {% endif %}
-                {% else %}
-                  <span class="lead-action-muted">Hidden until accepted</span>
-                {% endif %}
-              </td>
-              <td>
-                <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
-              </td>
-              <td>
-                {% if ticket.assigned_technician_id == employee_profile.id %}
-                  <span class="org-status org-status-active">Assigned to you</span>
-                {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
-                  <span class="lead-action-muted">Open pool</span>
-                {% elif ticket.assigned_technician %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Registered</span>
+                  <span class="tech-install-meta-value">{{ client.created_at|date:"M j, Y g:i A" }}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="tech-install-empty">
+        <strong>No registered clients yet</strong>
+        <p>{{ empty_text }}</p>
+        <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
+          Register PPPoE client
+        </button>
+      </div>
+    {% endif %}
+  </section>
+
+  {% if tickets %}
+  <section class="tech-install-block" aria-labelledby="tech-tickets-heading">
+    <div class="tech-install-block-head">
+      <h3 id="tech-tickets-heading" class="tech-install-block-title">Installation tickets</h3>
+      <p class="tech-install-block-sub">
+        Open pool and tickets assigned to you
+        · {{ open_pool_count|default:0 }} open
+        · {{ assigned_count|default:0 }} assigned
+      </p>
+    </div>
+
+    <div class="tech-install-list">
+      {% for ticket in tickets %}
+        <article class="tech-install-card{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'allocated_open' or not ticket.assigned_technician_id %} is-open{% endif %}">
+          <header class="tech-install-card-head">
+            <div class="tech-install-card-id">
+              <span class="tech-install-ticket">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+              {% if ticket.full_name %}
+                <strong class="tech-install-client">{{ ticket.full_name }}</strong>
+              {% endif %}
+            </div>
+            <div class="tech-install-card-badges">
+              <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+              {% if ticket.assigned_technician_id == employee_profile.id %}
+                <span class="tech-install-chip is-yours">Assigned to you</span>
+              {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+                <span class="tech-install-chip is-pool">Open pool</span>
+              {% elif ticket.assigned_technician %}
+                <span class="tech-install-chip">
                   {% if ticket.assigned_technician.user.get_full_name %}
                     {{ ticket.assigned_technician.user.get_full_name }}
                   {% else %}
                     {{ ticket.assigned_technician.user.username }}
                   {% endif %}
+                </span>
+              {% endif %}
+            </div>
+          </header>
+
+          <div class="tech-install-card-body">
+            <div class="tech-install-meta">
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">Location</span>
+                {% if ticket.location_lat and ticket.location_lng %}
+                  {% with maps_label=ticket.building_name|default:ticket.address %}
+                  <a
+                    class="tech-install-maps"
+                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 14.5 9 2.5 2.5 0 0 1 12 11.5z"/></svg>
+                    <span>
+                      <strong>
+                        {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                      </strong>
+                      {% if ticket.address and ticket.building_name %}
+                        <small>{{ ticket.address }}</small>
+                      {% endif %}
+                    </span>
+                  </a>
+                  {% endwith %}
+                {% elif ticket.address or ticket.building_name %}
+                  <span class="tech-install-meta-value">{{ ticket.building_name|default:ticket.address }}</span>
                 {% else %}
-                  —
+                  <span class="tech-install-meta-muted">No location set</span>
                 {% endif %}
-              </td>
-              <td>
-                <div class="org-actions lead-ticket-actions">
-                  {% if ticket.assigned_technician_id == employee_profile.id %}
-                    <button
-                      type="button"
-                      class="org-action-warn"
-                      data-tech-reason
-                      data-reason-mode="reject"
-                      data-reason-url="{% url 'roles:technician_installation_reject' ticket.id %}"
-                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
-                      title="Return this ticket to Allocated — open"
-                    >
-                      Reject ticket
-                    </button>
-                    <button
-                      type="button"
-                      class="org-action-danger"
-                      data-tech-reason
-                      data-reason-mode="decline"
-                      data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
-                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
-                      title="Hide this ticket for you"
-                    >
-                      Not interested
-                    </button>
-                  {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
-                    <form
-                      method="post"
-                      action="{% url 'roles:technician_installation_accept' ticket.id %}"
-                    >
-                      {% csrf_token %}
-                      <button type="submit" class="org-action-success" title="Accept this installation ticket">
-                        Accept
-                      </button>
-                    </form>
-                    <button
-                      type="button"
-                      class="org-action-danger"
-                      data-tech-reason
-                      data-reason-mode="decline"
-                      data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
-                      data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
-                      title="Hide this ticket for you"
-                    >
-                      Not interested
-                    </button>
+              </div>
+
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">ISP</span>
+                {% if ticket.assigned_technician_id == employee_profile.id %}
+                  {% if ticket.organization %}
+                    <span class="tech-install-meta-value">{{ ticket.organization.name }}</span>
                   {% else %}
-                    <span class="lead-action-muted">—</span>
+                    <span class="tech-install-meta-muted">—</span>
                   {% endif %}
+                {% else %}
+                  <span class="tech-install-meta-muted">Hidden until accepted</span>
+                {% endif %}
+              </div>
+
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">ISP phone</span>
+                {% if ticket.assigned_technician_id == employee_profile.id %}
+                  {% if ticket.organization and ticket.organization.phone %}
+                    <a class="tech-install-phone" href="tel:{{ ticket.organization.phone }}">{{ ticket.organization.phone }}</a>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                {% else %}
+                  <span class="tech-install-meta-muted">Hidden until accepted</span>
+                {% endif %}
+              </div>
+
+              {% if ticket.plan %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Package</span>
+                  <span class="tech-install-meta-value">{{ ticket.plan.name }}</span>
                 </div>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+              {% endif %}
+            </div>
+          </div>
+
+          <footer class="tech-install-card-actions">
+            {% if ticket.assigned_technician_id == employee_profile.id %}
+              <button
+                type="button"
+                class="tech-install-btn is-warn"
+                data-tech-reason
+                data-reason-mode="reject"
+                data-reason-url="{% url 'roles:technician_installation_reject' ticket.id %}"
+                data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                title="Return this ticket to Allocated — open"
+              >
+                Reject ticket
+              </button>
+              <button
+                type="button"
+                class="tech-install-btn is-danger"
+                data-tech-reason
+                data-reason-mode="decline"
+                data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
+                data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                title="Hide this ticket for you"
+              >
+                Not interested
+              </button>
+            {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+              <form method="post" action="{% url 'roles:technician_installation_accept' ticket.id %}">
+                {% csrf_token %}
+                <button type="submit" class="tech-install-btn is-success" title="Accept this installation ticket">
+                  Accept ticket
+                </button>
+              </form>
+              <button
+                type="button"
+                class="tech-install-btn is-danger"
+                data-tech-reason
+                data-reason-mode="decline"
+                data-reason-url="{% url 'roles:technician_installation_not_interested' ticket.id %}"
+                data-ticket="{{ ticket.sales_ticket_number|default:ticket.account_number }}"
+                title="Hide this ticket for you"
+              >
+                Not interested
+              </button>
+            {% else %}
+              <span class="tech-install-meta-muted">Taken by another technician</span>
+            {% endif %}
+          </footer>
+        </article>
+      {% endfor %}
     </div>
-  {% else %}
-    <p class="empty">{{ empty_text }}</p>
+  </section>
   {% endif %}
 </section>
 
@@ -399,4 +514,9 @@
   });
 })();
 </script>
+
+{% if pppoe_form %}
+  {% include "core/includes/pppoe_register_modal.html" %}
+  {% include "core/includes/pppoe_register_scripts.html" %}
+{% endif %}
 {% endblock %}

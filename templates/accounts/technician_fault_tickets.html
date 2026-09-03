@@ -1,0 +1,105 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="tech-install-page tech-fault-page">
+  <header class="tech-install-head">
+    <div class="tech-install-head-copy">
+      <p class="tech-install-kicker">{{ page_kicker }}</p>
+      <h2 class="tech-install-title">Fault tickets</h2>
+      <p class="tech-install-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="tech-install-head-actions">
+      <a class="btn btn-ghost tech-fault-back" href="{% url 'roles:technician' %}">
+        ← Dashboard
+      </a>
+    </div>
+  </header>
+
+  <div class="tech-install-stats" aria-label="Fault ticket summary">
+    <div class="tech-install-stat">
+      <strong>{{ tickets|length }}</strong>
+      <span>Total</span>
+    </div>
+    <div class="tech-install-stat is-assigned">
+      <strong>{{ assigned_count|default:0 }}</strong>
+      <span>Assigned to you</span>
+    </div>
+    <div class="tech-install-stat is-open">
+      <strong>{{ open_count|default:0 }}</strong>
+      <span>Open</span>
+    </div>
+  </div>
+
+  {% if tickets %}
+    <div class="tech-install-list">
+      {% for ticket in tickets %}
+        <article class="tech-install-card{% if ticket.assigned_to_you %} is-mine{% elif ticket.is_open %} is-open{% endif %}">
+          <header class="tech-install-card-head">
+            <div class="tech-install-card-id">
+              <span class="tech-install-ticket">{{ ticket.reference }}</span>
+              {% if ticket.client_name %}
+                <strong class="tech-install-client">{{ ticket.client_name }}</strong>
+              {% endif %}
+            </div>
+            <div class="tech-install-card-badges">
+              {% if ticket.status_label %}
+                <span class="org-status">{{ ticket.status_label }}</span>
+              {% endif %}
+              {% if ticket.assigned_to_you %}
+                <span class="tech-install-chip is-yours">Assigned to you</span>
+              {% elif ticket.is_open %}
+                <span class="tech-install-chip is-pool">Open</span>
+              {% endif %}
+            </div>
+          </header>
+
+          <div class="tech-install-card-body">
+            <div class="tech-install-meta">
+              {% if ticket.issue %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Issue</span>
+                  <span class="tech-install-meta-value">{{ ticket.issue }}</span>
+                </div>
+              {% endif %}
+              {% if ticket.location %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Location</span>
+                  <span class="tech-install-meta-value">{{ ticket.location }}</span>
+                </div>
+              {% endif %}
+              {% if ticket.priority %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Priority</span>
+                  <span class="tech-install-meta-value">{{ ticket.priority }}</span>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="tech-install-empty tech-fault-empty">
+      <span class="tech-fault-empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M12 8v5" stroke-linecap="round"/>
+          <circle cx="12" cy="16.2" r="0.9" fill="currentColor" stroke="none"/>
+          <path d="M10.2 4.8 3.6 16.8A2 2 0 0 0 5.4 19.8h13.2a2 2 0 0 0 1.8-3L13.8 4.8a2 2 0 0 0-3.6 0Z" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <strong>No fault tickets</strong>
+      <p>{{ empty_text }}</p>
+      <a class="btn btn-ghost" href="{% url 'roles:technician_installations' %}">
+        View installations
+      </a>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

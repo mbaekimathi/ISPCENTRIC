@@ -778,6 +778,184 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Your account is not linked to an organization.")
 
+    def test_technician_installations_register_selects_isp_then_mikrotik(self):
+        from unittest.mock import patch
+
+        from core.models import MikroTikRouter
+
+        tech_user = User.objects.create_user("tech-install", password="pass123")
+        tech = Employee.objects.create(
+            user=tech_user,
+            organization=None,
+            login_code="556688",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        owner_a = User.objects.create_user("isp-a-owner", password="pass123")
+        owner_b = User.objects.create_user("isp-b-owner", password="pass123")
+        org_a = Organization.objects.create(
+            name="Alpha ISP",
+            owner=owner_a,
+            join_code="111222",
+        )
+        org_b = Organization.objects.create(
+            name="Beta ISP",
+            owner=owner_b,
+            join_code="333444",
+        )
+        router_a = MikroTikRouter.objects.create(
+            organization=org_a,
+            name="Alpha NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.20.0.1",
+            username="admin",
+            password="secret",
+        )
+        MikroTikRouter.objects.create(
+            organization=org_b,
+            name="Beta NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.20.0.2",
+            username="admin",
+            password="secret",
+        )
+
+        self.client.force_login(tech_user)
+        page = self.client.get(reverse("roles:technician_installations"))
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "id_pppoe_organization")
+        self.assertContains(page, "Alpha ISP")
+        self.assertContains(page, "Beta ISP")
+        self.assertContains(page, "routersByOrg")
+        self.assertContains(page, "Alpha NAS")
+
+        started = []
+
+        class FakeThread:
+            def __init__(self, target=None, daemon=None):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                started.append(self)
+
+        with (
+            patch("accounts.role_dashboards.threading.Thread", FakeThread),
+            patch(
+                "accounts.role_dashboards.provision_customer_pppoe",
+                return_value={"ok": True},
+            ),
+        ):
+            response = self.client.post(
+                reverse("roles:technician_installations"),
+                {
+                    "action": "register_pppoe",
+                    "organization": str(org_a.pk),
+                    "full_name": "field client",
+                    "phone": "0712556677",
+                    "email": "",
+                    "router": str(router_a.pk),
+                    "address": "",
+                    "house_number": "",
+                    "plan": "",
+                    "activate_account": "0",
+                    "activation_date": "",
+                    "pppoe_username": "",
+                    "pppoe_password": "pass1234",
+                    "cpe_username": "admin",
+                    "cpe_password": "",
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        customer = Customer.objects.get(phone="0712556677")
+        self.assertEqual(customer.organization_id, org_a.pk)
+        self.assertEqual(customer.router_id, router_a.pk)
+        self.assertEqual(customer.assigned_technician_id, tech.pk)
+        self.assertEqual(customer.registered_by_id, tech_user.pk)
+        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(len(started), 1)
+
+        listed = self.client.get(reverse("roles:technician_installations"))
+        self.assertEqual(listed.status_code, 200)
+        self.assertContains(listed, "My registered clients")
+        self.assertContains(listed, "FIELD CLIENT")
+        self.assertContains(listed, customer.account_number)
+        self.assertContains(listed, "Inactive")
+        self.assertContains(listed, "Alpha ISP")
+        self.assertContains(listed, "Alpha NAS")
+
+    def test_technician_tickets_pending_and_connected(self):
+        from core.models import MikroTikRouter
+
+        tech_user = User.objects.create_user("tech-tickets", password="pass123")
+        tech = Employee.objects.create(
+            user=tech_user,
+            organization=None,
+            login_code="556699",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        owner = User.objects.create_user("isp-tickets-owner", password="pass123")
+        org = Organization.objects.create(
+            name="Tickets ISP",
+            owner=owner,
+            join_code="555666",
+        )
+        router = MikroTikRouter.objects.create(
+            organization=org,
+            name="Tickets NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="10.30.0.1",
+            username="admin",
+            password="secret",
+        )
+        pending = Customer.objects.create(
+            organization=org,
+            full_name="Pending Client",
+            phone="0712000001",
+            account_number="TECH-PEND-1",
+            router=router,
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.INACTIVE,
+            registered_by=tech_user,
+            assigned_technician=tech,
+        )
+        active = Customer.objects.create(
+            organization=org,
+            full_name="Active Client",
+            phone="0712000002",
+            account_number="TECH-ACT-1",
+            router=router,
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            registered_by=tech_user,
+            assigned_technician=tech,
+        )
+
+        self.client.force_login(tech_user)
+
+        dash = self.client.get(reverse("roles:technician"))
+        self.assertEqual(dash.status_code, 200)
+        self.assertContains(dash, "Tickets")
+        self.assertContains(dash, reverse("roles:technician_tickets"))
+
+        pending_page = self.client.get(reverse("roles:technician_tickets"))
+        self.assertEqual(pending_page.status_code, 200)
+        self.assertContains(pending_page, "Pending activation")
+        self.assertContains(pending_page, "Pending Client")
+        self.assertContains(pending_page, pending.account_number)
+        self.assertNotContains(pending_page, "Active Client")
+        self.assertContains(pending_page, reverse("roles:technician_tickets_connected"))
+
+        connected_page = self.client.get(reverse("roles:technician_tickets_connected"))
+        self.assertEqual(connected_page.status_code, 200)
+        self.assertContains(connected_page, "My connected tickets")
+        self.assertContains(connected_page, "Pending Client")
+        self.assertContains(connected_page, "Active Client")
+        self.assertContains(connected_page, active.account_number)
+        self.assertContains(connected_page, "Active")
+        self.assertContains(connected_page, "Pending activation")
+
 
 class EmployeeAdminOrgOptionalTests(TestCase):
     def setUp(self):

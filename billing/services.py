@@ -604,11 +604,11 @@ def customer_pppoe_secret_disabled(customer, *, today: date | None = None) -> bo
     """
     Whether the NAS /ppp/secret should be disabled.
 
-    Account suspend/inactive → disable secret (cannot dial).
-    Expired package alone → keep secret enabled but use the blocked PPP profile
-    (see provision_customer_pppoe) so surfing stops at the NAS.
+    Suspended → disable secret (cannot dial).
+    Inactive / expired / unpaid → keep secret enabled so the CPE can dial,
+    but provision onto the blocked PPP profile so surfing is denied at the NAS.
     """
-    if getattr(customer, "status", None) != Customer.Status.ACTIVE:
+    if getattr(customer, "status", None) == Customer.Status.SUSPENDED:
         return True
     return False
 

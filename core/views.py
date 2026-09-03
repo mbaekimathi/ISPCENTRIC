@@ -25,6 +25,7 @@ from django.db.models import Count, Q, Sum
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
@@ -62,6 +63,7 @@ from billing.forms import (
 )
 from billing.models import AccessVoucher, BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from billing.services import (
+    compute_package_end,
     customer_needs_nas_provision,
     customer_package_is_paused,
     customer_portal_access_context,
@@ -258,6 +260,12 @@ CLIENT_SIDEBARS = {
                 "label": "Register PPPoE client",
                 "action": "open_modal",
                 "modal": "pppoe-register-modal",
+            },
+            {
+                "key": "pending_activation",
+                "label": "Pending activation",
+                "url_name": "core:my_clients",
+                "query": "tab=pppoe&view=pending",
             },
             {
                 "key": "general_usage",
@@ -841,7 +849,12 @@ def build_client_nav(active_nav: str, *, referral_enabled: bool = False) -> dict
         if item.get("key") == "referral" and not referral_enabled:
             continue
         row = dict(item)
-        if row.get("url_name") and row.get("tab") and not row.get("href"):
+        if row.get("url_name") and row.get("query") and not row.get("href"):
+            try:
+                row["href"] = f"{reverse(row['url_name'])}?{row['query']}"
+            except Exception:  # noqa: BLE001 — keep plain url_name fallback
+                pass
+        elif row.get("url_name") and row.get("tab") and not row.get("href"):
             try:
                 row["href"] = f"{reverse(row['url_name'])}?tab={row['tab']}"
             except Exception:  # noqa: BLE001 — keep plain url_name fallback
@@ -1107,21 +1120,77 @@ def resolve_client_usage_router(customer, org=None):
         return router
     if customer.service_type != Customer.ServiceType.HOTSPOT:
         return None
-    mac = (customer.hotspot_mac or "").strip()
-    if not mac:
-        return None
     organization = org or getattr(customer, "organization", None)
-    found = find_hotspot_router_for_mac(organization, mac)
-    if found is not None and found.account_status != MikroTikRouter.AccountStatus.SUSPENDED:
-        return found
-    return (
+    macs: list[str] = []
+    primary = (customer.hotspot_mac or "").strip()
+    if primary:
+        macs.append(primary)
+    try:
+        from billing.devices import hotspot_macs_for_customer
+
+        for mac in hotspot_macs_for_customer(customer):
+            if mac and mac not in macs:
+                macs.append(mac)
+    except Exception:
+        pass
+    for mac in macs:
+        found = find_hotspot_router_for_mac(organization, mac)
+        if found is not None and found.account_status != MikroTikRouter.AccountStatus.SUSPENDED:
+            return found
+    # Only fall back when the org has a single active router — guessing among
+    # many NASes silently probes the wrong box and records empty usage.
+    active = list(
         MikroTikRouter.objects.filter(
             organization=organization,
             account_status=MikroTikRouter.AccountStatus.ACTIVE,
-        )
-        .order_by("id")
-        .first()
+        ).order_by("id")[:2]
     )
+    if len(active) == 1:
+        return active[0]
+    return None
+
+
+def _hotspot_macs_for_usage(customer) -> list[str]:
+    """MACs to probe for Hotspot live usage (primary first)."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _add(raw: str) -> None:
+        compact = "".join(ch for ch in (raw or "") if ch.isalnum()).upper()
+        if len(compact) != 12 or compact in seen:
+            return
+        seen.add(compact)
+        out.append(raw.strip())
+
+    _add(getattr(customer, "hotspot_mac", "") or "")
+    try:
+        from billing.devices import hotspot_macs_for_customer
+
+        for mac in hotspot_macs_for_customer(customer):
+            _add(mac)
+    except Exception:
+        pass
+    return out
+
+
+def _usage_bytes_label(num: int) -> str:
+    n = max(0, int(num or 0))
+    if n >= 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024 * 1024):.2f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _usage_bps_label(bps: int | float | None) -> str:
+    n = max(0, int(bps or 0))
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.2f} Mbps"
+    if n >= 1000:
+        return f"{n / 1000:.1f} Kbps"
+    return f"{n} bps"
 
 
 def build_client_detail_nav(customer, *, can_access_wifi: bool = False) -> list[dict]:
@@ -8919,20 +8988,108 @@ def my_clients(request):
     org = resolve_organization(request.user, request)
 
     open_modal = ""
-    pppoe_form = PppoeClientRegisterForm(organization=org)
+    pppoe_form = PppoeClientRegisterForm(organization=org, default_activate=True)
+    clients_view = (request.GET.get("view") or "").strip().lower()
+
+    def _pppoe_pending_redirect():
+        return redirect(f"{reverse('core:my_clients')}?tab=pppoe&view=pending")
 
     if request.method == "POST":
         action = (request.POST.get("action") or "").strip()
+        if action == "activate_pppoe":
+            if not org:
+                messages.error(request, "No organization is linked to this workspace.")
+                return redirect("core:my_clients")
+            raw_id = (request.POST.get("customer_id") or "").strip()
+            raw_date = (request.POST.get("activation_date") or "").strip()
+            if not raw_id.isdigit():
+                messages.error(request, "Choose a client to activate.")
+                return _pppoe_pending_redirect()
+            customer = (
+                Customer.objects.select_related("plan", "router", "organization")
+                .filter(
+                    pk=int(raw_id),
+                    organization=org,
+                    service_type=Customer.ServiceType.PPPOE,
+                    status=Customer.Status.INACTIVE,
+                )
+                .first()
+            )
+            if customer is None:
+                messages.error(request, "That pending PPPoE client was not found.")
+                return _pppoe_pending_redirect()
+            try:
+                from datetime import date as date_cls
+
+                activation_day = (
+                    date_cls.fromisoformat(raw_date)
+                    if raw_date
+                    else timezone.localdate()
+                )
+            except ValueError:
+                messages.error(request, "Choose a valid activation date.")
+                return _pppoe_pending_redirect()
+            start = PppoeClientRegisterForm._activation_datetime(activation_day)
+            customer.status = Customer.Status.ACTIVE
+            customer.package_start = start
+            if customer.plan_id:
+                customer.package_end = compute_package_end(start, customer.plan)
+            else:
+                customer.package_end = None
+            customer.save(
+                update_fields=[
+                    "status",
+                    "package_start",
+                    "package_end",
+                ]
+            )
+            customer_pk = customer.pk
+            full_name = customer.full_name
+            account_number = customer.account_number
+
+            def _bg_provision(pk: int = customer_pk) -> None:
+                from django.db import connection
+
+                try:
+                    cust = Customer.objects.select_related(
+                        "plan", "router", "organization"
+                    ).get(pk=pk)
+                    provision_customer_pppoe(cust, ensure_stack=False)
+                except Exception:
+                    pass
+                finally:
+                    connection.close()
+
+            threading.Thread(target=_bg_provision, daemon=True).start()
+            messages.success(
+                request,
+                (
+                    f"PPPoE client “{full_name}” ({account_number}) activated "
+                    f"from {activation_day.isoformat()}. "
+                    "Enabling the MikroTik login in the background."
+                ),
+            )
+            remaining = Customer.objects.filter(
+                organization=org,
+                service_type=Customer.ServiceType.PPPOE,
+                status=Customer.Status.INACTIVE,
+            ).exists()
+            if remaining:
+                return _pppoe_pending_redirect()
+            return redirect(f"{reverse('core:my_clients')}?tab=pppoe")
         if action == "register_pppoe":
             if not org:
                 messages.error(request, "No organization is linked to this workspace.")
                 return redirect("core:my_clients")
-            pppoe_form = PppoeClientRegisterForm(request.POST, organization=org)
+            pppoe_form = PppoeClientRegisterForm(
+                request.POST, organization=org, default_activate=True
+            )
             if pppoe_form.is_valid():
                 customer = pppoe_form.save()
                 customer_pk = customer.pk
                 account_number = customer.account_number
                 full_name = customer.full_name
+                activated = bool(pppoe_form.cleaned_data.get("activate_account"))
 
                 def _bg_provision(pk: int = customer_pk) -> None:
                     from django.db import connection
@@ -8949,18 +9106,29 @@ def my_clients(request):
                         connection.close()
 
                 threading.Thread(target=_bg_provision, daemon=True).start()
-                messages.success(
-                    request,
-                    (
-                        f"PPPoE client “{full_name}” registered "
-                        f"({account_number}). "
-                        "Installing the login on MikroTik in the background — "
-                        "the CPE can dial once the push finishes."
-                    ),
-                )
+                if activated:
+                    messages.success(
+                        request,
+                        (
+                            f"PPPoE client “{full_name}” registered "
+                            f"({account_number}). "
+                            "Installing the login on MikroTik in the background — "
+                            "the CPE can dial once the push finishes."
+                        ),
+                    )
+                else:
+                    messages.success(
+                        request,
+                        (
+                            f"PPPoE client “{full_name}” registered "
+                            f"({account_number}) as inactive. "
+                            "The CPE can dial in, but surfing stays blocked until activation."
+                        ),
+                    )
                 return redirect(f"{reverse('core:my_clients')}?tab=pppoe")
             open_modal = "pppoe-register-modal"
             tab = "pppoe"
+            clients_view = ""
         else:
             tab = (request.GET.get("tab") or "pppoe").strip().lower()
     else:
@@ -8969,6 +9137,7 @@ def my_clients(request):
     valid_tabs = {"pppoe", "static", "hotspot"}
     if tab not in valid_tabs:
         tab = "pppoe"
+    pending_view = tab == "pppoe" and clients_view == "pending"
 
     base_qs = Customer.objects.filter(organization=org) if org else Customer.objects.none()
     counts = (
@@ -8981,6 +9150,14 @@ def my_clients(request):
     pppoe_count = count_map.get(Customer.ServiceType.PPPOE, 0)
     static_count = count_map.get(Customer.ServiceType.STATIC, 0)
     hotspot_count = count_map.get(Customer.ServiceType.HOTSPOT, 0)
+    pending_activation_count = (
+        base_qs.filter(
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.INACTIVE,
+        ).count()
+        if org
+        else 0
+    )
 
     service_type = {
         "pppoe": Customer.ServiceType.PPPOE,
@@ -9032,6 +9209,8 @@ def my_clients(request):
         .select_related("plan", "router")
         .order_by("-created_at")
     )
+    if pending_view:
+        tab_qs = tab_qs.filter(status=Customer.Status.INACTIVE)
     if clients_router_param == "none":
         tab_qs = tab_qs.filter(router__isnull=True)
     elif clients_router_id:
@@ -9057,16 +9236,27 @@ def my_clients(request):
             pppoe_initial["router"] = clients_router_id
         elif len(client_routers) == 1:
             pppoe_initial["router"] = client_routers[0].pk
-        pppoe_form = PppoeClientRegisterForm(organization=org, initial=pppoe_initial)
+        pppoe_form = PppoeClientRegisterForm(
+            organization=org, initial=pppoe_initial, default_activate=True
+        )
 
     ctx = client_page_context(
         request,
         active_nav="clients",
-        sidebar_active=f"clients_{tab}",
+        sidebar_active=(
+            "pending_activation" if pending_view else f"clients_{tab}"
+        ),
         page_title="My clients",
         page_kicker="Subscribers",
-        page_subtitle="Browse subscribers by connection type and open a client for details.",
+        page_subtitle=(
+            "Activate PPPoE accounts registered by technicians."
+            if pending_view
+            else "Browse subscribers by connection type and open a client for details."
+        ),
         active_tab=tab,
+        clients_view="pending" if pending_view else "",
+        pending_view=pending_view,
+        pending_activation_count=pending_activation_count,
         pppoe_customers=pppoe_customers,
         static_customers=static_customers,
         hotspot_customers=hotspot_customers,
@@ -9082,6 +9272,7 @@ def my_clients(request):
         pppoe_form=pppoe_form,
         router_cpe_defaults_json=json.dumps(router_cpe_defaults),
         open_client_modal=open_modal,
+        today_iso=timezone.localdate().isoformat(),
         billing_plans_exist=bool(
             org
             and BillingPlan.objects.filter(organization=org, is_active=True).exists()
@@ -9091,11 +9282,16 @@ def my_clients(request):
         "clients_pppoe": pppoe_count,
         "clients_static": static_count,
         "clients_hotspot": hotspot_count,
+        "pending_activation": pending_activation_count,
     }
     base_path = reverse("core:my_clients")
     for item in ctx["client_nav_main"]:
         key = item.get("key")
         if key not in tab_badges:
+            continue
+        if key == "pending_activation":
+            item["href"] = f"{base_path}?tab=pppoe&view=pending"
+            item["badge"] = tab_badges[key]
             continue
         query_params = {"tab": key.replace("clients_", "")}
         if clients_query:
@@ -9993,12 +10189,9 @@ def client_router_login_start(request, customer_id: int):
     if not probe.get("ok"):
         failure_class = _cpe_router_failure_class(probe, nas_ok=True)
         detail = probe.get("hint") or probe.get("error") or ""
-        needs_password = not (customer.cpe_password or "").strip()
-        # When web is blocked and we have no password, surface that as a next action.
-        if failure_class in {"wan_mgmt_blocked", "web_blocked"} and needs_password:
-            show_password = True
-        else:
-            show_password = needs_password and failure_class != "offline"
+        # CPE online but www/API failed — always offer password entry/correction.
+        # A wrong saved admin password often surfaces as "blocked" or "unreachable".
+        show_password = failure_class not in {"nas_down", "offline"}
         guidance = _cpe_router_guidance(
             failure_class=failure_class,
             access_mode=mode,
@@ -10007,7 +10200,7 @@ def client_router_login_start(request, customer_id: int):
             via_tunnel=via_tunnel,
             detail=detail,
         )
-        if show_password and failure_class not in {"nas_down", "offline"}:
+        if show_password:
             guidance = guidance + _cpe_router_guidance(failure_class="needs_password")
         return JsonResponse(
             {
@@ -10076,47 +10269,64 @@ def client_router_login_start(request, customer_id: int):
 
     working_user = (login.get("cpe_username") or "").strip()
     working_pass = login.get("cpe_password")
-    # Only persist passwords the operator entered (POST) or that were already saved —
+    authenticated = bool(login.get("authenticated"))
+    # Only persist passwords the operator entered (POST) or that were already empty —
     # never store guessed factory defaults from auto-login.
     password_from_operator = request.method == "POST" and bool(
         (request.POST.get("cpe_password") or "").strip()
     )
     if (
-        login.get("authenticated")
+        authenticated
         and working_pass
         and not login.get("support_user")
         and password_from_operator
-        and not (customer.cpe_password or "").strip()
     ):
-        customer.cpe_password = working_pass
-        update_fields = ["cpe_password"]
+        # Operator explicitly entered the password — keep it as the saved CPE admin login.
+        update_fields: list[str] = []
+        if working_pass != (customer.cpe_password or ""):
+            customer.cpe_password = working_pass
+            update_fields.append("cpe_password")
         if working_user and working_user != (customer.cpe_username or ""):
             customer.cpe_username = working_user
             update_fields.append("cpe_username")
-        customer.save(update_fields=update_fields)
+        if update_fields:
+            customer.save(update_fields=update_fields)
+
+    login_error = (login.get("error") or "").strip()
+    # Web UI is open but auto-sign-in failed — ask for the admin password so the
+    # operator can correct a wrong/outdated saved credential and reconnect.
+    needs_password = (not authenticated) and (
+        not (customer.cpe_password or "").strip()
+        or bool(login_error)
+        or password_from_operator
+    )
+    guidance = []
+    if needs_password:
+        guidance = _cpe_router_guidance(failure_class="needs_password")
 
     steps = list(probe.get("steps") or []) + list(login.get("steps") or [])
     return JsonResponse(
         {
             **base_meta,
             "ok": True,
-            "failure_class": "ok",
+            "failure_class": "ok" if authenticated else "needs_password",
             "proxy_url": proxy_url,
             "cpe_host": probe.get("cpe_host") or "",
             "port": int(probe.get("port") or 80),
             "ping_ok": bool(probe.get("ping_ok")),
             "api_ok": bool(probe.get("api_ok")),
             "www_enabled": bool(probe.get("www_enabled")),
-            "authenticated": bool(login.get("authenticated")),
+            "authenticated": authenticated,
             "vendor": login.get("vendor") or "",
             "session_active": True,
             "steps": steps,
-            "guidance": [],
+            "guidance": guidance,
             "cpe_username": working_user
             or (customer.cpe_username or "").strip()
             or "admin",
             "has_password": bool((customer.cpe_password or working_pass or "").strip()),
-            "login_error": login.get("error") or "",
+            "needs_password": needs_password,
+            "login_error": login_error,
         }
     )
 
@@ -10541,20 +10751,36 @@ def client_cpe_wifi(request, customer_id: int):
             wifi_mode = (live.get("wifi_mode") or "").strip() or wifi_mode
             error = ""
             hint = ""
+            # Persist only credentials that actually authenticated — never
+            # overwrite a stored password with a failed guess.
+            working_user = (live.get("cpe_username") or "").strip()
+            working_pass = live.get("cpe_password")
+            cred_fields: list[str] = []
+            if working_user and working_user != (customer.cpe_username or ""):
+                customer.cpe_username = working_user
+                cred_fields.append("cpe_username")
+            if (
+                working_pass is not None
+                and working_pass != ""
+                and working_pass != (customer.cpe_password or "")
+            ):
+                customer.cpe_password = working_pass
+                cred_fields.append("cpe_password")
+            if cred_fields:
+                customer.save(update_fields=cred_fields)
         else:
             error = error or live.get("error") or ""
             hint = hint or live.get("hint") or ""
-            working_user = (live.get("cpe_username") or "").strip()
-            working_pass = live.get("cpe_password")
-            update_fields: list[str] = []
-            if working_user and working_user != (customer.cpe_username or ""):
-                customer.cpe_username = working_user
-                update_fields.append("cpe_username")
-            if working_pass is not None and working_pass != (customer.cpe_password or ""):
-                customer.cpe_password = working_pass
-                update_fields.append("cpe_password")
-            if update_fields:
-                customer.save(update_fields=update_fields)
+            err_l = f"{error} {hint}".lower()
+            needs_password = needs_password or (
+                not (customer.cpe_password or "").strip()
+                or "password" in err_l
+                or "login" in err_l
+                or "auth" in err_l
+                or "invalid" in err_l
+                or "denied" in err_l
+                or "rejected" in err_l
+            )
 
     if auth_ok:
         update_fields = []
@@ -10566,6 +10792,10 @@ def client_cpe_wifi(request, customer_id: int):
             update_fields.append("cpe_wifi_password")
         if update_fields:
             customer.save(update_fields=update_fields)
+    elif not needs_password and session_active and not firewall_blocked:
+        # Reachable CPE but neither web nor API could authenticate — ask for
+        # the router admin password so remote access can use the correct one.
+        needs_password = not (customer.cpe_password or "").strip() or bool(error)
 
     payload = {
         "ok": True,
@@ -10588,7 +10818,7 @@ def client_cpe_wifi(request, customer_id: int):
         "error": error if not auth_ok else "",
         "firewall_blocked": firewall_blocked,
         "prep_steps": prep_steps,
-        "needs_password": needs_password and not auth_ok,
+        "needs_password": bool(needs_password) and not auth_ok,
         "cpe_username": (customer.cpe_username or "").strip() or "admin",
     }
     cache.set(cache_key, payload, 12 if auth_ok else 5)
@@ -10940,7 +11170,7 @@ def client_usage(request, customer_id: int):
                 "error": "This client has no PPPoE username.",
             }
         )
-    if is_hotspot and not (customer.hotspot_mac or "").strip():
+    if is_hotspot and not _hotspot_macs_for_usage(customer):
         return JsonResponse(
             {
                 "ok": False,
@@ -10976,23 +11206,75 @@ def client_usage(request, customer_id: int):
             return JsonResponse(cached)
 
     if is_hotspot:
-        payload = fetch_customer_hotspot_usage(
-            router.host,
-            router.username,
-            router.password or "",
-            hotspot_mac=customer.hotspot_mac,
-        )
-        connected = bool(
+        macs = _hotspot_macs_for_usage(customer)
+        best = None
+        best_total = -1
+        connected_count = 0
+        active_count = 0
+        peak_down = 0
+        peak_up = 0
+        for mac in macs:
+            candidate = fetch_customer_hotspot_usage(
+                router.host,
+                router.username,
+                router.password or "",
+                hotspot_mac=mac,
+            )
+            if not candidate.get("ok"):
+                if best is None:
+                    best = candidate
+                continue
+            connected = bool(
+                candidate.get("connected") or candidate.get("session_active")
+            )
+            if connected:
+                connected_count += 1
+            if candidate.get("session_active"):
+                active_count += 1
+                bi = int(candidate.get("bytes_in") or 0)
+                bo = int(candidate.get("bytes_out") or 0)
+                peak_down = max(peak_down, int(candidate.get("download_bps") or 0))
+                peak_up = max(peak_up, int(candidate.get("upload_bps") or 0))
+                if bi + bo > best_total:
+                    best_total = bi + bo
+                    best = candidate
+            elif connected and (best is None or not best.get("session_active")):
+                best = candidate
+            elif best is None:
+                best = candidate
+
+        payload = best or {
+            "ok": False,
+            "session_active": False,
+            "connected": False,
+            "error": "This client has no Hotspot device MAC.",
+        }
+        if active_count > 1 and payload.get("session_active"):
+            # Prefer peak live rates from any gadget; keep the busiest session's
+            # byte counters so trend deltas stay continuous (do not sum absolute
+            # session totals across MACs — that spikes "data used").
+            if peak_down:
+                payload["download_bps"] = peak_down
+                payload["download_label"] = _usage_bps_label(peak_down)
+            if peak_up:
+                payload["upload_bps"] = peak_up
+                payload["upload_label"] = _usage_bps_label(peak_up)
+
+        connected = connected_count > 0 or bool(
             payload.get("connected") or payload.get("session_active")
         )
         payload["connected"] = connected
-        payload["devices_connected"] = 1 if connected else 0
-        payload["devices_label"] = "1 gadget" if connected else "0"
-        payload["devices_hint"] = (
-            "Connected to Hotspot network"
-            if connected
-            else "Not seen on Hotspot network"
-        )
+        payload["devices_connected"] = connected_count or (1 if connected else 0)
+        if connected_count > 1:
+            payload["devices_label"] = f"{connected_count} gadgets"
+            payload["devices_hint"] = f"{active_count} surfing · {connected_count} on Wi‑Fi"
+        else:
+            payload["devices_label"] = "1 gadget" if connected else "0"
+            payload["devices_hint"] = (
+                "Connected to Hotspot network"
+                if connected
+                else "Not seen on Hotspot network"
+            )
         payload["speed_source"] = "nas"
         payload["cpe_host"] = (payload.get("address") or "").strip()
         payload["cpe_auth_ok"] = False
@@ -11021,6 +11303,9 @@ def client_usage(request, customer_id: int):
         payload["session_state"] = session_state
         payload["session_label"] = session_label
         payload["hint"] = session_hint
+        # Presence / trend charts track authenticated Hotspot surfing.
+        if payload.get("ok") and payload.get("session_active"):
+            payload["session_active"] = surfing
     else:
         payload = fetch_customer_pppoe_usage(
             router.host,
@@ -11092,7 +11377,10 @@ def client_usage(request, customer_id: int):
     try:
         from billing.usage_samples import record_customer_usage_sample
 
-        record_customer_usage_sample(customer, payload)
+        # Only persist successful router reads — timeouts/errors must not look
+        # like the client went offline.
+        if payload.get("ok"):
+            record_customer_usage_sample(customer, payload)
     except Exception:
         pass
 
@@ -11302,10 +11590,11 @@ def client_usage_analysis(request, customer_id: int):
         trends = usage_trend_payload(customer, hours=hours)
     else:
         if customer.service_type == Customer.ServiceType.HOTSPOT:
+            has_mac = bool(_hotspot_macs_for_usage(customer))
             error = (
-                "No active MikroTik is available to collect Hotspot gadget usage."
-                if not (customer.hotspot_mac or "").strip()
-                else "No MikroTik router is available for this Hotspot gadget."
+                "No MikroTik router is available for this Hotspot gadget."
+                if has_mac
+                else "Add a device MAC to collect Hotspot gadget usage."
             )
         else:
             error = "Live usage trends are available for PPPoE clients with an assigned router."
@@ -11353,6 +11642,25 @@ def client_usage_analysis(request, customer_id: int):
     return render(request, "core/client_usage_analysis.html", ctx)
 
 
+def _payment_mpesa_reference(payment: Payment) -> str:
+    """Prefer the real M-Pesa receipt over Safaricom CheckoutRequestID placeholders."""
+    checkout_ids: set[str] = set()
+    for stk in payment.stk_push_requests.all():
+        receipt = (stk.mpesa_receipt or "").strip()
+        if receipt:
+            return receipt
+        checkout_id = (stk.checkout_request_id or "").strip()
+        if checkout_id:
+            checkout_ids.add(checkout_id)
+    ref = (payment.reference or "").strip()
+    if not ref:
+        return ""
+    # Checkout IDs look like ws_CO_… and are not the SMS receipt number.
+    if ref in checkout_ids or ref.startswith("ws_CO_"):
+        return ""
+    return ref
+
+
 @client_workspace_required
 def client_billing(request, customer_id: int):
     """Dedicated page listing successful payments and access vouchers for one client."""
@@ -11367,11 +11675,31 @@ def client_billing(request, customer_id: int):
         list(
             Payment.objects.filter(invoice__customer=customer, organization=org)
             .select_related("invoice")
+            .prefetch_related("stk_push_requests")
             .order_by("-received_at")[:100]
         )
         if org
         else []
     )
+    for pay in payments:
+        display_ref = _payment_mpesa_reference(pay)
+        pay.display_reference = display_ref
+        # Heal rows that still store CheckoutRequestID after the real receipt arrived.
+        if not display_ref:
+            continue
+        current = (pay.reference or "").strip()
+        linked_checkouts = {
+            (stk.checkout_request_id or "").strip()
+            for stk in pay.stk_push_requests.all()
+            if (stk.checkout_request_id or "").strip()
+        }
+        if (
+            not current
+            or current in linked_checkouts
+            or current.startswith("ws_CO_")
+        ) and current != display_ref:
+            pay.reference = display_ref[:100]
+            pay.save(update_fields=["reference"])
     invoice_stats = (
         Invoice.objects.filter(customer=customer, organization=org).aggregate(
             total=Count("id"),
@@ -11451,7 +11779,99 @@ def client_usage_trends(request, customer_id: int):
     from billing.usage_samples import clamp_usage_hours, usage_trend_payload
 
     hours = clamp_usage_hours(request.GET.get("hours"), default=24)
-    return JsonResponse(usage_trend_payload(customer, hours=hours))
+    sample = (request.GET.get("sample") or "").strip() in {"1", "true", "yes"}
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    if sample or force:
+        # Collect a fresh MikroTik snapshot so the open analysis page builds
+        # history while it is watched (throttled inside record_customer_usage_sample).
+        try:
+            _record_live_usage_sample(customer, org, force=force)
+        except Exception:
+            pass
+    return JsonResponse(
+        usage_trend_payload(customer, hours=hours, use_cache=not force)
+    )
+
+
+def _record_live_usage_sample(customer, org, *, force: bool = False) -> bool:
+    """Probe this client's NAS/Hotspot session and persist a trend sample."""
+    from billing.usage_samples import record_customer_usage_sample
+
+    router = resolve_client_usage_router(customer, org)
+    if not router or router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
+        return False
+
+    cache_key = f"client_usage:v2:{org.pk}:{customer.pk}"
+    if not force:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached.get("ok"):
+            return bool(record_customer_usage_sample(customer, cached))
+
+    if customer.service_type == Customer.ServiceType.HOTSPOT:
+        macs = _hotspot_macs_for_usage(customer)
+        if not macs:
+            return False
+        best = None
+        best_total = -1
+        peak_down = 0
+        peak_up = 0
+        active_count = 0
+        for mac in macs:
+            candidate = fetch_customer_hotspot_usage(
+                router.host,
+                router.username,
+                router.password or "",
+                hotspot_mac=mac,
+            )
+            if not candidate.get("ok"):
+                continue
+            if candidate.get("session_active"):
+                active_count += 1
+                bi = int(candidate.get("bytes_in") or 0)
+                bo = int(candidate.get("bytes_out") or 0)
+                peak_down = max(peak_down, int(candidate.get("download_bps") or 0))
+                peak_up = max(peak_up, int(candidate.get("upload_bps") or 0))
+                if bi + bo > best_total:
+                    best_total = bi + bo
+                    best = candidate
+            elif best is None and candidate.get("connected"):
+                best = candidate
+        if not best or not best.get("ok"):
+            return False
+        payload = best
+        if active_count > 1 and payload.get("session_active"):
+            if peak_down:
+                payload = {**payload, "download_bps": peak_down}
+            if peak_up:
+                payload = {**payload, "upload_bps": peak_up}
+        try:
+            from billing.services import customer_can_surf_via_hotspot
+
+            if payload.get("session_active") and not customer_can_surf_via_hotspot(
+                customer
+            ):
+                payload = {**payload, "session_active": False}
+        except Exception:
+            pass
+    elif customer.service_type == Customer.ServiceType.PPPOE:
+        if not customer.pppoe_username:
+            return False
+        payload = fetch_customer_pppoe_usage(
+            router.host,
+            router.username,
+            router.password or "",
+            pppoe_username=customer.pppoe_username,
+        )
+        if not payload.get("ok"):
+            return False
+    else:
+        return False
+
+    payload["customer_id"] = customer.pk
+    payload["router_id"] = router.pk
+    payload["router_name"] = router.name
+    cache.set(cache_key, payload, 8 if payload.get("session_active") else 4)
+    return bool(record_customer_usage_sample(customer, payload))
 
 
 @client_workspace_required

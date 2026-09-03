@@ -1,0 +1,171 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="tech-install-page tech-tickets-page">
+  <header class="tech-install-head">
+    <div class="tech-install-head-copy">
+      <p class="tech-install-kicker">{{ page_kicker }}</p>
+      <h2 class="tech-install-title">
+        {% if ticket_view == "connected" %}My connected tickets{% else %}Tickets{% endif %}
+      </h2>
+      <p class="tech-install-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="tech-install-head-actions">
+      {% if ticket_view == "connected" %}
+        <a class="btn btn-ghost" href="{% url 'roles:technician_tickets' %}">
+          ← Pending activation
+        </a>
+      {% else %}
+        <a class="btn btn-primary" href="{% url 'roles:technician_tickets_connected' %}">
+          My connected tickets
+        </a>
+      {% endif %}
+    </div>
+  </header>
+
+  <nav class="tech-tickets-tabs" aria-label="Ticket views">
+    <a
+      class="tech-tickets-tab{% if ticket_view == 'pending' %} is-active{% endif %}"
+      href="{% url 'roles:technician_tickets' %}"
+    >
+      Pending activation
+      <span class="tech-tickets-tab-count">{{ pending_count|default:0 }}</span>
+    </a>
+    <a
+      class="tech-tickets-tab{% if ticket_view == 'connected' %} is-active{% endif %}"
+      href="{% url 'roles:technician_tickets_connected' %}"
+    >
+      My connected tickets
+      <span class="tech-tickets-tab-count">{{ connected_count|default:0 }}</span>
+    </a>
+  </nav>
+
+  <div class="tech-install-stats" aria-label="Ticket summary">
+    {% if ticket_view == "connected" %}
+      <div class="tech-install-stat">
+        <strong>{{ connected_count|default:0 }}</strong>
+        <span>Connected</span>
+      </div>
+      <div class="tech-install-stat is-open">
+        <strong>{{ pending_count|default:0 }}</strong>
+        <span>Pending activation</span>
+      </div>
+      <div class="tech-install-stat is-assigned">
+        <strong>{{ active_count|default:0 }}</strong>
+        <span>Active</span>
+      </div>
+    {% else %}
+      <div class="tech-install-stat is-open">
+        <strong>{{ pending_count|default:0 }}</strong>
+        <span>Pending activation</span>
+      </div>
+      <div class="tech-install-stat">
+        <strong>{{ connected_count|default:0 }}</strong>
+        <span>All connected</span>
+      </div>
+    {% endif %}
+  </div>
+
+  {% if tickets %}
+    <div class="tech-install-list">
+      {% for ticket in tickets %}
+        <article class="tech-install-card{% if ticket.status == 'inactive' %} is-open{% elif ticket.status == 'active' %} is-mine{% else %} is-registered{% endif %}">
+          <header class="tech-install-card-head">
+            <div class="tech-install-card-id">
+              <span class="tech-install-ticket">
+                {{ ticket.sales_ticket_number|default:ticket.account_number }}
+              </span>
+              {% if ticket.full_name %}
+                <strong class="tech-install-client">{{ ticket.full_name }}</strong>
+              {% endif %}
+            </div>
+            <div class="tech-install-card-badges">
+              <span class="org-status org-status-{{ ticket.status }}">
+                {{ ticket.get_status_display }}
+              </span>
+              {% if ticket.status == "inactive" %}
+                <span class="tech-install-chip is-pool">Pending activation</span>
+              {% elif ticket.status == "active" %}
+                <span class="tech-install-chip is-yours">Active</span>
+              {% endif %}
+            </div>
+          </header>
+
+          <div class="tech-install-card-body">
+            <div class="tech-install-meta">
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">Phone</span>
+                {% if ticket.phone %}
+                  <a class="tech-install-phone" href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a>
+                {% else %}
+                  <span class="tech-install-meta-muted">—</span>
+                {% endif %}
+              </div>
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">ISP</span>
+                {% if ticket.organization %}
+                  <span class="tech-install-meta-value">{{ ticket.organization.name }}</span>
+                {% else %}
+                  <span class="tech-install-meta-muted">—</span>
+                {% endif %}
+              </div>
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">MikroTik</span>
+                {% if ticket.router %}
+                  <span class="tech-install-meta-value">{{ ticket.router.name }}</span>
+                {% else %}
+                  <span class="tech-install-meta-muted">—</span>
+                {% endif %}
+              </div>
+              {% if ticket.plan %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Plan</span>
+                  <span class="tech-install-meta-value">{{ ticket.plan.name }}</span>
+                </div>
+              {% endif %}
+              {% if ticket.address or ticket.house_number %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Location</span>
+                  <span class="tech-install-meta-value">
+                    {{ ticket.address }}{% if ticket.address and ticket.house_number %}, {% endif %}{{ ticket.house_number }}
+                  </span>
+                </div>
+              {% endif %}
+              <div class="tech-install-meta-item">
+                <span class="tech-install-meta-label">Connected</span>
+                <span class="tech-install-meta-value">{{ ticket.created_at|date:"M j, Y g:i A" }}</span>
+              </div>
+            </div>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="tech-install-empty tech-fault-empty">
+      <span class="tech-fault-empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M9 5h6M9 19h6M7 5v2.2c0 1.1.4 2.1 1.2 2.9l2.1 2.1c.8.8 1.2 1.8 1.2 2.9V19M17 5v2.2c0 1.1-.4 2.1-1.2 2.9l-2.1 2.1c-.8.8-1.2 1.8-1.2 2.9V19" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <strong>
+        {% if ticket_view == "connected" %}
+          No connected tickets
+        {% else %}
+          No pending activation clients
+        {% endif %}
+      </strong>
+      <p>{{ empty_text }}</p>
+      <a class="btn btn-ghost" href="{% url 'roles:technician_installations' %}">
+        Open installations
+      </a>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

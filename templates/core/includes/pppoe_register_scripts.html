@@ -1,0 +1,507 @@
+{# Expects: pppoe_form, router_cpe_defaults_json, open_client_modal (optional) #}
+<script>
+(function () {
+  var FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
+  var lastTrigger = null;
+
+  function focusables(modal) {
+    return Array.prototype.filter.call(modal.querySelectorAll(FOCUSABLE), function (el) {
+      return el.offsetParent !== null || el === document.activeElement;
+    });
+  }
+
+  function openModal(id, trigger) {
+    var modal = document.getElementById(id);
+    if (!modal) return;
+    closeAll();
+    lastTrigger = trigger || null;
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (id === "pppoe-register-modal") {
+      cpePassEdited = false;
+      cpeUserEdited = false;
+      addressEdited = false;
+    }
+    ensureRegisterDefaults(modal);
+
+    var firstError = modal.querySelector(".field-error");
+    var target = firstError
+      ? firstError.parentNode.querySelector("input, select, textarea")
+      : modal.querySelector(".pppoe-body input, .pppoe-body select");
+    if (target) {
+      target.focus({ preventScroll: !!firstError });
+      if (firstError) firstError.scrollIntoView({ block: "center" });
+    }
+  }
+
+  function closeModal(modal) {
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".client-action-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+    if (lastTrigger) {
+      lastTrigger.focus();
+      lastTrigger = null;
+    }
+  }
+
+  function closeAll() {
+    document.querySelectorAll(".client-action-modal").forEach(closeModal);
+  }
+
+  document.querySelectorAll('[data-open-modal="pppoe-register-modal"]').forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal("pppoe-register-modal", btn);
+    });
+  });
+
+  document.querySelectorAll("#pppoe-register-modal [data-close-client-modal]").forEach(function (el) {
+    el.addEventListener("click", function () {
+      closeModal(el.closest(".client-action-modal"));
+    });
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var open = document.getElementById("pppoe-register-modal");
+    if (!open || open.hidden) return;
+    if (e.key === "Escape") {
+      closeModal(open);
+      return;
+    }
+    if (e.key !== "Tab") return;
+    var items = focusables(open);
+    if (!items.length) return;
+    var first = items[0];
+    var last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
+
+  var phoneInput = document.getElementById("{{ pppoe_form.phone.id_for_label|escapejs }}");
+  var userInput = document.getElementById("{{ pppoe_form.pppoe_username.id_for_label|escapejs }}");
+  var userEdited = false;
+  if (phoneInput && userInput) {
+    userEdited = !!(userInput.value && userInput.value !== (phoneInput.value || "").toUpperCase());
+    userInput.addEventListener("input", function () {
+      userEdited = true;
+    });
+    function syncUsernameFromPhone() {
+      if (userEdited) return;
+      userInput.value = (phoneInput.value || "").toUpperCase();
+    }
+    phoneInput.addEventListener("input", syncUsernameFromPhone);
+    syncUsernameFromPhone();
+  }
+
+  document.querySelectorAll(".pppoe-form input.text-upper, .pppoe-form textarea.text-upper").forEach(function (el) {
+    el.addEventListener("input", function () {
+      var start = el.selectionStart;
+      var end = el.selectionEnd;
+      var next = el.value.toUpperCase();
+      if (el.value !== next) {
+        el.value = next;
+        if (typeof start === "number") el.setSelectionRange(start, end);
+      }
+      if (phoneInput && userInput && el === phoneInput && !userEdited) {
+        userInput.value = next;
+      }
+    });
+  });
+
+  function randomPassword() {
+    var chars = "abcdefghjkmnpqrstuvwxyz23456789ACDEFGHJKLMNPQRSTUVWXYZ";
+    var out = "";
+    var i;
+    if (window.crypto && window.crypto.getRandomValues) {
+      var buf = new Uint32Array(10);
+      window.crypto.getRandomValues(buf);
+      for (i = 0; i < buf.length; i++) out += chars.charAt(buf[i] % chars.length);
+    } else {
+      for (i = 0; i < 10; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return out;
+  }
+
+  var cpePassEdited = false;
+  var cpeUserEdited = false;
+  var addressEdited = false;
+  var pppoePassInput = document.getElementById("id_pppoe_password");
+  var cpePassInput = document.getElementById("id_pppoe_cpe_password");
+  var cpeUserInput = document.getElementById("id_pppoe_cpe_username");
+  var addressInput = document.getElementById("id_pppoe_address");
+  var routerSelect = document.getElementById("id_pppoe_router");
+  var orgSelect = document.getElementById("id_pppoe_organization");
+  var planSelect = document.getElementById("{{ pppoe_form.plan.id_for_label|escapejs }}");
+  var routerWrap = document.querySelector("[data-pppoe-router-wrap]");
+  var routerHint = document.querySelector("[data-pppoe-router-hint]");
+  var routerCpeDefaults = {{ router_cpe_defaults_json|default:"{}"|safe }};
+  var routersByOrg = {{ routers_by_org_json|default:"{}"|safe }};
+  var plansByOrg = {{ plans_by_org_json|default:"{}"|safe }};
+  var remoteDesc = document.getElementById("pppoe-remote-desc");
+  var allRouterOptions = [];
+  var allPlanOptions = [];
+
+  if (routerSelect) {
+    Array.prototype.forEach.call(routerSelect.options, function (opt) {
+      allRouterOptions.push({
+        value: opt.value,
+        label: opt.textContent,
+        orgId: opt.value && routerCpeDefaults[opt.value]
+          ? String(routerCpeDefaults[opt.value].organization_id || "")
+          : ""
+      });
+    });
+  }
+  if (planSelect) {
+    Array.prototype.forEach.call(planSelect.options, function (opt) {
+      allPlanOptions.push({
+        value: opt.value,
+        label: opt.textContent,
+        orgId: opt.value && plansByOrg._plan_org
+          ? String(plansByOrg._plan_org[opt.value] || "")
+          : ""
+      });
+    });
+    // Prefer explicit plan lists per org when provided.
+    Object.keys(plansByOrg).forEach(function (key) {
+      if (key === "_plan_org") return;
+      (plansByOrg[key] || []).forEach(function (plan) {
+        var exists = allPlanOptions.some(function (row) {
+          return String(row.value) === String(plan.id);
+        });
+        if (!exists) {
+          allPlanOptions.push({
+            value: String(plan.id),
+            label: plan.name,
+            orgId: String(key),
+            routerIds: plan.router_ids || []
+          });
+        } else {
+          allPlanOptions.forEach(function (row) {
+            if (String(row.value) === String(plan.id)) {
+              row.orgId = String(key);
+              row.routerIds = plan.router_ids || [];
+            }
+          });
+        }
+      });
+    });
+  }
+
+  function selectedOrgId() {
+    return orgSelect ? String(orgSelect.value || "") : "";
+  }
+
+  function rebuildSelect(select, rows, emptyLabel, selectedValue) {
+    if (!select) return;
+    var keep = selectedValue || "";
+    select.innerHTML = "";
+    var empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = emptyLabel;
+    select.appendChild(empty);
+    rows.forEach(function (row) {
+      var opt = document.createElement("option");
+      opt.value = row.value;
+      opt.textContent = row.label;
+      if (keep && String(keep) === String(row.value)) opt.selected = true;
+      select.appendChild(opt);
+    });
+    if (!keep && rows.length === 1) {
+      select.selectedIndex = 1;
+    }
+  }
+
+  function routersForOrg(orgId) {
+    if (!orgId) return [];
+    if (routersByOrg[orgId] && routersByOrg[orgId].length) {
+      return routersByOrg[orgId].map(function (row) {
+        return {
+          value: String(row.id),
+          label: row.label || row.name,
+          orgId: String(orgId)
+        };
+      });
+    }
+    return allRouterOptions.filter(function (row) {
+      return row.value && String(row.orgId) === String(orgId);
+    });
+  }
+
+  function plansForOrgAndRouter(orgId, routerId) {
+    if (!orgId) return [];
+    var listed = plansByOrg[orgId];
+    if (listed && listed.length) {
+      return listed
+        .filter(function (plan) {
+          var ids = plan.router_ids || [];
+          if (!ids.length) return true;
+          if (!routerId) return true;
+          return ids.map(String).indexOf(String(routerId)) !== -1;
+        })
+        .map(function (plan) {
+          return { value: String(plan.id), label: plan.name, orgId: String(orgId) };
+        });
+    }
+    return allPlanOptions.filter(function (row) {
+      if (!row.value || String(row.orgId) !== String(orgId)) return false;
+      var ids = row.routerIds || [];
+      if (!ids.length || !routerId) return true;
+      return ids.map(String).indexOf(String(routerId)) !== -1;
+    });
+  }
+
+  function selectedRouterDefaults() {
+    if (!routerSelect || !routerSelect.value) return null;
+    return routerCpeDefaults[routerSelect.value] || null;
+  }
+
+  function updateRemoteDesc() {
+    if (!remoteDesc) return;
+    var defs = selectedRouterDefaults();
+    if (defs && defs.router_name) {
+      remoteDesc.textContent = defs.has_password
+        ? "From " + defs.router_name
+        : "From " + defs.router_name + " (no default password saved)";
+    } else {
+      remoteDesc.textContent = "MikroTik default CPE login";
+    }
+  }
+
+  function applyRouterCpeDefaults(force) {
+    if (!routerSelect) return;
+    if (!orgSelect && routerSelect.options.length === 2 && !routerSelect.value) {
+      routerSelect.selectedIndex = 1;
+    }
+    var defs = selectedRouterDefaults();
+    if (!defs) {
+      if (force) {
+        if (cpeUserInput && !cpeUserEdited) cpeUserInput.value = "admin";
+        if (cpePassInput && !cpePassEdited) cpePassInput.value = "";
+      }
+      updateRemoteDesc();
+      return;
+    }
+    // Always keep MikroTik defaults until the user edits these fields.
+    if (cpeUserInput && (force || !cpeUserEdited)) {
+      cpeUserInput.value = defs.username || "admin";
+    }
+    if (cpePassInput && (force || !cpePassEdited)) {
+      cpePassInput.value = defs.has_password && defs.password ? defs.password : "";
+    }
+    if (addressInput && defs.address && (force || !addressEdited)) {
+      addressInput.value = defs.address;
+    }
+    updateRemoteDesc();
+  }
+
+  function syncOrgScopedFields(forceRouterDefaults) {
+    var orgId = selectedOrgId();
+    var previousRouter = routerSelect ? routerSelect.value : "";
+    var previousPlan = planSelect ? planSelect.value : "";
+    if (routerWrap) {
+      routerWrap.hidden = !!(orgSelect && !orgId);
+    }
+    if (routerHint) {
+      var count = orgId ? routersForOrg(orgId).length : 0;
+      if (orgSelect && orgId && !count) {
+        routerHint.hidden = false;
+        routerHint.textContent = "No MikroTik on this ISP yet.";
+      } else {
+        routerHint.hidden = true;
+        routerHint.textContent = "";
+      }
+    }
+    if (orgSelect) {
+      rebuildSelect(
+        routerSelect,
+        routersForOrg(orgId),
+        "Select MikroTik",
+        previousRouter
+      );
+      rebuildSelect(
+        planSelect,
+        plansForOrgAndRouter(orgId, routerSelect ? routerSelect.value : ""),
+        "No plan yet",
+        previousPlan
+      );
+    }
+    if (forceRouterDefaults) {
+      applyRouterCpeDefaults(true);
+    }
+  }
+
+  function ensureRegisterDefaults(modal) {
+    if (!modal || modal.id !== "pppoe-register-modal") return;
+    if (modal.querySelector(".field-error")) {
+      syncOrgScopedFields(false);
+      return;
+    }
+    if (pppoePassInput && !pppoePassInput.value.trim()) {
+      pppoePassInput.value = randomPassword();
+    }
+    if (orgSelect && orgSelect.options.length === 2 && !orgSelect.value) {
+      orgSelect.selectedIndex = 1;
+    }
+    syncOrgScopedFields(true);
+    if (phoneInput && userInput && !userEdited) {
+      userInput.value = (phoneInput.value || "").toUpperCase();
+    }
+    syncActivationDateUi();
+  }
+
+  if (cpePassInput) {
+    cpePassInput.addEventListener("input", function () {
+      cpePassEdited = true;
+    });
+  }
+  if (cpeUserInput) {
+    cpeUserInput.addEventListener("input", function () {
+      cpeUserEdited = true;
+    });
+  }
+  if (addressInput) {
+    addressInput.addEventListener("input", function () {
+      addressEdited = true;
+    });
+  }
+  if (orgSelect) {
+    orgSelect.addEventListener("change", function () {
+      cpePassEdited = false;
+      cpeUserEdited = false;
+      addressEdited = false;
+      if (routerSelect) routerSelect.value = "";
+      if (planSelect) planSelect.value = "";
+      syncOrgScopedFields(true);
+    });
+  }
+  if (routerSelect) {
+    routerSelect.addEventListener("change", function () {
+      cpePassEdited = false;
+      cpeUserEdited = false;
+      addressEdited = false;
+      if (orgSelect) {
+        var orgId = selectedOrgId();
+        var previousPlan = planSelect ? planSelect.value : "";
+        rebuildSelect(
+          planSelect,
+          plansForOrgAndRouter(orgId, routerSelect.value),
+          "No plan yet",
+          previousPlan
+        );
+      }
+      applyRouterCpeDefaults(true);
+    });
+    if (routerSelect.value) {
+      applyRouterCpeDefaults(true);
+    }
+  }
+
+  // Initial scoping for technician multi-ISP registration.
+  if (orgSelect) {
+    syncOrgScopedFields(false);
+  }
+
+  document.querySelectorAll("#pppoe-register-modal [data-generate-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-generate-password"));
+      if (!input) return;
+      var syncFrom = btn.getAttribute("data-sync-from");
+      if (syncFrom) {
+        var source = document.getElementById(syncFrom);
+        if (source && source.value) {
+          input.value = source.value;
+        } else {
+          input.value = randomPassword();
+        }
+      } else {
+        input.value = randomPassword();
+      }
+      // Generating a CPE password is an explicit override of MikroTik defaults.
+      if (input.id === "id_pppoe_cpe_password") {
+        cpePassEdited = true;
+      }
+      input.type = "text";
+      var toggle = input.parentNode.querySelector("[data-toggle-password]");
+      if (toggle) {
+        var eye = toggle.querySelector(".icon-eye");
+        var eyeOff = toggle.querySelector(".icon-eye-off");
+        if (eye && eyeOff) {
+          eye.hidden = true;
+          eyeOff.hidden = false;
+        }
+        toggle.setAttribute("aria-label", "Hide password");
+      }
+      input.focus();
+    });
+  });
+
+  document.querySelectorAll(".pppoe-form").forEach(function (form) {
+    form.addEventListener("submit", function () {
+      var submit = form.querySelector("[data-pppoe-submit]");
+      if (!submit || submit.disabled) return;
+      submit.textContent = "Saving…";
+      window.setTimeout(function () { submit.disabled = true; }, 0);
+    });
+  });
+
+  document.querySelectorAll("#pppoe-register-modal [data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+
+  window.__pppoeOpenRegisterModal = openModal;
+
+  var activateSelect = document.getElementById("id_pppoe_activate");
+  var activationDateWrap = document.querySelector("[data-pppoe-activation-date-wrap]");
+  var activationDateInput = document.getElementById("id_pppoe_activation_date");
+
+  function isActivateSelected() {
+    if (!activateSelect) return true;
+    var value = String(activateSelect.value || "").toLowerCase();
+    return value === "1" || value === "true" || value === "yes" || value === "on";
+  }
+
+  function syncActivationDateUi() {
+    var show = isActivateSelected();
+    if (activationDateWrap) activationDateWrap.hidden = !show;
+    if (activationDateInput) {
+      activationDateInput.required = show;
+      if (show && !activationDateInput.value) {
+        var today = new Date();
+        var month = String(today.getMonth() + 1).padStart(2, "0");
+        var day = String(today.getDate()).padStart(2, "0");
+        activationDateInput.value = today.getFullYear() + "-" + month + "-" + day;
+      }
+    }
+  }
+
+  if (activateSelect) {
+    activateSelect.addEventListener("change", syncActivationDateUi);
+  }
+  syncActivationDateUi();
+
+  {% if open_client_modal == "pppoe-register-modal" %}
+  openModal("pppoe-register-modal");
+  {% endif %}
+})();
+</script>

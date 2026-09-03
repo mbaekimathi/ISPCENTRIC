@@ -1,13 +1,13 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}Usage analysis — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+{% block title %}Usage — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
 <div class="client-detail-page client-usage-analysis-page">
 
-<nav class="client-cat-nav" aria-label="Usage ranges">
+<nav class="client-cat-nav" aria-label="Time range">
   <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?hours=6">6 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">24 hours</a>
+  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">Today</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?hours=72">3 days</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?hours=168">7 days</a>
   <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?hours=720">30 days</a>
@@ -18,10 +18,10 @@
     <div class="mikrotik-detail-toolbar-copy">
       <p class="client-cat client-cat-live">
         <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
-        Usage analysis
+        Client usage
       </p>
       <h2>{{ customer.full_name }}</h2>
-      <p class="panel-sub">Trends for the last {{ range_label|default:trend_hours }}.</p>
+      <p class="panel-sub">Simple picture of online time, speed, and data for the last {{ range_label|default:trend_hours }}.</p>
     </div>
     <div class="mikrotik-detail-actions">
       <span class="mikrotik-live-stamp" data-usage-stamp>—</span>
@@ -29,26 +29,24 @@
     </div>
   </div>
 
+  <p class="client-usage-insight" data-usage-insight role="status">Reading usage…</p>
+
   <dl class="client-kv-row client-usage-stats" id="usage-summary">
-    <div class="client-kv client-usage-stat" data-ico="uptime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</dt>
-      <dd><strong data-sum="online">—</strong><span data-sum="online-state">Share of samples online</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="prime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Prime usage</dt>
-      <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">Highest surfing point</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="low">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 22 9.5 15.5 2 14.7l5.5-4.7L5.8 3 12 6.7 18.2 3l-1.7 7 5.5 4.7-7.5.8Z"/></svg></span>Lowest usage</dt>
-      <dd><strong data-sum="lowest">—</strong><span data-sum="lowest-at">Quietest surfing point</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="stop">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Stopped surfing</dt>
-      <dd><strong data-sum="stopped">—</strong><span data-sum="stopped-meta">When the session went offline</span></dd>
+    <div class="client-kv client-usage-stat" data-ico="status" data-stat="status">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Now</dt>
+      <dd><strong data-sum="status">—</strong><span data-sum="status-hint">Current connection</span></dd>
     </div>
     <div class="client-kv client-usage-stat" data-ico="data">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
-      <dd><strong data-sum="data">—</strong><span>Transferred in this window</span></dd>
+      <dd><strong data-sum="data">—</strong><span data-sum="data-hint">In this period</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="prime">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Fastest</dt>
+      <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">Peak download</span></dd>
+    </div>
+    <div class="client-kv client-usage-stat" data-ico="uptime">
+      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
+      <dd><strong data-sum="online-time">—</strong><span data-sum="online-meta">Share of this period</span></dd>
     </div>
   </dl>
 </section>
@@ -62,12 +60,19 @@
   data-usage-url="{{ usage_url }}"
   data-hours="{{ trend_hours }}"
 >
-  <div class="client-usage-chart-grid">
+  <div class="client-usage-empty" data-usage-empty hidden>
+    <p class="client-usage-empty-title" data-usage-empty-title>Collecting usage…</p>
+    <p class="client-usage-empty-text" data-usage-empty-text>
+      The app saves usage in the background. Charts fill in as readings arrive.
+    </p>
+  </div>
+
+  <div class="client-usage-chart-grid" data-usage-charts>
     <article class="client-usage-chart-card">
       <header>
-        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
-        <h3>Surfing status</h3>
-        <p>Online vs offline across this window. Drops mark when surfing stopped.</p>
+        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</p>
+        <h3>When were they online?</h3>
+        <p>Green = surfing. Gaps = offline. Orange dots = dropped.</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-online" height="200"></canvas>
@@ -76,9 +81,9 @@
 
     <article class="client-usage-chart-card">
       <header>
-        <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
-        <h3>Download &amp; upload</h3>
-        <p>Prime (red) and lowest (teal) points are marked on the trend.</p>
+        <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Speed</p>
+        <h3>How fast?</h3>
+        <p>Blue = download · Amber = upload. Red mark = fastest moment.</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-throughput" height="200"></canvas>
@@ -87,12 +92,12 @@
 
     <article class="client-usage-chart-card client-usage-chart-card-wide">
       <header>
-        <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</p>
-        <h3>Traffic transferred</h3>
-        <p>Data moved per interval (MB).</p>
+        <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data</p>
+        <h3>How much data?</h3>
+        <p>Megabytes used in each time slot.</p>
       </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-data" height="200"></canvas>
+      <div class="client-usage-chart-wrap client-usage-chart-wrap-tall">
+        <canvas id="chart-data" height="220"></canvas>
       </div>
     </article>
   </div>
@@ -101,7 +106,7 @@
 <section class="panel" data-cat="live">
   <p class="client-live-empty-text">
     {% if customer.service_type == "hotspot" %}
-      {% if not customer.hotspot_mac %}
+      {% if not customer.hotspot_mac and not can_live_usage %}
         Add a device MAC to collect Hotspot gadget usage.
       {% else %}
         No MikroTik router is available to collect usage for this Hotspot gadget.
@@ -127,10 +132,13 @@
   var root = document.getElementById("usage-charts");
   if (!root) return;
   var trendsUrl = root.getAttribute("data-trends-url");
-  var usageUrl = root.getAttribute("data-usage-url");
   var hours = root.getAttribute("data-hours") || "24";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
+  var insightEl = document.querySelector("[data-usage-insight]");
+  var emptyBox = document.querySelector("[data-usage-empty]");
+  var chartsBox = document.querySelector("[data-usage-charts]");
+  var statusCard = document.querySelector('[data-stat="status"]');
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
@@ -145,8 +153,8 @@
   function fmtBytes(bytes) {
     var n = Number(bytes) || 0;
     if (n >= 1073741824) return (n / 1073741824).toFixed(2) + " GB";
-    if (n >= 1048576) return (n / 1048576).toFixed(2) + " MB";
-    if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
     return Math.round(n) + " B";
   }
 
@@ -157,50 +165,79 @@
 
   function markPoints(len, markers) {
     var peak = markers && markers.peak_index;
-    var low = markers && markers.low_index;
     var stops = {};
     ((markers && markers.stop_indexes) || []).forEach(function (i) { stops[i] = true; });
     var radius = [];
     var colors = [];
     for (var i = 0; i < len; i++) {
       if (i === peak) { radius.push(6); colors.push("#e74c3c"); }
-      else if (i === low) { radius.push(6); colors.push("#1abc9c"); }
       else if (stops[i]) { radius.push(5); colors.push("#e8a317"); }
-      else { radius.push(len > 40 ? 0 : 2); colors.push(null); }
+      else { radius.push(len > 36 ? 0 : 2); colors.push(null); }
     }
     return { radius: radius, colors: colors };
+  }
+
+  function speedSeries(series) {
+    var down = series.download_mbps;
+    var up = series.upload_mbps;
+    if (down && down.length) return { down: down, up: up || [], unit: "Mbps" };
+    return {
+      down: (series.download_kbps || []).map(function (v) {
+        return v == null ? null : Number(v) / 1000;
+      }),
+      up: (series.upload_kbps || []).map(function (v) {
+        return v == null ? null : Number(v) / 1000;
+      }),
+      unit: "Mbps"
+    };
   }
 
   function applySummary(data) {
     var summary = (data && data.summary) || {};
     var prime = summary.prime_point;
-    var lowest = summary.lowest_point;
-    var stopped = summary.last_stopped;
-    var stopCount = summary.stopped_count || 0;
+    var tracking = summary.tracking || ((data && data.sample_count) ? "ready" : "empty");
+    var latest = !!summary.latest_active;
 
-    setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
-    setSum("online-state", summary.latest_active ? "Currently surfing" : "Currently offline");
-    setSum("prime", prime ? fmtBps(prime.combined_bps) : "—");
-    setSum("prime-at", prime ? ("At " + prime.at_label) : "No surfing peak yet");
-    setSum("lowest", lowest ? fmtBps(lowest.combined_bps) : "—");
-    setSum("lowest-at", lowest ? ("At " + lowest.at_label) : "No surfing low yet");
-    setSum(
-      "stopped",
-      stopped ? stopped.at_label : (summary.latest_active ? "Still surfing" : "No stop in window")
-    );
-    setSum(
-      "stopped-meta",
-      stopCount > 1
-        ? (stopCount + " stops in this window")
-        : (stopped ? "Last time surfing stopped" : (
-            summary.latest_active ? "Session stayed online" : "No online→offline transition"
-          ))
-    );
+    setSum("status", summary.status || (latest ? "Online now" : "Offline now"));
+    setSum("status-hint", summary.status_hint || (latest ? "Connected" : "Not connected"));
     setSum("data", fmtBytes(summary.data_used_bytes));
+    setSum(
+      "data-hint",
+      summary.current_session_bytes && latest
+        ? ("This session " + fmtBytes(summary.current_session_bytes))
+        : "In this period"
+    );
+    setSum("prime", prime ? fmtBps(prime.download_bps || prime.combined_bps) : "—");
+    setSum("prime-at", prime ? ("Around " + prime.at_label) : "No peak yet");
+    setSum("online-time", summary.online_time_label || "—");
+    setSum(
+      "online-meta",
+      (summary.online_ratio != null ? summary.online_ratio : 0) + "% of readings online"
+    );
+
+    if (statusCard) {
+      statusCard.classList.toggle("is-online", latest);
+      statusCard.classList.toggle("is-offline", !latest && tracking !== "empty");
+      statusCard.classList.toggle("is-waiting", tracking === "empty" || tracking === "warming");
+    }
+
+    if (insightEl) {
+      insightEl.textContent = summary.insight || "Usage updates automatically while the app is running.";
+      insightEl.setAttribute("data-tracking", tracking);
+    }
+
+    var showEmpty = tracking === "empty" || (tracking === "warming" && !(data && data.sample_count));
+    if (emptyBox) emptyBox.hidden = !showEmpty;
+    if (chartsBox) chartsBox.hidden = !!showEmpty && tracking === "empty";
+
     if (stamp) {
-      stamp.textContent = "Updated " + new Date().toLocaleTimeString([], {
-        hour: "2-digit", minute: "2-digit", second: "2-digit"
-      });
+      var n = Number((data && data.sample_count) || 0);
+      stamp.textContent =
+        (n ? n + " reading" + (n === 1 ? "" : "s") + " · " : "") +
+        "Updated " +
+        new Date().toLocaleTimeString([], {
+          hour: "2-digit", minute: "2-digit", second: "2-digit"
+        });
     }
   }
 
@@ -215,7 +252,20 @@
         legend: {
           labels: { color: dark ? "#c8d4db" : "#4a6573", boxWidth: 12, font: { weight: "600" } }
         },
-        tooltip: { backgroundColor: dark ? "#141c22" : "#0b1f2a" }
+        tooltip: {
+          backgroundColor: dark ? "#141c22" : "#0b1f2a",
+          callbacks: {
+            label: function (ctx) {
+              var label = ctx.dataset.label || "";
+              var raw = ctx.parsed && ctx.parsed.y;
+              if (raw == null) return label + ": —";
+              if (label.indexOf("Mbps") >= 0) return label.replace(" (Mbps)", "") + ": " + Number(raw).toFixed(2) + " Mbps";
+              if (label.indexOf("MB") >= 0) return "Data: " + Number(raw).toFixed(2) + " MB";
+              if (label === "Online") return raw ? "Online" : "Offline";
+              return label + ": " + raw;
+            }
+          }
+        }
       },
       scales: {
         x: {
@@ -267,24 +317,27 @@
 
   function paint(data) {
     ensureCharts();
+    applySummary(data);
     if (!charts.online) return;
+
     var labels = (data && data.labels) || [];
     var series = (data && data.series) || {};
     var markers = (data && data.markers) || {};
     var len = labels.length;
     var marks = markPoints(len, markers);
+    var speed = speedSeries(series);
     var downColors = marks.colors.map(function (c) { return c || "#4f8cff"; });
     var upColors = marks.colors.map(function (c) { return c || "#e8a317"; });
 
     charts.online.data = {
       labels: labels,
       datasets: [{
-        label: "Surfing",
+        label: "Online",
         data: series.online || [],
         borderColor: "#2ecc71",
-        backgroundColor: "rgba(46,204,113,0.16)",
+        backgroundColor: "rgba(46,204,113,0.18)",
         fill: true,
-        tension: 0.2,
+        tension: 0.15,
         spanGaps: false,
         stepped: true,
         pointRadius: marks.radius,
@@ -295,8 +348,8 @@
       labels: labels,
       datasets: [
         {
-          label: "Download (kbps)",
-          data: series.download_kbps || [],
+          label: "Download (Mbps)",
+          data: speed.down,
           borderColor: "#4f8cff",
           backgroundColor: "rgba(79,140,255,0.12)",
           fill: true,
@@ -306,10 +359,10 @@
           pointBackgroundColor: downColors
         },
         {
-          label: "Upload (kbps)",
-          data: series.upload_kbps || [],
+          label: "Upload (Mbps)",
+          data: speed.up,
           borderColor: "#e8a317",
-          backgroundColor: "rgba(232,163,23,0.12)",
+          backgroundColor: "rgba(232,163,23,0.10)",
           fill: true,
           tension: 0.3,
           spanGaps: true,
@@ -321,22 +374,26 @@
     charts.data.data = {
       labels: labels,
       datasets: [{
-        label: "Data used (MB)",
+        label: "Data (MB)",
         data: series.data_used_mb || [],
-        backgroundColor: "rgba(232,163,23,0.55)",
-        borderRadius: 4
+        backgroundColor: "rgba(79,140,255,0.55)",
+        borderRadius: 5,
+        maxBarThickness: 28
       }]
     };
     charts.online.update("none");
     charts.throughput.update("none");
     charts.data.update("none");
-    applySummary(data);
   }
 
-  function loadTrends() {
+  function loadTrends(opts) {
+    opts = opts || {};
     if (!trendsUrl || inFlight) return Promise.resolve();
     inFlight = true;
-    return fetch(trendsUrl + "?hours=" + encodeURIComponent(hours), {
+    var qs = "?hours=" + encodeURIComponent(hours);
+    if (opts.sample) qs += "&sample=1";
+    if (opts.refresh) qs += "&refresh=1";
+    return fetch(trendsUrl + qs, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",
       cache: "no-store"
@@ -347,20 +404,15 @@
       .finally(function () { inFlight = false; });
   }
 
-  function sampleLive() {
-    if (!usageUrl || document.hidden) return;
-    fetch(usageUrl + "?refresh=1", {
-      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
-      credentials: "same-origin",
-      cache: "no-store"
-    }).then(function () { return loadTrends(); }).catch(function () {});
+  function sampleLive(force) {
+    if (!trendsUrl || document.hidden) return;
+    loadTrends({ sample: true, refresh: !!force });
   }
 
   function boot() {
     ensureCharts();
     paint(initial);
-    // One live sample on open; charts then refresh from cached trends.
-    sampleLive();
+    sampleLive(true);
   }
 
   if (window.Chart) boot();
@@ -373,15 +425,13 @@
   }
 
   if (refreshBtn) {
-    refreshBtn.addEventListener("click", function () { sampleLive(); });
+    refreshBtn.addEventListener("click", function () { sampleLive(true); });
   }
-  // Trends only (cached, no MikroTik) — keeps the page current without load.
   setInterval(function () {
-    if (!document.hidden) loadTrends();
+    if (!document.hidden) sampleLive(false);
   }, 45000);
-  // Live MikroTik sample is manual / visibility only — avoid hammering routers.
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadTrends();
+    if (!document.hidden) sampleLive(true);
   });
 })();
 </script>

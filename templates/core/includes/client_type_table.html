@@ -35,7 +35,7 @@
                 {% if c.plan %}
                   <span class="clients-list-table-plan">{{ c.plan.name }}</span>
                 {% endif %}
-                {% if not show_pppoe %}
+                {% if pending_activation or not show_pppoe %}
                   <span class="badge clients-account-status">{{ c.get_status_display }}</span>
                 {% endif %}
               </div>
@@ -97,7 +97,23 @@
               </td>
             {% endif %}
             <td class="clients-list-table-actions-col" data-label="Open">
-              <a class="clients-list-table-action" href="{% url 'core:client_detail' c.id %}">View</a>
+              {% if pending_activation %}
+                <div class="clients-list-table-action-stack">
+                  <button
+                    type="button"
+                    class="clients-list-table-action is-primary"
+                    data-open-activate-pppoe
+                    data-customer-id="{{ c.id }}"
+                    data-customer-name="{{ c.full_name }}"
+                    data-customer-account="{{ c.account_number|default:'' }}"
+                  >
+                    Activate
+                  </button>
+                  <a class="clients-list-table-action" href="{% url 'core:client_detail' c.id %}">View</a>
+                </div>
+              {% else %}
+                <a class="clients-list-table-action" href="{% url 'core:client_detail' c.id %}">View</a>
+              {% endif %}
             </td>
           </tr>
         {% endfor %}
@@ -112,7 +128,7 @@
     {% else %}
       <p class="clients-dash-empty-title">{{ empty_title }}</p>
       <p class="clients-dash-empty-copy">{{ empty_text }}</p>
-      {% if show_pppoe %}
+      {% if show_pppoe and not pending_activation %}
         <button type="button" class="btn btn-primary btn-sm" data-open-modal="pppoe-register-modal">Register PPPoE client</button>
       {% endif %}
     {% endif %}

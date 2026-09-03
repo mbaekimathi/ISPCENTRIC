@@ -5,172 +5,209 @@
 {% block client_content %}
 <div class="client-detail-page client-detail-simple client-billing-page">
 
-<section class="panel client-simple-panel" id="client-vouchers">
-  <header class="client-simple-head">
-    <div>
-      <p class="client-simple-kicker">Device activation</p>
-      <h2 class="client-simple-section-title">Access vouchers</h2>
-      <p class="client-simple-meta">
-        One-time codes from successful M-Pesa payments. Hotspot packages issue one voucher per device. Share a valid code so that device can connect — a used voucher cannot be reused.
-      </p>
-    </div>
-    <div class="client-simple-badges">
-      <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
-        {{ valid_voucher_count }} valid
+  <header class="client-billing-hero">
+    <div class="client-billing-hero-main">
+      <span class="client-billing-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="3.5" y="6" width="17" height="12" rx="2.2"/>
+          <path d="M7 10h4M7 13h7" stroke-linecap="round"/>
+          <circle cx="16.5" cy="12" r="1.4"/>
+        </svg>
       </span>
-      <span class="org-status">{{ vouchers|length }} total</span>
+      <div>
+        <p class="client-billing-kicker">Client billing</p>
+        <h2 class="client-billing-title">{{ customer.full_name }}</h2>
+        <p class="client-billing-lead">
+          Access vouchers and successful payments for
+          <span class="org-code">{{ customer.account_number }}</span>.
+        </p>
+      </div>
+    </div>
+    <div class="client-billing-hero-meta">
+      <span class="client-billing-chip is-live">{{ valid_voucher_count }} valid voucher{{ valid_voucher_count|pluralize }}</span>
+      <span class="client-billing-chip">KES {{ amount_paid }} collected</span>
+      {% if back_url %}
+        <a class="btn btn-ghost btn-sm" href="{{ back_url }}">← Client profile</a>
+      {% endif %}
     </div>
   </header>
 
-  {% if vouchers %}
-    <ul class="client-voucher-cards" aria-label="Access vouchers">
-      {% for row in vouchers %}
-        <li class="client-voucher-card is-{{ row.status }}">
-          <div class="client-voucher-card-kicker">
-            <span>{% if row.status == "valid" %}Ready to share{% else %}{{ row.status_label }}{% endif %}</span>
-            <span class="voucher-status-pill is-{{ row.status }}">{{ row.status_label }}</span>
-          </div>
-          {% if row.share.can_share %}
-            <button
-              type="button"
-              class="org-code voucher-code client-voucher-code-btn"
-              data-voucher-code
-              data-copy-voucher
-              data-copy-text="{{ row.code_display }}"
-              title="Copy {{ row.code_display }}"
-            >{{ row.code_display }}</button>
-          {% else %}
-            <span class="org-code voucher-code client-voucher-code-btn" data-voucher-code>{{ row.code_display }}</span>
-          {% endif %}
-          <p class="client-voucher-card-meta">
-            {{ row.plan_name }}
-            {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
-            · {{ row.created_at|date:"M j, Y g:i A" }}
-            {% if row.status == "expired" and row.redeemed_at %}
-              · Used {{ row.redeemed_at|date:"M j, g:i A" }}
-            {% elif row.status == "invalid" and row.invalidated_at %}
-              · Burned {{ row.invalidated_at|date:"M j, g:i A" }}
-            {% endif %}
-          </p>
-          {% if row.share.can_share %}
-            <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
+  <section class="panel client-simple-panel client-billing-panel" id="client-vouchers">
+    <header class="client-simple-head">
+      <div>
+        <p class="client-simple-kicker">Device activation</p>
+        <h2 class="client-simple-section-title">Access vouchers</h2>
+        <p class="client-simple-meta">
+          One-time codes from successful M-Pesa payments. Hotspot packages issue one voucher per device.
+          Share a valid code so that device can connect — a used voucher cannot be reused.
+        </p>
+      </div>
+      <div class="client-simple-badges">
+        <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
+          {{ valid_voucher_count }} valid
+        </span>
+        <span class="org-status">{{ vouchers|length }} total</span>
+      </div>
+    </header>
+
+    {% if vouchers %}
+      <ul class="client-voucher-cards" aria-label="Access vouchers">
+        {% for row in vouchers %}
+          <li class="client-voucher-card is-{{ row.status }}">
+            <div class="client-voucher-card-kicker">
+              <span>{% if row.status == "valid" %}Ready to share{% else %}{{ row.status_label }}{% endif %}</span>
+              <span class="voucher-status-pill is-{{ row.status }}">{{ row.status_label }}</span>
+            </div>
+            {% if row.share.can_share %}
               <button
                 type="button"
-                class="btn btn-sm"
+                class="org-code voucher-code client-voucher-code-btn"
+                data-voucher-code
                 data-copy-voucher
-                data-copy-text="{{ row.share.share_text|escape }}"
-              >Copy</button>
-              {% if row.share.whatsapp_client_url %}
-                <a
-                  class="btn btn-sm voucher-share-wa"
-                  href="{{ row.share.whatsapp_client_url }}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >WhatsApp client</a>
-              {% else %}
-                <a
-                  class="btn btn-sm voucher-share-wa"
-                  href="{{ row.share.whatsapp_share_url }}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >WhatsApp</a>
+                data-copy-text="{{ row.code_display }}"
+                title="Copy {{ row.code_display }}"
+              >{{ row.code_display }}</button>
+            {% else %}
+              <span class="org-code voucher-code client-voucher-code-btn" data-voucher-code>{{ row.code_display }}</span>
+            {% endif %}
+            <p class="client-voucher-card-meta">
+              {{ row.plan_name }}
+              {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
+              · {{ row.created_at|date:"M j, Y g:i A" }}
+              {% if row.status == "expired" and row.redeemed_at %}
+                · Used {{ row.redeemed_at|date:"M j, g:i A" }}
+              {% elif row.status == "invalid" and row.invalidated_at %}
+                · Burned {{ row.invalidated_at|date:"M j, g:i A" }}
               {% endif %}
-              <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
-              {% if row.share.pay_url %}
-                <a
-                  class="btn btn-sm btn-ghost"
-                  href="{{ row.share.pay_url }}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >Pay page</a>
-              {% endif %}
-            </div>
-          {% else %}
-            <p class="client-simple-hint">Not shareable ({{ row.status_label|lower }})</p>
-          {% endif %}
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <div class="client-voucher-empty">
-      <p class="empty client-simple-note">
-        No vouchers yet. When this client pays successfully, a one-time activation code appears here so you can share it.
-      </p>
-    </div>
-  {% endif %}
-</section>
-
-<section class="panel client-simple-panel" id="client-billing">
-  <header class="client-simple-head">
-    <div>
-      <p class="client-simple-kicker">Collections</p>
-      <h2 class="client-simple-section-title">Successful payments</h2>
-      <p class="client-simple-meta">M-Pesa and other collections recorded for this subscriber.</p>
-    </div>
-    <div class="client-simple-badges">
-      <span class="org-status org-status-active">{{ payments|length }} listed</span>
-      <span class="org-status">KES {{ amount_paid }} collected</span>
-    </div>
-  </header>
-
-  <ul class="client-simple-status client-billing-stats" aria-label="Billing summary">
-    <li data-stat="collected">
-      <span>Collected</span>
-      <strong>KES {{ amount_paid }}</strong>
-      <em>All successful payments</em>
-    </li>
-    <li data-stat="paid">
-      <span>Paid invoices</span>
-      <strong>{{ invoice_paid }}</strong>
-      <em>of {{ invoice_total }} total</em>
-    </li>
-    <li data-stat="pending">
-      <span>Pending</span>
-      <strong>{{ invoice_pending }}</strong>
-      <em>Awaiting payment</em>
-    </li>
-    <li data-stat="overdue">
-      <span>Overdue</span>
-      <strong>{{ invoice_overdue }}</strong>
-      <em>Past due</em>
-    </li>
-  </ul>
-
-  {% if payments %}
-    <div class="org-table-shell client-detail-table-shell">
-      <table class="org-table org-table-client-billing">
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Amount</th>
-            <th>Method</th>
-            <th>M-Pesa / Ref</th>
-            <th>Invoice</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for pay in payments %}
-            <tr>
-              <td>{{ pay.received_at|date:"M j, Y g:i A" }}</td>
-              <td><strong>KES {{ pay.amount }}</strong></td>
-              <td>{{ pay.get_method_display }}</td>
-              <td><span class="org-code">{{ pay.reference|default:"—" }}</span></td>
-              <td>
-                {% if pay.invoice %}
-                  <span class="org-code">{{ pay.invoice.invoice_number }}</span>
+            </p>
+            {% if row.share.can_share %}
+              <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
+                <button
+                  type="button"
+                  class="btn btn-sm"
+                  data-copy-voucher
+                  data-copy-text="{{ row.share.share_text|escape }}"
+                >Copy</button>
+                {% if row.share.whatsapp_client_url %}
+                  <a
+                    class="btn btn-sm voucher-share-wa"
+                    href="{{ row.share.whatsapp_client_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >WhatsApp client</a>
                 {% else %}
-                  —
+                  <a
+                    class="btn btn-sm voucher-share-wa"
+                    href="{{ row.share.whatsapp_share_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >WhatsApp</a>
                 {% endif %}
-              </td>
+                <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+                {% if row.share.pay_url %}
+                  <a
+                    class="btn btn-sm btn-ghost"
+                    href="{{ row.share.pay_url }}"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Pay page</a>
+                {% endif %}
+              </div>
+            {% else %}
+              <p class="client-simple-hint">Not shareable ({{ row.status_label|lower }})</p>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="client-voucher-empty client-billing-empty">
+        <strong>No vouchers yet</strong>
+        <p class="empty client-simple-note">
+          When this client pays successfully, a one-time activation code appears here so you can share it.
+        </p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="panel client-simple-panel client-billing-panel" id="client-billing">
+    <header class="client-simple-head">
+      <div>
+        <p class="client-simple-kicker">Collections</p>
+        <h2 class="client-simple-section-title">Successful payments</h2>
+        <p class="client-simple-meta">M-Pesa and other collections recorded for this subscriber.</p>
+      </div>
+      <div class="client-simple-badges">
+        <span class="org-status org-status-active">{{ payments|length }} listed</span>
+        <span class="org-status">KES {{ amount_paid }} collected</span>
+      </div>
+    </header>
+
+    <ul class="client-simple-status client-billing-stats" aria-label="Billing summary">
+      <li data-stat="collected">
+        <span>Collected</span>
+        <strong>KES {{ amount_paid }}</strong>
+        <em>All successful payments</em>
+      </li>
+      <li data-stat="paid">
+        <span>Paid invoices</span>
+        <strong>{{ invoice_paid }}</strong>
+        <em>of {{ invoice_total }} total</em>
+      </li>
+      <li data-stat="pending">
+        <span>Pending</span>
+        <strong>{{ invoice_pending }}</strong>
+        <em>Awaiting payment</em>
+      </li>
+      <li data-stat="overdue">
+        <span>Overdue</span>
+        <strong>{{ invoice_overdue }}</strong>
+        <em>Past due</em>
+      </li>
+    </ul>
+
+    {% if payments %}
+      <div class="org-table-shell client-detail-table-shell client-billing-table-shell">
+        <table class="org-table org-table-client-billing">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Amount</th>
+              <th>Method</th>
+              <th>M-Pesa / Ref</th>
+              <th>Invoice</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty client-simple-note">No successful payments recorded for this client yet.</p>
-  {% endif %}
-</section>
+          </thead>
+          <tbody>
+            {% for pay in payments %}
+              <tr>
+                <td data-label="Date">
+                  <div class="client-billing-stack">
+                    <strong>{{ pay.received_at|date:"M j, Y" }}</strong>
+                    <small>{{ pay.received_at|date:"g:i A" }}</small>
+                  </div>
+                </td>
+                <td data-label="Amount"><strong class="client-billing-amount">KES {{ pay.amount }}</strong></td>
+                <td data-label="Method">{{ pay.get_method_display }}</td>
+                <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.display_reference|default:"—" }}</span></td>
+                <td data-label="Invoice">
+                  {% if pay.invoice %}
+                    <span class="org-code">{{ pay.invoice.invoice_number }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="client-billing-empty">
+        <strong>No payments yet</strong>
+        <p class="empty client-simple-note">No successful payments recorded for this client yet.</p>
+      </div>
+    {% endif %}
+  </section>
 
 </div>
 {% endblock %}

@@ -29,6 +29,39 @@ def _default_client_password(length: int = 10) -> str:
 class PppoeClientRegisterForm(forms.ModelForm):
     """Register a new PPPoE subscriber for an organization."""
 
+    activate_account = forms.TypedChoiceField(
+        label="Activate PPPoE account",
+        choices=(
+            ("1", "Activate"),
+            ("0", "Do not activate"),
+        ),
+        coerce=lambda value: str(value).strip().lower() in {"1", "true", "yes", "on"},
+        widget=forms.Select(
+            attrs={
+                "class": "form-control",
+                "id": "id_pppoe_activate",
+                "data-pppoe-activate": "1",
+            }
+        ),
+        help_text=(
+            "Active accounts can surf when a package is running. "
+            "Inactive accounts can dial in but stay on the blocked profile until activation."
+        ),
+    )
+    activation_date = forms.DateField(
+        label="Activate from",
+        required=False,
+        widget=forms.DateInput(
+            attrs={
+                "type": "date",
+                "class": "form-control",
+                "id": "id_pppoe_activation_date",
+                "data-pppoe-activation-date": "1",
+            }
+        ),
+        help_text="Package period starts on this date.",
+    )
+
     class Meta:
         model = Customer
         fields = [
@@ -62,7 +95,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "email": forms.EmailInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "Email (optional)",
+                    "placeholder": "Email",
                     "autocomplete": "email",
                 }
             ),
@@ -70,7 +103,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "address": forms.TextInput(
                 attrs={
                     "class": "form-control text-upper",
-                    "placeholder": "Install address (optional)",
+                    "placeholder": "Address",
                     "autocomplete": "street-address",
                     "id": "id_pppoe_address",
                 }
@@ -78,7 +111,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "house_number": forms.TextInput(
                 attrs={
                     "class": "form-control text-upper",
-                    "placeholder": "House / unit number",
+                    "placeholder": "House / unit",
                     "autocomplete": "address-line2",
                 }
             ),
@@ -86,7 +119,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "pppoe_username": forms.TextInput(
                 attrs={
                     "class": "form-control text-upper",
-                    "placeholder": "PPPoE username",
+                    "placeholder": "Username",
                     "autocomplete": "off",
                     "id": "id_pppoe_username",
                 }
@@ -94,7 +127,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "pppoe_password": forms.PasswordInput(
                 attrs={
                     "class": "form-control password-input",
-                    "placeholder": "PPPoE password",
+                    "placeholder": "Password",
                     "autocomplete": "new-password",
                     "id": "id_pppoe_password",
                 },
@@ -111,7 +144,7 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "cpe_password": forms.PasswordInput(
                 attrs={
                     "class": "form-control password-input",
-                    "placeholder": "Client router admin password",
+                    "placeholder": "Router password",
                     "autocomplete": "new-password",
                     "id": "id_pppoe_cpe_password",
                 },
@@ -122,18 +155,32 @@ class PppoeClientRegisterForm(forms.ModelForm):
             "full_name": "Full name",
             "phone": "Phone",
             "email": "Email",
-            "router": "MikroTik router",
+            "router": "MikroTik",
             "address": "Address",
             "house_number": "House number",
-            "plan": "Billing plan",
-            "pppoe_username": "PPPoE username",
-            "pppoe_password": "PPPoE password",
-            "cpe_username": "Client router username",
-            "cpe_password": "Client router password",
+            "plan": "Plan",
+            "pppoe_username": "Username",
+            "pppoe_password": "Password",
+            "cpe_username": "Username",
+            "cpe_password": "Password",
         }
 
-    def __init__(self, *args, organization=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        organization=None,
+        organizations=None,
+        default_activate=True,
+        allow_activate=True,
+        **kwargs,
+    ):
         self.organization = organization
+        self.organizations = organizations
+        self.allow_activate = bool(allow_activate)
+        # Technicians (and other non-activators) must register pending only.
+        if not self.allow_activate:
+            default_activate = False
+        self.default_activate = bool(default_activate)
         super().__init__(*args, **kwargs)
         self.fields["email"].required = False
         self.fields["address"].required = False
@@ -143,18 +190,87 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["cpe_password"].required = False
         self.fields["cpe_password"].help_text = (
             "Uses the default client-router login saved on the selected MikroTik. "
-            "Falls back to the PPPoE password only when that MikroTik has no default set."
+            "Change only if this CPE uses different credentials."
         )
         self.fields["pppoe_username"].required = False
         # Router is required so the PPPoE secret can be installed on the NAS.
         self.fields["router"].required = True
         self.fields["plan"].empty_label = "No plan yet"
-        self.fields["router"].empty_label = "Select MikroTik router"
+        self.fields["router"].empty_label = "Select MikroTik"
+        activate_initial = "1" if self.default_activate else "0"
+        self.fields["activate_account"].initial = activate_initial
+        if not self.allow_activate:
+            self.fields["activate_account"].widget = forms.HiddenInput()
+            self.fields["activate_account"].help_text = (
+                "Technician registrations stay pending. An ISP client must activate the account."
+            )
+            self.fields["activation_date"].required = False
+            self.fields["activation_date"].widget = forms.HiddenInput()
+
+        org_qs = None
+        if organizations is not None:
+            from accounts.models import Organization
+
+            if hasattr(organizations, "all"):
+                org_qs = organizations
+            else:
+                org_ids = [
+                    getattr(item, "pk", item) for item in organizations if item is not None
+                ]
+                org_qs = Organization.objects.filter(pk__in=org_ids).order_by("name")
+            self.fields["organization"] = forms.ModelChoiceField(
+                label="ISP client",
+                queryset=org_qs,
+                required=True,
+                empty_label="Select ISP client",
+                widget=forms.Select(
+                    attrs={
+                        "class": "form-control",
+                        "id": "id_pppoe_organization",
+                        "data-pppoe-organization": "1",
+                    }
+                ),
+            )
+            selected_org = organization
+            if self.is_bound:
+                raw_org = (self.data.get("organization") or "").strip()
+                selected_org = org_qs.filter(pk=raw_org).first() if raw_org else None
+            elif self.initial.get("organization"):
+                candidate = self.initial.get("organization")
+                if isinstance(candidate, Organization):
+                    selected_org = candidate
+                else:
+                    selected_org = org_qs.filter(pk=candidate).first()
+            self.organization = selected_org
+            if selected_org is not None and not self.is_bound:
+                self.initial.setdefault("organization", selected_org.pk)
+            self.order_fields(
+                [
+                    "organization",
+                    "full_name",
+                    "phone",
+                    "email",
+                    "router",
+                    "address",
+                    "house_number",
+                    "plan",
+                    "activate_account",
+                    "activation_date",
+                    "pppoe_username",
+                    "pppoe_password",
+                    "cpe_username",
+                    "cpe_password",
+                ]
+            )
+
+        today = timezone.localdate()
         if not self.is_bound:
+            self.initial.setdefault("activate_account", activate_initial)
+            self.initial.setdefault("activation_date", today)
             default_password = self.initial.get("pppoe_password") or _default_client_password()
             self.initial.setdefault("pppoe_password", default_password)
             router = self._selected_router()
-            cpe_user, cpe_pass = self._cpe_defaults_for_router(router, default_password)
+            cpe_user, cpe_pass = self._cpe_defaults_for_router(router)
             if not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
                 self.initial.setdefault("cpe_username", cpe_user)
             if not self.initial.get("cpe_password"):
@@ -163,23 +279,41 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 address = self._address_default_for_router(router)
                 if address:
                     self.initial.setdefault("address", address)
-        elif not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
-            self.fields["cpe_username"].initial = "admin"
-        if organization is not None:
+        else:
+            if not self.data.get("activation_date"):
+                self.fields["activation_date"].initial = today
+            if not (self.initial.get("cpe_username") or getattr(self.instance, "cpe_username", "")):
+                self.fields["cpe_username"].initial = "admin"
+        if self.organization is not None:
             from billing.services import plans_for_router
 
             self.fields["plan"].queryset = plans_for_router(
-                organization,
+                self.organization,
                 self._selected_router(),
                 service_type=Customer.ServiceType.PPPOE,
             )
             self.fields["router"].queryset = MikroTikRouter.objects.filter(
-                organization=organization,
+                organization=self.organization,
             ).order_by("name")
+        elif org_qs is not None:
+            # Multi-ISP registration: MikroTiks/plans are filled from JS maps
+            # until an ISP client is chosen. On POST without a valid ISP, keep
+            # allowed routers so validation errors can still redisplay.
+            if self.is_bound:
+                self.fields["router"].queryset = MikroTikRouter.objects.filter(
+                    organization__in=org_qs,
+                ).order_by("name")
+                self.fields["plan"].queryset = BillingPlan.objects.filter(
+                    organization__in=org_qs,
+                    is_active=True,
+                    service_type=Customer.ServiceType.PPPOE,
+                ).order_by("price", "name")
+            else:
+                self.fields["router"].queryset = MikroTikRouter.objects.none()
+                self.fields["plan"].queryset = BillingPlan.objects.none()
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
             self.fields["router"].queryset = MikroTikRouter.objects.none()
-
     def _selected_router(self):
         router = None
         if self.organization is None:
@@ -210,13 +344,22 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
     @staticmethod
     def _cpe_defaults_for_router(router, fallback_password: str = "") -> tuple[str, str]:
+        """Return MikroTik default CPE login. Never invent a password from PPPoE."""
         if router is None:
-            return "admin", fallback_password or ""
+            return "admin", ""
         username = (getattr(router, "default_cpe_username", None) or "").strip() or "admin"
         password = getattr(router, "default_cpe_password", None) or ""
-        if not password:
-            password = fallback_password or ""
         return username, password
+
+    @staticmethod
+    def _activation_datetime(day: date):
+        now = timezone.localtime()
+        if day == now.date():
+            return now
+        return timezone.make_aware(
+            datetime.combine(day, time.min),
+            timezone.get_current_timezone(),
+        )
 
     def clean_full_name(self):
         name = (self.cleaned_data.get("full_name") or "").strip().upper()
@@ -257,21 +400,19 @@ class PppoeClientRegisterForm(forms.ModelForm):
 
     def clean_cpe_username(self):
         username = (self.cleaned_data.get("cpe_username") or "").strip()
-        return username or "admin"
+        if username:
+            return username
+        router = self._selected_router()
+        cpe_user, _ = self._cpe_defaults_for_router(router)
+        return cpe_user or "admin"
 
     def clean_cpe_password(self):
         password = self.cleaned_data.get("cpe_password") or ""
         if password:
             return password
         router = self._selected_router()
-        _, router_password = self._cpe_defaults_for_router(
-            router,
-            self.cleaned_data.get("pppoe_password") or "",
-        )
-        if router_password:
-            return router_password
-        return self.cleaned_data.get("pppoe_password") or ""
-
+        _, router_password = self._cpe_defaults_for_router(router)
+        return router_password or ""
     def clean(self):
         cleaned = super().clean()
         phone = (cleaned.get("phone") or "").strip().upper()
@@ -307,7 +448,26 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 "plan",
                 "That package is not linked to the selected MikroTik.",
             )
+        if not self.allow_activate:
+            cleaned["activate_account"] = False
+            cleaned["activation_date"] = None
+            return cleaned
+        activate = bool(cleaned.get("activate_account"))
+        activation_date = cleaned.get("activation_date")
+        if activate and not activation_date:
+            self.add_error("activation_date", "Choose the activation date.")
+        if not activate:
+            cleaned["activation_date"] = None
         return cleaned
+
+    def clean_organization(self):
+        org = self.cleaned_data.get("organization")
+        if self.organizations is None:
+            return org
+        if not org:
+            raise forms.ValidationError("Select the ISP client this subscriber belongs to.")
+        self.organization = org
+        return org
 
     def clean_router(self):
         router = self.cleaned_data.get("router")
@@ -316,26 +476,37 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 "Select the MikroTik this client dials into so the PPPoE login can be installed."
             )
         if self.organization and router.organization_id != self.organization.pk:
-            raise forms.ValidationError("Choose a router from this organization.")
+            raise forms.ValidationError(
+                "Choose a MikroTik that belongs to the selected ISP client."
+            )
         return router
 
     def save(self, commit=True):
         customer = super().save(commit=False)
+        if self.organizations is not None and not self.organization:
+            self.organization = self.cleaned_data.get("organization")
         customer.organization = self.organization
         customer.service_type = Customer.ServiceType.PPPOE
-        customer.status = Customer.Status.ACTIVE
+        activate = bool(self.cleaned_data.get("activate_account"))
+        activation_date = self.cleaned_data.get("activation_date")
+        if activate:
+            customer.status = Customer.Status.ACTIVE
+            start = self._activation_datetime(activation_date or timezone.localdate())
+            customer.package_start = start
+            if customer.plan_id:
+                customer.package_end = compute_package_end(start, customer.plan)
+            else:
+                customer.package_end = None
+        else:
+            customer.status = Customer.Status.INACTIVE
+            customer.package_start = None
+            customer.package_end = None
         if not customer.account_number:
             from billing.services import generate_account_number_from_phone
 
             customer.account_number = generate_account_number_from_phone(
                 customer.phone,
                 organization=self.organization,
-            )
-        if customer.plan_id and not customer.package_start:
-            customer.package_start = timezone.localtime()
-            customer.package_end = compute_package_end(
-                customer.package_start,
-                customer.plan,
             )
         if commit:
             customer.save()

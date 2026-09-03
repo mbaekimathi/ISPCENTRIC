@@ -1,5 +1,6 @@
 from functools import wraps
 import json
+import threading
 
 from django.db import transaction
 from django.db.models import Q
@@ -54,7 +55,10 @@ from accounts.routing import (
     switchable_clients_list,
     switchable_role_options,
 )
-from billing.models import Customer, InstallationDecline, InstallationReject
+from billing.forms import PppoeClientRegisterForm
+from billing.models import BillingPlan, Customer, InstallationDecline, InstallationReject
+from core.mikrotik_connect import provision_customer_pppoe
+from core.models import MikroTikRouter
 
 
 ROLE_PAGE = {
@@ -2424,16 +2428,25 @@ def technician_dashboard(request):
                 {
                     "index": "01",
                     "label": "New Customer Installation",
+                    "hint": "Accept jobs, navigate to site, and register PPPoE clients.",
                     "url_name": "roles:technician_installations",
                 },
                 {
                     "index": "02",
-                    "label": "Fault Tickets",
-                    "url_name": "roles:technician_fault_tickets",
+                    "label": "Tickets",
+                    "hint": "Pending activation clients and tickets you have connected.",
+                    "url_name": "roles:technician_tickets",
                 },
                 {
                     "index": "03",
+                    "label": "Fault Tickets",
+                    "hint": "Work repair and outage tickets assigned to you.",
+                    "url_name": "roles:technician_fault_tickets",
+                },
+                {
+                    "index": "04",
                     "label": "Network Equipment",
+                    "hint": "Review gear, CPE, and field inventory for jobs.",
                     "url_name": "roles:technician_network_equipment",
                 },
             ],
@@ -2465,6 +2478,84 @@ def technician_installations(request):
     if can_switch_roles(employee):
         set_role_view(request, Employee.Role.TECHNICIAN)
 
+    # Technicians pick the ISP client first, then that client's MikroTiks.
+    isp_clients = list(
+        Organization.objects.exclude(status=Organization.Status.SUSPENDED)
+        .order_by("name")
+        .only("id", "name")
+    )
+    open_modal = ""
+    pppoe_form = PppoeClientRegisterForm(
+        organizations=isp_clients,
+        default_activate=False,
+        allow_activate=False,
+    )
+
+    if request.method == "POST":
+        action = (request.POST.get("action") or "").strip()
+        if action == "register_pppoe":
+            if not isp_clients:
+                messages.error(request, "No ISP clients are available for registration.")
+                return redirect("roles:technician_installations")
+            pppoe_form = PppoeClientRegisterForm(
+                request.POST,
+                organizations=isp_clients,
+                default_activate=False,
+                allow_activate=False,
+            )
+            if pppoe_form.is_valid():
+                customer = pppoe_form.save(commit=False)
+                customer.registered_by = request.user
+                customer.assigned_technician = employee
+                customer.save()
+                customer_pk = customer.pk
+                account_number = customer.account_number
+                full_name = customer.full_name
+                org_name = (
+                    customer.organization.name
+                    if customer.organization_id
+                    else "ISP client"
+                )
+
+                def _bg_provision(pk: int = customer_pk) -> None:
+                    from django.db import connection
+
+                    try:
+                        cust = Customer.objects.select_related(
+                            "plan", "router", "organization"
+                        ).get(pk=pk)
+                        provision_customer_pppoe(cust, ensure_stack=False)
+                    except Exception:
+                        pass
+                    finally:
+                        connection.close()
+
+                threading.Thread(target=_bg_provision, daemon=True).start()
+                messages.success(
+                    request,
+                    (
+                        f"PPPoE client “{full_name}” registered "
+                        f"({account_number}) under {org_name} as inactive. "
+                        "The CPE can dial in, but surfing stays blocked until an ISP client activates the account."
+                    ),
+                )
+                return redirect("roles:technician_installations")
+            open_modal = "pppoe-register-modal"
+
+    # Clients this technician registered (also include older rows only linked via assignment).
+    my_clients = list(
+        Customer.objects.filter(
+            Q(registered_by=request.user) | Q(assigned_technician=employee)
+        )
+        .select_related("organization", "plan", "router")
+        .distinct()
+        .order_by("-created_at")[:300]
+    )
+    inactive_count = sum(
+        1 for c in my_clients if c.status == Customer.Status.INACTIVE
+    )
+    active_count = sum(1 for c in my_clients if c.status == Customer.Status.ACTIVE)
+
     # Open pool: allocated-open, plus closed tickets with no assignee.
     # Closed assigned: only tickets for the technician in session.
     # Hide tickets this technician marked as not interested.
@@ -2481,6 +2572,7 @@ def technician_installations(request):
             )
         )
         .exclude(installation_declines__technician=employee)
+        .exclude(pk__in=[c.pk for c in my_clients])
         .select_related(
             "organization",
             "plan",
@@ -2488,8 +2580,81 @@ def technician_installations(request):
             "assigned_technician__user",
         )
         .distinct()
-        .order_by("-created_at")[:200]
+        .order_by("-created_at")[:100]
     )
+
+    router_cpe_defaults: dict[str, dict] = {}
+    routers_by_org: dict[str, list[dict]] = {}
+    plans_by_org: dict[str, list[dict]] = {"_plan_org": {}}
+    client_routers = []
+    if isp_clients:
+        org_ids = [org.pk for org in isp_clients]
+        client_routers = list(
+            MikroTikRouter.objects.filter(organization_id__in=org_ids)
+            .order_by("name", "host")
+            .only("id", "name", "host", "organization_id")
+        )
+        for router in MikroTikRouter.objects.filter(organization_id__in=org_ids).only(
+            "id",
+            "name",
+            "host",
+            "organization_id",
+            "default_cpe_username",
+            "default_cpe_password",
+            "location",
+        ):
+            org_key = str(router.organization_id)
+            label = (router.name or "").strip() or router.host or f"Router {router.pk}"
+            if router.host and router.name:
+                label = f"{router.name} ({router.host})"
+            routers_by_org.setdefault(org_key, []).append(
+                {"id": router.pk, "name": router.name or "", "label": label}
+            )
+            default_password = (router.default_cpe_password or "").strip()
+            router_cpe_defaults[str(router.pk)] = {
+                "username": (router.default_cpe_username or "").strip() or "admin",
+                "password": default_password,
+                "has_password": bool(default_password),
+                "address": (router.location or "").strip(),
+                "router_name": (router.name or "").strip(),
+                "organization_id": router.organization_id,
+            }
+        for plan in (
+            BillingPlan.objects.filter(
+                organization_id__in=org_ids,
+                is_active=True,
+                service_type=Customer.ServiceType.PPPOE,
+            )
+            .prefetch_related("routers")
+            .order_by("price", "name")
+            .only("id", "name", "organization_id")
+        ):
+            org_key = str(plan.organization_id)
+            router_ids = list(plan.routers.values_list("id", flat=True))
+            plans_by_org.setdefault(org_key, []).append(
+                {
+                    "id": plan.pk,
+                    "name": plan.name,
+                    "router_ids": router_ids,
+                }
+            )
+            plans_by_org["_plan_org"][str(plan.pk)] = plan.organization_id
+
+    if open_modal != "pppoe-register-modal" and request.method != "POST":
+        pppoe_initial: dict = {}
+        if len(isp_clients) == 1:
+            pppoe_initial["organization"] = isp_clients[0].pk
+            org_routers = [
+                r for r in client_routers if r.organization_id == isp_clients[0].pk
+            ]
+            if len(org_routers) == 1:
+                pppoe_initial["router"] = org_routers[0].pk
+        pppoe_form = PppoeClientRegisterForm(
+            organizations=isp_clients,
+            initial=pppoe_initial,
+            default_activate=False,
+            allow_activate=False,
+        )
 
     return render(
         request,
@@ -2498,13 +2663,39 @@ def technician_installations(request):
             "page_title": "New Customer Installation",
             "page_kicker": "Field work",
             "page_subtitle": (
-                "Open technician requests and tickets assigned to you."
+                "Clients you registered, plus open installation tickets."
             ),
-            "empty_text": "No open or assigned installation tickets yet.",
+            "empty_text": "No clients registered yet. Register a PPPoE client to get started.",
             "current_page": "installations",
             "dashboard_url_name": "roles:technician",
+            "my_clients": my_clients,
             "tickets": tickets,
             "employee_profile": employee,
+            "registered_count": len(my_clients),
+            "inactive_count": inactive_count,
+            "active_count": active_count,
+            "assigned_count": sum(
+                1 for t in tickets if t.assigned_technician_id == employee.pk
+            ),
+            "open_pool_count": sum(
+                1
+                for t in tickets
+                if t.status == Customer.Status.ALLOCATED_OPEN
+                or (
+                    t.status == Customer.Status.ALLOCATED_CLOSED
+                    and t.assigned_technician_id is None
+                )
+            ),
+            "pppoe_form": pppoe_form,
+            "pppoe_select_isp": True,
+            "router_cpe_defaults_json": json.dumps(router_cpe_defaults),
+            "routers_by_org_json": json.dumps(routers_by_org),
+            "plans_by_org_json": json.dumps(plans_by_org),
+            "open_client_modal": open_modal,
+            "billing_plans_exist": any(
+                key != "_plan_org" and plans_by_org.get(key)
+                for key in plans_by_org
+            ),
         },
     )
 
@@ -2699,25 +2890,151 @@ def technician_installation_reject(request, customer_id):
     return redirect("roles:technician_installations")
 
 
+def _technician_ticket_clients(employee, user):
+    """Clients this technician registered or has assigned."""
+    return (
+        Customer.objects.filter(
+            Q(registered_by=user) | Q(assigned_technician=employee)
+        )
+        .select_related("organization", "plan", "router")
+        .distinct()
+        .order_by("-created_at")
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_tickets(request):
+    """Pending-activation clients for this technician."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    tickets = list(
+        _technician_ticket_clients(employee, request.user).filter(
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.INACTIVE,
+        )[:200]
+    )
+    connected_count = _technician_ticket_clients(employee, request.user).count()
+
+    return render(
+        request,
+        "accounts/technician_tickets.html",
+        {
+            "page_title": "Tickets",
+            "page_kicker": "Field work",
+            "page_subtitle": (
+                "Clients you connected that are waiting for ISP activation."
+            ),
+            "empty_text": (
+                "No pending activation clients yet. Register a PPPoE client "
+                "from Installations to see it here."
+            ),
+            "current_page": "tickets",
+            "dashboard_url_name": "roles:technician",
+            "ticket_view": "pending",
+            "tickets": tickets,
+            "pending_count": len(tickets),
+            "connected_count": connected_count,
+            "employee_profile": employee,
+        },
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_tickets_connected(request):
+    """All tickets this technician has connected, with status."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    tickets = list(_technician_ticket_clients(employee, request.user)[:300])
+    pending_count = sum(
+        1 for t in tickets if t.status == Customer.Status.INACTIVE
+    )
+    active_count = sum(1 for t in tickets if t.status == Customer.Status.ACTIVE)
+
+    return render(
+        request,
+        "accounts/technician_tickets.html",
+        {
+            "page_title": "My connected tickets",
+            "page_kicker": "Field work",
+            "page_subtitle": (
+                "Every client ticket you have connected, with current status."
+            ),
+            "empty_text": (
+                "You have not connected any tickets yet. Accept an installation "
+                "or register a PPPoE client to get started."
+            ),
+            "current_page": "tickets_connected",
+            "dashboard_url_name": "roles:technician",
+            "ticket_view": "connected",
+            "tickets": tickets,
+            "pending_count": pending_count,
+            "connected_count": len(tickets),
+            "active_count": active_count,
+            "employee_profile": employee,
+        },
+    )
+
+
 @role_required(Employee.Role.TECHNICIAN)
 def technician_fault_tickets(request):
-    return _technician_module_page(
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    tickets = []
+    return render(
         request,
-        current_page="fault_tickets",
-        page_title="Fault Tickets",
-        page_kicker="Field work",
-        page_subtitle="Active and recent fault tickets for field resolution.",
-        empty_text="No fault tickets are open yet.",
+        "accounts/technician_fault_tickets.html",
+        {
+            "page_title": "Fault Tickets",
+            "page_kicker": "Field work",
+            "page_subtitle": "Active and recent fault tickets for field resolution.",
+            "empty_text": "When support assigns a repair or outage, it will show up here for you to work.",
+            "current_page": "fault_tickets",
+            "dashboard_url_name": "roles:technician",
+            "tickets": tickets,
+            "assigned_count": 0,
+            "open_count": 0,
+        },
     )
 
 
 @role_required(Employee.Role.TECHNICIAN)
 def technician_network_equipment(request):
-    return _technician_module_page(
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    allocations = list(
+        NetworkEquipmentAllocation.objects.filter(
+            employee=employee,
+            returned_at__isnull=True,
+        )
+        .select_related("equipment", "serial", "allocated_by")
+        .order_by("-allocated_at")[:100]
+    )
+    serial_count = sum(1 for row in allocations if row.serial_id)
+    catalog_count = NetworkEquipment.objects.filter(
+        status=NetworkEquipment.Status.ACTIVE
+    ).count()
+
+    return render(
         request,
-        current_page="network_equipment",
-        page_title="Network Equipment",
-        page_kicker="Field work",
-        page_subtitle="Network equipment used for installs and repairs.",
-        empty_text="No network equipment records yet.",
+        "accounts/technician_network_equipment.html",
+        {
+            "page_title": "Network Equipment",
+            "page_kicker": "Field work",
+            "page_subtitle": "Gear assigned to you for installs and repairs.",
+            "empty_text": "Nothing is checked out to you yet. When support allocates routers, ONUs, or other gear, it will appear here.",
+            "current_page": "network_equipment",
+            "dashboard_url_name": "roles:technician",
+            "allocations": allocations,
+            "assigned_count": len(allocations),
+            "serial_count": serial_count,
+            "catalog_count": catalog_count,
+        },
     )

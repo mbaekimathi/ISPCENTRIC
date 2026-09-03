@@ -144,14 +144,20 @@
     <input type="hidden" name="action" value="update_router_password">
     <label for="wifi-router-password">Client router admin password</label>
     <div class="client-router-password-row">
-      <input
-        type="password"
-        id="wifi-router-password"
-        name="cpe_password"
-        class="form-control"
-        autocomplete="off"
-        placeholder="Password used to sign in to the client router"
-      >
+      <div class="password-field">
+        <input
+          type="password"
+          id="wifi-router-password"
+          name="cpe_password"
+          class="form-control"
+          autocomplete="off"
+          placeholder="Password used to sign in to the client router"
+        >
+        <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
+          <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+        </button>
+      </div>
       <button type="submit" class="btn btn-primary">Save &amp; fetch</button>
     </div>
     <p class="field-hint">
@@ -256,10 +262,14 @@
         <strong class="mikrotik-secret" data-router-secret {% if not has_cpe_password %}hidden{% endif %}>
           <span class="mikrotik-secret-mask" data-secret-mask>•</span>
           <span class="mikrotik-secret-value" data-secret-value data-router-password hidden>{{ cpe_password }}</span>
-          <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
+          <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show router password">
+            <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+            <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+          </button>
           <button type="button" class="pppoe-mini-btn" data-copy-password>Copy</button>
         </strong>
         <span data-router-password-empty {% if has_cpe_password %}hidden{% endif %}>Not saved — enter it below if connect fails</span>
+        <span {% if not has_cpe_password %}hidden{% endif %} data-router-password-hint>Tap the eye icon to reveal</span>
       </dd>
     </div>
     <div class="client-kv" data-ico="shield">
@@ -303,14 +313,20 @@
       {% csrf_token %}
       <label for="router-access-password">Client router admin password</label>
       <div class="client-router-password-row">
-        <input
-          type="password"
-          id="router-access-password"
-          name="cpe_password"
-          class="form-control"
-          autocomplete="off"
-          placeholder="Password used to sign in to the client router"
-        >
+        <div class="password-field">
+          <input
+            type="password"
+            id="router-access-password"
+            name="cpe_password"
+            class="form-control"
+            autocomplete="off"
+            placeholder="Password used to sign in to the client router"
+          >
+          <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
+            <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+            <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+          </button>
+        </div>
         <button type="submit" class="btn btn-primary">Save &amp; connect</button>
       </div>
       <p class="field-hint">This is the router’s own admin password, not the PPPoE password.</p>
@@ -388,7 +404,9 @@
       if (value) value.hidden = showing;
       if (eye) eye.hidden = !showing;
       if (eyeOff) eyeOff.hidden = showing;
-      if (btn.classList.contains("mikrotik-secret-toggle")) {
+      if (eye || eyeOff) {
+        btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+      } else if (btn.classList.contains("mikrotik-secret-toggle")) {
         btn.textContent = showing ? "Show" : "Hide";
       } else {
         btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
@@ -407,6 +425,7 @@
       var eyeOff = btn.querySelector(".icon-eye-off");
       if (eye) eye.hidden = !showing;
       if (eyeOff) eyeOff.hidden = showing;
+      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
     });
   });
 })();
@@ -684,12 +703,32 @@
     }
     if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
     if (connecting) connecting.hidden = true;
-    if (errorBox) errorBox.hidden = true;
+    // Keep the password form available when auto-login failed so a wrong or
+    // outdated saved admin password can be corrected and reconnect.
+    var needPass = !data.authenticated && !!data.needs_password;
+    if (errorBox) errorBox.hidden = !needPass;
+    if (errorBanner && needPass) {
+      errorBanner.textContent = data.login_error
+        || "Could not sign in with the saved router password. Enter the correct admin password below.";
+    }
+    if (guidance && needPass) {
+      var items = data.guidance || [];
+      guidance.innerHTML = "";
+      items.forEach(function (item) {
+        var li = document.createElement("li");
+        li.textContent = item;
+        guidance.appendChild(li);
+      });
+      guidance.hidden = !items.length;
+    }
+    if (errorActions) errorActions.hidden = true;
+    if (passwordForm) passwordForm.hidden = !needPass;
+    if (errorDetail && needPass) errorDetail.textContent = "";
     if (newTab) {
       newTab.href = url;
       newTab.hidden = false;
     }
-    setStepState("login", "done");
+    setStepState("login", data.authenticated ? "done" : "active");
     if (frame) {
       frame.hidden = false;
       frame.src = url;
@@ -823,9 +862,11 @@
       root.setAttribute("data-cpe-pass", value);
       var secret = root.querySelector("[data-router-secret]");
       var empty = root.querySelector("[data-router-password-empty]");
+      var hint = root.querySelector("[data-router-password-hint]");
       var passNode = root.querySelector("[data-router-password]");
       if (secret) secret.hidden = false;
       if (empty) empty.hidden = true;
+      if (hint) hint.hidden = false;
       if (passNode) passNode.textContent = value;
       routerStarted = true;
       connect(new FormData(passwordForm));

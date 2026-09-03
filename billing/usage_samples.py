@@ -19,7 +19,7 @@ _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
-_CLIENT_SAMPLE_CAP = 1200  # max rows scanned per client trend request
+_CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
 _NETWORK_TREND_TTL = 20
 _NETWORK_TREND_COLORS = [
     "#2ecc71",
@@ -114,6 +114,11 @@ def record_customer_usage_sample(customer: Customer, payload: dict[str, Any]) ->
     Returns True when a row was written.
     """
     if not customer or not customer.pk or not customer.organization_id:
+        return False
+
+    # Failed MikroTik probes must not be stored as "offline" — that poisons
+    # presence charts and breaks counter continuity for real sessions.
+    if payload.get("ok") is False:
         return False
 
     session_active = bool(payload.get("session_active"))
@@ -226,25 +231,61 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     )
     pppoe_by_router: dict[int, dict[str, Customer]] = {}
     hotspot_by_router: dict[int, dict[str, Customer]] = {}
+    # Global MAC → customer so Hotspot gadgets are matched even when the
+    # client has no assigned router, or is surfing on a different NAS.
+    hotspot_by_mac: dict[str, Customer] = {}
+
+    def _hotspot_macs(customer: Customer) -> list[str]:
+        macs: list[str] = []
+        primary = "".join(
+            ch for ch in (customer.hotspot_mac or "") if ch.isalnum()
+        ).upper()
+        if len(primary) == 12:
+            macs.append(primary)
+        try:
+            from billing.devices import hotspot_macs_for_customer
+
+            for raw in hotspot_macs_for_customer(customer):
+                compact = "".join(ch for ch in (raw or "") if ch.isalnum()).upper()
+                if len(compact) == 12 and compact not in macs:
+                    macs.append(compact)
+        except Exception:
+            pass
+        return macs
+
     for customer in customers:
         router_id = customer.router_id
-        if not router_id:
-            continue
         if customer.service_type == Customer.ServiceType.PPPOE:
+            if not router_id:
+                continue
             key = (customer.pppoe_username or "").strip().lower()
             if key:
-                pppoe_by_router.setdefault(router_id, {})[key] = customer
+                bucket = pppoe_by_router.setdefault(router_id, {})
+                bucket[key] = customer
+                # Match NAS sessions stored with/without a leading +.
+                if key.startswith("+"):
+                    bucket.setdefault(key[1:], customer)
+                elif key.isdigit():
+                    bucket.setdefault(f"+{key}", customer)
         elif customer.service_type == Customer.ServiceType.HOTSPOT:
-            mac = "".join(
-                ch for ch in (customer.hotspot_mac or "") if ch.isalnum()
-            ).upper()
-            if len(mac) == 12:
-                hotspot_by_router.setdefault(router_id, {})[mac] = customer
+            macs = _hotspot_macs(customer)
+            if not macs:
+                continue
+            for mac in macs:
+                hotspot_by_mac[mac] = customer
+            if router_id:
+                bucket = hotspot_by_router.setdefault(router_id, {})
+                for mac in macs:
+                    bucket[mac] = customer
 
-    def _probe(router: MikroTikRouter) -> tuple[int, list[tuple[Customer, dict[str, Any]]]]:
-        hits: list[tuple[Customer, dict[str, Any]]] = []
+    def _probe(
+        router: MikroTikRouter,
+    ) -> tuple[int, bool, dict[str, dict[str, Any]], bool, dict[str, dict[str, Any]]]:
+        pppoe_sessions: dict[str, dict[str, Any]] = {}
+        hotspot_sessions: dict[str, dict[str, Any]] = {}
+        pppoe_ok = False
+        hotspot_ok = False
         pppoe_map = pppoe_by_router.get(router.pk) or {}
-        hotspot_map = hotspot_by_router.get(router.pk) or {}
         if pppoe_map:
             result = fetch_router_bulk_pppoe_usage(
                 router.host,
@@ -252,54 +293,129 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 router.password or "",
                 timeout=_ORG_SAMPLE_ROUTER_TIMEOUT,
             )
-            # Only mark missing clients offline when the router answered —
-            # a failed probe must not flood everyone as offline.
-            if result.get("ok"):
-                matched: set[int] = set()
-                for username, payload in (result.get("sessions") or {}).items():
-                    customer = pppoe_map.get((username or "").strip().lower())
-                    if customer:
-                        hits.append((customer, payload))
-                        matched.add(customer.pk)
-                offline = _offline_usage_payload()
-                for customer in pppoe_map.values():
-                    if customer.pk not in matched:
-                        hits.append((customer, offline))
-        if hotspot_map:
+            pppoe_ok = bool(result.get("ok"))
+            if pppoe_ok:
+                pppoe_sessions = result.get("sessions") or {}
+        # Always probe Hotspot on every reachable router so unassigned / roaming
+        # gadgets are still captured for usage trends.
+        if hotspot_by_mac:
             result = fetch_router_bulk_hotspot_usage(
                 router.host,
                 router.username,
                 router.password or "",
                 timeout=_ORG_SAMPLE_ROUTER_TIMEOUT,
             )
-            if result.get("ok"):
-                matched = set()
-                for mac, payload in (result.get("sessions") or {}).items():
-                    customer = hotspot_map.get((mac or "").strip().upper())
-                    if customer:
-                        hits.append((customer, payload))
-                        matched.add(customer.pk)
-                offline = _offline_usage_payload()
-                for customer in hotspot_map.values():
-                    if customer.pk not in matched:
-                        hits.append((customer, offline))
-        return router.pk, hits
+            hotspot_ok = bool(result.get("ok"))
+            if hotspot_ok:
+                hotspot_sessions = result.get("sessions") or {}
+        return router.pk, pppoe_ok, pppoe_sessions, hotspot_ok, hotspot_sessions
 
     sampled = 0
+    matched_hotspot: set[int] = set()
+    # Aggregate multi-MAC Hotspot clients (sum counters / max rates).
+    hotspot_agg: dict[int, dict[str, Any]] = {}
+    reachable_hotspot_routers: set[int] = set()
     workers = min(_ORG_SAMPLE_WORKERS, len(routers))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(_probe, router) for router in routers]
         for future in as_completed(futures):
             try:
-                _router_id, hits = future.result()
+                router_id, pppoe_ok, pppoe_sessions, hotspot_ok, hotspot_sessions = (
+                    future.result()
+                )
             except Exception:
                 continue
-            for customer, payload in hits:
+
+            if pppoe_ok:
+                pppoe_map = pppoe_by_router.get(router_id) or {}
+                matched: set[int] = set()
+                for username, payload in pppoe_sessions.items():
+                    customer = pppoe_map.get((username or "").strip().lower())
+                    if not customer:
+                        continue
+                    try:
+                        if record_customer_usage_sample(customer, payload):
+                            sampled += 1
+                    except Exception:
+                        pass
+                    matched.add(customer.pk)
+                offline = _offline_usage_payload()
+                for customer in pppoe_map.values():
+                    if customer.pk in matched:
+                        continue
+                    try:
+                        if record_customer_usage_sample(customer, offline):
+                            sampled += 1
+                    except Exception:
+                        pass
+
+            if hotspot_ok:
+                reachable_hotspot_routers.add(router_id)
+                for mac, payload in hotspot_sessions.items():
+                    customer = hotspot_by_mac.get((mac or "").strip().upper())
+                    if not customer:
+                        continue
+                    matched_hotspot.add(customer.pk)
+                    total = int(payload.get("bytes_in") or 0) + int(
+                        payload.get("bytes_out") or 0
+                    )
+                    stats = hotspot_agg.get(customer.pk)
+                    # Keep the busiest gadget session so byte deltas stay stable.
+                    if stats is None or total >= int(stats.get("total") or 0):
+                        hotspot_agg[customer.pk] = {
+                            "customer": customer,
+                            "total": total,
+                            "session_active": True,
+                            "bytes_in": int(payload.get("bytes_in") or 0),
+                            "bytes_out": int(payload.get("bytes_out") or 0),
+                            "download_bps": int(payload.get("download_bps") or 0),
+                            "upload_bps": int(payload.get("upload_bps") or 0),
+                            "address": payload.get("address") or "",
+                            "uptime_raw": payload.get("uptime_raw") or "",
+                        }
+                    else:
+                        stats["download_bps"] = max(
+                            int(stats["download_bps"] or 0),
+                            int(payload.get("download_bps") or 0),
+                        )
+                        stats["upload_bps"] = max(
+                            int(stats["upload_bps"] or 0),
+                            int(payload.get("upload_bps") or 0),
+                        )
+
+    for stats in hotspot_agg.values():
+        customer = stats["customer"]
+        payload = {
+            "ok": True,
+            "session_active": True,
+            "bytes_in": stats["bytes_in"],
+            "bytes_out": stats["bytes_out"],
+            "download_bps": stats["download_bps"] or None,
+            "upload_bps": stats["upload_bps"] or None,
+            "address": stats["address"],
+            "uptime_raw": stats["uptime_raw"],
+        }
+        try:
+            if record_customer_usage_sample(customer, payload):
+                sampled += 1
+        except Exception:
+            pass
+
+    # Offline markers only for Hotspot clients assigned to a router we reached —
+    # unassigned clients simply stay silent when offline (no false presence).
+    if reachable_hotspot_routers:
+        offline = _offline_usage_payload()
+        for router_id, cmap in hotspot_by_router.items():
+            if router_id not in reachable_hotspot_routers:
+                continue
+            for customer in cmap.values():
+                if customer.pk in matched_hotspot:
+                    continue
                 try:
-                    if record_customer_usage_sample(customer, payload):
+                    if record_customer_usage_sample(customer, offline):
                         sampled += 1
                 except Exception:
-                    continue
+                    pass
 
     # Invalidate payload caches so the next read includes fresh samples.
     router_keys = ["all", "none"]
@@ -329,6 +445,74 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
         "sampled": sampled,
         "routers": len(routers),
         "skipped": False,
+    }
+
+
+def _human_duration(seconds: float | int) -> str:
+    total = max(0, int(seconds or 0))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        mins = total // 60
+        return f"{mins} min"
+    hours = total // 3600
+    mins = (total % 3600) // 60
+    if mins:
+        return f"{hours}h {mins}m"
+    return f"{hours}h"
+
+
+def _client_usage_story(
+    *,
+    hours: int,
+    sample_count: int,
+    latest_active: bool,
+    online_ratio: float,
+    data_used_bytes: int,
+    peak_download_bps: int,
+    stopped_count: int,
+) -> dict[str, Any]:
+    """Plain-language status for the usage analysis page."""
+    if sample_count <= 0:
+        return {
+            "tracking": "empty",
+            "status": "Waiting",
+            "status_hint": "No readings yet",
+            "insight": "Usage history is still empty. The app collects it automatically in the background.",
+        }
+    if sample_count < 3 and data_used_bytes <= 0 and peak_download_bps <= 0:
+        return {
+            "tracking": "warming",
+            "status": "Online now" if latest_active else "Offline now",
+            "status_hint": "Building history…",
+            "insight": "First readings are in. A clearer trend will appear after a few more minutes.",
+        }
+
+    status = "Online now" if latest_active else "Offline now"
+    bits: list[str] = [status]
+    if data_used_bytes > 0:
+        if data_used_bytes >= 1024 * 1024 * 1024:
+            bits.append(f"used {data_used_bytes / (1024 * 1024 * 1024):.2f} GB")
+        elif data_used_bytes >= 1024 * 1024:
+            bits.append(f"used {data_used_bytes / (1024 * 1024):.1f} MB")
+        else:
+            bits.append(f"used {max(1, data_used_bytes // 1024)} KB")
+    if peak_download_bps >= 1_000_000:
+        bits.append(f"peak {peak_download_bps / 1_000_000:.1f} Mbps down")
+    elif peak_download_bps >= 1000:
+        bits.append(f"peak {peak_download_bps / 1000:.0f} Kbps down")
+    if online_ratio >= 80:
+        bits.append("mostly online")
+    elif online_ratio <= 20 and sample_count >= 4:
+        bits.append("mostly offline")
+    if stopped_count >= 2:
+        bits.append(f"dropped {stopped_count} times")
+
+    return {
+        "tracking": "ready",
+        "status": status,
+        "status_hint": f"Last {usage_range_label(hours)}",
+        "insight": " · ".join(bits),
     }
 
 
@@ -385,7 +569,7 @@ def usage_trend_payload(
 
     samples = list(
         CustomerUsageSample.objects.filter(customer=customer, sampled_at__gte=since)
-        .order_by("-sampled_at")
+        .order_by("sampled_at")
         .values(
             "sampled_at",
             "session_active",
@@ -394,9 +578,13 @@ def usage_trend_payload(
             "upload_bps",
             "bytes_in",
             "bytes_out",
-        )[:_CLIENT_SAMPLE_CAP]
+        )
     )
-    samples.reverse()  # chronological for byte-delta math
+    # Keep the full window: when dense, pick evenly spaced points so long
+    # ranges (7d/30d) are not truncated to only the newest samples.
+    if len(samples) > _CLIENT_SAMPLE_CAP:
+        step = len(samples) / float(_CLIENT_SAMPLE_CAP)
+        samples = [samples[min(len(samples) - 1, int(i * step))] for i in range(_CLIENT_SAMPLE_CAP)]
 
     online_by_bucket: dict[int, bool] = {}
     seen_by_bucket: dict[int, bool] = {}
@@ -489,12 +677,16 @@ def usage_trend_payload(
     labels: list[str] = []
     download_kbps: list[float | None] = []
     upload_kbps: list[float | None] = []
+    download_mbps: list[float | None] = []
+    upload_mbps: list[float | None] = []
     data_used_mb: list[float | None] = []
     online_flags: list[int | None] = []
     prime_index: int | None = None
     lowest_index: int | None = None
     stop_indexes: list[int] = []
     fmt = _chart_label_format(hours)
+    online_bucket_count = 0
+    seen_bucket_count = 0
 
     for idx, key in enumerate(chart_keys):
         labels.append(
@@ -507,17 +699,22 @@ def usage_trend_payload(
             online_flags.append(None)
             download_kbps.append(None)
             upload_kbps.append(None)
+            download_mbps.append(None)
+            upload_mbps.append(None)
             data_used_mb.append(None)
             continue
 
+        seen_bucket_count += 1
         is_online = bool(online_by_bucket.get(key))
+        if is_online:
+            online_bucket_count += 1
         online_flags.append(1 if is_online else 0)
-        download_kbps.append(
-            round(down_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
-        )
-        upload_kbps.append(
-            round(up_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
-        )
+        down_k = round(down_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
+        up_k = round(up_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
+        download_kbps.append(down_k)
+        upload_kbps.append(up_k)
+        download_mbps.append(round(down_k / 1000.0, 3) if is_online else 0)
+        upload_mbps.append(round(up_k / 1000.0, 3) if is_online else 0)
         data_used_mb.append(round(data_by_bucket.get(key, 0.0) / (1024 * 1024), 3))
         if prime_bucket == key:
             prime_index = idx
@@ -533,6 +730,25 @@ def usage_trend_payload(
             latest.get("bytes_out") or 0
         )
 
+    online_ratio = (
+        round((online_bucket_count / seen_bucket_count) * 100, 1)
+        if seen_bucket_count
+        else (
+            round((online_samples / len(samples)) * 100, 1) if samples else 0
+        )
+    )
+    approx_online_seconds = online_bucket_count * bucket_secs
+    latest_active = bool(latest and latest.get("session_active"))
+    story = _client_usage_story(
+        hours=hours,
+        sample_count=len(samples),
+        latest_active=latest_active,
+        online_ratio=online_ratio,
+        data_used_bytes=total_bytes_delta,
+        peak_download_bps=peak_down,
+        stopped_count=stopped_count,
+    )
+
     payload = {
         "ok": True,
         "hours": hours,
@@ -542,6 +758,8 @@ def usage_trend_payload(
         "series": {
             "download_kbps": download_kbps,
             "upload_kbps": upload_kbps,
+            "download_mbps": download_mbps,
+            "upload_mbps": upload_mbps,
             "data_used_mb": data_used_mb,
             "online": online_flags,
         },
@@ -551,14 +769,18 @@ def usage_trend_payload(
             "stop_indexes": stop_indexes[:6],
         },
         "summary": {
-            "online_ratio": (
-                round((online_samples / len(samples)) * 100, 1) if samples else 0
-            ),
+            "online_ratio": online_ratio,
+            "online_time_label": _human_duration(approx_online_seconds),
+            "online_time_seconds": approx_online_seconds,
             "peak_download_bps": peak_down,
             "peak_upload_bps": peak_up,
             "data_used_bytes": total_bytes_delta,
             "current_session_bytes": current_session_bytes,
-            "latest_active": bool(latest and latest.get("session_active")),
+            "latest_active": latest_active,
+            "status": story["status"],
+            "status_hint": story["status_hint"],
+            "tracking": story["tracking"],
+            "insight": story["insight"],
             "prime_point": (
                 _usage_point(
                     prime_sample["stamp"],
@@ -613,7 +835,9 @@ def _bytes_delta(previous_total: int | None, total: int) -> int:
         return 0
     if total >= previous_total:
         return total - previous_total
-    return total
+    # Counter reset (reconnect / new session) — do not count the new absolute
+    # total as data used; that created huge false spikes on the trend chart.
+    return 0
 
 
 def _empty_org_payload(hours: int, *, error: str = "", service: str = "") -> dict[str, Any]:

@@ -76,6 +76,34 @@ def _subscription_sweep_startup_delay_sec() -> float:
         return 20.0
 
 
+def _usage_sample_enabled() -> bool:
+    if "--no-usage-sample" in sys.argv:
+        return False
+    if "--no-sweep" in sys.argv:
+        return False
+    return os.getenv("USAGE_SAMPLE_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
+def _usage_sample_interval_sec() -> float:
+    """How often to snapshot PPPoE/Hotspot usage from every org's MikroTiks."""
+    try:
+        # Default 60s — dense enough for trend charts, light on RouterOS.
+        return max(30.0, float(os.getenv("USAGE_SAMPLE_INTERVAL_SEC", "60")))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _usage_sample_startup_delay_sec() -> float:
+    try:
+        return max(0.0, float(os.getenv("USAGE_SAMPLE_STARTUP_DELAY_SEC", "35")))
+    except (TypeError, ValueError):
+        return 35.0
+
+
 def _expiry_watch_interval_sec() -> float:
     """How often to check customers near their access deadline."""
     try:
@@ -169,6 +197,80 @@ def _start_subscription_sweep_loop() -> None:
     )
 
 
+def _run_usage_sample_all_orgs(*, label: str = "interval") -> None:
+    """
+    Persist live PPPoE/Hotspot counters for every organization.
+
+    Runs without anyone viewing usage pages so client/org trend charts keep
+    history. One worker wins via cache lock when multiple app processes boot.
+    """
+    from django.core.cache import cache
+
+    interval = int(_usage_sample_interval_sec())
+    lock_ttl = max(20, interval - 5)
+    if not cache.add("usage_sample_bg_lock", 1, timeout=lock_ttl):
+        return
+
+    from accounts.models import Organization
+    from billing.usage_samples import sample_organization_usage
+
+    sampled_total = 0
+    org_count = 0
+    for org in Organization.objects.order_by("id").iterator():
+        org_count += 1
+        try:
+            result = sample_organization_usage(org, force=True)
+            sampled_total += int((result or {}).get("sampled") or 0)
+        except Exception:
+            logger.exception(
+                "usage sample %s failed for org %s",
+                label,
+                getattr(org, "pk", "?"),
+            )
+    if org_count:
+        logger.info(
+            "usage sample %s: %s org(s), %s new row(s)",
+            label,
+            org_count,
+            sampled_total,
+        )
+
+
+def _start_usage_sample_loop() -> None:
+    if not _usage_sample_enabled():
+        return
+    interval = _usage_sample_interval_sec()
+
+    def _loop() -> None:
+        delay = _usage_sample_startup_delay_sec()
+        if delay:
+            logger.info(
+                "Usage sampling startup delayed %.0fs so boot traffic stays light.",
+                delay,
+            )
+            time.sleep(delay)
+        try:
+            _run_usage_sample_all_orgs(label="startup")
+        except Exception:
+            logger.exception("usage sample startup failed")
+        while True:
+            time.sleep(interval)
+            try:
+                _run_usage_sample_all_orgs(label="interval")
+            except Exception:
+                logger.exception("usage sample interval failed")
+
+    threading.Thread(
+        target=_loop,
+        name="usage-sample",
+        daemon=True,
+    ).start()
+    logger.info(
+        "Usage sampling armed (every %.0fs). Disable with USAGE_SAMPLE_ENABLED=false.",
+        interval,
+    )
+
+
 def _sync_wireguard() -> None:
     if not _tunnel_sync_enabled():
         return
@@ -255,7 +357,7 @@ def _run_nas_config_sync_once() -> None:
 
 
 def start_runtime_tasks() -> None:
-    """Idempotent: WireGuard peer sync + subscription sweep in background threads."""
+    """Idempotent: WireGuard sync, subscription sweep, and usage sampling."""
     global _started
     if _started or not should_start_runtime_tasks():
         return
@@ -269,5 +371,6 @@ def start_runtime_tasks() -> None:
         except Exception:
             logger.exception("NAS config sync boot hook failed")
         _start_subscription_sweep_loop()
+        _start_usage_sample_loop()
 
     threading.Thread(target=_boot, name="ispcentric-boot", daemon=True).start()

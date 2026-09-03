@@ -133,6 +133,13 @@ class PrepaidAccessPolicyTests(TestCase):
         self.assertFalse(customer_receives_internet(customer))
         self.assertTrue(customer_pppoe_secret_disabled(customer))
 
+    def test_inactive_pppoe_can_dial_but_cannot_surf(self):
+        """Pending-activation clients stay connected on the blocked profile."""
+        customer = self._pppoe(status=Customer.Status.INACTIVE)
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertFalse(customer_can_surf_via_pppoe(customer))
+        self.assertFalse(customer_pppoe_secret_disabled(customer))
+
     def test_hotspot_without_package_period_is_denied(self):
         customer = self._hotspot()
         self.assertFalse(customer_receives_internet(customer))
@@ -1006,7 +1013,7 @@ class CustomerPhoneUniquenessTests(TestCase):
         Customer.objects.create(
             organization=self.org,
             full_name="Existing",
-            phone="254700000011",
+            phone="254710000011",
             account_number="CLT-EXIST",
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="EXIST",
@@ -1019,6 +1026,8 @@ class CustomerPhoneUniquenessTests(TestCase):
                 "pppoe_username": "NEWUSER",
                 "pppoe_password": "secret",
                 "router": "",
+                "activate_account": "1",
+                "activation_date": "2026-09-04",
             },
             organization=self.org,
         )
@@ -1144,7 +1153,8 @@ class FulfillIdempotencyTests(TestCase):
         first = fulfill_successful_stk(stk, mpesa_receipt="")
         self.assertTrue(first["ok"])
         stk.refresh_from_db()
-        self.assertEqual(stk.payment.reference, "ws_CO_RECEIPT")
+        # Do not store CheckoutRequestID as the payment reference; wait for receipt.
+        self.assertEqual(stk.payment.reference, "")
         self.assertEqual(stk.mpesa_receipt, "")
 
         second = fulfill_successful_stk(stk, mpesa_receipt="QWERTY99")
@@ -1608,6 +1618,7 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertContains(response, "WhatsApp")
         self.assertContains(response, "Copy")
         self.assertContains(response, "Pay page")
+        self.assertContains(response, "SHARE1")
         self.assertEqual(response.context["valid_voucher_count"], 1)
         self.assertEqual(voucher.status, AccessVoucher.Status.VALID)
         # Share payload targets the client's phone.
@@ -1615,6 +1626,54 @@ class AccessVoucherLifecycleTests(TestCase):
         self.assertTrue(row["share"]["can_share"])
         self.assertIn(voucher.code[:4], row["share"]["share_text"])
         self.assertIn("wa.me/254700000777", row["share"]["whatsapp_client_url"])
+        payments = response.context["payments"]
+        self.assertEqual(len(payments), 1)
+        self.assertEqual(payments[0].display_reference, "SHARE1")
+
+    def test_client_billing_shows_mpesa_receipt_not_checkout_id(self):
+        """Payments table must show MpesaReceiptNumber, not CheckoutRequestID."""
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        self.client.force_login(self.owner)
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-MPESA-REF-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="ws_CO_STALE_CHECKOUT",
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_STALE_CHECKOUT",
+            mpesa_receipt="REALRCP01",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=payment,
+            invoice=invoice,
+        )
+
+        response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "REALRCP01")
+        self.assertNotContains(response, "ws_CO_STALE_CHECKOUT")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "REALRCP01")
+        pay_row = response.context["payments"][0]
+        self.assertEqual(pay_row.display_reference, "REALRCP01")
 
     def test_client_detail_shows_available_voucher(self):
         from billing.stk import fulfill_successful_stk

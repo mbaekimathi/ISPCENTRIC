@@ -576,6 +576,7 @@ class ClientRouterProxyTests(TestCase):
         payload = response.json()
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["authenticated"])
+        self.assertFalse(payload.get("needs_password"))
         token = payload["proxy_url"].rstrip("/").rsplit("/", 1)[-1]
         digest = hashlib.sha256(token.encode()).hexdigest()
         self.assertEqual(cache.get("cpe-web:" + digest)["stok"], "router-session")
@@ -583,6 +584,106 @@ class ClientRouterProxyTests(TestCase):
             cache.get("cpe-web-basic:" + digest)["header"],
             "Basic YWRtaW46c2VjcmV0",
         )
+
+    def test_start_failed_auto_login_still_offers_password_form(self):
+        """Wrong/missing CPE password must surface Save & connect, not hide it."""
+        self.customer.cpe_password = "wrong-pass"
+        self.customer.save(update_fields=["cpe_password"])
+        with patch(
+            "core.views.probe_customer_cpe_web",
+            return_value={
+                "ok": True,
+                "session_active": True,
+                "cpe_host": "10.20.0.55",
+                "port": 80,
+                "reachable": True,
+                "ping_ok": True,
+                "steps": ["found client IP"],
+            },
+        ):
+            # Default login patch returns authenticated=False.
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["proxy_url"])
+        self.assertFalse(payload["authenticated"])
+        self.assertTrue(payload["needs_password"])
+        self.assertEqual(payload["failure_class"], "needs_password")
+        self.assertTrue(payload["guidance"])
+
+    def test_preflight_blocked_still_offers_password_when_one_is_saved(self):
+        self.customer.cpe_password = "saved-secret"
+        self.customer.save(update_fields=["cpe_password"])
+        with patch(
+            "core.views.probe_customer_cpe_web",
+            return_value={
+                "ok": False,
+                "session_active": True,
+                "cpe_host": "10.20.0.55",
+                "port": None,
+                "reachable": False,
+                "ping_ok": True,
+                "hint": "router refuses management from the ISP side",
+            },
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/router-login/start/",
+            )
+
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failure_class"], "wan_mgmt_blocked")
+        self.assertTrue(payload["needs_password"])
+        self.assertTrue(any("admin password" in g.lower() for g in payload["guidance"]))
+
+    def test_wifi_failed_auth_does_not_overwrite_saved_cpe_password(self):
+        self.customer.cpe_password = "correct-secret"
+        self.customer.cpe_username = "admin"
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
+        with (
+            patch(
+                "core.views.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "port": 80,
+                    "reachable": True,
+                    "ping_ok": True,
+                },
+            ),
+            patch(
+                "core.views.fetch_customer_cpe_web_data",
+                return_value={"ok": False, "error": "login rejected"},
+            ),
+            patch(
+                "core.views.access_customer_cpe_wifi",
+                return_value={
+                    "ok": True,
+                    "auth_ok": False,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "cpe_username": "admin",
+                    "cpe_password": "",  # failed guess must not clobber
+                    "error": "invalid password",
+                    "hint": "",
+                    "prep_steps": [],
+                },
+            ),
+        ):
+            response = self.client.get(
+                f"/app/clients/{self.customer.pk}/cpe-wifi/?refresh=1",
+            )
+
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["auth_ok"])
+        self.assertTrue(payload["needs_password"])
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_password, "correct-secret")
 
     @patch("core.views.http.client.HTTPConnection", _FakeConnection)
     @patch("core.views.customer_cpe_web_proxy", _proxy)

@@ -74,6 +74,36 @@ class UsageTrendPayloadTests(TestCase):
         self.assertIsNotNone(lowest)
         self.assertEqual(lowest["download_bps"], 1000)
 
+    def test_plain_language_story_fields(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=2),
+            session_active=True,
+            download_bps=2_000_000,
+            upload_bps=500_000,
+            bytes_in=1000,
+            bytes_out=5000,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=1),
+            session_active=True,
+            download_bps=3_000_000,
+            upload_bps=600_000,
+            bytes_in=4000,
+            bytes_out=12000,
+        )
+        payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
+        summary = payload["summary"]
+        self.assertEqual(summary["tracking"], "ready")
+        self.assertIn(summary["status"], {"Online now", "Offline now"})
+        self.assertTrue(summary["insight"])
+        self.assertIn("download_mbps", payload["series"])
+        self.assertTrue(summary["online_time_label"])
+
     def test_marks_stopped_surfing_and_filter_window(self):
         now = timezone.now()
         CustomerUsageSample.objects.create(
@@ -129,8 +159,49 @@ class UsageTrendPayloadTests(TestCase):
             len(payload["labels"]), len(payload["series"]["download_kbps"])
         )
 
+    def test_counter_reset_does_not_spike_data_used(self):
+        now = timezone.now()
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=3),
+            session_active=True,
+            bytes_in=10_000,
+            bytes_out=5_000,
+            download_bps=1000,
+            upload_bps=500,
+        )
+        # New session after reconnect — counters restart near zero.
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=1),
+            session_active=True,
+            bytes_in=200,
+            bytes_out=100,
+            download_bps=800,
+            upload_bps=400,
+        )
+        payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
+        # Only growth within a continuous counter series counts; resets do not.
+        self.assertEqual(payload["summary"]["data_used_bytes"], 0)
 
-class RouterNetworkPerformanceTrendTests(TestCase):
+    def test_failed_probe_is_not_recorded_as_offline(self):
+        from billing.usage_samples import record_customer_usage_sample
+
+        written = record_customer_usage_sample(
+            self.customer,
+            {
+                "ok": False,
+                "session_active": False,
+                "error": "Connection timed out reaching the router.",
+                "bytes_in": 0,
+                "bytes_out": 0,
+            },
+        )
+        self.assertFalse(written)
+        self.assertEqual(CustomerUsageSample.objects.filter(customer=self.customer).count(), 0)
+
     def setUp(self):
         owner = User.objects.create_user("net-trend-owner", password="x")
         self.org = Organization.objects.create(name="Net Trend Org", owner=owner, join_code="NET001")
@@ -313,6 +384,44 @@ class SampleOrganizationUsageTests(TestCase):
         self.assertFalse(
             CustomerUsageSample.objects.filter(customer=self.unassigned).exists()
         )
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_records_unassigned_hotspot_by_mac(self, mock_pppoe, mock_hotspot):
+        hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Roamer",
+            phone="0700000199",
+            account_number="HS-ROAM-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:01",
+        )
+        mock_pppoe.return_value = {"ok": True, "sessions": {}, "error": ""}
+        mock_hotspot.return_value = {
+            "ok": True,
+            "sessions": {
+                "AABBCCDDEE01": {
+                    "session_active": True,
+                    "bytes_in": 4000,
+                    "bytes_out": 9000,
+                    "download_bps": 1500,
+                    "upload_bps": 400,
+                    "uptime_raw": "10m",
+                    "address": "10.10.0.9",
+                }
+            },
+            "error": "",
+        }
+        result = sample_organization_usage(self.org, force=True)
+        self.assertTrue(result["ok"])
+        sample = (
+            CustomerUsageSample.objects.filter(customer=hotspot)
+            .order_by("-sampled_at")
+            .first()
+        )
+        self.assertIsNotNone(sample)
+        self.assertTrue(sample.session_active)
+        self.assertEqual(sample.bytes_out, 9000)
 
     @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
     @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
