@@ -814,6 +814,42 @@ class WireGuardKeyTests(SimpleTestCase):
         finally:
             release_subscription_sweep_lock()
 
+    def test_subscription_sweep_clear_lock_command(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from core.subscription_sync import (
+            release_subscription_sweep_lock,
+            try_acquire_subscription_sweep_lock,
+        )
+
+        release_subscription_sweep_lock()
+        self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        out = StringIO()
+        call_command("sync_subscription_access", clear_lock=True, stdout=out)
+        self.assertIn("lock cleared", out.getvalue().lower())
+        self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        release_subscription_sweep_lock()
+
+    def test_subscription_sweep_steals_dead_pid_lock(self):
+        from core.subscription_sync import (
+            _SWEEP_LOCK_NAME,
+            _jobs_cache,
+            release_subscription_sweep_lock,
+            try_acquire_subscription_sweep_lock,
+        )
+
+        release_subscription_sweep_lock()
+        # PID 1 may be alive on Linux; use a high unused pid that is almost
+        # certainly dead on both Windows and Linux test hosts.
+        dead_pid = 2_147_483_646
+        _jobs_cache().set(_SWEEP_LOCK_NAME, dead_pid, timeout=60)
+        try:
+            self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        finally:
+            release_subscription_sweep_lock()
+
     def test_usage_sample_interval_defaults(self):
         from core.boot import (
             _usage_sample_enabled,

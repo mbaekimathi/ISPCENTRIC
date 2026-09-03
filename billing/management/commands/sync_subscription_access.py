@@ -42,6 +42,14 @@ class Command(BaseCommand):
                 "(emergency only — can race MikroTik API writes)."
             ),
         )
+        parser.add_argument(
+            "--clear-lock",
+            action="store_true",
+            help=(
+                "Release a stuck sweep lock (e.g. after Ctrl+C) and exit. "
+                "Does not sync routers."
+            ),
+        )
 
     def _write(self, stream, message, style=None):
         """Write sweep lines without crashing Windows cp1252 consoles on arrows."""
@@ -86,6 +94,11 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if bool(options.get("clear_lock")):
+            release_subscription_sweep_lock()
+            self._write(self.stdout, "Subscription sweep lock cleared.")
+            return
+
         dry_run = bool(options.get("dry_run"))
         force = bool(options.get("force"))
         lock_held = False
@@ -96,7 +109,9 @@ class Command(BaseCommand):
                 self._write(
                     self.stdout,
                     "Skipped: another subscription sweep is already running "
-                    "(avoids partial MikroTik updates that drop some paid clients).",
+                    "(avoids partial MikroTik updates that drop some paid clients). "
+                    "Use --force to run anyway, or --clear-lock if a prior run "
+                    "was interrupted.",
                 )
                 return
             lock_held = True

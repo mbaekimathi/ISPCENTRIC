@@ -28,16 +28,43 @@ def _jobs_cache():
         return cache
 
 
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but we cannot signal it — treat as alive.
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def try_acquire_subscription_sweep_lock(*, ttl_sec: int = 600) -> bool:
     """
     True when this process should run a full subscription/NAS sweep.
 
     Uses the jobs FileBasedCache so locks work across gunicorn workers and the
-    systemd oneshot timer. Stale locks expire via TTL if a process dies mid-run.
+    systemd oneshot timer. Stale locks expire via TTL if a process dies mid-run;
+    locks whose stored PID is already dead are stolen immediately (Ctrl+C / kill).
     """
     ttl = max(60, int(ttl_sec))
+    cache = _jobs_cache()
     try:
-        return bool(_jobs_cache().add(_SWEEP_LOCK_NAME, os.getpid(), timeout=ttl))
+        if cache.add(_SWEEP_LOCK_NAME, os.getpid(), timeout=ttl):
+            return True
+        holder = cache.get(_SWEEP_LOCK_NAME)
+        try:
+            holder_pid = int(holder)
+        except (TypeError, ValueError):
+            holder_pid = 0
+        if holder_pid and not _pid_is_alive(holder_pid):
+            cache.delete(_SWEEP_LOCK_NAME)
+            return bool(cache.add(_SWEEP_LOCK_NAME, os.getpid(), timeout=ttl))
+        return False
     except Exception:
         logger.exception("subscription sweep lock acquire failed")
         # Fail open only if cache is broken — better a rare race than no expiry.
