@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import logging
+import os
 import shlex
 import shutil
 import socket
@@ -386,6 +387,26 @@ def reserve_peer(label: str):
         reservation.address,
         reservation.public_key,
     )
+    # Generate must not block on a false "sync skipped" when the peer is already
+    # on wg0 (e.g. after wireguard_peer --sync-server, or a prior successful apply).
+    if not peer_sync.get("ok"):
+        peer = inspect_server_peer(reservation.public_key)
+        if peer.get("checked") and peer.get("present"):
+            peer_sync = {
+                "ok": True,
+                "runtime": True,
+                "persisted": True,
+                "skipped": False,
+                "error": "",
+                "already_present": True,
+            }
+        elif peer_sync.get("skipped"):
+            logger.warning(
+                "WireGuard peer apply skipped for %s (%s): %s",
+                reservation.address,
+                peer_sync.get("reason") or "",
+                peer_sync.get("error") or "",
+            )
     return reservation, peer_sync
 
 
@@ -704,18 +725,28 @@ def peer_sync_report(peer_sync: dict | None) -> dict:
         }
 
     if skipped:
+        sync_set = bool(
+            (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+        )
         hint = (
             "This VPS could not register the router on WireGuard. "
-            "Set WIREGUARD_SYNC_COMMAND=sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh, "
-            "install sudoers for that script, then Generate again "
-            "(or run: manage.py wireguard_peer --sync-server)."
+            'Set WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh" '
+            "(quoted for systemd), install sudoers for that script, restart ispcentric, "
+            "then Generate again (or run: manage.py wireguard_peer --sync-server)."
         )
         if reason == "sync_command_unset":
             hint = (
                 "WIREGUARD_SYNC_COMMAND is missing on this VPS — peers never reach wg0. "
-                "Add it to .env with sudoers for wireguard_apply_peer.sh, restart the app, "
-                "then Generate again."
+                "Add the quoted value to .env with sudoers for wireguard_apply_peer.sh, "
+                "restart the app, then Generate again."
             )
+        elif reason == "peer_missing":
+            hint = (
+                "This peer is not on VPS wg0 yet. Run: "
+                "manage.py wireguard_peer --sync-server — then Generate / Check now."
+            )
+        elif sync_set and error:
+            hint = error
         return {
             "peer_synced": False,
             "peer_sync_skipped": True,
@@ -747,6 +778,8 @@ def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
     Return whether the VPS wg0 peer for a pending onboarding reservation exists.
 
     Used to block Connect on hosted servers until the tunnel peer is registered.
+    Prefer apply-success / live reachability over `wg show` (www-data often cannot
+    read WireGuard state without sudo).
     """
     address = (tunnel_address or "").strip()
     if not address or not bool(getattr(settings, "HOSTED", False)):
@@ -763,16 +796,45 @@ def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
     if not reservation or not public_key:
         return {"ok": True, "required": False}
 
+    sync = apply_server_peer(
+        getattr(reservation, "label", None) or "MikroTik",
+        address,
+        public_key,
+    )
+    if sync.get("ok"):
+        return {
+            "ok": True,
+            "required": True,
+            "peer_synced": True,
+            "peer_sync": sync,
+        }
+
     peer = inspect_server_peer(public_key)
     if peer.get("checked") and peer.get("present"):
-        return {"ok": True, "required": True, "peer_synced": True}
+        return {
+            "ok": True,
+            "required": True,
+            "peer_synced": True,
+            "peer": peer,
+            "peer_sync": sync,
+        }
+
+    if _tunnel_host_reachable(address):
+        return {
+            "ok": True,
+            "required": True,
+            "peer_synced": True,
+            "reachable": True,
+            "peer_sync": sync,
+        }
 
     report = peer_sync_report(
-        {
+        sync
+        or {
             "ok": False,
             "skipped": not bool(peer.get("checked")),
-            "error": (peer.get("error") or "").strip(),
-            "reason": "peer_missing",
+            "error": (peer.get("error") or sync.get("error") or "").strip(),
+            "reason": (sync.get("reason") if sync else "") or "peer_missing",
         }
     )
     return {
@@ -780,8 +842,33 @@ def onboard_tunnel_peer_ready(tunnel_address: str) -> dict:
         "required": True,
         "peer_synced": False,
         "error": report.get("peer_sync_hint") or report.get("peer_sync_error") or "",
+        "peer": peer,
         **report,
     }
+
+
+def _tunnel_host_reachable(address: str, timeout: float = 1.5) -> bool:
+    """True when the tunnel IP answers ICMP or TCP/8728 (peer is live on wg0)."""
+    address = (address or "").strip()
+    if not address:
+        return False
+    try:
+        proc = subprocess.run(
+            ["ping", "-c", "1", "-W", "1", address],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 1,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+    try:
+        with socket.create_connection((address, 8728), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def inspect_server_peer(public_key: str) -> dict:
@@ -803,18 +890,35 @@ def inspect_server_peer(public_key: str) -> dict:
         return out
 
     iface = _wireguard_interface()
-    wg_bin = shutil.which("wg")
-    if not wg_bin:
-        out["error"] = "wg_not_found"
-        return out
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
+    dump_cmd: list[str] | None = None
+    sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+    sync_cmd = sync_cmd.strip('"').strip("'")
+    # Prefer the sudo helper (same sudoers path as peer apply) so www-data can read wg.
+    if sync_cmd:
+        try:
+            parts = shlex.split(sync_cmd)
+        except ValueError:
+            parts = []
+        if parts:
+            dump_cmd = [*parts, "--dump"]
+    if dump_cmd is None:
+        if not Path(wg_bin).is_file() and not shutil.which("wg"):
+            out["error"] = "wg_not_found"
+            return out
+        dump_cmd = [wg_bin, "show", iface, "dump"]
 
     try:
         proc = subprocess.run(
-            [wg_bin, "show", iface, "dump"],
+            dump_cmd,
             capture_output=True,
             text=True,
             timeout=8,
             check=False,
+            env={
+                **os.environ,
+                "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            },
         )
     except Exception as exc:
         out["error"] = str(exc)
@@ -1053,6 +1157,10 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
     iface = _wireguard_interface()
     conf_path = _wireguard_conf_path()
     sync_cmd = (getattr(settings, "WIREGUARD_SYNC_COMMAND", None) or "").strip()
+    sync_cmd = sync_cmd.strip('"').strip("'")
+    # systemd may leave PATH thin; keep sudo/wg absolute when possible.
+    if sync_cmd == "sudo" or sync_cmd.startswith("sudo "):
+        sync_cmd = "/usr/bin/sudo " + sync_cmd[len("sudo") :].lstrip()
     block = server_peer_block(label or "MikroTik", address, public_key)
     result: dict = {
         "ok": False,
@@ -1070,15 +1178,22 @@ def apply_server_peer(label: str, address: str, public_key: str) -> dict:
                 text=True,
                 timeout=15,
                 check=False,
+                env={**os.environ, "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
             )
             if proc.returncode == 0:
                 result.update(ok=True, runtime=True, persisted=True)
                 return result
             result["error"] = (proc.stderr or proc.stdout or "sync command failed").strip()
+            logger.warning(
+                "WIREGUARD_SYNC_COMMAND failed for %s: %s",
+                address,
+                result["error"],
+            )
         except Exception as exc:
             result["error"] = str(exc)
+            logger.warning("WIREGUARD_SYNC_COMMAND raised for %s: %s", address, exc)
 
-    wg_bin = shutil.which("wg") or "wg"
+    wg_bin = shutil.which("wg") or "/usr/bin/wg"
     try:
         proc = subprocess.run(
             [wg_bin, "set", iface, "peer", public_key, "allowed-ips", f"{address}/32"],

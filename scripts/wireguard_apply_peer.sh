@@ -1,18 +1,27 @@
 #!/bin/bash
 # Register one MikroTik WireGuard peer on the billing VPS.
-# Usage: wireguard_apply_peer.sh PUBLIC_KEY TUNNEL_ADDRESS [LABEL]
+# Usage:
+#   wireguard_apply_peer.sh PUBLIC_KEY TUNNEL_ADDRESS [LABEL]
+#   wireguard_apply_peer.sh --dump
 # Intended to run via sudo from WIREGUARD_SYNC_COMMAND in .env.
 
 set -euo pipefail
 
-PUBKEY="${1:-}"
-ADDR="${2:-}"
-LABEL="${3:-MikroTik}"
 IFACE="${WIREGUARD_INTERFACE:-wg0}"
 CONF="${WIREGUARD_CONF_PATH:-/etc/wireguard/wg0.conf}"
 
+if [[ "${1:-}" == "--dump" ]]; then
+  wg show "$IFACE" dump
+  exit 0
+fi
+
+PUBKEY="${1:-}"
+ADDR="${2:-}"
+LABEL="${3:-MikroTik}"
+
 if [[ -z "$PUBKEY" || -z "$ADDR" ]]; then
   echo "usage: $0 PUBLIC_KEY TUNNEL_ADDRESS [LABEL]" >&2
+  echo "       $0 --dump" >&2
   exit 1
 fi
 

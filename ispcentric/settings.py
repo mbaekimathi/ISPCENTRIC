@@ -203,8 +203,45 @@ WIREGUARD_SERVER_PUBLIC_KEY = (os.getenv("WIREGUARD_SERVER_PUBLIC_KEY") or "").s
 WIREGUARD_SUBNET = (os.getenv("WIREGUARD_SUBNET") or "10.9.0.0/24").strip()
 WIREGUARD_INTERFACE = (os.getenv("WIREGUARD_INTERFACE") or "wg0").strip()
 WIREGUARD_CONF_PATH = (os.getenv("WIREGUARD_CONF_PATH") or "/etc/wireguard/wg0.conf").strip()
-# Optional helper on the VPS, e.g. /opt/ispcentric/scripts/wireguard_apply_peer.sh
-WIREGUARD_SYNC_COMMAND = (os.getenv("WIREGUARD_SYNC_COMMAND") or "").strip()
+
+
+def _wireguard_sync_command() -> str:
+    """
+    Resolve WIREGUARD_SYNC_COMMAND for both dotenv (manage.py) and systemd.
+
+    systemd EnvironmentFile rejects unquoted values with spaces, or truncates
+    them to the first token (`sudo /path/...` → `sudo`). dotenv then cannot
+    override because load_project_env(..., override=False). Re-read .env when
+    the process value looks truncated so Generate can register peers.
+    """
+    raw = (os.getenv("WIREGUARD_SYNC_COMMAND") or "").strip().strip('"').strip("'")
+    looks_truncated = (not raw) or raw == "sudo" or (
+        raw.startswith("sudo") and "wireguard" not in raw.lower()
+    )
+    if not looks_truncated:
+        return raw
+    env_path = BASE_DIR / ".env"
+    if not env_path.is_file():
+        return raw
+    try:
+        text = env_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return raw
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, val = stripped.partition("=")
+        if key.strip() != "WIREGUARD_SYNC_COMMAND":
+            continue
+        val = val.strip().strip('"').strip("'")
+        if val:
+            return val
+    return raw
+
+
+# Optional helper on the VPS, e.g. sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh
+WIREGUARD_SYNC_COMMAND = _wireguard_sync_command()
 
 # Background MikroTik watchdog (sample_mikrotik_status): repair management + WAN.
 MIKROTIK_AUTO_RESTORE = env_flag("MIKROTIK_AUTO_RESTORE", "true" if HOSTED else "false")

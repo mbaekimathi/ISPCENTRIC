@@ -2064,6 +2064,9 @@
           tunnelPeerSyncRequired = false;
           if (tunnelPeerPanel) tunnelPeerPanel.hidden = true;
         }
+        if (data.tunnel_reachable || data.api_enabled || data.ready) {
+          tunnelPeerSyncRequired = false;
+        }
         setTunnelCheckState(
           data.tunnel_reachable ? "error" : "waiting",
           data.tunnel_reachable ? "Tunnel found · waiting for API 8728" : "Waiting for MikroTik…",
@@ -2795,16 +2798,8 @@
       }
       return;
     }
-    if (wireguardReady && tunnelPeerSyncRequired) {
-      showConnectStatus(
-        "Register the WireGuard peer on the VPS first (panel below the script), then Check now before Connect.",
-        true
-      );
-      if (tunnelCheckNow) {
-        try { tunnelCheckNow.focus(); } catch (err) {}
-      }
-      return;
-    }
+    // Do not hard-block Connect on a stale peer_sync flag when Check now already
+    // passed (tunnelApiReady). Backend re-applies / reachability-checks the peer.
 
     connectBtn.disabled = true;
     showConnectStatus("Connecting to " + host + "…");

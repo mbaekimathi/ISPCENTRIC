@@ -1,5 +1,8 @@
 from io import StringIO
+import os
 import socket
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -3976,6 +3979,46 @@ class TunnelStatusTests(TestCase):
         self.assertIn('identity set name="ispcentric.10.9.0.19"', script)
         self.assertEqual(wireguard.validate_inline_install_steps(script), [])
 
+    def test_reserve_peer_treats_existing_wg_peer_as_synced(self):
+        from core.models import WireGuardReservation
+
+        reservation = WireGuardReservation.objects.create(
+            label="Existing Peer Site",
+            address="10.9.0.44",
+            lan_address="192.168.88.1",
+            private_key="x" * 44,
+            public_key=SERVER_PUBLIC_KEY,
+        )
+        with (
+            override_settings(
+                WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
+                WIREGUARD_SERVER_PUBLIC_KEY=SERVER_PUBLIC_KEY,
+                WIREGUARD_SYNC_COMMAND="",
+                HOSTED=True,
+            ),
+            patch("core.wireguard.server_on_tunnel", return_value=False),
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "sync_command_unset",
+                    "error": "empty",
+                },
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": True, "present": True},
+            ),
+        ):
+            reserved, peer_sync = wireguard.reserve_peer(reservation.label)
+        self.assertEqual(reserved.pk, reservation.pk)
+        self.assertTrue(peer_sync.get("ok"))
+        self.assertTrue(peer_sync.get("already_present"))
+        report = wireguard.peer_sync_report(peer_sync)
+        self.assertTrue(report["peer_synced"])
+        self.assertFalse(report["peer_sync_required"])
+
     def test_peer_sync_report_marks_hosted_skip_as_required(self):
         with override_settings(HOSTED=True):
             report = wireguard.peer_sync_report(
@@ -3989,6 +4032,36 @@ class TunnelStatusTests(TestCase):
         self.assertTrue(report["peer_sync_required"])
         self.assertFalse(report["peer_synced"])
         self.assertIn("WIREGUARD_SYNC_COMMAND", report["peer_sync_hint"])
+
+    def test_peer_sync_report_peer_missing_hint(self):
+        with override_settings(
+            HOSTED=True,
+            WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh",
+        ):
+            report = wireguard.peer_sync_report(
+                {"ok": False, "skipped": True, "reason": "peer_missing"}
+            )
+        self.assertTrue(report["peer_sync_required"])
+        self.assertIn("sync-server", report["peer_sync_hint"])
+        self.assertNotIn("install sudoers", report["peer_sync_hint"])
+
+    def test_wireguard_sync_command_recovers_systemd_truncation(self):
+        from ispcentric.settings import _wireguard_sync_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text(
+                'WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh"\n',
+                encoding="utf-8",
+            )
+            with (
+                patch("ispcentric.settings.BASE_DIR", Path(tmp)),
+                patch.dict(os.environ, {"WIREGUARD_SYNC_COMMAND": "sudo"}, clear=False),
+            ):
+                self.assertEqual(
+                    _wireguard_sync_command(),
+                    "sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh",
+                )
 
     def test_peer_sync_report_local_skip_is_not_required(self):
         with override_settings(HOSTED=False):
@@ -9292,9 +9365,22 @@ class MikroTikOnboardPeerGateTests(TestCase):
             private_key=SERVER_PUBLIC_KEY,
             lan_address="192.168.15.1",
         )
-        with patch(
-            "core.wireguard.inspect_server_peer",
-            return_value={"checked": True, "present": False},
+        with (
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={
+                    "ok": False,
+                    "skipped": True,
+                    "reason": "sync_command_unset",
+                    "error": "empty",
+                },
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": True, "present": False},
+            ),
+            patch("core.wireguard._tunnel_host_reachable", return_value=False),
+            patch("core.views.wireguard._tunnel_host_reachable", return_value=False),
         ):
             response = self.client.post(
                 "/app/mikrotik/connect/",
@@ -9309,6 +9395,52 @@ class MikroTikOnboardPeerGateTests(TestCase):
         body = response.json()
         self.assertFalse(body.get("ok"))
         self.assertTrue(body.get("peer_sync_required"))
+
+    @override_settings(HOSTED=True)
+    def test_connect_allows_when_tunnel_reachable_despite_inspect_fail(self):
+        from core.models import WireGuardReservation
+
+        WireGuardReservation.objects.create(
+            label="Site Reach",
+            address="10.9.0.83",
+            public_key=SERVER_PUBLIC_KEY,
+            private_key=SERVER_PUBLIC_KEY,
+            lan_address="192.168.17.1",
+        )
+        with (
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": False, "skipped": True, "reason": "not_on_tunnel"},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": False, "present": False, "error": "wg_not_found"},
+            ),
+            patch("core.wireguard._tunnel_host_reachable", return_value=True),
+            patch(
+                "core.views.test_mikrotik_api_login",
+                return_value={
+                    "ok": True,
+                    "serial_number": "SN833",
+                    "software_id": "SW833",
+                    "host": "10.9.0.83",
+                },
+            ),
+            patch("core.views._find_router_by_hardware", return_value=None),
+            patch("core.views._api_session") as session,
+        ):
+            session.return_value.__enter__.return_value = object()
+            response = self.client.post(
+                "/app/mikrotik/connect/",
+                {
+                    "host": "10.9.0.83",
+                    "username": "admin",
+                    "password": "secret",
+                    "tunnel_host": "10.9.0.83",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json().get("ok"))
 
     @override_settings(HOSTED=True)
     def test_connect_allows_when_hosted_peer_present(self):
@@ -9358,6 +9490,55 @@ class MikroTikOnboardPeerGateTests(TestCase):
             result = onboard_tunnel_peer_ready("10.9.0.90")
         self.assertTrue(result["ok"])
         self.assertFalse(result["required"])
+
+    def test_onboard_tunnel_peer_ready_ok_when_apply_succeeds(self):
+        from core.models import WireGuardReservation
+        from core.wireguard import onboard_tunnel_peer_ready
+
+        WireGuardReservation.objects.create(
+            label="Gate Site",
+            address="10.9.0.91",
+            lan_address="192.168.88.1",
+            private_key="y" * 44,
+            public_key=SERVER_PUBLIC_KEY,
+        )
+        with (
+            override_settings(HOSTED=True),
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": True, "skipped": False},
+            ),
+        ):
+            result = onboard_tunnel_peer_ready("10.9.0.91")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["peer_synced"])
+
+    def test_onboard_tunnel_peer_ready_ok_when_reachable(self):
+        from core.models import WireGuardReservation
+        from core.wireguard import onboard_tunnel_peer_ready
+
+        WireGuardReservation.objects.create(
+            label="Reachable Site",
+            address="10.9.0.92",
+            lan_address="192.168.88.1",
+            private_key="z" * 44,
+            public_key=SERVER_PUBLIC_KEY,
+        )
+        with (
+            override_settings(HOSTED=True),
+            patch(
+                "core.wireguard.apply_server_peer",
+                return_value={"ok": False, "skipped": True, "reason": "sync_command_unset"},
+            ),
+            patch(
+                "core.wireguard.inspect_server_peer",
+                return_value={"checked": False, "present": False, "error": "wg_not_found"},
+            ),
+            patch("core.wireguard._tunnel_host_reachable", return_value=True),
+        ):
+            result = onboard_tunnel_peer_ready("10.9.0.92")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("reachable"))
 
 
 class HostedDetectionTests(SimpleTestCase):

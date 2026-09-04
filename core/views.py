@@ -8611,18 +8611,20 @@ def mikrotik_connect(request):
     if tunnel_host:
         peer_gate = wireguard.onboard_tunnel_peer_ready(tunnel_host)
         if peer_gate.get("required") and not peer_gate.get("ok"):
-            return JsonResponse(
-                {
-                    "ok": False,
-                    "peer_sync_required": True,
-                    "error": (
-                        peer_gate.get("error")
-                        or peer_gate.get("peer_sync_hint")
-                        or "WireGuard peer is not registered on the VPS yet."
-                    ),
-                },
-                status=400,
-            )
+            # Last resort: if the tunnel IP already answers, let Connect try API login.
+            if not wireguard._tunnel_host_reachable(tunnel_host):
+                return JsonResponse(
+                    {
+                        "ok": False,
+                        "peer_sync_required": True,
+                        "error": (
+                            peer_gate.get("error")
+                            or peer_gate.get("peer_sync_hint")
+                            or "WireGuard peer is not registered on the VPS yet."
+                        ),
+                    },
+                    status=400,
+                )
 
     if on_router_lan():
         connect_host = pick_local_onboard_connect_host(

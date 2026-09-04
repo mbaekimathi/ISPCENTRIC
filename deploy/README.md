@@ -217,7 +217,7 @@ sudo visudo -cf /etc/sudoers.d/ispcentric-wireguard
 Set in `.env` (see `.env.production.example`):
 
 ```
-WIREGUARD_SYNC_COMMAND=sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh
+WIREGUARD_SYNC_COMMAND="sudo /opt/ispcentric/scripts/wireguard_apply_peer.sh"
 ```
 
 Then `sudo systemctl restart ispcentric`. New script generations register the
