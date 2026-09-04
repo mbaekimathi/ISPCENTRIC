@@ -1,5 +1,7 @@
 """Sync internet access from package start/end dates across all organizations."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 
@@ -7,7 +9,8 @@ from billing.models import Customer
 from core.mikrotik_connect import (
     refresh_onboarded_router_config,
     sweep_log_text,
-    sync_customer_subscription_access,
+    sync_hotspot_subscription_batch_on_router,
+    sync_pppoe_subscription_batch_on_router,
 )
 from core.subscription_sync import (
     release_subscription_sweep_lock,
@@ -18,8 +21,8 @@ from core.subscription_sync import (
 class Command(BaseCommand):
     help = (
         "Disable internet for PPPoE and Hotspot clients outside their package "
-        "period, and re-enable it for those inside it. Also re-installs expired "
-        "pay redirects on NAS routers so phones get an instant captive popup."
+        "period, and re-enable it for those inside it. Runs per MikroTik with "
+        "batch session kicks so CPEs redial together."
     )
 
     def add_arguments(self, parser):
@@ -50,6 +53,12 @@ class Command(BaseCommand):
                 "Does not sync routers."
             ),
         )
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=4,
+            help="How many MikroTiks to sync in parallel (default 4).",
+        )
 
     def _write(self, stream, message, style=None):
         """Write sweep lines without crashing Windows cp1252 consoles on arrows."""
@@ -62,37 +71,6 @@ class Command(BaseCommand):
             encoding = getattr(getattr(stream, "_out", None), "encoding", None) or "ascii"
             stream.write(text.encode(encoding, errors="replace").decode(encoding))
 
-    @staticmethod
-    def _hotspot_routers(org_ids):
-        """Every active router of the organizations that have Hotspot clients."""
-        from core.models import MikroTikRouter
-
-        if not org_ids:
-            return []
-        return (
-            MikroTikRouter.objects.filter(
-                organization_id__in=org_ids,
-                account_status=MikroTikRouter.AccountStatus.ACTIVE,
-            )
-            .exclude(host="")
-            .order_by("id")
-        )
-
-    @staticmethod
-    def _routers_for_ids(router_ids):
-        from core.models import MikroTikRouter
-
-        if not router_ids:
-            return []
-        return list(
-            MikroTikRouter.objects.filter(
-                pk__in=router_ids,
-                account_status=MikroTikRouter.AccountStatus.ACTIVE,
-            )
-            .exclude(host="")
-            .order_by("id")
-        )
-
     def handle(self, *args, **options):
         if bool(options.get("clear_lock")):
             release_subscription_sweep_lock()
@@ -103,8 +81,6 @@ class Command(BaseCommand):
         force = bool(options.get("force"))
         lock_held = False
         if not dry_run and not force:
-            # Match systemd TimeoutStartSec so a crashed sweep cannot wedge the
-            # fleet for longer than one timer cycle.
             if not try_acquire_subscription_sweep_lock(ttl_sec=600):
                 self._write(
                     self.stdout,
@@ -124,10 +100,8 @@ class Command(BaseCommand):
 
     def _sync_all(self, options, *, dry_run: bool) -> None:
         from billing.services import customer_receives_internet
+        from core.models import MikroTikRouter
 
-        # Hotspot packages are usually hourly, so this sweep is what ends a
-        # session on time: nothing else revisits a Hotspot MAC between the
-        # payment that provisioned it and its expiry.
         qs = (
             Customer.objects.filter(
                 Q(service_type=Customer.ServiceType.PPPOE) & ~Q(pppoe_username="")
@@ -140,13 +114,11 @@ class Command(BaseCommand):
         if org_id:
             qs = qs.filter(organization_id=org_id)
 
-        blocked = allowed = errors = 0
-        hotspot_org_ids: set[int] = set()
-        expired_hotspot: list[Customer] = []
-
-        for customer in qs:
-            receives = customer_receives_internet(customer)
-            if dry_run:
+        customers = list(qs)
+        if dry_run:
+            allowed = blocked = 0
+            for customer in customers:
+                receives = customer_receives_internet(customer)
                 label = "ALLOW" if receives else "BLOCK"
                 self._write(
                     self.stdout,
@@ -157,175 +129,150 @@ class Command(BaseCommand):
                     allowed += 1
                 else:
                     blocked += 1
-                continue
-
-            # Hotspot access lives in a per-router user table that is rewritten
-            # wholesale, so it is swept once per router below rather than once
-            # per customer. Still push paid MACs individually with
-            # reauthenticate=False so a failed wholesale rewrite cannot leave
-            # a subscribed client disabled after deploy.
-            if customer.service_type == Customer.ServiceType.HOTSPOT:
-                hotspot_org_ids.add(customer.organization_id)
-                if receives:
-                    allowed += 1
-                    if not dry_run:
-                        try:
-                            hs_result = sync_customer_subscription_access(
-                                customer,
-                                provision=True,
-                                reauthenticate=False,
-                            )
-                            if hs_result.get("ok"):
-                                self._write(
-                                    self.stdout,
-                                    f"{customer.account_number}: hotspot allowed",
-                                )
-                            elif not hs_result.get("skipped"):
-                                errors += 1
-                                self._write(
-                                    self.stderr,
-                                    f"{customer.account_number}: hotspot "
-                                    f"{(hs_result.get('provision') or {}).get('error') or hs_result.get('message') or 'restore failed'}",
-                                    style=self.style.WARNING,
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            errors += 1
-                            self._write(
-                                self.stderr,
-                                f"{customer.account_number}: hotspot {exc}",
-                                style=self.style.WARNING,
-                            )
-                else:
-                    blocked += 1
-                    expired_hotspot.append(customer)
-                    # Push the MAC disable + session kill immediately. Waiting
-                    # only for the later per-router rewrite left expired phones
-                    # surfing until that heavier step finished (or failed).
-                    if not dry_run:
-                        try:
-                            hs_result = sync_customer_subscription_access(
-                                customer,
-                                provision=True,
-                            )
-                            if hs_result.get("ok"):
-                                self._write(
-                                    self.stdout,
-                                    f"{customer.account_number}: hotspot blocked",
-                                )
-                            elif not hs_result.get("skipped"):
-                                errors += 1
-                                self._write(
-                                    self.stderr,
-                                    f"{customer.account_number}: hotspot "
-                                    f"{(hs_result.get('provision') or {}).get('error') or hs_result.get('message') or 'block failed'}",
-                                    style=self.style.WARNING,
-                                )
-                        except Exception as exc:  # noqa: BLE001
-                            errors += 1
-                            self._write(
-                                self.stderr,
-                                f"{customer.account_number}: hotspot {exc}",
-                                style=self.style.WARNING,
-                            )
-                continue
-
-            result = sync_customer_subscription_access(
-                customer,
-                provision=True,
-                # Fleet sweep: restore/block on the ISP NAS immediately.
-                # Do not stall the whole org on offline CPE SSH/proxy (Ctrl+C
-                # traces). Pending CPE renew clear is finished when they redial.
-                quick=True,
+            self._write(
+                self.stdout,
+                f"Done. allowed={allowed} blocked={blocked} errors=0 (dry-run)",
+                style=self.style.SUCCESS,
             )
-            if result.get("allowed"):
-                allowed += 1
-            else:
-                blocked += 1
-                # Re-push CPE renew only when the earlier attempt actually failed
-                # (not when the CPE was offline / skipped — that just wastes API).
-                portal = result.get("portal") or {}
-                if (
-                    customer.service_type == Customer.ServiceType.PPPOE
-                    and not portal.get("ok")
-                    and not portal.get("skipped")
-                    and not dry_run
-                ):
-                    try:
-                        from core.mikrotik_connect import (
-                            _CAPTIVE_API_TIMEOUT,
-                            _pppoe_pay_portal_url,
-                            apply_cpe_renew_portal,
-                        )
+            return
 
-                        pay_url = _pppoe_pay_portal_url(
-                            customer.organization, customer=customer
-                        )
-                        retry = apply_cpe_renew_portal(
-                            customer,
-                            enabled=True,
-                            portal_url=pay_url,
-                            timeout=_CAPTIVE_API_TIMEOUT,
-                        )
-                        if retry.get("ok"):
-                            self._write(
-                                self.stdout,
-                                f"{customer.account_number}: cpe-renew repaired",
-                            )
-                        elif not retry.get("skipped"):
-                            errors += 1
-                            self._write(
-                                self.stderr,
-                                f"{customer.account_number}: cpe-renew "
-                                f"{retry.get('error') or 'failed'}",
-                                style=self.style.WARNING,
-                            )
+        router_qs = (
+            MikroTikRouter.objects.filter(
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            )
+            .exclude(host="")
+            .select_related("organization")
+            .order_by("id")
+        )
+        if org_id:
+            router_qs = router_qs.filter(organization_id=org_id)
+        routers = list(router_qs)
+
+        hotspot_by_org: dict[int, list[Customer]] = {}
+        expired_hotspot: list[Customer] = []
+        for customer in customers:
+            if customer.service_type != Customer.ServiceType.HOTSPOT:
+                continue
+            org_pk = customer.organization_id
+            hotspot_by_org.setdefault(org_pk, []).append(customer)
+            if not customer_receives_internet(customer):
+                expired_hotspot.append(customer)
+
+        workers = max(1, min(int(options.get("workers") or 4), 8, max(1, len(routers))))
+        errors = 0
+        allowed = sum(1 for c in customers if customer_receives_internet(c))
+        blocked = len(customers) - allowed
+
+        def _work_one(router):
+            from core.mikrotik_connect import _pppoe_customers_for_router
+
+            pppoe_customers = list(_pppoe_customers_for_router(router))
+            hs_customers = [
+                c
+                for c in hotspot_by_org.get(router.organization_id, [])
+                if c.router_id in (None, router.pk)
+            ]
+
+            pppoe_result = {"ok": True, "allowed": 0, "blocked": 0, "errors": 0, "skipped": True}
+            if pppoe_customers:
+                pppoe_result = sync_pppoe_subscription_batch_on_router(
+                    router, pppoe_customers
+                )
+
+            hs_result = {"ok": True, "allowed": 0, "blocked": 0, "errors": 0, "skipped": True}
+            if hs_customers:
+                hs_result = sync_hotspot_subscription_batch_on_router(
+                    router,
+                    hs_customers,
+                    reauthenticate_paid=False,
+                )
+
+            refresh = refresh_onboarded_router_config(
+                router,
+                reauthenticate=False,
+                sync_pppoe_secrets=False,
+            )
+            return {
+                "router": router,
+                "pppoe": pppoe_result,
+                "hotspot": hs_result,
+                "refresh": refresh,
+            }
+
+        if not routers:
+            self._write(self.stdout, "No active MikroTik routers to sync.")
+        elif workers == 1 or len(routers) == 1:
+            outcomes = [_work_one(router) for router in routers]
+        else:
+            outcomes = []
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(_work_one, router): router for router in routers}
+                for fut in as_completed(futures):
+                    try:
+                        outcomes.append(fut.result())
                     except Exception as exc:  # noqa: BLE001
+                        router = futures[fut]
                         errors += 1
                         self._write(
                             self.stderr,
-                            f"{customer.account_number}: cpe-renew {exc}",
+                            f"nas {getattr(router, 'host', '')}: {exc}",
                             style=self.style.WARNING,
                         )
-            if not result.get("ok"):
-                portal = result.get("portal") or {}
-                provision = result.get("provision") or {}
-                cpe_offline = bool(portal.get("skipped")) and not portal.get("ok")
-                nas_ok = bool(provision.get("ok"))
-                # CPE offline / pending clear with NAS already correct is a
-                # notice, not a sweep error — surfing is decided on the NAS.
-                if nas_ok and (
-                    cpe_offline or result.get("cpe_renew_clear_pending")
-                ):
-                    state = "allowed" if result.get("allowed") else "blocked"
-                    note = (
-                        " (CPE renew clear pending)"
-                        if result.get("cpe_renew_clear_pending")
-                        else " (CPE offline — NAS ok)"
-                    )
+
+        for outcome in outcomes:
+            router = outcome["router"]
+            host = getattr(router, "host", "") or ""
+            name = getattr(router, "name", "") or host
+            pppoe = outcome.get("pppoe") or {}
+            hotspot = outcome.get("hotspot") or {}
+            refresh = outcome.get("refresh") or {}
+
+            errors += int(pppoe.get("errors") or 0) + int(hotspot.get("errors") or 0)
+
+            if pppoe.get("ok") or pppoe.get("skipped"):
+                kick_n = int(pppoe.get("kick_accounts") or 0)
+                self._write(
+                    self.stdout,
+                    f"nas {name}: {pppoe.get('message') or 'pppoe ok'}"
+                    + (f" (batch redial {kick_n} account(s))" if kick_n else ""),
+                )
+            else:
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"nas {name}: pppoe {pppoe.get('error') or 'failed'}",
+                    style=self.style.WARNING,
+                )
+
+            if hotspot.get("ok") or hotspot.get("skipped"):
+                if not hotspot.get("skipped"):
                     self._write(
                         self.stdout,
-                        f"{customer.account_number}: {state}{note}",
-                    )
-                else:
-                    errors += 1
-                    err = (
-                        portal.get("error")
-                        or provision.get("error")
-                        or result.get("message")
-                    )
-                    self._write(
-                        self.stderr,
-                        f"{customer.account_number}: {err}",
-                        style=self.style.WARNING,
+                        f"nas {name}: {hotspot.get('message') or 'hotspot ok'}",
                     )
             else:
-                state = "allowed" if result.get("allowed") else "blocked"
-                note = ""
-                if result.get("allowed") and result.get("cpe_renew_clear_pending"):
-                    note = " (CPE renew clear pending)"
-                self._write(self.stdout, f"{customer.account_number}: {state}{note}")
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"nas {name}: hotspot {hotspot.get('error') or 'failed'}",
+                    style=self.style.WARNING,
+                )
 
-        if expired_hotspot and not dry_run:
+            if refresh.get("ok") or refresh.get("skipped"):
+                self._write(
+                    self.stdout,
+                    f"nas {host}: {refresh.get('message') or 'captive ok'}",
+                )
+            else:
+                errors += 1
+                self._write(
+                    self.stderr,
+                    f"nas {host}: "
+                    f"{refresh.get('error') or refresh.get('message') or 'refresh failed'}",
+                    style=self.style.WARNING,
+                )
+
+        if expired_hotspot:
             try:
                 from billing.vouchers import (
                     invalidate_unused_vouchers_for_expired_customers,
@@ -347,42 +294,9 @@ class Command(BaseCommand):
                     style=self.style.WARNING,
                 )
 
-        if not dry_run:
-            from core.models import MikroTikRouter
-
-            router_qs = (
-                MikroTikRouter.objects.filter(
-                    account_status=MikroTikRouter.AccountStatus.ACTIVE,
-                )
-                .exclude(host="")
-                .select_related("organization")
-                .order_by("id")
-            )
-            if org_id:
-                router_qs = router_qs.filter(organization_id=org_id)
-
-            for router in router_qs:
-                # Never force Hotspot re-login on a routine sweep — that drops
-                # every paid phone mid-session after deploys / worker restarts.
-                result = refresh_onboarded_router_config(
-                    router,
-                    reauthenticate=False,
-                )
-                if result.get("ok") or result.get("skipped"):
-                    note = result.get("message") or "synced"
-                    self._write(self.stdout, f"nas {router.host}: {note}")
-                else:
-                    errors += 1
-                    self._write(
-                        self.stderr,
-                        f"nas {router.host}: "
-                        f"{result.get('error') or result.get('message')}",
-                        style=self.style.WARNING,
-                    )
-
         self._write(
             self.stdout,
-            f"Done. allowed={allowed} blocked={blocked} errors={errors}"
-            + (" (dry-run)" if dry_run else ""),
+            f"Done. allowed={allowed} blocked={blocked} errors={errors} "
+            f"routers={len(routers)} workers={workers}",
             style=self.style.SUCCESS,
         )

@@ -131,38 +131,71 @@ def _run_subscription_sweep(*, label: str = "sweep") -> None:
 
 def _run_near_deadline_expiry_sync() -> None:
     """
-    Immediately block customers whose package deadline is due or imminent.
+    Block customers near package deadline and repair paid-but-not-surfing PPPoE.
 
-    The full sweep can take up to SUBSCRIPTION_SWEEP_INTERVAL_SEC. Hourly
-    Hotspot/PPPoE packages need a tighter loop so surfing stops near the
-    exact deadline instead of minutes later.
+    Shares the fleet sweep lock with ``sync_subscription_access`` / deploy NAS
+    sync so MikroTik rewrites never overlap.
     """
     from billing.services import customers_near_access_deadline
-    from core.mikrotik_connect import sync_customer_subscription_access
-    from core.subscription_sync import try_acquire_expiry_watch_lock
+    from core.mikrotik_connect import (
+        repair_paid_pppoe_not_surfing_on_router,
+        sync_customer_subscription_access,
+    )
+    from core.models import MikroTikRouter
+    from core.subscription_sync import (
+        release_expiry_watch_lock,
+        try_acquire_expiry_watch_lock,
+    )
 
     watch_interval = int(_expiry_watch_interval_sec())
-    if not try_acquire_expiry_watch_lock(ttl_sec=max(15, watch_interval - 5)):
+    # Hold the shared fleet lock for this short watch pass.
+    if not try_acquire_expiry_watch_lock(ttl_sec=max(90, watch_interval * 3)):
         return
 
-    near = list(customers_near_access_deadline(past_seconds=90, future_seconds=45))
-    if not near:
-        return
-    synced = 0
-    for customer in near:
-        try:
-            # Hotspot + PPPoE both get a direct push here so expiry does not
-            # wait for the next full org Hotspot rewrite.
-            result = sync_customer_subscription_access(customer, provision=True)
-            if result.get("ok") or result.get("allowed") is False:
-                synced += 1
-        except Exception:
-            logger.exception(
-                "near-deadline sync failed for %s",
-                getattr(customer, "account_number", customer.pk),
+    try:
+        near = list(customers_near_access_deadline(past_seconds=90, future_seconds=45))
+        synced = 0
+        for customer in near:
+            try:
+                result = sync_customer_subscription_access(customer, provision=True)
+                if result.get("ok") or result.get("allowed") is False:
+                    synced += 1
+            except Exception:
+                logger.exception(
+                    "near-deadline sync failed for %s",
+                    getattr(customer, "account_number", customer.pk),
+                )
+        if synced:
+            logger.info("near-deadline expiry synced %s customer(s)", synced)
+
+        repaired = 0
+        routers = (
+            MikroTikRouter.objects.filter(
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
             )
-    if synced:
-        logger.info("near-deadline expiry synced %s customer(s)", synced)
+            .exclude(host="")
+            .select_related("organization")
+            .order_by("id")
+        )
+        for router in routers:
+            try:
+                result = repair_paid_pppoe_not_surfing_on_router(router)
+                count = int(result.get("repaired") or 0)
+                if count:
+                    repaired += count
+                    logger.info(
+                        "paid-not-surfing repair: %s",
+                        result.get("message") or count,
+                    )
+            except Exception:
+                logger.exception(
+                    "paid-not-surfing repair failed for router %s",
+                    getattr(router, "pk", None),
+                )
+        if repaired:
+            logger.info("paid-not-surfing repaired %s account(s)", repaired)
+    finally:
+        release_expiry_watch_lock()
 
 
 def _start_subscription_sweep_loop() -> None:
@@ -200,7 +233,7 @@ def _start_subscription_sweep_loop() -> None:
         daemon=True,
     ).start()
     logger.info(
-        "Subscription sweep armed (full every %.0fs, expiry watch every %.0fs). "
+        "Subscription sweep armed (full every %.0fs, expiry+paid-repair watch every %.0fs). "
         "Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
         interval,
         watch_interval,

@@ -781,6 +781,38 @@ class WireGuardKeyTests(SimpleTestCase):
         finally:
             release_subscription_sweep_lock()
 
+    def test_expiry_watch_shares_fleet_lock_with_sweep(self):
+        from core.subscription_sync import (
+            release_subscription_sweep_lock,
+            try_acquire_expiry_watch_lock,
+            try_acquire_subscription_sweep_lock,
+        )
+
+        release_subscription_sweep_lock()
+        self.assertTrue(try_acquire_subscription_sweep_lock(ttl_sec=60))
+        try:
+            self.assertFalse(try_acquire_expiry_watch_lock(ttl_sec=60))
+        finally:
+            release_subscription_sweep_lock()
+
+    def test_sync_nas_config_skips_when_fleet_lock_held(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        with (
+            patch(
+                "core.management.commands.sync_nas_config."
+                "acquire_subscription_sweep_lock_with_retry",
+                return_value=False,
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            call_command("sync_nas_config", stdout=out, stderr=out)
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("fleet lock", out.getvalue())
+
     def test_subscription_sweep_force_bypasses_lock(self):
         from io import StringIO
 
@@ -5331,8 +5363,10 @@ class PackageSpeedLimitTests(SimpleTestCase):
 
         self.assertEqual(_parse_rate_limit_mbps("5M/10M"), (5, 10))
         self.assertEqual(_parse_rate_limit_mbps("5000k/10m"), (5, 10))
+        self.assertEqual(_parse_rate_limit_mbps("10M/10M 0/0 0/0 0/0"), (10, 10))
         self.assertEqual(_normalize_rate_limit_string("5m/10M"), "5M/10M")
         self.assertTrue(_rate_limits_match("5M/10M", "5m/10m"))
+        self.assertTrue(_rate_limits_match("10M/10M", "10M/10M 0/0 0/0 0/0"))
         self.assertFalse(_rate_limits_match("5M/10M", "8M/25M"))
 
     def test_ensure_pppoe_rate_profile_rejects_bare_profile(self):
@@ -6889,6 +6923,61 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(order[0], ("portal", False))
         self.assertEqual(order[1], ("provision",))
+
+    def test_repair_paid_pppoe_not_surfing_restores_blocked_session(self):
+        from core.mikrotik_connect import (
+            PPPOE_BLOCKED_PROFILE_NAME,
+            repair_paid_pppoe_not_surfing_on_router,
+        )
+
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value=PPPOE_BLOCKED_PROFILE_NAME,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 1},
+            ) as batch,
+        ):
+            session.return_value.__enter__.return_value = object()
+            # Paid window for the repair path.
+            from datetime import timedelta
+
+            from django.utils import timezone
+
+            self.pppoe.package_end = timezone.now() + timedelta(days=2)
+            self.pppoe.save(update_fields=["package_end"])
+            result = repair_paid_pppoe_not_surfing_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("repaired"), 1)
+        self.assertTrue(batch.called)
 
     def test_pppoe_restore_retries_cpe_clear_after_offline_skip(self):
         """Paid restore clears renew Hotspot on the post-provision attempt."""

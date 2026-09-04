@@ -11196,10 +11196,17 @@ def _rate_limit_string(upload_mbps: int, download_mbps: int) -> str:
 
 
 def _parse_rate_limit_mbps(rate_limit: str) -> tuple[int, int]:
-    """Parse RouterOS rate-limit to (upload_mbps, download_mbps)."""
+    """Parse RouterOS rate-limit to (upload_mbps, download_mbps).
+
+    RouterOS may store burst fields after the main pair
+    (``10M/10M 0/0 0/0 0/0``). Only the first rx/tx pair is compared — otherwise
+    every subscription sweep thinks the speed changed and kicks every CPE.
+    """
     rate_limit = (rate_limit or "").strip()
     if not rate_limit or "/" not in rate_limit:
         return 0, 0
+    # Drop burst / threshold tails: "10M/10M 0/0 0/0" → "10M/10M"
+    rate_limit = rate_limit.split()[0]
 
     def _part_to_mbps(part: str) -> int:
         part = (part or "").strip()
@@ -11585,20 +11592,30 @@ def _customer_pppoe_secret_disabled(customer) -> bool:
 
 def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     """Drop active PPP sessions so a password change takes effect immediately."""
-    username = (username or "").strip()
-    if not username:
+    return _disconnect_pppoe_sessions_many(sock, [username])
+
+
+def _disconnect_pppoe_sessions_many(
+    sock: socket.socket, usernames: list[str] | set[str] | tuple[str, ...]
+) -> int:
+    """
+    Drop many PPP sessions in one pass so CPEs redial together.
+
+    Walking clients one-by-one serializes outages; removing every matching
+    /ppp/active row from a single dump lets redials overlap.
+    """
+    needles = {
+        (name or "").strip().lower()
+        for name in usernames
+        if (name or "").strip()
+    }
+    if not needles:
         return 0
     removed = 0
-    rows = _print(
-        sock,
-        "/ppp/active",
-        props=".id,name",
-        query={"name": username},
-    )
-    if not rows:
-        rows = _print(sock, "/ppp/active", props=".id,name")
+    rows = _print(sock, "/ppp/active", props=".id,name")
     for row in rows:
-        if (row.get("name") or "").strip().lower() != username.lower():
+        name = (row.get("name") or "").strip().lower()
+        if name not in needles:
             continue
         item_id = (row.get(".id") or "").strip()
         if not item_id:
@@ -11694,12 +11711,17 @@ def _ensure_ppp_secret(
     comment: str = "",
     disabled: bool = False,
     rate_limit: str = "",
+    kick: bool = True,
 ) -> str:
     """
     Create or update /ppp/secret so a CPE can dial this username/password.
 
     Always writes the password in a dedicated follow-up set (some RouterOS builds
     drop password when mixed with other properties), then verifies the secret exists.
+
+    When ``kick=False``, never remove /ppp/active — callers that already decide
+    whether a redial is required (provision / bulk restore) should pass False so
+    routine sweeps do not disconnect every paid CPE in ID order.
 
     Returns 'created' or 'updated'.
     """
@@ -11894,15 +11916,19 @@ def _ensure_ppp_secret(
         and previous_rate_limit
         and not _rate_limits_match(rate_limit, previous_rate_limit)
     )
-    # Kick only when access actually changes. Sweeping already-blocked clients
-    # every two minutes was tearing down the redialed session that powers the
-    # pay page / STK status polls.
+    # Kick only when access actually changes. Do NOT kick on rate-limit-only
+    # drift when the profile name is unchanged — profile shaping already
+    # applies, and false rate-limit mismatches (burst-field formats) used to
+    # disconnect every paid CPE on each 2-minute sweep.
     should_kick = bool(
-        created
-        or profile_changed
-        or disabled_changed
-        or password_changed
-        or rate_limit_changed
+        kick
+        and (
+            created
+            or profile_changed
+            or disabled_changed
+            or password_changed
+            or (rate_limit_changed and profile_changed)
+        )
     )
 
     if rate_limit and profile != PPPOE_BLOCKED_PROFILE_NAME and not disabled:
@@ -12027,6 +12053,9 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             comment=comment,
             disabled=disabled,
             rate_limit=_pppoe_rate_limit_for_customer(customer),
+            # Caller decides when a redial is required — never kick here or a
+            # routine NAS refresh disconnects every paid CPE in account order.
+            kick=False,
         )
         restoring = (
             not disabled
@@ -12054,6 +12083,438 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
     if orphan_notes:
         synced += len(orphan_notes)
     return synced
+
+
+def _pppoe_customer_needs_session_kick(
+    customer,
+    *,
+    previous_profile: str,
+    profile: str,
+    disabled: bool,
+    internet_allowed: bool,
+    session_was_blocked: bool,
+    session_active_before: bool,
+) -> bool:
+    """Whether this secret rewrite requires dropping /ppp/active for the CPE."""
+    restoring_surf = bool(
+        internet_allowed
+        and not disabled
+        and profile != PPPOE_BLOCKED_PROFILE_NAME
+    )
+    if (
+        restoring_surf
+        and cpe_renew_clear_is_pending(customer)
+        and session_active_before
+        and not session_was_blocked
+        and (previous_profile or "")
+        not in {"", PPPOE_BLOCKED_PROFILE_NAME}
+    ):
+        clear_cpe_renew_clear_pending(customer)
+    needs_redial_nudge = bool(
+        restoring_surf and cpe_renew_clear_is_pending(customer)
+    )
+    stuck_unblocked_session = bool(
+        profile == PPPOE_BLOCKED_PROFILE_NAME
+        and not session_was_blocked
+        and session_active_before
+    )
+    return bool(
+        (previous_profile or "") != profile
+        or (internet_allowed and session_was_blocked)
+        or needs_redial_nudge
+        or stuck_unblocked_session
+        or (
+            restoring_surf
+            and session_active_before
+            and (previous_profile or "") == PPPOE_BLOCKED_PROFILE_NAME
+        )
+    )
+
+
+def sync_pppoe_subscription_batch_on_router(
+    router,
+    customers: list | None = None,
+) -> dict[str, Any]:
+    """
+    Apply PPPoE allow/block for many customers on one NAS in one API session.
+
+    Writes every secret first (no kicks), clears stuck blocked address-list
+    rows, then drops all sessions that need a redial together so CPEs reconnect
+    in parallel instead of first→last.
+    """
+    if router is None:
+        return {"ok": False, "error": "No router provided.", "allowed": 0, "blocked": 0}
+
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    router_id = getattr(router, "pk", None)
+    router_name = getattr(router, "name", "") or host
+    if not host or not api_user:
+        return {
+            "ok": False,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "error": "Router host or API username is missing.",
+            "allowed": 0,
+            "blocked": 0,
+        }
+
+    if customers is None:
+        customers = list(_pppoe_customers_for_router(router))
+    else:
+        customers = list(customers)
+
+    if not customers:
+        return {
+            "ok": True,
+            "skipped": True,
+            "router_id": router_id,
+            "router_name": router_name,
+            "host": host,
+            "allowed": 0,
+            "blocked": 0,
+            "kicked": 0,
+            "message": "No PPPoE customers on this router.",
+        }
+
+    lan_interface = getattr(router, "lan_bridge", None) or "bridgeLocal"
+    wan_interface = getattr(router, "wan_interface", None) or "ether1"
+    org = getattr(router, "organization", None)
+    compulsory = bool(getattr(org, "pppoe_compulsory", False)) if org else False
+    hosts = _router_api_host_candidates(router, discover=False)
+    last_error = ""
+    kick_usernames: list[str] = []
+    clear_usernames: list[str] = []
+    allowed = blocked = errors = 0
+    kicked = 0
+    notes: list[str] = []
+    need_block_stack = False
+
+    for customer in customers:
+        disabled = _customer_pppoe_secret_disabled(customer)
+        internet_allowed = _customer_internet_allowed(customer)
+        profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
+        if internet_allowed and not disabled:
+            allowed += 1
+        else:
+            blocked += 1
+        if profile == PPPOE_BLOCKED_PROFILE_NAME:
+            need_block_stack = True
+
+    for candidate in hosts:
+        try:
+            with socket.create_connection((dial_host(candidate), 8728), timeout=1.2):
+                pass
+        except OSError:
+            if candidate != host:
+                continue
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=20.0) as sock:
+                if need_block_stack:
+                    portal_url = _billing_portal_base_url()
+                    notes.extend(
+                        _ensure_pppoe_expired_access(sock, portal_url=portal_url)
+                    )
+                    notes.extend(_ensure_pppoe_blocked_profile(sock))
+                    if compulsory:
+                        _, stack_notes = _ensure_pppoe_stack(
+                            sock,
+                            lan_interface=lan_interface,
+                            wan_interface=wan_interface,
+                            compulsory=True,
+                            portal_url=portal_url,
+                        )
+                        notes.extend(stack_notes[:4])
+
+                for customer in customers:
+                    username = (customer.pppoe_username or "").strip()
+                    password = customer.pppoe_password or ""
+                    if not username or not password:
+                        errors += 1
+                        continue
+                    disabled = _customer_pppoe_secret_disabled(customer)
+                    internet_allowed = _customer_internet_allowed(customer)
+                    profile = _ppp_secret_profile_for_customer(
+                        customer, disabled=disabled
+                    )
+                    comment = (
+                        f"{PPP_SECRET_TAG} {getattr(customer, 'account_number', '')}"
+                    ).strip()
+                    rate_limit = _pppoe_rate_limit_for_customer(customer)
+                    try:
+                        previous_profile = _current_ppp_secret_profile(sock, username)
+                        session_active_before = _pppoe_has_active_session(
+                            sock, username
+                        )
+                        session_was_blocked = False
+                        if previous_profile or session_active_before:
+                            session_was_blocked = _active_pppoe_session_is_blocked(
+                                sock, username
+                            )
+                        _ensure_ppp_secret(
+                            sock,
+                            username=username,
+                            password=password,
+                            profile=profile,
+                            comment=comment,
+                            disabled=disabled,
+                            rate_limit=rate_limit,
+                            kick=False,
+                        )
+                        restoring_surf = bool(
+                            internet_allowed
+                            and not disabled
+                            and profile != PPPOE_BLOCKED_PROFILE_NAME
+                        )
+                        if restoring_surf and session_was_blocked:
+                            clear_usernames.append(username)
+                        if _pppoe_customer_needs_session_kick(
+                            customer,
+                            previous_profile=previous_profile,
+                            profile=profile,
+                            disabled=disabled,
+                            internet_allowed=internet_allowed,
+                            session_was_blocked=session_was_blocked,
+                            session_active_before=session_active_before,
+                        ):
+                            kick_usernames.append(username)
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        logger.warning(
+                            "PPPoE batch sync failed customer=%s router=%s: %s",
+                            getattr(customer, "pk", None),
+                            router_id,
+                            exc,
+                        )
+
+                for username in clear_usernames:
+                    try:
+                        _clear_pppoe_blocked_address_list(sock, username)
+                    except Exception:
+                        logger.exception(
+                            "Could not clear blocked list for %s on router %s",
+                            username,
+                            router_id,
+                        )
+
+                kicked = _disconnect_pppoe_sessions_many(sock, kick_usernames)
+                if kicked:
+                    notes.append(
+                        f"batch-kicked {kicked} session(s) "
+                        f"({len(set(kick_usernames))} account(s)) — CPEs redial together"
+                    )
+
+            return {
+                "ok": errors == 0,
+                "router_id": router_id,
+                "router_name": router_name,
+                "host": candidate,
+                "allowed": allowed,
+                "blocked": blocked,
+                "errors": errors,
+                "kicked": kicked,
+                "kick_accounts": len(set(kick_usernames)),
+                "notes": notes,
+                "message": (
+                    f"PPPoE batch on {router_name}: allowed={allowed} "
+                    f"blocked={blocked} kick_accounts={len(set(kick_usernames))}"
+                ),
+            }
+        except TimeoutError:
+            last_error = f"{candidate}: timed out on API port 8728"
+        except OSError as exc:
+            last_error = f"{candidate}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            last_error = f"{candidate}: {exc}"
+
+    return {
+        "ok": False,
+        "router_id": router_id,
+        "router_name": router_name,
+        "host": host,
+        "allowed": allowed,
+        "blocked": blocked,
+        "errors": errors + 1,
+        "kicked": 0,
+        "error": last_error or f"{host}: unreachable",
+    }
+
+
+def sync_hotspot_subscription_batch_on_router(
+    router,
+    customers: list,
+    *,
+    reauthenticate_paid: bool = False,
+) -> dict[str, Any]:
+    """Apply Hotspot allow/block for many customers on one NAS session."""
+    if router is None:
+        return {"ok": False, "error": "No router provided.", "allowed": 0, "blocked": 0}
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    customers = [c for c in customers if c is not None]
+    if not host or not api_user or not customers:
+        return {
+            "ok": True,
+            "skipped": True,
+            "allowed": 0,
+            "blocked": 0,
+            "host": host,
+        }
+
+    allowed = blocked = errors = 0
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=20.0) as sock:
+                active_rows = _print(
+                    sock, "/ip/hotspot/active", props=".id,user,mac-address"
+                )
+                host_rows = _print(
+                    sock, "/ip/hotspot/host", props=".id,mac-address,authorized"
+                )
+                for customer in customers:
+                    internet_allowed = _customer_internet_allowed(customer)
+                    if internet_allowed:
+                        allowed += 1
+                        reauth = bool(reauthenticate_paid)
+                    else:
+                        blocked += 1
+                        reauth = True
+                    try:
+                        result = _apply_hotspot_customer_on_socket(
+                            sock,
+                            customer,
+                            reauthenticate=reauth,
+                            active_rows=active_rows,
+                            host_rows=host_rows,
+                        )
+                        if not result.get("ok"):
+                            errors += 1
+                    except Exception as exc:  # noqa: BLE001
+                        errors += 1
+                        logger.warning(
+                            "Hotspot batch sync failed customer=%s: %s",
+                            getattr(customer, "pk", None),
+                            exc,
+                        )
+                return {
+                    "ok": errors == 0,
+                    "host": candidate,
+                    "router_id": getattr(router, "pk", None),
+                    "allowed": allowed,
+                    "blocked": blocked,
+                    "errors": errors,
+                    "message": (
+                        f"Hotspot batch: allowed={allowed} blocked={blocked}"
+                    ),
+                }
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+    return {
+        "ok": False,
+        "host": host,
+        "allowed": allowed,
+        "blocked": blocked,
+        "errors": errors + 1,
+        "error": last_error or "unreachable",
+    }
+
+
+def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
+    """
+    Fix paid PPPoE clients that are dialed but not surfing on one NAS.
+
+    Detects wrong/blocked profile or leftover ``ispcentric-blocked`` address-list
+    rows, restores the paid secret, clears the list, and batch-kicks so CPEs
+    redial onto the surfing profile together.
+    """
+    if router is None:
+        return {"ok": False, "skipped": True, "repaired": 0, "error": "No router."}
+
+    paid = [
+        customer
+        for customer in _pppoe_customers_for_router(router)
+        if _customer_internet_allowed(customer)
+        and not _customer_pppoe_secret_disabled(customer)
+    ]
+    if not paid:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": getattr(router, "pk", None),
+            "message": "No paid PPPoE clients on this router.",
+        }
+
+    host = (getattr(router, "host", None) or "").strip()
+    api_user = (getattr(router, "username", None) or "").strip()
+    api_password = getattr(router, "password", None) or ""
+    if not host or not api_user:
+        return {
+            "ok": False,
+            "repaired": 0,
+            "error": "Router host or API username is missing.",
+        }
+
+    need_repair: list = []
+    last_error = ""
+    for candidate in _router_api_host_candidates(router, discover=False):
+        try:
+            with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
+                for customer in paid:
+                    username = (customer.pppoe_username or "").strip()
+                    if not username:
+                        continue
+                    expected = _ppp_secret_profile_for_customer(
+                        customer, disabled=False
+                    )
+                    current = _current_ppp_secret_profile(sock, username)
+                    active = _pppoe_has_active_session(sock, username)
+                    blocked_session = bool(
+                        active and _active_pppoe_session_is_blocked(sock, username)
+                    )
+                    wrong_profile = bool(
+                        current
+                        and current != expected
+                        and (
+                            current == PPPOE_BLOCKED_PROFILE_NAME
+                            or expected != PPPOE_BLOCKED_PROFILE_NAME
+                        )
+                    )
+                    if blocked_session or wrong_profile:
+                        need_repair.append(customer)
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            continue
+    else:
+        return {
+            "ok": False,
+            "repaired": 0,
+            "error": last_error or f"{host}: unreachable",
+            "router_id": getattr(router, "pk", None),
+        }
+
+    if not need_repair:
+        return {
+            "ok": True,
+            "skipped": True,
+            "repaired": 0,
+            "router_id": getattr(router, "pk", None),
+            "host": host,
+            "message": "All paid PPPoE sessions already surfing.",
+        }
+
+    result = sync_pppoe_subscription_batch_on_router(router, need_repair)
+    result["repaired"] = len(need_repair)
+    result["message"] = (
+        f"Repaired {len(need_repair)} paid PPPoE account(s) not surfing on "
+        f"{getattr(router, 'name', None) or host}"
+    )
+    return result
 
 
 _TUNNEL_HOST_CACHE: dict[str, str] = {}
@@ -12596,6 +13057,9 @@ def provision_customer_pppoe(
                     comment=comment,
                     disabled=disabled,
                     rate_limit=rate_limit,
+                    # Explicit should_kick below — avoid a second disconnect for
+                    # every secret rewrite on the 2-minute subscription sweep.
+                    kick=False,
                 )
                 # Kick when profile changes so the blocked address-list (or restore)
                 # takes effect immediately — otherwise established TCP keeps surfing
@@ -12609,23 +13073,22 @@ def provision_customer_pppoe(
                     and not disabled
                     and profile != PPPOE_BLOCKED_PROFILE_NAME
                 )
-                needs_redial_nudge = bool(
-                    restoring_surf and cpe_renew_clear_is_pending(customer)
+                should_kick = _pppoe_customer_needs_session_kick(
+                    customer,
+                    previous_profile=previous_profile,
+                    profile=profile,
+                    disabled=disabled,
+                    internet_allowed=internet_allowed,
+                    session_was_blocked=session_was_blocked,
+                    session_active_before=session_active_before,
                 )
                 stuck_unblocked_session = bool(
                     profile == PPPOE_BLOCKED_PROFILE_NAME
                     and not session_was_blocked
                     and _pppoe_has_active_session(sock, username)
                 )
-                # Paid secret + live session that dialed while blocked (or after a
-                # failed kick): must redial onto the paid profile. Secret profile
-                # alone is not enough — /ppp/active keeps the old address-list/DNS.
-                should_kick = (previous_profile or "") != profile or (
-                    internet_allowed and session_was_blocked
-                ) or needs_redial_nudge or stuck_unblocked_session or (
-                    restoring_surf
-                    and session_active_before
-                    and (previous_profile or "") == PPPOE_BLOCKED_PROFILE_NAME
+                needs_redial_nudge = bool(
+                    restoring_surf and cpe_renew_clear_is_pending(customer)
                 )
                 if restoring_surf and session_was_blocked:
                     cleared = _clear_pppoe_blocked_address_list(sock, username)
@@ -13924,6 +14387,7 @@ def refresh_onboarded_router_config(
     skip_pppoe: bool = False,
     skip_hotspot: bool = False,
     reauthenticate: bool = False,
+    sync_pppoe_secrets: bool = True,
 ) -> dict[str, Any]:
     """
     Push the latest PPPoE / Hotspot / captive templates to one onboarded NAS.
@@ -13931,6 +14395,10 @@ def refresh_onboarded_router_config(
     Used after onboard, reconnect, deploy, and the subscription sweep so routers
     pick up code changes (firewall rules, login.html, bypass cleanup, MAC blocks)
     without a manual push from the UI.
+
+    ``sync_pppoe_secrets=False`` (subscription sweep): refresh firewall / captive
+    stack only. Per-customer sync already applied access; rewriting every secret
+    again was disconnecting paid CPEs first→last every cycle.
     """
     router_id = getattr(router, "pk", None)
     router_name = getattr(router, "name", "") or getattr(router, "host", "") or ""
@@ -14008,6 +14476,7 @@ def refresh_onboarded_router_config(
             router,
             compulsory=compulsory,
             hotspot_fallback=bool(compulsory or hotspot_on or has_hotspot),
+            sync_secrets=sync_pppoe_secrets,
         )
         if pppoe_result.get("ok"):
             notes.append("pppoe ok")
@@ -15347,6 +15816,7 @@ def apply_pppoe_enforcement_on_router(
     compulsory: bool,
     candidate_hosts: list[str] | None = None,
     hotspot_fallback: bool | None = None,
+    sync_secrets: bool = True,
 ) -> dict[str, Any]:
     """
     Push PPPoE pool/server + compulsory firewall policy to one MikroTik.
@@ -15354,6 +15824,9 @@ def apply_pppoe_enforcement_on_router(
     When compulsory is True, also provision Hotspot fallback so devices that
     are not dialed in via PPPoE are redirected to the payment portal instead
     of being silently dropped.
+
+    ``sync_secrets=False`` skips rewriting every /ppp/secret (used by the
+    subscription sweep after per-customer access sync already ran).
     """
     if router is None:
         return {"ok": False, "error": "No router provided."}
@@ -15410,9 +15883,14 @@ def apply_pppoe_enforcement_on_router(
                     compulsory=bool(compulsory),
                     portal_url=portal_url,
                 )
-                secrets_synced = _sync_organization_pppoe_secrets_on_socket(sock, router)
-                if secrets_synced:
-                    notes.append(f"synced {secrets_synced} PPPoE secret(s)")
+                if sync_secrets:
+                    secrets_synced = _sync_organization_pppoe_secrets_on_socket(
+                        sock, router
+                    )
+                    if secrets_synced:
+                        notes.append(f"synced {secrets_synced} PPPoE secret(s)")
+                else:
+                    notes.append("pppoe secrets skipped (already synced per customer)")
             working_host = candidate
             break
         except TimeoutError:
