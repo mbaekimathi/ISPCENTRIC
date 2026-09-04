@@ -18,7 +18,13 @@
     </span>
     <span class="account-menu-copy">
       <span class="account-menu-name" data-client-name>{{ customer.full_name }}</span>
-      <span class="account-menu-meta">{{ customer.account_number }} · {{ customer.get_status_display }}</span>
+      <span class="account-menu-meta">
+        {% if customer.service_type == "hotspot" and customer.phone %}
+          {{ customer.phone }} · {{ customer.get_status_display }}
+        {% else %}
+          {{ customer.account_number }} · {{ customer.get_status_display }}
+        {% endif %}
+      </span>
     </span>
     <span class="account-menu-caret" aria-hidden="true"></span>
   </button>
@@ -73,7 +79,10 @@
           </strong>
         </div>
       {% elif customer.service_type == "hotspot" %}
-        <div class="account-session-row"><span>Device MAC</span><strong>{{ customer.hotspot_mac|default:"—" }}</strong></div>
+        {% if customer.phone %}
+          <div class="account-session-row"><span>Phone</span><strong><a href="tel:{{ customer.phone }}">{{ customer.phone }}</a></strong></div>
+        {% endif %}
+        <div class="account-session-row"><span>Device MAC</span><strong class="client-cmd-mac-muted">{{ customer.hotspot_mac|default:"—" }}</strong></div>
       {% elif customer.service_type == "static" %}
         <div class="account-session-row"><span>Router IP</span><strong>{{ customer.cpe_ip|default:"—" }}</strong></div>
         <div class="account-session-row"><span>Router MAC</span><strong>{{ customer.cpe_mac|default:"—" }}</strong></div>
@@ -135,7 +144,7 @@
 {% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page client-detail-simple client-cmd" id="client-overview">
+<div class="client-detail-page client-detail-simple client-cmd{% if customer.service_type == 'hotspot' %} is-hotspot{% endif %}" id="client-overview">
 
   <section class="client-cmd-deck">
     <div class="client-cmd-deck-top">
@@ -157,9 +166,17 @@
             aria-expanded="false"
             aria-controls="client-user-profile-panel"
           >{{ customer.full_name }}</button>
+          {% if customer.phone %}
+            <a class="client-cmd-phone" href="tel:{{ customer.phone }}">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.6 10.8a15.5 15.5 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11.4 11.4 0 0 0 .57 3.6 1 1 0 0 1-.25 1Z"/></svg>
+              {{ customer.phone }}
+            </a>
+          {% endif %}
           <p class="client-cmd-subline">
             {% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}No plan assigned{% endif %}
-            {% if customer.phone %} · {{ customer.phone }}{% endif %}
+            {% if customer.service_type == "hotspot" and customer.hotspot_mac %}
+              <span class="client-cmd-mac-inline"> · MAC {{ customer.hotspot_mac }}</span>
+            {% endif %}
           </p>
         </div>
       </div>
@@ -360,6 +377,12 @@
                 <dt>Plan</dt>
                 <dd>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</dd>
               </div>
+              {% if customer.phone %}
+                <div>
+                  <dt>Phone</dt>
+                  <dd><a class="client-cmd-phone-inline" href="tel:{{ customer.phone }}">{{ customer.phone }}</a></dd>
+                </div>
+              {% endif %}
               <div>
                 <dt>Router</dt>
                 <dd>
@@ -374,7 +397,7 @@
               {% if customer.service_type == "pppoe" %}
                 <div><dt>PPPoE</dt><dd data-client-pppoe-user>{{ customer.pppoe_username|default:"—" }}</dd></div>
               {% elif customer.service_type == "hotspot" %}
-                <div><dt>Device MAC</dt><dd>{{ customer.hotspot_mac|default:"—" }}</dd></div>
+                <div><dt>Device MAC</dt><dd class="client-cmd-mac-muted">{{ customer.hotspot_mac|default:"—" }}</dd></div>
               {% elif customer.service_type == "static" %}
                 <div><dt>CPE IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
               {% endif %}
@@ -465,7 +488,13 @@
               </dd>
             </div>
           {% elif customer.service_type == "hotspot" %}
-            <div><dt>Device MAC</dt><dd>{{ customer.hotspot_mac|default:"—" }}</dd></div>
+            {% if customer.phone %}
+              <div>
+                <dt>Phone</dt>
+                <dd><a class="client-cmd-phone-inline" href="tel:{{ customer.phone }}">{{ customer.phone }}</a></dd>
+              </div>
+            {% endif %}
+            <div><dt>Device MAC</dt><dd class="client-cmd-mac-muted">{{ customer.hotspot_mac|default:"—" }}</dd></div>
           {% elif customer.service_type == "static" %}
             <div><dt>Router IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
             <div><dt>Router MAC</dt><dd>{{ customer.cpe_mac|default:"—" }}</dd></div>

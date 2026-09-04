@@ -1,9 +1,10 @@
 {% if customers %}
-  <div class="clients-list-table-wrap">
+  <div class="clients-list-table-wrap{% if show_hotspot %} is-hotspot-table{% endif %}">
     <table class="clients-list-table">
       <thead>
         <tr>
           <th>Client</th>
+          {% if show_hotspot %}<th>Phone</th>{% endif %}
           <th>Account</th>
           {% if show_pppoe %}<th>PPPoE</th><th>Session</th>{% endif %}
           {% if show_hotspot %}<th>Session</th><th>Connected to</th>{% endif %}
@@ -16,19 +17,32 @@
           <tr
             class="clients-list-table-row"
             data-client-row
-            data-search="{{ c.full_name|default:'' }} {{ c.phone|default:'' }} {{ c.account_number|default:'' }} {{ c.pppoe_username|default:'' }}"
+            data-search="{{ c.full_name|default:'' }} {{ c.phone|default:'' }} {{ c.account_number|default:'' }} {{ c.pppoe_username|default:'' }} {{ c.hotspot_mac|default:'' }}"
           >
             <td class="clients-list-table-client-cell" data-label="Client">
               <div class="clients-list-table-identity">
                 <span class="clients-avatar" aria-hidden="true">{{ c.full_name|slice:":1"|upper }}</span>
                 <div class="clients-name-stack">
                   <a class="clients-list-table-name" href="{% url 'core:client_detail' c.id %}">{{ c.full_name }}</a>
-                  {% if c.phone %}
+                  {% if show_hotspot %}
+                    {% if c.hotspot_mac %}
+                      <span class="clients-list-table-mac" title="Device MAC">{{ c.hotspot_mac }}</span>
+                    {% endif %}
+                  {% elif c.phone %}
                     <span class="clients-list-table-phone">{{ c.phone }}</span>
                   {% endif %}
                 </div>
               </div>
             </td>
+            {% if show_hotspot %}
+              <td class="clients-list-table-phone-cell" data-label="Phone">
+                {% if c.phone %}
+                  <a class="clients-list-table-phone is-featured" href="tel:{{ c.phone }}">{{ c.phone }}</a>
+                {% else %}
+                  <span class="clients-list-table-phone is-empty">No phone</span>
+                {% endif %}
+              </td>
+            {% endif %}
             <td class="clients-list-table-account-cell" data-label="Account">
               <div class="clients-list-table-stack">
                 <span class="clients-list-table-account">{{ c.account_number|default:"—" }}</span>

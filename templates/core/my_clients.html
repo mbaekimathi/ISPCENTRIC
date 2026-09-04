@@ -125,7 +125,7 @@
             class="clients-search-input"
             name="q"
             value="{{ clients_query|default:'' }}"
-            placeholder="Name, phone, or account…"
+            placeholder="{% if active_tab == 'hotspot' %}Phone, name, or account…{% else %}Name, phone, or account…{% endif %}"
             autocomplete="off"
             spellcheck="false"
             enterkeyhint="search"
@@ -140,9 +140,9 @@
     </div>
 
     <div class="clients-workspace-meta">
-      {% if active_tab == 'hotspot' %}
-        <p class="clients-status-hint">Live session and device status refresh every 10s.</p>
-      {% endif %}
+        {% if active_tab == 'hotspot' %}
+          <p class="clients-status-hint">Phone is the primary contact · MAC stays as device technical ID · live status refreshes every 10s.</p>
+        {% endif %}
       <div class="clients-search-meta" data-clients-search-meta {% if not clients_query and not clients_router_param %}hidden{% endif %}>
         <span class="clients-search-meta-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm10 2-5-5"/></svg>

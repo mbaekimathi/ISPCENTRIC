@@ -7295,6 +7295,68 @@ body.staff-nav-lock {
   white-space: nowrap;
 }
 
+.clients-list-table-phone.is-featured {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0;
+  padding: 0.28rem 0.55rem;
+  border-radius: 0.55rem;
+  border: 1px solid color-mix(in srgb, var(--clients-tone, #059669) 28%, var(--border));
+  background: color-mix(in srgb, var(--clients-tone, #059669) 12%, transparent);
+  color: var(--clients-tone-strong, #047857);
+  font-size: 0.92rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  max-width: 100%;
+}
+
+.clients-list-table-phone.is-featured:hover,
+.clients-list-table-phone.is-featured:focus-visible {
+  border-color: color-mix(in srgb, var(--clients-tone, #059669) 45%, var(--border));
+  background: color-mix(in srgb, var(--clients-tone, #059669) 18%, transparent);
+  outline: none;
+}
+
+.clients-list-table-phone.is-empty {
+  color: var(--ink-soft);
+  font-weight: 600;
+  opacity: 0.65;
+}
+
+.clients-list-table-mac {
+  display: block;
+  margin-top: 0.18rem;
+  color: var(--ink-soft);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.68rem;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clients-list-table-wrap.is-hotspot-table .clients-list-table-name {
+  font-size: 0.95rem;
+}
+
+.clients-list-table-phone-cell {
+  white-space: nowrap;
+  min-width: 8.5rem;
+}
+
+.clients-dash.is-tab-hotspot .clients-workspace-head {
+  background:
+    radial-gradient(ellipse 55% 120% at 0% -20%, color-mix(in srgb, #059669 18%, transparent), transparent 55%),
+    linear-gradient(180deg, color-mix(in srgb, #059669 8%, transparent), transparent 70%);
+}
+
+.clients-dash.is-tab-hotspot .clients-seg-item.tone-hotspot.is-active {
+  box-shadow: 0 10px 22px color-mix(in srgb, #059669 18%, transparent);
+}
+
 .clients-list-table-client-cell {
   white-space: normal;
   min-width: 0;
@@ -7531,6 +7593,16 @@ button.clients-list-table-action {
     border: 0;
     border-radius: 0;
     padding: 0;
+  }
+
+  .clients-list-table td.clients-list-table-phone-cell {
+    grid-column: 1 / -1;
+    border-color: color-mix(in srgb, var(--clients-tone) 28%, var(--border));
+    background: color-mix(in srgb, var(--clients-tone) 10%, var(--surface));
+  }
+
+  .clients-list-table td.clients-list-table-phone-cell .clients-list-table-phone.is-featured {
+    font-size: 1.05rem;
   }
 
   .clients-list-table td.clients-list-table-client-cell {
@@ -28439,36 +28511,52 @@ h1, h2, h3, h4,
 /* Client detail ? simple layout ------------------------------------------- */
 
 .client-detail-simple {
-  width: min(100%, 72rem);
+  width: min(100%, 76rem);
   margin-left: auto;
   margin-right: auto;
-  padding-inline: clamp(0.25rem, 2vw, 0.75rem);
+  padding-inline: clamp(0.15rem, 1.5vw, 0.5rem);
   display: grid;
-  gap: 1.05rem;
+  gap: 1rem;
 }
 
-/* Client profile page — modern organised layout ------------------------------- */
-.client-profile-page {
-  gap: 1.15rem;
+/* Client command center ----------------------------------------------------- */
+.client-cmd {
+  gap: 1rem;
 }
 
-.client-profile-hero {
+.client-cmd-deck {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 1.35rem;
+  padding: clamp(1.1rem, 2.4vw, 1.45rem);
+  background:
+    radial-gradient(ellipse 70% 120% at -8% -30%, color-mix(in srgb, var(--sea) 28%, transparent), transparent 55%),
+    radial-gradient(ellipse 50% 80% at 108% 120%, color-mix(in srgb, var(--signal) 16%, transparent), transparent 50%),
+    linear-gradient(155deg, color-mix(in srgb, var(--sea) 8%, var(--surface-solid, var(--surface))), var(--surface-solid, var(--surface)) 55%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #fff 55%, transparent) inset,
+    0 22px 50px color-mix(in srgb, #0b1f2a 10%, transparent);
+}
+
+.client-cmd-deck::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(180deg, var(--sea), color-mix(in srgb, var(--sea) 40%, var(--signal)));
+}
+
+.client-cmd-deck-top {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem 1.35rem;
-  flex-wrap: wrap;
-  padding: clamp(1.15rem, 2.5vw, 1.55rem) clamp(1.1rem, 2.4vw, 1.5rem);
-  border: 1px solid var(--border-strong);
-  border-radius: 1.25rem;
-  background:
-    radial-gradient(ellipse 55% 90% at 0% -10%, color-mix(in srgb, var(--sea) 22%, transparent), transparent 58%),
-    radial-gradient(ellipse 40% 70% at 100% 110%, color-mix(in srgb, #6366f1 10%, transparent), transparent 55%),
-    linear-gradient(165deg, color-mix(in srgb, var(--sea) 7%, var(--surface-solid, var(--surface))), var(--surface-solid, var(--surface)));
-  box-shadow: var(--card-shadow);
+  gap: 1rem 1.25rem;
+  margin-bottom: 1.1rem;
 }
 
-.client-profile-hero-main {
+.client-cmd-identity {
   display: flex;
   align-items: flex-start;
   gap: 0.95rem;
@@ -28476,161 +28564,772 @@ h1, h2, h3, h4,
   flex: 1 1 18rem;
 }
 
-.client-profile-hero-avatar {
-  width: 3.4rem;
-  height: 3.4rem;
-  font-size: 1.2rem;
-}
-
-.client-profile-hero-copy {
-  min-width: 0;
-}
-
-.client-profile-hero-name {
+.client-cmd-avatar {
+  display: grid;
+  place-items: center;
+  width: 3.6rem;
+  height: 3.6rem;
+  flex: 0 0 auto;
+  border-radius: 1.05rem;
+  background: linear-gradient(145deg, var(--sea), color-mix(in srgb, var(--sea) 40%, #042a30));
+  color: #fff;
   font-family: var(--font-display);
-  font-size: clamp(1.35rem, 1.15rem + 0.85vw, 1.85rem);
-  line-height: 1.15;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--sea) 16%, transparent),
+    0 14px 28px color-mix(in srgb, var(--sea) 24%, transparent);
 }
 
-.client-profile-hero-lead {
+.client-cmd-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  margin-bottom: 0.2rem;
+  color: var(--sea-deep);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+[data-theme="dark"] .client-cmd-eyebrow {
+  color: var(--sea);
+}
+
+.client-cmd-dot {
+  width: 0.28rem;
+  height: 0.28rem;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+.client-cmd-name {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: clamp(1.45rem, 1.15rem + 1.1vw, 2rem);
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  cursor: pointer;
+  text-align: left;
+}
+
+.client-cmd-name:hover {
+  color: var(--sea);
+}
+
+.client-cmd-subline {
   margin: 0.35rem 0 0;
   color: var(--ink-soft);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   font-weight: 550;
-  line-height: 1.45;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
-.client-profile-hero-meta {
+.client-cmd-phone {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--sea) 30%, var(--border));
+  border-radius: 0.7rem;
+  background: color-mix(in srgb, var(--sea) 12%, transparent);
+  color: var(--sea-deep);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.client-cmd-phone:hover,
+.client-cmd-phone:focus-visible {
+  border-color: color-mix(in srgb, var(--sea) 48%, var(--border));
+  background: color-mix(in srgb, var(--sea) 18%, transparent);
+  outline: none;
+}
+
+.client-cmd.is-hotspot .client-cmd-phone {
+  border-color: color-mix(in srgb, #059669 32%, var(--border));
+  background: color-mix(in srgb, #059669 14%, transparent);
+  color: #047857;
+}
+
+[data-theme="dark"] .client-cmd.is-hotspot .client-cmd-phone {
+  color: #6ee7b7;
+}
+
+.client-cmd-phone-inline {
+  color: inherit;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.client-cmd-phone-inline:hover {
+  color: var(--sea);
+  text-decoration: underline;
+}
+
+.client-cmd.is-hotspot .client-cmd-phone-inline {
+  color: #047857;
+}
+
+[data-theme="dark"] .client-cmd.is-hotspot .client-cmd-phone-inline {
+  color: #6ee7b7;
+}
+
+.client-cmd-mac-muted,
+.client-cmd-mac-inline {
+  color: var(--ink-soft);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.82em;
+  font-weight: 550;
+  letter-spacing: 0.02em;
+  opacity: 0.78;
+}
+
+.client-cmd.is-hotspot .client-cmd-deck {
+  background:
+    radial-gradient(ellipse 70% 120% at -8% -30%, color-mix(in srgb, #059669 26%, transparent), transparent 55%),
+    radial-gradient(ellipse 50% 80% at 108% 120%, color-mix(in srgb, var(--signal) 12%, transparent), transparent 50%),
+    linear-gradient(155deg, color-mix(in srgb, #059669 8%, var(--surface-solid, var(--surface))), var(--surface-solid, var(--surface)) 55%);
+}
+
+.client-cmd.is-hotspot .client-cmd-deck::before {
+  background: linear-gradient(180deg, #059669, color-mix(in srgb, #059669 40%, var(--signal)));
+}
+
+.client-cmd.is-hotspot .client-cmd-avatar {
+  background: linear-gradient(145deg, #059669, color-mix(in srgb, #059669 40%, #064e3b));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, #059669 16%, transparent),
+    0 14px 28px color-mix(in srgb, #059669 24%, transparent);
+}
+
+.client-cmd-deck-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.75rem;
+  max-width: min(100%, 34rem);
+}
+
+.client-cmd-flags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.client-cmd-flag-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid color-mix(in srgb, #059669 30%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, #059669 12%, transparent);
+  color: color-mix(in srgb, #059669 85%, var(--ink));
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.client-cmd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.client-cmd-pause {
+  display: inline-flex;
+  margin: 0;
+}
+
+.client-cmd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.4rem;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.75rem;
+  background: var(--surface-solid, var(--surface));
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 750;
+  line-height: 1.1;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.client-cmd-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border-strong));
+  box-shadow: 0 10px 20px color-mix(in srgb, #0b1f2a 8%, transparent);
+}
+
+.client-cmd-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.client-cmd-btn.is-primary {
+  border-color: color-mix(in srgb, var(--sea) 45%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--sea) 88%, #fff), var(--sea));
+  color: #fff;
+  box-shadow: 0 12px 24px color-mix(in srgb, var(--sea) 28%, transparent);
+}
+
+.client-cmd-btn.is-pause {
+  border-color: color-mix(in srgb, var(--signal) 35%, var(--border));
+  background: color-mix(in srgb, var(--signal) 12%, var(--surface));
+  color: color-mix(in srgb, var(--signal) 80%, var(--ink));
+}
+
+.client-cmd-btn.is-pause.is-paused {
+  border-color: color-mix(in srgb, #059669 35%, var(--border));
+  background: color-mix(in srgb, #059669 12%, var(--surface));
+  color: color-mix(in srgb, #059669 90%, var(--ink));
+}
+
+.client-cmd-btn.is-ghost {
+  background: transparent;
+}
+
+.client-cmd-more {
+  position: relative;
+}
+
+.client-cmd-more-menu {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  right: 0;
+  z-index: 20;
+  min-width: 11rem;
+  padding: 0.35rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.85rem;
+  background: var(--surface-solid, var(--surface));
+  box-shadow: var(--menu-shadow);
+}
+
+.client-cmd-more-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  min-height: 2.2rem;
+  padding: 0.4rem 0.7rem;
+  border: 0;
+  border-radius: 0.55rem;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.client-cmd-more-item:hover {
+  background: var(--surface-3);
+}
+
+.client-cmd-more-item.is-danger {
+  color: var(--danger);
+}
+
+.client-cmd-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.client-cmd-metrics li {
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface-solid, var(--surface)) 72%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.client-cmd-metrics li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.75rem;
+  bottom: 0.75rem;
+  width: 0.22rem;
+  border-radius: 999px;
+  background: var(--sea);
+}
+
+.client-cmd-metrics li[data-hero-chip="subscription"]::after { background: #059669; }
+.client-cmd-metrics li[data-hero-chip="throughput"]::after { background: var(--signal); }
+.client-cmd-metrics li[data-hero-chip="plan"]::after { background: #6366f1; }
+
+.client-cmd-metric-label,
+.client-cmd-metrics em {
+  display: block;
+  font-style: normal;
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.client-cmd-metrics strong {
+  display: block;
+  margin: 0.28rem 0 0.15rem;
+  font-size: 1.02rem;
+  font-weight: 800;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.client-cmd-metrics li.is-good strong { color: #059669; }
+.client-cmd-metrics li.is-bad strong { color: var(--danger); }
+.client-cmd-metrics li.is-idle strong { color: color-mix(in srgb, var(--signal) 80%, var(--ink)); }
+
+.client-cmd-period {
+  border: 1px solid var(--border-strong);
+  border-radius: 1.15rem;
+  padding: 0.85rem 1rem 1rem;
+  background: var(--surface-solid, var(--surface));
+  box-shadow: var(--card-shadow);
+}
+
+.client-cmd-banner {
+  margin: 0 0 0.85rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+
+.client-cmd-period-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.client-cmd-period-facts > div {
+  min-width: 0;
+}
+
+.client-cmd-period-facts span {
+  display: block;
+  margin-bottom: 0.2rem;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.client-cmd-period-facts strong {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 750;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.client-cmd-progress {
+  margin-top: 0.85rem;
+}
+
+.client-cmd-workspace {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 1.25rem;
+  background: var(--surface-solid, var(--surface));
+  box-shadow: var(--card-shadow);
+}
+
+.client-cmd-workspace::before {
+  display: none !important;
+}
+
+.client-cmd-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0.65rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--sea) 6%, transparent), transparent),
+    var(--surface-2, var(--surface));
+}
+
+.client-cmd-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.client-cmd-tab:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.client-cmd-tab.is-active {
+  color: var(--sea-deep);
+  border-color: color-mix(in srgb, var(--sea) 28%, var(--border));
+  background: color-mix(in srgb, var(--sea) 12%, var(--surface-solid, var(--surface)));
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 40%, transparent) inset;
+}
+
+[data-theme="dark"] .client-cmd-tab.is-active {
+  color: var(--sea);
+}
+
+.client-cmd-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, #059669 18%, transparent);
+  color: color-mix(in srgb, #059669 90%, var(--ink));
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.client-cmd-panels {
+  padding: clamp(1rem, 2.2vw, 1.35rem);
+}
+
+.client-cmd-panel[hidden] {
+  display: none !important;
+}
+
+.client-cmd-panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.client-cmd-panel-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.client-cmd-panel-head p {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.client-cmd-panel-tools {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.45rem;
-  justify-content: flex-end;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
 }
 
-.client-profile-toolbar {
-  position: sticky;
-  top: 0.75rem;
-  z-index: 12;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+.client-cmd-overview-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 1rem;
+}
+
+.client-cmd-tile {
+  border: 1px solid var(--border);
+  border-radius: 1.05rem;
+  padding: 1rem 1.05rem;
   background:
-    linear-gradient(135deg, color-mix(in srgb, var(--sea) 10%, transparent), transparent 55%),
-    color-mix(in srgb, var(--surface-solid, var(--surface)) 88%, transparent);
+    linear-gradient(180deg, color-mix(in srgb, #fff 6%, transparent), transparent 50%),
+    var(--surface-2, var(--surface));
 }
 
-[data-theme="light"] .client-profile-toolbar {
-  background: linear-gradient(135deg, rgba(240, 250, 251, 0.92) 0%, rgba(255, 255, 255, 0.94) 48%, rgba(248, 251, 252, 0.94) 100%);
+.client-cmd-tile.is-accent {
+  background:
+    radial-gradient(ellipse 80% 70% at 100% 0%, color-mix(in srgb, var(--sea) 14%, transparent), transparent 55%),
+    var(--surface-2, var(--surface));
 }
 
-.client-profile-status {
-  margin-bottom: 0.15rem;
-}
-
-.client-profile-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.05rem;
-  align-items: start;
-}
-
-.client-profile-card {
+.client-cmd-tile-head h3 {
   margin: 0;
-  min-width: 0;
+  font-size: 1rem;
+  font-weight: 800;
 }
 
-.client-profile-card--full {
-  grid-column: 1 / -1;
+.client-cmd-tile-head p {
+  margin: 0.25rem 0 0.85rem;
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.4;
 }
 
-.client-profile-card-head {
-  margin-bottom: 0.85rem;
+.client-cmd-tile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.95rem;
 }
 
-.client-profile-card .client-simple-more + .client-simple-more {
-  margin-top: 0.75rem;
-}
-
-.client-profile-empty-note {
-  margin: 0;
-  padding: 0.85rem 1rem;
-  border: 1px dashed var(--border-strong);
-  border-radius: 0.9rem;
-  background: var(--surface-2, var(--surface));
-}
-
-.client-profile-metrics {
+.client-cmd-kv {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1.25rem;
+  margin: 0;
+  gap: 0;
 }
 
-.client-profile-metrics > div {
+.client-cmd-kv > div {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 8rem) minmax(0, 1fr);
+  gap: 0.65rem;
+  padding: 0.62rem 0;
   border-bottom: 1px solid var(--border);
 }
 
-.client-profile-metrics > div:nth-last-child(-n + 2) {
+.client-cmd-kv > div:last-child {
   border-bottom: 0;
+  padding-bottom: 0;
 }
 
-.client-profile-page > .panel.client-simple-panel::before {
-  background: linear-gradient(
-    90deg,
-    var(--sea),
-    color-mix(in srgb, var(--sea) 45%, #6366f1),
-    color-mix(in srgb, var(--sea) 20%, transparent)
-  );
+.client-cmd-kv dt {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  font-weight: 700;
 }
 
-.client-profile-page > .panel[data-cat="billing"]::before {
-  background: linear-gradient(90deg, #059669, color-mix(in srgb, #059669 40%, var(--sea)), transparent);
+.client-cmd-kv dd {
+  margin: 0;
+  min-width: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
-.client-profile-page > .panel[data-cat="access"]::before {
-  background: linear-gradient(90deg, var(--sea), color-mix(in srgb, var(--sea) 40%, #6366f1), transparent);
+.client-cmd-kv-dense > div {
+  padding: 0.72rem 0;
 }
 
-.client-profile-page > .panel[data-cat="live"]::before {
-  background: linear-gradient(90deg, #6366f1, color-mix(in srgb, #6366f1 40%, var(--sea)), transparent);
+.client-cmd-quick {
+  display: grid;
+  gap: 0.45rem;
 }
 
-@media (max-width: 960px) {
-  .client-profile-grid {
+.client-cmd-quick-item {
+  display: grid;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: var(--surface-solid, var(--surface));
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.client-cmd-quick-item:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border));
+  box-shadow: 0 10px 20px color-mix(in srgb, #0b1f2a 7%, transparent);
+}
+
+.client-cmd-quick-item strong {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.client-cmd-quick-item span {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.client-cmd-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+  margin: 0;
+}
+
+.client-cmd-metric-card {
+  margin: 0;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.95rem;
+  background: var(--surface-2, var(--surface));
+}
+
+.client-cmd-metric-card dt {
+  margin: 0 0 0.35rem;
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.client-cmd-metric-card dd {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.client-cmd-metric-card strong {
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.client-cmd-metric-card span {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.client-cmd-empty {
+  margin: 0;
+  padding: 1.1rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 0.95rem;
+  color: var(--ink-soft);
+  background: var(--surface-2, var(--surface));
+}
+
+@media (max-width: 1100px) {
+  .client-cmd-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-cmd-overview-grid {
     grid-template-columns: 1fr;
   }
+}
 
-  .client-profile-metrics {
-    grid-template-columns: 1fr;
+@media (max-width: 900px) {
+  .client-cmd-metrics,
+  .client-cmd-period-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .client-profile-metrics > div:nth-last-child(-n + 2) {
-    border-bottom: 1px solid var(--border);
+  .client-cmd-deck-aside {
+    align-items: stretch;
+    max-width: none;
+    width: 100%;
   }
 
-  .client-profile-metrics > div:last-child {
-    border-bottom: 0;
+  .client-cmd-flags,
+  .client-cmd-actions {
+    justify-content: flex-start;
   }
 }
 
 @media (max-width: 640px) {
-  .client-profile-hero {
-    padding: 1rem 0.95rem 1.05rem;
-    border-radius: 1rem;
+  .client-cmd-deck {
+    border-radius: 1.05rem;
+    padding: 1rem 0.9rem;
   }
 
-  .client-profile-hero-meta {
+  .client-cmd-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .client-cmd-actions .client-cmd-pause,
+  .client-cmd-actions .client-cmd-btn,
+  .client-cmd-actions .client-cmd-more {
     width: 100%;
-    justify-content: flex-start;
   }
 
-  .client-profile-toolbar {
-    position: static;
+  .client-cmd-actions .client-cmd-btn {
+    width: 100%;
   }
 
-  .client-profile-hero-lead {
-    font-size: 0.84rem;
+  .client-cmd-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+
+  .client-cmd-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .client-cmd-tab {
+    flex: 0 0 auto;
+  }
+
+  .client-cmd-kv > div {
+    grid-template-columns: 1fr;
+    gap: 0.18rem;
+  }
+
+  .client-cmd-metric-grid,
+  .client-cmd-metrics,
+  .client-cmd-period-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .client-cmd-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Legacy simple layout retained for billing/other pages ------------------- */
+.client-profile-page {
+  gap: 1.15rem;
 }
 
 .client-detail-simple > .client-back-link {
