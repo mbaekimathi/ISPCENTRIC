@@ -11,6 +11,7 @@ from billing.models import BillingPlan, Customer
 from billing.services import (
     apply_subscription_renewal,
     compute_partial_recharge_amount,
+    compute_partial_to_date_from_amount,
     customer_can_surf_via_hotspot,
     customer_can_surf_via_pppoe,
     customer_needs_nas_provision,
@@ -18,6 +19,7 @@ from billing.services import (
     customer_pppoe_secret_disabled,
     customer_receives_internet,
     customer_subscription_expired,
+    end_customer_subscription,
     generate_account_number_from_phone,
     organization_uses_dynamic_access,
     package_remaining_seconds,
@@ -25,6 +27,7 @@ from billing.services import (
     pause_customer_package,
     recharge_customer_cash,
     resume_customer_package,
+    subscription_access_deadline,
     subscription_period_allows,
 )
 
@@ -944,6 +947,27 @@ class PackagePauseResumeTests(TestCase):
         )
         with self.assertRaises(ValueError):
             pause_customer_package(customer, now=now)
+
+    def test_end_subscription_cuts_access_immediately(self):
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="End Client",
+            phone="254700000031",
+            account_number="PPP-END",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="end1",
+            pppoe_password="secret",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(minutes=10),
+            package_end=now + timedelta(minutes=50),
+        )
+        end_customer_subscription(customer, now=now)
+        customer.refresh_from_db()
+        self.assertTrue(customer_subscription_expired(customer))
+        self.assertFalse(customer_receives_internet(customer))
+        self.assertFalse(customer_package_is_paused(customer))
 
 
 class HotspotMacUniquenessTests(TestCase):
@@ -2467,6 +2491,48 @@ class PartialRechargeTests(TestCase):
         self.assertEqual(result["payment"].method, Payment.Method.CASH)
         self.assertEqual(result["payment"].amount, amount)
 
+    def test_active_cash_recharge_stacks_remaining_time(self):
+        """Paid duration must extend current deadline, not replace the window."""
+        now = timezone.localtime()
+        original_start = now - timedelta(days=5)
+        original_end = now + timedelta(days=10)
+        self.customer.plan = self.daily_plan
+        self.customer.status = Customer.Status.ACTIVE
+        self.customer.package_start = original_start
+        self.customer.package_end = original_end
+        self.customer.save(
+            update_fields=["plan", "status", "package_start", "package_end"]
+        )
+
+        day = timezone.localdate()
+        # Amount for 2 calendar days — without stacking this would cut ~8 days.
+        start, end = partial_recharge_window(day, day + timedelta(days=1), self.daily_plan)
+        amount = compute_partial_recharge_amount(self.daily_plan, start, end)
+        before_deadline = subscription_access_deadline(self.customer)
+
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.daily_plan,
+            amount=amount,
+            reference="STACK-1",
+            recorded_by=self.owner,
+            period_start=start,
+            period_end=end,
+        )
+        self.customer.refresh_from_db()
+        after_deadline = subscription_access_deadline(self.customer)
+
+        self.assertTrue(result["partial"])
+        self.assertEqual(self.customer.package_start, original_start)
+        self.assertGreater(self.customer.package_end, original_end)
+        self.assertAlmostEqual(
+            (after_deadline - before_deadline).total_seconds(),
+            2 * 86400,
+            delta=1,
+        )
+        self.assertTrue(customer_receives_internet(self.customer))
+
 
 class CustomerCashRechargeFormTests(TestCase):
     def setUp(self):
@@ -2495,17 +2561,15 @@ class CustomerCashRechargeFormTests(TestCase):
             plan=self.plan,
         )
 
-    def test_partial_form_calculates_amount(self):
+    def test_form_derives_end_date_from_amount(self):
         from billing.forms import CustomerCashRechargeForm
 
         day = timezone.localdate()
         form = CustomerCashRechargeForm(
             {
-                "recharge_mode": CustomerCashRechargeForm.MODE_PARTIAL,
                 "plan": str(self.plan.pk),
                 "period_from": day.isoformat(),
-                "period_to": (day + timedelta(days=1)).isoformat(),
-                "amount": "999.00",
+                "amount": "200.00",
                 "reference": "",
             },
             organization=self.org,
@@ -2513,8 +2577,18 @@ class CustomerCashRechargeFormTests(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["amount"], Decimal("200.00"))
+        self.assertEqual(form.cleaned_data["period_to"], day + timedelta(days=1))
         self.assertIsNotNone(form.cleaned_data["period_start"])
         self.assertIsNotNone(form.cleaned_data["period_end"])
+
+    def test_to_date_from_amount_daily_plan(self):
+        day = timezone.localdate()
+        to_date = compute_partial_to_date_from_amount(
+            self.plan,
+            day,
+            Decimal("300.00"),
+        )
+        self.assertEqual(to_date, day + timedelta(days=2))
 
 
 class CustomerNeedsNasProvisionTests(SimpleTestCase):

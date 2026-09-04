@@ -71,6 +71,7 @@ from billing.services import (
     customer_subscription_expired,
     customers_needing_renewal_attention,
     package_remaining_seconds,
+    end_customer_subscription,
     pause_customer_package,
     plan_uses_clock_time,
     plans_for_router,
@@ -304,6 +305,13 @@ CLIENT_SIDEBARS = {
                 "label": "Recharge account",
                 "action": "open_modal",
                 "modal": "client-recharge-modal",
+            },
+            {
+                "key": "end_subscription",
+                "label": "End subscription",
+                "action": "open_modal",
+                "modal": "client-end-subscription-modal",
+                "danger": True,
             },
             {"key": "billing", "label": "Payments", "anchor": "client-billing"},
         ],
@@ -1112,6 +1120,17 @@ def customer_can_pause_package(customer) -> bool:
 def customer_can_resume_package(customer) -> bool:
     """Whether a paused package can be resumed."""
     return customer_package_is_paused(customer)
+
+
+def customer_can_end_subscription(customer) -> bool:
+    """Whether staff can forcibly end the current prepaid window."""
+    if getattr(customer, "package_start", None) is None and getattr(
+        customer, "package_end", None
+    ) is None:
+        return False
+    if customer_subscription_expired(customer) and not customer_package_is_paused(customer):
+        return False
+    return True
 
 
 def resolve_client_usage_router(customer, org=None):
@@ -9424,6 +9443,7 @@ def client_detail(request, customer_id: int):
             "voucher_code": codes[0] if codes else "",
             "can_pause_package": customer_can_pause_package(customer),
             "can_resume_package": customer_can_resume_package(customer),
+            "can_end_subscription": customer_can_end_subscription(customer),
         })
 
     if request.method == "POST":
@@ -9597,22 +9617,16 @@ def client_detail(request, customer_id: int):
                     if customer.package_end
                     else "—"
                 )
-                if result.get("partial"):
-                    start_label = (
-                        customer.package_start.isoformat()
-                        if customer.package_start
-                        else "—"
-                    )
-                    msg = (
-                        f"Partial cash recharge of KES {amount_label} recorded "
-                        f"({invoice.invoice_number}). Surfing window "
-                        f"{start_label} → {end_label}."
-                    )
-                else:
-                    msg = (
-                        f"Cash recharge of KES {amount_label} recorded "
-                        f"({invoice.invoice_number}). Package active until {end_label}."
-                    )
+                start_label = (
+                    customer.package_start.isoformat()
+                    if customer.package_start
+                    else "—"
+                )
+                msg = (
+                    f"Cash recharge of KES {amount_label} recorded "
+                    f"({invoice.invoice_number}). Surfing window "
+                    f"{start_label} → {end_label}."
+                )
                 if voucher_codes:
                     codes_label = ", ".join(voucher_codes)
                     msg += (
@@ -9667,6 +9681,38 @@ def client_detail(request, customer_id: int):
                     customer,
                     message=msg,
                     provision=provision,
+                )
+            messages.success(request, msg)
+            return redirect("core:client_detail", customer_id=customer.pk)
+
+        if action == "end_subscription":
+            try:
+                end_customer_subscription(customer)
+            except ValueError as exc:
+                if is_ajax:
+                    return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+                messages.error(request, str(exc))
+                return redirect("core:client_detail", customer_id=customer.pk)
+
+            customer.refresh_from_db()
+            provision = True
+            enqueue_customer_subscription_sync(
+                customer.pk,
+                provision,
+                wait_first=True,
+                quick=True,
+                reauthenticate=True,
+            )
+            msg = (
+                "Subscription ended. Surfing is blocked immediately. "
+                "Recharge to start a new package period."
+            )
+            if is_ajax:
+                return _package_json_response(
+                    customer,
+                    message=msg,
+                    provision=provision,
+                    kick_sessions=True,
                 )
             messages.success(request, msg)
             return redirect("core:client_detail", customer_id=customer.pk)
@@ -9736,6 +9782,7 @@ def client_detail(request, customer_id: int):
         subscription_paused=customer_package_is_paused(customer),
         can_pause_package=customer_can_pause_package(customer),
         can_resume_package=customer_can_resume_package(customer),
+        can_end_subscription=customer_can_end_subscription(customer),
         renew_url=(
             (
                 _hotspot_pay_url_for_org(customer.organization, request)
@@ -11048,6 +11095,7 @@ def client_subscription(request, customer_id: int):
             "remaining_label": remaining_label,
             "can_pause_package": customer_can_pause_package(customer),
             "can_resume_package": customer_can_resume_package(customer),
+            "can_end_subscription": customer_can_end_subscription(customer),
             "sync": sync_result,
         }
     )

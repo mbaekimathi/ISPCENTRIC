@@ -135,145 +135,137 @@
 {% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page client-detail-simple">
+<div class="client-detail-page client-detail-simple client-cmd" id="client-overview">
 
-<section class="panel client-simple-panel" id="client-overview">
-  <header class="client-simple-head">
-    <div class="client-simple-identity">
-      <span class="client-simple-avatar" aria-hidden="true" data-client-initial>{{ customer.full_name|slice:":1"|upper }}</span>
-      <div>
-        <p class="client-simple-kicker">Subscriber profile</p>
-        <button
-          type="button"
-          class="client-simple-name"
-          id="client-profile-open"
-          data-open-client-profile
-          data-client-name
-          aria-haspopup="menu"
-          aria-expanded="false"
-          aria-controls="client-user-profile-panel"
-        >
-          {{ customer.full_name }}
-        </button>
-        <div class="client-simple-meta-chips">
-          <span class="client-chip is-service">{{ customer.get_service_type_display }}</span>
-          <span class="client-chip">{{ customer.account_number }}</span>
-          {% if customer.phone %}<span class="client-chip">{{ customer.phone }}</span>{% endif %}
+  <section class="client-cmd-deck">
+    <div class="client-cmd-deck-top">
+      <div class="client-cmd-identity">
+        <span class="client-cmd-avatar" aria-hidden="true" data-client-initial>{{ customer.full_name|slice:":1"|upper }}</span>
+        <div class="client-cmd-identity-copy">
+          <div class="client-cmd-eyebrow">
+            <span>{{ customer.get_service_type_display }}</span>
+            <span class="client-cmd-dot" aria-hidden="true"></span>
+            <span class="org-code">{{ customer.account_number }}</span>
+          </div>
+          <button
+            type="button"
+            class="client-cmd-name"
+            id="client-profile-open"
+            data-open-client-profile
+            data-client-name
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="client-user-profile-panel"
+          >{{ customer.full_name }}</button>
+          <p class="client-cmd-subline">
+            {% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}No plan assigned{% endif %}
+            {% if customer.phone %} · {{ customer.phone }}{% endif %}
+          </p>
+        </div>
+      </div>
+
+      <div class="client-cmd-deck-aside">
+        <div class="client-cmd-flags">
+          <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+          {% if customer.router %}
+            <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
+              <span class="mikrotik-link-dot" aria-hidden="true"></span>
+              <span class="mikrotik-link-label">Checking…</span>
+            </span>
+          {% endif %}
+          {% if valid_voucher_count %}
+            <button type="button" class="client-cmd-flag-link" data-client-tab="vouchers">
+              {{ valid_voucher_count }} voucher{{ valid_voucher_count|pluralize }}
+            </button>
+          {% endif %}
+        </div>
+
+        <div class="client-cmd-actions">
+          <button type="button" class="client-cmd-btn is-primary" data-open-modal="client-recharge-modal">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+            Recharge
+          </button>
+          <button type="button" class="client-cmd-btn" data-open-modal="client-details-modal" data-edit-details-label>
+            Edit
+          </button>
+          {% if can_access_wifi and customer.router %}
+            <a class="client-cmd-btn" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>Router</a>
+          {% endif %}
+          <form
+            method="post"
+            action="{% url 'core:client_detail' customer.id %}"
+            class="client-package-pause-form client-cmd-pause"
+            data-package-pause-form
+            data-no-page-loader="1"
+          >
+            {% csrf_token %}
+            <input
+              type="hidden"
+              name="action"
+              value="{% if subscription_paused %}resume_package{% else %}pause_package{% endif %}"
+              data-package-pause-action
+            >
+            <button
+              type="submit"
+              class="client-cmd-btn is-pause{% if subscription_paused %} is-paused{% endif %}"
+              data-package-pause-btn
+              {% if not can_pause_package and not can_resume_package %}disabled aria-disabled="true"{% endif %}
+            >
+              <span class="client-action-btn-icon" aria-hidden="true">
+                {% if subscription_paused %}
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                {% else %}
+                  <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+                {% endif %}
+              </span>
+              <span data-package-pause-label>{% if subscription_paused %}Resume{% else %}Pause{% endif %}</span>
+            </button>
+          </form>
+
+          <div class="client-cmd-more" data-client-more>
+            <button type="button" class="client-cmd-btn is-ghost" data-client-more-trigger aria-haspopup="menu" aria-expanded="false">
+              More
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5z"/></svg>
+            </button>
+            <div class="client-cmd-more-menu" data-client-more-menu hidden role="menu">
+              <button type="button" class="client-cmd-more-item is-danger" data-open-modal="client-end-subscription-modal" data-end-subscription-btn role="menuitem" {% if not can_end_subscription %}disabled aria-disabled="true" hidden{% endif %}>
+                End access
+              </button>
+              <button type="button" class="client-cmd-more-item is-danger" data-open-modal="client-delete-modal" role="menuitem">
+                Delete client
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-    <div class="client-simple-head-right">
-      <div class="client-simple-badges">
-        <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
-        {% if customer.router %}
-          <span class="mikrotik-link-status is-checking" data-router-status="{{ customer.router.id }}" data-router-host="{{ customer.router.host }}">
-            <span class="mikrotik-link-dot" aria-hidden="true"></span>
-            <span class="mikrotik-link-label">Checking…</span>
-          </span>
-        {% endif %}
-        {% if valid_voucher_count %}
-          <a class="org-status org-status-active" href="#client-available-vouchers">
-            {{ valid_voucher_count }} unused voucher{{ valid_voucher_count|pluralize }}
-          </a>
-        {% endif %}
-      </div>
-    </div>
-  </header>
 
-  <nav class="client-action-toolbar" aria-label="Client actions">
-    <div class="client-action-toolbar-group client-action-toolbar-group--primary">
-      <button type="button" class="client-action-btn is-primary" data-open-modal="client-recharge-modal">
-        <span class="client-action-btn-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
-        </span>
-        <span class="client-action-btn-label">Recharge account</span>
-      </button>
-      <button type="button" class="client-action-btn" data-open-modal="client-details-modal">
-        <span class="client-action-btn-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-        </span>
-        <span class="client-action-btn-label" data-edit-details-label>Edit {{ customer.full_name }} details</span>
-      </button>
-      {% if can_access_wifi and customer.router %}
-      <a
-        class="client-action-btn"
-        href="{% url 'core:client_wifi_settings' customer.id %}"
-        data-client-router-open
-      >
-        <span class="client-action-btn-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg>
-        </span>
-        <span class="client-action-btn-label">Open client router</span>
-      </a>
-      {% endif %}
-      <form
-        method="post"
-        action="{% url 'core:client_detail' customer.id %}"
-        class="client-package-pause-form"
-        data-package-pause-form
-        data-no-page-loader="1"
-      >
-        {% csrf_token %}
-        <input
-          type="hidden"
-          name="action"
-          value="{% if subscription_paused %}resume_package{% else %}pause_package{% endif %}"
-          data-package-pause-action
-        >
-        <button
-          type="submit"
-          class="client-action-btn is-pause{% if subscription_paused %} is-paused{% endif %}"
-          data-package-pause-btn
-          {% if not can_pause_package and not can_resume_package %}disabled aria-disabled="true"{% endif %}
-        >
-          <span class="client-action-btn-icon" aria-hidden="true">
-            {% if subscription_paused %}
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            {% else %}
-              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
-            {% endif %}
-          </span>
-          <span class="client-action-btn-label" data-package-pause-label>
-            {% if subscription_paused %}Resume subscription{% else %}Pause subscription{% endif %}
-          </span>
-        </button>
-      </form>
-    </div>
-    <span class="client-action-toolbar-divider" aria-hidden="true"></span>
-    <div class="client-action-toolbar-group client-action-toolbar-group--danger">
-      <button type="button" class="client-action-btn is-danger" data-open-modal="client-delete-modal">
-        <span class="client-action-btn-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-        </span>
-        <span class="client-action-btn-label">Delete client</span>
-      </button>
-    </div>
-  </nav>
+    <ul class="client-cmd-metrics" aria-label="Live status">
+      <li data-hero-chip="subscription">
+        <span class="client-cmd-metric-label">Subscription</span>
+        <strong data-hero="subscription">Checking…</strong>
+        <em data-hero-meta="subscription">Package</em>
+      </li>
+      <li data-hero-chip="session">
+        <span class="client-cmd-metric-label">Session</span>
+        <strong data-hero="session">Checking…</strong>
+        <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
+      </li>
+      <li data-hero-chip="throughput">
+        <span class="client-cmd-metric-label">Speed</span>
+        <strong data-hero="throughput">—</strong>
+        <em data-hero-meta="throughput">Down / up</em>
+      </li>
+      <li data-hero-chip="plan">
+        <span class="client-cmd-metric-label">Plan</span>
+        <strong>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
+        <em>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan{% endif %}</em>
+      </li>
+    </ul>
+  </section>
 
-  <ul class="client-simple-status" aria-label="Live status">
-    <li data-hero-chip="subscription">
-      <span>Subscription</span>
-      <strong data-hero="subscription">Checking…</strong>
-      <em data-hero-meta="subscription">Package</em>
-    </li>
-    <li data-hero-chip="session">
-      <span>Session</span>
-      <strong data-hero="session">Checking…</strong>
-      <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
-    </li>
-    <li data-hero-chip="throughput">
-      <span>Speed</span>
-      <strong data-hero="throughput">—</strong>
-      <em data-hero-meta="throughput">Down / up</em>
-    </li>
-    <li data-hero-chip="plan">
-      <span>Plan</span>
-      <strong>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
-      <em>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan{% endif %}</em>
-    </li>
-  </ul>
-
-  <div
+  <section
+    class="client-cmd-period"
     id="client-package-period"
     data-subscription-url="{% url 'core:client_subscription' customer.id %}"
     data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
@@ -281,345 +273,459 @@
     data-package-duration="{{ package_duration|default:'' }}"
   >
     {% if customer.package_start or customer.package_end or subscription_paused %}
-      <div class="client-subscription-banner {% if subscription_paused %}is-paused{% elif subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
+      <div class="client-subscription-banner client-cmd-banner {% if subscription_paused %}is-paused{% elif subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
         {% if subscription_paused %}
-          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Client internet is paused. Surfing blocked; remaining time is frozen until you resume.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Paused · remaining time frozen
         {% elif subscription_active %}
-          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Active. Surfing allowed in this period.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Active · surfing allowed
         {% elif subscription_expired %}
-          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Ended. Surfing blocked.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Ended · surfing blocked
         {% else %}
-          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Outside package period. Surfing blocked.
+          {% if customer.plan %}<strong>{{ customer.plan.name }}</strong> — {% endif %}Outside period · surfing blocked
         {% endif %}
       </div>
     {% else %}
-      <div class="client-subscription-banner is-blocked" data-sub-banner hidden></div>
+      <div class="client-subscription-banner client-cmd-banner is-blocked" data-sub-banner hidden></div>
     {% endif %}
 
-    <div class="client-period-progress" data-period-progress hidden>
-      <div class="client-period-progress-head">
-        <span data-period-progress-label>Package period</span>
-        <span class="client-period-progress-pct" data-period-progress-pct>—</span>
-      </div>
-      <div class="client-period-track">
-        <span data-period-progress-fill></span>
-      </div>
-    </div>
-
-    <dl class="client-simple-list">
-      <div>
-        <dt>Plan</dt>
-        <dd><strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong>{% if package_duration_label %} · <span data-sub-duration>{{ package_duration_label }}</span>{% else %} · <span data-sub-duration>—</span>{% endif %}{% if customer.plan and customer.service_type == "hotspot" %} · {{ customer.plan.max_devices_label }}{% endif %}</dd>
-      </div>
-      <div>
-        <dt>Package</dt>
-        <dd>
-          <span data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
-          →
-          <span data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
-          · <span data-sub-remaining>—</span> left
-          <span class="client-simple-hint" data-sub-pause-hint {% if not subscription_paused %}hidden{% endif %}>Internet paused</span>
-        </dd>
-      </div>
-    </dl>
-  </div>
-
-  <dl
-    class="client-simple-list"
-    id="client-wifi"
-    {% if can_access_wifi %}data-cpe-wifi-url="{% url 'core:client_cpe_wifi' customer.id %}"{% endif %}
-  >
-    <div>
-      <dt>Router</dt>
-      <dd>
-        {% if customer.router %}
-          <a href="{% url 'core:mikrotik_detail' customer.router.id %}" data-client-router-link>{{ customer.router.name }}</a>
-          · <span data-client-router-host>{{ customer.router.host }}</span>
-          {% if can_access_wifi %}
-            · <a href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>Open client router</a>
-          {% endif %}
-        {% else %}
-          —
-        {% endif %}
-      </dd>
-    </div>
-    {% if customer.service_type == "pppoe" %}
-      <div><dt>PPPoE user</dt><dd data-client-pppoe-user>{{ customer.pppoe_username|default:"—" }}</dd></div>
-      <div>
-        <dt>PPPoE password</dt>
-        <dd>
-          <span class="mikrotik-secret" data-client-pppoe-secret>
-            {% if customer.pppoe_password %}
-              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-              <span class="mikrotik-secret-value" data-secret-value data-client-pppoe-password hidden>{{ customer.pppoe_password }}</span>
-              <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>
-            {% else %}
-              —
-            {% endif %}
-          </span>
-        </dd>
-      </div>
-    {% elif customer.service_type == "hotspot" %}
-      <div><dt>Device MAC</dt><dd>{{ customer.hotspot_mac|default:"—" }}</dd></div>
-    {% elif customer.service_type == "static" %}
-      <div><dt>Router IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
-      <div><dt>Router MAC</dt><dd>{{ customer.cpe_mac|default:"—" }}</dd></div>
-    {% endif %}
-    {% if can_access_wifi %}
-      <div><dt>Router admin</dt><dd data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</dd></div>
-      <div>
-        <dt>Router password</dt>
-        <dd>
-          <span class="mikrotik-secret" data-client-cpe-secret>
-            {% if customer.cpe_password %}
-              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-              <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ customer.cpe_password }}</span>
-              <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
-            {% else %}
-              —
-            {% endif %}
-          </span>
-        </dd>
-      </div>
-      <div>
-        <dt>Wi‑Fi</dt>
-        <dd>
-          <span data-cpe-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</span>
-          <span class="client-simple-hint" data-cpe-wifi-ssid-hint></span>
-        </dd>
-      </div>
-      <div>
-        <dt>Wi‑Fi password</dt>
-        <dd>
-          <span data-cpe-password-wrap>
-            <span class="mikrotik-secret" data-cpe-wifi-secret {% if not wifi_password_display %}hidden{% endif %}>
-              <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-              <span class="mikrotik-secret-value" data-secret-value data-cpe-wifi-password hidden>{{ wifi_password_display }}</span>
-              <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">Show</button>
-            </span>
-            <span data-cpe-wifi-password-empty {% if wifi_password_display %}hidden{% endif %}>—</span>
-          </span>
-          <span class="client-simple-hint" data-cpe-wifi-radio-hint hidden></span>
-          <span class="client-simple-hint" data-cpe-wifi-state hidden></span>
-          <span class="client-simple-hint" data-cpe-wifi-channel hidden></span>
-        </dd>
-      </div>
-    {% endif %}
-  </dl>
-
-  {% if can_live_usage %}
-  <details
-    class="client-simple-more"
-    id="client-usage"
-    data-usage-url="{% url 'core:client_usage' customer.id %}"
-    data-can-live="1"
-    data-service="{{ customer.service_type }}"
-    data-plan-down-mbps="{% if customer.plan %}{{ customer.plan.download_speed_mbps }}{% else %}0{% endif %}"
-    data-plan-up-mbps="{% if customer.plan %}{{ customer.plan.upload_speed_mbps }}{% else %}0{% endif %}"
-  >
-    <summary>
-      <span>Live connection</span>
-      <span class="client-simple-more-meta" id="client-usage-sub">Checking…</span>
-    </summary>
-    <div class="client-simple-more-body">
-      <div class="client-simple-more-tools">
-        <span id="client-usage-stamp">—</span>
-        <button type="button" class="btn btn-ghost" id="client-usage-refresh">Refresh</button>
-      </div>
-      <dl class="client-simple-list client-simple-list-dense" id="client-usage-grid">
-        <div data-metric="session"><dt>Session</dt><dd><strong data-usage="session">…</strong> <span data-usage="session-hint"></span></dd></div>
-        <div data-metric="download" data-ico="down"><dt>Download</dt><dd><strong data-usage="download">—</strong><div class="client-meter" data-usage-meter="download"><span></span></div><span data-usage="download-hint"></span></dd></div>
-        <div data-metric="upload" data-ico="up"><dt>Upload</dt><dd><strong data-usage="upload">—</strong><div class="client-meter" data-usage-meter="upload"><span></span></div><span data-usage="upload-hint"></span></dd></div>
-        <div><dt>Devices</dt><dd><strong data-usage="devices">—</strong> <span data-usage="devices-hint"></span></dd></div>
-        <div><dt>Uptime</dt><dd><strong data-usage="uptime">—</strong></dd></div>
-        <div><dt>Downloaded</dt><dd><strong data-usage="bytes-in">—</strong> <span data-usage="bytes-in-hint"></span></dd></div>
-        <div><dt>Uploaded</dt><dd><strong data-usage="bytes-out">—</strong> <span data-usage="bytes-out-hint"></span></dd></div>
-        <div><dt>CPE IP</dt><dd><strong class="client-usage-mono" data-usage="address">—</strong> <span data-usage="caller"></span></dd></div>
-      </dl>
-    </div>
-  </details>
-  {% elif not can_live_usage %}
-  <p class="client-simple-note">
-    {% if customer.service_type == "hotspot" %}
-      {% if not customer.hotspot_mac %}
-        Add a device MAC to enable Hotspot gadget usage.
-      {% else %}
-        Live Hotspot usage will appear once a MikroTik is reachable for this gadget.
-      {% endif %}
-    {% elif not customer.router %}
-      Assign a router to see live usage.
-    {% elif customer.service_type != "pppoe" %}
-      Live usage is available for PPPoE and Hotspot clients.
-    {% else %}
-      Add a PPPoE username to enable live usage.
-    {% endif %}
-  </p>
-  {% endif %}
-
-  {% if can_access_wifi and customer.router %}
-  <details
-    class="client-simple-more"
-    id="client-router-data"
-    data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"
-  >
-    <summary>
-      <span>Router details</span>
-      <span class="client-simple-more-meta" data-router-data-status>Checking…</span>
-    </summary>
-    <div class="client-simple-more-body">
-      <div class="client-simple-more-tools">
-        <span data-router-data-stamp>—</span>
-        <button type="button" class="btn btn-ghost" data-router-data-refresh>Refresh</button>
-      </div>
-
-      <form class="client-router-password-form" data-router-password-form hidden>
-        {% csrf_token %}
-        <input type="hidden" name="action" value="update_router_password">
-        <p class="client-router-credentials-title">Client router admin login</p>
-        <div class="client-router-credentials-grid">
-          <div class="form-field">
-            <label for="client-router-username">Username</label>
-            <input type="text" id="client-router-username" name="cpe_username" class="form-control" autocomplete="username" spellcheck="false" value="{{ cpe_username|default:'admin' }}" placeholder="admin">
-          </div>
-          <div class="form-field">
-            <label for="client-router-password">Password</label>
-            <div class="password-field">
-              <input type="password" id="client-router-password" name="cpe_password" class="form-control" autocomplete="current-password" placeholder="Router admin password" value="{{ cpe_password }}">
-              <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
-                <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-                <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-              </button>
-            </div>
-          </div>
-          <div class="client-router-credentials-actions">
-            <button type="submit" class="btn btn-primary">Save &amp; fetch</button>
-          </div>
+    <div class="client-cmd-period-body">
+      <div class="client-cmd-period-facts">
+        <div>
+          <span>Plan</span>
+          <strong data-sub-plan>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</strong>
         </div>
-      </form>
+        <div>
+          <span>Duration</span>
+          <strong data-sub-duration>{{ package_duration_label|default:"—" }}</strong>
+        </div>
+        <div>
+          <span>Window</span>
+          <strong>
+            <span data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
+            →
+            <span data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
+          </strong>
+        </div>
+        <div>
+          <span>Remaining</span>
+          <strong><span data-sub-remaining>—</span> <em class="client-simple-hint" data-sub-pause-hint {% if not subscription_paused %}hidden{% endif %}>paused</em></strong>
+        </div>
+      </div>
 
-      <dl class="client-simple-list client-simple-list-dense">
-        <div><dt>Internet</dt><dd><strong data-router-value="internet">…</strong> <span data-router-value="internet-hint"></span></dd></div>
-        <div><dt>Router</dt><dd><strong data-router-value="model">—</strong> <span data-router-value="firmware"></span></dd></div>
-        <div><dt>Devices</dt><dd><strong data-router-value="devices">—</strong></dd></div>
-        <div><dt>Wi‑Fi</dt><dd><strong data-router-value="ssid">—</strong> <span data-router-value="wifi-state"></span></dd></div>
-        <div><dt>Radio</dt><dd><strong data-router-value="wifi-mode">—</strong> <span data-router-value="wifi-channel"></span></dd></div>
-        <div><dt>WAN</dt><dd><strong class="client-usage-mono" data-router-value="wan-ip">—</strong> <span data-router-value="wan-type"></span></dd></div>
-        <div><dt>Gateway</dt><dd><strong class="client-usage-mono" data-router-value="gateway">—</strong> <span data-router-value="dns"></span></dd></div>
-        <div><dt>WAN MAC</dt><dd><strong class="client-usage-mono" data-router-value="wan-mac">—</strong> <span data-router-value="wan-link"></span></dd></div>
-        <div><dt>LAN</dt><dd><strong class="client-usage-mono" data-router-value="lan-ip">—</strong> <span data-router-value="router-time"></span></dd></div>
-        <div><dt>Uptime</dt><dd><strong data-router-value="uptime">—</strong></dd></div>
-        <div><dt>Throughput</dt><dd><strong data-router-value="throughput">—</strong></dd></div>
-      </dl>
-
-      <div data-router-device-wrap hidden>
-        <h3 class="client-simple-subhead">Connected devices</h3>
-        <div class="org-table-shell client-detail-table-shell">
-          <table class="org-table org-table-client-devices">
-            <thead><tr><th>Device</th><th>IP</th><th>MAC</th><th>Connection</th><th>Traffic</th></tr></thead>
-            <tbody data-router-device-list></tbody>
-          </table>
+      <div class="client-period-progress client-cmd-progress" data-period-progress hidden>
+        <div class="client-period-progress-head">
+          <span data-period-progress-label>Package period</span>
+          <span class="client-period-progress-pct" data-period-progress-pct>—</span>
+        </div>
+        <div class="client-period-track">
+          <span data-period-progress-fill></span>
         </div>
       </div>
     </div>
-  </details>
-  {% endif %}
-</section>
+  </section>
 
-{% if show_available_vouchers %}
-<section class="panel client-simple-panel" id="client-available-vouchers">
-  <header class="client-simple-head">
-    <div>
-      <p class="client-simple-kicker">Multi-device access</p>
-      <h2 class="client-simple-section-title">Available vouchers</h2>
-      <p class="client-simple-meta">
-        {% if voucher_device_cap > 1 %}
-          This package covers {{ voucher_device_cap }} devices. Each unused code activates one extra phone or laptop — a used voucher cannot be reused.
-        {% else %}
-          Unused one-time codes from successful payments. Share a valid code so another device can connect.
-        {% endif %}
-      </p>
-    </div>
-    <div class="client-simple-badges">
-      <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
-        {{ valid_voucher_count }} unused
-      </span>
-      {% if voucher_device_cap > 1 %}
-        <span class="org-status">{{ voucher_device_cap }} devices</span>
+  <section class="client-cmd-workspace panel">
+    <nav class="client-cmd-tabs" aria-label="Client detail sections" data-client-tabs>
+      <button type="button" class="client-cmd-tab is-active" data-client-tab="overview" aria-selected="true">Overview</button>
+      <button type="button" class="client-cmd-tab" data-client-tab="connection" aria-selected="false">Connection</button>
+      <button type="button" class="client-cmd-tab" data-client-tab="live" aria-selected="false">Live</button>
+      {% if can_access_wifi and customer.router %}
+        <button type="button" class="client-cmd-tab" data-client-tab="router" aria-selected="false">CPE</button>
       {% endif %}
-      {% if used_voucher_count %}
-        <span class="org-status">{{ used_voucher_count }} used</span>
+      {% if show_available_vouchers %}
+        <button type="button" class="client-cmd-tab" data-client-tab="vouchers" aria-selected="false">
+          Vouchers{% if valid_voucher_count %} <span class="client-cmd-tab-badge">{{ valid_voucher_count }}</span>{% endif %}
+        </button>
       {% endif %}
-    </div>
-  </header>
+    </nav>
 
-  {% if available_vouchers %}
-    <ul class="client-voucher-cards" aria-label="Unused access vouchers">
-      {% for row in available_vouchers %}
-        <li class="client-voucher-card is-valid">
-          <div class="client-voucher-card-kicker">
-            <span>{% if voucher_device_cap > 1 %}Device code{% else %}Access code{% endif %}</span>
-            <span class="voucher-status-pill is-valid">{{ row.status_label }}</span>
-          </div>
-          <button
-            type="button"
-            class="org-code voucher-code client-voucher-code-btn"
-            data-copy-voucher
-            data-copy-text="{{ row.code_display }}"
-            title="Copy {{ row.code_display }}"
-          >{{ row.code_display }}</button>
-          <p class="client-voucher-card-meta">
-            {{ row.plan_name }}
-            {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
-          </p>
-          {% if row.share.can_share %}
-            <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
-              <button
-                type="button"
-                class="btn btn-sm"
-                data-copy-voucher
-                data-copy-text="{{ row.share.share_text|escape }}"
-              >Copy</button>
-              {% if row.share.whatsapp_client_url %}
-                <a
-                  class="btn btn-sm voucher-share-wa"
-                  href="{{ row.share.whatsapp_client_url }}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >WhatsApp client</a>
-              {% else %}
-                <a
-                  class="btn btn-sm voucher-share-wa"
-                  href="{{ row.share.whatsapp_share_url }}"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >WhatsApp</a>
+    <div class="client-cmd-panels">
+      <div class="client-cmd-panel is-active" data-client-panel="overview" id="client-panel-overview">
+        <div class="client-cmd-overview-grid">
+          <article class="client-cmd-tile">
+            <header class="client-cmd-tile-head">
+              <h3>Service snapshot</h3>
+              <p>What matters on this account right now.</p>
+            </header>
+            <dl class="client-cmd-kv">
+              <div>
+                <dt>Service</dt>
+                <dd>{{ customer.get_service_type_display }}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{{ customer.get_status_display }}</dd>
+              </div>
+              <div>
+                <dt>Plan</dt>
+                <dd>{% if customer.plan %}{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% else %}—{% endif %}</dd>
+              </div>
+              <div>
+                <dt>Router</dt>
+                <dd>
+                  {% if customer.router %}
+                    <a href="{% url 'core:mikrotik_detail' customer.router.id %}" data-client-router-link>{{ customer.router.name }}</a>
+                    · <span data-client-router-host>{{ customer.router.host }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
+                </dd>
+              </div>
+              {% if customer.service_type == "pppoe" %}
+                <div><dt>PPPoE</dt><dd data-client-pppoe-user>{{ customer.pppoe_username|default:"—" }}</dd></div>
+              {% elif customer.service_type == "hotspot" %}
+                <div><dt>Device MAC</dt><dd>{{ customer.hotspot_mac|default:"—" }}</dd></div>
+              {% elif customer.service_type == "static" %}
+                <div><dt>CPE IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
               {% endif %}
-              <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+              {% if can_access_wifi %}
+                <div>
+                  <dt>Wi‑Fi</dt>
+                  <dd data-cpe-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</dd>
+                </div>
+              {% endif %}
+            </dl>
+            <div class="client-cmd-tile-actions">
+              <button type="button" class="btn btn-ghost btn-sm" data-client-tab="connection">Full credentials</button>
+              <button type="button" class="btn btn-ghost btn-sm" data-client-tab="live">Live session</button>
+            </div>
+          </article>
+
+          <article class="client-cmd-tile is-accent">
+            <header class="client-cmd-tile-head">
+              <h3>Quick actions</h3>
+              <p>Common support moves without digging through menus.</p>
+            </header>
+            <div class="client-cmd-quick">
+              <button type="button" class="client-cmd-quick-item" data-open-modal="client-recharge-modal">
+                <strong>Recharge</strong>
+                <span>Extend package with cash received</span>
+              </button>
+              <button type="button" class="client-cmd-quick-item" data-open-modal="client-details-modal">
+                <strong>Edit profile</strong>
+                <span>Name, phone, credentials, router</span>
+              </button>
+              {% if can_access_wifi and customer.router %}
+                <a class="client-cmd-quick-item" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>
+                  <strong>Open CPE admin</strong>
+                  <span>Configure Wi‑Fi on the client router</span>
+                </a>
+              {% endif %}
+              {% if show_available_vouchers %}
+                <button type="button" class="client-cmd-quick-item" data-client-tab="vouchers">
+                  <strong>Share vouchers</strong>
+                  <span>{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }} ready</span>
+                </button>
+              {% endif %}
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="client-cmd-panel" data-client-panel="connection" id="client-panel-connection" hidden>
+        <header class="client-cmd-panel-head">
+          <div>
+            <h3>Connection details</h3>
+            <p>Credentials and access endpoints for this subscriber.</p>
+          </div>
+        </header>
+        <dl
+          class="client-cmd-kv client-cmd-kv-dense"
+          id="client-wifi"
+          {% if can_access_wifi %}data-cpe-wifi-url="{% url 'core:client_cpe_wifi' customer.id %}"{% endif %}
+        >
+          <div>
+            <dt>Router</dt>
+            <dd>
+              {% if customer.router %}
+                <a href="{% url 'core:mikrotik_detail' customer.router.id %}" data-client-router-link>{{ customer.router.name }}</a>
+                · <span data-client-router-host>{{ customer.router.host }}</span>
+                {% if can_access_wifi %}
+                  · <a href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>Open client router</a>
+                {% endif %}
+              {% else %}
+                —
+              {% endif %}
+            </dd>
+          </div>
+          {% if customer.service_type == "pppoe" %}
+            <div><dt>PPPoE user</dt><dd data-client-pppoe-user>{{ customer.pppoe_username|default:"—" }}</dd></div>
+            <div>
+              <dt>PPPoE password</dt>
+              <dd>
+                <span class="mikrotik-secret" data-client-pppoe-secret>
+                  {% if customer.pppoe_password %}
+                    <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+                    <span class="mikrotik-secret-value" data-secret-value data-client-pppoe-password hidden>{{ customer.pppoe_password }}</span>
+                    <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>
+                  {% else %}
+                    —
+                  {% endif %}
+                </span>
+              </dd>
+            </div>
+          {% elif customer.service_type == "hotspot" %}
+            <div><dt>Device MAC</dt><dd>{{ customer.hotspot_mac|default:"—" }}</dd></div>
+          {% elif customer.service_type == "static" %}
+            <div><dt>Router IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
+            <div><dt>Router MAC</dt><dd>{{ customer.cpe_mac|default:"—" }}</dd></div>
+          {% endif %}
+          {% if can_access_wifi %}
+            <div><dt>Router admin</dt><dd data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</dd></div>
+            <div>
+              <dt>Router password</dt>
+              <dd>
+                <span class="mikrotik-secret" data-client-cpe-secret>
+                  {% if customer.cpe_password %}
+                    <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+                    <span class="mikrotik-secret-value" data-secret-value data-client-cpe-password hidden>{{ customer.cpe_password }}</span>
+                    <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show router password">Show</button>
+                  {% else %}
+                    —
+                  {% endif %}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>Wi‑Fi</dt>
+              <dd>
+                <span data-cpe-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</span>
+                <span class="client-simple-hint" data-cpe-wifi-ssid-hint></span>
+              </dd>
+            </div>
+            <div>
+              <dt>Wi‑Fi password</dt>
+              <dd>
+                <span data-cpe-password-wrap>
+                  <span class="mikrotik-secret" data-cpe-wifi-secret {% if not wifi_password_display %}hidden{% endif %}>
+                    <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+                    <span class="mikrotik-secret-value" data-secret-value data-cpe-wifi-password hidden>{{ wifi_password_display }}</span>
+                    <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show Wi‑Fi password">Show</button>
+                  </span>
+                  <span data-cpe-wifi-password-empty {% if wifi_password_display %}hidden{% endif %}>—</span>
+                </span>
+                <span class="client-simple-hint" data-cpe-wifi-radio-hint hidden></span>
+                <span class="client-simple-hint" data-cpe-wifi-state hidden></span>
+                <span class="client-simple-hint" data-cpe-wifi-channel hidden></span>
+              </dd>
             </div>
           {% endif %}
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <div class="client-voucher-empty">
-      <p class="empty client-simple-note">
-        {% if voucher_device_cap > 1 %}
-          No unused vouchers yet. After this client pays a {{ voucher_device_cap }}-device package, leftover codes for other devices appear here.
-        {% else %}
-          No unused vouchers on this account.
-        {% endif %}
-      </p>
-    </div>
-  {% endif %}
+        </dl>
+      </div>
 
-  <p class="client-simple-note">
-    {% if used_voucher_count and not available_vouchers %}
-      All vouchers from the last payment have been used.
-    {% endif %}
-    <a href="{{ voucher_billing_url }}#client-vouchers">Full voucher history</a>
-  </p>
-</section>
-{% endif %}
+      <div class="client-cmd-panel" data-client-panel="live" id="client-panel-live" hidden>
+        <header class="client-cmd-panel-head">
+          <div>
+            <h3>Live connection</h3>
+            <p id="client-usage-sub">Session throughput and online state.</p>
+          </div>
+          <div class="client-cmd-panel-tools">
+            <span id="client-usage-stamp">—</span>
+            {% if can_live_usage %}
+              <button type="button" class="btn btn-ghost btn-sm" id="client-usage-refresh">Refresh</button>
+            {% endif %}
+          </div>
+        </header>
+
+        {% if can_live_usage %}
+          <div
+            id="client-usage"
+            class="client-cmd-live"
+            data-usage-url="{% url 'core:client_usage' customer.id %}"
+            data-can-live="1"
+            data-service="{{ customer.service_type }}"
+            data-plan-down-mbps="{% if customer.plan %}{{ customer.plan.download_speed_mbps }}{% else %}0{% endif %}"
+            data-plan-up-mbps="{% if customer.plan %}{{ customer.plan.upload_speed_mbps }}{% else %}0{% endif %}"
+          >
+            <dl class="client-cmd-metric-grid" id="client-usage-grid">
+              <div data-metric="session" class="client-cmd-metric-card">
+                <dt>Session</dt>
+                <dd><strong data-usage="session">…</strong><span data-usage="session-hint"></span></dd>
+              </div>
+              <div data-metric="download" data-ico="down" class="client-cmd-metric-card">
+                <dt>Download</dt>
+                <dd>
+                  <strong data-usage="download">—</strong>
+                  <div class="client-meter" data-usage-meter="download"><span></span></div>
+                  <span data-usage="download-hint"></span>
+                </dd>
+              </div>
+              <div data-metric="upload" data-ico="up" class="client-cmd-metric-card">
+                <dt>Upload</dt>
+                <dd>
+                  <strong data-usage="upload">—</strong>
+                  <div class="client-meter" data-usage-meter="upload"><span></span></div>
+                  <span data-usage="upload-hint"></span>
+                </dd>
+              </div>
+              <div class="client-cmd-metric-card"><dt>Devices</dt><dd><strong data-usage="devices">—</strong><span data-usage="devices-hint"></span></dd></div>
+              <div class="client-cmd-metric-card"><dt>Uptime</dt><dd><strong data-usage="uptime">—</strong></dd></div>
+              <div class="client-cmd-metric-card"><dt>Downloaded</dt><dd><strong data-usage="bytes-in">—</strong><span data-usage="bytes-in-hint"></span></dd></div>
+              <div class="client-cmd-metric-card"><dt>Uploaded</dt><dd><strong data-usage="bytes-out">—</strong><span data-usage="bytes-out-hint"></span></dd></div>
+              <div class="client-cmd-metric-card"><dt>CPE IP</dt><dd><strong class="client-usage-mono" data-usage="address">—</strong><span data-usage="caller"></span></dd></div>
+            </dl>
+          </div>
+        {% else %}
+          <p class="client-cmd-empty">
+            {% if customer.service_type == "hotspot" %}
+              {% if not customer.hotspot_mac %}
+                Add a device MAC to enable Hotspot gadget usage.
+              {% else %}
+                Live Hotspot usage will appear once a MikroTik is reachable for this gadget.
+              {% endif %}
+            {% elif not customer.router %}
+              Assign a router to see live usage.
+            {% elif customer.service_type != "pppoe" %}
+              Live usage is available for PPPoE and Hotspot clients.
+            {% else %}
+              Add a PPPoE username to enable live usage.
+            {% endif %}
+          </p>
+        {% endif %}
+      </div>
+
+      {% if can_access_wifi and customer.router %}
+      <div
+        class="client-cmd-panel"
+        data-client-panel="router"
+        id="client-router-data"
+        data-router-data-url="{% url 'core:client_cpe_router_data' customer.id %}"
+        hidden
+      >
+        <header class="client-cmd-panel-head">
+          <div>
+            <h3>Client router (CPE)</h3>
+            <p data-router-data-status>Checking…</p>
+          </div>
+          <div class="client-cmd-panel-tools">
+            <span data-router-data-stamp>—</span>
+            <button type="button" class="btn btn-ghost btn-sm" data-router-data-refresh>Refresh</button>
+          </div>
+        </header>
+
+          <form class="client-router-password-form" data-router-password-form hidden>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="update_router_password">
+            <p class="client-router-credentials-title">Client router admin login</p>
+            <div class="client-router-credentials-grid">
+              <div class="form-field">
+                <label for="client-router-username">Username</label>
+                <input type="text" id="client-router-username" name="cpe_username" class="form-control" autocomplete="username" spellcheck="false" value="{{ cpe_username|default:'admin' }}" placeholder="admin">
+              </div>
+              <div class="form-field">
+                <label for="client-router-password">Password</label>
+                <div class="password-field">
+                  <input type="password" id="client-router-password" name="cpe_password" class="form-control" autocomplete="current-password" placeholder="Router admin password" value="{{ cpe_password }}">
+                  <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
+                    <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                    <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div class="client-router-credentials-actions">
+                <button type="submit" class="btn btn-primary">Save &amp; fetch</button>
+              </div>
+            </div>
+          </form>
+
+          <dl class="client-cmd-metric-grid">
+            <div class="client-cmd-metric-card"><dt>Internet</dt><dd><strong data-router-value="internet">…</strong><span data-router-value="internet-hint"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>Router</dt><dd><strong data-router-value="model">—</strong><span data-router-value="firmware"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>Devices</dt><dd><strong data-router-value="devices">—</strong></dd></div>
+            <div class="client-cmd-metric-card"><dt>Wi‑Fi</dt><dd><strong data-router-value="ssid">—</strong><span data-router-value="wifi-state"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>Radio</dt><dd><strong data-router-value="wifi-mode">—</strong><span data-router-value="wifi-channel"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>WAN</dt><dd><strong class="client-usage-mono" data-router-value="wan-ip">—</strong><span data-router-value="wan-type"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>Gateway</dt><dd><strong class="client-usage-mono" data-router-value="gateway">—</strong><span data-router-value="dns"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>WAN MAC</dt><dd><strong class="client-usage-mono" data-router-value="wan-mac">—</strong><span data-router-value="wan-link"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>LAN</dt><dd><strong class="client-usage-mono" data-router-value="lan-ip">—</strong><span data-router-value="router-time"></span></dd></div>
+            <div class="client-cmd-metric-card"><dt>Uptime</dt><dd><strong data-router-value="uptime">—</strong></dd></div>
+            <div class="client-cmd-metric-card"><dt>Throughput</dt><dd><strong data-router-value="throughput">—</strong></dd></div>
+          </dl>
+
+          <div data-router-device-wrap hidden>
+            <h3 class="client-simple-subhead">Connected devices</h3>
+            <div class="org-table-shell client-detail-table-shell">
+              <table class="org-table org-table-client-devices">
+                <thead><tr><th>Device</th><th>IP</th><th>MAC</th><th>Connection</th><th>Traffic</th></tr></thead>
+                <tbody data-router-device-list></tbody>
+              </table>
+            </div>
+          </div>
+      </div>
+      {% endif %}
+
+      {% if show_available_vouchers %}
+      <div class="client-cmd-panel" data-client-panel="vouchers" id="client-available-vouchers" hidden>
+        <header class="client-cmd-panel-head">
+          <div>
+            <h3>Available vouchers</h3>
+            <p>
+              {% if voucher_device_cap > 1 %}
+                Package covers {{ voucher_device_cap }} devices · unused codes for extra gadgets
+              {% else %}
+                Unused one-time access codes from payments
+              {% endif %}
+            </p>
+          </div>
+          <div class="client-simple-badges">
+            <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">{{ valid_voucher_count }} unused</span>
+            {% if voucher_device_cap > 1 %}<span class="org-status">{{ voucher_device_cap }} devices</span>{% endif %}
+            {% if used_voucher_count %}<span class="org-status">{{ used_voucher_count }} used</span>{% endif %}
+          </div>
+        </header>
+
+        {% if available_vouchers %}
+          <ul class="client-voucher-cards" aria-label="Unused access vouchers">
+            {% for row in available_vouchers %}
+              <li class="client-voucher-card is-valid">
+                <div class="client-voucher-card-kicker">
+                  <span>{% if voucher_device_cap > 1 %}Device code{% else %}Access code{% endif %}</span>
+                  <span class="voucher-status-pill is-valid">{{ row.status_label }}</span>
+                </div>
+                <button
+                  type="button"
+                  class="org-code voucher-code client-voucher-code-btn"
+                  data-copy-voucher
+                  data-copy-text="{{ row.code_display }}"
+                  title="Copy {{ row.code_display }}"
+                >{{ row.code_display }}</button>
+                <p class="client-voucher-card-meta">
+                  {{ row.plan_name }}
+                  {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
+                </p>
+                {% if row.share.can_share %}
+                  <div class="voucher-share-actions client-voucher-card-actions" data-voucher-share>
+                    <button type="button" class="btn btn-sm" data-copy-voucher data-copy-text="{{ row.share.share_text|escape }}">Copy</button>
+                    {% if row.share.whatsapp_client_url %}
+                      <a class="btn btn-sm voucher-share-wa" href="{{ row.share.whatsapp_client_url }}" target="_blank" rel="noopener noreferrer">WhatsApp client</a>
+                    {% else %}
+                      <a class="btn btn-sm voucher-share-wa" href="{{ row.share.whatsapp_share_url }}" target="_blank" rel="noopener noreferrer">WhatsApp</a>
+                    {% endif %}
+                    <a class="btn btn-sm" href="{{ row.share.sms_url }}">SMS</a>
+                  </div>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <div class="client-voucher-empty">
+            <p class="empty client-simple-note">
+              {% if voucher_device_cap > 1 %}
+                No unused vouchers yet. After this client pays a {{ voucher_device_cap }}-device package, leftover codes appear here.
+              {% else %}
+                No unused vouchers on this account.
+              {% endif %}
+            </p>
+          </div>
+        {% endif %}
+        <p class="client-simple-note">
+          {% if used_voucher_count and not available_vouchers %}All vouchers from the last payment have been used.{% endif %}
+          <a href="{{ voucher_billing_url }}#client-vouchers">Full voucher history</a>
+        </p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
 
 </div>
 
@@ -638,12 +744,9 @@
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Recharge</p>
         <h2 id="client-recharge-title">Recharge account</h2>
-        <p class="role-modal-sub pppoe-sub" data-recharge-modal-sub>
-          {% if customer.plan %}
-            Current plan: <strong data-package-current-plan>{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% if package_duration_label %} · {{ package_duration_label }}{% endif %}</strong>
-          {% else %}
-            Select a package, record the cash received, and the prepaid period extends automatically.
-          {% endif %}
+        <p class="role-modal-sub pppoe-sub">
+          Set the start date and cash received — end date is calculated from the plan rate.
+          If the client still has paid time left, that remaining time is kept and the new days are added on top.
         </p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
@@ -658,75 +761,82 @@
           <div class="field-error pppoe-banner">{{ recharge_form.non_field_errors|striptags }}</div>
         {% endif %}
         <section class="pppoe-section">
-          <h3 class="pppoe-section-title">Cash recharge</h3>
-          {% if customer.plan %}
-            <p class="field-hint" data-package-current-plan-banner style="margin: 0 0 0.85rem;">
-              Currently on <strong data-package-current-plan>{{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}{% if package_duration_label %} · {{ package_duration_label }}{% endif %}</strong>
-            </p>
-          {% endif %}
-          <div class="field field-span-2" style="margin-bottom: 0.85rem;">
-            <span class="package-service-type-label">{{ recharge_form.recharge_mode.label }}</span>
-            <div class="package-service-type-toggle" data-recharge-mode-toggle>
-              <div>
-                {% for radio in recharge_form.recharge_mode %}
-                  <label>{{ radio.tag }} <span>{{ radio.choice_label }}</span></label>
-                {% endfor %}
-              </div>
-            </div>
-            {% if recharge_form.recharge_mode.errors %}<div class="field-error">{{ recharge_form.recharge_mode.errors|striptags }}</div>{% endif %}
-          </div>
           <div class="pppoe-grid">
             <div class="field field-span-2">
               <label for="{{ recharge_form.plan.id_for_label }}">{{ recharge_form.plan.label }}</label>
               <div class="pppoe-select">{{ recharge_form.plan }}</div>
               {% if recharge_form.plan.errors %}<div class="field-error">{{ recharge_form.plan.errors|striptags }}</div>{% endif %}
             </div>
-            <div class="field" data-recharge-partial-field hidden>
+            <div class="field">
               <label for="{{ recharge_form.period_from.id_for_label }}">{{ recharge_form.period_from.label }}</label>
               {{ recharge_form.period_from }}
               {% if recharge_form.period_from.errors %}<div class="field-error">{{ recharge_form.period_from.errors|striptags }}</div>{% endif %}
-              {% if recharge_form.period_from.help_text %}<p class="field-hint">{{ recharge_form.period_from.help_text }}</p>{% endif %}
-            </div>
-            <div class="field" data-recharge-partial-field hidden>
-              <label for="{{ recharge_form.period_to.id_for_label }}">{{ recharge_form.period_to.label }}</label>
-              {{ recharge_form.period_to }}
-              {% if recharge_form.period_to.errors %}<div class="field-error">{{ recharge_form.period_to.errors|striptags }}</div>{% endif %}
-              {% if recharge_form.period_to.help_text %}<p class="field-hint">{{ recharge_form.period_to.help_text }}</p>{% endif %}
             </div>
             <div class="field">
               <label for="{{ recharge_form.amount.id_for_label }}">{{ recharge_form.amount.label }}</label>
               {{ recharge_form.amount }}
               {% if recharge_form.amount.errors %}<div class="field-error">{{ recharge_form.amount.errors|striptags }}</div>{% endif %}
-              <p class="field-hint" data-recharge-amount-hint-full>{% if recharge_form.amount.help_text %}{{ recharge_form.amount.help_text }}{% endif %}</p>
-              <p class="field-hint" data-recharge-amount-hint-partial hidden>Calculated from the package rate × selected days.</p>
-              <p class="field-hint" data-recharge-days-summary hidden style="font-weight: 700; color: var(--sea, #0e7c86);"></p>
+            </div>
+            <div class="field">
+              <label for="{{ recharge_form.period_to.id_for_label }}">{{ recharge_form.period_to.label }}</label>
+              {{ recharge_form.period_to }}
+              {% if recharge_form.period_to.errors %}<div class="field-error">{{ recharge_form.period_to.errors|striptags }}</div>{% endif %}
+              <p class="field-hint" data-recharge-days-summary hidden></p>
             </div>
             <div class="field">
               <label for="{{ recharge_form.reference.id_for_label }}">{{ recharge_form.reference.label }}</label>
               {{ recharge_form.reference }}
               {% if recharge_form.reference.errors %}<div class="field-error">{{ recharge_form.reference.errors|striptags }}</div>{% endif %}
-              {% if recharge_form.reference.help_text %}<p class="field-hint">{{ recharge_form.reference.help_text }}</p>{% endif %}
             </div>
           </div>
-          <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-full>
-            {% if customer.service_type == "hotspot" %}
-              Payment method is recorded as <strong>Cash</strong>. Hotspot recharges issue new vouchers, clear the current device session, and MikroTik syncs so the client can autoconnect or enter a voucher to start fresh.
-            {% else %}
-              Payment method is recorded as <strong>Cash</strong>. The package period stacks onto any remaining time and MikroTik access syncs in the background.
-            {% endif %}
-          </p>
-          <p class="field-hint" style="margin: 0.85rem 0 0;" data-recharge-hint-partial hidden>
-            {% if customer.service_type == "hotspot" %}
-              Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates. New vouchers are issued and the current device session is cleared so the client starts fresh.
-            {% else %}
-              Payment method is recorded as <strong>Cash</strong>. Surfing is limited to the selected dates (inclusive) and MikroTik access syncs in the background.
-            {% endif %}
-          </p>
         </section>
       </div>
       <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
         <button type="submit" class="btn btn-primary" data-save-label="Recharge account">Recharge account</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<div
+  class="role-modal client-action-modal pppoe-modal"
+  id="client-end-subscription-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-client-modal></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-end-subscription-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">End access</p>
+        <h2 id="client-end-subscription-title">End subscription</h2>
+        <p class="role-modal-sub pppoe-sub">
+          Cuts internet for {{ customer.full_name }} right away. Remaining package time is forfeited.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <form
+      method="post"
+      action="{% url 'core:client_detail' customer.id %}"
+      class="pppoe-form client-end-subscription-ajax-form"
+      id="client-end-subscription-form"
+      data-no-page-loader="1"
+    >
+      {% csrf_token %}
+      <input type="hidden" name="action" value="end_subscription">
+      <div class="pppoe-body">
+        <p class="org-delete-warn cc-delete-banner" role="alert">
+          <strong>This ends the current package now.</strong>
+          Surfing is blocked immediately. Use Pause if you only want to freeze remaining time.
+        </p>
+      </div>
+      <footer class="pppoe-foot">
+        <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
+        <button type="submit" class="btn btn-danger" data-save-label="End subscription">End subscription</button>
       </footer>
     </form>
   </div>
@@ -790,6 +900,81 @@
 {% endblock %}
 
 {% block client_extra_js %}
+<script>
+(function () {
+  function setClientCmdTab(name) {
+    if (!name) return;
+    var tabs = document.querySelectorAll("[data-client-tab]");
+    var panels = document.querySelectorAll("[data-client-panel]");
+    var found = false;
+    panels.forEach(function (panel) {
+      var match = panel.getAttribute("data-client-panel") === name;
+      if (match) found = true;
+      panel.classList.toggle("is-active", match);
+      panel.hidden = !match;
+    });
+    if (!found) return;
+    tabs.forEach(function (tab) {
+      var match = tab.getAttribute("data-client-tab") === name;
+      tab.classList.toggle("is-active", match);
+      if (tab.hasAttribute("aria-selected")) {
+        tab.setAttribute("aria-selected", match ? "true" : "false");
+      }
+    });
+    try {
+      if (history.replaceState) {
+        history.replaceState(null, "", "#" + name);
+      }
+    } catch (err) {}
+  }
+  window.setClientCmdTab = setClientCmdTab;
+
+  document.addEventListener("click", function (e) {
+    var tabBtn = e.target.closest("[data-client-tab]");
+    if (tabBtn) {
+      e.preventDefault();
+      setClientCmdTab(tabBtn.getAttribute("data-client-tab"));
+    }
+  });
+
+  var hash = (location.hash || "").replace(/^#/, "");
+  if (hash && document.querySelector('[data-client-panel="' + hash + '"]')) {
+    setClientCmdTab(hash);
+  } else if (hash === "client-available-vouchers") {
+    setClientCmdTab("vouchers");
+  }
+
+  document.querySelectorAll("[data-client-more]").forEach(function (wrap) {
+    var trigger = wrap.querySelector("[data-client-more-trigger]");
+    var menu = wrap.querySelector("[data-client-more-menu]");
+    if (!trigger || !menu) return;
+    function closeMore() {
+      menu.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      wrap.classList.remove("is-open");
+    }
+    trigger.addEventListener("click", function (e) {
+      e.stopPropagation();
+      var open = menu.hidden;
+      document.querySelectorAll("[data-client-more-menu]").forEach(function (m) {
+        m.hidden = true;
+      });
+      menu.hidden = !open;
+      trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      wrap.classList.toggle("is-open", open);
+    });
+    menu.addEventListener("click", function (e) {
+      if (e.target.closest("[data-open-modal]")) closeMore();
+    });
+    document.addEventListener("click", function (e) {
+      if (!wrap.contains(e.target)) closeMore();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeMore();
+    });
+  });
+})();
+</script>
 <script>
 (function () {
   // Hero rail chips are written by the live pollers further down the page.
@@ -1086,15 +1271,15 @@
         var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
         if (paused) {
           banner.classList.add("is-paused");
-          banner.textContent = planPrefix + "Client internet is paused. Surfing blocked; remaining time is frozen until you resume.";
+          banner.textContent = planPrefix + "Paused · remaining time frozen";
         } else if (data.subscription_active) {
           banner.classList.add("is-active");
-          banner.textContent = planPrefix + "Active. Surfing allowed in this period.";
+          banner.textContent = planPrefix + "Active · surfing allowed";
         } else {
           banner.classList.add("is-blocked");
           banner.textContent = planPrefix + (data.subscription_expired
-            ? "Ended. Surfing blocked."
-            : "Outside package period. Surfing blocked.");
+            ? "Ended · surfing blocked"
+            : "Outside period · surfing blocked");
         }
         banner.hidden = false;
       }
@@ -1166,8 +1351,7 @@
     var amountInput = document.getElementById("id_recharge_amount");
     var fromInput = document.getElementById("id_recharge_period_from");
     var toInput = document.getElementById("id_recharge_period_to");
-    var sub = modal && modal.querySelector("[data-recharge-modal-sub]");
-    if (!modal || !form || !planSelect || !amountInput) return;
+    if (!modal || !form || !planSelect || !amountInput || !fromInput || !toInput) return;
 
     function readJsonScript(id) {
       var el = document.getElementById(id);
@@ -1181,21 +1365,8 @@
 
     var planPrices = readJsonScript("recharge-plan-prices");
     var planDurations = readJsonScript("recharge-plan-durations");
-    var partialFields = modal.querySelectorAll("[data-recharge-partial-field]");
-    var hintFull = modal.querySelector("[data-recharge-amount-hint-full]");
-    var hintPartial = modal.querySelector("[data-recharge-amount-hint-partial]");
     var daysSummary = modal.querySelector("[data-recharge-days-summary]");
-    var noteFull = modal.querySelector("[data-recharge-hint-full]");
-    var notePartial = modal.querySelector("[data-recharge-hint-partial]");
-
-    function selectedMode() {
-      var checked = form.querySelector('input[name="recharge_mode"]:checked');
-      return checked ? checked.value : "full";
-    }
-
-    function isPartialMode() {
-      return selectedMode() === "partial";
-    }
+    var amountTouched = false;
 
     function planMeta(planId) {
       var key = String(planId || "");
@@ -1255,15 +1426,11 @@
       return isNaN(d.getTime()) ? null : d;
     }
 
-    function inclusiveDays(fromDate, toDate) {
-      if (!fromDate || !toDate || toDate < fromDate) return 0;
-      return Math.floor((toDate - fromDate) / 86400000) + 1;
-    }
-
-    function partialBilledSeconds(fromDate, toDate) {
-      var days = inclusiveDays(fromDate, toDate);
-      if (!days) return 0;
-      return days * 86400;
+    function formatDate(dateObj) {
+      var y = dateObj.getFullYear();
+      var m = String(dateObj.getMonth() + 1).padStart(2, "0");
+      var d = String(dateObj.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + d;
     }
 
     function formatAmount(value) {
@@ -1272,111 +1439,97 @@
       return n.toFixed(2);
     }
 
-    function ensureDefaultDates() {
-      var today = new Date();
-      var y = today.getFullYear();
-      var m = String(today.getMonth() + 1).padStart(2, "0");
-      var d = String(today.getDate()).padStart(2, "0");
-      var stamp = y + "-" + m + "-" + d;
-      if (fromInput && !fromInput.value) fromInput.value = stamp;
-      if (toInput && !toInput.value) toInput.value = stamp;
+    function roundHalfUp(value) {
+      return Math.floor(Number(value) + 0.5);
     }
 
-    function syncPartialAmount() {
-      ensureDefaultDates();
+    function ensureDefaultStart() {
+      if (fromInput && !fromInput.value) {
+        fromInput.value = formatDate(new Date());
+      }
+    }
+
+    function syncEndDateFromAmount() {
+      ensureDefaultStart();
       var meta = planMeta(planSelect.value);
-      if (!planSelect.value || isNaN(meta.price)) return;
-      var fromDate = parseDateInput(fromInput && fromInput.value);
-      var toDate = parseDateInput(toInput && toInput.value);
-      if (!fromDate || !toDate) return;
-      var days = inclusiveDays(fromDate, toDate);
-      if (!days) {
+      var fromDate = parseDateInput(fromInput.value);
+      var amount = Number(amountInput.value);
+      if (!planSelect.value || isNaN(meta.price) || meta.price <= 0 || !fromDate) {
+        if (daysSummary) daysSummary.hidden = true;
+        return;
+      }
+      if (isNaN(amount) || amount <= 0) {
+        toInput.value = "";
         if (daysSummary) {
           daysSummary.hidden = false;
-          daysSummary.textContent = "To date must be on or after from date.";
+          daysSummary.textContent = "Enter amount paid to calculate end date.";
         }
         return;
       }
-      var seconds = partialBilledSeconds(fromDate, toDate);
       var unit = billingUnitSeconds(meta.duration, fromDate);
-      if (!seconds || !unit) return;
-      var amount = meta.price * (seconds / unit);
-      if (amount > 0 && amount < 0.01) amount = 0.01;
-      amountInput.value = formatAmount(amount);
+      if (!unit) {
+        if (daysSummary) daysSummary.hidden = true;
+        return;
+      }
+      var daysExact = (amount / meta.price) * (unit / 86400);
+      var inclusiveDays = roundHalfUp(daysExact);
+      if (inclusiveDays < 1) inclusiveDays = 1;
+      var toDate = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+      toDate.setDate(toDate.getDate() + inclusiveDays - 1);
+      toInput.value = formatDate(toDate);
       if (daysSummary) {
         daysSummary.hidden = false;
-        daysSummary.textContent = days + (days === 1 ? " day" : " days") + " selected · KES " + formatAmount(amount);
+        daysSummary.textContent =
+          inclusiveDays + (inclusiveDays === 1 ? " day" : " days") +
+          " · ends " + toInput.value;
       }
     }
 
     function syncAmountFromPlan() {
       var meta = planMeta(planSelect.value);
       if (!planSelect.value || isNaN(meta.price)) return;
-      if (isPartialMode()) {
-        syncPartialAmount();
-      } else {
+      if (!amountTouched || !amountInput.value) {
         amountInput.value = formatAmount(meta.price);
-        if (daysSummary) daysSummary.hidden = true;
       }
-      var selected = planSelect.options[planSelect.selectedIndex];
-      var planLabel = selected && selected.value ? selected.textContent.trim() : "";
-      if (sub && planLabel) {
-        var currentPlanEl = sub.querySelector("[data-package-current-plan]");
-        if (currentPlanEl) {
-          currentPlanEl.textContent = planLabel;
-        } else {
-          sub.innerHTML = "Selected plan: <strong data-package-current-plan></strong>";
-          var el = sub.querySelector("[data-package-current-plan]");
-          if (el) el.textContent = planLabel;
-        }
-      }
+      syncEndDateFromAmount();
     }
 
     function syncRechargeFormUi() {
-      var partial = isPartialMode();
-      partialFields.forEach(function (el) { el.hidden = !partial; });
-      if (hintFull) hintFull.hidden = partial;
-      if (hintPartial) hintPartial.hidden = !partial;
-      if (noteFull) noteFull.hidden = partial;
-      if (notePartial) notePartial.hidden = !partial;
-      amountInput.readOnly = partial;
-      if (partial) {
-        ensureDefaultDates();
-      } else if (daysSummary) {
-        daysSummary.hidden = true;
-      }
+      ensureDefaultStart();
+      toInput.readOnly = true;
       syncAmountFromPlan();
     }
 
     form.addEventListener("input", function (e) {
       var target = e.target;
       if (!target) return;
-      if (
-        target.name === "recharge_mode" ||
-        target.id === "id_recharge_plan" ||
-        target.id === "id_recharge_period_from" ||
-        target.id === "id_recharge_period_to"
-      ) {
+      if (target.id === "id_recharge_amount") {
+        amountTouched = true;
+        syncEndDateFromAmount();
+        return;
+      }
+      if (target.id === "id_recharge_plan") {
+        amountTouched = false;
         syncRechargeFormUi();
+        return;
+      }
+      if (target.id === "id_recharge_period_from") {
+        syncEndDateFromAmount();
       }
     });
     form.addEventListener("change", function (e) {
       var target = e.target;
       if (!target) return;
-      if (
-        target.name === "recharge_mode" ||
-        target.id === "id_recharge_plan" ||
-        target.id === "id_recharge_period_from" ||
-        target.id === "id_recharge_period_to"
-      ) {
+      if (target.id === "id_recharge_plan") {
+        amountTouched = false;
         syncRechargeFormUi();
+      } else if (
+        target.id === "id_recharge_period_from" ||
+        target.id === "id_recharge_amount"
+      ) {
+        if (target.id === "id_recharge_amount") amountTouched = true;
+        syncEndDateFromAmount();
       }
-    });
-
-    modal.querySelectorAll("[data-recharge-mode-toggle] label").forEach(function (label) {
-      label.addEventListener("click", function () {
-        setTimeout(syncRechargeFormUi, 0);
-      });
     });
 
     window.syncRechargeFormUi = syncRechargeFormUi;
@@ -1815,15 +1968,15 @@
         var planPrefix = data.plan_name ? (data.plan_name + " — ") : "";
         if (data.subscription_paused) {
           banner.classList.add("is-paused");
-          banner.textContent = planPrefix + "Client internet is paused. Surfing blocked; remaining time is frozen until you resume.";
+          banner.textContent = planPrefix + "Paused · remaining time frozen";
         } else if (data.subscription_active) {
           banner.classList.add("is-active");
-          banner.textContent = planPrefix + "Active. Surfing allowed in this period.";
+          banner.textContent = planPrefix + "Active · surfing allowed";
         } else {
           banner.classList.add("is-blocked");
           banner.textContent = planPrefix + (data.subscription_expired
-            ? "Ended. Surfing blocked."
-            : "Outside package period. Surfing blocked.");
+            ? "Ended · surfing blocked"
+            : "Outside period · surfing blocked");
         }
         banner.hidden = !(data.package_start || data.package_end || data.package_start_iso || data.package_end_iso || data.subscription_paused);
       }
@@ -1923,7 +2076,9 @@
       if (passwordForm) {
         passwordForm.hidden = !(data && data.needs_password);
         if (data && data.needs_password) {
-          root.open = true;
+          if (typeof window.setClientCmdTab === "function") {
+            window.setClientCmdTab("router");
+          }
         }
       }
       [

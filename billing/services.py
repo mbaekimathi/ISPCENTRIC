@@ -421,6 +421,49 @@ def clear_customer_package_pause(customer, *, save: bool = True) -> bool:
     return True
 
 
+def end_customer_subscription(customer, *, now: datetime | None = None):
+    """
+    Immediately end the prepaid window and cut surfing.
+
+    Remaining time is forfeited (unlike pause). Hotspot unused vouchers are
+    invalidated so devices cannot reconnect until the next recharge.
+    """
+    if getattr(customer, "package_start", None) is None and getattr(
+        customer, "package_end", None
+    ) is None:
+        raise ValueError("This client has no package period to end.")
+    if customer_subscription_expired(customer) and not customer_package_is_paused(customer):
+        raise ValueError("This subscription has already ended.")
+
+    now = now or timezone.localtime()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    else:
+        now = timezone.localtime(now)
+
+    clear_customer_package_pause(customer, save=False)
+    plan = getattr(customer, "plan", None)
+    if plan_uses_clock_time(plan):
+        customer.package_end = now
+    else:
+        # Calendar packages stay live through the end calendar day. Set end to
+        # yesterday so today is already past the inclusive window.
+        yesterday = now.date() - timedelta(days=1)
+        customer.package_end = timezone.make_aware(
+            datetime.combine(yesterday, time.min),
+            timezone.get_current_timezone(),
+        )
+    customer.save(update_fields=["package_end", "package_paused_at"])
+
+    try:
+        from billing.vouchers import invalidate_unused_customer_vouchers
+
+        invalidate_unused_customer_vouchers(customer)
+    except Exception:  # noqa: BLE001 — ending must not fail on voucher cleanup
+        pass
+    return customer
+
+
 def organization_uses_dynamic_access(organization) -> bool:
     """
     Dual-path access: home CPE dials PPPoE during the subscription window;
@@ -814,6 +857,46 @@ def compute_partial_recharge_amount(plan, start: datetime, end: datetime) -> Dec
     return amount
 
 
+def compute_partial_to_date_from_amount(
+    plan,
+    from_date: date,
+    amount,
+) -> date:
+    """
+    Derive the inclusive end date from cash received at the package rate.
+
+    Inverse of day-based proration: amount ≈ price × (days × 86400 / unit).
+    Days are rounded half-up, with a minimum of one inclusive day.
+    """
+    if from_date is None:
+        raise ValueError("Select the start date.")
+    if plan is None:
+        raise ValueError("Select a package.")
+    try:
+        price = Decimal(plan.price)
+        amount = Decimal(amount)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Enter a valid amount.") from exc
+    if amount <= 0:
+        raise ValueError("Amount must be greater than zero.")
+    if price <= 0:
+        raise ValueError("Package price must be greater than zero.")
+
+    start = timezone.make_aware(
+        datetime.combine(from_date, time.min),
+        timezone.get_current_timezone(),
+    )
+    unit = plan_billing_unit_seconds(plan, reference=start)
+    if unit <= 0:
+        raise ValueError("Could not determine the package billing unit.")
+
+    days_exact = (amount / price) * (Decimal(str(unit)) / Decimal("86400"))
+    inclusive_days = int(days_exact.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if inclusive_days < 1:
+        inclusive_days = 1
+    return from_date + timedelta(days=inclusive_days - 1)
+
+
 def apply_subscription_period(customer, *, plan=None, start=None, end=None):
     """Set an explicit prepaid surfing window (partial recharge)."""
     plan = plan or getattr(customer, "plan", None)
@@ -829,6 +912,56 @@ def apply_subscription_period(customer, *, plan=None, start=None, end=None):
         raise ValueError("The to date must be on or after the from date.")
     customer.package_start = start_dt
     customer.package_end = end_dt
+    update_fields = ["package_start", "package_end"]
+    if clear_customer_package_pause(customer, save=False):
+        update_fields.append("package_paused_at")
+    customer.save(update_fields=update_fields)
+    return customer
+
+
+def apply_cash_recharge_period(customer, *, plan=None, start=None, end=None):
+    """
+    Apply a cash-recharge surfing window without forfeiting remaining paid time.
+
+    If the client is still inside an active prepaid window, the purchased
+    duration is stacked onto the current access deadline and ``package_start``
+    is left alone. Only expired / missing packages get the absolute start–end
+    range from the form.
+    """
+    plan = plan or getattr(customer, "plan", None)
+    if plan is None:
+        raise ValueError("Customer has no billing plan to renew.")
+    start_dt = _as_local_datetime(start)
+    end_dt = _as_local_datetime(end)
+    if start_dt is None or end_dt is None:
+        raise ValueError("Partial recharge requires both from and to dates.")
+
+    purchased_seconds = partial_recharge_billed_seconds(start_dt, end_dt, plan)
+    now = timezone.localtime()
+    active_until = subscription_access_deadline(customer)
+    if active_until is None or active_until <= now:
+        return apply_subscription_period(
+            customer, plan=plan, start=start_dt, end=end_dt
+        )
+
+    current_start = _as_local_datetime(getattr(customer, "package_start", None))
+    access_start = (
+        current_start if current_start is not None and current_start <= now else now
+    )
+    new_deadline = active_until + timedelta(seconds=purchased_seconds)
+    if plan_uses_clock_time(plan):
+        package_end = new_deadline
+    else:
+        # Calendar packages store the inclusive end day; access stops at the
+        # following local midnight (subscription_access_deadline).
+        end_day = timezone.localtime(new_deadline - timedelta(microseconds=1)).date()
+        package_end = timezone.make_aware(
+            datetime.combine(end_day, time.min),
+            timezone.get_current_timezone(),
+        )
+
+    customer.package_start = access_start
+    customer.package_end = package_end
     update_fields = ["package_start", "package_end"]
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
@@ -947,8 +1080,10 @@ def recharge_customer_cash(
     MikroTik sessions so devices autoconnect or redeem a voucher to start fresh.
     PPPoE: activates access right away (no vouchers).
 
-    When ``period_start`` and ``period_end`` are provided, the surfing window is
-    set to that range (partial recharge) instead of stacking a full plan unit.
+    When ``period_start`` and ``period_end`` are provided, that range is the
+    purchased duration. Active clients keep remaining paid time (duration is
+    stacked onto the current access deadline). Expired clients get the absolute
+    window. Omitting both dates stacks one full plan unit (offer-aware).
     """
     from django.db import transaction
 
@@ -995,7 +1130,7 @@ def recharge_customer_cash(
             method=Payment.Method.CASH,
         )
         if partial:
-            apply_subscription_period(
+            apply_cash_recharge_period(
                 customer,
                 plan=plan,
                 start=period_start,

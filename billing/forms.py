@@ -1855,25 +1855,12 @@ class BillingPackageRegisterForm(forms.ModelForm):
 
 
 class CustomerCashRechargeForm(forms.Form):
-    """Staff cash recharge: pick a plan, record cash, extend the package."""
+    """Staff cash recharge: start date + cash amount → purchased duration.
 
-    MODE_FULL = "full"
-    MODE_PARTIAL = "partial"
-    MODE_CHOICES = (
-        (MODE_FULL, "Full recharge"),
-        (MODE_PARTIAL, "Partial recharge"),
-    )
+    Active clients keep remaining paid time (server stacks the duration).
+    Expired clients get the absolute start→end window.
+    """
 
-    recharge_mode = forms.ChoiceField(
-        label="Recharge type",
-        choices=MODE_CHOICES,
-        initial=MODE_FULL,
-        widget=forms.RadioSelect(
-            attrs={
-                "class": "package-service-type-radios",
-            },
-        ),
-    )
     plan = forms.ModelChoiceField(
         label="Package / plan",
         queryset=BillingPlan.objects.none(),
@@ -1886,8 +1873,8 @@ class CustomerCashRechargeForm(forms.Form):
         ),
     )
     period_from = forms.DateField(
-        label="From date",
-        required=False,
+        label="Start date",
+        required=True,
         input_formats=["%Y-%m-%d"],
         widget=forms.DateInput(
             format="%Y-%m-%d",
@@ -1897,21 +1884,6 @@ class CustomerCashRechargeForm(forms.Form):
                 "id": "id_recharge_period_from",
             },
         ),
-        help_text="First day the client can surf under this partial recharge.",
-    )
-    period_to = forms.DateField(
-        label="To date",
-        required=False,
-        input_formats=["%Y-%m-%d"],
-        widget=forms.DateInput(
-            format="%Y-%m-%d",
-            attrs={
-                "class": "form-control",
-                "type": "date",
-                "id": "id_recharge_period_to",
-            },
-        ),
-        help_text="Last day included. Amount is calculated from the package rate.",
     )
     amount = forms.DecimalField(
         label="Amount (KES)",
@@ -1927,7 +1899,20 @@ class CustomerCashRechargeForm(forms.Form):
                 "inputmode": "decimal",
             },
         ),
-        help_text="Defaults to the selected plan price. Adjust only if the cash received differs.",
+    )
+    period_to = forms.DateField(
+        label="End date",
+        required=False,
+        input_formats=["%Y-%m-%d"],
+        widget=forms.DateInput(
+            format="%Y-%m-%d",
+            attrs={
+                "class": "form-control",
+                "type": "date",
+                "id": "id_recharge_period_to",
+                "readonly": True,
+            },
+        ),
     )
     reference = forms.CharField(
         label="Reference",
@@ -1941,7 +1926,6 @@ class CustomerCashRechargeForm(forms.Form):
                 "autocomplete": "off",
             },
         ),
-        help_text="Optional cash receipt number or note.",
     )
 
     def __init__(self, *args, organization=None, customer=None, **kwargs):
@@ -1973,7 +1957,6 @@ class CustomerCashRechargeForm(forms.Form):
             ).order_by("price", "name")
 
         self.fields["plan"].queryset = qs
-        self.fields["recharge_mode"].initial = self.MODE_FULL
         today = timezone.localdate()
         self.fields["period_from"].initial = today
         self.fields["period_to"].initial = today
@@ -2009,38 +1992,26 @@ class CustomerCashRechargeForm(forms.Form):
 
     def clean(self):
         from billing.services import (
-            compute_partial_recharge_amount,
+            compute_partial_to_date_from_amount,
             partial_recharge_window,
         )
 
         cleaned = super().clean()
-        mode = (cleaned.get("recharge_mode") or self.MODE_FULL).strip().lower()
-        cleaned["recharge_mode"] = mode
         plan = cleaned.get("plan")
-        if mode != self.MODE_PARTIAL:
-            cleaned["period_start"] = None
-            cleaned["period_end"] = None
-            return cleaned
-
         period_from = cleaned.get("period_from")
-        period_to = cleaned.get("period_to")
+        amount = cleaned.get("amount")
         if period_from is None:
-            self.add_error("period_from", "Select the from date.")
-        if period_to is None:
-            self.add_error("period_to", "Select the to date.")
-        if period_from is None or period_to is None or plan is None:
+            self.add_error("period_from", "Select the start date.")
             return cleaned
-        if period_to < period_from:
-            self.add_error("period_to", "To date must be on or after from date.")
+        if plan is None or amount is None:
             return cleaned
         try:
+            period_to = compute_partial_to_date_from_amount(plan, period_from, amount)
             start, end = partial_recharge_window(period_from, period_to, plan)
-            expected = compute_partial_recharge_amount(plan, start, end)
         except ValueError as exc:
             self.add_error(None, str(exc))
             return cleaned
+        cleaned["period_to"] = period_to
         cleaned["period_start"] = start
         cleaned["period_end"] = end
-        # Always bill the prorated package amount for partial windows.
-        cleaned["amount"] = expected
         return cleaned

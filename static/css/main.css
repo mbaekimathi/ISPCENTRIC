@@ -14534,13 +14534,14 @@ a.packages-stat:focus-visible {
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
-  margin: 0 0 1rem;
-  padding: 0.85rem 1rem;
-  border-radius: 12px;
-  border: 1px solid rgba(245, 158, 11, 0.38);
-  background: rgba(245, 158, 11, 0.12);
+  margin: 0;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(245, 158, 11, 0.08));
   color: #fcd34d;
-  font-size: 0.88rem;
+  font-size: 0.875rem;
   line-height: 1.5;
 }
 
@@ -14548,19 +14549,37 @@ a.packages-stat:focus-visible {
   margin: 0;
 }
 
+.mikrotik-restart-warning-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.mikrotik-restart-warning-title {
+  margin: 0 0 0.2rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fde68a;
+}
+
 .mikrotik-restart-warning-icon {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 1.65rem;
-  height: 1.65rem;
+  width: 2rem;
+  height: 2rem;
   margin-top: 0.05rem;
+  border-radius: 10px;
   color: #fbbf24;
+  background: rgba(245, 158, 11, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.28);
 }
 
 .mikrotik-restart-modal .mikrotik-restart-panel {
   display: flex;
   flex-direction: column;
+  width: min(100%, 26.5rem);
+  max-width: min(26.5rem, calc(100vw - 1.5rem));
   overflow: hidden;
   padding: 0;
   background:
@@ -14576,26 +14595,30 @@ a.packages-stat:focus-visible {
   align-items: flex-start;
   gap: 0.85rem;
   margin: 0;
-  padding: 1.15rem 1.2rem 1rem;
+  padding: 1.2rem 1.25rem 1rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.03);
 }
 
 .mikrotik-restart-head-main {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.85rem;
   min-width: 0;
   flex: 1 1 auto;
+}
+
+.mikrotik-restart-head-copy {
+  min-width: 0;
 }
 
 .mikrotik-restart-mark {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 2.65rem;
-  height: 2.65rem;
-  border-radius: 14px;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 15px;
   color: #fbbf24;
   background: rgba(245, 158, 11, 0.14);
   box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.28);
@@ -14604,59 +14627,84 @@ a.packages-stat:focus-visible {
 .mikrotik-restart-modal .role-modal-kicker {
   display: inline-flex;
   align-items: center;
-  margin: 0 0 0.4rem;
-  padding: 0.22rem 0.55rem;
+  margin: 0 0 0.35rem;
+  padding: 0.2rem 0.55rem;
   border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: 999px;
   background: rgba(245, 158, 11, 0.12);
-  font-size: 0.66rem;
+  font-size: 0.64rem;
+  font-weight: 800;
   letter-spacing: 0.1em;
   color: #fbbf24;
 }
 
 .mikrotik-restart-modal .role-modal-head h2 {
+  margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(1.1rem, 3.6vw, 1.4rem);
+  font-size: clamp(1.15rem, 3.6vw, 1.38rem);
   line-height: 1.2;
   letter-spacing: -0.02em;
 }
 
+.mikrotik-restart-desc,
 .mikrotik-restart-modal .role-modal-sub {
-  max-width: 38ch;
-  color: rgba(232, 242, 244, 0.72);
+  max-width: none;
+  margin: 0;
+  color: rgba(232, 242, 244, 0.74);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.mikrotik-restart-emph {
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+  color: inherit;
 }
 
 .mikrotik-restart-body {
   display: grid;
-  gap: 0.85rem;
-  padding: 1rem 1.2rem 0.35rem;
+  gap: 0.95rem;
+  padding: 1.1rem 1.25rem 0.45rem;
 }
 
+/* Beat .mikrotik-action-modal .mikrotik-action-panel .mikrotik-confirm-check light-text override */
+.mikrotik-action-modal .mikrotik-restart-panel .mikrotik-restart-confirm,
 .mikrotik-restart-confirm {
   margin: 0;
-  padding: 0.85rem 1rem;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: rgba(232, 242, 244, 0.9);
-  transition: border-color 0.2s ease, background 0.2s ease;
+  padding: 0.9rem 1rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(232, 242, 244, 0.94);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
 
 .mikrotik-restart-confirm:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .mikrotik-restart-confirm:has(input:checked) {
-  border-color: rgba(245, 158, 11, 0.45);
-  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.12);
+  color: rgba(254, 243, 199, 0.98);
 }
 
 .mikrotik-restart-confirm input {
-  margin-top: 0.15rem;
-  width: 1rem;
-  height: 1rem;
+  margin-top: 0.18rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
   accent-color: #f59e0b;
+  cursor: pointer;
+}
+
+.mikrotik-restart-confirm span {
+  color: inherit;
 }
 
 .mikrotik-restart-error {
@@ -14664,42 +14712,73 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-restart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.6rem;
   margin: 0;
-  padding: 0.85rem 1.2rem 1.15rem;
+  padding: 0.95rem 1.25rem 1.2rem;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.mikrotik-restart-actions .mikrotik-restart-cancel {
+  min-width: 5.5rem;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(232, 242, 244, 0.9);
+}
+
+.mikrotik-restart-actions .mikrotik-restart-cancel:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.mikrotik-restart-actions .mikrotik-restart-submit {
+  min-width: 8.5rem;
+  font-weight: 700;
+}
+
+.mikrotik-restart-actions .mikrotik-restart-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 [data-theme="light"] .mikrotik-restart-modal .mikrotik-restart-panel {
   background:
-    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(245, 158, 11, 0.1), transparent 55%),
-    radial-gradient(ellipse 55% 40% at 0% 0%, rgba(14, 124, 134, 0.08), transparent 50%),
-    linear-gradient(180deg, #ffffff 0%, #f3f7f8 100%);
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(245, 158, 11, 0.09), transparent 55%),
+    radial-gradient(ellipse 50% 35% at 0% 0%, rgba(14, 124, 134, 0.06), transparent 50%),
+    linear-gradient(180deg, #ffffff 0%, #f6f9fa 100%);
   color: var(--ink);
   box-shadow:
-    0 -18px 48px rgba(11, 31, 42, 0.18),
-    0 0 0 1px rgba(11, 31, 42, 0.06);
+    0 22px 56px rgba(11, 31, 42, 0.2),
+    0 0 0 1px rgba(11, 31, 42, 0.07);
 }
 
 [data-theme="light"] .mikrotik-restart-head {
   border-bottom-color: rgba(11, 31, 42, 0.08);
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.85);
 }
 
 [data-theme="light"] .mikrotik-restart-mark {
   color: #b45309;
-  background: rgba(245, 158, 11, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.22);
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.2);
 }
 
 [data-theme="light"] .mikrotik-restart-modal .role-modal-kicker {
-  border-color: rgba(160, 106, 0, 0.28);
+  border-color: rgba(160, 106, 0, 0.26);
   background: rgba(232, 163, 23, 0.12);
-  color: #a06a00;
+  color: #92400e;
 }
 
+[data-theme="light"] .mikrotik-restart-desc,
 [data-theme="light"] .mikrotik-restart-modal .role-modal-sub {
   color: var(--ink-soft);
+}
+
+[data-theme="light"] .mikrotik-restart-emph {
+  color: var(--ink);
 }
 
 [data-theme="light"] .mikrotik-restart-modal .role-modal-close {
@@ -14709,34 +14788,64 @@ a.packages-stat:focus-visible {
 }
 
 [data-theme="light"] .mikrotik-restart-warning {
-  border-color: rgba(180, 83, 9, 0.28);
-  background: rgba(245, 158, 11, 0.1);
-  color: #92400e;
+  border-color: rgba(180, 83, 9, 0.26);
+  background:
+    linear-gradient(135deg, rgba(251, 191, 36, 0.16), rgba(245, 158, 11, 0.08));
+  color: #7c2d12;
+}
+
+[data-theme="light"] .mikrotik-restart-warning-title {
+  color: #9a3412;
 }
 
 [data-theme="light"] .mikrotik-restart-warning-icon {
   color: #b45309;
+  background: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.2);
 }
 
+[data-theme="light"] .mikrotik-action-modal .mikrotik-restart-panel .mikrotik-restart-confirm,
 [data-theme="light"] .mikrotik-restart-confirm {
-  border-color: rgba(11, 31, 42, 0.1);
-  background: rgba(11, 31, 42, 0.03);
+  border-color: rgba(11, 31, 42, 0.12);
+  background: #fff;
   color: var(--ink);
+  box-shadow: 0 1px 2px rgba(11, 31, 42, 0.04);
 }
 
 [data-theme="light"] .mikrotik-restart-confirm:hover {
-  border-color: rgba(11, 31, 42, 0.16);
-  background: rgba(11, 31, 42, 0.05);
+  border-color: rgba(11, 31, 42, 0.18);
+  background: #fff;
 }
 
 [data-theme="light"] .mikrotik-restart-confirm:has(input:checked) {
-  border-color: rgba(180, 83, 9, 0.35);
-  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(180, 83, 9, 0.4);
+  background: rgba(255, 251, 235, 0.95);
+  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.12);
+  color: var(--ink);
 }
 
 [data-theme="light"] .mikrotik-restart-actions {
   border-top-color: rgba(11, 31, 42, 0.08);
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(246, 249, 250, 0.95);
+}
+
+[data-theme="light"] .mikrotik-restart-actions .mikrotik-restart-cancel {
+  border-color: rgba(11, 31, 42, 0.14);
+  background: #fff;
+  color: var(--ink);
+}
+
+[data-theme="light"] .mikrotik-restart-actions .mikrotik-restart-cancel:hover {
+  border-color: rgba(11, 31, 42, 0.22);
+  background: rgba(11, 31, 42, 0.03);
+}
+
+@media (min-width: 40rem) {
+  .mikrotik-action-modal.pppoe-modal .mikrotik-restart-panel {
+    width: min(100%, 26.5rem);
+    max-width: min(26.5rem, calc(100vw - 2.5rem));
+    border-radius: 20px;
+  }
 }
 
 .mikrotik-restart-btn {
@@ -28330,12 +28439,198 @@ h1, h2, h3, h4,
 /* Client detail ? simple layout ------------------------------------------- */
 
 .client-detail-simple {
-  width: min(100%, 58rem);
+  width: min(100%, 72rem);
   margin-left: auto;
   margin-right: auto;
-  padding-inline: clamp(0.25rem, 2vw, 0.5rem);
+  padding-inline: clamp(0.25rem, 2vw, 0.75rem);
   display: grid;
   gap: 1.05rem;
+}
+
+/* Client profile page — modern organised layout ------------------------------- */
+.client-profile-page {
+  gap: 1.15rem;
+}
+
+.client-profile-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.35rem;
+  flex-wrap: wrap;
+  padding: clamp(1.15rem, 2.5vw, 1.55rem) clamp(1.1rem, 2.4vw, 1.5rem);
+  border: 1px solid var(--border-strong);
+  border-radius: 1.25rem;
+  background:
+    radial-gradient(ellipse 55% 90% at 0% -10%, color-mix(in srgb, var(--sea) 22%, transparent), transparent 58%),
+    radial-gradient(ellipse 40% 70% at 100% 110%, color-mix(in srgb, #6366f1 10%, transparent), transparent 55%),
+    linear-gradient(165deg, color-mix(in srgb, var(--sea) 7%, var(--surface-solid, var(--surface))), var(--surface-solid, var(--surface)));
+  box-shadow: var(--card-shadow);
+}
+
+.client-profile-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.95rem;
+  min-width: 0;
+  flex: 1 1 18rem;
+}
+
+.client-profile-hero-avatar {
+  width: 3.4rem;
+  height: 3.4rem;
+  font-size: 1.2rem;
+}
+
+.client-profile-hero-copy {
+  min-width: 0;
+}
+
+.client-profile-hero-name {
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.15rem + 0.85vw, 1.85rem);
+  line-height: 1.15;
+}
+
+.client-profile-hero-lead {
+  margin: 0.35rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.client-profile-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+.client-profile-toolbar {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 12;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--sea) 10%, transparent), transparent 55%),
+    color-mix(in srgb, var(--surface-solid, var(--surface)) 88%, transparent);
+}
+
+[data-theme="light"] .client-profile-toolbar {
+  background: linear-gradient(135deg, rgba(240, 250, 251, 0.92) 0%, rgba(255, 255, 255, 0.94) 48%, rgba(248, 251, 252, 0.94) 100%);
+}
+
+.client-profile-status {
+  margin-bottom: 0.15rem;
+}
+
+.client-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.05rem;
+  align-items: start;
+}
+
+.client-profile-card {
+  margin: 0;
+  min-width: 0;
+}
+
+.client-profile-card--full {
+  grid-column: 1 / -1;
+}
+
+.client-profile-card-head {
+  margin-bottom: 0.85rem;
+}
+
+.client-profile-card .client-simple-more + .client-simple-more {
+  margin-top: 0.75rem;
+}
+
+.client-profile-empty-note {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: 0.9rem;
+  background: var(--surface-2, var(--surface));
+}
+
+.client-profile-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1.25rem;
+}
+
+.client-profile-metrics > div {
+  border-bottom: 1px solid var(--border);
+}
+
+.client-profile-metrics > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.client-profile-page > .panel.client-simple-panel::before {
+  background: linear-gradient(
+    90deg,
+    var(--sea),
+    color-mix(in srgb, var(--sea) 45%, #6366f1),
+    color-mix(in srgb, var(--sea) 20%, transparent)
+  );
+}
+
+.client-profile-page > .panel[data-cat="billing"]::before {
+  background: linear-gradient(90deg, #059669, color-mix(in srgb, #059669 40%, var(--sea)), transparent);
+}
+
+.client-profile-page > .panel[data-cat="access"]::before {
+  background: linear-gradient(90deg, var(--sea), color-mix(in srgb, var(--sea) 40%, #6366f1), transparent);
+}
+
+.client-profile-page > .panel[data-cat="live"]::before {
+  background: linear-gradient(90deg, #6366f1, color-mix(in srgb, #6366f1 40%, var(--sea)), transparent);
+}
+
+@media (max-width: 960px) {
+  .client-profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .client-profile-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .client-profile-metrics > div:nth-last-child(-n + 2) {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .client-profile-metrics > div:last-child {
+    border-bottom: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .client-profile-hero {
+    padding: 1rem 0.95rem 1.05rem;
+    border-radius: 1rem;
+  }
+
+  .client-profile-hero-meta {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .client-profile-toolbar {
+    position: static;
+  }
+
+  .client-profile-hero-lead {
+    font-size: 0.84rem;
+  }
 }
 
 .client-detail-simple > .client-back-link {
@@ -29614,6 +29909,21 @@ h1, h2, h3, h4,
 
   .client-detail-simple .client-billing-split {
     grid-template-columns: 1fr;
+  }
+
+  .client-action-toolbar-group--primary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex: 1 1 100%;
+  }
+
+  .client-action-toolbar-group--primary .client-package-pause-form,
+  .client-action-toolbar-group--primary .client-action-btn {
+    width: 100%;
+  }
+
+  .client-action-toolbar-group--primary .client-action-btn {
+    justify-content: center;
   }
 }
 
