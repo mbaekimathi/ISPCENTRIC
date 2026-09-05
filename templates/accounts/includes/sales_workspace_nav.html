@@ -1,0 +1,27 @@
+{# In-page chips for Sales role sections. Expects current_page. #}
+<nav class="cs-workspace-nav" aria-label="Sales sections">
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'dashboard' %} is-active{% endif %}"
+    href="{% url 'roles:sales' %}"
+  >Dashboard</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'lead_management' or current_page == 'customer_registration' %} is-active{% endif %}"
+    href="{% url 'roles:sales_lead_management' %}"
+  >Leads &amp; registration</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'sales_orders' %} is-active{% endif %}"
+    href="{% url 'roles:sales_orders' %}"
+  >Sales orders</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'promotions_discounts' %} is-active{% endif %}"
+    href="{% url 'roles:sales_promotions_discounts' %}"
+  >Promotions</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'commissions' %} is-active{% endif %}"
+    href="{% url 'roles:sales_commissions' %}"
+  >Commissions</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'reports' %} is-active{% endif %}"
+    href="{% url 'roles:sales_reports' %}"
+  >Reports</a>
+</nav>

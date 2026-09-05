@@ -55,7 +55,7 @@ from accounts.routing import (
     switchable_clients_list,
     switchable_role_options,
 )
-from billing.forms import PppoeClientRegisterForm
+from billing.forms import PppoeClientRegisterForm, SalesClientRegisterForm
 from billing.models import BillingPlan, Customer, InstallationDecline, InstallationReject
 from core.mikrotik_connect import provision_customer_pppoe
 from core.models import MikroTikRouter
@@ -561,36 +561,43 @@ def manager_dashboard(request):
                 {
                     "index": "01",
                     "label": "ISP clients",
+                    "hint": "Open an ISP workspace for billing and subscribers.",
                     "url_name": "roles:customer_support_isp_clients",
                 },
                 {
                     "index": "02",
                     "label": "Sales",
+                    "hint": "Register potential clients and review sales leads.",
                     "url_name": "roles:customer_support_sales",
                 },
                 {
                     "index": "03",
                     "label": "Approved sales",
+                    "hint": "Tickets that have moved past new status.",
                     "url_name": "roles:customer_support_approved_sales",
                 },
                 {
                     "index": "04",
                     "label": "Technician",
+                    "hint": "Open and assigned installation work.",
                     "url_name": "roles:customer_support_technician",
                 },
                 {
                     "index": "05",
                     "label": "Allocated",
+                    "hint": "Closed technician allocations.",
                     "url_name": "roles:customer_support_allocated",
                 },
                 {
                     "index": "06",
                     "label": "Network equipment",
+                    "hint": "Stock, register, and manage install gear.",
                     "url_name": "roles:customer_support_network_equipment",
                 },
                 {
                     "index": "07",
                     "label": "Allocate",
+                    "hint": "Assign employees to organizations.",
                     "url_name": "roles:customer_support_allocate",
                 },
             ],
@@ -663,28 +670,106 @@ def manager_exit_client_portal(request):
 
 @role_required(Employee.Role.MANAGER)
 def manager_sales(request):
+    """Customer support: register potential clients and review all sales-role leads."""
     _prepare_manager_view(request)
-    sales = list(
-        Customer.objects.filter(
-            status=Customer.Status.NEW,
-            organization__isnull=True,
+    employee = request.user.employee_profile
+    organization = employee.organization
+
+    open_register_modal = False
+    if request.method == "POST":
+        form = LeadRegisterForm(request.POST, organization=organization)
+        if form.is_valid():
+            lead = form.save(created_by=request.user)
+            messages.success(
+                request,
+                (
+                    f"Potential client “{lead.full_name}” registered "
+                    f"(lead {lead.lead_number}) for follow-up."
+                ),
+            )
+            return redirect("roles:customer_support_sales")
+        open_register_modal = True
+    else:
+        form = LeadRegisterForm(organization=organization)
+
+    # Oversight list: every lead captured by sales-role staff (plus any this
+    # customer-support user registered from this page).
+    leads = list(
+        Lead.objects.select_related(
+            "preferred_package",
+            "preferred_isp",
+            "organization",
+            "created_by",
+            "created_by__employee_profile",
         )
-        .select_related("plan", "registered_by")
+        .filter(
+            Q(created_by__employee_profile__role=Employee.Role.SALES)
+            | Q(created_by=request.user)
+        )
         .order_by("-created_at")[:300]
     )
+
+    packages_by_org = {}
+    all_packages = []
+    package_qs = (
+        BillingPlan.objects.filter(is_active=True)
+        .select_related("organization")
+        .order_by("price", "name")
+    )
+    for plan in package_qs:
+        row = {
+            "id": plan.pk,
+            "label": f"{plan.name} — {plan.price} ({plan.speed_label})",
+        }
+        packages_by_org.setdefault(str(plan.organization_id), []).append(row)
+        all_packages.append(row)
+
     return render(
         request,
         "accounts/customer_support_sales.html",
         {
             "page_title": "Sales",
             "page_kicker": "Operations",
-            "page_subtitle": "All new sales tickets waiting for ISP allocation.",
+            "page_subtitle": (
+                "Register potential clients as leads for follow-up and review "
+                "all leads captured by the sales team."
+            ),
             "current_page": "sales",
             "dashboard_url_name": "roles:customer_support",
-            "sales": sales,
-            "empty_text": "No new sales tickets are open yet.",
+            "leads": leads,
+            "form": form,
+            "open_register_modal": open_register_modal,
+            "default_org_id": organization.pk if organization else "",
+            "packages_by_org_json": json.dumps(packages_by_org),
+            "all_packages_json": json.dumps(all_packages),
+            "phone_lengths_json": json.dumps(NATIONAL_PHONE_LENGTHS),
+            "empty_text": "No sales leads have been registered yet.",
         },
     )
+
+
+@role_required(Employee.Role.MANAGER)
+@require_GET
+def manager_places(request):
+    """Live location suggestions for customer-support sales registration."""
+    from core.places import search_locations
+
+    query = (request.GET.get("q") or "").strip()
+    return JsonResponse(search_locations(query, limit=6))
+
+
+@role_required(Employee.Role.MANAGER)
+@require_GET
+def manager_place_details(request):
+    """Resolve a place_id or free-text location to coordinates."""
+    from core.places import resolve_location
+
+    place_id = (request.GET.get("place_id") or "").strip()
+    query = (request.GET.get("q") or "").strip()
+    details = resolve_location(query, place_id=place_id)
+    if not details:
+        return JsonResponse({"ok": False, "error": "Place not found."}, status=404)
+    return JsonResponse({"ok": True, **details})
 
 
 @role_required(Employee.Role.MANAGER)
@@ -1902,7 +1987,7 @@ def it_support_company_system_settings(request):
             "page_kicker": "Settings",
             "page_subtitle": (
                 "Configure platform identity, communications, Company Payment Gateway, "
-                "and ISP onboarding from one place."
+                "ISP onboarding, and client payment-page themes from one place."
             ),
             "current_page": "company_system_settings",
             "dashboard_url_name": "roles:it_support",
@@ -1931,7 +2016,134 @@ def it_support_company_system_settings(request):
                     "description": "Landing Register, MikroTik onboarding fees, and referral controls.",
                     "url_name": "roles:it_support_isp_onboarding_settings",
                 },
+                {
+                    "key": "company_themes",
+                    "label": "Company themes",
+                    "description": "Preview pay/pause pages, and toggle Click to earn adverts for each ISP.",
+                    "url_name": "roles:it_support_company_themes",
+                },
             ],
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_company_themes(request):
+    """Preview client-facing Hotspot / PPPoE payment pages for company themes."""
+    _prepare_it_support_view(request)
+    organizations = list(
+        Organization.objects.exclude(join_code="")
+        .order_by("name")
+        .only(
+            "id",
+            "name",
+            "join_code",
+            "hotspot_enabled",
+            "pppoe_compulsory",
+            "adverts_enabled",
+            "adverts_redirect_url",
+        )
+    )
+    selected = None
+    org_id = (
+        request.POST.get("org")
+        or request.GET.get("org")
+        or ""
+    )
+    if org_id:
+        selected = next((row for row in organizations if str(row.pk) == str(org_id)), None)
+    if selected is None and organizations:
+        selected = organizations[0]
+
+    if request.method == "POST" and selected is not None:
+        action = (request.POST.get("action") or "").strip()
+        if action == "toggle_adverts":
+            enabled = (request.POST.get("adverts_enabled") or "") in {
+                "1",
+                "true",
+                "on",
+                "yes",
+            }
+            redirect_url = (request.POST.get("adverts_redirect_url") or "").strip()
+            if redirect_url and not redirect_url.lower().startswith(("http://", "https://")):
+                redirect_url = f"https://{redirect_url}"
+            Organization.objects.filter(pk=selected.pk).update(
+                adverts_enabled=enabled,
+                adverts_redirect_url=redirect_url,
+            )
+            selected.adverts_enabled = enabled
+            selected.adverts_redirect_url = redirect_url
+            for row in organizations:
+                if row.pk == selected.pk:
+                    row.adverts_enabled = enabled
+                    row.adverts_redirect_url = redirect_url
+            messages.success(
+                request,
+                (
+                    f"Click to earn is on for {selected.name}."
+                    if enabled
+                    else f"Click to earn is off for {selected.name}."
+                ),
+            )
+            return redirect(
+                f"{reverse('roles:it_support_company_themes')}?org={selected.pk}"
+            )
+
+    hotspot_pay_url = ""
+    pppoe_pay_url = ""
+    earn_url = ""
+    earn_preview_url = ""
+    if selected and selected.join_code:
+        hotspot_pay_url = reverse(
+            "core:hotspot_pay", kwargs={"join_code": selected.join_code}
+        )
+        pppoe_pay_url = reverse(
+            "core:pppoe_pay", kwargs={"join_code": selected.join_code}
+        )
+        earn_url = reverse(
+            "core:click_to_earn", kwargs={"join_code": selected.join_code}
+        )
+        custom = (getattr(selected, "adverts_redirect_url", None) or "").strip()
+        earn_preview_url = custom or earn_url
+
+    return render(
+        request,
+        "accounts/it_support_company_themes.html",
+        {
+            "page_title": "Company themes",
+            "page_kicker": "Settings",
+            "page_subtitle": (
+                "Preview captive pay and pause pages, and turn on Click to earn "
+                "so Wi‑Fi visitors can open the ISP adverts page."
+            ),
+            "current_page": "company_themes",
+            "dashboard_url_name": "roles:it_support",
+            "theme_organizations": organizations,
+            "selected_organization": selected,
+            "hotspot_pay_url": hotspot_pay_url,
+            "pppoe_pay_url": pppoe_pay_url,
+            "earn_url": earn_url,
+            "earn_preview_url": earn_preview_url,
+            "adverts_enabled": bool(
+                getattr(selected, "adverts_enabled", False) if selected else False
+            ),
+            "adverts_redirect_url": (
+                (getattr(selected, "adverts_redirect_url", None) or "").strip()
+                if selected
+                else ""
+            ),
+            "hotspot_demo_preview_url": (
+                f"{hotspot_pay_url}?preview=demo" if hotspot_pay_url else ""
+            ),
+            "pppoe_demo_preview_url": (
+                f"{pppoe_pay_url}?preview=demo" if pppoe_pay_url else ""
+            ),
+            "hotspot_paused_preview_url": (
+                f"{hotspot_pay_url}?preview=paused" if hotspot_pay_url else ""
+            ),
+            "pppoe_paused_preview_url": (
+                f"{pppoe_pay_url}?preview=paused" if pppoe_pay_url else ""
+            ),
         },
     )
 
@@ -2096,37 +2308,32 @@ def sales_dashboard(request):
             "module_links": [
                 {
                     "index": "01",
-                    "label": "Lead Management",
+                    "label": "Leads & registration",
+                    "hint": "Register leads, PPPoE clients, and business ISPs.",
                     "url_name": "roles:sales_lead_management",
                 },
                 {
                     "index": "02",
-                    "label": "Customer Registration",
-                    "url_name": "roles:sales_customer_registration",
-                },
-                {
-                    "index": "03",
                     "label": "Sales Orders",
+                    "hint": "Review and manage confirmed sales orders.",
                     "url_name": "roles:sales_orders",
                 },
                 {
-                    "index": "04",
-                    "label": "Installation Requests",
-                    "url_name": "roles:sales_installation_requests",
-                },
-                {
-                    "index": "05",
+                    "index": "03",
                     "label": "Promotions & Discounts",
+                    "hint": "Manage active offers and discount codes.",
                     "url_name": "roles:sales_promotions_discounts",
                 },
                 {
-                    "index": "06",
+                    "index": "04",
                     "label": "Commissions",
+                    "hint": "Track earnings tied to closed sales.",
                     "url_name": "roles:sales_commissions",
                 },
                 {
-                    "index": "07",
+                    "index": "05",
                     "label": "Reports",
+                    "hint": "Performance and conversion summaries.",
                     "url_name": "roles:sales_reports",
                 },
             ],
@@ -2154,37 +2361,105 @@ def _sales_module_page(request, *, current_page, page_title, page_kicker, page_s
 
 @role_required(Employee.Role.SALES)
 def sales_lead_management(request):
+    """Sales: register leads and customers on one page; list only this user's records."""
+    from billing.forms import SalesClientRegisterForm
+    from billing.models import Customer
+
     employee = request.user.employee_profile
     if can_switch_roles(employee):
         set_role_view(request, Employee.Role.SALES)
 
-    # Sales may be platform-level (no organization) and still register leads
-    # against any ISP via preferred_isp.
+    # Sales may be platform-level (no organization) and still register against any ISP.
     organization = employee.organization
+    organizations = Organization.objects.order_by("name")
 
-    from billing.models import BillingPlan
+    open_lead_modal = False
+    open_customer_modal = False
+    selected_type = ""
+    form = LeadRegisterForm(organization=organization)
+    client_form = SalesClientRegisterForm(
+        organization=organization,
+        organizations=organizations,
+        prefix="client",
+    )
+    isp_form = RegisterForm(prefix="isp", require_invite=False)
 
-    open_register_modal = False
     if request.method == "POST":
-        form = LeadRegisterForm(request.POST, organization=organization)
-        if form.is_valid():
-            lead = form.save(created_by=request.user)
-            messages.success(
-                request,
-                f"Lead {lead.lead_number} registered for {lead.full_name}.",
-            )
-            return redirect("roles:sales_lead_management")
-        open_register_modal = True
-    else:
-        form = LeadRegisterForm(organization=organization)
+        # Customer registration posts include registration_type; lead forms do not.
+        if "registration_type" in request.POST:
+            selected_type = (request.POST.get("registration_type") or "").strip()
+            open_customer_modal = True
+            if selected_type == "client":
+                client_form = SalesClientRegisterForm(
+                    request.POST,
+                    organization=organization,
+                    organizations=organizations,
+                    prefix="client",
+                )
+                if client_form.is_valid():
+                    customer = client_form.save(registered_by=request.user)
+                    org_label = (
+                        customer.organization.name
+                        if customer.organization_id
+                        else "no specific ISP provider"
+                    )
+                    messages.success(
+                        request,
+                        (
+                            f"PPPoE client “{customer.full_name}” registered "
+                            f"(ticket {customer.sales_ticket_number}, "
+                            f"account {customer.account_number}) — {org_label}."
+                        ),
+                    )
+                    return redirect("roles:sales_lead_management")
+            elif selected_type == "isp":
+                isp_form = RegisterForm(
+                    request.POST, request.FILES, prefix="isp", require_invite=False
+                )
+                if isp_form.is_valid():
+                    with transaction.atomic():
+                        org = _create_isp_organization_from_register_form(
+                            isp_form,
+                            registered_by=request.user,
+                        )
+                    messages.success(
+                        request,
+                        (
+                            f"Business (ISP) “{org.name}” registered. "
+                            f"Owner login: {org.login_code}."
+                        ),
+                    )
+                    return redirect("roles:sales_lead_management")
+            else:
+                messages.error(
+                    request,
+                    "Choose what to register: PPPoE client or business (ISP).",
+                )
+        else:
+            form = LeadRegisterForm(request.POST, organization=organization)
+            if form.is_valid():
+                lead = form.save(created_by=request.user)
+                messages.success(
+                    request,
+                    (
+                        f"Potential client “{lead.full_name}” registered "
+                        f"(lead {lead.lead_number}) for follow-up."
+                    ),
+                )
+                return redirect("roles:sales_lead_management")
+            open_lead_modal = True
 
-    lead_qs = Lead.objects.select_related(
-        "preferred_package",
-        "preferred_isp",
-        "organization",
-        "created_by",
-    ).filter(created_by=request.user)
-    leads = lead_qs.order_by("-created_at")[:100]
+    # Only leads / registrations linked to the signed-in sales user.
+    leads = list(
+        Lead.objects.select_related(
+            "preferred_package",
+            "preferred_isp",
+            "organization",
+            "created_by",
+        )
+        .filter(created_by=request.user)
+        .order_by("-created_at")[:100]
+    )
     packages_by_org = {}
     all_packages = []
     package_qs = (
@@ -2200,18 +2475,39 @@ def sales_lead_management(request):
         packages_by_org.setdefault(str(plan.organization_id), []).append(row)
         all_packages.append(row)
 
+    recent_clients = list(
+        Customer.objects.select_related("organization")
+        .filter(registered_by=request.user)
+        .order_by("-created_at")[:20]
+    )
+    recent_isps = list(
+        organizations.filter(registered_by=request.user)
+        .select_related("owner")
+        .order_by("-created_at")[:20]
+    )
+
     return render(
         request,
         "accounts/sales_lead_management.html",
         {
-            "page_title": "Lead Management",
+            "page_title": "Leads & registration",
             "page_kicker": "Sales",
-            "page_subtitle": "Register and track sales leads.",
+            "page_subtitle": (
+                "Register potential clients as leads, or onboard PPPoE clients "
+                "and business (ISP) accounts — only your records are listed."
+            ),
             "current_page": "lead_management",
             "dashboard_url_name": "roles:sales",
             "form": form,
             "leads": leads,
-            "open_register_modal": open_register_modal,
+            "open_lead_modal": open_lead_modal,
+            "open_customer_modal": open_customer_modal,
+            "selected_type": selected_type,
+            "client_form": client_form,
+            "isp_form": isp_form,
+            "recent_clients": recent_clients,
+            "recent_isps": recent_isps,
+            "employee_organization": organization,
             "default_org_id": organization.pk if organization else "",
             "packages_by_org_json": json.dumps(packages_by_org),
             "all_packages_json": json.dumps(all_packages),
@@ -2246,108 +2542,8 @@ def sales_place_details(request):
 
 @role_required(Employee.Role.SALES)
 def sales_customer_registration(request):
-    from django.db import transaction
-
-    from billing.forms import SalesClientRegisterForm
-    from billing.models import Customer
-
-    employee = request.user.employee_profile
-    if can_switch_roles(employee):
-        set_role_view(request, Employee.Role.SALES)
-
-    # Sales staff may be platform-level (no organization) and still register
-    # personal clients against any ISP, or create new ISP / business accounts.
-    organization = employee.organization
-    organizations = Organization.objects.order_by("name")
-
-    selected_type = ""
-    open_register_modal = False
-    client_form = SalesClientRegisterForm(
-        organization=organization,
-        organizations=organizations,
-        prefix="client",
-    )
-    isp_form = RegisterForm(prefix="isp", require_invite=False)
-
-    if request.method == "POST":
-        selected_type = (request.POST.get("registration_type") or "").strip()
-        open_register_modal = True
-        if selected_type == "client":
-            client_form = SalesClientRegisterForm(
-                request.POST,
-                organization=organization,
-                organizations=organizations,
-                prefix="client",
-            )
-            if client_form.is_valid():
-                customer = client_form.save(registered_by=request.user)
-                org_label = (
-                    customer.organization.name
-                    if customer.organization_id
-                    else "no specific ISP provider"
-                )
-                messages.success(
-                    request,
-                    (
-                        f"PPPoE client “{customer.full_name}” registered "
-                        f"(ticket {customer.sales_ticket_number}, "
-                        f"account {customer.account_number}) — {org_label}."
-                    ),
-                )
-                return redirect("roles:sales_customer_registration")
-        elif selected_type == "isp":
-            isp_form = RegisterForm(
-                request.POST, request.FILES, prefix="isp", require_invite=False
-            )
-            if isp_form.is_valid():
-                with transaction.atomic():
-                    org = _create_isp_organization_from_register_form(
-                        isp_form,
-                        registered_by=request.user,
-                    )
-                messages.success(
-                    request,
-                    (
-                        f"Business (ISP) “{org.name}” registered. "
-                        f"Owner login: {org.login_code}."
-                    ),
-                )
-                return redirect("roles:sales_customer_registration")
-        else:
-            messages.error(
-                request,
-                "Choose what to register: PPPoE client or business (ISP).",
-            )
-
-    client_qs = Customer.objects.select_related("organization").filter(
-        registered_by=request.user
-    )
-    recent_clients = client_qs.order_by("-created_at")[:20]
-    recent_isps = (
-        organizations.filter(registered_by=request.user)
-        .select_related("owner")
-        .order_by("-created_at")[:20]
-    )
-
-    return render(
-        request,
-        "accounts/sales_customer_registration.html",
-        {
-            "page_title": "Customer Registration",
-            "page_kicker": "Sales",
-            "page_subtitle": "Register a PPPoE client, or create a business (ISP) account.",
-            "current_page": "customer_registration",
-            "dashboard_url_name": "roles:sales",
-            "selected_type": selected_type,
-            "open_register_modal": open_register_modal,
-            "client_form": client_form,
-            "isp_form": isp_form,
-            "recent_clients": recent_clients,
-            "recent_isps": recent_isps,
-            "employee_organization": organization,
-            "phone_lengths_json": json.dumps(NATIONAL_PHONE_LENGTHS),
-        },
-    )
+    """Legacy URL — customer registration now lives on lead management."""
+    return redirect("roles:sales_lead_management")
 
 
 @role_required(Employee.Role.SALES)
@@ -2359,18 +2555,6 @@ def sales_orders(request):
         page_kicker="Sales",
         page_subtitle="Review and manage sales orders.",
         empty_text="No sales orders yet.",
-    )
-
-
-@role_required(Employee.Role.SALES)
-def sales_installation_requests(request):
-    return _sales_module_page(
-        request,
-        current_page="installation_requests",
-        page_title="Installation Requests",
-        page_kicker="Sales",
-        page_subtitle="Submit and track installation requests for new customers.",
-        empty_text="No installation requests yet.",
     )
 
 
@@ -2434,8 +2618,8 @@ def technician_dashboard(request):
                 {
                     "index": "02",
                     "label": "Tickets",
-                    "hint": "Pending activation clients and tickets you have connected.",
-                    "url_name": "roles:technician_tickets",
+                    "hint": "Pending connections, pending activation, and tickets you have connected.",
+                    "url_name": "roles:technician_tickets_pending_connections",
                 },
                 {
                     "index": "03",
@@ -2489,6 +2673,7 @@ def technician_installations(request):
         organizations=isp_clients,
         default_activate=False,
         allow_activate=False,
+        require_serials=True,
     )
 
     if request.method == "POST":
@@ -2502,6 +2687,7 @@ def technician_installations(request):
                 organizations=isp_clients,
                 default_activate=False,
                 allow_activate=False,
+                require_serials=True,
             )
             if pppoe_form.is_valid():
                 customer = pppoe_form.save(commit=False)
@@ -2654,6 +2840,7 @@ def technician_installations(request):
             initial=pppoe_initial,
             default_activate=False,
             allow_activate=False,
+            require_serials=True,
         )
 
     return render(
@@ -2902,6 +3089,188 @@ def _technician_ticket_clients(employee, user):
     )
 
 
+def _pending_connection_pool_qs():
+    """Open pending-connection tickets awaiting a technician."""
+    return (
+        Customer.objects.filter(
+            status=Customer.Status.NEW,
+            service_type=Customer.ServiceType.PPPOE,
+            assigned_technician__isnull=True,
+        )
+        .select_related(
+            "organization",
+            "plan",
+            "router",
+            "registered_by",
+            "assigned_technician",
+            "assigned_technician__user",
+        )
+        .order_by("-created_at")
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+def technician_tickets_pending_connections(request):
+    """Pending-connection tickets: open pool + this technician's in-progress work."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    open_tickets = list(_pending_connection_pool_qs()[:200])
+    in_progress_tickets = list(
+        Customer.objects.filter(
+            status=Customer.Status.IN_PROGRESS,
+            assigned_technician=employee,
+            service_type=Customer.ServiceType.PPPOE,
+        )
+        .select_related(
+            "organization",
+            "plan",
+            "router",
+            "registered_by",
+            "assigned_technician",
+            "assigned_technician__user",
+        )
+        .order_by("-created_at")[:200]
+    )
+    in_progress_ids = {t.pk for t in in_progress_tickets}
+    tickets = list(in_progress_tickets) + [
+        t for t in open_tickets if t.pk not in in_progress_ids
+    ]
+    pending_activation_count = (
+        _technician_ticket_clients(employee, request.user)
+        .filter(status=Customer.Status.INACTIVE)
+        .count()
+    )
+    connected_count = _technician_ticket_clients(employee, request.user).count()
+
+    return render(
+        request,
+        "accounts/technician_tickets.html",
+        {
+            "page_title": "Pending connections",
+            "page_kicker": "Field work",
+            "page_subtitle": (
+                "Receive a pending-connection ticket to take it in progress, "
+                "then mark it done when the site visit is complete."
+            ),
+            "empty_text": (
+                "No pending connection tickets yet. When sales or customer support "
+                "registers a PPPoE client, it will appear here."
+            ),
+            "current_page": "tickets_pending_connections",
+            "dashboard_url_name": "roles:technician",
+            "ticket_view": "pending_connections",
+            "tickets": tickets,
+            "open_count": len(open_tickets),
+            "in_progress_count": len(in_progress_tickets),
+            "pending_count": pending_activation_count,
+            "pending_connections_count": len(tickets),
+            "connected_count": connected_count,
+            "employee_profile": employee,
+        },
+    )
+
+
+@role_required(Employee.Role.TECHNICIAN)
+@require_POST
+def technician_ticket_receive(request, customer_id):
+    """Receive a pending-connection ticket → In progress."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    with transaction.atomic():
+        customer = (
+            Customer.objects.select_for_update()
+            .filter(pk=customer_id)
+            .first()
+        )
+        if customer is None:
+            messages.error(request, "That ticket was not found.")
+            return redirect("roles:technician_tickets_pending_connections")
+
+        ticket = customer.sales_ticket_number or customer.account_number
+        if customer.status == Customer.Status.IN_PROGRESS:
+            if customer.assigned_technician_id == employee.pk:
+                messages.info(
+                    request, f"Ticket {ticket} is already in progress with you."
+                )
+            else:
+                messages.error(
+                    request,
+                    f"Ticket {ticket} was already received by another technician.",
+                )
+            return redirect("roles:technician_tickets_pending_connections")
+
+        if customer.status != Customer.Status.NEW:
+            messages.error(
+                request,
+                f"Ticket {ticket} is not a pending connection ticket.",
+            )
+            return redirect("roles:technician_tickets_pending_connections")
+
+        if (
+            customer.assigned_technician_id
+            and customer.assigned_technician_id != employee.pk
+        ):
+            messages.error(
+                request,
+                f"Ticket {ticket} was already received by another technician.",
+            )
+            return redirect("roles:technician_tickets_pending_connections")
+
+        customer.status = Customer.Status.IN_PROGRESS
+        customer.assigned_technician = employee
+        customer.save(update_fields=["status", "assigned_technician"])
+
+    messages.success(
+        request,
+        f"Received ticket {ticket}. Status is now In progress.",
+    )
+    return redirect("roles:technician_tickets_pending_connections")
+
+
+@role_required(Employee.Role.TECHNICIAN)
+@require_POST
+def technician_ticket_mark_done(request, customer_id):
+    """Mark an in-progress ticket done → Pending activation."""
+    employee = request.user.employee_profile
+    if can_switch_roles(employee):
+        set_role_view(request, Employee.Role.TECHNICIAN)
+
+    with transaction.atomic():
+        customer = (
+            Customer.objects.select_for_update()
+            .filter(pk=customer_id)
+            .first()
+        )
+        if customer is None:
+            messages.error(request, "That ticket was not found.")
+            return redirect("roles:technician_tickets_pending_connections")
+
+        ticket = customer.sales_ticket_number or customer.account_number
+        if customer.assigned_technician_id != employee.pk:
+            messages.error(request, f"Ticket {ticket} is not assigned to you.")
+            return redirect("roles:technician_tickets_pending_connections")
+
+        if customer.status != Customer.Status.IN_PROGRESS:
+            messages.error(
+                request,
+                f"Ticket {ticket} must be in progress before you can mark it done.",
+            )
+            return redirect("roles:technician_tickets_pending_connections")
+
+        customer.status = Customer.Status.INACTIVE
+        customer.save(update_fields=["status"])
+
+    messages.success(
+        request,
+        f"Ticket {ticket} marked done — now pending activation.",
+    )
+    return redirect("roles:technician_tickets")
+
+
 @role_required(Employee.Role.TECHNICIAN)
 def technician_tickets(request):
     """Pending-activation clients for this technician."""
@@ -2916,25 +3285,34 @@ def technician_tickets(request):
         )[:200]
     )
     connected_count = _technician_ticket_clients(employee, request.user).count()
+    pending_connections_count = (
+        _pending_connection_pool_qs().count()
+        + Customer.objects.filter(
+            status=Customer.Status.IN_PROGRESS,
+            assigned_technician=employee,
+            service_type=Customer.ServiceType.PPPOE,
+        ).count()
+    )
 
     return render(
         request,
         "accounts/technician_tickets.html",
         {
-            "page_title": "Tickets",
+            "page_title": "Pending activation",
             "page_kicker": "Field work",
             "page_subtitle": (
                 "Clients you connected that are waiting for ISP activation."
             ),
             "empty_text": (
-                "No pending activation clients yet. Register a PPPoE client "
-                "from Installations to see it here."
+                "No pending activation clients yet. Receive a pending connection "
+                "ticket and mark it done, or register a PPPoE client from Installations."
             ),
             "current_page": "tickets",
             "dashboard_url_name": "roles:technician",
             "ticket_view": "pending",
             "tickets": tickets,
             "pending_count": len(tickets),
+            "pending_connections_count": pending_connections_count,
             "connected_count": connected_count,
             "employee_profile": employee,
         },
@@ -2953,6 +3331,14 @@ def technician_tickets_connected(request):
         1 for t in tickets if t.status == Customer.Status.INACTIVE
     )
     active_count = sum(1 for t in tickets if t.status == Customer.Status.ACTIVE)
+    pending_connections_count = (
+        _pending_connection_pool_qs().count()
+        + Customer.objects.filter(
+            status=Customer.Status.IN_PROGRESS,
+            assigned_technician=employee,
+            service_type=Customer.ServiceType.PPPOE,
+        ).count()
+    )
 
     return render(
         request,
@@ -2964,14 +3350,15 @@ def technician_tickets_connected(request):
                 "Every client ticket you have connected, with current status."
             ),
             "empty_text": (
-                "You have not connected any tickets yet. Accept an installation "
-                "or register a PPPoE client to get started."
+                "You have not connected any tickets yet. Receive a pending "
+                "connection or register a PPPoE client to get started."
             ),
             "current_page": "tickets_connected",
             "dashboard_url_name": "roles:technician",
             "ticket_view": "connected",
             "tickets": tickets,
             "pending_count": pending_count,
+            "pending_connections_count": pending_connections_count,
             "connected_count": len(tickets),
             "active_count": active_count,
             "employee_profile": employee,

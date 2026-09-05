@@ -99,9 +99,11 @@ class UsageTrendPayloadTests(TestCase):
         payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
         summary = payload["summary"]
         self.assertEqual(summary["tracking"], "ready")
-        self.assertIn(summary["status"], {"Online now", "Offline now"})
+        self.assertIn(summary["status"], {"Surfing", "Not surfing", "Disconnected"})
         self.assertTrue(summary["insight"])
         self.assertIn("download_mbps", payload["series"])
+        self.assertIn("surf_state", payload["series"])
+        self.assertIn("access", payload)
         self.assertTrue(summary["online_time_label"])
 
     def test_marks_stopped_surfing_and_filter_window(self):
@@ -157,6 +159,248 @@ class UsageTrendPayloadTests(TestCase):
         self.assertIn(1, payload["series"]["online"])
         self.assertEqual(
             len(payload["labels"]), len(payload["series"]["download_kbps"])
+        )
+        self.assertEqual(len(payload["labels"]), len(payload["series"]["surf_state"]))
+
+    def test_access_timeline_flags_early_offline_before_package_end(self):
+        from billing.models import BillingPlan
+
+        now = timezone.now()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly early",
+            price=10,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.customer.status = Customer.Status.ACTIVE
+        self.customer.plan = plan
+        self.customer.package_start = now - timezone.timedelta(hours=5)
+        self.customer.package_end = now + timezone.timedelta(hours=5)
+        self.customer.save(
+            update_fields=["status", "plan", "package_start", "package_end"]
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=3),
+            session_active=True,
+            bytes_in=1000,
+            bytes_out=2000,
+            download_bps=50000,
+            upload_bps=10000,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(hours=2),
+            session_active=False,
+            bytes_in=0,
+            bytes_out=0,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=30),
+            session_active=False,
+            bytes_in=0,
+            bytes_out=0,
+        )
+        payload = usage_trend_payload(self.customer, hours=6, use_cache=False)
+        access = payload["access"]
+        kinds = {ev["kind"] for ev in access["events"]}
+        self.assertIn("subscription_started", kinds)
+        self.assertIn("subscription_ended", kinds)
+        self.assertIn("early_offline", kinds)
+        self.assertTrue(access["alert"])
+        self.assertIn(2, payload["series"]["surf_state"])  # surfing while active
+        self.assertEqual(payload["summary"]["access_state"], "disconnected")
+
+    def test_access_timeline_marks_not_surfing_after_deadline(self):
+        from billing.models import BillingPlan
+
+        now = timezone.now()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly test",
+            price=10,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.customer.status = Customer.Status.ACTIVE
+        self.customer.plan = plan
+        self.customer.package_start = now - timezone.timedelta(hours=10)
+        self.customer.package_end = now - timezone.timedelta(hours=2)
+        self.customer.save(
+            update_fields=["status", "plan", "package_start", "package_end"]
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=20),
+            session_active=True,
+            bytes_in=5000,
+            bytes_out=8000,
+            download_bps=1000,
+            upload_bps=500,
+        )
+        payload = usage_trend_payload(self.customer, hours=6, use_cache=False)
+        self.assertEqual(payload["summary"]["access_state"], "not_surfing")
+        self.assertIn(1, payload["series"]["surf_state"])
+        kinds = {ev["kind"] for ev in payload["access"]["events"]}
+        self.assertIn("blocked_connected", kinds)
+
+    def test_multiple_pay_to_start_periods_classify_surfing(self):
+        """Expire → pay again must keep earlier surfing classified correctly."""
+        from billing.models import BillingPlan, Invoice, Payment
+
+        now = timezone.now()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly multi",
+            price=10,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        self.customer.status = Customer.Status.ACTIVE
+        self.customer.plan = plan
+        first_pay_at = now - timezone.timedelta(hours=5)
+        second_pay_at = now - timezone.timedelta(hours=1)
+        # Live package is only the latest pay-to-start window.
+        self.customer.package_start = second_pay_at
+        self.customer.package_end = second_pay_at + timezone.timedelta(hours=1)
+        self.customer.save(
+            update_fields=["status", "plan", "package_start", "package_end"]
+        )
+
+        for stamp, ref in ((first_pay_at, "PAY1"), (second_pay_at, "PAY2")):
+            inv = Invoice.objects.create(
+                organization=self.org,
+                customer=self.customer,
+                invoice_number=f"REN-MULTI-{ref}",
+                amount=10,
+                status=Invoice.Status.PAID,
+                due_date=stamp.date(),
+                issued_at=stamp,
+                paid_at=stamp,
+            )
+            Payment.objects.create(
+                organization=self.org,
+                invoice=inv,
+                amount=10,
+                method=Payment.Method.MPESA,
+                reference=ref,
+                received_at=stamp,
+            )
+
+        # Surfing during the first paid hour (before current package_start).
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=first_pay_at + timezone.timedelta(minutes=20),
+            session_active=True,
+            bytes_in=1000,
+            bytes_out=2000,
+            download_bps=50_000,
+            upload_bps=10_000,
+        )
+        # Gap after first expiry, before second payment — should be not surfing.
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=first_pay_at + timezone.timedelta(hours=2),
+            session_active=True,
+            bytes_in=2000,
+            bytes_out=3000,
+            download_bps=40_000,
+            upload_bps=8_000,
+        )
+        # Surfing in the second paid hour.
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=second_pay_at + timezone.timedelta(minutes=15),
+            session_active=True,
+            bytes_in=3000,
+            bytes_out=4000,
+            download_bps=60_000,
+            upload_bps=12_000,
+        )
+
+        payload = usage_trend_payload(self.customer, hours=6, use_cache=False)
+        access = payload["access"]
+        start_events = [
+            ev for ev in access["events"] if ev["kind"] == "subscription_started"
+        ]
+        end_events = [
+            ev for ev in access["events"] if ev["kind"] == "subscription_ended"
+        ]
+        payment_events = [ev for ev in access["events"] if ev["kind"] == "payment"]
+        self.assertGreaterEqual(len(payment_events), 2)
+        self.assertGreaterEqual(len(start_events), 2)
+        self.assertGreaterEqual(len(end_events), 2)
+        self.assertGreaterEqual(access.get("period_count") or 0, 2)
+        # Chart should show both surfing (2) and not_surfing (1) across periods.
+        self.assertIn(2, payload["series"]["surf_state"])
+        self.assertIn(1, payload["series"]["surf_state"])
+
+    def test_stacked_payment_marks_subscription_extended(self):
+        from billing.models import BillingPlan, Invoice, Payment
+
+        now = timezone.now()
+        plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Hourly stack",
+            price=10,
+            duration=BillingPlan.Duration.HOURLY,
+            service_type=BillingPlan.ServiceType.PPPOE,
+        )
+        first_pay_at = now - timezone.timedelta(minutes=50)
+        second_pay_at = now - timezone.timedelta(minutes=20)
+        self.customer.status = Customer.Status.ACTIVE
+        self.customer.plan = plan
+        self.customer.package_start = first_pay_at
+        self.customer.package_end = first_pay_at + timezone.timedelta(hours=2)
+        self.customer.save(
+            update_fields=["status", "plan", "package_start", "package_end"]
+        )
+
+        for stamp, ref in ((first_pay_at, "STACK1"), (second_pay_at, "STACK2")):
+            inv = Invoice.objects.create(
+                organization=self.org,
+                customer=self.customer,
+                invoice_number=f"REN-STACK-{ref}",
+                amount=10,
+                status=Invoice.Status.PAID,
+                due_date=stamp.date(),
+                issued_at=stamp,
+                paid_at=stamp,
+            )
+            Payment.objects.create(
+                organization=self.org,
+                invoice=inv,
+                amount=10,
+                method=Payment.Method.MPESA,
+                reference=ref,
+                received_at=stamp,
+            )
+
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=5),
+            session_active=True,
+            bytes_in=1000,
+            bytes_out=2000,
+            download_bps=10_000,
+            upload_bps=2_000,
+        )
+        payload = usage_trend_payload(self.customer, hours=6, use_cache=False)
+        labels = [ev["label"] for ev in payload["access"]["events"]]
+        self.assertTrue(any("extended" in (label or "").lower() for label in labels))
+        self.assertGreaterEqual(
+            sum(1 for ev in payload["access"]["events"] if ev["kind"] == "payment"),
+            2,
         )
 
     def test_counter_reset_does_not_spike_data_used(self):
@@ -491,3 +735,62 @@ class SampleOrganizationUsageTests(TestCase):
         )
         self.assertTrue(online_row["latest_active"])
         self.assertFalse(offline_row["latest_active"])
+
+    def test_org_payload_ranks_highest_data_usage_first(self):
+        now = timezone.now()
+        heavy = Customer.objects.create(
+            organization=self.org,
+            router=self.router,
+            full_name="AAA Low Name Heavy Usage",
+            phone="0700000199",
+            account_number="PPP-HEAVY-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="heavy1",
+        )
+        light = Customer.objects.create(
+            organization=self.org,
+            router=self.router,
+            full_name="ZZZ High Name Light Usage",
+            phone="0700000198",
+            account_number="PPP-LIGHT-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="light1",
+        )
+        for customer, bi0, bo0, bi1, bo1 in (
+            (heavy, 1_000, 500, 50_000, 20_000),
+            (light, 100, 50, 400, 150),
+        ):
+            CustomerUsageSample.objects.create(
+                customer=customer,
+                organization=self.org,
+                sampled_at=now - timezone.timedelta(minutes=5),
+                session_active=True,
+                bytes_in=bi0,
+                bytes_out=bo0,
+                download_bps=1_000,
+                upload_bps=200,
+            )
+            CustomerUsageSample.objects.create(
+                customer=customer,
+                organization=self.org,
+                sampled_at=now - timezone.timedelta(minutes=1),
+                session_active=True,
+                bytes_in=bi1,
+                bytes_out=bo1,
+                download_bps=2_000,
+                upload_bps=400,
+            )
+
+        payload = org_usage_payload(
+            self.org, hours=24, service="pppoe", top_n=0, use_cache=False, auto_widen=False
+        )
+        self.assertTrue(payload["ok"])
+        users = payload["top_users"]
+        self.assertGreaterEqual(len(users), 2)
+        self.assertEqual(users[0]["customer_id"], heavy.pk)
+        self.assertEqual(users[0]["rank"], 1)
+        self.assertGreater(users[0]["data_used_bytes"], users[1]["data_used_bytes"])
+        heavy_bytes = next(u["data_used_bytes"] for u in users if u["customer_id"] == heavy.pk)
+        light_bytes = next(u["data_used_bytes"] for u in users if u["customer_id"] == light.pk)
+        self.assertGreater(heavy_bytes, light_bytes)
+        self.assertEqual(payload["summary"]["top_user_name"], heavy.full_name)

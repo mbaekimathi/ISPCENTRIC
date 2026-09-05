@@ -154,6 +154,44 @@
             </div>
           </div>
         </details>
+
+        <section class="pppoe-section pppoe-section--slim" data-pppoe-serials-section>
+          <div class="pppoe-label-row">
+            <h3 class="pppoe-section-title">Equipment serials</h3>
+            <button type="button" class="pppoe-mini-btn" data-pppoe-add-serial>Add another</button>
+          </div>
+          <p class="field-hint">
+            {% if pppoe_form.require_serials %}
+              Required — enter CPE / ONU / other gear serial numbers installed at this site.
+            {% else %}
+              Optional — enter CPE / ONU / other gear serial numbers if known.
+            {% endif %}
+          </p>
+          {{ pppoe_form.equipment_serials }}
+          <div class="pppoe-serial-list" data-pppoe-serial-list>
+            {% for serial in pppoe_form.serial_values %}
+            <div class="pppoe-serial-row" data-pppoe-serial-row>
+              <div class="field field-span-2">
+                <label class="visually-hidden" for="id_pppoe_equipment_serial_{{ forloop.counter }}">Serial {{ forloop.counter }}</label>
+                <input
+                  type="text"
+                  name="equipment_serial"
+                  id="id_pppoe_equipment_serial_{{ forloop.counter }}"
+                  class="form-control text-upper"
+                  value="{{ serial }}"
+                  placeholder="Serial number"
+                  autocomplete="off"
+                  {% if pppoe_form.require_serials and forloop.first %}required{% endif %}
+                >
+              </div>
+              <button type="button" class="pppoe-serial-remove" data-pppoe-remove-serial aria-label="Remove serial" {% if forloop.first and pppoe_form.serial_values|length == 1 %}hidden{% endif %}>
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            {% endfor %}
+          </div>
+          {% if pppoe_form.equipment_serials.errors %}<div class="field-error">{{ pppoe_form.equipment_serials.errors|striptags }}</div>{% endif %}
+        </section>
       </div>
 
       <footer class="pppoe-foot">

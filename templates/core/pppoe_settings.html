@@ -88,11 +88,13 @@
         </div>
       </section>
 
+      {% include "core/includes/adverts_settings_panel.html" %}
+
       {% if form and can_edit %}
         <section class="panel account-card access-push-card">
           <header class="account-card-head">
             <div class="account-card-head-main">
-              <span class="account-step" aria-hidden="true">2</span>
+              <span class="account-step" aria-hidden="true">3</span>
               <div>
                 <h3>Push to this router</h3>
                 <p>
@@ -127,7 +129,7 @@
 {% endblock %}
 
 {% block client_extra_js %}
-{% if form and can_edit %}
+{% if form and can_edit or adverts_form and can_edit %}
 <script>
 (function () {
   var form = document.getElementById("pppoe-settings-form");
@@ -136,25 +138,45 @@
   var pill = document.getElementById("pppoe-status-pill");
   var policy = document.getElementById("pppoe-policy-label");
   var panel = document.querySelector(".settings-policy-panel");
-  if (!form || !input) return;
-
-  function syncUi() {
-    var on = !!input.checked;
-    if (label) label.textContent = on ? "On" : "Off";
-    if (pill) {
-      pill.textContent = on ? "On" : "Off";
-      pill.classList.toggle("is-on", on);
-      pill.classList.toggle("is-off", !on);
+  if (form && input) {
+    function syncUi() {
+      var on = !!input.checked;
+      if (label) label.textContent = on ? "On" : "Off";
+      if (pill) {
+        pill.textContent = on ? "On" : "Off";
+        pill.classList.toggle("is-on", on);
+        pill.classList.toggle("is-off", !on);
+      }
+      if (policy) policy.textContent = on ? "PPPoE clients only" : "All active clients";
+      if (panel) panel.classList.toggle("is-policy-on", on);
     }
-    if (policy) policy.textContent = on ? "PPPoE clients only" : "All active clients";
-    if (panel) panel.classList.toggle("is-policy-on", on);
+    input.addEventListener("change", function () {
+      syncUi();
+      form.submit();
+    });
+    syncUi();
   }
 
-  input.addEventListener("change", function () {
-    syncUi();
-    form.submit();
-  });
-  syncUi();
+  var advertsForm = document.getElementById("pppoe-adverts-form");
+  var advertsInput = advertsForm && advertsForm.querySelector("#id_adverts_enabled");
+  var advertsLabel = document.getElementById("adverts-enabled-label");
+  var advertsPill = document.getElementById("adverts-status-pill");
+  if (advertsForm && advertsInput) {
+    function syncAdvertsUi() {
+      var on = !!advertsInput.checked;
+      if (advertsLabel) advertsLabel.textContent = on ? "On" : "Off";
+      if (advertsPill) {
+        advertsPill.textContent = on ? "On" : "Off";
+        advertsPill.classList.toggle("is-on", on);
+        advertsPill.classList.toggle("is-off", !on);
+      }
+    }
+    advertsInput.addEventListener("change", function () {
+      syncAdvertsUi();
+      advertsForm.submit();
+    });
+    syncAdvertsUi();
+  }
 })();
 </script>
 {% endif %}

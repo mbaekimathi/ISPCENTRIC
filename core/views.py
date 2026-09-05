@@ -35,7 +35,9 @@ from accounts.communications import (
     fetch_provider_options,
 )
 from accounts.forms import (
+    AdvertsSettingsForm,
     CommunicationSettingsForm,
+    HotspotEnabledForm,
     HotspotSettingsForm,
     OrganizationEditForm,
     OwnerProfileForm,
@@ -458,6 +460,19 @@ def _router_api_host(router) -> str:
         return dial_host(raw) or raw
     except Exception:
         return raw
+
+
+def _resolve_working_nas_host(router, *, timeout: float = 1.5) -> str:
+    """First NAS dial address that accepts API — LAN before dead tunnel peers."""
+    try:
+        from core.mikrotik_connect import resolve_nas_api_host
+
+        resolved = (resolve_nas_api_host(router, timeout=timeout) or "").strip()
+        if resolved:
+            return dial_host(resolved) or resolved
+    except Exception:
+        pass
+    return _router_api_host(router)
 
 
 def _router_uses_tunnel(router) -> bool:
@@ -3754,8 +3769,13 @@ def _workspace_day_snapshot(org) -> dict:
             received_at__lt=day_end,
         )
         .select_related("invoice", "invoice__customer")
+        .prefetch_related("stk_push_requests")
         .order_by("-received_at")[:8]
     )
+    from billing.services import heal_payment_mpesa_reference
+
+    for pay in recent_payments:
+        pay.display_reference = heal_payment_mpesa_reference(pay)
     attention = customers_needing_renewal_attention(org)
     expired_rows = [row for row in attention if row["attention"] == "expired"]
     expiring_rows = [
@@ -3876,7 +3896,7 @@ def _workspace_day_snapshot(org) -> dict:
                 "id": pay.pk,
                 "amount": float(pay.amount or 0),
                 "method": pay.get_method_display(),
-                "reference": pay.reference or "",
+                "reference": pay.display_reference or pay.reference or "",
                 "received_at": dj_tz.localtime(pay.received_at).strftime("%H:%M"),
                 "customer_name": (
                     pay.invoice.customer.full_name
@@ -9912,6 +9932,7 @@ def _cpe_proxy_token(
     gateway: str = "",
     scope: str = "",
     mode: str = "",
+    nas_host: str = "",
 ) -> str:
     payload = {
         "customer_id": customer.pk,
@@ -9928,6 +9949,8 @@ def _cpe_proxy_token(
         payload["scope"] = scope.strip()
     if (mode or "").strip():
         payload["mode"] = mode.strip()
+    if (nas_host or "").strip():
+        payload["nas_host"] = nas_host.strip()
     return signing.dumps(
         payload,
         salt=_CPE_PROXY_SALT,
@@ -10066,8 +10089,17 @@ def _client_cpe_access_context(
 ) -> dict:
     """Shared template context for the advanced client router admin page."""
     nas = customer.router
-    via_tunnel = _router_uses_tunnel(nas) if nas else False
-    dial = _router_api_host(nas) if nas else ""
+    dial = _resolve_working_nas_host(nas) if nas else ""
+    via_tunnel = False
+    if dial:
+        try:
+            from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+            via_tunnel = _is_wireguard_tunnel_host(dial)
+        except Exception:
+            via_tunnel = _router_uses_tunnel(nas) if nas else False
+    elif nas:
+        via_tunnel = _router_uses_tunnel(nas)
     nas_url = (
         reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk}) if nas else ""
     )
@@ -10179,7 +10211,6 @@ def client_router_login_start(request, customer_id: int):
             customer.save(update_fields=["cpe_username"])
 
     nas = customer.router
-    nas_host = _router_api_host(nas)
     via_tunnel = _router_uses_tunnel(nas)
     access_mode = customer_cpe_access_mode(customer)
     nas_url = reverse("core:mikrotik_detail", kwargs={"router_id": nas.pk})
@@ -10199,7 +10230,7 @@ def client_router_login_start(request, customer_id: int):
     probe_password = cpe_pass or default_cpe_pass
     base_meta = {
         "nas_name": nas.name or "",
-        "nas_dial": nas_host,
+        "nas_dial": _router_api_host(nas),
         "nas_url": nas_url,
         "via_tunnel": via_tunnel,
         "access_mode": access_mode,
@@ -10211,7 +10242,22 @@ def client_router_login_start(request, customer_id: int):
 
     # Fail fast when the ISP NAS (LAN or WireGuard) is unreachable — otherwise
     # the CPE probe looks like "client offline" and operators chase the wrong layer.
+    # evaluate_nas_connectivity tries LAN before a dead tunnel peer.
     nas_check = evaluate_nas_connectivity(nas, timeout=3.0)
+    nas_host = (
+        (nas_check.get("details") or {}).get("working_host")
+        or _resolve_working_nas_host(nas)
+    )
+    base_meta["nas_dial"] = nas_host
+    try:
+        from core.mikrotik_connect import _is_wireguard_tunnel_host
+
+        base_meta["via_tunnel"] = (
+            _is_wireguard_tunnel_host(nas_host) if nas_host else via_tunnel
+        )
+    except Exception:
+        base_meta["via_tunnel"] = via_tunnel
+    via_tunnel = bool(base_meta["via_tunnel"])
     if not nas_check.get("api_ok"):
         detail = (
             nas_check.get("hint")
@@ -10303,6 +10349,7 @@ def client_router_login_start(request, customer_id: int):
         gateway=gateway,
         scope=customer_cpe_proxy_scope(customer),
         mode=mode,
+        nas_host=nas_host,
     )
     proxy_url = reverse(
         "core:client_router_proxy_root",
@@ -10458,7 +10505,10 @@ def client_router_proxy(request, customer_id: int, token: str, router_path: str 
         )
 
     nas = customer.router
-    nas_host = _router_api_host(nas)
+    nas_host = (
+        (token_payload.get("nas_host") or "").strip()
+        or _resolve_working_nas_host(nas)
+    )
     cpe_host = (token_payload.get("cpe_host") or "").strip()
     gateway = (token_payload.get("gateway") or "").strip() or MK_PPPOE_LOCAL_ADDRESS
     cpe_scope = (token_payload.get("scope") or "").strip() or customer_cpe_proxy_scope(
@@ -10760,7 +10810,7 @@ def client_cpe_wifi(request, customer_id: int):
 
     # Prefer the consumer CPE web API (Tenda, etc.) — this is where most
     # subscriber routers expose the live SSID/password/radio settings.
-    nas_host = _router_api_host(nas)
+    nas_host = _resolve_working_nas_host(nas)
     probe = probe_customer_cpe_web(
         nas_host,
         nas.username,
@@ -10962,7 +11012,7 @@ def client_cpe_router_data(request, customer_id: int):
             return JsonResponse(cached)
 
     nas = customer.router
-    nas_host = _router_api_host(nas)
+    nas_host = _resolve_working_nas_host(nas)
     probe = probe_customer_cpe_web(
         nas_host,
         nas.username,
@@ -11336,6 +11386,20 @@ def client_usage(request, customer_id: int):
     payload["router_name"] = router.name
     payload["wifi_ssid"] = (router.wifi_ssid or "").strip()
 
+    if is_pppoe:
+        from billing.services import customer_can_surf_via_pppoe
+        from core.mikrotik_connect import cpe_renew_clear_is_pending
+
+        internet_allowed = customer_can_surf_via_pppoe(customer)
+        payload["internet_allowed"] = internet_allowed
+        pending_renew = cpe_renew_clear_is_pending(customer)
+        payload["cpe_renew_clear_pending"] = pending_renew
+        if pending_renew and internet_allowed:
+            payload["hint"] = (
+                "Package active — CPE renew Hotspot still clearing. "
+                "Phones may see the pay page until the CPE redials."
+            )
+
     try:
         from billing.usage_samples import record_customer_usage_sample
 
@@ -11544,7 +11608,12 @@ def client_usage_analysis(request, customer_id: int):
         and usage_router.account_status != MikroTikRouter.AccountStatus.SUSPENDED
     )
     can_access_wifi = customer_can_access_router(customer, org)
-    from billing.usage_samples import clamp_usage_hours, usage_range_label, usage_trend_payload
+    from billing.usage_samples import (
+        build_client_access_timeline,
+        clamp_usage_hours,
+        usage_range_label,
+        usage_trend_payload,
+    )
 
     hours = clamp_usage_hours(request.GET.get("hours"), default=24)
     live_error = ""
@@ -11574,6 +11643,8 @@ def client_usage_analysis(request, customer_id: int):
             )
         else:
             error = "Live usage trends are available for PPPoE clients with an assigned router."
+        access = build_client_access_timeline(customer, hours=hours)
+        access_public = {k: v for k, v in access.items() if k != "bounds"}
         trends = {
             "ok": False,
             "hours": hours,
@@ -11585,9 +11656,24 @@ def client_usage_analysis(request, customer_id: int):
                 "upload_kbps": [],
                 "data_used_mb": [],
                 "online": [],
+                "surf_state": [],
             },
-            "markers": {"peak_index": None, "low_index": None, "stop_indexes": []},
-            "summary": {},
+            "markers": {
+                "peak_index": None,
+                "low_index": None,
+                "stop_indexes": [],
+                "event_indexes": {},
+            },
+            "access": access_public,
+            "summary": {
+                "status": access_public.get("status") or "—",
+                "status_hint": access_public.get("status_hint") or "",
+                "access_state": access_public.get("current_state") or "waiting",
+                "access_alert": access_public.get("alert") or "",
+                "tracking": "empty",
+                "insight": access_public.get("alert")
+                or "Payment and subscription timing is available even without live charts.",
+            },
             "error": error,
         }
 
@@ -11620,21 +11706,9 @@ def client_usage_analysis(request, customer_id: int):
 
 def _payment_mpesa_reference(payment: Payment) -> str:
     """Prefer the real M-Pesa receipt over Safaricom CheckoutRequestID placeholders."""
-    checkout_ids: set[str] = set()
-    for stk in payment.stk_push_requests.all():
-        receipt = (stk.mpesa_receipt or "").strip()
-        if receipt:
-            return receipt
-        checkout_id = (stk.checkout_request_id or "").strip()
-        if checkout_id:
-            checkout_ids.add(checkout_id)
-    ref = (payment.reference or "").strip()
-    if not ref:
-        return ""
-    # Checkout IDs look like ws_CO_… and are not the SMS receipt number.
-    if ref in checkout_ids or ref.startswith("ws_CO_"):
-        return ""
-    return ref
+    from billing.services import payment_mpesa_reference
+
+    return payment_mpesa_reference(payment)
 
 
 @client_workspace_required
@@ -11657,25 +11731,10 @@ def client_billing(request, customer_id: int):
         if org
         else []
     )
+    from billing.services import heal_payment_mpesa_reference
+
     for pay in payments:
-        display_ref = _payment_mpesa_reference(pay)
-        pay.display_reference = display_ref
-        # Heal rows that still store CheckoutRequestID after the real receipt arrived.
-        if not display_ref:
-            continue
-        current = (pay.reference or "").strip()
-        linked_checkouts = {
-            (stk.checkout_request_id or "").strip()
-            for stk in pay.stk_push_requests.all()
-            if (stk.checkout_request_id or "").strip()
-        }
-        if (
-            not current
-            or current in linked_checkouts
-            or current.startswith("ws_CO_")
-        ) and current != display_ref:
-            pay.reference = display_ref[:100]
-            pay.save(update_fields=["reference"])
+        pay.display_reference = heal_payment_mpesa_reference(pay)
     invoice_stats = (
         Invoice.objects.filter(customer=customer, organization=org).aggregate(
             total=Count("id"),
@@ -12409,6 +12468,8 @@ def mikrotik_pppoe_settings(request, router_id: int):
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     can_edit = bool(org.owner_id == request.user.id or viewing_client)
     pppoe_compulsory = bool(org.pppoe_compulsory)
+    form = None
+    adverts_form = None
 
     if request.method == "POST" and can_edit:
         action = (request.POST.get("action") or "save_policy").strip()
@@ -12434,38 +12495,57 @@ def mikrotik_pppoe_settings(request, router_id: int):
             )
             return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
 
-        form = PppoeSettingsForm(request.POST, instance=org)
-        if form.is_valid():
-            form.save()
-            org.refresh_from_db()
-            enabled = bool(form.cleaned_data.get("pppoe_compulsory"))
-            router_pk = router.pk
+        if action == "save_adverts":
+            adverts_form, saved = _save_org_adverts_settings(request, org)
+            if saved:
+                return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
+            form = PppoeSettingsForm(instance=org) if can_edit else None
+        else:
+            form = PppoeSettingsForm(request.POST, instance=org)
+            if form.is_valid():
+                form.save()
+                org.refresh_from_db()
+                enabled = bool(form.cleaned_data.get("pppoe_compulsory"))
+                router_pk = router.pk
 
-            def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled):
-                live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
-                return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
+                def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled):
+                    live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
+                    return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
 
-            set_job(router_pk, "pppoe_push", "pending")
-            schedule_mikrotik_job(
-                _bg_save_push,
-                name=f"pppoe-save-{router_pk}",
-                router_id=router_pk,
-                job_type="pppoe_push",
-            )
-            if enabled:
-                messages.success(
-                    request,
-                    "PPPoE enforcement enabled. Pushing to this MikroTik in the background — "
-                    "paid PPPoE clients will surf automatically; other devices use Hotspot.",
+                set_job(router_pk, "pppoe_push", "pending")
+                schedule_mikrotik_job(
+                    _bg_save_push,
+                    name=f"pppoe-save-{router_pk}",
+                    router_id=router_pk,
+                    job_type="pppoe_push",
                 )
-            else:
-                messages.success(
-                    request,
-                    "PPPoE enforcement disabled. Updating this MikroTik in the background.",
-                )
-            return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
+                if enabled:
+                    messages.success(
+                        request,
+                        "PPPoE enforcement enabled. Pushing to this MikroTik in the background — "
+                        "paid PPPoE clients will surf automatically; other devices use Hotspot.",
+                    )
+                else:
+                    messages.success(
+                        request,
+                        "PPPoE enforcement disabled. Updating this MikroTik in the background.",
+                    )
+                return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
+            adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
     else:
         form = PppoeSettingsForm(instance=org) if can_edit else None
+        adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
+
+    if adverts_form is None and can_edit:
+        adverts_form = AdvertsSettingsForm(instance=org)
+
+    bits = _adverts_context_for_settings(org)
+    pay_preview_path = ""
+    if org.join_code:
+        pay_preview_path = (
+            reverse("core:pppoe_pay", kwargs={"join_code": org.join_code})
+            + "?preview=demo"
+        )
 
     pppoe_eligible_count = Customer.objects.filter(
         organization=org,
@@ -12499,12 +12579,16 @@ def mikrotik_pppoe_settings(request, router_id: int):
         page_kicker="Access",
         page_subtitle=f"PPPoE enforcement and client logins for {router.name}.",
         form=form,
+        adverts_form=adverts_form,
+        adverts_form_id="pppoe-adverts-form",
+        pay_preview_path=pay_preview_path,
         can_edit=can_edit,
         organization=org,
         pppoe_compulsory=pppoe_compulsory,
         pppoe_eligible_count=pppoe_eligible_count,
         blocked_count=blocked_count,
         access_settings_tab="pppoe",
+        **bits,
     )
     return render(
         request,
@@ -12575,7 +12659,87 @@ def mikrotik_hotspot_settings(request, router_id: int):
         action = (request.POST.get("action") or "save_settings").strip()
         urls = _portal_urls_for(org)
 
-        if action == "push_hotspot":
+        if action == "save_adverts":
+            adverts_form, saved = _save_org_adverts_settings(request, org)
+            if saved:
+                return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
+            # Invalid — fall through to render with errors (form rebuilt below).
+        elif action == "save_hotspot_enabled":
+            enable_form = HotspotEnabledForm(request.POST, instance=org)
+            if enable_form.is_valid():
+                org = enable_form.save()
+                enabled = bool(org.hotspot_enabled)
+                urls = _portal_urls_for(org)
+                if enabled and org.hotspot_use_welcome_page:
+                    welcome = urls["welcome_url"]
+                    if org.hotspot_redirect_url != welcome:
+                        org.hotspot_redirect_url = welcome
+                        org.save(update_fields=["hotspot_redirect_url"])
+                router_pk = router.pk
+                org_pk = org.pk
+                push_urls = {
+                    "redirect_url": org.hotspot_redirect_url if enabled else "",
+                    "login_url": urls["login_url"] if enabled else "",
+                    "alogin_url": urls["alogin_url"] if enabled else "",
+                    "pay_url": urls["pay_url"] if enabled else "",
+                    "welcome_url": urls["welcome_url"] if enabled else "",
+                }
+
+                def _bg_hotspot_toggle(
+                    r_pk: int = router_pk,
+                    o_pk: int = org_pk,
+                    on: bool = enabled,
+                    portal: dict = push_urls,
+                ):
+                    live_router = MikroTikRouter.objects.select_related(
+                        "organization"
+                    ).get(pk=r_pk)
+                    live_org = Organization.objects.get(pk=o_pk)
+                    return apply_hotspot_on_router(
+                        live_router,
+                        enabled=on,
+                        organization=live_org,
+                        redirect_url=portal.get("redirect_url") or "",
+                        login_url=portal.get("login_url") or "",
+                        alogin_url=portal.get("alogin_url") or "",
+                        pay_url=portal.get("pay_url") or "",
+                        welcome_url=portal.get("welcome_url") or "",
+                    )
+
+                set_job(router_pk, "hotspot_push", "pending")
+                schedule_mikrotik_job(
+                    _bg_hotspot_toggle,
+                    name=f"hotspot-toggle-{router_pk}",
+                    router_id=router_pk,
+                    job_type="hotspot_push",
+                )
+                messages.success(
+                    request,
+                    (
+                        f"Hotspot turned {'on' if enabled else 'off'}. "
+                        f"{'Pushing to' if enabled else 'Removing from'} "
+                        f"{router.name} in the background."
+                    ),
+                )
+                if enabled and org.pppoe_compulsory:
+                    messages.info(
+                        request,
+                        "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
+                        "other devices must log in via Hotspot.",
+                    )
+                if enabled and urls.get("base_is_loopback"):
+                    messages.warning(
+                        request,
+                        "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
+                        "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
+                        "(e.g. http://10.10.0.168:8000) and run: "
+                        "python manage.py runserver 0.0.0.0:8000",
+                    )
+                elif enabled and urls.get("base_unreachable_reason"):
+                    messages.warning(request, urls["base_unreachable_reason"])
+            return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
+
+        elif action == "push_hotspot":
             enabled = bool(org.hotspot_enabled)
             redirect_url = (org.hotspot_redirect_url or "").strip()
             if enabled and org.hotspot_use_welcome_page:
@@ -12645,84 +12809,102 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 messages.warning(request, urls["base_unreachable_reason"])
             return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
 
-        form = HotspotSettingsForm(request.POST, instance=org)
-        if form.is_valid():
-            org = form.save(commit=False)
-            urls = _portal_urls_for(org)
-            if org.hotspot_use_welcome_page:
-                org.hotspot_redirect_url = urls["welcome_url"]
-            org.save()
-            enabled = bool(org.hotspot_enabled)
-            router_pk = router.pk
-            org_pk = org.pk
-            push_urls = {
-                "redirect_url": org.hotspot_redirect_url if enabled else "",
-                "login_url": urls["login_url"] if enabled else "",
-                "alogin_url": urls["alogin_url"] if enabled else "",
-                "pay_url": urls["pay_url"] if enabled else "",
-                "welcome_url": urls["welcome_url"] if enabled else "",
-            }
+        elif action != "save_adverts":
+            form = HotspotSettingsForm(request.POST, instance=org)
+            if form.is_valid():
+                org = form.save(commit=False)
+                urls = _portal_urls_for(org)
+                if org.hotspot_use_welcome_page:
+                    org.hotspot_redirect_url = urls["welcome_url"]
+                org.save()
+                enabled = bool(org.hotspot_enabled)
+                router_pk = router.pk
+                org_pk = org.pk
+                push_urls = {
+                    "redirect_url": org.hotspot_redirect_url if enabled else "",
+                    "login_url": urls["login_url"] if enabled else "",
+                    "alogin_url": urls["alogin_url"] if enabled else "",
+                    "pay_url": urls["pay_url"] if enabled else "",
+                    "welcome_url": urls["welcome_url"] if enabled else "",
+                }
 
-            def _bg_hotspot_save(
-                r_pk: int = router_pk,
-                o_pk: int = org_pk,
-                on: bool = enabled,
-                portal: dict = push_urls,
-            ):
-                live_router = MikroTikRouter.objects.select_related(
-                    "organization"
-                ).get(pk=r_pk)
-                live_org = Organization.objects.get(pk=o_pk)
-                return apply_hotspot_on_router(
-                    live_router,
-                    enabled=on,
-                    organization=live_org,
-                    redirect_url=portal.get("redirect_url") or "",
-                    login_url=portal.get("login_url") or "",
-                    alogin_url=portal.get("alogin_url") or "",
-                    pay_url=portal.get("pay_url") or "",
-                    welcome_url=portal.get("welcome_url") or "",
-                )
+                def _bg_hotspot_save(
+                    r_pk: int = router_pk,
+                    o_pk: int = org_pk,
+                    on: bool = enabled,
+                    portal: dict = push_urls,
+                ):
+                    live_router = MikroTikRouter.objects.select_related(
+                        "organization"
+                    ).get(pk=r_pk)
+                    live_org = Organization.objects.get(pk=o_pk)
+                    return apply_hotspot_on_router(
+                        live_router,
+                        enabled=on,
+                        organization=live_org,
+                        redirect_url=portal.get("redirect_url") or "",
+                        login_url=portal.get("login_url") or "",
+                        alogin_url=portal.get("alogin_url") or "",
+                        pay_url=portal.get("pay_url") or "",
+                        welcome_url=portal.get("welcome_url") or "",
+                    )
 
-            set_job(router_pk, "hotspot_push", "pending")
-            schedule_mikrotik_job(
-                _bg_hotspot_save,
-                name=f"hotspot-save-{router_pk}",
-                router_id=router_pk,
-                job_type="hotspot_push",
-            )
-            messages.success(
-                request,
-                (
-                    f"Settings saved. {'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
-                    f"{router.name} in the background."
-                ),
-            )
-            if enabled and org.pppoe_compulsory:
-                messages.info(
-                    request,
-                    "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
-                    "other devices must log in via Hotspot.",
+                set_job(router_pk, "hotspot_push", "pending")
+                schedule_mikrotik_job(
+                    _bg_hotspot_save,
+                    name=f"hotspot-save-{router_pk}",
+                    router_id=router_pk,
+                    job_type="hotspot_push",
                 )
-            if enabled and urls.get("base_is_loopback"):
-                messages.warning(
+                messages.success(
                     request,
-                    "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
-                    "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
-                    "(e.g. http://10.10.0.168:8000) and run: "
-                    "python manage.py runserver 0.0.0.0:8000",
+                    (
+                        f"Settings saved. {'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
+                        f"{router.name} in the background."
+                    ),
                 )
-            elif enabled and urls.get("base_unreachable_reason"):
-                messages.warning(request, urls["base_unreachable_reason"])
-            return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
+                if enabled and org.pppoe_compulsory:
+                    messages.info(
+                        request,
+                        "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
+                        "other devices must log in via Hotspot.",
+                    )
+                if enabled and urls.get("base_is_loopback"):
+                    messages.warning(
+                        request,
+                        "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
+                        "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
+                        "(e.g. http://10.10.0.168:8000) and run: "
+                        "python manage.py runserver 0.0.0.0:8000",
+                    )
+                elif enabled and urls.get("base_unreachable_reason"):
+                    messages.warning(request, urls["base_unreachable_reason"])
+                return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
     else:
         form = HotspotSettingsForm(instance=org) if can_edit else None
 
-    if form is not None:
-        hotspot_enabled = bool(form["hotspot_enabled"].value())
-        use_welcome_page = bool(form["hotspot_use_welcome_page"].value())
+    enable_form = HotspotEnabledForm(instance=org) if can_edit else None
+    try:
+        _af = adverts_form
+    except NameError:
+        _af = None
+    if _af is None:
+        adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
+    try:
+        _f = form
+    except NameError:
+        form = HotspotSettingsForm(instance=org) if can_edit else None
+
+    bits = _adverts_context_for_settings(org)
+
+    if enable_form is not None:
+        hotspot_enabled = bool(enable_form["hotspot_enabled"].value())
     else:
         hotspot_enabled = bool(org.hotspot_enabled)
+
+    if form is not None:
+        use_welcome_page = bool(form["hotspot_use_welcome_page"].value())
+    else:
         use_welcome_page = bool(org.hotspot_use_welcome_page)
 
     urls = _portal_urls_for(org)
@@ -12745,6 +12927,9 @@ def mikrotik_hotspot_settings(request, router_id: int):
         page_kicker="Access",
         page_subtitle=f"Hotspot portal, payment page, and voucher defaults for {router.name}.",
         form=form,
+        enable_form=enable_form,
+        adverts_form=adverts_form,
+        adverts_form_id="hotspot-adverts-form",
         can_edit=can_edit,
         organization=org,
         hotspot_enabled=hotspot_enabled,
@@ -12754,11 +12939,15 @@ def mikrotik_hotspot_settings(request, router_id: int):
         welcome_page_path=urls["welcome_path"],
         pay_page_url=urls["pay_url"],
         pay_page_path=urls["pay_path"],
+        pay_preview_path=(
+            f"{urls['pay_path']}?preview=demo" if urls.get("pay_path") else ""
+        ),
         portal_base_is_loopback=bool(urls.get("base_is_loopback")),
         portal_base_unreachable=urls.get("base_unreachable_reason") or "",
         router_count=1,
         pppoe_compulsory=bool(org.pppoe_compulsory),
         access_settings_tab="hotspot",
+        **bits,
     )
     return render(
         request,
@@ -12930,6 +13119,304 @@ def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
     return None
 
 
+def _click_to_earn_portal_bits(org, request=None, *, portal: str = "") -> dict:
+    """Captive pay/pause pages: optional Click to earn link for this ISP."""
+    from core.hotspot_portal import public_absolute_url
+
+    enabled = bool(getattr(org, "adverts_enabled", False))
+    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
+    portal = (portal or "").strip().lower()
+    if portal not in {"hotspot", "pppoe"}:
+        portal = ""
+    url = ""
+    mode = "off"
+    if enabled:
+        if custom:
+            url = custom
+            mode = "external"
+        elif getattr(org, "join_code", None):
+            path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
+            if portal:
+                path = f"{path}?from={portal}"
+            url = public_absolute_url(path, request) if request is not None else path
+            if not url:
+                url = path
+            mode = "builtin"
+    return {
+        "adverts_enabled": enabled,
+        "click_to_earn_url": url,
+        "click_to_earn_label": "Refer & earn" if mode == "builtin" else "Click to earn",
+        "click_to_earn_is_external": mode == "external",
+        "click_to_earn_mode": mode,
+    }
+
+
+def _adverts_context_for_settings(org) -> dict:
+    """Shared template context for Hotspot / PPPoE Adverts settings panels."""
+    earn_path = ""
+    if org.join_code:
+        earn_path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
+    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
+    return {
+        "adverts_enabled": bool(getattr(org, "adverts_enabled", False)),
+        "earn_page_path": earn_path,
+        "earn_preview_url": custom or earn_path,
+        "adverts_mode": "external" if custom else "builtin",
+        "adverts_redirect_url": custom,
+    }
+
+
+def _save_org_adverts_settings(request, org) -> tuple[AdvertsSettingsForm, bool]:
+    """
+    Persist Click to earn toggle + redirect URL.
+
+    Returns (form, saved). Caller should redirect after save.
+    """
+    form = AdvertsSettingsForm(request.POST, instance=org)
+    if not form.is_valid():
+        return form, False
+    org = form.save()
+    org.refresh_from_db()
+    if org.adverts_enabled:
+        custom = (org.adverts_redirect_url or "").strip()
+        if custom:
+            messages.success(
+                request,
+                "Click to earn is on (external link). Pay and pause pages will "
+                f"open: {custom}. Push Hotspot again so unpaid phones can reach "
+                "that host via walled garden.",
+            )
+        else:
+            earn_path = reverse(
+                "core:click_to_earn", kwargs={"join_code": org.join_code}
+            )
+            messages.success(
+                request,
+                "Click to earn is on (built-in adverts page). Pay and pause pages "
+                f"will open: {earn_path}",
+            )
+    else:
+        messages.success(
+            request,
+            "Click to earn is off. The card is hidden on pay and pause pages.",
+        )
+    return form, True
+
+
+def _theme_preview_demo_plans(*, service_type: str) -> list:
+    """Sample packages so Company Themes popups look like a live client portal."""
+    from decimal import Decimal
+
+    from billing.models import BillingPlan
+
+    class _DemoPlan:
+        def __init__(
+            self,
+            *,
+            pk,
+            name,
+            price,
+            duration,
+            download_speed_mbps,
+            upload_speed_mbps,
+            max_devices=0,
+            offer_enabled=False,
+            offer_label="",
+            offer_payments_remaining=None,
+        ):
+            self.pk = pk
+            self.name = name
+            self.price = Decimal(price)
+            self.duration = duration
+            self.download_speed_mbps = download_speed_mbps
+            self.upload_speed_mbps = upload_speed_mbps
+            self.max_devices = max_devices
+            self.image = None
+            self.portal_image_url = ""
+            self.offer_enabled = offer_enabled
+            self.offer_label = offer_label
+            self.offer_payments_remaining = offer_payments_remaining
+
+        @property
+        def speed_label(self) -> str:
+            return f"{self.download_speed_mbps}/{self.upload_speed_mbps} Mbps"
+
+        def get_duration_display(self) -> str:
+            return dict(BillingPlan.Duration.choices).get(self.duration, self.duration)
+
+    if service_type == BillingPlan.ServiceType.HOTSPOT:
+        return [
+            _DemoPlan(
+                pk="demo-hs-hour",
+                name="Hotspot Hour",
+                price="30.00",
+                duration=BillingPlan.Duration.HOURLY,
+                download_speed_mbps=5,
+                upload_speed_mbps=2,
+                max_devices=1,
+            ),
+            _DemoPlan(
+                pk="demo-hs-day",
+                name="Hotspot Day",
+                price="100.00",
+                duration=BillingPlan.Duration.DAILY,
+                download_speed_mbps=10,
+                upload_speed_mbps=5,
+                max_devices=2,
+                offer_enabled=True,
+                offer_label="Buy 5 get 1 free",
+                offer_payments_remaining=2,
+            ),
+            _DemoPlan(
+                pk="demo-hs-week",
+                name="Hotspot Week",
+                price="500.00",
+                duration=BillingPlan.Duration.WEEKLY,
+                download_speed_mbps=15,
+                upload_speed_mbps=8,
+                max_devices=3,
+            ),
+        ]
+    return [
+        _DemoPlan(
+            pk="demo-ppp-day",
+            name="Home Daily",
+            price="150.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        ),
+        _DemoPlan(
+            pk="demo-ppp-week",
+            name="Home Weekly",
+            price="700.00",
+            duration=BillingPlan.Duration.WEEKLY,
+            download_speed_mbps=20,
+            upload_speed_mbps=10,
+            offer_enabled=True,
+            offer_label="Buy 4 get 1 free",
+            offer_payments_remaining=1,
+        ),
+        _DemoPlan(
+            pk="demo-ppp-month",
+            name="Home Monthly",
+            price="2500.00",
+            duration=BillingPlan.Duration.MONTHLY,
+            download_speed_mbps=30,
+            upload_speed_mbps=15,
+        ),
+    ]
+
+
+def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: str) -> dict:
+    """
+    Fill sample client + package data for Company Themes popups.
+
+    Preview modes never write billing state; forms stay non-submitting.
+    """
+    mode = (preview_mode or "").strip().lower()
+    if mode not in {"demo", "paused", "renew", "theme"}:
+        return context
+
+    from datetime import timedelta
+
+    from billing.models import BillingPlan
+
+    paused = mode == "paused" or bool(context.get("subscription_paused"))
+    demo_name = "Jane Wanjiku"
+    demo_account = "DEMO-4821"
+    demo_phone = "0712 345 678"
+    demo_mac = "00:11:22:33:44:55"
+    demo_end = timezone.localtime() - timedelta(hours=3)
+
+    if portal == "hotspot":
+        # Always use sample packages in theme preview so the popup is fully filled.
+        plans = _theme_preview_demo_plans(service_type=BillingPlan.ServiceType.HOTSPOT)
+        context["hotspot_plans"] = plans
+        context["plans"] = plans
+        context["hotspot_selected_plan_id"] = plans[0].pk
+        context["selected_plan_id"] = plans[0].pk
+        context["hotspot_mac"] = demo_mac
+        context["hotspot_mac_privacy_hint"] = False
+        context["customer_name"] = demo_name
+        context["account_number"] = demo_account
+        context["phone_value"] = demo_phone
+        context["hotspot_phone_value"] = demo_phone
+        context["package_end"] = demo_end
+    else:
+        plans = _theme_preview_demo_plans(service_type=BillingPlan.ServiceType.PPPOE)
+        context["pppoe_plans"] = plans
+        context["plans"] = plans
+        context["pppoe_selected_plan_id"] = plans[0].pk
+        context["selected_plan_id"] = plans[0].pk
+        context["customer_name"] = demo_name
+        context["account_number"] = demo_account
+        context["pppoe_customer_name"] = demo_name
+        context["pppoe_account_number"] = demo_account
+        context["phone_value"] = demo_phone
+        context["pppoe_phone_value"] = demo_phone
+        context["package_end"] = demo_end
+        context["pppoe_package_end"] = demo_end
+        context["require_account_lookup"] = False
+        context["pppoe_require_account_lookup"] = False
+        context["pppoe_account_locked"] = True
+        context["identify_error"] = ""
+        context["pppoe_identify_error"] = ""
+        context["show_inline_hotspot"] = False
+
+    context["has_payable_plans"] = True
+    context["portal_setup_hint"] = ""
+    context["error"] = ""
+    context["has_mpesa"] = True
+    context["stk_ready"] = True
+    if not context.get("mpesa_number"):
+        context["mpesa_type"] = context.get("mpesa_type") or "paybill"
+        context["mpesa_number"] = "522522"
+        context["mpesa_account"] = context.get("mpesa_account") or demo_account
+    context["show_payment_form"] = not paused
+    context["stk_payment_available"] = not paused
+    # Keep preview read-only so staff cannot start a real STK from the sample UI.
+    context["payment_start_url"] = "#"
+    context["hotspot_payment_start_url"] = "#"
+    context["pppoe_payment_start_url"] = "#"
+    context["voucher_redeem_url"] = "#"
+    context["hotspot_voucher_redeem_url"] = "#"
+    context["theme_preview"] = True
+    context["theme_preview_mode"] = mode
+    # Always show Click to earn in theme previews so owners can see the live look
+    # even before they flip the Adverts toggle on.
+    join_code = (context.get("join_code") or "").strip()
+    if not join_code:
+        org_obj = context.get("organization")
+        join_code = str(getattr(org_obj, "join_code", "") or "").strip()
+    org_obj = context.get("organization")
+    custom = str(getattr(org_obj, "adverts_redirect_url", "") or "").strip()
+    if custom:
+        context["adverts_enabled"] = True
+        context["click_to_earn_url"] = custom
+        context["click_to_earn_label"] = context.get("click_to_earn_label") or "Click to earn"
+        context["click_to_earn_is_external"] = True
+    elif join_code:
+        earn_path = reverse("core:click_to_earn", kwargs={"join_code": join_code})
+        context["adverts_enabled"] = True
+        context["click_to_earn_url"] = earn_path
+        context["click_to_earn_label"] = context.get("click_to_earn_label") or "Refer & earn"
+        context["click_to_earn_is_external"] = False
+    if paused:
+        context["page_title"] = f"{context.get('org_name') or 'ISP'} — Internet paused"
+        context["page_message"] = context.get("access_banner_message") or (
+            "Your provider paused this subscription."
+        )
+    else:
+        context["page_title"] = context.get("page_title") or (
+            f"{context.get('org_name') or 'ISP'} renew"
+        )
+        context["page_message"] = context.get("access_banner_message") or (
+            "Choose a package and pay with M-Pesa to restore internet."
+        )
+    return context
+
+
 def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
     from core.hotspot_portal import hotspot_portal_urls, public_absolute_url
 
@@ -12954,7 +13441,10 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
             mikrotik_login = True
 
     from billing.services import plans_for_router
-    from core.mikrotik_connect import find_hotspot_router_for_mac
+    from core.mikrotik_connect import (
+        find_hotspot_router_for_mac,
+        hotspot_mac_looks_randomized,
+    )
 
     # Customer + bound router first (DB only). Live NAS MAC→router scan is a
     # last resort — it was the main multi-second cost on every pay-page open.
@@ -13027,7 +13517,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
             f"M-Pesa is not set up for {org.name} yet. "
             "Configure Paybill/Till or Daraja STK under System settings."
         )
-    return {
+    context = {
         "organization": org,
         "org_name": org.name,
         "page_title": title,
@@ -13051,6 +13541,9 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "link_login": link_login,
         "link_orig": link_orig or urls["welcome_url"],
         "hotspot_mac": hotspot_mac,
+        "hotspot_mac_privacy_hint": bool(
+            hotspot_mac and hotspot_mac_looks_randomized(hotspot_mac)
+        ),
         "payment_start_url": hotspot_start,
         "hotspot_payment_start_url": hotspot_start,
         "voucher_redeem_url": public_absolute_url(
@@ -13091,7 +13584,11 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "hotspot_phone_value": hotspot_phone,
         "hotspot_selected_plan_id": hotspot_selected_plan_id,
         **access_ctx,
+        **_click_to_earn_portal_bits(org, request, portal="hotspot"),
     }
+    return _enrich_portal_theme_preview(
+        context, portal="hotspot", preview_mode=preview_mode
+    )
 
 
 def _normalize_hotspot_mac(value: str) -> str:
@@ -13681,6 +14178,52 @@ def _redirect_pay_preserving_query(request, view_name: str, join_code: str):
     return redirect(path)
 
 
+def click_to_earn(request, join_code: str):
+    """
+    ISP Refer & earn page.
+
+    - External mode: redirects to org.adverts_redirect_url
+    - Built-in mode: referral / commission info with ISP phone
+    - Off: return to the matching pay portal
+    """
+    org = get_object_or_404(Organization, join_code=join_code)
+    from_portal = (request.GET.get("from") or "").strip().lower()
+    if from_portal not in {"hotspot", "pppoe"}:
+        from_portal = "hotspot"
+
+    def _pay_fallback():
+        name = "core:pppoe_pay" if from_portal == "pppoe" else "core:hotspot_pay"
+        return redirect(name, join_code=join_code)
+
+    if not getattr(org, "adverts_enabled", False):
+        return _pay_fallback()
+
+    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
+    if custom:
+        return redirect(custom)
+
+    pay_name = "core:pppoe_pay" if from_portal == "pppoe" else "core:hotspot_pay"
+    pay_url = reverse(pay_name, kwargs={"join_code": join_code})
+    isp_phone = (getattr(org, "phone", None) or "").strip()
+    wa_digits = re.sub(r"\D", "", isp_phone)
+    if wa_digits.startswith("0") and len(wa_digits) >= 9:
+        wa_digits = "254" + wa_digits[1:]
+    elif wa_digits.startswith("7") and len(wa_digits) == 9:
+        wa_digits = "254" + wa_digits
+    return render(
+        request,
+        "core/click_to_earn.html",
+        {
+            "organization": org,
+            "org_name": org.name,
+            "isp_phone": isp_phone,
+            "isp_whatsapp": wa_digits,
+            "pay_url": pay_url,
+            "page_title": f"{org.name} — Refer & earn",
+        },
+    )
+
+
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
     org = get_object_or_404(Organization, join_code=join_code)
@@ -13848,7 +14391,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     if request is not None and show_inline_hotspot:
         hotspot_mac = _resolve_request_hotspot_mac(org, request) or ""
     hotspot_pay_url = urls.get("pay_url") or "" if hotspot_enabled else ""
-    return {
+    context = {
         "organization": org,
         "org_name": org.name,
         "page_title": page_title,
@@ -13908,7 +14451,11 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
         "hotspot_phone_value": phone_value,
         "hotspot_selected_plan_id": None,
         **access_ctx,
+        **_click_to_earn_portal_bits(org, request, portal="pppoe"),
     }
+    return _enrich_portal_theme_preview(
+        context, portal="pppoe", preview_mode=preview_mode
+    )
 
 
 def _find_pppoe_customer_from_token(org, token: str):

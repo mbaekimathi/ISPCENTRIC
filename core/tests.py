@@ -13,6 +13,7 @@ from core.mikrotik_connect import (
     _router_api_host_candidates,
     dial_host,
     on_router_lan,
+    resolve_nas_api_host,
 )
 from core.models import MikroTikRouter
 
@@ -987,6 +988,25 @@ class RouterDialTargetTests(SimpleTestCase):
         self.assertNotIn("192.168.88.1", hosts)
 
     @override_settings(HOSTED=False)
+    def test_resolve_nas_api_host_returns_first_open_candidate(self):
+        router = _router(vpn_address="10.9.0.2")
+
+        def fake_connect(address, timeout=1.0):
+            host, port = address
+            if host == "192.168.1.104" and port == 8728:
+                return socket.socket()
+            raise TimeoutError("timed out")
+
+        with (
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["192.168.1.104", "10.9.0.2"],
+            ),
+            patch("core.mikrotik_connect.socket.create_connection", side_effect=fake_connect),
+        ):
+            self.assertEqual(resolve_nas_api_host(router, timeout=0.5), "192.168.1.104")
+
+    @override_settings(HOSTED=False)
     def test_discover_false_skips_lan_discovery_scan(self):
         with patch(
             "core.mikrotik_discovery.discover_mikrotik_devices",
@@ -1710,6 +1730,71 @@ class PayPagePoolMismatchGuardTests(TestCase):
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
 
+class ClickToEarnPortalTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+
+        self.org = Organization.objects.create(
+            name="Earn Org",
+            owner=User.objects.create_user("owner-earn", password="x"),
+            join_code="707070",
+            hotspot_enabled=True,
+            adverts_enabled=False,
+        )
+
+    def test_earn_off_redirects_to_pay_portal(self):
+        response = self.client.get(f"/hotspot/{self.org.join_code}/earn/?from=pppoe")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
+
+    def test_earn_external_redirects_to_custom_url(self):
+        self.org.adverts_enabled = True
+        self.org.adverts_redirect_url = "https://ads.example.com/earn"
+        self.org.save(update_fields=["adverts_enabled", "adverts_redirect_url"])
+        response = self.client.get(f"/hotspot/{self.org.join_code}/earn/")
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "https://ads.example.com/earn")
+
+    def test_earn_builtin_shows_referral_page(self):
+        self.org.adverts_enabled = True
+        self.org.adverts_redirect_url = ""
+        self.org.phone = "0712345678"
+        self.org.save(
+            update_fields=["adverts_enabled", "adverts_redirect_url", "phone"]
+        )
+        response = self.client.get(
+            f"/hotspot/{self.org.join_code}/earn/?from=hotspot"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Refer a Wi‑Fi client")
+        self.assertContains(response, "0712345678")
+        self.assertNotContains(response, "Live adverts")
+        self.assertNotContains(response, "Post an advert")
+
+    def test_portal_bits_prefer_external_url(self):
+        from core.views import _click_to_earn_portal_bits
+
+        self.org.adverts_enabled = True
+        self.org.adverts_redirect_url = "https://partner.example/ads"
+        bits = _click_to_earn_portal_bits(self.org, portal="hotspot")
+        self.assertTrue(bits["adverts_enabled"])
+        self.assertEqual(bits["click_to_earn_url"], "https://partner.example/ads")
+        self.assertTrue(bits["click_to_earn_is_external"])
+        self.assertEqual(bits["click_to_earn_mode"], "external")
+
+    def test_portal_bits_builtin_includes_from_query(self):
+        from core.views import _click_to_earn_portal_bits
+
+        self.org.adverts_enabled = True
+        self.org.adverts_redirect_url = ""
+        bits = _click_to_earn_portal_bits(self.org, portal="pppoe")
+        self.assertIn("/earn/", bits["click_to_earn_url"])
+        self.assertIn("from=pppoe", bits["click_to_earn_url"])
+        self.assertEqual(bits["click_to_earn_mode"], "builtin")
+
+
 class CaptiveProbeMiddlewareTests(TestCase):
     def setUp(self):
         from django.contrib.auth.models import User
@@ -2184,6 +2269,10 @@ class HotspotAuthorizeFastPathTests(TestCase):
             )
         self.assertTrue(result.get("skipped"))
         self.assertTrue(result.get("timeout"))
+        self.assertTrue(result.get("authorize_pending"))
+        from core.mikrotik_connect import hotspot_authorize_is_pending
+
+        self.assertTrue(hotspot_authorize_is_pending(self.customer))
 
     def test_renew_skips_pppoe_ensure_stack(self):
         from unittest.mock import patch
@@ -2836,6 +2925,86 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertEqual(customer.status, Customer.Status.INACTIVE)
         self.assertIsNone(customer.package_start)
         self.assertIsNone(customer.package_end)
+
+    def test_require_serials_enforced_for_technician_style_form(self):
+        from billing.forms import PppoeClientRegisterForm
+
+        missing = PppoeClientRegisterForm(
+            {
+                "full_name": "tech client",
+                "phone": "0711665544",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organization=self.org,
+            default_activate=False,
+            allow_activate=False,
+            require_serials=True,
+        )
+        self.assertFalse(missing.is_valid())
+        self.assertIn("equipment_serials", missing.errors)
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "tech client",
+                "phone": "0711665544",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+                "equipment_serial": [" sn-abc ", "SN-ABC", "sn-xyz"],
+            },
+            organization=self.org,
+            default_activate=False,
+            allow_activate=False,
+            require_serials=True,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        customer = form.save()
+        self.assertEqual(customer.equipment_serials, ["SN-ABC", "SN-XYZ"])
+
+    def test_serials_optional_when_not_required(self):
+        from billing.forms import PppoeClientRegisterForm
+
+        form = PppoeClientRegisterForm(
+            {
+                "full_name": "isp client",
+                "phone": "0711778899",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "",
+                "house_number": "",
+                "plan": "",
+                "activate_account": "0",
+                "activation_date": "",
+                "pppoe_username": "",
+                "pppoe_password": "secret1",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+            organization=self.org,
+            default_activate=False,
+            require_serials=False,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        customer = form.save()
+        self.assertEqual(customer.equipment_serials, [])
 
     def test_allow_activate_false_ignores_activate_post(self):
         """Technician registrations cannot activate even if POST tampers."""
@@ -6949,6 +7118,10 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._api_session") as session,
             patch(
+                "core.mikrotik_connect._pppoe_arp_complete_map",
+                return_value={},
+            ),
+            patch(
                 "core.mikrotik_connect._current_ppp_secret_profile",
                 return_value=PPPOE_BLOCKED_PROFILE_NAME,
             ),
@@ -6961,9 +7134,17 @@ class AccessFlowCorrectionLoopTests(TestCase):
                 return_value=True,
             ),
             patch(
+                "core.mikrotik_connect._pppoe_session_looks_ghost",
+                return_value=False,
+            ),
+            patch(
                 "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
                 return_value={"ok": True, "kicked": 1},
             ) as batch,
+            patch(
+                "core.mikrotik_connect._follow_up_pending_cpe_renew_clears",
+                return_value=0,
+            ),
         ):
             session.return_value.__enter__.return_value = object()
             # Paid window for the repair path.
@@ -6978,6 +7159,184 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.assertTrue(result.get("ok"))
         self.assertEqual(result.get("repaired"), 1)
         self.assertTrue(batch.called)
+
+    def test_repair_paid_pppoe_skips_ghost_only_session(self):
+        """Ghost alone must not kick — keepalive clears dead peers safely."""
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import repair_paid_pppoe_not_surfing_on_router
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_arp_complete_map",
+                return_value={},
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value="ispcentric-pppoe-5u-10d",
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_session_looks_ghost",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 1},
+            ) as batch,
+            patch(
+                "core.mikrotik_connect._follow_up_pending_cpe_renew_clears",
+                return_value=0,
+            ),
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = repair_paid_pppoe_not_surfing_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("repaired"), 0)
+        self.assertEqual(result.get("ghost_noted"), 1)
+        self.assertFalse(batch.called)
+
+    def test_repair_paid_pppoe_clears_pending_cpe_renew(self):
+        from datetime import timedelta
+        from unittest.mock import patch
+
+        from django.utils import timezone
+
+        from core.mikrotik_connect import (
+            mark_cpe_renew_clear_pending,
+            repair_paid_pppoe_not_surfing_on_router,
+        )
+
+        self.pppoe.package_end = timezone.now() + timedelta(days=2)
+        self.pppoe.save(update_fields=["package_end"])
+        mark_cpe_renew_clear_pending(self.pppoe)
+
+        with (
+            patch(
+                "core.mikrotik_connect._pppoe_customers_for_router",
+                return_value=[self.pppoe],
+            ),
+            patch(
+                "core.mikrotik_connect._customer_internet_allowed",
+                return_value=True,
+            ),
+            patch(
+                "core.mikrotik_connect._customer_pppoe_secret_disabled",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.0.0.1"],
+            ),
+            patch("core.mikrotik_connect._api_session") as session,
+            patch(
+                "core.mikrotik_connect._pppoe_arp_complete_map",
+                return_value={},
+            ),
+            patch(
+                "core.mikrotik_connect._ppp_secret_profile_for_customer",
+                return_value="ispcentric-pppoe",
+            ),
+            patch(
+                "core.mikrotik_connect._current_ppp_secret_profile",
+                return_value="ispcentric-pppoe",
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_has_active_session",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._active_pppoe_session_is_blocked",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect._pppoe_session_looks_ghost",
+                return_value=False,
+            ),
+            patch(
+                "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
+                return_value={"ok": True, "kicked": 0},
+            ) as batch,
+            patch(
+                "core.mikrotik_connect._follow_up_pending_cpe_renew_clears",
+                return_value=1,
+            ) as clear_follow,
+        ):
+            session.return_value.__enter__.return_value = object()
+            result = repair_paid_pppoe_not_surfing_on_router(self.router)
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result.get("repaired"), 1)
+        self.assertEqual(result.get("cpe_renew_cleared"), 1)
+        self.assertTrue(batch.called)
+        self.assertTrue(clear_follow.called)
+
+    def test_ppp_profile_attempts_include_keepalive(self):
+        from core.mikrotik_connect import (
+            PPPOE_PROFILE_NAME,
+            _pppoe_keepalive_timeout,
+            _ppp_profile_attempts,
+        )
+
+        attempts = _ppp_profile_attempts(name=PPPOE_PROFILE_NAME)
+        expected = _pppoe_keepalive_timeout()
+        self.assertTrue(
+            any(props.get("keepalive-timeout") == expected for props in attempts),
+            msg="PPP profile attempts must include keepalive-timeout",
+        )
+        # Older RouterOS fallback must still work without keepalive.
+        self.assertTrue(
+            any("keepalive-timeout" not in props for props in attempts),
+            msg="PPP profile attempts must fall back without keepalive-timeout",
+        )
+        # Deploy-safe default is gentle (not 30s).
+        self.assertEqual(expected, "2m")
+
+    def test_hotspot_mac_looks_randomized(self):
+        from core.mikrotik_connect import hotspot_mac_looks_randomized
+
+        # Locally administered bit set (common Private Wi‑Fi Address).
+        self.assertTrue(hotspot_mac_looks_randomized("02:11:22:33:44:55"))
+        self.assertTrue(hotspot_mac_looks_randomized("AA:BB:CC:DD:EE:FF"))
+        # Globally administered.
+        self.assertFalse(hotspot_mac_looks_randomized("00:11:22:33:44:55"))
+        self.assertFalse(hotspot_mac_looks_randomized(""))
 
     def test_pppoe_restore_retries_cpe_clear_after_offline_skip(self):
         """Paid restore clears renew Hotspot on the post-provision attempt."""
@@ -7967,6 +8326,14 @@ class RouterConnectivityLoopTests(TestCase):
 
         with (
             patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="192.168.88.1",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["192.168.88.1"],
+            ),
+            patch(
                 "core.mikrotik_connect.check_mikrotik_reachable",
                 return_value={"online": True, "via": "api"},
             ),
@@ -7978,15 +8345,59 @@ class RouterConnectivityLoopTests(TestCase):
             result = evaluate_nas_connectivity(self.router)
         self.assertTrue(result["ok"])
         self.assertTrue(result["api_ok"])
+        self.assertEqual(result["details"]["working_host"], "192.168.88.1")
+
+    def test_evaluate_nas_falls_back_to_lan_when_tunnel_down(self):
+        from core.connectivity_verification import evaluate_nas_connectivity
+
+        self.router.vpn_address = "10.9.0.2"
+        self.router.save(update_fields=["vpn_address"])
+
+        def fake_reachable(host, **kwargs):
+            if host == "10.9.0.2":
+                return {"online": False, "error": "timed out"}
+            return {"online": True, "via": "api"}
+
+        with (
+            patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="192.168.88.1",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["192.168.88.1", "10.9.0.2"],
+            ),
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                side_effect=fake_reachable,
+            ),
+            patch(
+                "core.mikrotik_connect.test_mikrotik_api_login",
+                return_value={"ok": True, "identity": "MikroTik"},
+            ),
+        ):
+            result = evaluate_nas_connectivity(self.router)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["details"]["working_host"], "192.168.88.1")
 
     def test_evaluate_nas_tunnel_hint_when_unreachable(self):
         from core.connectivity_verification import evaluate_nas_connectivity
 
         self.router.host = "10.9.0.12"
         self.router.vpn_address = "10.9.0.12"
-        with patch(
-            "core.mikrotik_connect.check_mikrotik_reachable",
-            return_value={"online": False, "error": "timed out"},
+        with (
+            patch(
+                "core.mikrotik_connect.resolve_nas_api_host",
+                return_value="10.9.0.12",
+            ),
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["10.9.0.12"],
+            ),
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": False, "error": "timed out"},
+            ),
         ):
             result = evaluate_nas_connectivity(self.router)
         self.assertFalse(result["ok"])

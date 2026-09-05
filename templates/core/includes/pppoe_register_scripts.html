@@ -500,6 +500,64 @@
   }
   syncActivationDateUi();
 
+  (function initSerialRows() {
+    var list = document.querySelector("#pppoe-register-modal [data-pppoe-serial-list]");
+    var addBtn = document.querySelector("#pppoe-register-modal [data-pppoe-add-serial]");
+    if (!list || !addBtn) return;
+
+    function rows() {
+      return Array.prototype.slice.call(list.querySelectorAll("[data-pppoe-serial-row]"));
+    }
+
+    function syncRemoveButtons() {
+      var items = rows();
+      items.forEach(function (row) {
+        var remove = row.querySelector("[data-pppoe-remove-serial]");
+        if (remove) remove.hidden = items.length <= 1;
+      });
+    }
+
+    function renumber() {
+      rows().forEach(function (row, index) {
+        var input = row.querySelector('input[name="equipment_serial"]');
+        var label = row.querySelector("label");
+        if (!input) return;
+        var id = "id_pppoe_equipment_serial_" + (index + 1);
+        input.id = id;
+        if (label) {
+          label.setAttribute("for", id);
+          label.textContent = "Serial " + (index + 1);
+        }
+      });
+      syncRemoveButtons();
+    }
+
+    addBtn.addEventListener("click", function () {
+      var template = rows()[0];
+      if (!template) return;
+      var clone = template.cloneNode(true);
+      var input = clone.querySelector('input[name="equipment_serial"]');
+      if (input) {
+        input.value = "";
+        input.removeAttribute("required");
+      }
+      list.appendChild(clone);
+      renumber();
+      if (input) input.focus();
+    });
+
+    list.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-pppoe-remove-serial]");
+      if (!btn || !list.contains(btn)) return;
+      var row = btn.closest("[data-pppoe-serial-row]");
+      if (!row || rows().length <= 1) return;
+      row.remove();
+      renumber();
+    });
+
+    syncRemoveButtons();
+  })();
+
   {% if open_client_modal == "pppoe-register-modal" %}
   openModal("pppoe-register-modal");
   {% endif %}

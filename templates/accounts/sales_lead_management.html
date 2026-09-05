@@ -8,24 +8,42 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Recent leads</h2>
-      <p class="panel-sub">Leads you registered.</p>
+<section class="cs-list-page">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">{{ page_title }}</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="panel-head-actions">
+    <div class="cs-list-toolbar">
       <button type="button" class="btn btn-primary" data-open-sales-modal="lead-register-modal">
-        Register lead
+        Register potential client
       </button>
+      <button type="button" class="btn btn-primary" data-open-sales-modal="customer-register-modal">
+        Register customer
+      </button>
+      <div class="cs-list-count">
+        <strong>{% if leads %}{{ leads|length }}{% else %}0{% endif %}</strong>
+        <span>{% if leads|length == 1 %}lead{% else %}leads{% endif %}</span>
+      </div>
     </div>
-  </div>
+  </header>
+
+  <section class="cs-list-section" id="recent-leads-panel" aria-labelledby="recent-leads-title">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="recent-leads-title">Potential clients (leads)</h3>
+        <p>Leads linked to you for follow-up.</p>
+      </div>
+      <div class="cs-list-count">
+        <strong>{% if leads %}{{ leads|length }}{% else %}0{% endif %}</strong>
+        <span>{% if leads|length == 1 %}lead{% else %}leads{% endif %}</span>
+      </div>
+    </header>
 
   {% if leads %}
-    <div class="org-table-shell">
-      <table class="org-table org-table-leads">
+    <div class="cs-list-shell">
+      <table class="cs-list-table">
         <thead>
           <tr>
             <th>Lead #</th>
@@ -41,40 +59,166 @@
         <tbody>
           {% for lead in leads %}
             <tr>
-              <td><span class="org-code">{{ lead.lead_number }}</span></td>
-              <td>
-                <strong>{{ lead.full_name }}</strong>
-                {% if lead.location %}<small class="lead-location-line">{{ lead.location }}</small>{% endif %}
+              <td class="is-primary-cell" data-label="Lead #">
+                <span class="org-code">{{ lead.lead_number }}</span>
               </td>
-              <td>{{ lead.phone }}</td>
-              <td>{{ lead.get_service_type_display }}</td>
-              <td class="col-optional">{% if lead.preferred_package %}{{ lead.preferred_package.name }}{% else %}—{% endif %}</td>
-              <td>{% if lead.preferred_installation_date %}{{ lead.preferred_installation_date|date:"d M Y" }}{% else %}—{% endif %}</td>
-              <td class="col-optional">{{ lead.get_lead_source_display }}</td>
-              <td><span class="org-status">{{ lead.get_status_display }}</span></td>
+              <td data-label="Name">
+                <div class="cs-list-primary">
+                  <strong>{{ lead.full_name }}</strong>
+                  {% if lead.location %}<small>{{ lead.location }}</small>{% endif %}
+                </div>
+              </td>
+              <td data-label="Phone">
+                {% if lead.phone %}<a href="tel:{{ lead.phone }}">{{ lead.phone }}</a>{% else %}—{% endif %}
+              </td>
+              <td data-label="Service">{{ lead.get_service_type_display }}</td>
+              <td class="col-optional" data-label="Package">{% if lead.preferred_package %}{{ lead.preferred_package.name }}{% else %}—{% endif %}</td>
+              <td data-label="Install date">{% if lead.preferred_installation_date %}{{ lead.preferred_installation_date|date:"d M Y" }}{% else %}—{% endif %}</td>
+              <td class="col-optional" data-label="Source">{{ lead.get_lead_source_display }}</td>
+              <td data-label="Status"><span class="org-status">{{ lead.get_status_display }}</span></td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
   {% else %}
-    <p class="empty">No leads have been added yet. Use Register lead to add one.</p>
+    <div class="cs-list-empty">
+      <strong>No potential clients yet</strong>
+      <p>No potential clients linked to you yet. Use Register potential client to add one.</p>
+      <button type="button" class="btn btn-primary" data-open-sales-modal="lead-register-modal">
+        Register potential client
+      </button>
+    </div>
   {% endif %}
+  </section>
+
+<section class="cs-list-section" id="recent-clients-panel" aria-labelledby="recent-pppoe-title">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="recent-pppoe-title">Recent PPPoE clients</h3>
+        <p>PPPoE clients you registered.</p>
+      </div>
+      <div class="cs-list-count">
+        <strong>{% if recent_clients %}{{ recent_clients|length }}{% else %}0{% endif %}</strong>
+        <span>{% if recent_clients|length == 1 %}client{% else %}clients{% endif %}</span>
+      </div>
+    </header>
+
+    {% if recent_clients %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Name</th>
+              <th>ISP</th>
+              <th>Account</th>
+              <th>Phone</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for customer in recent_clients %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span>
+                </td>
+                <td data-label="Name">
+                  <div class="cs-list-primary">
+                    <strong>{{ customer.full_name }}</strong>
+                    {% if customer.building_name or customer.address %}
+                      <small>
+                        {% if customer.building_name %}{{ customer.building_name }}{% endif %}
+                        {% if customer.building_name and customer.address %} · {% endif %}
+                        {% if customer.address %}{{ customer.address }}{% endif %}
+                        {% if customer.house_number %} · {{ customer.house_number }}{% endif %}
+                      </small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="ISP">{% if customer.organization %}{{ customer.organization.name }}{% else %}— Open —{% endif %}</td>
+                <td data-label="Account"><span class="org-code">{{ customer.account_number }}</span></td>
+                <td data-label="Phone">
+                  {% if customer.phone %}<a href="tel:{{ customer.phone }}">{{ customer.phone }}</a>{% else %}—{% endif %}
+                </td>
+                <td data-label="Status">
+                  <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No PPPoE clients</strong>
+        <p>No PPPoE clients registered yet.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="cs-list-section" id="recent-isps-panel" aria-labelledby="recent-isp-title">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="recent-isp-title">Recent business (ISP) accounts</h3>
+        <p>Business ISP accounts you registered.</p>
+      </div>
+      <div class="cs-list-count">
+        <strong>{% if recent_isps %}{{ recent_isps|length }}{% else %}0{% endif %}</strong>
+        <span>{% if recent_isps|length == 1 %}account{% else %}accounts{% endif %}</span>
+      </div>
+    </header>
+
+    {% if recent_isps %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table cs-list-table--compact">
+          <thead>
+            <tr>
+              <th>Company</th>
+              <th>Owner</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for org in recent_isps %}
+              <tr>
+                <td class="is-primary-cell" data-label="Company">
+                  <div class="cs-list-primary">
+                    <strong>{{ org.name }}</strong>
+                  </div>
+                </td>
+                <td data-label="Owner">{{ org.login_code }}</td>
+                <td data-label="Status">
+                  <span class="org-status org-status-{{ org.status }}">{{ org.get_status_display }}</span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No business accounts</strong>
+        <p>No business (ISP) accounts registered yet.</p>
+      </div>
+    {% endif %}
+  </section>
+
 </section>
 
 <div
   class="role-modal client-action-modal pppoe-modal sales-register-modal"
   id="lead-register-modal"
-  {% if not open_register_modal %}hidden{% endif %}
-  aria-hidden="{% if open_register_modal %}false{% else %}true{% endif %}"
+  {% if not open_lead_modal %}hidden{% endif %}
+  aria-hidden="{% if open_lead_modal %}false{% else %}true{% endif %}"
 >
   <div class="role-modal-backdrop" data-close-sales-modal></div>
   <div class="role-modal-panel pppoe-panel sales-register-panel" role="dialog" aria-modal="true" aria-labelledby="lead-register-title">
     <header class="role-modal-head pppoe-head">
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Sales</p>
-        <h2 id="lead-register-title">Register lead</h2>
-        <p class="role-modal-sub pppoe-sub">Capture a new home or business internet lead.</p>
+        <h2 id="lead-register-title">Register potential client</h2>
+        <p class="role-modal-sub pppoe-sub">Capture client details as a lead for your follow-up.</p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-sales-modal aria-label="Close">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
@@ -256,7 +400,7 @@
 
       <footer class="role-modal-actions pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-sales-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary">Register lead</button>
+        <button type="submit" class="btn btn-primary">Register potential client</button>
       </footer>
     </form>
   </div>
@@ -269,7 +413,7 @@
   var packagesByOrg = {{ packages_by_org_json|safe }};
   var allPackages = {{ all_packages_json|safe }};
   var defaultOrgId = "{{ default_org_id }}";
-  var openOnLoad = {% if open_register_modal %}true{% else %}false{% endif %};
+  var openOnLoad = {% if open_lead_modal %}true{% else %}false{% endif %};
 
   var modal = document.getElementById("lead-register-modal");
   var form = document.getElementById("lead-register-form");
@@ -728,4 +872,736 @@
   }
 })();
 </script>
+
+<div
+  class="role-modal client-action-modal pppoe-modal sales-register-modal"
+  id="customer-register-modal"
+  {% if not open_customer_modal %}hidden{% endif %}
+  aria-hidden="{% if open_customer_modal %}false{% else %}true{% endif %}"
+>
+  <div class="role-modal-backdrop" data-close-sales-modal></div>
+  <div class="role-modal-panel pppoe-panel sales-register-panel" role="dialog" aria-modal="true" aria-labelledby="customer-register-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Sales</p>
+        <h2 id="customer-register-title">Register customer</h2>
+        <p class="role-modal-sub pppoe-sub">Choose PPPoE client or business (ISP), then complete the details.</p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-sales-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form
+      method="post"
+      enctype="multipart/form-data"
+      class="pppoe-form lead-register-form"
+      id="customer-register-form"
+      novalidate
+    >
+      {% csrf_token %}
+      {{ client_form.place_id }}
+      {{ client_form.location_lat }}
+      {{ client_form.location_lng }}
+
+      <div class="pppoe-body">
+        {% if client_form.non_field_errors %}
+          <div class="field-error pppoe-banner">{{ client_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        {% if isp_form.non_field_errors %}
+          <div class="field-error pppoe-banner">{{ isp_form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <section class="pppoe-section">
+          <h3 class="pppoe-section-title">What are you registering? *</h3>
+          <div class="sales-reg-type-grid" role="radiogroup" aria-label="Registration type">
+            <label class="sales-reg-type-card{% if selected_type == 'client' %} is-selected{% endif %}">
+              <input
+                type="radio"
+                name="registration_type"
+                id="id_registration_type_client"
+                value="client"
+                {% if selected_type == 'client' %}checked{% endif %}
+              >
+              <span class="sales-reg-type-title">PPPoE client</span>
+              <span class="sales-reg-type-sub">End subscriber — contact, location, and building details.</span>
+            </label>
+            <label class="sales-reg-type-card{% if selected_type == 'isp' %} is-selected{% endif %}">
+              <input
+                type="radio"
+                name="registration_type"
+                id="id_registration_type_isp"
+                value="isp"
+                {% if selected_type == 'isp' %}checked{% endif %}
+              >
+              <span class="sales-reg-type-title">Business (ISP)</span>
+              <span class="sales-reg-type-sub">Create an ISP company account with owner login.</span>
+            </label>
+          </div>
+          <p class="field-hint">Select one option to show the matching registration form.</p>
+        </section>
+
+        <div id="client-register-fields" {% if selected_type != 'client' %}hidden{% endif %}>
+          <section class="pppoe-section">
+            <h3 class="pppoe-section-title">PPPoE client details</h3>
+            <div class="pppoe-grid lead-form-grid">
+              <div class="field field-span-2">
+                <label for="{{ client_form.organization.id_for_label }}">{{ client_form.organization.label }}</label>
+                {{ client_form.organization }}
+                <p class="field-hint">Leave open if the client has no specific ISP provider yet.</p>
+                {% if client_form.organization.errors %}<div class="field-error">{{ client_form.organization.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field field-span-2">
+                <label for="{{ client_form.full_name.id_for_label }}">{{ client_form.full_name.label }} *</label>
+                {{ client_form.full_name }}
+                {% if client_form.full_name.errors %}<div class="field-error">{{ client_form.full_name.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ client_form.phone.id_for_label }}">{{ client_form.phone.label }} *</label>
+                <div class="phone-row">
+                  <div class="flag-select" id="client-flag-select">
+                    {{ client_form.country_code }}
+                    <button type="button" class="flag-select-trigger" id="client-flag-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                      <img
+                        class="flag-img"
+                        id="client-flag-select-img"
+                        src="{{ client_form.selected_country.flag }}"
+                        srcset="{{ client_form.selected_country.flag }} 1x, {{ client_form.selected_country.flag_2x }} 2x"
+                        alt=""
+                        width="28"
+                        height="21"
+                      >
+                      <span class="flag-select-dial" id="client-flag-select-dial">+{{ client_form.selected_country.dial }}</span>
+                      <span class="flag-select-caret" aria-hidden="true"></span>
+                    </button>
+                    <div class="flag-select-menu" id="client-flag-select-menu" role="listbox" hidden>
+                      <input type="search" class="flag-select-search" id="client-flag-select-search" placeholder="Search country…" autocomplete="off">
+                      <div class="flag-select-list" id="client-flag-select-list">
+                        {% for c in client_form.country_options %}
+                          <button
+                            type="button"
+                            class="flag-select-option{% if c.value == client_form.selected_country.value %} is-selected{% endif %}"
+                            role="option"
+                            data-value="{{ c.value }}"
+                            data-dial="{{ c.dial }}"
+                            data-flag="{{ c.flag }}"
+                            data-flag2x="{{ c.flag_2x }}"
+                            data-name="{{ c.name|lower }}"
+                          >
+                            <img class="flag-img" src="{{ c.flag }}" srcset="{{ c.flag }} 1x, {{ c.flag_2x }} 2x" alt="" width="28" height="21" loading="lazy">
+                            <span class="flag-select-name">{{ c.name }}</span>
+                            <span class="flag-select-code">+{{ c.dial }}</span>
+                          </button>
+                        {% endfor %}
+                      </div>
+                    </div>
+                  </div>
+                  {{ client_form.phone }}
+                </div>
+                <p class="field-hint" id="client-phone-digit-hint">Enter exactly {{ client_form.phone_national_length }} digits after +{{ client_form.selected_country.dial }}. Account number is set from this phone.</p>
+                {% if client_form.country_code.errors %}<div class="field-error">{{ client_form.country_code.errors|striptags }}</div>{% endif %}
+                {% if client_form.phone.errors %}<div class="field-error">{{ client_form.phone.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ client_form.email.id_for_label }}">{{ client_form.email.label }}</label>
+                {{ client_form.email }}
+                {% if client_form.email.errors %}<div class="field-error">{{ client_form.email.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field field-span-2 mikrotik-location-field">
+                <label for="{{ client_form.address.id_for_label }}">{{ client_form.address.label }} *</label>
+                <div class="mikrotik-location-combo">
+                  {{ client_form.address }}
+                  <div class="mikrotik-location-suggest" id="client-location-suggest" hidden role="listbox" aria-label="Location suggestions"></div>
+                </div>
+                <p class="mikrotik-location-hint" id="client-location-hint" hidden></p>
+                <p class="mikrotik-coords" id="client-coords" hidden></p>
+                {% if client_form.address.errors %}<div class="field-error">{{ client_form.address.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ client_form.building_name.id_for_label }}">{{ client_form.building_name.label }} *</label>
+                {{ client_form.building_name }}
+                {% if client_form.building_name.errors %}<div class="field-error">{{ client_form.building_name.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ client_form.house_number.id_for_label }}">{{ client_form.house_number.label }}</label>
+                {{ client_form.house_number }}
+                {% if client_form.house_number.errors %}<div class="field-error">{{ client_form.house_number.errors|striptags }}</div>{% endif %}
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="isp-register-fields" {% if selected_type != 'isp' %}hidden{% endif %}>
+          <section class="pppoe-section">
+            <h3 class="pppoe-section-title">Business (ISP) details</h3>
+            <div class="pppoe-grid lead-form-grid">
+              <div class="field field-span-2">
+                <label for="{{ isp_form.company_name.id_for_label }}">{{ isp_form.company_name.label }} *</label>
+                {{ isp_form.company_name }}
+                {% if isp_form.company_name.errors %}<div class="field-error">{{ isp_form.company_name.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ isp_form.phone.id_for_label }}">{{ isp_form.phone.label }}</label>
+                <div class="phone-row">
+                  <div class="flag-select" id="isp-flag-select">
+                    {{ isp_form.country_code }}
+                    <button type="button" class="flag-select-trigger" id="isp-flag-select-trigger" aria-haspopup="listbox" aria-expanded="false">
+                      <img
+                        class="flag-img"
+                        id="isp-flag-select-img"
+                        src="{{ isp_form.selected_country.flag }}"
+                        srcset="{{ isp_form.selected_country.flag }} 1x, {{ isp_form.selected_country.flag_2x }} 2x"
+                        alt=""
+                        width="28"
+                        height="21"
+                      >
+                      <span class="flag-select-dial" id="isp-flag-select-dial">+{{ isp_form.selected_country.dial }}</span>
+                      <span class="flag-select-caret" aria-hidden="true"></span>
+                    </button>
+                    <div class="flag-select-menu" id="isp-flag-select-menu" role="listbox" hidden>
+                      <input type="search" class="flag-select-search" id="isp-flag-select-search" placeholder="Search country…" autocomplete="off">
+                      <div class="flag-select-list" id="isp-flag-select-list">
+                        {% for c in isp_form.country_options %}
+                          <button
+                            type="button"
+                            class="flag-select-option{% if c.value == isp_form.selected_country.value %} is-selected{% endif %}"
+                            role="option"
+                            data-value="{{ c.value }}"
+                            data-dial="{{ c.dial }}"
+                            data-flag="{{ c.flag }}"
+                            data-flag2x="{{ c.flag_2x }}"
+                            data-name="{{ c.name|lower }}"
+                          >
+                            <img class="flag-img" src="{{ c.flag }}" srcset="{{ c.flag }} 1x, {{ c.flag_2x }} 2x" alt="" width="28" height="21" loading="lazy">
+                            <span class="flag-select-name">{{ c.name }}</span>
+                            <span class="flag-select-code">+{{ c.dial }}</span>
+                          </button>
+                        {% endfor %}
+                      </div>
+                    </div>
+                  </div>
+                  {{ isp_form.phone }}
+                </div>
+                <p class="field-hint" id="isp-phone-digit-hint">Optional. If provided, enter the exact local digit count for the selected country.</p>
+                {% if isp_form.country_code.errors %}<div class="field-error">{{ isp_form.country_code.errors|striptags }}</div>{% endif %}
+                {% if isp_form.phone.errors %}<div class="field-error">{{ isp_form.phone.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ isp_form.profile_photo.id_for_label }}">{{ isp_form.profile_photo.label }}</label>
+                {{ isp_form.profile_photo }}
+                {% if isp_form.profile_photo.errors %}<div class="field-error">{{ isp_form.profile_photo.errors|striptags }}</div>{% endif %}
+              </div>
+            </div>
+          </section>
+
+          <section class="pppoe-section">
+            <h3 class="pppoe-section-title">ISP client login</h3>
+            <div class="pppoe-grid lead-form-grid">
+              <div class="field">
+                <label for="{{ isp_form.username.id_for_label }}">{{ isp_form.username.label }} *</label>
+                {{ isp_form.username }}
+                {% if isp_form.username.help_text %}<p class="field-hint">{{ isp_form.username.help_text }}</p>{% endif %}
+                {% if isp_form.username.errors %}<div class="field-error">{{ isp_form.username.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ isp_form.email.id_for_label }}">{{ isp_form.email.label }} *</label>
+                {{ isp_form.email }}
+                {% if isp_form.email.errors %}<div class="field-error">{{ isp_form.email.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ isp_form.password1.id_for_label }}">Password *</label>
+                <div class="password-field">
+                  {{ isp_form.password1 }}
+                  <button type="button" class="password-toggle" data-toggle-password="{{ isp_form.password1.id_for_label }}" aria-label="Show password">
+                    <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                    <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                  </button>
+                </div>
+                {% if isp_form.password1.help_text %}<p class="field-hint">{{ isp_form.password1.help_text }}</p>{% endif %}
+                {% if isp_form.password1.errors %}<div class="field-error">{{ isp_form.password1.errors|striptags }}</div>{% endif %}
+              </div>
+              <div class="field">
+                <label for="{{ isp_form.password2.id_for_label }}">Confirm password *</label>
+                <div class="password-field">
+                  {{ isp_form.password2 }}
+                  <button type="button" class="password-toggle" data-toggle-password="{{ isp_form.password2.id_for_label }}" aria-label="Show password">
+                    <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                    <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+                  </button>
+                </div>
+                {% if isp_form.password2.errors %}<div class="field-error">{{ isp_form.password2.errors|striptags }}</div>{% endif %}
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="role-modal-actions pppoe-foot" id="register-actions" {% if not selected_type %}hidden{% endif %}>
+        <button type="button" class="btn btn-ghost" data-close-sales-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="register-submit-btn">
+          {% if selected_type == 'isp' %}Register business (ISP){% else %}Register PPPoE client{% endif %}
+        </button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var placesUrl = "{% url 'roles:sales_places' %}";
+  var placeDetailsUrl = "{% url 'roles:sales_place_details' %}";
+  var openOnLoad = {% if open_customer_modal %}true{% else %}false{% endif %};
+  var modal = document.getElementById("customer-register-modal");
+  var form = document.getElementById("customer-register-form");
+  var typeRadios = form
+    ? form.querySelectorAll('input[name="registration_type"]')
+    : document.querySelectorAll('input[name="registration_type"]');
+  var typeCards = form
+    ? form.querySelectorAll(".sales-reg-type-card")
+    : document.querySelectorAll(".sales-reg-type-card");
+  var clientFields = document.getElementById("client-register-fields");
+  var ispFields = document.getElementById("isp-register-fields");
+  var actions = document.getElementById("register-actions");
+  var submitBtn = document.getElementById("register-submit-btn");
+  var locationInput = document.getElementById("id_client_location");
+  var latInput = document.getElementById("id_client_location_lat");
+  var lngInput = document.getElementById("id_client_location_lng");
+  var placeIdInput = document.getElementById("id_client_place_id");
+  var suggest = document.getElementById("client-location-suggest");
+  var hintEl = document.getElementById("client-location-hint");
+  var coordsEl = document.getElementById("client-coords");
+  var searchTimer = null;
+  var searchAbort = null;
+  var searchSeq = 0;
+  var latestSuggestions = [];
+  var activeIndex = -1;
+
+  function openModal() {
+    if (!modal) return;
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".role-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+  }
+
+  document.querySelectorAll('[data-open-sales-modal="customer-register-modal"]').forEach(function (btn) {
+    btn.addEventListener("click", openModal);
+  });
+  document.querySelectorAll("[data-close-sales-modal]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal && !modal.hidden) closeModal();
+  });
+  if (openOnLoad) openModal();
+
+  function setDisabled(container, disabled) {
+    if (!container) return;
+    container.querySelectorAll("input, select, textarea, button").forEach(function (el) {
+      if (el.type === "hidden" && el.name === "csrfmiddlewaretoken") return;
+      if (el.name === "registration_type") return;
+      el.disabled = disabled;
+    });
+  }
+
+  function selectedType() {
+    var checked = form
+      ? form.querySelector('input[name="registration_type"]:checked')
+      : document.querySelector('input[name="registration_type"]:checked');
+    return checked ? checked.value : "";
+  }
+
+  function showType(type) {
+    var isClient = type === "client";
+    var isIsp = type === "isp";
+    if (clientFields) clientFields.hidden = !isClient;
+    if (ispFields) ispFields.hidden = !isIsp;
+    if (actions) actions.hidden = !(isClient || isIsp);
+    if (submitBtn) {
+      submitBtn.textContent = isIsp ? "Register business (ISP)" : "Register PPPoE client";
+    }
+    Array.prototype.forEach.call(typeCards, function (card) {
+      var input = card.querySelector('input[name="registration_type"]');
+      card.classList.toggle("is-selected", !!(input && input.value === type && input.checked));
+    });
+    setDisabled(clientFields, !isClient);
+    setDisabled(ispFields, !isIsp);
+    if (latInput) latInput.disabled = !isClient;
+    if (lngInput) lngInput.disabled = !isClient;
+    if (placeIdInput) placeIdInput.disabled = !isClient;
+  }
+
+  Array.prototype.forEach.call(typeRadios, function (radio) {
+    radio.addEventListener("change", function () {
+      showType(selectedType());
+    });
+  });
+  showType(selectedType());
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function setHint(text) {
+    if (!hintEl) return;
+    if (!text) { hintEl.hidden = true; hintEl.textContent = ""; return; }
+    hintEl.hidden = false;
+    hintEl.textContent = text;
+  }
+
+  function hideSuggest() {
+    if (!suggest) return;
+    suggest.hidden = true;
+    suggest.classList.remove("is-open");
+    suggest.innerHTML = "";
+    latestSuggestions = [];
+    activeIndex = -1;
+    setHint("");
+  }
+
+  function setCoords(lat, lng, placeId) {
+    function fmt(value) {
+      if (value == null || value === "") return "";
+      var num = Number(value);
+      if (!isFinite(num)) return "";
+      return num.toFixed(6);
+    }
+    var latValue = fmt(lat);
+    var lngValue = fmt(lng);
+    if (latInput) latInput.value = latValue;
+    if (lngInput) lngInput.value = lngValue;
+    if (placeIdInput && placeId !== undefined) placeIdInput.value = placeId || "";
+    if (coordsEl) {
+      if (latValue && lngValue) {
+        coordsEl.hidden = false;
+        coordsEl.textContent = "Lat " + latValue + ", Lng " + lngValue;
+      } else {
+        coordsEl.hidden = true;
+        coordsEl.textContent = "";
+      }
+    }
+  }
+
+  function highlightOption(index) {
+    activeIndex = index;
+    if (!suggest) return;
+    Array.prototype.forEach.call(suggest.querySelectorAll(".mikrotik-location-option"), function (btn, idx) {
+      btn.classList.toggle("is-active", idx === activeIndex);
+    });
+  }
+
+  function chooseSuggestion(item) {
+    if (!item || !locationInput) return;
+    locationInput.value = String(item.label || "").toUpperCase();
+    if (item.lat != null && item.lng != null && item.lat !== "" && item.lng !== "") {
+      setCoords(item.lat, item.lng, item.place_id || "");
+      hideSuggest();
+      return;
+    }
+    if (item.place_id) {
+      setHint("Resolving coordinates…");
+      fetch(placeDetailsUrl + "?place_id=" + encodeURIComponent(item.place_id) + "&q=" + encodeURIComponent(item.label || ""), {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.ok && data.lat != null && data.lng != null) {
+            if (data.label) locationInput.value = String(data.label).toUpperCase();
+            setCoords(data.lat, data.lng, item.place_id || data.place_id || "");
+            hideSuggest();
+            return;
+          }
+          setCoords("", "", "");
+          setHint("Could not resolve that place. Try another suggestion.");
+        })
+        .catch(function () {
+          setCoords("", "", "");
+          setHint("Could not resolve that place. Try another suggestion.");
+        });
+      return;
+    }
+    setCoords("", "", "");
+    hideSuggest();
+  }
+
+  function renderSuggest(items) {
+    if (!suggest) return;
+    latestSuggestions = items || [];
+    activeIndex = -1;
+    if (!latestSuggestions.length) {
+      suggest.hidden = true;
+      suggest.classList.remove("is-open");
+      suggest.innerHTML = "";
+      setHint("No matching places. Keep typing or try a different name.");
+      return;
+    }
+    setHint("");
+    suggest.innerHTML = latestSuggestions.map(function (item, idx) {
+      return '<button type="button" class="mikrotik-location-option" role="option" data-idx="' + idx + '">' +
+        escapeHtml(item.label) +
+        "</button>";
+    }).join("");
+    suggest.hidden = false;
+    suggest.classList.add("is-open");
+    Array.prototype.forEach.call(suggest.querySelectorAll(".mikrotik-location-option"), function (btn) {
+      btn.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        chooseSuggestion(latestSuggestions[Number(btn.getAttribute("data-idx"))]);
+      });
+    });
+  }
+
+  function searchPlaces(query) {
+    if (searchAbort) { try { searchAbort.abort(); } catch (err) {} }
+    searchAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var seq = ++searchSeq;
+    setHint("Searching places…");
+    fetch(placesUrl + "?q=" + encodeURIComponent(query), {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      signal: searchAbort ? searchAbort.signal : undefined
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("search failed");
+        return res.json();
+      })
+      .then(function (data) {
+        if (seq !== searchSeq) return;
+        renderSuggest((data && data.suggestions) || []);
+      })
+      .catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        if (seq !== searchSeq) return;
+        hideSuggest();
+        setHint("Could not search places. Check your connection and try again.");
+      });
+  }
+
+  if (locationInput) {
+    locationInput.setAttribute("autocomplete", "off");
+    hideSuggest();
+    if (latInput && lngInput && latInput.value && lngInput.value) {
+      setCoords(latInput.value, lngInput.value, placeIdInput ? placeIdInput.value : "");
+    }
+    locationInput.addEventListener("input", function () {
+      setCoords("", "", "");
+      var q = locationInput.value.trim();
+      clearTimeout(searchTimer);
+      if (searchAbort) { try { searchAbort.abort(); } catch (err) {} searchAbort = null; }
+      if (q.length < 2) { hideSuggest(); return; }
+      setHint("Searching places…");
+      searchTimer = setTimeout(function () { searchPlaces(q); }, 180);
+    });
+    locationInput.addEventListener("keydown", function (e) {
+      if (!suggest || suggest.hidden || !latestSuggestions.length) {
+        if (e.key === "Escape") hideSuggest();
+        return;
+      }
+      if (e.key === "ArrowDown") { e.preventDefault(); highlightOption(Math.min(activeIndex + 1, latestSuggestions.length - 1)); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); highlightOption(Math.max(activeIndex - 1, 0)); }
+      else if (e.key === "Enter" && activeIndex >= 0) { e.preventDefault(); chooseSuggestion(latestSuggestions[activeIndex]); }
+      else if (e.key === "Escape") { e.preventDefault(); hideSuggest(); }
+    });
+    locationInput.addEventListener("blur", function () {
+      setTimeout(function () {
+        if (document.activeElement && suggest && suggest.contains(document.activeElement)) return;
+        if (suggest && !suggest.hidden) {
+          suggest.hidden = true;
+          suggest.classList.remove("is-open");
+        }
+      }, 180);
+    });
+    document.addEventListener("click", function (e) {
+      if (!suggest || suggest.hidden) return;
+      if (e.target === locationInput || suggest.contains(e.target)) return;
+      hideSuggest();
+    });
+  }
+
+  if (form) {
+    form.addEventListener("submit", function (e) {
+      if (selectedType() !== "client") return;
+      var locationValue = locationInput ? locationInput.value.trim() : "";
+      var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
+      if (!locationValue || hasCoords) return;
+
+      e.preventDefault();
+      var url = placeDetailsUrl + "?q=" + encodeURIComponent(locationValue);
+      if (placeIdInput && placeIdInput.value) {
+        url += "&place_id=" + encodeURIComponent(placeIdInput.value);
+      }
+      fetch(url, {
+        headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin"
+      })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          if (data && data.ok && data.lat != null && data.lng != null) {
+            if (data.label) locationInput.value = String(data.label).toUpperCase();
+            setCoords(data.lat, data.lng, data.place_id || (placeIdInput && placeIdInput.value) || "");
+            form.submit();
+            return;
+          }
+          alert("Choose a suggested location so latitude and longitude can be saved.");
+          if (locationInput) locationInput.focus();
+        })
+        .catch(function () {
+          alert("Could not resolve location coordinates. Try choosing a suggestion.");
+        });
+    });
+  }
+
+  var phoneLengths = {{ phone_lengths_json|safe }};
+
+  function bindFlagSelect(prefix, phoneInputId, hintId) {
+    var root = document.getElementById(prefix + "-flag-select");
+    var hidden = document.getElementById("id_" + prefix + "_country_code");
+    var trigger = document.getElementById(prefix + "-flag-select-trigger");
+    var menu = document.getElementById(prefix + "-flag-select-menu");
+    var list = document.getElementById(prefix + "-flag-select-list");
+    var search = document.getElementById(prefix + "-flag-select-search");
+    var img = document.getElementById(prefix + "-flag-select-img");
+    var dialEl = document.getElementById(prefix + "-flag-select-dial");
+    var phone = document.getElementById(phoneInputId);
+    var hint = hintId ? document.getElementById(hintId) : null;
+    if (!root || !hidden || !trigger || !menu || !list) return;
+
+    function dialCode() {
+      return (hidden.value || "254|Kenya").split("|")[0];
+    }
+    function expectedDigits() {
+      var dial = dialCode();
+      return phoneLengths[dial] || 9;
+    }
+    function updatePhoneConstraints() {
+      var digits = expectedDigits();
+      var dial = dialCode();
+      if (phone) {
+        phone.placeholder = "7XX XXX XXX".slice(0, Math.max(3, digits));
+        phone.maxLength = digits + 2;
+        phone.setAttribute("data-expected-digits", String(digits));
+      }
+      if (hint) {
+        hint.textContent = "Enter exactly " + digits + " digits after +" + dial + ".";
+      }
+      if (dialEl) dialEl.textContent = "+" + dial;
+    }
+    function setOpen(open) {
+      menu.hidden = !open;
+      trigger.setAttribute("aria-expanded", open ? "true" : "false");
+      root.classList.toggle("is-open", open);
+      if (open) {
+        search.value = "";
+        filterOptions("");
+        search.focus();
+      }
+    }
+    function filterOptions(query) {
+      var q = (query || "").toLowerCase().trim();
+      list.querySelectorAll(".flag-select-option").forEach(function (opt) {
+        var hay = (opt.dataset.name || "") + " " + (opt.dataset.dial || "");
+        opt.hidden = q && hay.indexOf(q) === -1;
+      });
+    }
+    function selectOption(opt) {
+      hidden.value = opt.dataset.value;
+      img.src = opt.dataset.flag;
+      img.srcset = opt.dataset.flag + " 1x, " + opt.dataset.flag2x + " 2x";
+      dialEl.textContent = "+" + opt.dataset.dial;
+      list.querySelectorAll(".flag-select-option").forEach(function (el) {
+        el.classList.toggle("is-selected", el === opt);
+      });
+      updatePhoneConstraints();
+      setOpen(false);
+    }
+    trigger.addEventListener("click", function (e) {
+      e.preventDefault();
+      setOpen(menu.hidden);
+    });
+    search.addEventListener("input", function () {
+      filterOptions(search.value);
+    });
+    list.addEventListener("click", function (e) {
+      var opt = e.target.closest(".flag-select-option");
+      if (!opt || opt.hidden) return;
+      e.preventDefault();
+      selectOption(opt);
+    });
+    document.addEventListener("click", function (e) {
+      if (!root.contains(e.target)) setOpen(false);
+    });
+    if (phone) {
+      phone.addEventListener("input", function () {
+        var digits = phone.value.replace(/\D/g, "");
+        var dial = dialCode();
+        if (digits.indexOf(dial) === 0) digits = digits.slice(dial.length);
+        digits = digits.replace(/^0+/, "");
+        var max = expectedDigits();
+        if (digits.length > max) digits = digits.slice(0, max);
+        phone.value = digits;
+      });
+    }
+    updatePhoneConstraints();
+  }
+
+  bindFlagSelect("client", "id_client_phone", "client-phone-digit-hint");
+  bindFlagSelect("isp", "id_isp_phone", "isp-phone-digit-hint");
+
+  if (form) {
+    form.querySelectorAll("input.text-upper, textarea.text-upper").forEach(function (el) {
+      el.addEventListener("input", function () {
+        var start = el.selectionStart;
+        var end = el.selectionEnd;
+        var next = el.value.toUpperCase();
+        if (el.value !== next) {
+          el.value = next;
+          if (typeof start === "number") el.setSelectionRange(start, end);
+        }
+      });
+    });
+    form.querySelectorAll("input.text-lower").forEach(function (el) {
+      el.addEventListener("input", function () {
+        var start = el.selectionStart;
+        var end = el.selectionEnd;
+        var next = el.value.toLowerCase();
+        if (el.value !== next) {
+          el.value = next;
+          if (typeof start === "number") el.setSelectionRange(start, end);
+        }
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      btn.classList.toggle("is-visible", show);
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+})();
+</script>
+
 {% endblock %}

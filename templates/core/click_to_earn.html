@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a4f56">
+  <title>{{ page_title }}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,500;0,9..40,700;0,9..40,800;1,9..40,500&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #0c1f24;
+      --muted: #5a6f76;
+      --sea: #0e7c86;
+      --sea-deep: #0a5c64;
+      --sand: #f3f7f5;
+      --glow: rgba(14, 124, 134, 0.18);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      font-family: "DM Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 90% 55% at 50% -8%, var(--glow), transparent 58%),
+        linear-gradient(180deg, #e8f3f2 0%, var(--sand) 42%, #eef2f0 100%);
+    }
+    .shell {
+      width: min(26.5rem, 100%);
+      margin: 0 auto;
+      padding: 0 0 2.75rem;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      padding: 0.85rem 1rem 0.35rem;
+    }
+    .back {
+      color: var(--sea-deep);
+      font-weight: 700;
+      font-size: 0.88rem;
+      text-decoration: none;
+    }
+    .back:hover { text-decoration: underline; }
+
+    .hero {
+      position: relative;
+      margin: 0.35rem 1rem 1rem;
+      padding: 1.35rem 1.15rem 1.25rem;
+      border-radius: 1.35rem;
+      overflow: hidden;
+      color: #f4fffd;
+      background: linear-gradient(145deg, #0a5c64 0%, #0e7c86 48%, #0f766e 100%);
+      animation: rise 0.55s ease-out both;
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: auto -20% -40% 20%;
+      height: 9rem;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.12);
+      animation: drift 8s ease-in-out infinite alternate;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      width: 7rem;
+      height: 7rem;
+      top: -2rem;
+      right: -1.5rem;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .kicker {
+      position: relative;
+      margin: 0 0 0.4rem;
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      opacity: 0.88;
+    }
+    .brand {
+      position: relative;
+      margin: 0;
+      font-family: "Fraunces", Georgia, serif;
+      font-size: clamp(1.7rem, 7vw, 2.15rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+    }
+    .lead {
+      position: relative;
+      margin: 0.55rem 0 0;
+      font-size: 0.95rem;
+      line-height: 1.45;
+      opacity: 0.92;
+      max-width: 22rem;
+    }
+
+    .refer-card {
+      margin: 0 1rem 0.95rem;
+      padding: 1.1rem 1.1rem 1.15rem;
+      border-radius: 1.15rem;
+      border: 1px solid rgba(14, 124, 134, 0.28);
+      background: linear-gradient(160deg, #fff 0%, #f0faf9 100%);
+      animation: rise 0.65s ease-out 0.08s both;
+    }
+    .refer-card h2 {
+      margin: 0 0 0.45rem;
+      font-family: "Fraunces", Georgia, serif;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+    .refer-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+      line-height: 1.5;
+    }
+    .phone-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      margin-top: 0.75rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: 999px;
+      background: rgba(14, 124, 134, 0.1);
+      color: var(--sea-deep);
+      font-weight: 800;
+      font-size: 0.88rem;
+    }
+    .refer-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.9rem;
+    }
+    .refer-actions a {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.6rem;
+      padding: 0.5rem 1rem;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 0.9rem;
+      text-decoration: none;
+    }
+    .btn-call {
+      color: #fff;
+      background: linear-gradient(135deg, var(--sea), var(--sea-deep));
+    }
+    .btn-wa {
+      color: var(--sea-deep);
+      border: 1px solid rgba(14, 124, 134, 0.35);
+      background: rgba(14, 124, 134, 0.08);
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes drift {
+      from { transform: translateX(0); }
+      to { transform: translateX(-12%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <a class="back" href="{{ pay_url }}">← Back to pay</a>
+    </div>
+
+    <header class="hero">
+      <p class="kicker">Refer · Earn</p>
+      <h1 class="brand">{{ org_name }}</h1>
+      <p class="lead">
+        Earn commission when you refer new Wi‑Fi clients to {{ org_name }}.
+      </p>
+    </header>
+
+    <section class="refer-card" aria-labelledby="refer-title">
+      <h2 id="refer-title">Refer a Wi‑Fi client · get commission</h2>
+      <p>
+        Bring a friend or neighbour onto {{ org_name }} Wi‑Fi.
+        When they become a paying client, you earn commission.
+        {% if isp_phone %}
+          Call or WhatsApp the ISP below to claim your referral.
+        {% else %}
+          Ask the provider how to register your referral.
+        {% endif %}
+      </p>
+      {% if isp_phone %}
+        <div class="phone-chip" aria-label="ISP phone">ISP · {{ isp_phone }}</div>
+        <div class="refer-actions">
+          <a class="btn-call" href="tel:{{ isp_phone }}">Call {{ isp_phone }}</a>
+          {% if isp_whatsapp %}
+            <a class="btn-wa" href="https://wa.me/{{ isp_whatsapp }}" target="_blank" rel="noopener">WhatsApp</a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</body>
+</html>

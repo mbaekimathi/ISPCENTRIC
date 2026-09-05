@@ -10,7 +10,7 @@ from typing import Any
 from django.core.cache import cache
 from django.utils import timezone
 
-from billing.models import Customer, CustomerUsageSample
+from billing.models import Customer, CustomerUsageSample, Payment
 
 _UPTIME_PART = re.compile(r"(\d+)\s*([wdhms])", re.I)
 _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
@@ -18,8 +18,13 @@ _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offl
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
+_CLIENT_TREND_CACHE_VERSION = "v3"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
 _CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
+# Chart y-values for access presence: surfing / not surfing / disconnected
+_SURF_STATE_SURFING = 2
+_SURF_STATE_NOT_SURFING = 1
+_SURF_STATE_DISCONNECTED = 0
 _NETWORK_TREND_TTL = 20
 _NETWORK_TREND_COLORS = [
     "#2ecc71",
@@ -167,6 +172,8 @@ def record_customer_usage_sample(
 
 def _invalidate_client_usage_trend_cache(customer_id: int) -> None:
     for hours in _USAGE_RANGE_CACHE_HOURS:
+        cache.delete(f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer_id}:{hours}")
+        # Legacy key from before access-timeline payload.
         cache.delete(f"client_usage_trend:{customer_id}:{hours}")
 
 
@@ -465,6 +472,695 @@ def _human_duration(seconds: float | int) -> str:
     return f"{hours}h"
 
 
+def _access_stamp_label(stamp, hours: int) -> str:
+    local = timezone.localtime(stamp)
+    if hours <= 48:
+        return local.strftime("%b %d · %H:%M")
+    if hours <= 720:
+        return local.strftime("%b %d · %H:%M")
+    return local.strftime("%b %d, %Y · %H:%M")
+
+
+def _aware_local(stamp):
+    if stamp is None:
+        return None
+    if timezone.is_naive(stamp):
+        return timezone.make_aware(stamp, timezone.get_current_timezone())
+    return stamp
+
+
+def _normalize_package_start(start, plan) -> datetime | None:
+    """Align calendar-package starts to local midnight (matches live access rules)."""
+    from billing.services import plan_uses_clock_time
+
+    start = _aware_local(start)
+    if start is None:
+        return None
+    if plan_uses_clock_time(plan):
+        return start
+    start_day = timezone.localtime(start).date()
+    return timezone.make_aware(
+        datetime.combine(start_day, datetime.min.time()),
+        timezone.get_current_timezone(),
+    )
+
+
+def _access_deadline_for_end(package_end, plan) -> datetime | None:
+    """Exclusive cut-off for a stored package_end + plan (calendar vs clock)."""
+    from billing.services import plan_uses_clock_time
+
+    end = _aware_local(package_end)
+    if end is None:
+        return None
+    if plan_uses_clock_time(plan):
+        return end
+    end_day = timezone.localtime(end).date()
+    return timezone.make_aware(
+        datetime.combine(end_day + timedelta(days=1), datetime.min.time()),
+        timezone.get_current_timezone(),
+    )
+
+
+def _payment_plan_for_replay(payment, customer):
+    """Prefer the STK plan that was paid for; fall back to the client's plan."""
+    stks = getattr(payment, "stk_push_requests", None)
+    if stks is not None:
+        for stk in stks.all():
+            plan = getattr(stk, "plan", None)
+            if plan is not None:
+                return plan
+    return getattr(customer, "plan", None)
+
+
+def _replay_one_subscription_payment(
+    *,
+    paid_at,
+    plan,
+    current_start,
+    current_end,
+) -> dict[str, Any] | None:
+    """
+    One ``apply_subscription_renewal`` step without saving.
+
+    Stacks onto an active window; otherwise starts a fresh period from payment time.
+    """
+    from billing.services import compute_package_end
+
+    paid_at = _aware_local(paid_at)
+    if paid_at is None or plan is None:
+        return None
+    active_until = _access_deadline_for_end(current_end, plan)
+    if active_until is not None and active_until > paid_at:
+        calculation_start = current_end or active_until
+        access_start = (
+            current_start
+            if current_start is not None and current_start <= paid_at
+            else paid_at
+        )
+        fresh = False
+    else:
+        calculation_start = paid_at
+        access_start = paid_at
+        fresh = True
+    package_end = compute_package_end(calculation_start, plan)
+    if package_end is None:
+        return None
+    deadline = _access_deadline_for_end(package_end, plan)
+    return {
+        "start": _normalize_package_start(access_start, plan),
+        "package_end": package_end,
+        "deadline": deadline,
+        "payment_at": paid_at,
+        "fresh_start": fresh,
+        "plan": plan,
+    }
+
+
+def _merge_access_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge overlapping / contiguous prepaid intervals."""
+    cleaned: list[dict[str, Any]] = []
+    for win in windows:
+        start = win.get("start")
+        deadline = win.get("deadline")
+        if start is None or deadline is None or deadline <= start:
+            continue
+        cleaned.append(
+            {
+                "start": start,
+                "deadline": deadline,
+                "package_end": win.get("package_end"),
+                "fresh_start": bool(win.get("fresh_start")),
+                "payment_at": win.get("payment_at"),
+            }
+        )
+    if not cleaned:
+        return []
+    cleaned.sort(key=lambda w: (w["start"], w["deadline"]))
+    merged = [dict(cleaned[0])]
+    for win in cleaned[1:]:
+        last = merged[-1]
+        if win["start"] <= last["deadline"]:
+            if win["deadline"] > last["deadline"]:
+                last["deadline"] = win["deadline"]
+                last["package_end"] = win.get("package_end") or last.get("package_end")
+            # Keep earliest start / first fresh flag for the continuous block.
+            continue
+        merged.append(dict(win))
+    return merged
+
+
+def _subscription_windows_from_payments(
+    customer: Customer, *, lookback_since, until
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Reconstruct prepaid windows from every successful payment.
+
+    Returns ``(merged_windows, payment_steps)`` where ``payment_steps`` retains
+    each pay-to-start / extension for the timeline.
+    """
+    org_id = getattr(customer, "organization_id", None)
+    if not org_id:
+        return [], []
+    rows = list(
+        Payment.objects.filter(
+            organization_id=org_id,
+            invoice__customer=customer,
+            received_at__gte=lookback_since,
+            received_at__lte=until,
+        )
+        .select_related("invoice")
+        .prefetch_related("stk_push_requests__plan")
+        .order_by("received_at", "pk")[:80]
+    )
+    current_start = None
+    current_end = None
+    steps: list[dict[str, Any]] = []
+    for pay in rows:
+        plan = _payment_plan_for_replay(pay, customer)
+        step = _replay_one_subscription_payment(
+            paid_at=pay.received_at,
+            plan=plan,
+            current_start=current_start,
+            current_end=current_end,
+        )
+        if step is None:
+            continue
+        current_start = step["start"]
+        current_end = step["package_end"]
+        steps.append(step)
+    return _merge_access_windows(steps), steps
+
+
+def _package_access_bounds(customer) -> dict[str, Any]:
+    """
+    Package windows used to classify surfing vs blocked over time.
+
+    Includes the live package on the customer plus historical windows rebuilt
+    from each successful payment (expire → pay again, or stack while active).
+    """
+    from billing.services import subscription_access_deadline
+
+    plan = getattr(customer, "plan", None)
+    raw_start = getattr(customer, "package_start", None)
+    raw_end = getattr(customer, "package_end", None)
+    paused_at = _aware_local(getattr(customer, "package_paused_at", None))
+    deadline = subscription_access_deadline(customer)
+    start = _normalize_package_start(raw_start, plan)
+    raw_end = _aware_local(raw_end)
+    deadline = _aware_local(deadline)
+
+    # Look far enough back that a 30-day usage chart still sees prior periods.
+    until = timezone.now()
+    lookback_since = until - timedelta(days=400)
+    windows, payment_steps = _subscription_windows_from_payments(
+        customer, lookback_since=lookback_since, until=until
+    )
+    if start is not None and deadline is not None:
+        windows = _merge_access_windows(
+            [
+                *windows,
+                {
+                    "start": start,
+                    "deadline": deadline,
+                    "package_end": raw_end,
+                    "fresh_start": True,
+                },
+            ]
+        )
+    elif start is not None or deadline is not None:
+        # Incomplete live window — still expose for timeline labels.
+        windows = _merge_access_windows(
+            [
+                *windows,
+                {
+                    "start": start or deadline,
+                    "deadline": deadline or start,
+                    "package_end": raw_end,
+                    "fresh_start": True,
+                },
+            ]
+        )
+
+    return {
+        "package_start": start,
+        "package_end": raw_end,
+        "access_deadline": deadline,
+        "package_paused_at": paused_at,
+        "has_package_end": raw_end is not None or bool(windows),
+        "windows": windows,
+        "payment_steps": payment_steps,
+    }
+
+
+def _surf_allowed_at(
+    stamp,
+    *,
+    bounds: dict[str, Any],
+    service_type: str,
+) -> bool:
+    """Whether any prepaid window would allow surfing at ``stamp``."""
+    paused_at = bounds.get("package_paused_at")
+    if paused_at is not None and stamp >= paused_at:
+        return False
+    windows = bounds.get("windows") or []
+    if windows:
+        for win in windows:
+            start = win.get("start")
+            deadline = win.get("deadline")
+            if start is not None and stamp < start:
+                continue
+            if deadline is not None and stamp >= deadline:
+                continue
+            return True
+        return False
+    if service_type in {
+        Customer.ServiceType.HOTSPOT,
+        Customer.ServiceType.PPPOE,
+    } and not bounds.get("has_package_end"):
+        return False
+    start = bounds.get("package_start")
+    if start is not None and stamp < start:
+        return False
+    deadline = bounds.get("access_deadline")
+    if deadline is not None and stamp >= deadline:
+        return False
+    if start is None and deadline is None:
+        return True
+    return True
+
+
+def _classify_access_state(*, session_active: bool, surf_allowed: bool) -> str:
+    """
+    Support-facing presence:
+    - surfing: dialed in and package allows internet
+    - not_surfing: package blocks internet (expired / paused / unpaid)
+    - disconnected: package allows surfing but no live session
+    """
+    if session_active and surf_allowed:
+        return "surfing"
+    if not surf_allowed:
+        return "not_surfing"
+    return "disconnected"
+
+
+def _access_state_labels(state: str) -> tuple[str, str]:
+    mapping = {
+        "surfing": ("Surfing", "Connected with internet"),
+        "not_surfing": ("Not surfing", "Blocked — cannot browse"),
+        "disconnected": ("Disconnected", "Package active, no session"),
+        "waiting": ("Waiting", "No readings yet"),
+    }
+    return mapping.get(state, ("—", "Current connection"))
+
+
+def _surf_state_value(state: str | None) -> int | None:
+    if state == "surfing":
+        return _SURF_STATE_SURFING
+    if state == "not_surfing":
+        return _SURF_STATE_NOT_SURFING
+    if state == "disconnected":
+        return _SURF_STATE_DISCONNECTED
+    return None
+
+
+def _client_payment_events(customer: Customer, *, since, until, hours: int) -> list[dict[str, Any]]:
+    """Successful payments that land in (or just before) the usage window."""
+    org_id = getattr(customer, "organization_id", None)
+    if not org_id:
+        return []
+    lookback = since - timedelta(days=2)
+    rows = list(
+        Payment.objects.filter(
+            organization_id=org_id,
+            invoice__customer=customer,
+            received_at__gte=lookback,
+            received_at__lte=until,
+        )
+        .select_related("invoice")
+        .order_by("received_at")[:20]
+    )
+    events: list[dict[str, Any]] = []
+    for pay in rows:
+        stamp = pay.received_at
+        if stamp is None:
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        in_window = stamp >= since
+        amount = pay.amount
+        amount_label = f"KES {amount}" if amount is not None else "Payment"
+        method = (pay.get_method_display() if hasattr(pay, "get_method_display") else "") or "Payment"
+        ref = (pay.reference or "").strip()
+        events.append(
+            {
+                "kind": "payment",
+                "label": "Payment received",
+                "detail": f"{amount_label} · {method}"
+                + (f" · {ref}" if ref else ""),
+                "at": timezone.localtime(stamp).isoformat(),
+                "at_label": _access_stamp_label(stamp, hours),
+                "in_window": in_window,
+                "tone": "payment",
+            }
+        )
+    return events
+
+
+def build_client_access_timeline(
+    customer: Customer,
+    *,
+    hours: int,
+    samples: list[dict[str, Any]] | None = None,
+    now=None,
+) -> dict[str, Any]:
+    """
+    Payment / subscription / block timeline for support on the usage page.
+
+    Reconstructs surfing vs blocked across *every* prepaid window created by
+    successful payments (including expire → pay again). Flags when the client
+    dropped while a package was still active.
+    """
+    from billing.services import (
+        customer_package_is_paused,
+        customer_receives_internet,
+        customer_subscription_expired,
+    )
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = now or timezone.now()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    since = now - timedelta(hours=hours)
+    bounds = _package_access_bounds(customer)
+    service_type = (getattr(customer, "service_type", "") or "").strip()
+
+    events = _client_payment_events(customer, since=since, until=now, hours=hours)
+
+    package_start = bounds.get("package_start")
+    package_end = bounds.get("package_end")
+    deadline = bounds.get("access_deadline")
+    paused_at = bounds.get("package_paused_at")
+    windows = bounds.get("windows") or []
+    payment_steps = bounds.get("payment_steps") or []
+
+    # Prefer payment-step starts so each pay-to-start shows on the timeline;
+    # fall back to merged windows when payments are missing.
+    start_stamps: list = []
+    seen_starts: set[str] = set()
+    for step in payment_steps:
+        if not step.get("fresh_start"):
+            # Stacked top-up: package kept surfing; note the extension.
+            stamp = step.get("payment_at")
+            if stamp is None:
+                continue
+            if since <= stamp <= now:
+                events.append(
+                    {
+                        "kind": "subscription_started",
+                        "label": "Subscription extended",
+                        "detail": (
+                            "Another payment stacked onto the active package — "
+                            "surfing continued without a gap."
+                        ),
+                        "at": timezone.localtime(stamp).isoformat(),
+                        "at_label": _access_stamp_label(stamp, hours),
+                        "in_window": True,
+                        "tone": "start",
+                        "extended": True,
+                    }
+                )
+            continue
+        stamp = step.get("start") or step.get("payment_at")
+        if stamp is None:
+            continue
+        # Show starts that land in the chart, or that open a window still overlapping it.
+        step_deadline = step.get("deadline")
+        overlaps = since <= stamp <= now or (
+            stamp < since and step_deadline is not None and step_deadline > since
+        )
+        if not overlaps:
+            continue
+        key = timezone.localtime(stamp).isoformat()
+        if key in seen_starts:
+            continue
+        seen_starts.add(key)
+        start_stamps.append(stamp)
+
+    if not start_stamps:
+        for win in windows:
+            stamp = win.get("start")
+            win_deadline = win.get("deadline")
+            if stamp is None:
+                continue
+            overlaps = since <= stamp <= now or (
+                stamp < since and win_deadline is not None and win_deadline > since
+            )
+            if not overlaps:
+                continue
+            key = timezone.localtime(stamp).isoformat()
+            if key in seen_starts:
+                continue
+            seen_starts.add(key)
+            start_stamps.append(stamp)
+
+    for idx, stamp in enumerate(start_stamps):
+        multi = len(start_stamps) > 1
+        events.append(
+            {
+                "kind": "subscription_started",
+                "label": (
+                    f"Subscription started ({idx + 1} of {len(start_stamps)})"
+                    if multi
+                    else "Subscription started"
+                ),
+                "detail": (
+                    "Package window began after payment — surfing allowed after this point."
+                    if multi
+                    else "Package window began — surfing allowed after this point."
+                ),
+                "at": timezone.localtime(stamp).isoformat(),
+                "at_label": _access_stamp_label(stamp, hours),
+                "in_window": since <= stamp <= now,
+                "tone": "start",
+            }
+        )
+
+    if paused_at is not None:
+        before_end = bool(
+            any(win.get("deadline") and paused_at < win["deadline"] for win in windows)
+            or (deadline and paused_at < deadline)
+        )
+        events.append(
+            {
+                "kind": "blocked",
+                "label": "Blocked (package paused)",
+                "detail": (
+                    "Staff paused the package — surfing stopped while time left was preserved."
+                    if before_end
+                    else "Package paused; surfing blocked."
+                ),
+                "at": timezone.localtime(paused_at).isoformat(),
+                "at_label": _access_stamp_label(paused_at, hours),
+                "in_window": since <= paused_at <= now,
+                "tone": "blocked",
+                "before_subscription_end": before_end,
+            }
+        )
+
+    end_stamps: list = []
+    seen_ends: set[str] = set()
+    for win in windows:
+        stamp = win.get("deadline")
+        start = win.get("start")
+        if stamp is None:
+            continue
+        # Keep ends for windows that overlap the chart, plus the live/upcoming cut-off.
+        overlaps_chart = (start is None or start <= now) and stamp >= since
+        if not overlaps_chart and not (stamp > now):
+            continue
+        key = timezone.localtime(stamp).isoformat()
+        if key in seen_ends:
+            continue
+        seen_ends.add(key)
+        end_stamps.append(stamp)
+
+    if not end_stamps and deadline is not None:
+        end_stamps.append(deadline)
+    elif not end_stamps and package_end is not None:
+        end_stamps.append(package_end)
+
+    for idx, stamp in enumerate(end_stamps):
+        ended = now >= stamp
+        multi = len(end_stamps) > 1
+        events.append(
+            {
+                "kind": "subscription_ended",
+                "label": (
+                    (
+                        f"Subscription ended ({idx + 1} of {len(end_stamps)})"
+                        if ended
+                        else f"Subscription ends ({idx + 1} of {len(end_stamps)})"
+                    )
+                    if multi
+                    else ("Subscription ended" if ended else "Subscription ends")
+                ),
+                "detail": (
+                    "Access cut-off — surfing should stop at this time."
+                    if ended
+                    else "Scheduled access cut-off for this package period."
+                ),
+                "at": timezone.localtime(stamp).isoformat(),
+                "at_label": _access_stamp_label(stamp, hours),
+                "in_window": since <= stamp <= now or (not ended and stamp > now),
+                "tone": "end",
+                "future": not ended,
+            }
+        )
+
+    early_offline = None
+    blocked_while_connected = None
+    if samples:
+        prev_active: bool | None = None
+        for row in samples:
+            stamp = row.get("sampled_at")
+            if stamp is None:
+                continue
+            if timezone.is_naive(stamp):
+                stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+            active = bool(row.get("session_active"))
+            allowed = _surf_allowed_at(
+                stamp, bounds=bounds, service_type=service_type
+            )
+            if active and not allowed and blocked_while_connected is None:
+                blocked_while_connected = stamp
+            if prev_active is True and not active and allowed and early_offline is None:
+                # Dropped while a paid window still allowed surfing.
+                early_offline = stamp
+            prev_active = active
+
+    if early_offline is not None:
+        events.append(
+            {
+                "kind": "early_offline",
+                "label": "Went offline while package active",
+                "detail": (
+                    "Session dropped before the subscription ended — useful when "
+                    "the client says they were blocked early."
+                ),
+                "at": timezone.localtime(early_offline).isoformat(),
+                "at_label": _access_stamp_label(early_offline, hours),
+                "in_window": True,
+                "tone": "warn",
+                "before_subscription_end": True,
+            }
+        )
+    if blocked_while_connected is not None:
+        events.append(
+            {
+                "kind": "blocked_connected",
+                "label": "Connected but unable to surf",
+                "detail": (
+                    "Session was up while billing blocked internet "
+                    "(expired, paused, or unpaid)."
+                ),
+                "at": timezone.localtime(blocked_while_connected).isoformat(),
+                "at_label": _access_stamp_label(blocked_while_connected, hours),
+                "in_window": True,
+                "tone": "blocked",
+                "before_subscription_end": bool(
+                    any(
+                        win.get("deadline")
+                        and blocked_while_connected < win["deadline"]
+                        for win in windows
+                    )
+                    and not customer_subscription_expired(customer)
+                ),
+            }
+        )
+
+    def _sort_key(ev: dict[str, Any]):
+        try:
+            return datetime.fromisoformat(ev["at"])
+        except Exception:
+            return now
+
+    events.sort(key=_sort_key)
+
+    billing_allows = bool(customer_receives_internet(customer))
+    paused = bool(customer_package_is_paused(customer))
+    expired = bool(customer_subscription_expired(customer))
+    latest_active = bool(samples[-1].get("session_active")) if samples else False
+    current_state = (
+        _classify_access_state(session_active=latest_active, surf_allowed=billing_allows)
+        if samples
+        else "waiting"
+    )
+    status, status_hint = _access_state_labels(current_state)
+
+    alert = ""
+    if early_offline is not None:
+        alert = (
+            f"Client went offline at {_access_stamp_label(early_offline, hours)} "
+            "while the package was still active."
+        )
+    elif paused and paused_at and (
+        any(win.get("deadline") and paused_at < win["deadline"] for win in windows)
+        or (deadline and paused_at < deadline)
+    ):
+        alert = (
+            f"Surfing was blocked by pause at {_access_stamp_label(paused_at, hours)}, "
+            "before the subscription end."
+        )
+    elif blocked_while_connected is not None and not expired and not paused:
+        alert = (
+            "Client stayed connected while surfing was blocked — check router "
+            "profile sync."
+        )
+
+    overlapping_periods = [
+        w
+        for w in windows
+        if w.get("start") is not None
+        and w.get("deadline") is not None
+        and w["start"] <= now
+        and w["deadline"] > since
+    ]
+    period_count = max(len(start_stamps), len(overlapping_periods), 1 if package_start else 0)
+    return {
+        "current_state": current_state,
+        "status": status,
+        "status_hint": status_hint,
+        "billing_allows": billing_allows,
+        "paused": paused,
+        "expired": expired,
+        "period_count": period_count,
+        "package_start": (
+            timezone.localtime(package_start).isoformat() if package_start else ""
+        ),
+        "package_end": (
+            timezone.localtime(package_end).isoformat() if package_end else ""
+        ),
+        "access_deadline": (
+            timezone.localtime(deadline).isoformat() if deadline else ""
+        ),
+        "package_paused_at": (
+            timezone.localtime(paused_at).isoformat() if paused_at else ""
+        ),
+        "package_start_label": (
+            _access_stamp_label(package_start, hours) if package_start else ""
+        ),
+        "package_end_label": (
+            _access_stamp_label(package_end, hours) if package_end else ""
+        ),
+        "access_deadline_label": (
+            _access_stamp_label(deadline, hours) if deadline else ""
+        ),
+        "alert": alert,
+        "events": events,
+        "bounds": bounds,
+    }
+
+
 def _client_usage_story(
     *,
     hours: int,
@@ -474,6 +1170,8 @@ def _client_usage_story(
     data_used_bytes: int,
     peak_download_bps: int,
     stopped_count: int,
+    access_state: str = "",
+    access_alert: str = "",
 ) -> dict[str, Any]:
     """Plain-language status for the usage analysis page."""
     if sample_count <= 0:
@@ -482,17 +1180,23 @@ def _client_usage_story(
             "status": "Waiting",
             "status_hint": "No readings yet",
             "insight": "Usage history is still empty. The app collects it automatically in the background.",
+            "access_state": "waiting",
         }
+    status, status_hint = _access_state_labels(access_state or (
+        "surfing" if latest_active else "disconnected"
+    ))
     if sample_count < 3 and data_used_bytes <= 0 and peak_download_bps <= 0:
         return {
             "tracking": "warming",
-            "status": "Online now" if latest_active else "Offline now",
+            "status": status,
             "status_hint": "Building history…",
             "insight": "First readings are in. A clearer trend will appear after a few more minutes.",
+            "access_state": access_state or ("surfing" if latest_active else "disconnected"),
         }
 
-    status = "Online now" if latest_active else "Offline now"
     bits: list[str] = [status]
+    if access_alert:
+        bits.append(access_alert.rstrip("."))
     if data_used_bytes > 0:
         if data_used_bytes >= 1024 * 1024 * 1024:
             bits.append(f"used {data_used_bytes / (1024 * 1024 * 1024):.2f} GB")
@@ -505,7 +1209,7 @@ def _client_usage_story(
     elif peak_download_bps >= 1000:
         bits.append(f"peak {peak_download_bps / 1000:.0f} Kbps down")
     if online_ratio >= 80:
-        bits.append("mostly online")
+        bits.append("mostly surfing")
     elif online_ratio <= 20 and sample_count >= 4:
         bits.append("mostly offline")
     if stopped_count >= 2:
@@ -514,8 +1218,9 @@ def _client_usage_story(
     return {
         "tracking": "ready",
         "status": status,
-        "status_hint": f"Last {usage_range_label(hours)}",
+        "status_hint": status_hint or f"Last {usage_range_label(hours)}",
         "insight": " · ".join(bits),
+        "access_state": access_state or ("surfing" if latest_active else "disconnected"),
     }
 
 
@@ -551,7 +1256,7 @@ def usage_trend_payload(
     cache so refreshes stay cheap.
     """
     hours = clamp_usage_hours(hours, default=24)
-    cache_key = f"client_usage_trend:{customer.pk}:{hours}"
+    cache_key = f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer.pk}:{hours}"
     if use_cache:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -589,7 +1294,16 @@ def usage_trend_payload(
         step = len(samples) / float(_CLIENT_SAMPLE_CAP)
         samples = [samples[min(len(samples) - 1, int(i * step))] for i in range(_CLIENT_SAMPLE_CAP)]
 
+    access = build_client_access_timeline(
+        customer, hours=hours, samples=samples, now=now
+    )
+    access_bounds = access.get("bounds") or _package_access_bounds(customer)
+    service_type = (getattr(customer, "service_type", "") or "").strip()
+    # Drop non-JSON helper before caching / responding.
+    access_public = {k: v for k, v in access.items() if k != "bounds"}
+
     online_by_bucket: dict[int, bool] = {}
+    surf_state_by_bucket: dict[int, int] = {}
     seen_by_bucket: dict[int, bool] = {}
     down_by_bucket: dict[int, float] = {}
     up_by_bucket: dict[int, float] = {}
@@ -602,6 +1316,7 @@ def usage_trend_payload(
     previous_active: bool | None = None
     total_bytes_delta = 0
     online_samples = 0
+    surfing_samples = 0
     peak_down = 0
     peak_up = 0
     prime_sample: dict[str, Any] | None = None
@@ -621,12 +1336,22 @@ def usage_trend_payload(
             bucket = window_end
 
         active = bool(row["session_active"])
+        allowed = _surf_allowed_at(
+            stamp, bounds=access_bounds, service_type=service_type
+        )
+        state = _classify_access_state(session_active=active, surf_allowed=allowed)
+        state_val = _surf_state_value(state)
         bi = int(row["bytes_in"] or 0)
         bo = int(row["bytes_out"] or 0)
         total = bi + bo
         down = int(row["download_bps"] or 0)
         up = int(row["upload_bps"] or 0)
         seen_by_bucket[bucket] = True
+        if state_val is not None:
+            # Prefer the "most online" state in a bucket: surfing > not surfing > disconnected
+            prev_state = surf_state_by_bucket.get(bucket)
+            if prev_state is None or state_val > prev_state:
+                surf_state_by_bucket[bucket] = state_val
 
         if previous_active is True and not active:
             stopped_count += 1
@@ -657,6 +1382,8 @@ def usage_trend_payload(
             previous_active = True
             online_samples += 1
             online_by_bucket[bucket] = True
+            if allowed:
+                surfing_samples += 1
             peak_down = max(peak_down, down)
             peak_up = max(peak_up, up)
             down_by_bucket[bucket] = max(down_by_bucket.get(bucket, 0.0), float(down))
@@ -684,11 +1411,21 @@ def usage_trend_payload(
     upload_mbps: list[float | None] = []
     data_used_mb: list[float | None] = []
     online_flags: list[int | None] = []
+    surf_states: list[int | None] = []
     prime_index: int | None = None
     lowest_index: int | None = None
     stop_indexes: list[int] = []
+    event_indexes: dict[str, list[int]] = {
+        "payment": [],
+        "subscription_started": [],
+        "blocked": [],
+        "subscription_ended": [],
+        "early_offline": [],
+        "blocked_connected": [],
+    }
     fmt = _chart_label_format(hours)
     online_bucket_count = 0
+    surfing_bucket_count = 0
     seen_bucket_count = 0
 
     for idx, key in enumerate(chart_keys):
@@ -700,6 +1437,7 @@ def usage_trend_payload(
         has_signal = key in seen_by_bucket or key in data_by_bucket
         if not has_signal:
             online_flags.append(None)
+            surf_states.append(None)
             download_kbps.append(None)
             upload_kbps.append(None)
             download_mbps.append(None)
@@ -712,6 +1450,18 @@ def usage_trend_payload(
         if is_online:
             online_bucket_count += 1
         online_flags.append(1 if is_online else 0)
+        state_val = surf_state_by_bucket.get(key)
+        if state_val is None:
+            bucket_stamp = datetime.fromtimestamp(key, tz=dt_timezone.utc)
+            allowed = _surf_allowed_at(
+                bucket_stamp, bounds=access_bounds, service_type=service_type
+            )
+            state_val = _surf_state_value(
+                _classify_access_state(session_active=is_online, surf_allowed=allowed)
+            )
+        surf_states.append(state_val)
+        if state_val == _SURF_STATE_SURFING:
+            surfing_bucket_count += 1
         down_k = round(down_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
         up_k = round(up_by_bucket.get(key, 0.0) / 1000.0, 2) if is_online else 0
         download_kbps.append(down_k)
@@ -725,6 +1475,33 @@ def usage_trend_payload(
             lowest_index = idx
         if key in stop_buckets and idx > 0 and online_flags[idx - 1] == 1:
             stop_indexes.append(idx)
+
+    # Map access events onto the nearest chart bucket for marker overlays.
+    for ev in access_public.get("events") or []:
+        kind = ev.get("kind") or ""
+        if kind not in event_indexes:
+            continue
+        try:
+            stamp = datetime.fromisoformat(ev["at"])
+        except Exception:
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        key = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if key < window_start or key > window_end:
+            # Still allow future subscription-end markers just outside the window.
+            if not (kind == "subscription_ended" and key > window_end):
+                continue
+            key = window_end
+        best_idx = None
+        best_dist = None
+        for idx, chart_key in enumerate(chart_keys):
+            dist = abs(chart_key - key)
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx is not None and best_idx not in event_indexes[kind]:
+            event_indexes[kind].append(best_idx)
 
     latest = samples[-1] if samples else None
     current_session_bytes = 0
@@ -740,6 +1517,13 @@ def usage_trend_payload(
             round((online_samples / len(samples)) * 100, 1) if samples else 0
         )
     )
+    surfing_ratio = (
+        round((surfing_bucket_count / seen_bucket_count) * 100, 1)
+        if seen_bucket_count
+        else (
+            round((surfing_samples / len(samples)) * 100, 1) if samples else 0
+        )
+    )
     approx_online_seconds = online_bucket_count * bucket_secs
     latest_active = bool(latest and latest.get("session_active"))
     story = _client_usage_story(
@@ -750,6 +1534,8 @@ def usage_trend_payload(
         data_used_bytes=total_bytes_delta,
         peak_download_bps=peak_down,
         stopped_count=stopped_count,
+        access_state=access_public.get("current_state") or "",
+        access_alert=access_public.get("alert") or "",
     )
 
     payload = {
@@ -765,14 +1551,18 @@ def usage_trend_payload(
             "upload_mbps": upload_mbps,
             "data_used_mb": data_used_mb,
             "online": online_flags,
+            "surf_state": surf_states,
         },
         "markers": {
             "peak_index": prime_index,
             "low_index": lowest_index,
             "stop_indexes": stop_indexes[:6],
+            "event_indexes": event_indexes,
         },
+        "access": access_public,
         "summary": {
             "online_ratio": online_ratio,
+            "surfing_ratio": surfing_ratio,
             "online_time_label": _human_duration(approx_online_seconds),
             "online_time_seconds": approx_online_seconds,
             "peak_download_bps": peak_down,
@@ -780,10 +1570,12 @@ def usage_trend_payload(
             "data_used_bytes": total_bytes_delta,
             "current_session_bytes": current_session_bytes,
             "latest_active": latest_active,
+            "access_state": story.get("access_state") or access_public.get("current_state"),
             "status": story["status"],
             "status_hint": story["status_hint"],
             "tracking": story["tracking"],
             "insight": story["insight"],
+            "access_alert": access_public.get("alert") or "",
             "prime_point": (
                 _usage_point(
                     prime_sample["stamp"],
@@ -1104,19 +1896,24 @@ def _build_org_usage_payload(
             "lowest_download_bps": 0,
         }
 
+    # Highest data first; numeric ties fall through to peak session / rate / online.
+    # Name stays A–Z (do not reverse the string key with reverse=True).
     ranked = sorted(
         (
             per_customer.get(cid) or _empty_stats(cid)
             for cid in customers.keys()
         ),
         key=lambda item: (
-            item["data_used_bytes"],
-            item["peak_session_bytes"],
-            item["peak_download_bps"],
-            item["online_samples"],
-            customers.get(item["customer_id"]).full_name if customers.get(item["customer_id"]) else "",
+            -int(item["data_used_bytes"] or 0),
+            -int(item["peak_session_bytes"] or 0),
+            -int(item["peak_download_bps"] or 0),
+            -int(item["online_samples"] or 0),
+            (
+                customers.get(item["customer_id"]).full_name
+                if customers.get(item["customer_id"])
+                else ""
+            ).casefold(),
         ),
-        reverse=True,
     )
     top_users: list[dict[str, Any]] = []
     user_limit = len(ranked) if top_n <= 0 else min(top_n, len(ranked))

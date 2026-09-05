@@ -12,25 +12,19 @@
   <header class="tech-install-head">
     <div class="tech-install-head-copy">
       <p class="tech-install-kicker">{{ page_kicker }}</p>
-      <h2 class="tech-install-title">
-        {% if ticket_view == "connected" %}My connected tickets{% else %}Tickets{% endif %}
-      </h2>
+      <h2 class="tech-install-title">{{ page_title }}</h2>
       <p class="tech-install-lead">{{ page_subtitle }}</p>
-    </div>
-    <div class="tech-install-head-actions">
-      {% if ticket_view == "connected" %}
-        <a class="btn btn-ghost" href="{% url 'roles:technician_tickets' %}">
-          ← Pending activation
-        </a>
-      {% else %}
-        <a class="btn btn-primary" href="{% url 'roles:technician_tickets_connected' %}">
-          My connected tickets
-        </a>
-      {% endif %}
     </div>
   </header>
 
   <nav class="tech-tickets-tabs" aria-label="Ticket views">
+    <a
+      class="tech-tickets-tab{% if ticket_view == 'pending_connections' %} is-active{% endif %}"
+      href="{% url 'roles:technician_tickets_pending_connections' %}"
+    >
+      Pending connections
+      <span class="tech-tickets-tab-count">{{ pending_connections_count|default:0 }}</span>
+    </a>
     <a
       class="tech-tickets-tab{% if ticket_view == 'pending' %} is-active{% endif %}"
       href="{% url 'roles:technician_tickets' %}"
@@ -48,7 +42,20 @@
   </nav>
 
   <div class="tech-install-stats" aria-label="Ticket summary">
-    {% if ticket_view == "connected" %}
+    {% if ticket_view == "pending_connections" %}
+      <div class="tech-install-stat is-open">
+        <strong>{{ open_count|default:0 }}</strong>
+        <span>Open pool</span>
+      </div>
+      <div class="tech-install-stat is-assigned">
+        <strong>{{ in_progress_count|default:0 }}</strong>
+        <span>In progress</span>
+      </div>
+      <div class="tech-install-stat">
+        <strong>{{ pending_count|default:0 }}</strong>
+        <span>Pending activation</span>
+      </div>
+    {% elif ticket_view == "connected" %}
       <div class="tech-install-stat">
         <strong>{{ connected_count|default:0 }}</strong>
         <span>Connected</span>
@@ -67,6 +74,10 @@
         <span>Pending activation</span>
       </div>
       <div class="tech-install-stat">
+        <strong>{{ pending_connections_count|default:0 }}</strong>
+        <span>Pending connections</span>
+      </div>
+      <div class="tech-install-stat">
         <strong>{{ connected_count|default:0 }}</strong>
         <span>All connected</span>
       </div>
@@ -76,7 +87,7 @@
   {% if tickets %}
     <div class="tech-install-list">
       {% for ticket in tickets %}
-        <article class="tech-install-card{% if ticket.status == 'inactive' %} is-open{% elif ticket.status == 'active' %} is-mine{% else %} is-registered{% endif %}">
+        <article class="tech-install-card{% if ticket.status == 'new' %} is-open{% elif ticket.status == 'in_progress' %} is-mine{% elif ticket.status == 'inactive' %} is-open{% elif ticket.status == 'active' %} is-mine{% else %} is-registered{% endif %}">
           <header class="tech-install-card-head">
             <div class="tech-install-card-id">
               <span class="tech-install-ticket">
@@ -90,7 +101,11 @@
               <span class="org-status org-status-{{ ticket.status }}">
                 {{ ticket.get_status_display }}
               </span>
-              {% if ticket.status == "inactive" %}
+              {% if ticket.status == "new" %}
+                <span class="tech-install-chip is-pool">Open</span>
+              {% elif ticket.status == "in_progress" %}
+                <span class="tech-install-chip is-yours">Yours</span>
+              {% elif ticket.status == "inactive" %}
                 <span class="tech-install-chip is-pool">Pending activation</span>
               {% elif ticket.status == "active" %}
                 <span class="tech-install-chip is-yours">Active</span>
@@ -113,37 +128,67 @@
                 {% if ticket.organization %}
                   <span class="tech-install-meta-value">{{ ticket.organization.name }}</span>
                 {% else %}
-                  <span class="tech-install-meta-muted">—</span>
+                  <span class="tech-install-meta-muted">— Open —</span>
                 {% endif %}
               </div>
-              <div class="tech-install-meta-item">
-                <span class="tech-install-meta-label">MikroTik</span>
-                {% if ticket.router %}
+              {% if ticket.building_name or ticket.address or ticket.house_number %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Location</span>
+                  <span class="tech-install-meta-value">
+                    {% if ticket.building_name %}{{ ticket.building_name }}{% endif %}
+                    {% if ticket.building_name and ticket.address %} · {% endif %}
+                    {% if ticket.address %}{{ ticket.address }}{% endif %}
+                    {% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}
+                  </span>
+                </div>
+              {% endif %}
+              {% if ticket.location_lat and ticket.location_lng %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Map</span>
+                  <a
+                    class="lead-maps-link"
+                    href="https://www.google.com/maps?q={{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >Open map</a>
+                </div>
+              {% endif %}
+              {% if ticket.router %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">MikroTik</span>
                   <span class="tech-install-meta-value">{{ ticket.router.name }}</span>
-                {% else %}
-                  <span class="tech-install-meta-muted">—</span>
-                {% endif %}
-              </div>
+                </div>
+              {% endif %}
               {% if ticket.plan %}
                 <div class="tech-install-meta-item">
                   <span class="tech-install-meta-label">Plan</span>
                   <span class="tech-install-meta-value">{{ ticket.plan.name }}</span>
                 </div>
               {% endif %}
-              {% if ticket.address or ticket.house_number %}
-                <div class="tech-install-meta-item">
-                  <span class="tech-install-meta-label">Location</span>
-                  <span class="tech-install-meta-value">
-                    {{ ticket.address }}{% if ticket.address and ticket.house_number %}, {% endif %}{{ ticket.house_number }}
-                  </span>
-                </div>
-              {% endif %}
               <div class="tech-install-meta-item">
-                <span class="tech-install-meta-label">Connected</span>
+                <span class="tech-install-meta-label">
+                  {% if ticket_view == "pending_connections" %}Created{% else %}Connected{% endif %}
+                </span>
                 <span class="tech-install-meta-value">{{ ticket.created_at|date:"M j, Y g:i A" }}</span>
               </div>
             </div>
           </div>
+
+          {% if ticket_view == "pending_connections" %}
+            <footer class="tech-install-card-actions">
+              {% if ticket.status == "new" %}
+                <form method="post" action="{% url 'roles:technician_ticket_receive' ticket.id %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-primary">Receive ticket</button>
+                </form>
+              {% elif ticket.status == "in_progress" and ticket.assigned_technician_id == employee_profile.pk %}
+                <form method="post" action="{% url 'roles:technician_ticket_mark_done' ticket.id %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-primary">Mark done</button>
+                </form>
+              {% endif %}
+            </footer>
+          {% endif %}
         </article>
       {% endfor %}
     </div>
@@ -155,16 +200,24 @@
         </svg>
       </span>
       <strong>
-        {% if ticket_view == "connected" %}
+        {% if ticket_view == "pending_connections" %}
+          No pending connection tickets
+        {% elif ticket_view == "connected" %}
           No connected tickets
         {% else %}
           No pending activation clients
         {% endif %}
       </strong>
       <p>{{ empty_text }}</p>
-      <a class="btn btn-ghost" href="{% url 'roles:technician_installations' %}">
-        Open installations
-      </a>
+      {% if ticket_view == "pending_connections" %}
+        <a class="btn btn-ghost" href="{% url 'roles:technician_tickets' %}">
+          View pending activation
+        </a>
+      {% else %}
+        <a class="btn btn-ghost" href="{% url 'roles:technician_tickets_pending_connections' %}">
+          View pending connections
+        </a>
+      {% endif %}
     </div>
   {% endif %}
 </section>

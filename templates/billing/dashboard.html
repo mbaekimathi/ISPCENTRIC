@@ -388,7 +388,7 @@
                     <span class="billing-dash-cell-primary">{{ pay.get_method_display }}</span>
                   </td>
                   <td data-label="M-Pesa / Ref" class="billing-dash-col-ref">
-                    <span class="org-code billing-dash-ref">{{ pay.reference|default:"—" }}</span>
+                    <span class="org-code billing-dash-ref">{{ pay.display_reference|default:pay.reference|default:"—" }}</span>
                   </td>
                 </tr>
               {% endfor %}

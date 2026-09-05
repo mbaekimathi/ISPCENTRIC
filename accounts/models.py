@@ -135,6 +135,24 @@ class Organization(models.Model):
         default=15,
         help_text="Disconnect idle Hotspot sessions after this many minutes. Use 0 for no idle timeout.",
     )
+    adverts_enabled = models.BooleanField(
+        "Show Click to earn on captive pages",
+        default=False,
+        help_text=(
+            "When enabled, Hotspot and PPPoE pay / pause pages show a "
+            "“Click to earn” link for this ISP."
+        ),
+    )
+    adverts_redirect_url = models.URLField(
+        "Click to earn redirect link",
+        max_length=500,
+        blank=True,
+        default="",
+        help_text=(
+            "Where subscribers go when they tap Click to earn on the pay / pause popup. "
+            "Leave blank to use this ISP’s built-in adverts page."
+        ),
+    )
 
     class MpesaPaymentType(models.TextChoices):
         NONE = "", "Not set"
@@ -1157,6 +1175,31 @@ class CompanyProfile(models.Model):
 
     def __str__(self):
         return self.app_name or "Company profile"
+
+
+class SubscriberAdvertisement(models.Model):
+    """Subscriber-posted advert on an ISP’s Click to earn page."""
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="subscriber_adverts",
+    )
+    title = models.CharField(max_length=120)
+    description = models.TextField(max_length=2000)
+    contact_name = models.CharField(max_length=120, blank=True, default="")
+    contact_phone = models.CharField(max_length=30)
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "accounts_subscriber_advertisement"
+        ordering = ["-created_at"]
+        verbose_name = "Subscriber advertisement"
+        verbose_name_plural = "Subscriber advertisements"
+
+    def __str__(self):
+        return f"{self.title} ({self.organization_id})"
 
 
 class ClientSettings(models.Model):

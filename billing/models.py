@@ -175,7 +175,8 @@ class BillingPlan(models.Model):
 
 class Customer(models.Model):
     class Status(models.TextChoices):
-        NEW = "new", "New"
+        NEW = "new", "Pending connection"
+        IN_PROGRESS = "in_progress", "In progress"
         ALLOCATED = "allocated", "Allocated"
         ALLOCATED_OPEN = "allocated_open", "Allocated — open"
         ALLOCATED_CLOSED = "allocated_closed", "Allocated — closed"
@@ -183,7 +184,7 @@ class Customer(models.Model):
         NOT_INTERESTED = "not_interested", "Not interested"
         ACTIVE = "active", "Active"
         SUSPENDED = "suspended", "Suspended"
-        INACTIVE = "inactive", "Inactive"
+        INACTIVE = "inactive", "Pending activation"
 
     ALLOCATED_STATUSES = (
         Status.ALLOCATED,
@@ -282,6 +283,12 @@ class Customer(models.Model):
         max_length=17,
         blank=True,
         help_text="Router MAC for dynamic DHCP clients — IP is resolved from the NAS lease.",
+    )
+    equipment_serials = models.JSONField(
+        "Equipment serial numbers",
+        default=list,
+        blank=True,
+        help_text="Serial numbers of CPE / ONU / other gear installed at this subscriber.",
     )
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     plan = models.ForeignKey(

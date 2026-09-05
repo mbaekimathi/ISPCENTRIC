@@ -172,11 +172,14 @@ class PppoeClientRegisterForm(forms.ModelForm):
         organizations=None,
         default_activate=True,
         allow_activate=True,
+        require_serials=False,
         **kwargs,
     ):
         self.organization = organization
         self.organizations = organizations
         self.allow_activate = bool(allow_activate)
+        # Technicians must record installed gear serials; other roles may skip.
+        self.require_serials = bool(require_serials)
         # Technicians (and other non-activators) must register pending only.
         if not self.allow_activate:
             default_activate = False
@@ -197,6 +200,12 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["router"].required = True
         self.fields["plan"].empty_label = "No plan yet"
         self.fields["router"].empty_label = "Select MikroTik"
+        # Bound field used only for validation errors; inputs are rendered manually.
+        self.fields["equipment_serials"] = forms.CharField(
+            label="Equipment serials",
+            required=False,
+            widget=forms.HiddenInput(),
+        )
         activate_initial = "1" if self.default_activate else "0"
         self.fields["activate_account"].initial = activate_initial
         if not self.allow_activate:
@@ -260,8 +269,11 @@ class PppoeClientRegisterForm(forms.ModelForm):
                     "pppoe_password",
                     "cpe_username",
                     "cpe_password",
+                    "equipment_serials",
                 ]
             )
+
+        self.serial_values = self._serial_values_for_display()
 
         today = timezone.localdate()
         if not self.is_bound:
@@ -314,6 +326,46 @@ class PppoeClientRegisterForm(forms.ModelForm):
         else:
             self.fields["plan"].queryset = BillingPlan.objects.none()
             self.fields["router"].queryset = MikroTikRouter.objects.none()
+
+    @staticmethod
+    def _normalize_equipment_serials(raw_values) -> list[str]:
+        """Uppercase, strip, and de-dupe serials while preserving order."""
+        serials: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_values or []:
+            value = (raw or "").strip().upper()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            serials.append(value)
+        return serials
+
+    def _posted_equipment_serials(self) -> list[str]:
+        if not self.is_bound:
+            return []
+        data = self.data
+        if hasattr(data, "getlist"):
+            raw = data.getlist("equipment_serial")
+        else:
+            single = data.get("equipment_serial")
+            if single is None:
+                raw = []
+            elif isinstance(single, (list, tuple)):
+                raw = list(single)
+            else:
+                raw = [single]
+        return self._normalize_equipment_serials(raw)
+
+    def _serial_values_for_display(self) -> list[str]:
+        if self.is_bound:
+            values = self._posted_equipment_serials()
+            return values or [""]
+        initial = self.initial.get("equipment_serials")
+        if initial is None and getattr(self.instance, "pk", None):
+            initial = getattr(self.instance, "equipment_serials", None) or []
+        values = self._normalize_equipment_serials(initial or [])
+        return values or [""]
+
     def _selected_router(self):
         router = None
         if self.organization is None:
@@ -448,6 +500,13 @@ class PppoeClientRegisterForm(forms.ModelForm):
                 "plan",
                 "That package is not linked to the selected MikroTik.",
             )
+        serials = self._posted_equipment_serials()
+        cleaned["equipment_serials"] = serials
+        if self.require_serials and not serials:
+            self.add_error(
+                "equipment_serials",
+                "Enter at least one equipment serial number.",
+            )
         if not self.allow_activate:
             cleaned["activate_account"] = False
             cleaned["activation_date"] = None
@@ -459,6 +518,10 @@ class PppoeClientRegisterForm(forms.ModelForm):
         if not activate:
             cleaned["activation_date"] = None
         return cleaned
+
+    def clean_equipment_serials(self):
+        # Value comes from POST getlist("equipment_serial"), not this hidden input.
+        return self._posted_equipment_serials()
 
     def clean_organization(self):
         org = self.cleaned_data.get("organization")
@@ -501,6 +564,9 @@ class PppoeClientRegisterForm(forms.ModelForm):
             customer.status = Customer.Status.INACTIVE
             customer.package_start = None
             customer.package_end = None
+        customer.equipment_serials = list(
+            self.cleaned_data.get("equipment_serials") or []
+        )
         if not customer.account_number:
             from billing.services import generate_account_number_from_phone
 

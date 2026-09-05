@@ -1,0 +1,69 @@
+{# Shared Adverts · Click to earn settings (org-wide). Expects adverts_form, adverts_form_id. #}
+{% if adverts_form and can_edit %}
+  <section class="panel account-card settings-policy-panel{% if adverts_enabled %} is-policy-on{% endif %}" id="org-adverts-panel">
+    <header class="account-card-head">
+      <div class="account-card-head-main">
+        <span class="account-step" aria-hidden="true">★</span>
+        <div>
+          <h3>Adverts · Click to earn</h3>
+          <p>
+            Organization-wide for <strong>{{ organization.name }}</strong>.
+            When on, Hotspot and PPPoE pay / pause popups show a <strong>Click to earn</strong> card.
+            {% if adverts_mode == "external" %}
+              Mode: <strong>external link</strong> — taps open your redirect URL.
+            {% else %}
+              Mode: <strong>built-in page</strong>
+              {% if earn_page_path %}(<code>{{ earn_page_path }}</code>){% endif %}.
+            {% endif %}
+          </p>
+        </div>
+      </div>
+      <div class="access-preview-actions">
+        {% if earn_preview_url %}
+          <a class="btn btn-ghost access-preview-btn" href="{{ earn_preview_url }}" target="_blank" rel="noopener">Preview redirect</a>
+        {% endif %}
+        {% if pay_preview_path %}
+          <a class="btn btn-ghost access-preview-btn" href="{{ pay_preview_path }}" target="_blank" rel="noopener">Preview on pay page</a>
+        {% endif %}
+        <span class="mikrotik-wifi-pill{% if adverts_enabled %} is-on{% else %} is-off{% endif %}" id="adverts-status-pill">
+          {% if adverts_enabled %}On{% else %}Off{% endif %}
+        </span>
+      </div>
+    </header>
+    <form method="post" class="settings-policy-form" id="{{ adverts_form_id|default:'org-adverts-form' }}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="save_adverts">
+      <div class="access-toggle-row">
+        <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ adverts_form.adverts_enabled.id_for_label }}">
+          {{ adverts_form.adverts_enabled }}
+          <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
+          <span class="mikrotik-wifi-switch-text" id="adverts-enabled-label">
+            {% if adverts_enabled %}On{% else %}Off{% endif %}
+          </span>
+        </label>
+        {% if adverts_form.adverts_enabled.errors %}
+          <div class="field-error">{{ adverts_form.adverts_enabled.errors|striptags }}</div>
+        {% endif %}
+        <p class="settings-policy-hint">{{ adverts_form.adverts_enabled.help_text }}</p>
+      </div>
+      <div class="field" style="margin-top:1rem;">
+        <label for="{{ adverts_form.adverts_redirect_url.id_for_label }}">{{ adverts_form.adverts_redirect_url.label }}</label>
+        {{ adverts_form.adverts_redirect_url }}
+        {% if adverts_form.adverts_redirect_url.errors %}
+          <div class="field-error">{{ adverts_form.adverts_redirect_url.errors|striptags }}</div>
+        {% endif %}
+        <p class="settings-policy-hint">{{ adverts_form.adverts_redirect_url.help_text }}</p>
+      </div>
+      {% if adverts_redirect_url %}
+        <div class="notice notice-warning access-settings-notice" role="status" style="margin-top:0.75rem;">
+          Unpaid Hotspot phones can only open external sites that are on the MikroTik
+          <strong>walled garden</strong>. After saving, use <strong>Save &amp; push</strong> /
+          <strong>Push Hotspot</strong> so this host is allowed.
+        </div>
+      {% endif %}
+      <div class="form-actions" style="margin-top:0.85rem;">
+        <button type="submit" class="btn btn-primary" data-loading-label="Saving…">Save Click to earn</button>
+      </div>
+    </form>
+  </section>
+{% endif %}

@@ -59,25 +59,39 @@ def _tunnel_unreachable_hint(router) -> str:
 
 
 def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
-    """Probe TCP reachability and RouterOS API login for one NAS."""
+    """Probe TCP reachability and RouterOS API login for one NAS.
+
+    Tries LAN and WireGuard dial candidates (same order as CPE / status code)
+    so a local PC is not stuck on an unreachable tunnel peer when the LAN
+    gateway still answers.
+    """
     from core.mikrotik_connect import (
+        _router_api_host_candidates,
         check_mikrotik_reachable,
+        resolve_nas_api_host,
         sweep_log_text,
         test_mikrotik_api_login,
     )
 
-    host = (getattr(router, "api_host", None) or getattr(router, "host", None) or "").strip()
     username = (getattr(router, "username", None) or "").strip()
     password = getattr(router, "password", None) or ""
+    candidates = _router_api_host_candidates(router, discover=False)
+    if not candidates:
+        primary = (
+            getattr(router, "api_host", None) or getattr(router, "host", None) or ""
+        ).strip()
+        if primary:
+            candidates = [primary]
 
     details: dict = {
         "router_id": getattr(router, "pk", None),
-        "router_name": getattr(router, "name", "") or host,
-        "host": host,
+        "router_name": getattr(router, "name", "") or (candidates[0] if candidates else ""),
+        "host": candidates[0] if candidates else "",
         "username": username,
+        "candidates": list(candidates),
     }
 
-    if not host:
+    if not candidates:
         return {
             "ok": False,
             "reachable": False,
@@ -95,69 +109,89 @@ def evaluate_nas_connectivity(router, *, timeout: float = 2.5) -> dict:
             "details": details,
         }
 
-    probe = check_mikrotik_reachable(host, timeout=timeout)
-    details.update(
-        {
-            "probe_online": bool(probe.get("online")),
-            "probe_via": (probe.get("via") or "").strip(),
-            "probe_error": sweep_log_text(probe.get("error") or ""),
-        }
-    )
+    # Prefer a host that already accepts :8728 so we do not burn the full
+    # multi-port probe timeout on a dead WireGuard peer first.
+    preferred = resolve_nas_api_host(router, timeout=min(timeout, 1.5))
+    ordered: list[str] = []
+    for host in [preferred, *candidates]:
+        value = (host or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
 
-    if not probe.get("online"):
-        hint = _tunnel_unreachable_hint(router)
-        return {
-            "ok": False,
-            "reachable": False,
-            "api_ok": False,
-            "error": sweep_log_text(probe.get("error") or f"{host}: unreachable"),
-            "hint": hint,
-            "details": details,
-        }
+    last_error = ""
+    last_hint = ""
+    reachable_without_api = False
 
-    via = (probe.get("via") or "").strip()
-    if via != "api":
-        return {
-            "ok": False,
-            "reachable": True,
-            "api_ok": False,
-            "error": f"{host}: online via {via or 'ping'} but RouterOS API (8728) is closed.",
-            "hint": (
+    for host in ordered:
+        details["host"] = host
+        probe = check_mikrotik_reachable(host, timeout=timeout)
+        details.update(
+            {
+                "probe_online": bool(probe.get("online")),
+                "probe_via": (probe.get("via") or "").strip(),
+                "probe_error": sweep_log_text(probe.get("error") or ""),
+            }
+        )
+
+        if not probe.get("online"):
+            last_error = sweep_log_text(
+                probe.get("error") or f"{host}: unreachable"
+            )
+            last_hint = _tunnel_unreachable_hint(router)
+            continue
+
+        via = (probe.get("via") or "").strip()
+        if via != "api":
+            reachable_without_api = True
+            last_error = (
+                f"{host}: online via {via or 'ping'} but RouterOS API (8728) is closed."
+            )
+            last_hint = (
                 "Enable IP -> Services -> api on port 8728 with Allowed From empty, "
                 "or re-paste the ISPCENTRIC tunnel script."
-            ),
-            "details": details,
-        }
+            )
+            continue
 
-    login = test_mikrotik_api_login(
-        host,
-        username,
-        password,
-        timeout=timeout,
-        include_wifi=False,
-    )
-    details.update(
-        {
-            "identity": (login.get("identity") or login.get("board") or "").strip(),
-            "serial_number": (login.get("serial_number") or "").strip(),
-        }
-    )
-    if login.get("ok"):
+        login = test_mikrotik_api_login(
+            host,
+            username,
+            password,
+            timeout=timeout,
+            include_wifi=False,
+        )
+        details.update(
+            {
+                "identity": (login.get("identity") or login.get("board") or "").strip(),
+                "serial_number": (login.get("serial_number") or "").strip(),
+                "working_host": host,
+            }
+        )
+        if login.get("ok"):
+            return {
+                "ok": True,
+                "reachable": True,
+                "api_ok": True,
+                "error": "",
+                "hint": "",
+                "details": details,
+            }
+
+        # Same credentials on every dial address — stop on auth failure.
         return {
-            "ok": True,
+            "ok": False,
             "reachable": True,
-            "api_ok": True,
-            "error": "",
-            "hint": "",
+            "api_ok": False,
+            "error": sweep_log_text(login.get("error") or "API login failed."),
+            "hint": "Update saved API username/password, then MikroTik -> Reconnect.",
             "details": details,
         }
 
     return {
         "ok": False,
-        "reachable": True,
+        "reachable": reachable_without_api,
         "api_ok": False,
-        "error": sweep_log_text(login.get("error") or "API login failed."),
-        "hint": "Update saved API username/password, then MikroTik -> Reconnect.",
+        "error": last_error or "NAS unreachable.",
+        "hint": last_hint or _tunnel_unreachable_hint(router),
         "details": details,
     }
 
@@ -962,7 +996,10 @@ def evaluate_layered_cpe_access(
             "details": details,
         }
 
-    nas_host = (router.api_host or router.host or "").strip()
+    nas_host = (
+        (nas.get("details") or {}).get("working_host")
+        or (router.api_host or router.host or "")
+    ).strip()
     probe = probe_customer_cpe_web(
         nas_host,
         router.username,

@@ -9868,6 +9868,20 @@ _CAPTIVE_SESSION_CACHE_TTL = 15
 # dst-nat renew page can still auto-fill without a signed CPE token.
 _CAPTIVE_PPPOE_IP_CACHE_TTL = 60 * 60 * 6
 _CPE_RENEW_CLEAR_PENDING_TTL = 60 * 60 * 12
+_HOTSPOT_AUTHORIZE_PENDING_TTL = 60 * 60 * 6
+# Drop dead PPP peers so only-one=yes cannot block a paid CPE redial forever.
+# Default 2m (not 30s): aggressive keepalives bounce flaky-but-live CPEs on deploy.
+# Override with settings.PPPOE_KEEPALIVE_TIMEOUT (e.g. "1m" / "30s") after soak.
+_PPPOE_KEEPALIVE_TIMEOUT_DEFAULT = "2m"
+
+
+def _pppoe_keepalive_timeout() -> str:
+    raw = (getattr(settings, "PPPOE_KEEPALIVE_TIMEOUT", None) or "").strip()
+    return raw or _PPPOE_KEEPALIVE_TIMEOUT_DEFAULT
+
+
+# Backward-compatible name used by tests / callers that read the module constant.
+_PPPOE_KEEPALIVE_TIMEOUT = _PPPOE_KEEPALIVE_TIMEOUT_DEFAULT
 
 
 def _cpe_renew_clear_pending_key(customer_id) -> str:
@@ -9903,6 +9917,57 @@ def cpe_renew_clear_is_pending(customer) -> bool:
     if not customer_id:
         return False
     return bool(_captive_cache_get(_cpe_renew_clear_pending_key(customer_id)))
+
+
+def _hotspot_authorize_pending_key(customer_id) -> str:
+    return f"captive:hotspot-authorize-pending:{customer_id}"
+
+
+def mark_hotspot_authorize_pending(customer) -> None:
+    """Queue a paid Hotspot MAC rewrite after an offline authorize skip."""
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    _captive_cache_set(
+        _hotspot_authorize_pending_key(customer_id),
+        1,
+        _HOTSPOT_AUTHORIZE_PENDING_TTL,
+    )
+
+
+def clear_hotspot_authorize_pending(customer) -> None:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_hotspot_authorize_pending_key(customer_id))
+    except Exception:
+        pass
+
+
+def hotspot_authorize_is_pending(customer) -> bool:
+    customer_id = getattr(customer, "pk", None)
+    if not customer_id:
+        return False
+    return bool(_captive_cache_get(_hotspot_authorize_pending_key(customer_id)))
+
+
+def hotspot_mac_looks_randomized(mac: str) -> bool:
+    """
+    True when the MAC is locally administered (common for Private Wi‑Fi Address).
+
+    IEEE U/L bit is the second-least-significant bit of the first octet.
+    """
+    compact = "".join(ch for ch in (mac or "") if ch.isalnum())
+    if len(compact) != 12:
+        return False
+    try:
+        first = int(compact[0:2], 16)
+    except ValueError:
+        return False
+    return bool(first & 0x02)
 
 
 def _clear_cpe_renew_with_retries(
@@ -10195,6 +10260,9 @@ def _ppp_profile_attempts(
             "change-tcp-mss": "yes",
             "use-encryption": "no",
             "only-one": "yes",
+            # Clear dead peers so only-one cannot trap a paid CPE after an
+            # unclean disconnect (ghost /ppp/active blocking redial).
+            "keepalive-timeout": _pppoe_keepalive_timeout(),
             "comment": tag,
         }
         if address_list:
@@ -10204,7 +10272,16 @@ def _ppp_profile_attempts(
         for props in (
             full,
             {k: v for k, v in full.items() if k != "change-tcp-mss"},
-            {k: v for k, v in full.items() if k not in {"change-tcp-mss", "only-one"}},
+            {
+                k: v
+                for k, v in full.items()
+                if k not in {"change-tcp-mss", "keepalive-timeout"}
+            },
+            {
+                k: v
+                for k, v in full.items()
+                if k not in {"change-tcp-mss", "only-one", "keepalive-timeout"}
+            },
         ):
             key = tuple(sorted((k, str(v)) for k, v in props.items()))
             if key in seen:
@@ -11644,6 +11721,56 @@ def _pppoe_has_active_session(sock: socket.socket, username: str) -> bool:
     )
 
 
+def _pppoe_session_looks_ghost(
+    sock: socket.socket,
+    username: str,
+    *,
+    arp_complete: dict[str, bool] | None = None,
+) -> bool:
+    """
+    Detect a leftover /ppp/active row that may block only-one=yes redial.
+
+    Only incomplete ARP is treated as a ghost. Missing ARP is ignored — some
+    RouterOS builds omit PPP peers from /ip/arp dumps, and false kicks would
+    bounce every paid CPE on the fleet sweep.
+
+    Deploy-safe policy: callers must NOT kick solely for this signal. Incomplete
+    ARP flaps on live sessions. Dead peers are cleared by ``keepalive-timeout``
+    on the PPP profile; kicks remain for wrong/blocked profile transitions only.
+    """
+    username = (username or "").strip().lower()
+    if not username:
+        return False
+    addresses = _active_pppoe_session_addresses(sock, username)
+    if not addresses:
+        return False
+    if arp_complete is None:
+        arp_complete = _pppoe_arp_complete_map(sock)
+    for addr in addresses:
+        if arp_complete.get(addr) is False:
+            return True
+    return False
+
+
+def _pppoe_arp_complete_map(sock: socket.socket) -> dict[str, bool]:
+    """Map PPP/ARP peer address → complete flag for ghost detection."""
+    arp_complete: dict[str, bool] = {}
+    try:
+        rows = _print(sock, "/ip/arp", props="address,complete")
+    except Exception:
+        return arp_complete
+    for row in rows:
+        addr = (row.get("address") or "").strip()
+        if not addr:
+            continue
+        complete = (row.get("complete") or "").strip().lower()
+        if complete in {"true", "yes"}:
+            arp_complete[addr] = True
+        elif complete in {"false", "no"}:
+            arp_complete[addr] = False
+    return arp_complete
+
+
 def _active_pppoe_session_addresses(sock: socket.socket, username: str) -> set[str]:
     """Remote IPs for this username's live /ppp/active rows."""
     username = (username or "").strip().lower()
@@ -12228,6 +12355,7 @@ def sync_pppoe_subscription_batch_on_router(
                         )
                         notes.extend(stack_notes[:4])
 
+                arp_complete = _pppoe_arp_complete_map(sock)
                 for customer in customers:
                     username = (customer.pppoe_username or "").strip()
                     password = customer.pppoe_password or ""
@@ -12270,6 +12398,20 @@ def sync_pppoe_subscription_batch_on_router(
                         )
                         if restoring_surf and session_was_blocked:
                             clear_usernames.append(username)
+                        # Do not kick for incomplete-ARP "ghost" alone — that
+                        # false-positives on live CPEs. Keepalive clears dead
+                        # peers; kicks stay for profile / blocked transitions.
+                        if (
+                            restoring_surf
+                            and session_active_before
+                            and _pppoe_session_looks_ghost(
+                                sock, username, arp_complete=arp_complete
+                            )
+                        ):
+                            notes.append(
+                                f"ghost PPP session for {username} — "
+                                "leaving for keepalive (no kick)"
+                            )
                         if _pppoe_customer_needs_session_kick(
                             customer,
                             previous_profile=previous_profile,
@@ -12306,6 +12448,12 @@ def sync_pppoe_subscription_batch_on_router(
                         f"({len(set(kick_usernames))} account(s)) — CPEs redial together"
                     )
 
+            # Outside the API session: CPE renew clear uses NAS→CPE proxy and
+            # must run while paid secrets are already restored.
+            cleared = _follow_up_pending_cpe_renew_clears(customers)
+            if cleared:
+                notes.append(f"cleared {cleared} pending CPE renew Hotspot(s)")
+
             return {
                 "ok": errors == 0,
                 "router_id": router_id,
@@ -12316,10 +12464,12 @@ def sync_pppoe_subscription_batch_on_router(
                 "errors": errors,
                 "kicked": kicked,
                 "kick_accounts": len(set(kick_usernames)),
+                "cpe_renew_cleared": cleared,
                 "notes": notes,
                 "message": (
                     f"PPPoE batch on {router_name}: allowed={allowed} "
                     f"blocked={blocked} kick_accounts={len(set(kick_usernames))}"
+                    + (f" cpe_cleared={cleared}" if cleared else "")
                 ),
             }
         except TimeoutError:
@@ -12379,6 +12529,10 @@ def sync_hotspot_subscription_batch_on_router(
                     internet_allowed = _customer_internet_allowed(customer)
                     if internet_allowed:
                         allowed += 1
+                        # Pending authorize after offline pay: refresh MAC
+                        # user/limit without session kicks. Explicit
+                        # reauthenticate_paid=True (voucher / renew) keeps
+                        # the stronger path that drops unauthorized hosts.
                         reauth = bool(reauthenticate_paid)
                     else:
                         blocked += 1
@@ -12393,6 +12547,8 @@ def sync_hotspot_subscription_batch_on_router(
                         )
                         if not result.get("ok"):
                             errors += 1
+                        elif internet_allowed:
+                            clear_hotspot_authorize_pending(customer)
                     except Exception as exc:  # noqa: BLE001
                         errors += 1
                         logger.warning(
@@ -12427,9 +12583,12 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
     """
     Fix paid PPPoE clients that are dialed but not surfing on one NAS.
 
-    Detects wrong/blocked profile or leftover ``ispcentric-blocked`` address-list
-    rows, restores the paid secret, clears the list, and batch-kicks so CPEs
-    redial onto the surfing profile together.
+    Detects wrong/blocked profile, leftover ``ispcentric-blocked`` address-list
+    rows, and stuck CPE renew Hotspot clears. Restores the paid secret, clears
+    the list, and batch-kicks so CPEs redial onto the surfing profile together.
+
+    Incomplete-ARP "ghost" peers are logged only — kicking them on deploy
+    bounced live CPEs. Dead peers clear via PPP ``keepalive-timeout``.
     """
     if router is None:
         return {"ok": False, "skipped": True, "repaired": 0, "error": "No router."}
@@ -12460,10 +12619,13 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
         }
 
     need_repair: list = []
+    pending_clear: list = []
+    ghost_noted = 0
     last_error = ""
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
+                arp_complete = _pppoe_arp_complete_map(sock)
                 for customer in paid:
                     username = (customer.pppoe_username or "").strip()
                     if not username:
@@ -12484,7 +12646,18 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
                             or expected != PPPOE_BLOCKED_PROFILE_NAME
                         )
                     )
-                    if blocked_session or wrong_profile:
+                    if (
+                        active
+                        and _pppoe_session_looks_ghost(
+                            sock, username, arp_complete=arp_complete
+                        )
+                    ):
+                        ghost_noted += 1
+                    renew_pending = cpe_renew_clear_is_pending(customer)
+                    if renew_pending:
+                        pending_clear.append(customer)
+                    # Ghost alone is not a repair target (deploy-safe).
+                    if blocked_session or wrong_profile or renew_pending:
                         need_repair.append(customer)
                 break
         except Exception as exc:  # noqa: BLE001
@@ -12498,23 +12671,67 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
             "router_id": getattr(router, "pk", None),
         }
 
-    if not need_repair:
+    if not need_repair and not pending_clear:
         return {
             "ok": True,
             "skipped": True,
             "repaired": 0,
+            "ghost_noted": ghost_noted,
             "router_id": getattr(router, "pk", None),
             "host": host,
-            "message": "All paid PPPoE sessions already surfing.",
+            "message": (
+                "All paid PPPoE sessions already surfing."
+                + (
+                    f" ({ghost_noted} incomplete-ARP peer(s) left for keepalive)"
+                    if ghost_noted
+                    else ""
+                )
+            ),
         }
 
-    result = sync_pppoe_subscription_batch_on_router(router, need_repair)
-    result["repaired"] = len(need_repair)
+    repair_targets = list({id(c): c for c in [*need_repair, *pending_clear]}.values())
+    result = sync_pppoe_subscription_batch_on_router(router, repair_targets)
+    cleared = _follow_up_pending_cpe_renew_clears(repair_targets)
+    result["repaired"] = len(repair_targets)
+    result["cpe_renew_cleared"] = cleared
+    result["ghost_noted"] = ghost_noted
     result["message"] = (
-        f"Repaired {len(need_repair)} paid PPPoE account(s) not surfing on "
+        f"Repaired {len(repair_targets)} paid PPPoE account(s) not surfing on "
         f"{getattr(router, 'name', None) or host}"
+        + (f" (cleared {cleared} CPE renew Hotspot(s))" if cleared else "")
     )
     return result
+
+
+def _follow_up_pending_cpe_renew_clears(customers: list) -> int:
+    """
+    Best-effort clear of CPE renew Hotspot while paid access is restored.
+
+    Called from fleet sweep / paid-not-surfing repair so phones do not stay
+    trapped behind the renew popup after the CPE redials.
+    """
+    cleared = 0
+    for customer in customers:
+        if not cpe_renew_clear_is_pending(customer):
+            continue
+        if not _customer_internet_allowed(customer):
+            continue
+        try:
+            portal = apply_cpe_renew_portal(
+                customer,
+                enabled=False,
+                timeout=_CAPTIVE_RESTORE_TIMEOUT,
+            )
+        except Exception:
+            logger.exception(
+                "CPE renew clear follow-up failed for customer %s",
+                getattr(customer, "pk", None),
+            )
+            continue
+        if portal.get("ok"):
+            clear_cpe_renew_clear_pending(customer)
+            cleared += 1
+    return cleared
 
 
 _TUNNEL_HOST_CACHE: dict[str, str] = {}
@@ -12858,6 +13075,32 @@ def _router_api_host_candidates(
         except Exception:
             pass
     return hosts
+
+
+def resolve_nas_api_host(router, *, timeout: float = 1.5) -> str:
+    """
+    First NAS address that accepts RouterOS API (:8728).
+
+    Prefer LAN/tunnel order from ``_router_api_host_candidates`` so a local
+    billing PC does not get stuck on an unreachable WireGuard peer when the
+    LAN gateway still answers. Falls back to ``api_host`` / ``host`` when
+    nothing accepts (caller surfaces the connectivity error).
+    """
+    candidates = _router_api_host_candidates(router, discover=False)
+    connect_timeout = max(0.4, min(float(timeout or 1.5), 2.0))
+    for host in candidates:
+        target = dial_host(host)
+        if not target:
+            continue
+        try:
+            with socket.create_connection((target, 8728), timeout=connect_timeout):
+                return host
+        except OSError:
+            continue
+    return (
+        (getattr(router, "api_host", None) or getattr(router, "host", None) or "")
+        .strip()
+    )
 
 
 def unreachable_router_error(router) -> str:
@@ -16878,6 +17121,7 @@ def _ensure_hotspot_user(
 
     user_id = ""
     used_uptime = 0
+    existing_limit = 0
     # Filter server-side by name so a router with thousands of MAC users does
     # not stream its whole /ip/hotspot/user table for a single authorization.
     rows = _print(
@@ -16896,6 +17140,7 @@ def _ensure_hotspot_user(
         if (row.get("name") or "").strip().lower() == username.lower():
             user_id = (row.get(".id") or "").strip()
             used_uptime = _parse_ros_duration(row.get("uptime"))
+            existing_limit = _parse_ros_duration(row.get("limit-uptime"))
             break
 
     disabled_value = "yes" if disabled else "no"
@@ -16915,6 +17160,15 @@ def _ensure_hotspot_user(
     if not disabled and uptime_cap not in {"", "0s"}:
         remaining = _parse_ros_duration(uptime_cap)
         if remaining > 0:
+            if existing_limit > 0 and used_uptime >= existing_limit:
+                logger.info(
+                    "Healing Hotspot limit-uptime for %s: used=%ss old_limit=%ss "
+                    "billing_remaining=%ss",
+                    username,
+                    used_uptime,
+                    existing_limit,
+                    remaining,
+                )
             uptime_cap = _format_ros_duration(used_uptime + remaining)
     attempts = [
         {
@@ -17751,6 +18005,7 @@ def authorize_hotspot_customer(
                     "router_name": router_name,
                     "error": "Hotspot device MAC is missing.",
                 }
+            clear_hotspot_authorize_pending(customer)
             return {
                 "ok": True,
                 "skipped": False,
@@ -17798,6 +18053,8 @@ def authorize_hotspot_customer(
     if not any_reachable:
         # Router simply isn't connected right now — don't treat this as a failed
         # authorization so the payment UI can retry without charging again.
+        # Queue a must-resync so the next sweep enables the paid MAC.
+        mark_hotspot_authorize_pending(customer)
         return {
             "ok": True,
             "skipped": True,
@@ -17805,6 +18062,7 @@ def authorize_hotspot_customer(
             "router_name": router_name,
             "reason": "offline",
             "timeout": True,
+            "authorize_pending": True,
             "message": f"{router_name} is offline / not reachable — Hotspot push skipped.",
             "users_synced": 0,
             "notes": [f"skipped offline router ({host or 'no host'})"],
@@ -18369,6 +18627,9 @@ def _ensure_isp_hotspot_stack(
     notes.extend(_ensure_hotspot_walled_garden(sock, garden_url))
     if redirect_url and redirect_url != garden_url:
         notes.extend(_ensure_hotspot_walled_garden(sock, redirect_url))
+    earn_redirect = (getattr(org, "adverts_redirect_url", None) or "").strip()
+    if earn_redirect and earn_redirect not in {garden_url, redirect_url}:
+        notes.extend(_ensure_hotspot_walled_garden(sock, earn_redirect))
     notes.extend(_ensure_hotspot_server_bypass(sock, garden_url))
 
     # login.html BEFORE option 114 so we never advertise a broken portal.

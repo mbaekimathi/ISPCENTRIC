@@ -557,22 +557,25 @@ def customer_portal_access_context(customer, *, preview: str = "") -> dict:
 
     Paused packages must not offer payment — staff must resume the subscription.
 
-    ``preview`` is for staff Wi‑Fi preview only (``paused`` / ``renew``) and does
-    not change billing state.
+    ``preview`` is for staff theme preview only (``paused`` / ``renew`` / ``demo``)
+    and does not change billing state.
     """
     preview = (preview or "").strip().lower()
-    if preview == "paused" and customer:
+    if preview == "paused":
         remaining_label = ""
-        remaining = package_remaining_seconds(customer)
-        if remaining is not None and remaining > 0:
-            hours, rem = divmod(remaining, 3600)
-            minutes, _ = divmod(rem, 60)
-            if hours:
-                remaining_label = f"{hours}h {minutes}m left when resumed"
-            elif minutes:
-                remaining_label = f"{minutes} minutes left when resumed"
-            else:
-                remaining_label = "Less than a minute left when resumed"
+        if customer:
+            remaining = package_remaining_seconds(customer)
+            if remaining is not None and remaining > 0:
+                hours, rem = divmod(remaining, 3600)
+                minutes, _ = divmod(rem, 60)
+                if hours:
+                    remaining_label = f"{hours}h {minutes}m left when resumed"
+                elif minutes:
+                    remaining_label = f"{minutes} minutes left when resumed"
+                else:
+                    remaining_label = "Less than a minute left when resumed"
+        if not remaining_label:
+            remaining_label = "1 day 6 hours left when resumed"
         return {
             "subscription_paused": True,
             "subscription_expired": False,
@@ -584,7 +587,7 @@ def customer_portal_access_context(customer, *, preview: str = "") -> dict:
             ),
             "show_renew_payment": False,
         }
-    if preview == "renew" and customer:
+    if preview in {"renew", "demo"}:
         return {
             "subscription_paused": False,
             "subscription_expired": True,
@@ -1005,6 +1008,65 @@ def apply_subscription_renewal(customer, *, plan=None):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)
     return customer
+
+
+def payment_mpesa_reference(payment) -> str:
+    """Prefer the real M-Pesa receipt over Safaricom CheckoutRequestID placeholders."""
+    checkout_ids: set[str] = set()
+    for stk in payment.stk_push_requests.all():
+        receipt = (stk.mpesa_receipt or "").strip()
+        if receipt:
+            return receipt
+        # Recover from raw_callback when the model field was never copied.
+        raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        if raw:
+            from billing.stk import extract_mpesa_receipt_from_raw
+
+            buried = extract_mpesa_receipt_from_raw(raw)
+            if buried:
+                return buried
+        checkout_id = (stk.checkout_request_id or "").strip()
+        if checkout_id:
+            checkout_ids.add(checkout_id)
+    ref = (payment.reference or "").strip()
+    if not ref:
+        return ""
+    # Checkout IDs look like ws_CO_… and are not the SMS receipt number.
+    if ref in checkout_ids or ref.startswith("ws_CO_"):
+        return ""
+    return ref
+
+
+def heal_payment_mpesa_reference(payment) -> str:
+    """
+    Resolve the display M-Pesa receipt and persist it onto payment.reference
+    when a real receipt is known on a linked STK row.
+    """
+    display_ref = payment_mpesa_reference(payment)
+    if not display_ref:
+        return ""
+    current = (payment.reference or "").strip()
+    linked_checkouts = {
+        (stk.checkout_request_id or "").strip()
+        for stk in payment.stk_push_requests.all()
+        if (stk.checkout_request_id or "").strip()
+    }
+    if (
+        not current
+        or current in linked_checkouts
+        or current.startswith("ws_CO_")
+    ) and current != display_ref:
+        payment.reference = display_ref[:100]
+        payment.save(update_fields=["reference"])
+    # Keep STK.mpesa_receipt in sync when recovery came from raw_callback only.
+    for stk in payment.stk_push_requests.all():
+        if (stk.mpesa_receipt or "").strip() == display_ref:
+            continue
+        from billing.stk import ensure_stk_payment_receipt
+
+        ensure_stk_payment_receipt(stk, receipt=display_ref)
+        break
+    return display_ref
 
 
 def create_renewal_invoice_and_payment(

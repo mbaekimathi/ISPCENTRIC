@@ -1,183 +1,203 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}Router admin — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
+{% block title %}Router — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
+{% with initials=customer.full_name|default:customer.account_number|slice:":2"|upper %}
 <div
-  class="client-detail-page client-cpe-access-page client-router-access-page is-router-tab"
+  class="client-detail-page client-detail-simple client-cpe-access-page client-router-access-page client-router-simple"
   id="client-cpe-access"
   data-start-url="{{ start_url }}"
   data-cpe-user="{{ cpe_username }}"
   data-cpe-pass="{{ cpe_password }}"
-  data-detail-url="{{ back_url }}"
-  data-nas-url="{{ nas_url }}"
   data-via-tunnel="{% if via_tunnel %}1{% else %}0{% endif %}"
   data-has-password="{% if has_cpe_password %}1{% else %}0{% endif %}"
 >
-<section class="panel client-hero client-cpe-hero client-router-hero" id="router-access-head" data-cat="access">
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="client-cat client-cat-access">
-        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Z"/></svg></span>
-        <span class="client-live-pulse" aria-hidden="true"></span>
-        Advanced router admin
-      </p>
-      <h2>{{ customer.full_name }}</h2>
-      <p class="panel-sub" data-router-status>
-        {% if not can_access_wifi %}
-          Router admin is available for PPPoE, static IP, or DHCP clients with an assigned NAS.
-        {% elif via_tunnel %}
-          Connecting through {{ nas_name|default:"the ISP MikroTik" }} over WireGuard…
-        {% else %}
-          Connecting through {{ nas_name|default:"the ISP MikroTik" }}…
-        {% endif %}
-      </p>
-    </div>
-    <div class="mikrotik-detail-actions client-cpe-toolbar-actions">
-      <span class="mikrotik-live-stamp" data-router-stamp>{% if can_access_wifi %}Starting{% else %}Unavailable{% endif %}</span>
-      {% if can_access_wifi %}
-      <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
-      <a class="btn btn-primary" data-router-newtab hidden target="_blank" rel="noopener">Open in new tab</a>
-      {% endif %}
-      <a class="btn btn-ghost" href="{{ back_url }}">Back to client</a>
-      {% if nas_url %}
-      <a class="btn btn-ghost" href="{{ nas_url }}">Open NAS</a>
-      {% endif %}
-    </div>
-  </div>
-
-  {% if can_access_wifi %}
-  <dl class="client-kv-list" id="router-access-facts">
-    <div class="client-kv" data-ico="nas">
-      <dt>Router IP</dt>
-      <dd>
-        <strong data-router-host>—</strong>
-        <span data-router-port-hint>Detected after connect</span>
-      </dd>
-    </div>
-    <div class="client-kv" data-ico="lock">
-      <dt>Admin login</dt>
-      <dd>
-        <strong data-router-user>{{ cpe_username|default:"admin" }}</strong>
-        <span>{% if uses_nas_default_credentials %}From NAS default — edit below{% elif has_cpe_password %}Saved on this client{% else %}Edit below to connect{% endif %}</span>
-      </dd>
-    </div>
-    <div class="client-kv" data-ico="wifi">
-      <dt>Admin password</dt>
-      <dd>
-        <strong class="mikrotik-secret" data-router-secret {% if not cpe_password %}hidden{% endif %}>
-          <span class="mikrotik-secret-mask" data-secret-mask>•</span>
-          <span class="mikrotik-secret-value" data-secret-value data-router-password hidden>{{ cpe_password }}</span>
-          <button type="button" class="password-toggle clients-secret-toggle" data-toggle-secret aria-label="Show router password">
-            <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-            <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-          </button>
-          <button type="button" class="pppoe-mini-btn" data-copy-password>Copy</button>
-        </strong>
-        <span data-router-password-empty {% if cpe_password %}hidden{% endif %}>Not saved — enter it below</span>
-        <span {% if not cpe_password %}hidden{% endif %} data-router-password-hint>{% if uses_nas_default_password %}NAS default · edit below if needed{% else %}Tap the eye icon to reveal{% endif %}</span>
-      </dd>
-    </div>
-    <div class="client-kv" data-ico="shield">
-      <dt>Path</dt>
-      <dd>
-        <strong>{{ nas_name|default:"—" }}</strong>
-        <span>
-          {% if via_tunnel %}WireGuard {{ nas_dial|default:"" }}{% else %}LAN {{ nas_dial|default:"" }}{% endif %}
-          · {{ access_mode|default:"remote" }} · gateway {{ gateway }}
-        </span>
-      </dd>
-    </div>
-  </dl>
-
-  <form class="client-router-password-form client-router-credentials-form" data-router-password-form method="post">
-    {% csrf_token %}
-    <p class="client-router-credentials-title">Router admin login</p>
-    <p class="field-hint" style="margin-top:0">
-      {% if uses_nas_default_credentials %}
-        Prefills the MikroTik default client-router login. Edit if this CPE uses different credentials, then save &amp; connect.
-      {% else %}
-        Enter the router’s own admin username and password (not the PPPoE password), then save &amp; connect.
-      {% endif %}
-    </p>
-    <div class="client-router-credentials-grid">
-      <div class="form-field">
-        <label for="router-access-username">Username</label>
-        <input
-          type="text"
-          id="router-access-username"
-          name="cpe_username"
-          class="form-control"
-          autocomplete="username"
-          spellcheck="false"
-          value="{{ cpe_username|default:'admin' }}"
-          placeholder="admin"
-        >
-      </div>
-      <div class="form-field">
-        <label for="router-access-password">Password</label>
-        <div class="password-field">
-          <input
-            type="password"
-            id="router-access-password"
-            name="cpe_password"
-            class="form-control"
-            autocomplete="current-password"
-            value="{{ cpe_password }}"
-            placeholder="Router admin password"
-          >
-          <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
-            <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
-            <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
-          </button>
+  <section class="client-router-workspace">
+    <header class="client-router-workspace-head">
+      <div class="client-router-workspace-brand">
+        <span class="client-router-avatar" aria-hidden="true">{{ initials }}</span>
+        <div class="client-router-workspace-copy">
+          <a class="client-router-simple-back" href="{{ back_url }}">← {{ customer.full_name }}</a>
+          <p class="client-router-workspace-kicker">
+            <span class="client-router-kicker-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
+                <rect x="3.5" y="7" width="17" height="10" rx="2.2"/>
+                <path d="M7.5 17v2.5M16.5 17v2.5M8 12h.01M12 12h.01M16 12h.01" stroke-linecap="round"/>
+              </svg>
+            </span>
+            Client router
+          </p>
+          <h1>Open client router</h1>
+          <p class="client-router-simple-status" data-router-status>
+            {% if not can_access_wifi %}
+              Needs PPPoE, static IP, or DHCP with an assigned NAS.
+            {% else %}
+              Connecting…
+            {% endif %}
+          </p>
+          <div class="client-router-workspace-summary">
+            <span class="client-router-pill tone-account">{{ customer.account_number }}</span>
+            {% if customer.plan %}
+              <span class="client-router-pill tone-service">{{ customer.plan.name }}</span>
+            {% endif %}
+            {% if nas_name %}
+              <span class="client-router-pill tone-nas">{{ nas_name }}</span>
+            {% endif %}
+            {% if via_tunnel %}
+              <span class="client-router-pill tone-tunnel">WireGuard tunnel</span>
+            {% elif can_access_wifi %}
+              <span class="client-router-pill tone-lan">Direct NAS path</span>
+            {% endif %}
+          </div>
         </div>
       </div>
-      <div class="client-router-credentials-actions">
-        <button type="submit" class="btn btn-primary">Save &amp; connect</button>
+      <div class="client-router-simple-actions">
+        <span class="mikrotik-live-stamp client-router-stamp" data-router-stamp>{% if can_access_wifi %}Starting{% else %}Unavailable{% endif %}</span>
+        {% if can_access_wifi %}
+          <button type="button" class="btn btn-ghost btn-sm" data-router-retry>Retry</button>
+          <a class="btn btn-primary btn-sm client-router-newtab" data-router-newtab hidden target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 3h7v7M21 3l-9 9M10 5H6.5A2.5 2.5 0 0 0 4 7.5v10A2.5 2.5 0 0 0 6.5 20h10a2.5 2.5 0 0 0 2.5-2.5V14" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Open in new tab
+          </a>
+        {% endif %}
       </div>
-    </div>
-  </form>
-  {% endif %}
-</section>
+    </header>
 
-{% if can_access_wifi %}
-<section class="panel client-router-stage" id="router-access-stage" data-router-stage>
-  <div class="client-router-connecting" data-router-connecting>
-    <p class="client-router-connecting-title">Opening the client router</p>
-    <p class="panel-sub">
-      Reach the ISP MikroTik{% if via_tunnel %} over the billing tunnel{% endif %},
-      find the live client IP, open its admin UI, and sign in when the router allows it.
-    </p>
-    <ol class="client-router-steps" data-router-steps>
-      <li data-step="nas" class="is-active">Reach {{ nas_name|default:"the ISP MikroTik" }}{% if via_tunnel %} via WireGuard{% endif %}</li>
-      <li data-step="session">Find the client session</li>
-      <li data-step="web">Probe web ports {{ checked_ports }}</li>
-      <li data-step="login">Sign in and open the admin UI</li>
-    </ol>
-  </div>
+    {% if can_access_wifi %}
+      <form class="client-router-simple-creds" data-router-password-form method="post">
+        {% csrf_token %}
+        <div class="client-router-creds-copy">
+          <p class="client-router-creds-kicker">Router login</p>
+          <h2 class="client-router-creds-title">Credentials</h2>
+          <p class="client-router-creds-hint">
+            Client router admin login
+            {% if uses_nas_default_credentials or uses_nas_default_password %}
+              · <strong>From NAS default</strong>
+            {% endif %}
+          </p>
+        </div>
+        <div class="client-router-creds-fields">
+          <div class="form-field">
+            <label for="router-access-username">Username</label>
+            <input
+              type="text"
+              id="router-access-username"
+              name="cpe_username"
+              class="form-control"
+              autocomplete="username"
+              spellcheck="false"
+              value="{{ cpe_username|default:'admin' }}"
+              placeholder="admin"
+            >
+          </div>
+          <div class="form-field">
+            <label for="router-access-password">Password</label>
+            <div class="password-field">
+              <input
+                type="password"
+                id="router-access-password"
+                name="cpe_password"
+                class="form-control"
+                autocomplete="current-password"
+                value="{{ cpe_password }}"
+                placeholder="Router admin password"
+              >
+              <button type="button" class="password-toggle" data-toggle-password aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary">Save &amp; connect</button>
+        </div>
+      </form>
 
-  <div class="client-router-error" data-router-error hidden>
-    <div class="client-subscription-banner is-blocked" data-router-error-banner></div>
-    <ol class="mikrotik-tunnel-steps" data-router-guidance hidden></ol>
-    <div class="client-router-error-actions" data-router-error-actions hidden>
-      {% if nas_url %}
-      <a class="btn btn-primary" href="{{ nas_url }}" data-router-fix-nas>Fix NAS / tunnel</a>
-      {% endif %}
-      <button type="button" class="btn btn-ghost" data-router-retry>Retry</button>
-    </div>
-    <p class="panel-sub" data-router-error-detail style="opacity:.8;"></p>
-  </div>
+      <section class="panel client-router-stage client-cpe-stage" id="router-access-stage" data-router-stage>
+        <div class="client-router-connecting" data-router-connecting>
+          <span class="client-router-connecting-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M12 18.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z" fill="currentColor" stroke="none"/>
+              <path d="M8.2 15.2a5.5 5.5 0 0 1 7.6 0M5.4 12.4a9.5 9.5 0 0 1 13.2 0M2.8 9.6a13.5 13.5 0 0 1 18.4 0" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div>
+            <p class="client-router-connecting-title">Opening router…</p>
+            <p class="panel-sub" data-router-host-line>
+              Through {{ nas_name|default:"the ISP MikroTik" }}{% if via_tunnel %} (tunnel){% endif %}
+              · ports {{ checked_ports }}
+            </p>
+          </div>
+          <div class="client-router-connecting-pulse" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
 
-  <iframe
-    class="client-router-frame"
-    data-router-frame
-    title="Client router admin"
-    hidden
-  ></iframe>
-</section>
-{% endif %}
+        <div class="client-router-error" data-router-error hidden>
+          <header class="client-router-error-head">
+            <span class="client-router-error-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="12" cy="12" r="8.25"/>
+                <path d="M12 8v4.5" stroke-linecap="round"/>
+                <circle cx="12" cy="15.75" r="0.9" fill="currentColor" stroke="none"/>
+              </svg>
+            </span>
+            <div class="client-router-error-copy">
+              <p class="client-router-error-kicker">Connection failed</p>
+              <h2 class="client-router-error-title" data-router-error-title>Could not open router</h2>
+              <p class="client-router-error-path" data-router-error-path>
+                Through {{ nas_name|default:"the ISP MikroTik" }}{% if via_tunnel %} (tunnel){% endif %}
+              </p>
+            </div>
+          </header>
 
+          <div class="client-router-error-banner" data-router-error-banner role="alert"></div>
+
+          <div class="client-router-error-body">
+            <p class="client-router-error-guide-label" data-router-guidance-label hidden>What to try next</p>
+            <ol class="client-router-error-steps" data-router-guidance hidden></ol>
+            <div class="client-router-error-actions" data-router-error-actions hidden>
+              {% if nas_url %}
+                <a class="btn btn-primary" href="{{ nas_url }}" data-router-fix-nas>Fix NAS</a>
+              {% endif %}
+              <button type="button" class="btn btn-ghost" data-router-retry>
+                <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 12a8 8 0 1 1-2.2-5.5" stroke-linecap="round"/>
+                  <path d="M20 4v5h-5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Retry
+              </button>
+            </div>
+            <p class="client-router-error-detail" data-router-error-detail></p>
+          </div>
+        </div>
+
+        <iframe
+          class="client-router-frame"
+          data-router-frame
+          title="Client router admin"
+          hidden
+        ></iframe>
+      </section>
+    {% else %}
+      <div class="client-cpe-unavailable client-router-unavailable">
+        <span class="client-router-unavailable-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+            <rect x="3.5" y="7" width="17" height="10" rx="2.2"/>
+            <path d="M7.5 17v2.5M16.5 17v2.5" stroke-linecap="round"/>
+            <path d="M9 12h6" stroke-linecap="round"/>
+          </svg>
+        </span>
+        <strong>Router admin unavailable</strong>
+        <p>Assign a NAS and ensure this client is PPPoE, static IP, or DHCP.</p>
+        <a class="btn btn-ghost btn-sm" href="{{ back_url }}">Back</a>
+      </div>
+    {% endif %}
+  </section>
 </div>
+{% endwith %}
 {% endblock %}
 
 {% block client_extra_js %}
@@ -185,23 +205,6 @@
 (function () {
   var root = document.getElementById("client-cpe-access");
   if (!root) return;
-
-  root.querySelectorAll("[data-toggle-secret]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var wrap = btn.closest(".mikrotik-secret");
-      if (!wrap) return;
-      var mask = wrap.querySelector("[data-secret-mask]");
-      var value = wrap.querySelector("[data-secret-value]");
-      var eye = btn.querySelector(".icon-eye");
-      var eyeOff = btn.querySelector(".icon-eye-off");
-      var showing = value && !value.hidden;
-      if (mask) mask.hidden = !showing;
-      if (value) value.hidden = showing;
-      if (eye) eye.hidden = !showing;
-      if (eyeOff) eyeOff.hidden = showing;
-      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
-    });
-  });
 
   root.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -232,28 +235,58 @@
   var viaTunnel = root.getAttribute("data-via-tunnel") === "1";
   var statusEl = root.querySelector("[data-router-status]");
   var stampEl = root.querySelector("[data-router-stamp]");
-  var hostEl = root.querySelector("[data-router-host]");
-  var portHint = root.querySelector("[data-router-port-hint]");
   var connecting = root.querySelector("[data-router-connecting]");
-  var stepsEl = root.querySelector("[data-router-steps]");
   var errorBox = root.querySelector("[data-router-error]");
   var errorBanner = root.querySelector("[data-router-error-banner]");
+  var errorTitle = root.querySelector("[data-router-error-title]");
+  var errorPath = root.querySelector("[data-router-error-path]");
   var errorDetail = root.querySelector("[data-router-error-detail]");
   var guidance = root.querySelector("[data-router-guidance]");
+  var guidanceLabel = root.querySelector("[data-router-guidance-label]");
   var errorActions = root.querySelector("[data-router-error-actions]");
+  var fixNasBtn = root.querySelector("[data-router-fix-nas]");
   var passwordForm = root.querySelector("[data-router-password-form]");
   var frame = root.querySelector("[data-router-frame]");
   var stage = root.querySelector("[data-router-stage]");
   var newTab = root.querySelector("[data-router-newtab]");
-  var copyBtn = root.querySelector("[data-copy-password]");
   var csrfInput = root.querySelector("[data-router-password-form] input[name=csrfmiddlewaretoken]");
   var inFlight = false;
   var fillTimer = null;
   var routerStarted = false;
 
+  var DEFAULT_PATH = errorPath ? errorPath.textContent : "";
+
+  function failureTitle(fc) {
+    if (fc === "nas_down") return viaTunnel ? "Tunnel or NAS is down" : "NAS is unreachable";
+    if (fc === "offline") return "Subscriber is offline";
+    if (fc === "unreachable") return "Router could not be reached";
+    if (fc === "not_eligible") return "Router access unavailable";
+    return "Could not open router";
+  }
+
+  function fillGuidance(items) {
+    if (!guidance) return;
+    guidance.innerHTML = "";
+    (items || []).forEach(function (item, index) {
+      var li = document.createElement("li");
+      var num = document.createElement("span");
+      num.className = "client-router-error-step-num";
+      num.textContent = String(index + 1);
+      var text = document.createElement("span");
+      text.className = "client-router-error-step-text";
+      text.textContent = item;
+      li.appendChild(num);
+      li.appendChild(text);
+      guidance.appendChild(li);
+    });
+    var hasItems = !!(items && items.length);
+    guidance.hidden = !hasItems;
+    if (guidanceLabel) guidanceLabel.hidden = !hasItems;
+  }
+
   function showConnecting(message) {
     root.classList.remove("is-connected", "is-failed");
-    if (stage) stage.classList.remove("is-live");
+    if (stage) stage.classList.remove("is-live", "is-failed");
     if (statusEl) statusEl.textContent = message || "Connecting…";
     if (stampEl) stampEl.textContent = "Connecting";
     if (connecting) connecting.hidden = false;
@@ -263,43 +296,6 @@
       frame.removeAttribute("src");
     }
     if (newTab) newTab.hidden = true;
-    setStepState("nas", "active");
-  }
-
-  function setStepState(key, state) {
-    if (!stepsEl) return;
-    var order = ["nas", "session", "web", "login"];
-    var idx = order.indexOf(key);
-    order.forEach(function (name, i) {
-      var li = stepsEl.querySelector('[data-step="' + name + '"]');
-      if (!li) return;
-      li.classList.remove("is-active", "is-done", "is-fail");
-      if (state === "active" && name === key) li.classList.add("is-active");
-      else if (state === "fail" && name === key) li.classList.add("is-fail");
-      else if (i < idx || (state === "done" && name === key)) li.classList.add("is-done");
-      else if (state === "done" && i <= idx) li.classList.add("is-done");
-    });
-  }
-
-  function markStepsFromData(data) {
-    var fc = (data && data.failure_class) || "";
-    if (data && data.ok) {
-      setStepState("login", "done");
-      return;
-    }
-    if (fc === "nas_down") {
-      setStepState("nas", "fail");
-      return;
-    }
-    if (fc === "offline") {
-      setStepState("session", "fail");
-      return;
-    }
-    if (fc === "wan_mgmt_blocked" || fc === "web_blocked" || fc === "unreachable") {
-      setStepState("web", "fail");
-      return;
-    }
-    setStepState("web", "fail");
   }
 
   function fillLogin(doc) {
@@ -364,52 +360,51 @@
   function showProxy(url, data) {
     root.classList.add("is-connected");
     root.classList.remove("is-failed");
-    if (stage) stage.classList.add("is-live");
-    if (hostEl) hostEl.textContent = data.cpe_host || "—";
-    if (portHint) portHint.textContent = data.port ? ("Port " + data.port) : "Live web UI";
+    if (stage) {
+      stage.classList.add("is-live");
+      stage.classList.remove("is-failed");
+    }
     if (statusEl) {
       if (data.authenticated) {
-        statusEl.textContent = "Signed in automatically. You can manage the client router from here.";
+        statusEl.textContent = "Signed in — manage the router below.";
       } else if (data.login_error) {
         statusEl.textContent = data.login_error;
-      } else if (data.www_enabled) {
-        statusEl.textContent = "WebFig enabled from the ISP side. Sign in if the router asks.";
       } else {
-        statusEl.textContent = "Router UI is open. Credentials above fill when the login form appears.";
+        statusEl.textContent = "Router open" + (data.cpe_host ? " at " + data.cpe_host : "") + ".";
       }
     }
     if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
     if (connecting) connecting.hidden = true;
     var needPass = !data.authenticated && !!data.needs_password;
     if (errorBox) errorBox.hidden = !needPass;
-    if (errorBanner && needPass) {
-      errorBanner.textContent = data.login_error
-        || "Could not sign in with the saved router password. Edit username/password above, then Save & connect.";
+    if (needPass) {
+      if (errorTitle) errorTitle.textContent = "Sign-in required";
+      if (errorPath) {
+        errorPath.textContent = data.cpe_host
+          ? ("Router at " + data.cpe_host)
+          : DEFAULT_PATH;
+      }
+      if (errorBanner) {
+        errorBanner.textContent = data.login_error
+          || "Could not sign in. Edit username/password, then Save & connect.";
+      }
+      fillGuidance(data.guidance || [
+        "Confirm the username and password for this client router.",
+        "Save & connect, then retry if the session still fails."
+      ]);
+      if (errorActions) errorActions.hidden = false;
+      if (fixNasBtn) fixNasBtn.hidden = true;
+      if (errorDetail) errorDetail.textContent = "";
     }
-    if (guidance && needPass) {
-      var items = data.guidance || [];
-      guidance.innerHTML = "";
-      items.forEach(function (item) {
-        var li = document.createElement("li");
-        li.textContent = item;
-        guidance.appendChild(li);
-      });
-      guidance.hidden = !items.length;
-    }
-    if (errorActions) errorActions.hidden = true;
-    if (errorDetail && needPass) errorDetail.textContent = "";
     if (data.cpe_username) {
       cpeUser = data.cpe_username;
       var userInput = passwordForm && passwordForm.querySelector("input[name=cpe_username]");
-      var userEl = root.querySelector("[data-router-user]");
-      if (userEl) userEl.textContent = cpeUser;
       if (userInput && !userInput.matches(":focus")) userInput.value = cpeUser;
     }
     if (newTab) {
       newTab.href = url;
       newTab.hidden = false;
     }
-    setStepState("login", data.authenticated ? "done" : "active");
     if (frame) {
       frame.hidden = false;
       frame.src = url;
@@ -423,7 +418,10 @@
     data = data || {};
     root.classList.add("is-failed");
     root.classList.remove("is-connected");
-    if (stage) stage.classList.remove("is-live");
+    if (stage) {
+      stage.classList.remove("is-live");
+      stage.classList.add("is-failed");
+    }
     var fc = data.failure_class || "";
     if (statusEl) statusEl.textContent = data.detail || data.error || "Could not open the client router.";
     if (stampEl) {
@@ -432,12 +430,6 @@
       else if (data.session_active && data.ping_ok) stampEl.textContent = "Blocked";
       else stampEl.textContent = "Failed";
     }
-    if (hostEl) hostEl.textContent = data.cpe_host || "—";
-    if (portHint) {
-      portHint.textContent = fc === "nas_down"
-        ? (viaTunnel ? "Cannot reach NAS over WireGuard" : "Cannot reach ISP MikroTik")
-        : "No web port answered";
-    }
     if (connecting) connecting.hidden = true;
     if (frame) {
       frame.hidden = true;
@@ -445,27 +437,27 @@
     }
     if (newTab) newTab.hidden = true;
     if (errorBox) errorBox.hidden = false;
+    if (errorTitle) errorTitle.textContent = failureTitle(fc);
+    if (errorPath) {
+      var pathBits = [];
+      if (data.cpe_host) pathBits.push("Client IP " + data.cpe_host);
+      else if (DEFAULT_PATH) pathBits.push(DEFAULT_PATH.trim());
+      if (data.checked_ports && data.checked_ports.length) {
+        pathBits.push("ports " + data.checked_ports.join(", "));
+      }
+      errorPath.textContent = pathBits.join(" · ") || DEFAULT_PATH;
+    }
     if (errorBanner) {
       errorBanner.textContent = data.detail || data.error || "Could not open the client router.";
     }
     if (errorDetail) {
       var ports = data.checked_ports || [];
-      errorDetail.textContent = ports.length ? ("Checked ports: " + ports.join(", ") + ".") : "";
+      var host = data.cpe_host ? ("Client IP " + data.cpe_host + ". ") : "";
+      errorDetail.textContent = host + (ports.length ? ("Checked ports: " + ports.join(", ") + ".") : "");
     }
-    if (guidance) {
-      var items = data.guidance || [];
-      guidance.innerHTML = "";
-      items.forEach(function (item) {
-        var li = document.createElement("li");
-        li.textContent = item;
-        guidance.appendChild(li);
-      });
-      guidance.hidden = !items.length;
-    }
-    if (errorActions) {
-      errorActions.hidden = fc !== "nas_down";
-    }
-    markStepsFromData(data);
+    fillGuidance(data.guidance || []);
+    if (errorActions) errorActions.hidden = false;
+    if (fixNasBtn) fixNasBtn.hidden = fc !== "nas_down";
   }
 
   function connect(body) {
@@ -495,8 +487,9 @@
         var data = result.data || {};
         if (data.cpe_username) {
           cpeUser = data.cpe_username;
-          var userEl = root.querySelector("[data-router-user]");
-          if (userEl) userEl.textContent = cpeUser;
+        }
+        if (typeof data.via_tunnel === "boolean") {
+          viaTunnel = data.via_tunnel;
         }
         if (data.ok && data.proxy_url) {
           showProxy(data.proxy_url, data);
@@ -509,7 +502,6 @@
           failure_class: "unreachable",
           detail: "Could not reach the billing server to start router access.",
           guidance: ["Check that the billing app is running, then retry."],
-          steps: [],
         });
       })
       .finally(function () {
@@ -539,30 +531,8 @@
       cpePass = passValue;
       root.setAttribute("data-cpe-user", userValue);
       root.setAttribute("data-cpe-pass", passValue);
-      var secret = root.querySelector("[data-router-secret]");
-      var empty = root.querySelector("[data-router-password-empty]");
-      var hint = root.querySelector("[data-router-password-hint]");
-      var passNode = root.querySelector("[data-router-password]");
-      var userEl = root.querySelector("[data-router-user]");
-      if (userEl) userEl.textContent = userValue;
-      if (secret) secret.hidden = false;
-      if (empty) empty.hidden = true;
-      if (hint) {
-        hint.hidden = false;
-        hint.textContent = "Saved on this client · tap the eye icon to reveal";
-      }
-      if (passNode) passNode.textContent = passValue;
       routerStarted = true;
       connect(new FormData(passwordForm));
-    });
-  }
-  if (copyBtn) {
-    copyBtn.addEventListener("click", function () {
-      if (!cpePass || !navigator.clipboard) return;
-      navigator.clipboard.writeText(cpePass).then(function () {
-        copyBtn.textContent = "Copied";
-        setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
-      });
     });
   }
   if (frame) {

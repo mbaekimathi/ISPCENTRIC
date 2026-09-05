@@ -59,22 +59,11 @@ ROLE_DASHBOARD_ONLY_NAV = {
     Employee.Role.MANAGER: [
         {"key": "isp_clients", "label": "ISP clients", "url_name": "roles:customer_support_isp_clients"},
         {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
-        {
-            "key": "approved_sales",
-            "label": "Approved sales",
-            "url_name": "roles:customer_support_approved_sales",
-        },
         {"key": "technician", "label": "Technician", "url_name": "roles:customer_support_technician"},
-        {"key": "allocated", "label": "Allocated", "url_name": "roles:customer_support_allocated"},
         {
             "key": "network_equipment",
             "label": "Network equipment",
             "url_name": "roles:customer_support_network_equipment",
-        },
-        {
-            "key": "allocate",
-            "label": "Allocate",
-            "url_name": "roles:customer_support_allocate",
         },
     ],
     Employee.Role.IT_SUPPORT: [
@@ -88,23 +77,13 @@ ROLE_DASHBOARD_ONLY_NAV = {
     Employee.Role.SALES: [
         {
             "key": "lead_management",
-            "label": "Lead Management",
+            "label": "Leads & registration",
             "url_name": "roles:sales_lead_management",
-        },
-        {
-            "key": "customer_registration",
-            "label": "Customer Registration",
-            "url_name": "roles:sales_customer_registration",
         },
         {
             "key": "sales_orders",
             "label": "Sales Orders",
             "url_name": "roles:sales_orders",
-        },
-        {
-            "key": "installation_requests",
-            "label": "Installation Requests",
-            "url_name": "roles:sales_installation_requests",
         },
         {
             "key": "promotions_discounts",
@@ -131,7 +110,7 @@ ROLE_DASHBOARD_ONLY_NAV = {
         {
             "key": "tickets",
             "label": "Tickets",
-            "url_name": "roles:technician_tickets",
+            "url_name": "roles:technician_tickets_pending_connections",
         },
         {
             "key": "fault_tickets",
@@ -146,8 +125,13 @@ ROLE_DASHBOARD_ONLY_NAV = {
     ],
 }
 
-# Tickets section links (pending activation + connected tickets).
+# Tickets section links (pending connection → activation → connected).
 TECHNICIAN_TICKETS_NAV = [
+    {
+        "key": "tickets_pending_connections",
+        "label": "Pending connections",
+        "url_name": "roles:technician_tickets_pending_connections",
+    },
     {
         "key": "tickets",
         "label": "Pending activation",
@@ -216,7 +200,7 @@ SWITCHABLE_CLIENTS_CACHE_KEY = "switchable_clients:v1"
 SWITCHABLE_CLIENTS_TTL = 60
 
 
-# Customer support sales section links (shown on Sales / Approved sales pages).
+# Customer support sales section links (shown on Sales and related pages only).
 CUSTOMER_SUPPORT_SALES_NAV = [
     {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
     {
@@ -224,7 +208,22 @@ CUSTOMER_SUPPORT_SALES_NAV = [
         "label": "Approved sales",
         "url_name": "roles:customer_support_approved_sales",
     },
+    {
+        "key": "technician",
+        "label": "Technician",
+        "url_name": "roles:customer_support_technician",
+    },
+    {"key": "allocated", "label": "Allocated", "url_name": "roles:customer_support_allocated"},
+    {
+        "key": "allocate",
+        "label": "Allocate",
+        "url_name": "roles:customer_support_allocate",
+    },
 ]
+
+CUSTOMER_SUPPORT_SALES_PAGES = frozenset(
+    item["key"] for item in CUSTOMER_SUPPORT_SALES_NAV
+)
 
 # Customer support equipment section links.
 CUSTOMER_SUPPORT_EQUIPMENT_NAV = [
@@ -232,11 +231,6 @@ CUSTOMER_SUPPORT_EQUIPMENT_NAV = [
         "key": "network_equipment",
         "label": "Network equipment",
         "url_name": "roles:customer_support_network_equipment",
-    },
-    {
-        "key": "allocate",
-        "label": "Allocate",
-        "url_name": "roles:customer_support_allocate",
     },
 ]
 
@@ -272,17 +266,17 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
     elif role == Employee.Role.TECHNICIAN and current_page in {
         "tickets",
         "tickets_connected",
+        "tickets_pending_connections",
     }:
         items.extend(TECHNICIAN_TICKETS_NAV)
-    elif role == Employee.Role.MANAGER and current_page in {
-        "sales",
-        "approved_sales",
-    }:
+    elif role == Employee.Role.MANAGER and (
+        current_page in CUSTOMER_SUPPORT_SALES_PAGES
+        or current_page == "technician"
+    ):
         items.extend(CUSTOMER_SUPPORT_SALES_NAV)
     elif role == Employee.Role.MANAGER and current_page in {
         "network_equipment",
         "register_equipment",
-        "allocate",
     }:
         equipment_nav = list(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
         # Register equipment is only shown on the network equipment page.
@@ -330,6 +324,8 @@ def page_key_from_path(path: str) -> str | None:
         return "isp_onboarding_settings"
     if "/company-payment-links/" in path:
         return "company_payment_links"
+    if "/company-themes/" in path:
+        return "company_themes"
     if "/company-system-settings/communications/" in path or "/system-settings/communications/" in path:
         return "communications"
     if "/company-system-settings/payments/" in path or "/system-settings/payments/" in path:
@@ -340,6 +336,8 @@ def page_key_from_path(path: str) -> str | None:
         return "installations"
     if "/tickets/connected/" in path:
         return "tickets_connected"
+    if "/tickets/pending-connections/" in path:
+        return "tickets_pending_connections"
     if "/tickets/" in path:
         return "tickets"
     if "/fault-tickets/" in path:
@@ -348,14 +346,10 @@ def page_key_from_path(path: str) -> str | None:
         return "network_equipment"
     if "/customer-support/allocate/" in path or "/manager/allocate/" in path:
         return "allocate"
-    if "/lead-management/" in path:
+    if "/lead-management/" in path or "/customer-registration/" in path:
         return "lead_management"
-    if "/customer-registration/" in path:
-        return "customer_registration"
     if "/sales-orders/" in path:
         return "sales_orders"
-    if "/installation-requests/" in path:
-        return "installation_requests"
     if "/promotions-discounts/" in path:
         return "promotions_discounts"
     if "/commissions/" in path:

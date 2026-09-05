@@ -1,0 +1,269 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_nav %}
+  {% include "accounts/includes/it_support_system_settings_nav.html" %}
+{% endblock %}
+
+{% block staff_content %}
+<section class="css-themes-page" data-company-themes>
+  <div class="css-themes-shell">
+    <header class="css-hub-hero css-themes-hero">
+      <div class="css-hub-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+          <rect x="8" y="2.8" width="8" height="18.4" rx="2.2"/>
+          <path d="M10.5 5.2h3M11 18.8h2" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <p class="css-hub-kicker">Client-side look</p>
+      <h2 class="css-hub-title">{{ page_title }}</h2>
+      <p class="css-hub-lead">{{ page_subtitle }}</p>
+    </header>
+
+    <div class="css-themes-toolbar">
+      <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back to Company System Settings</a>
+      {% if theme_organizations %}
+        <form method="get" class="css-themes-org-form" id="css-themes-org-form">
+          <label for="css-themes-org">ISP client</label>
+          <div class="pppoe-select">
+            <select name="org" id="css-themes-org" class="form-control">
+              {% for org in theme_organizations %}
+                <option value="{{ org.pk }}" {% if selected_organization and org.pk == selected_organization.pk %}selected{% endif %}>
+                  {{ org.name }} · {{ org.join_code }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+
+    {% if not theme_organizations %}
+      <div class="notice notice-error">
+        No ISP clients with a join code are registered yet. Register an ISP first, then preview payment pages here.
+      </div>
+    {% else %}
+      <article class="css-themes-card css-themes-card--adverts" role="region" aria-labelledby="css-adverts-title">
+        <div class="css-themes-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M4.5 8.5h9.5l5.5 3.5-5.5 3.5H4.5V8.5Z"/>
+            <path d="M7.2 15.5v2.2a1.6 1.6 0 0 0 1.6 1.6h1.1" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="css-themes-card-body">
+          <h3 id="css-adverts-title">Adverts · Click to earn</h3>
+          <p>
+            When on, Wi‑Fi pay and pause pages show a <strong>Click to earn</strong> link.
+            It opens this ISP’s adverts page where subscribers can browse and post ads.
+          </p>
+          {% if selected_organization and earn_url %}
+            <p class="css-themes-card-meta">{{ selected_organization.name }} · {{ earn_url }}</p>
+          {% endif %}
+        </div>
+        <form method="post" class="css-themes-adverts-form">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="toggle_adverts">
+          <input type="hidden" name="org" value="{{ selected_organization.pk }}">
+          <label class="css-themes-toggle">
+            <input
+              type="checkbox"
+              name="adverts_enabled"
+              value="1"
+              {% if adverts_enabled %}checked{% endif %}
+            >
+            <span>{% if adverts_enabled %}Adverts page is on{% else %}Adverts page is off{% endif %}</span>
+          </label>
+          <div class="field" style="margin-top:0.75rem;text-align:left;">
+            <label for="css-adverts-redirect">External redirect link (optional)</label>
+            <input
+              class="form-control"
+              type="url"
+              name="adverts_redirect_url"
+              id="css-adverts-redirect"
+              value="{{ adverts_redirect_url }}"
+              placeholder="https://example.com/earn"
+              autocomplete="off"
+            >
+            <p class="css-themes-card-meta" style="margin-top:0.35rem;">
+              Leave blank for the built-in page. Save applies toggle + link.
+            </p>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top:0.65rem;">Save Click to earn</button>
+        </form>
+        <div class="css-themes-card-actions">
+          <button
+            type="button"
+            class="btn btn-ghost"
+            data-pay-preview
+            data-preview-title="Click to earn"
+            data-preview-url="{{ earn_preview_url }}"
+            {% if not earn_preview_url or not adverts_enabled %}disabled{% endif %}
+          >
+            Open adverts popup
+          </button>
+        </div>
+      </article>
+
+      <div class="css-themes-grid" role="list">
+        <article class="css-themes-card" role="listitem">
+          <div class="css-themes-card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M5 8.5h14v8.2a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V8.5Z"/>
+              <path d="M8.5 8.5V6.8A3.5 3.5 0 0 1 12 3.3a3.5 3.5 0 0 1 3.5 3.5V8.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="css-themes-card-body">
+            <h3>Hotspot payment page</h3>
+            <p>Phone Wi‑Fi captive portal — packages, M-Pesa, and voucher entry for Hotspot clients.</p>
+            {% if selected_organization %}
+              <p class="css-themes-card-meta">{{ selected_organization.name }} · /hotspot/{{ selected_organization.join_code }}/pay/?preview=demo</p>
+            {% endif %}
+          </div>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-pay-preview
+            data-preview-title="Hotspot payment page"
+            data-preview-url="{{ hotspot_demo_preview_url }}"
+            {% if not hotspot_demo_preview_url %}disabled{% endif %}
+          >
+            Open popup preview
+          </button>
+        </article>
+
+        <article class="css-themes-card" role="listitem">
+          <div class="css-themes-card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M4.5 16.5 12 5.5l7.5 11H4.5Z"/>
+              <path d="M12 10.2v3.4M12 16.2h.01" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="css-themes-card-body">
+            <h3>PPPoE payment page</h3>
+            <p>Home / CPE renew portal — account lookup and package payment for dialed clients.</p>
+            {% if selected_organization %}
+              <p class="css-themes-card-meta">{{ selected_organization.name }} · /pppoe/{{ selected_organization.join_code }}/pay/?preview=demo</p>
+            {% endif %}
+          </div>
+          <button
+            type="button"
+            class="btn btn-primary"
+            data-pay-preview
+            data-preview-title="PPPoE payment page"
+            data-preview-url="{{ pppoe_demo_preview_url }}"
+            {% if not pppoe_demo_preview_url %}disabled{% endif %}
+          >
+            Open popup preview
+          </button>
+        </article>
+
+        <article class="css-themes-card css-themes-card--paused" role="listitem">
+          <div class="css-themes-card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+              <circle cx="12" cy="12" r="8.2"/>
+              <path d="M10 9.2v5.6M14 9.2v5.6" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="css-themes-card-body">
+            <h3>Subscription paused</h3>
+            <p>
+              What clients see when staff pauses their package — internet off,
+              remaining time frozen, no renew payment until resume.
+            </p>
+            {% if selected_organization %}
+              <p class="css-themes-card-meta">{{ selected_organization.name }} · preview=paused</p>
+            {% endif %}
+          </div>
+          <div class="css-themes-card-actions">
+            <button
+              type="button"
+              class="btn btn-primary"
+              data-pay-preview
+              data-preview-title="Hotspot — paused"
+              data-preview-url="{{ hotspot_paused_preview_url }}"
+              {% if not hotspot_paused_preview_url %}disabled{% endif %}
+            >
+              Hotspot paused popup
+            </button>
+            <button
+              type="button"
+              class="btn btn-ghost"
+              data-pay-preview
+              data-preview-title="PPPoE — paused"
+              data-preview-url="{{ pppoe_paused_preview_url }}"
+              {% if not pppoe_paused_preview_url %}disabled{% endif %}
+            >
+              PPPoE paused popup
+            </button>
+          </div>
+        </article>
+      </div>
+      <p class="css-themes-hint" data-pay-preview-hint hidden role="status"></p>
+    {% endif %}
+  </div>
+</section>
+
+<script>
+(function () {
+  var orgSelect = document.getElementById("css-themes-org");
+  var orgForm = document.getElementById("css-themes-org-form");
+  if (orgSelect && orgForm) {
+    orgSelect.addEventListener("change", function () {
+      orgForm.submit();
+    });
+  }
+
+  var hint = document.querySelector("[data-pay-preview-hint]");
+  function showHint(message) {
+    if (!hint) return;
+    hint.hidden = !message;
+    hint.textContent = message || "";
+  }
+
+  document.querySelectorAll("[data-pay-preview]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var url = btn.getAttribute("data-preview-url") || "";
+      var title = btn.getAttribute("data-preview-title") || "Payment page";
+      if (!url) {
+        showHint("No payment page URL is available for this ISP.");
+        return;
+      }
+      var width = 390;
+      var height = 780;
+      var left = Math.max(0, Math.round((window.screen.width - width) / 2));
+      var top = Math.max(0, Math.round((window.screen.height - height) / 2));
+      var features = [
+        "popup=yes",
+        "noopener",
+        "noreferrer",
+        "width=" + width,
+        "height=" + height,
+        "left=" + left,
+        "top=" + top,
+        "menubar=no",
+        "toolbar=no",
+        "location=yes",
+        "status=no",
+        "scrollbars=yes",
+        "resizable=yes",
+      ].join(",");
+      var win = window.open(url, "ispcentric-pay-preview", features);
+      if (!win) {
+        showHint("Popup blocked. Allow popups for this site, then try again.");
+        return;
+      }
+      try {
+        win.focus();
+      } catch (err) {}
+      showHint("Opened “" + title + "” in a phone-sized popup.");
+    });
+  });
+})();
+</script>
+{% endblock %}

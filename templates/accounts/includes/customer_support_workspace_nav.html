@@ -1,0 +1,31 @@
+{# In-page chips for Customer Support operations. Expects current_page. #}
+<nav class="cs-workspace-nav" aria-label="Customer support sections">
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'dashboard' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support' %}"
+  >Dashboard</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'sales' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_sales' %}"
+  >Sales</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'approved_sales' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_approved_sales' %}"
+  >Approved sales</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'technician' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_technician' %}"
+  >Technician</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'allocated' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_allocated' %}"
+  >Allocated</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'network_equipment' or current_page == 'register_equipment' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_network_equipment' %}"
+  >Network equipment</a>
+  <a
+    class="cs-workspace-nav-link{% if current_page == 'allocate' %} is-active{% endif %}"
+    href="{% url 'roles:customer_support_allocate' %}"
+  >Allocate</a>
+</nav>

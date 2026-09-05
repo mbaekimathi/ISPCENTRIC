@@ -15,9 +15,14 @@
       <h2 class="cs-list-title">{{ page_title }}</h2>
       <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="cs-list-count">
-      <strong>{% if equipment_count %}{{ equipment_count }}{% else %}0{% endif %}</strong>
-      <span>{% if equipment_count == 1 %}item{% else %}items{% endif %}</span>
+    <div class="cs-list-toolbar">
+      <a class="btn btn-primary" href="{% url 'roles:customer_support_network_equipment' %}?register=1">
+        Register equipment
+      </a>
+      <div class="cs-list-count">
+        <strong>{% if equipment_count %}{{ equipment_count }}{% else %}0{% endif %}</strong>
+        <span>{% if equipment_count == 1 %}item{% else %}items{% endif %}</span>
+      </div>
     </div>
   </header>
 

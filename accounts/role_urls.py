@@ -83,6 +83,16 @@ urlpatterns = [
         name="customer_support_sales",
     ),
     path(
+        "customer-support/places/",
+        role_dashboards.manager_places,
+        name="customer_support_places",
+    ),
+    path(
+        "customer-support/places/details/",
+        role_dashboards.manager_place_details,
+        name="customer_support_place_details",
+    ),
+    path(
         "customer-support/approved-sales/",
         role_dashboards.manager_approved_sales,
         name="customer_support_approved_sales",
@@ -261,6 +271,11 @@ urlpatterns = [
         name="it_support_company_system_settings",
     ),
     path(
+        "it-support/company-themes/",
+        role_dashboards.it_support_company_themes,
+        name="it_support_company_themes",
+    ),
+    path(
         "it-support/company-system-settings/communications/",
         role_dashboards.it_support_settings_communications,
         name="it_support_settings_communications",
@@ -318,11 +333,6 @@ urlpatterns = [
         name="sales_orders",
     ),
     path(
-        "sales/installation-requests/",
-        role_dashboards.sales_installation_requests,
-        name="sales_installation_requests",
-    ),
-    path(
         "sales/promotions-discounts/",
         role_dashboards.sales_promotions_discounts,
         name="sales_promotions_discounts",
@@ -362,6 +372,21 @@ urlpatterns = [
         "technician/tickets/",
         role_dashboards.technician_tickets,
         name="technician_tickets",
+    ),
+    path(
+        "technician/tickets/pending-connections/",
+        role_dashboards.technician_tickets_pending_connections,
+        name="technician_tickets_pending_connections",
+    ),
+    path(
+        "technician/tickets/pending-connections/<int:customer_id>/receive/",
+        role_dashboards.technician_ticket_receive,
+        name="technician_ticket_receive",
+    ),
+    path(
+        "technician/tickets/pending-connections/<int:customer_id>/done/",
+        role_dashboards.technician_ticket_mark_done,
+        name="technician_ticket_mark_done",
     ),
     path(
         "technician/tickets/connected/",

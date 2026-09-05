@@ -19,6 +19,7 @@ from accounts.security import validate_employee_password
 from accounts.models import (
     CommunicationSettings,
     Employee,
+    Lead,
     Organization,
     PaymentGateway,
 )
@@ -617,7 +618,8 @@ class SalesCustomerRegistrationTests(TestCase):
             role=Employee.Role.SALES,
         )
         self.client = Client()
-        self.url = reverse("roles:sales_customer_registration")
+        self.url = reverse("roles:sales_lead_management")
+        self.legacy_url = reverse("roles:sales_customer_registration")
 
     def test_page_loads_without_employee_organization(self):
         self.client.force_login(self.sales_user)
@@ -631,11 +633,19 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(response, 'id="customer-register-form"')
         self.assertContains(response, 'id="customer-register-modal"')
         self.assertContains(response, "Register customer")
+        self.assertContains(response, "Register potential client")
+        self.assertContains(response, 'id="lead-register-modal"')
         self.assertContains(response, "PPPoE client details")
         self.assertContains(response, "Business (ISP) details")
         self.assertNotContains(response, "Your account is not linked to an organization.")
         self.assertNotContains(response, "PPPoE username")
         self.assertNotContains(response, "Select MikroTik router")
+
+    def test_legacy_customer_registration_url_redirects(self):
+        self.client.force_login(self.sales_user)
+        response = self.client.get(self.legacy_url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], self.url)
 
     def test_register_personal_client(self):
         self.client.force_login(self.sales_user)
@@ -742,8 +752,8 @@ class SalesCustomerRegistrationTests(TestCase):
                 "isp-company_name": "NEW FIBER",
                 "isp-country_code": "254|Kenya",
                 "isp-phone": "712345678",
-                "isp-password1": STRONG_PASSWORD,
-                "isp-password2": STRONG_PASSWORD,
+                "isp-password1": "123456",
+                "isp-password2": "123456",
             },
         )
         self.assertEqual(response.status_code, 302)
@@ -864,6 +874,7 @@ class SalesCustomerRegistrationTests(TestCase):
                     "pppoe_password": "pass1234",
                     "cpe_username": "admin",
                     "cpe_password": "",
+                    "equipment_serial": ["SN-ONU-1001", "SN-CPE-2002"],
                 },
             )
         self.assertEqual(response.status_code, 302)
@@ -873,6 +884,7 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertEqual(customer.assigned_technician_id, tech.pk)
         self.assertEqual(customer.registered_by_id, tech_user.pk)
         self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.equipment_serials, ["SN-ONU-1001", "SN-CPE-2002"])
         self.assertEqual(len(started), 1)
 
         listed = self.client.get(reverse("roles:technician_installations"))
@@ -880,7 +892,7 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(listed, "My registered clients")
         self.assertContains(listed, "FIELD CLIENT")
         self.assertContains(listed, customer.account_number)
-        self.assertContains(listed, "Inactive")
+        self.assertContains(listed, "Pending activation")
         self.assertContains(listed, "Alpha ISP")
         self.assertContains(listed, "Alpha NAS")
 
@@ -937,7 +949,9 @@ class SalesCustomerRegistrationTests(TestCase):
         dash = self.client.get(reverse("roles:technician"))
         self.assertEqual(dash.status_code, 200)
         self.assertContains(dash, "Tickets")
-        self.assertContains(dash, reverse("roles:technician_tickets"))
+        self.assertContains(
+            dash, reverse("roles:technician_tickets_pending_connections")
+        )
 
         pending_page = self.client.get(reverse("roles:technician_tickets"))
         self.assertEqual(pending_page.status_code, 200)
@@ -946,6 +960,9 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(pending_page, pending.account_number)
         self.assertNotContains(pending_page, "Active Client")
         self.assertContains(pending_page, reverse("roles:technician_tickets_connected"))
+        self.assertContains(
+            pending_page, reverse("roles:technician_tickets_pending_connections")
+        )
 
         connected_page = self.client.get(reverse("roles:technician_tickets_connected"))
         self.assertEqual(connected_page.status_code, 200)
@@ -955,6 +972,182 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(connected_page, active.account_number)
         self.assertContains(connected_page, "Active")
         self.assertContains(connected_page, "Pending activation")
+
+    def test_technician_pending_connections_receive_and_done(self):
+        tech_user = User.objects.create_user("tech-recv", password="pass123")
+        tech = Employee.objects.create(
+            user=tech_user,
+            organization=None,
+            login_code="556700",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        ticket = Customer.objects.create(
+            organization=None,
+            full_name="SITE VISIT CLIENT",
+            phone="0712333444",
+            account_number="TECH-CONN-1",
+            sales_ticket_number="PPP-CONN-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.NEW,
+            address="WESTLANDS",
+            building_name="TOWER A",
+        )
+
+        self.client.force_login(tech_user)
+        page = self.client.get(reverse("roles:technician_tickets_pending_connections"))
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, "Pending connections")
+        self.assertContains(page, "SITE VISIT CLIENT")
+        self.assertContains(page, "Receive ticket")
+
+        receive = self.client.post(
+            reverse("roles:technician_ticket_receive", args=[ticket.pk])
+        )
+        self.assertEqual(receive.status_code, 302)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Customer.Status.IN_PROGRESS)
+        self.assertEqual(ticket.assigned_technician_id, tech.pk)
+
+        in_progress_page = self.client.get(
+            reverse("roles:technician_tickets_pending_connections")
+        )
+        self.assertContains(in_progress_page, "In progress")
+        self.assertContains(in_progress_page, "Mark done")
+
+        done = self.client.post(
+            reverse("roles:technician_ticket_mark_done", args=[ticket.pk])
+        )
+        self.assertEqual(done.status_code, 302)
+        ticket.refresh_from_db()
+        self.assertEqual(ticket.status, Customer.Status.INACTIVE)
+        self.assertEqual(ticket.get_status_display(), "Pending activation")
+
+        activation_page = self.client.get(reverse("roles:technician_tickets"))
+        self.assertContains(activation_page, "SITE VISIT CLIENT")
+        self.assertContains(activation_page, "Pending activation")
+
+
+class CustomerSupportSalesRegistrationTests(TestCase):
+    def setUp(self):
+        self.manager_user = User.objects.create_user("cs-manager", password="pass123")
+        Employee.objects.create(
+            user=self.manager_user,
+            organization=None,
+            login_code="991122",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.MANAGER,
+        )
+        self.sales_user = User.objects.create_user("sales-rep", password="pass123")
+        Employee.objects.create(
+            user=self.sales_user,
+            organization=None,
+            login_code="991123",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.SALES,
+        )
+        self.other_sales_user = User.objects.create_user("sales-other", password="pass123")
+        Employee.objects.create(
+            user=self.other_sales_user,
+            organization=None,
+            login_code="991124",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.SALES,
+        )
+        self.client = Client()
+        self.url = reverse("roles:customer_support_sales")
+        self.sales_url = reverse("roles:sales_lead_management")
+
+    def test_page_shows_register_potential_client(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Register potential client")
+        self.assertContains(response, 'id="lead-register-modal"')
+        self.assertContains(response, "potential clients as leads")
+
+    def test_register_potential_client_lead(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.post(
+            self.url,
+            {
+                "customer_category": "home",
+                "full_name": "Pending Client",
+                "country_code": "254|Kenya",
+                "phone": "711223344",
+                "alt_country_code": "254|Kenya",
+                "alternative_phone": "",
+                "email": "",
+                "location": "Kilimani, Nairobi",
+                "location_lat": "-1.292100",
+                "location_lng": "36.821900",
+                "service_type": "home_internet",
+                "preferred_package": "",
+                "preferred_isp": "",
+                "lead_source": "walk_in",
+                "preferred_installation_date": "",
+                "customer_requirements": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        lead = Lead.objects.get(full_name="PENDING CLIENT")
+        self.assertEqual(lead.created_by_id, self.manager_user.pk)
+        self.assertEqual(lead.status, Lead.Status.NEW)
+        self.assertTrue(lead.lead_number)
+
+        listed = self.client.get(self.url)
+        self.assertContains(listed, "PENDING CLIENT")
+        self.assertContains(listed, lead.lead_number)
+
+    def test_customer_support_lists_all_sales_role_leads(self):
+        Lead.objects.create(
+            lead_number="LD-0001-AAAAAA",
+            full_name="SALES ONE LEAD",
+            phone="+254711000001",
+            location="Nairobi",
+            location_lat="-1.29",
+            location_lng="36.82",
+            created_by=self.sales_user,
+        )
+        Lead.objects.create(
+            lead_number="LD-0001-BBBBBB",
+            full_name="SALES TWO LEAD",
+            phone="+254711000002",
+            location="Mombasa",
+            location_lat="-4.04",
+            location_lng="39.67",
+            created_by=self.other_sales_user,
+        )
+        self.client.force_login(self.manager_user)
+        response = self.client.get(self.url)
+        self.assertContains(response, "SALES ONE LEAD")
+        self.assertContains(response, "SALES TWO LEAD")
+
+    def test_sales_lead_management_shows_only_own_leads(self):
+        Lead.objects.create(
+            lead_number="LD-0001-CCCCCC",
+            full_name="OWN LEAD",
+            phone="+254711000003",
+            location="Kisumu",
+            location_lat="-0.09",
+            location_lng="34.76",
+            created_by=self.sales_user,
+        )
+        Lead.objects.create(
+            lead_number="LD-0001-DDDDDD",
+            full_name="OTHER LEAD",
+            phone="+254711000004",
+            location="Nakuru",
+            location_lat="-0.30",
+            location_lng="36.08",
+            created_by=self.other_sales_user,
+        )
+        self.client.force_login(self.sales_user)
+        response = self.client.get(self.sales_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Register potential client")
+        self.assertContains(response, "OWN LEAD")
+        self.assertNotContains(response, "OTHER LEAD")
 
 
 class EmployeeAdminOrgOptionalTests(TestCase):

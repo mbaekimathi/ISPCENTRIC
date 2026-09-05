@@ -211,6 +211,16 @@ urlpatterns = [
         name="hotspot_pay",
     ),
     path(
+        "hotspot/<str:join_code>/earn/",
+        views.click_to_earn,
+        name="click_to_earn",
+    ),
+    path(
+        "pppoe/<str:join_code>/earn/",
+        views.click_to_earn,
+        name="pppoe_click_to_earn",
+    ),
+    path(
         "pppoe/<str:join_code>/pay/",
         views.pppoe_pay,
         name="pppoe_pay",

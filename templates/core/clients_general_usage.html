@@ -3,219 +3,303 @@
 {% block title %}General usage — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page client-usage-analysis-page clients-general-usage-page" data-active-tab="{{ active_tab|default:'pppoe' }}">
-
-<nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
-  <a
-    class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
-    href="?tab=pppoe&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
-    {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
-  >
-    <span class="clients-seg-ico" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
-    </span>
-    <span class="clients-seg-label">PPPoE</span>
-  </a>
-  <a
-    class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
-    href="?tab=hotspot&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
-    {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
-  >
-    <span class="clients-seg-ico" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
-    </span>
-    <span class="clients-seg-label">Hotspot</span>
-  </a>
-</nav>
-
-<div class="clients-general-usage-tools">
-  <form class="clients-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
-    <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
-    <input type="hidden" name="hours" value="{{ trend_hours }}">
-    <label class="clients-router-filter-label" for="usage-router-filter">MikroTik</label>
-    <div class="clients-router-select">
-      <select
-        id="usage-router-filter"
-        name="router"
-        class="clients-router-filter-select"
-        data-usage-router-filter
-        aria-label="Filter usage by MikroTik router"
-        onchange="this.form.submit()"
-      >
-        <option value="" {% if not clients_router_param %}selected{% endif %}>All routers</option>
-        <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No router assigned</option>
-        {% for router in client_routers %}
-          <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
-            {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
-          </option>
-        {% endfor %}
-      </select>
-    </div>
-  </form>
-  {% if clients_router_param %}
-    <p class="clients-general-usage-router-note">
-      Showing {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} usage for
-      <strong>{% if router_filter_label %}{{ router_filter_label }}{% elif clients_router_param == "none" %}unassigned clients{% else %}selected router{% endif %}</strong>.
-      <a href="?tab={{ active_tab|default:'pppoe' }}&amp;hours={{ trend_hours }}">Clear filter</a>
-    </p>
-  {% endif %}
-</div>
-
-<nav class="client-cat-nav" aria-label="Usage ranges">
-  <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=6{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">6 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=24{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">24 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=72{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">3 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=168{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">7 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=720{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">30 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=8760{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">1 year</a>
-</nav>
-
-{% if auto_widened %}
-<p class="panel-sub clients-general-usage-widen-note">
-  Little or no traffic in the last {{ requested_range_label|default:requested_hours }}; showing the last {{ range_label|default:trend_hours }} instead.
-</p>
-{% endif %}
-
-<section class="panel client-hero" id="usage-overview" data-cat="live">
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="client-cat client-cat-live">
-        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
-        {% if active_tab == 'hotspot' %}Hotspot usage{% else %}PPPoE usage{% endif %}
-      </p>
-      <h2>{% if active_tab == 'hotspot' %}Hotspot clients{% else %}PPPoE clients{% endif %}</h2>
-      <p class="panel-sub" data-usage-summary-copy>
-        {% if active_tab == 'hotspot' %}
-          Hotspot analytics for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
-        {% else %}
-          PPPoE analytics for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
-        {% endif %}
-      </p>
-    </div>
-    <div class="mikrotik-detail-actions">
-      <span class="mikrotik-live-stamp" data-usage-stamp>Loading…</span>
-      <button type="button" class="btn btn-ghost" data-usage-refresh>Refresh</button>
-    </div>
-  </div>
-
-  <dl class="client-kv-row client-usage-stats" id="usage-summary">
-    <div class="client-kv client-usage-stat" data-ico="clients">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients</dt>
-      <dd><strong data-sum="clients">—</strong><span><span data-sum="clients-tracked">—</span> with samples in this window</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="uptime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online now</dt>
-      <dd><strong data-sum="online-now">—</strong><span><span data-sum="online">—</span> of meaningful samples online</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="down">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
-      <dd><strong data-sum="peak-down">—</strong><span>Highest measured / estimated rate</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="data">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
-      <dd><strong data-sum="data">—</strong><span>Transferred in this window</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="top">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Highest user</dt>
-      <dd><strong data-sum="top-user">—</strong><span data-sum="top-user-data">Most data transferred</span></dd>
-    </div>
-    {% if active_tab == 'hotspot' %}
-    <div class="client-kv client-usage-stat" data-ico="gadgets">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets online</dt>
-      <dd><strong data-sum="gadgets">—</strong><span>Connected right now</span></dd>
-    </div>
-    {% endif %}
-  </dl>
-</section>
-
-<section
-  class="panel"
-  id="usage-charts"
-  data-cat="live"
-  data-trends-url="{{ trends_url }}"
-  data-hours="{{ trend_hours }}"
-  data-tab="{{ active_tab|default:'pppoe' }}"
-  data-router="{% if clients_router_param %}{{ clients_router_param|escape }}{% endif %}"
-  data-range-label="{{ range_label|default:trend_hours|escape }}"
+<div
+  class="client-detail-page client-usage-analysis-page clients-general-usage-page is-tab-{{ active_tab|default:'pppoe' }}"
+  data-active-tab="{{ active_tab|default:'pppoe' }}"
 >
-  <div class="client-usage-chart-grid">
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
-        <h3>Online clients</h3>
-        <p>How many {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients had an active session in each interval.</p>
-      </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-online" height="220"></canvas>
+  <section class="clients-usage-workspace">
+    <header class="clients-usage-workspace-head">
+      <div class="clients-usage-workspace-title">
+        <div class="clients-usage-workspace-brand">
+          <span class="clients-usage-workspace-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M4 19V9m5 10V5m5 14v-7m5 7V8" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div>
+            <p class="clients-usage-workspace-kicker">Subscriber analytics</p>
+            <h1>General usage</h1>
+          </div>
+        </div>
+        <p class="clients-usage-workspace-lead">
+          {% if active_tab == 'hotspot' %}
+            Hotspot traffic, presence, and top users for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+          {% else %}
+            PPPoE traffic, presence, and top users for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+          {% endif %}
+        </p>
+        <p class="clients-usage-workspace-summary">
+          <span class="clients-usage-pill tone-{{ active_tab|default:'pppoe' }}">{% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}</span>
+          <span class="clients-usage-pill tone-range">{{ range_label|default:trend_hours }}</span>
+          {% if router_filter_label %}
+            <span class="clients-usage-pill tone-router">{{ router_filter_label }}</span>
+          {% elif clients_router_param == "none" %}
+            <span class="clients-usage-pill tone-router">Unassigned</span>
+          {% else %}
+            <span class="clients-usage-pill tone-router">All routers</span>
+          {% endif %}
+        </p>
       </div>
-    </article>
+      <div class="clients-usage-workspace-actions">
+        <a class="btn btn-ghost btn-sm clients-usage-hero-btn" href="{% url 'core:my_clients' %}?tab={{ active_tab|default:'pppoe' }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Clients
+        </a>
+        <button type="button" class="btn btn-primary btn-sm clients-usage-hero-btn" data-usage-refresh>
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg>
+          Refresh
+        </button>
+      </div>
+    </header>
 
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
-        <h3>Aggregate download &amp; upload</h3>
-        <p>Combined live speed samples for this service (kbps).</p>
-      </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-throughput" height="220"></canvas>
-      </div>
-    </article>
+    <div class="clients-usage-toolbar">
+      <nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
+        <a
+          class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
+          href="?tab=pppoe&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+          {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
+        >
+          <span class="clients-seg-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+          </span>
+          <span class="clients-seg-label">PPPoE</span>
+        </a>
+        <a
+          class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
+          href="?tab=hotspot&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+          {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
+        >
+          <span class="clients-seg-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+          </span>
+          <span class="clients-seg-label">Hotspot</span>
+        </a>
+      </nav>
 
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Traffic</p>
-        <h3>Data transferred</h3>
-        <p>Total data moved between samples (MB).</p>
-      </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-data" height="220"></canvas>
-      </div>
-    </article>
+      <form class="clients-router-filter clients-usage-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
+        <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
+        <input type="hidden" name="hours" value="{{ trend_hours }}">
+        <label class="clients-router-filter-label" for="usage-router-filter">MikroTik</label>
+        <div class="clients-router-select">
+          <select
+            id="usage-router-filter"
+            name="router"
+            class="clients-router-filter-select"
+            data-usage-router-filter
+            aria-label="Filter usage by MikroTik router"
+            onchange="this.form.submit()"
+          >
+            <option value="" {% if not clients_router_param %}selected{% endif %}>All routers</option>
+            <option value="none" {% if clients_router_param == "none" %}selected{% endif %}>No router assigned</option>
+            {% for router in client_routers %}
+              <option value="{{ router.id }}" {% if clients_router_id == router.id %}selected{% endif %}>
+                {{ router.name }}{% if router.host %} · {{ router.host }}{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
 
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Top users</p>
-        <h3>Highest data users</h3>
-        <p>Top 10 {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients by data transferred.</p>
-      </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-top" height="220"></canvas>
-      </div>
-    </article>
-  </div>
-</section>
-
-<section class="panel staff-panel staff-panel-solid clients-usage-users-panel tone-{{ active_tab|default:'pppoe' }}">
-  <header class="clients-usage-users-head">
-    <div class="clients-usage-users-title-row">
-      <span class="clients-usage-users-ico" aria-hidden="true">
-        {% if active_tab == 'hotspot' %}
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
-        {% else %}
-          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
-        {% endif %}
-      </span>
-      <div class="clients-usage-users-copy">
-        <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %} <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span></h2>
-          <p class="panel-sub">Ranked by data transferred{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %} — peak/low times, downtime events{% if active_tab == 'hotspot' %}, and gadgets online{% endif %}.</p>
-      </div>
+      <span class="mikrotik-live-stamp clients-usage-stamp" data-usage-stamp>Loading…</span>
     </div>
-  </header>
+
+    {% if clients_router_param %}
+      <p class="clients-general-usage-router-note">
+        Showing {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} usage for
+        <strong>{% if router_filter_label %}{{ router_filter_label }}{% elif clients_router_param == "none" %}unassigned clients{% else %}selected router{% endif %}</strong>.
+        <a href="?tab={{ active_tab|default:'pppoe' }}&amp;hours={{ trend_hours }}">Clear filter</a>
+      </p>
+    {% endif %}
+
+    <nav class="client-cat-nav clients-usage-range-nav" aria-label="Usage ranges">
+      <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=6{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">6 hours</a>
+      <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=24{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">24 hours</a>
+      <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=72{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">3 days</a>
+      <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=168{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">7 days</a>
+      <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=720{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">30 days</a>
+      <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=8760{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">1 year</a>
+    </nav>
+
+    {% if auto_widened %}
+      <p class="panel-sub clients-general-usage-widen-note">
+        Little or no traffic in the last {{ requested_range_label|default:requested_hours }}; showing the last {{ range_label|default:trend_hours }} instead.
+      </p>
+    {% endif %}
+
+    <section class="clients-usage-overview" id="usage-overview" data-cat="live">
+      <header class="clients-usage-section-head">
+        <div>
+          <p class="clients-usage-section-kicker">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg>
+            </span>
+            Snapshot
+          </p>
+          <h2>{% if active_tab == 'hotspot' %}Hotspot summary{% else %}PPPoE summary{% endif %}</h2>
+          <p class="clients-usage-section-meta" data-usage-summary-copy>
+            Live and sampled totals for the selected window.
+          </p>
+        </div>
+      </header>
+
+      <dl class="client-kv-row client-usage-stats clients-usage-stat-grid" id="usage-summary">
+        <div class="client-kv client-usage-stat" data-ico="clients">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients</dt>
+          <dd><strong data-sum="clients">—</strong><span><span data-sum="clients-tracked">—</span> with samples in this window</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="uptime">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online now</dt>
+          <dd><strong data-sum="online-now">—</strong><span><span data-sum="online">—</span> of meaningful samples online</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="down">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
+          <dd><strong data-sum="peak-down">—</strong><span>Highest measured / estimated rate</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="data">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
+          <dd><strong data-sum="data">—</strong><span>Transferred in this window</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="top">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Highest user</dt>
+          <dd><strong data-sum="top-user">—</strong><span data-sum="top-user-data">Most data transferred</span></dd>
+        </div>
+        {% if active_tab == 'hotspot' %}
+        <div class="client-kv client-usage-stat" data-ico="gadgets">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets online</dt>
+          <dd><strong data-sum="gadgets">—</strong><span>Connected right now</span></dd>
+        </div>
+        {% endif %}
+      </dl>
+    </section>
+
+    <section
+      class="clients-usage-charts"
+      id="usage-charts"
+      data-cat="live"
+      data-trends-url="{{ trends_url }}"
+      data-hours="{{ trend_hours }}"
+      data-tab="{{ active_tab|default:'pppoe' }}"
+      data-router="{% if clients_router_param %}{{ clients_router_param|escape }}{% endif %}"
+      data-range-label="{{ range_label|default:trend_hours|escape }}"
+    >
+      <header class="clients-usage-section-head">
+        <div>
+          <p class="clients-usage-section-kicker">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 19V9m5 10V5m5 14v-7m5 7V8"/></svg>
+            </span>
+            Trends
+          </p>
+          <h2>Charts</h2>
+          <p class="clients-usage-section-meta">Presence, throughput, traffic, and top users over time.</p>
+        </div>
+      </header>
+
+      <div class="client-usage-chart-grid">
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Presence</p>
+            <h3>Online clients</h3>
+            <p>How many {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients had an active session in each interval.</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-online" height="220"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Throughput</p>
+            <h3>Aggregate download &amp; upload</h3>
+            <p>Combined live speed samples for this service (kbps).</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-throughput" height="220"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Traffic</p>
+            <h3>Data transferred</h3>
+            <p>Total data moved between samples (MB).</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-data" height="220"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Top users</p>
+            <h3>Highest data users</h3>
+            <p>Top 10 {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} clients by data transferred.</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-top" height="220"></canvas>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel staff-panel staff-panel-solid clients-usage-users-panel tone-{{ active_tab|default:'pppoe' }}">
+      <header class="clients-usage-users-head">
+        <div class="clients-usage-users-title-row">
+          <span class="clients-usage-users-ico" aria-hidden="true">
+            {% if active_tab == 'hotspot' %}
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18.75a1.5 1.5 0 1 0 1.5 1.5 1.5 1.5 0 0 0-1.5-1.5Zm5.3-3.05a7.5 7.5 0 0 0-10.6 0l1.4 1.4a5.5 5.5 0 0 1 7.8 0Zm3.55-3.55a12.5 12.5 0 0 0-17.7 0l1.4 1.4a10.5 10.5 0 0 1 14.9 0Z"/></svg>
+            {% else %}
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9h2a7 7 0 1 1 7 7v2a9 9 0 0 0 0-18Zm1 5h-2v5l4.2 2.5 1-1.65-3.2-1.9Z"/></svg>
+            {% endif %}
+          </span>
+          <div class="clients-usage-users-copy">
+            <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %} <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span></h2>
+            <p class="panel-sub" data-users-sort-copy>Highest data usage first{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %} — peak/low times, downtime events{% if active_tab == 'hotspot' %}, and gadgets online{% endif %}.</p>
+          </div>
+        </div>
+        <div class="clients-usage-users-sort" role="group" aria-label="Sort users">
+          <label class="clients-usage-users-sort-label" for="usage-users-sort">Sort</label>
+          <select id="usage-users-sort" class="clients-usage-users-sort-select" data-users-sort aria-label="Sort clients by usage">
+            <option value="data-desc" selected>Highest usage first</option>
+            <option value="data-asc">Lowest usage first</option>
+            <option value="name-asc">Client A–Z</option>
+            <option value="name-desc">Client Z–A</option>
+            <option value="online-desc">Online first</option>
+            <option value="downtime-desc">Most downtimes</option>
+          </select>
+        </div>
+      </header>
 
   <div class="org-table-shell clients-usage-users-shell">
-    <table class="org-table clients-usage-users-table">
+    <table class="org-table clients-usage-users-table" data-users-table>
       <thead>
         <tr>
-          <th>#</th>
-          <th>Client</th>
-          <th>Level</th>
-          <th>Data used</th>
-          <th>Peak</th>
-          <th>Lowest</th>
-          <th>Downtimes</th>
-          {% if active_tab == 'hotspot' %}<th>Gadgets</th>{% endif %}
-          <th>Status</th>
-          <th></th>
+          <th scope="col">#</th>
+          <th scope="col">
+            <button type="button" class="clients-usage-sort-btn" data-sort-key="name" aria-pressed="false">
+              Client <span class="clients-usage-sort-ind" aria-hidden="true"></span>
+            </button>
+          </th>
+          <th scope="col">Level</th>
+          <th scope="col">
+            <button type="button" class="clients-usage-sort-btn is-active" data-sort-key="data" aria-pressed="true" data-sort-dir="desc">
+              Data used <span class="clients-usage-sort-ind" aria-hidden="true">↓</span>
+            </button>
+          </th>
+          <th scope="col">Peak</th>
+          <th scope="col">Lowest</th>
+          <th scope="col">
+            <button type="button" class="clients-usage-sort-btn" data-sort-key="downtime" aria-pressed="false">
+              Downtimes <span class="clients-usage-sort-ind" aria-hidden="true"></span>
+            </button>
+          </th>
+          {% if active_tab == 'hotspot' %}<th scope="col">Gadgets</th>{% endif %}
+          <th scope="col">
+            <button type="button" class="clients-usage-sort-btn" data-sort-key="online" aria-pressed="false">
+              Status <span class="clients-usage-sort-ind" aria-hidden="true"></span>
+            </button>
+          </th>
+          <th scope="col"></th>
         </tr>
       </thead>
       <tbody data-top-users-body data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
@@ -302,6 +386,7 @@
   </div>
 </section>
 
+  </section>
 </div>
 {% endblock %}
 
@@ -321,12 +406,125 @@
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var countEl = document.querySelector("[data-users-count]");
+  var sortSelect = document.querySelector("[data-users-sort]");
+  var sortCopy = document.querySelector("[data-users-sort-copy]");
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
   var renderToken = 0;
   var FIRST_PAINT = 20;
   var CHUNK = 30;
+  var usersCache = [];
+  var usersTotalHint = 0;
+  var usersExpectMore = false;
+  var sortMode = "data-desc";
+
+  var SORT_COPY = {
+    "data-desc": "Highest data usage first",
+    "data-asc": "Lowest data usage first",
+    "name-asc": "Clients A–Z",
+    "name-desc": "Clients Z–A",
+    "online-desc": "Online clients first",
+    "downtime-desc": "Most downtimes first"
+  };
+
+  function applySort(users) {
+    var list = (users || []).slice();
+    var mode = sortMode || "data-desc";
+    list.sort(function (a, b) {
+      var ab = userBytes(a);
+      var bb = userBytes(b);
+      var an = String((a && a.full_name) || "").toLowerCase();
+      var bn = String((b && b.full_name) || "").toLowerCase();
+      var ad = Number((a && a.downtime_count) || 0);
+      var bd = Number((b && b.downtime_count) || 0);
+      var ao = (a && a.latest_active) ? 1 : 0;
+      var bo = (b && b.latest_active) ? 1 : 0;
+      if (mode === "data-asc") {
+        if (ab !== bb) return ab - bb;
+        return an.localeCompare(bn);
+      }
+      if (mode === "name-asc") return an.localeCompare(bn) || (bb - ab);
+      if (mode === "name-desc") return bn.localeCompare(an) || (bb - ab);
+      if (mode === "online-desc") {
+        if (ao !== bo) return bo - ao;
+        if (ab !== bb) return bb - ab;
+        return an.localeCompare(bn);
+      }
+      if (mode === "downtime-desc") {
+        if (ad !== bd) return bd - ad;
+        if (ab !== bb) return bb - ab;
+        return an.localeCompare(bn);
+      }
+      // data-desc (default): highest usage first
+      if (ab !== bb) return bb - ab;
+      return an.localeCompare(bn);
+    });
+    list.forEach(function (user, idx) {
+      user.rank = idx + 1;
+    });
+    return list;
+  }
+
+  function syncSortUi() {
+    if (sortSelect && sortSelect.value !== sortMode) {
+      sortSelect.value = sortMode;
+    }
+    if (sortCopy) {
+      var base = SORT_COPY[sortMode] || SORT_COPY["data-desc"];
+      var rest = sortCopy.getAttribute("data-sort-rest");
+      if (!rest) {
+        var full = sortCopy.textContent || "";
+        var dash = full.indexOf(" — ");
+        rest = dash >= 0 ? full.slice(dash) : "";
+        sortCopy.setAttribute("data-sort-rest", rest);
+      }
+      sortCopy.textContent = base + (rest || "");
+    }
+    document.querySelectorAll(".clients-usage-sort-btn").forEach(function (btn) {
+      var key = btn.getAttribute("data-sort-key");
+      var active = false;
+      var dir = "";
+      if (key === "data" && (sortMode === "data-desc" || sortMode === "data-asc")) {
+        active = true;
+        dir = sortMode === "data-asc" ? "asc" : "desc";
+      } else if (key === "name" && (sortMode === "name-asc" || sortMode === "name-desc")) {
+        active = true;
+        dir = sortMode === "name-desc" ? "desc" : "asc";
+      } else if (key === "downtime" && sortMode === "downtime-desc") {
+        active = true;
+        dir = "desc";
+      } else if (key === "online" && sortMode === "online-desc") {
+        active = true;
+        dir = "desc";
+      }
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+      if (dir) btn.setAttribute("data-sort-dir", dir);
+      else btn.removeAttribute("data-sort-dir");
+      var ind = btn.querySelector(".clients-usage-sort-ind");
+      if (ind) ind.textContent = active ? (dir === "asc" ? "↑" : "↓") : "";
+    });
+  }
+
+  function setSortMode(mode, opts) {
+    opts = opts || {};
+    if (!SORT_COPY[mode]) mode = "data-desc";
+    sortMode = mode;
+    syncSortUi();
+    if (opts.rerender !== false && usersCache.length) {
+      renderUsers(applySort(usersCache), {
+        progressive: false,
+        expectMore: usersExpectMore,
+        totalHint: usersTotalHint || usersCache.length
+      });
+    }
+  }
+
+  function userBytes(user) {
+    if (!user) return 0;
+    return Number(user.data_used_bytes || user.peak_session_bytes || 0) || 0;
+  }
 
   function fmtBps(bps) {
     var n = Number(bps) || 0;
@@ -435,7 +633,7 @@
     var body = document.querySelector("[data-top-users-body]");
     if (!body) return;
     opts = opts || {};
-    users = users || [];
+    users = applySort(users || []);
     var cols = showGadgets ? 10 : 9;
     var token = ++renderToken;
     var totalHint = opts.totalHint != null ? opts.totalHint : users.length;
@@ -679,10 +877,13 @@
     applySummary(data, opts);
     var users = (data && data.top_users) || [];
     var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
-    renderUsers(users, {
+    usersCache = users.slice();
+    usersTotalHint = totalHint;
+    usersExpectMore = !!opts.expectMore;
+    renderUsers(usersCache, {
       progressive: opts.progressive !== false,
-      expectMore: !!opts.expectMore,
-      totalHint: totalHint
+      expectMore: usersExpectMore,
+      totalHint: usersTotalHint
     });
   }
 
@@ -717,6 +918,7 @@
 
   function boot() {
     ensureCharts();
+    syncSortUi();
     var partial = !!(initial && initial.users_partial);
     paint(initial, {
       progressive: true,
@@ -751,6 +953,28 @@
       boot();
     }, 50);
   }
+
+  if (sortSelect) {
+    sortSelect.addEventListener("change", function () {
+      setSortMode(sortSelect.value || "data-desc");
+    });
+  }
+  document.querySelectorAll(".clients-usage-sort-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.getAttribute("data-sort-key");
+      var next = "data-desc";
+      if (key === "data") {
+        next = sortMode === "data-desc" ? "data-asc" : "data-desc";
+      } else if (key === "name") {
+        next = sortMode === "name-asc" ? "name-desc" : "name-asc";
+      } else if (key === "downtime") {
+        next = "downtime-desc";
+      } else if (key === "online") {
+        next = "online-desc";
+      }
+      setSortMode(next);
+    });
+  });
 
   if (refreshBtn) {
     refreshBtn.addEventListener("click", function () {

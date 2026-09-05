@@ -513,6 +513,74 @@
       background: linear-gradient(135deg, rgba(255, 107, 107, 0.18), rgba(16, 22, 34, 0.75));
     }
 
+    .click-to-earn-wrap {
+      margin: 0 0 0.95rem;
+    }
+
+    .click-to-earn-card {
+      display: block;
+      padding: 0.95rem 1rem;
+      border-radius: 16px;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(16, 22, 34, 0.82));
+      text-decoration: none;
+      color: inherit;
+      box-shadow: 0 10px 28px rgba(2, 12, 24, 0.28);
+    }
+
+    .click-to-earn-card:hover,
+    .click-to-earn-card:focus-visible {
+      border-color: rgba(125, 211, 252, 0.85);
+      outline: none;
+    }
+
+    .click-to-earn-kicker {
+      margin: 0 0 0.25rem;
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #7dd3fc;
+    }
+
+    .click-to-earn-title {
+      margin: 0;
+      font-size: 1.12rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #f0f9ff;
+    }
+
+    .click-to-earn-copy {
+      margin: 0.35rem 0 0.75rem;
+      font-size: 0.88rem;
+      line-height: 1.4;
+      color: rgba(224, 242, 254, 0.82);
+    }
+
+    .click-to-earn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      min-height: 2.45rem;
+      padding: 0.45rem 1rem;
+      border-radius: 999px;
+      border: 1px solid rgba(125, 211, 252, 0.55);
+      background: rgba(14, 165, 233, 0.35);
+      color: #e0f2fe;
+      font-weight: 800;
+      font-size: 0.9rem;
+      letter-spacing: 0.02em;
+    }
+
+    .click-to-earn-card:hover .click-to-earn,
+    .click-to-earn-card:focus-visible .click-to-earn {
+      border-color: rgba(186, 230, 253, 0.95);
+      color: #fff;
+      background: rgba(14, 165, 233, 0.55);
+    }
+
     .access-banner strong {
       font-size: 1.05rem;
       letter-spacing: -0.03em;
@@ -1050,6 +1118,48 @@
       {% elif page_message %}
         <p class="meta">{{ page_message }}</p>
       {% endif %}
+      {% if hotspot_mac_privacy_hint %}
+        <div class="access-banner" role="status">
+          <strong>Private Wi‑Fi Address detected</strong>
+          <p>
+            This device is using a randomized MAC. Turn off Private / Random Wi‑Fi
+            Address for this network, reconnect, then pay — otherwise a new MAC
+            looks like a different unpaid device.
+          </p>
+        </div>
+      {% endif %}
+
+      {% if adverts_enabled and click_to_earn_url %}
+        <div class="click-to-earn-wrap">
+          <a class="click-to-earn-card" href="{{ click_to_earn_url }}">
+            <p class="click-to-earn-kicker">While you connect</p>
+            <p class="click-to-earn-title">{{ click_to_earn_label|default:"Click to earn" }}</p>
+            <p class="click-to-earn-copy">
+              {% if click_to_earn_is_external %}
+                Tap to open the earn / adverts site set by {{ org_name }}.
+              {% else %}
+                Refer Wi‑Fi clients for commission — open {{ org_name }}’s Refer & earn page.
+              {% endif %}
+            </p>
+            <span class="click-to-earn">Open →</span>
+          </a>
+        </div>
+      {% endif %}
+
+      {% if theme_preview %}
+        <p class="meta" style="opacity:.75">Sample preview — not a live payment.</p>
+      {% endif %}
+
+      {% if customer_name or account_number %}
+        <div class="customer-chip" style="margin:0 0 0.85rem;padding:0.7rem 0.85rem;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04)">
+          {% if customer_name %}<strong>{{ customer_name }}</strong>{% endif %}
+          <div class="chip-meta" style="display:flex;flex-wrap:wrap;gap:0.45rem;margin-top:0.25rem;opacity:.8;font-size:.86rem">
+            {% if account_number %}<span>{{ account_number }}</span>{% endif %}
+            {% if hotspot_mac %}<span>{{ hotspot_mac }}</span>{% endif %}
+            {% if package_end %}<span>Ended {{ package_end|date:"M j, Y H:i" }}</span>{% endif %}
+          </div>
+        </div>
+      {% endif %}
 
       {% if subscription_paused %}
         <p class="meta">
@@ -1062,6 +1172,7 @@
           data-payment-form
           method="post"
           action="{{ hotspot_payment_start_url|default:payment_start_url }}"
+          {% if theme_preview %}onsubmit="return false"{% endif %}
         >
           {% csrf_token %}
           <input type="hidden" name="mac" value="{{ hotspot_mac|default:'$(mac)' }}">

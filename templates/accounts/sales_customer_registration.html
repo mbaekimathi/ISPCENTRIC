@@ -8,106 +8,137 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid">
-  <div class="panel-head-row">
-    <div>
-      <h2>Your registrations</h2>
-      <p class="panel-sub">PPPoE clients and business (ISP) accounts you registered.</p>
+<section class="cs-list-page sales-register-page">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">{{ page_title }}</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="panel-head-actions">
+    <div class="cs-list-toolbar">
       <button type="button" class="btn btn-primary" data-open-sales-modal="customer-register-modal">
         Register customer
       </button>
+      <div class="cs-list-count">
+        {% with clients_n=recent_clients|length isps_n=recent_isps|length %}
+          <strong>{{ clients_n|add:isps_n }}</strong>
+        {% endwith %}
+        <span>registrations</span>
+      </div>
     </div>
-  </div>
-</section>
+  </header>
 
-<section class="panel staff-panel staff-panel-solid" id="recent-clients-panel">
-  <div class="panel-head-row">
-    <div>
-      <h2>Recent PPPoE clients</h2>
-      <p class="panel-sub">PPPoE clients you registered.</p>
-    </div>
-  </div>
+  <section class="cs-list-section" id="recent-clients-panel" aria-labelledby="recent-pppoe-title">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="recent-pppoe-title">Recent PPPoE clients</h3>
+        <p>PPPoE clients you registered.</p>
+      </div>
+      <div class="cs-list-count">
+        <strong>{% if recent_clients %}{{ recent_clients|length }}{% else %}0{% endif %}</strong>
+        <span>{% if recent_clients|length == 1 %}client{% else %}clients{% endif %}</span>
+      </div>
+    </header>
 
-  {% if recent_clients %}
-    <div class="org-table-shell">
-      <table class="org-table">
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Name</th>
-            <th>ISP</th>
-            <th>Account</th>
-            <th>Phone</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for customer in recent_clients %}
+    {% if recent_clients %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
             <tr>
-              <td><span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span></td>
-              <td>
-                <strong>{{ customer.full_name }}</strong>
-                {% if customer.building_name or customer.address %}
-                  <small class="lead-location-line">
-                    {% if customer.building_name %}{{ customer.building_name }}{% endif %}
-                    {% if customer.building_name and customer.address %} · {% endif %}
-                    {% if customer.address %}{{ customer.address }}{% endif %}
-                    {% if customer.house_number %} · {{ customer.house_number }}{% endif %}
-                  </small>
-                {% endif %}
-              </td>
-              <td>{% if customer.organization %}{{ customer.organization.name }}{% else %}— Open —{% endif %}</td>
-              <td><span class="org-code">{{ customer.account_number }}</span></td>
-              <td>{{ customer.phone }}</td>
-              <td>
-                <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
-              </td>
+              <th>Ticket</th>
+              <th>Name</th>
+              <th>ISP</th>
+              <th>Account</th>
+              <th>Phone</th>
+              <th>Status</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No PPPoE clients registered yet.</p>
-  {% endif %}
-</section>
+          </thead>
+          <tbody>
+            {% for customer in recent_clients %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span>
+                </td>
+                <td data-label="Name">
+                  <div class="cs-list-primary">
+                    <strong>{{ customer.full_name }}</strong>
+                    {% if customer.building_name or customer.address %}
+                      <small>
+                        {% if customer.building_name %}{{ customer.building_name }}{% endif %}
+                        {% if customer.building_name and customer.address %} · {% endif %}
+                        {% if customer.address %}{{ customer.address }}{% endif %}
+                        {% if customer.house_number %} · {{ customer.house_number }}{% endif %}
+                      </small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="ISP">{% if customer.organization %}{{ customer.organization.name }}{% else %}— Open —{% endif %}</td>
+                <td data-label="Account"><span class="org-code">{{ customer.account_number }}</span></td>
+                <td data-label="Phone">
+                  {% if customer.phone %}<a href="tel:{{ customer.phone }}">{{ customer.phone }}</a>{% else %}—{% endif %}
+                </td>
+                <td data-label="Status">
+                  <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No PPPoE clients</strong>
+        <p>No PPPoE clients registered yet.</p>
+      </div>
+    {% endif %}
+  </section>
 
-<section class="panel staff-panel staff-panel-solid" id="recent-isps-panel">
-  <div class="panel-head-row">
-    <div>
-      <h2>Recent business (ISP) accounts</h2>
-      <p class="panel-sub">Business ISP accounts you registered.</p>
-    </div>
-  </div>
+  <section class="cs-list-section" id="recent-isps-panel" aria-labelledby="recent-isp-title">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="recent-isp-title">Recent business (ISP) accounts</h3>
+        <p>Business ISP accounts you registered.</p>
+      </div>
+      <div class="cs-list-count">
+        <strong>{% if recent_isps %}{{ recent_isps|length }}{% else %}0{% endif %}</strong>
+        <span>{% if recent_isps|length == 1 %}account{% else %}accounts{% endif %}</span>
+      </div>
+    </header>
 
-  {% if recent_isps %}
-    <div class="org-table-shell">
-      <table class="org-table">
-        <thead>
-          <tr>
-            <th>Company</th>
-            <th>Owner</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for org in recent_isps %}
+    {% if recent_isps %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table cs-list-table--compact">
+          <thead>
             <tr>
-              <td><strong>{{ org.name }}</strong></td>
-              <td>{{ org.login_code }}</td>
-              <td><span class="org-status org-status-{{ org.status }}">{{ org.get_status_display }}</span></td>
+              <th>Company</th>
+              <th>Owner</th>
+              <th>Status</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  {% else %}
-    <p class="empty">No business (ISP) accounts registered yet.</p>
-  {% endif %}
+          </thead>
+          <tbody>
+            {% for org in recent_isps %}
+              <tr>
+                <td class="is-primary-cell" data-label="Company">
+                  <div class="cs-list-primary">
+                    <strong>{{ org.name }}</strong>
+                  </div>
+                </td>
+                <td data-label="Owner">{{ org.login_code }}</td>
+                <td data-label="Status">
+                  <span class="org-status org-status-{{ org.status }}">{{ org.get_status_display }}</span>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No business accounts</strong>
+        <p>No business (ISP) accounts registered yet.</p>
+      </div>
+    {% endif %}
+  </section>
 </section>
 
 <div

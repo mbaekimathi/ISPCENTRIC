@@ -144,15 +144,28 @@
 {% endblock %}
 
 {% block client_content %}
+{% with initials=customer.full_name|default:customer.account_number|slice:":2"|upper %}
 <div class="client-detail-page client-detail-simple client-cmd{% if customer.service_type == 'hotspot' %} is-hotspot{% endif %}" id="client-overview">
+
+  <nav class="client-cmd-links" aria-label="Client shortcuts">
+    <a class="client-cmd-link is-current" href="{% url 'core:client_detail' customer.id %}" aria-current="page">Overview</a>
+    <a class="client-cmd-link" href="{{ voucher_billing_url }}">
+      Billing
+      {% if payment_count %}<span class="client-cmd-link-badge">{{ payment_count }}</span>{% endif %}
+    </a>
+    {% if can_live_usage %}
+      <a class="client-cmd-link" href="{% url 'core:client_usage_analysis' customer.id %}">Usage</a>
+    {% endif %}
+    <a class="client-cmd-link client-cmd-link-back" href="{% url 'core:my_clients' %}?tab={{ customer.service_type }}">← All clients</a>
+  </nav>
 
   <section class="client-cmd-deck">
     <div class="client-cmd-deck-top">
       <div class="client-cmd-identity">
-        <span class="client-cmd-avatar" aria-hidden="true" data-client-initial>{{ customer.full_name|slice:":1"|upper }}</span>
+        <span class="client-cmd-avatar" aria-hidden="true" data-client-initial>{{ initials }}</span>
         <div class="client-cmd-identity-copy">
           <div class="client-cmd-eyebrow">
-            <span>{{ customer.get_service_type_display }}</span>
+            <span class="client-cmd-service-pill">{{ customer.get_service_type_display }}</span>
             <span class="client-cmd-dot" aria-hidden="true"></span>
             <span class="org-code">{{ customer.account_number }}</span>
           </div>
@@ -195,6 +208,9 @@
               {{ valid_voucher_count }} voucher{{ valid_voucher_count|pluralize }}
             </button>
           {% endif %}
+          {% if invoice_count %}
+            <span class="client-cmd-flag-meta">{{ invoice_count }} invoice{{ invoice_count|pluralize }}</span>
+          {% endif %}
         </div>
 
         <div class="client-cmd-actions">
@@ -202,6 +218,10 @@
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
             Recharge
           </button>
+          <a class="client-cmd-btn" href="{{ voucher_billing_url }}">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
+            Billing
+          </a>
           <button type="button" class="client-cmd-btn" data-open-modal="client-details-modal" data-edit-details-label>
             Edit
           </button>
@@ -259,24 +279,44 @@
 
     <ul class="client-cmd-metrics" aria-label="Live status">
       <li data-hero-chip="subscription">
-        <span class="client-cmd-metric-label">Subscription</span>
-        <strong data-hero="subscription">Checking…</strong>
-        <em data-hero-meta="subscription">Package</em>
+        <span class="client-cmd-metric-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 8v5m0 4h.01M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Z"/></svg>
+        </span>
+        <div class="client-cmd-metric-body">
+          <span class="client-cmd-metric-label">Subscription</span>
+          <strong data-hero="subscription">Checking…</strong>
+          <em data-hero-meta="subscription">Package</em>
+        </div>
       </li>
       <li data-hero-chip="session">
-        <span class="client-cmd-metric-label">Session</span>
-        <strong data-hero="session">Checking…</strong>
-        <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
+        <span class="client-cmd-metric-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </span>
+        <div class="client-cmd-metric-body">
+          <span class="client-cmd-metric-label">Session</span>
+          <strong data-hero="session">Checking…</strong>
+          <em data-hero-meta="session">{% if customer.service_type == "pppoe" %}PPPoE{% else %}{{ customer.get_service_type_display }}{% endif %}</em>
+        </div>
       </li>
       <li data-hero-chip="throughput">
-        <span class="client-cmd-metric-label">Speed</span>
-        <strong data-hero="throughput">—</strong>
-        <em data-hero-meta="throughput">Down / up</em>
+        <span class="client-cmd-metric-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 19V9m5 10V5m5 14v-7m5 7V8"/></svg>
+        </span>
+        <div class="client-cmd-metric-body">
+          <span class="client-cmd-metric-label">Speed</span>
+          <strong data-hero="throughput">—</strong>
+          <em data-hero-meta="throughput">Down / up</em>
+        </div>
       </li>
       <li data-hero-chip="plan">
-        <span class="client-cmd-metric-label">Plan</span>
-        <strong>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
-        <em>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan{% endif %}</em>
+        <span class="client-cmd-metric-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        </span>
+        <div class="client-cmd-metric-body">
+          <span class="client-cmd-metric-label">Plan</span>
+          <strong>{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</strong>
+          <em>{% if customer.plan %}{{ customer.plan.speed_label }}{% else %}No plan{% endif %}</em>
+        </div>
       </li>
     </ul>
   </section>
@@ -289,6 +329,14 @@
     data-subscription-paused="{% if subscription_paused %}1{% else %}0{% endif %}"
     data-package-duration="{{ package_duration|default:'' }}"
   >
+    <header class="client-cmd-period-head">
+      <div>
+        <p class="client-cmd-period-kicker">Package window</p>
+        <h2 class="client-cmd-period-title">Subscription period</h2>
+      </div>
+      <a class="btn btn-ghost btn-sm" href="{{ voucher_billing_url }}">View payments</a>
+    </header>
+
     {% if customer.package_start or customer.package_end or subscription_paused %}
       <div class="client-subscription-banner client-cmd-banner {% if subscription_paused %}is-paused{% elif subscription_active %}is-active{% else %}is-blocked{% endif %}" data-sub-banner>
         {% if subscription_paused %}
@@ -421,23 +469,52 @@
             </header>
             <div class="client-cmd-quick">
               <button type="button" class="client-cmd-quick-item" data-open-modal="client-recharge-modal">
-                <strong>Recharge</strong>
-                <span>Extend package with cash received</span>
+                <span class="client-cmd-quick-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+                </span>
+                <span class="client-cmd-quick-copy">
+                  <strong>Recharge</strong>
+                  <span>Extend package with cash received</span>
+                </span>
               </button>
               <button type="button" class="client-cmd-quick-item" data-open-modal="client-details-modal">
-                <strong>Edit profile</strong>
-                <span>Name, phone, credentials, router</span>
+                <span class="client-cmd-quick-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </span>
+                <span class="client-cmd-quick-copy">
+                  <strong>Edit profile</strong>
+                  <span>Name, phone, credentials, router</span>
+                </span>
               </button>
+              <a class="client-cmd-quick-item" href="{{ voucher_billing_url }}">
+                <span class="client-cmd-quick-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 7h16M4 12h10M4 17h13"/></svg>
+                </span>
+                <span class="client-cmd-quick-copy">
+                  <strong>Billing & vouchers</strong>
+                  <span>{% if payment_count %}{{ payment_count }} payment{{ payment_count|pluralize }}{% else %}Payments{% endif %} and access codes</span>
+                </span>
+              </a>
               {% if can_access_wifi and customer.router %}
                 <a class="client-cmd-quick-item" href="{% url 'core:client_wifi_settings' customer.id %}" data-client-router-open>
-                  <strong>Open CPE admin</strong>
-                  <span>Configure Wi‑Fi on the client router</span>
+                  <span class="client-cmd-quick-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 12.5a7 7 0 0 1 14 0M8.5 15a3.5 3.5 0 0 1 7 0M12 18.5h.01"/></svg>
+                  </span>
+                  <span class="client-cmd-quick-copy">
+                    <strong>Open CPE admin</strong>
+                    <span>Configure Wi‑Fi on the client router</span>
+                  </span>
                 </a>
               {% endif %}
               {% if show_available_vouchers %}
                 <button type="button" class="client-cmd-quick-item" data-client-tab="vouchers">
-                  <strong>Share vouchers</strong>
-                  <span>{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }} ready</span>
+                  <span class="client-cmd-quick-ico" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M7 7h10v10H7zM9 3h6M9 21h6"/></svg>
+                  </span>
+                  <span class="client-cmd-quick-copy">
+                    <strong>Share vouchers</strong>
+                    <span>{{ valid_voucher_count }} unused code{{ valid_voucher_count|pluralize }} ready</span>
+                  </span>
                 </button>
               {% endif %}
             </div>
@@ -498,6 +575,12 @@
           {% elif customer.service_type == "static" %}
             <div><dt>Router IP</dt><dd>{{ customer.cpe_ip|default:"—" }}</dd></div>
             <div><dt>Router MAC</dt><dd>{{ customer.cpe_mac|default:"—" }}</dd></div>
+          {% endif %}
+          {% if customer.service_type == "pppoe" and customer.equipment_serials %}
+            <div class="field-span-2">
+              <dt>Equipment serials</dt>
+              <dd>{{ customer.equipment_serials|join:", " }}</dd>
+            </div>
           {% endif %}
           {% if can_access_wifi %}
             <div><dt>Router admin</dt><dd data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</dd></div>
@@ -757,6 +840,7 @@
   </section>
 
 </div>
+{% endwith %}
 
 <div
   class="role-modal client-action-modal pppoe-modal"
@@ -1809,12 +1893,16 @@
           root.classList.add("is-online");
           root.classList.remove("is-offline");
           setText("session", "Online");
-          setText(
-            "session-hint",
+          var pppoeHint =
             (data.service || "PPPoE") +
-              (data.interface ? " · " + data.interface : "") +
-              (data.speed_source === "cpe" ? " · CPE live" : "")
-          );
+            (data.interface ? " · " + data.interface : "") +
+            (data.speed_source === "cpe" ? " · CPE live" : "");
+          if (data.cpe_renew_clear_pending) {
+            pppoeHint =
+              data.hint ||
+              "Package active — CPE renew Hotspot still clearing";
+          }
+          setText("session-hint", pppoeHint);
           setText("download", data.download_label || "—");
           setText("upload", data.upload_label || "—");
           if (data.speed_source === "cpe") {

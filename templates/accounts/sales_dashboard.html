@@ -8,22 +8,46 @@
 {% endblock %}
 
 {% block staff_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+<section class="cs-role-page">
+  {% include "accounts/includes/sales_workspace_nav.html" %}
 
-<section class="panel staff-panel stack-gap">
-  <div class="panel-head-row">
-    <div>
-      <h2>Sales modules</h2>
-      <p class="panel-sub">Open the tools you use to win and onboard customers.</p>
+  <header class="cs-role-hero">
+    <div class="cs-role-hero-main">
+      <span class="cs-role-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M4 19.5 12 4.5l8 15" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M8.2 14.5h7.6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div>
+        <p class="cs-role-kicker">Sales</p>
+        <h2 class="cs-role-title">{{ page_title }}</h2>
+        <p class="cs-role-lead">{{ page_subtitle }}</p>
+      </div>
     </div>
-  </div>
-  <div class="role-highlight-grid">
-    {% for link in module_links %}
-      <a class="role-highlight-card" href="{% url link.url_name %}">
-        <span class="role-highlight-index">{{ link.index }}</span>
-        <p>{{ link.label }}</p>
-      </a>
-    {% endfor %}
-  </div>
+    <div class="cs-role-meta">
+      <span class="cs-role-chip is-live">{{ module_links|length }} modules</span>
+      <span class="cs-role-chip is-soft">Win &amp; onboard</span>
+    </div>
+  </header>
+
+  <section class="cs-role-panel">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3>Sales modules</h3>
+        <p>Open the tools you use to win and onboard customers.</p>
+      </div>
+    </header>
+    <div class="cs-role-grid">
+      {% for link in module_links %}
+        <a class="cs-role-card" href="{% url link.url_name %}">
+          <span class="cs-role-card-index">{{ link.index }}</span>
+          <span class="cs-role-card-label">{{ link.label }}</span>
+          {% if link.hint %}<p class="cs-role-card-hint">{{ link.hint }}</p>{% endif %}
+          <span class="cs-role-card-cta">Open →</span>
+        </a>
+      {% endfor %}
+    </div>
+  </section>
 </section>
 {% endblock %}

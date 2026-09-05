@@ -9,6 +9,8 @@
 
 {% block staff_content %}
 <section class="cs-role-page">
+  {% include "accounts/includes/customer_support_workspace_nav.html" %}
+
   <header class="cs-role-hero">
     <div class="cs-role-hero-main">
       <span class="cs-role-hero-mark" aria-hidden="true">
@@ -42,6 +44,7 @@
         <a class="cs-role-card" href="{% url link.url_name %}{% if link.query %}?{{ link.query }}{% endif %}">
           <span class="cs-role-card-index">{{ link.index }}</span>
           <span class="cs-role-card-label">{{ link.label }}</span>
+          {% if link.hint %}<p class="cs-role-card-hint">{{ link.hint }}</p>{% endif %}
           <span class="cs-role-card-cta">Open →</span>
         </a>
       {% endfor %}

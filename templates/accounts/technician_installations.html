@@ -8,14 +8,30 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="tech-install-page">
-  <header class="tech-install-head">
-    <div class="tech-install-head-copy">
-      <p class="tech-install-kicker">{{ page_kicker }}</p>
-      <h2 class="tech-install-title">Installations</h2>
-      <p class="tech-install-lead">{{ page_subtitle }}</p>
+<section class="cs-role-page tech-role-page tech-install-page">
+  <header class="cs-role-hero tech-install-hero">
+    <div class="cs-role-hero-main">
+      <span class="cs-role-hero-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7">
+          <path d="M4.5 19.5V9.8L12 4.5l7.5 5.3v9.7" stroke-linejoin="round"/>
+          <path d="M9.2 19.5v-5.2h5.6v5.2" stroke-linejoin="round"/>
+          <path d="M8 11.2h8" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div>
+        <p class="cs-role-kicker">{{ page_kicker }}</p>
+        <h2 class="cs-role-title">{{ page_title }}</h2>
+        <p class="cs-role-lead">{{ page_subtitle }}</p>
+      </div>
     </div>
-    <div class="tech-install-head-actions">
+    <div class="tech-install-hero-side">
+      <div class="cs-role-meta">
+        <span class="cs-role-chip"><strong>{{ registered_count|default:0 }}</strong> registered</span>
+        <span class="cs-role-chip is-soft"><strong>{{ open_pool_count|default:0 }}</strong> open pool</span>
+        {% if assigned_count %}
+          <span class="cs-role-chip is-live"><strong>{{ assigned_count }}</strong> assigned</span>
+        {% endif %}
+      </div>
       <button type="button" class="btn btn-primary tech-install-register" data-open-modal="pppoe-register-modal">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
         Register PPPoE client
@@ -25,24 +41,53 @@
 
   <div class="tech-install-stats" aria-label="Registration summary">
     <div class="tech-install-stat">
-      <strong>{{ registered_count|default:0 }}</strong>
-      <span>Registered</span>
+      <span class="tech-install-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" stroke-linecap="round"/>
+          <circle cx="9" cy="7" r="3.2"/>
+          <path d="M19 8v6M22 11h-6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div class="tech-install-stat-copy">
+        <strong>{{ registered_count|default:0 }}</strong>
+        <span>Registered</span>
+      </div>
     </div>
     <div class="tech-install-stat is-open">
-      <strong>{{ inactive_count|default:0 }}</strong>
-      <span>Inactive / pending</span>
+      <span class="tech-install-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+          <circle cx="12" cy="12" r="8.2"/>
+          <path d="M12 8v4.2l2.6 1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div class="tech-install-stat-copy">
+        <strong>{{ inactive_count|default:0 }}</strong>
+        <span>Inactive / pending</span>
+      </div>
     </div>
     <div class="tech-install-stat is-assigned">
-      <strong>{{ active_count|default:0 }}</strong>
-      <span>Active</span>
+      <span class="tech-install-stat-ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M20 6.5 9.5 17 4 11.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div class="tech-install-stat-copy">
+        <strong>{{ active_count|default:0 }}</strong>
+        <span>Active</span>
+      </div>
     </div>
   </div>
 
-  <section class="tech-install-block" aria-labelledby="tech-my-clients-heading">
-    <div class="tech-install-block-head">
-      <h3 id="tech-my-clients-heading" class="tech-install-block-title">My registered clients</h3>
-      <p class="tech-install-block-sub">Subscribers you registered in this session account.</p>
-    </div>
+  <section class="cs-role-panel tech-install-panel" aria-labelledby="tech-my-clients-heading">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3 id="tech-my-clients-heading">My registered clients</h3>
+        <p>Subscribers you registered in this session account.</p>
+      </div>
+      {% if my_clients %}
+        <span class="tech-install-panel-count">{{ my_clients|length }}</span>
+      {% endif %}
+    </header>
 
     {% if my_clients %}
       <div class="tech-install-list">
@@ -50,8 +95,11 @@
           <article class="tech-install-card is-registered">
             <header class="tech-install-card-head">
               <div class="tech-install-card-id">
-                <span class="tech-install-ticket">{{ client.account_number }}</span>
-                <strong class="tech-install-client">{{ client.full_name }}</strong>
+                <span class="tech-install-avatar" aria-hidden="true">{{ client.full_name|slice:":1"|upper }}</span>
+                <div class="tech-install-card-titles">
+                  <span class="tech-install-ticket">{{ client.account_number }}</span>
+                  <strong class="tech-install-client">{{ client.full_name }}</strong>
+                </div>
               </div>
               <div class="tech-install-card-badges">
                 <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
@@ -109,6 +157,13 @@
       </div>
     {% else %}
       <div class="tech-install-empty">
+        <span class="tech-install-empty-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" stroke-linecap="round"/>
+            <circle cx="9" cy="7" r="3.2"/>
+            <path d="M19 8v6M22 11h-6" stroke-linecap="round"/>
+          </svg>
+        </span>
         <strong>No registered clients yet</strong>
         <p>{{ empty_text }}</p>
         <button type="button" class="btn btn-primary" data-open-modal="pppoe-register-modal">
@@ -119,25 +174,33 @@
   </section>
 
   {% if tickets %}
-  <section class="tech-install-block" aria-labelledby="tech-tickets-heading">
-    <div class="tech-install-block-head">
-      <h3 id="tech-tickets-heading" class="tech-install-block-title">Installation tickets</h3>
-      <p class="tech-install-block-sub">
-        Open pool and tickets assigned to you
-        · {{ open_pool_count|default:0 }} open
-        · {{ assigned_count|default:0 }} assigned
-      </p>
-    </div>
+  <section class="cs-role-panel tech-install-panel is-tickets" aria-labelledby="tech-tickets-heading">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3 id="tech-tickets-heading">Installation tickets</h3>
+        <p>
+          Open pool and tickets assigned to you
+          · {{ open_pool_count|default:0 }} open
+          · {{ assigned_count|default:0 }} assigned
+        </p>
+      </div>
+      <span class="tech-install-panel-count">{{ tickets|length }}</span>
+    </header>
 
     <div class="tech-install-list">
       {% for ticket in tickets %}
         <article class="tech-install-card{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'allocated_open' or not ticket.assigned_technician_id %} is-open{% endif %}">
           <header class="tech-install-card-head">
             <div class="tech-install-card-id">
-              <span class="tech-install-ticket">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
-              {% if ticket.full_name %}
-                <strong class="tech-install-client">{{ ticket.full_name }}</strong>
-              {% endif %}
+              <span class="tech-install-avatar{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'allocated_open' or not ticket.assigned_technician_id %} is-open{% endif %}" aria-hidden="true">
+                {% if ticket.full_name %}{{ ticket.full_name|slice:":1"|upper }}{% else %}#{% endif %}
+              </span>
+              <div class="tech-install-card-titles">
+                <span class="tech-install-ticket">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                {% if ticket.full_name %}
+                  <strong class="tech-install-client">{{ ticket.full_name }}</strong>
+                {% endif %}
+              </div>
             </div>
             <div class="tech-install-card-badges">
               <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>

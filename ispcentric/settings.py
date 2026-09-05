@@ -253,6 +253,9 @@ MIKROTIK_AUTO_RESTORE_ALERTS = env_flag(
 MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC = int(
     os.getenv("MIKROTIK_AUTO_RESTORE_ALERT_COOLDOWN_SEC") or "3600"
 )
+# PPP profile keepalive for dead-peer cleanup (only-one redial). Gentle default
+# avoids bouncing flaky-but-live CPEs on deploy; tighten later if needed (30s).
+PPPOE_KEEPALIVE_TIMEOUT = (os.getenv("PPPOE_KEEPALIVE_TIMEOUT") or "2m").strip() or "2m"
 
 # Local auto portal URLs use this machine's current LAN IPs — accept them as Hosts
 # so DisallowedHost does not block Hotspot clients after the IP changes.

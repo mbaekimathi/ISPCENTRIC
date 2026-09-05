@@ -3,46 +3,88 @@
 {% block title %}Billing — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
+{% with initials=customer.full_name|default:customer.account_number|slice:":2"|upper %}
 <div class="client-detail-page client-detail-simple client-billing-page">
 
-  <header class="client-billing-hero">
-    <div class="client-billing-hero-main">
-      <span class="client-billing-hero-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
-          <rect x="3.5" y="6" width="17" height="12" rx="2.2"/>
-          <path d="M7 10h4M7 13h7" stroke-linecap="round"/>
-          <circle cx="16.5" cy="12" r="1.4"/>
-        </svg>
-      </span>
-      <div>
-        <p class="client-billing-kicker">Client billing</p>
-        <h2 class="client-billing-title">{{ customer.full_name }}</h2>
-        <p class="client-billing-lead">
-          Access vouchers and successful payments for
-          <span class="org-code">{{ customer.account_number }}</span>.
-        </p>
+  <nav class="client-cat-nav" aria-label="Billing sections">
+    <a class="client-cat-nav-item is-billing is-active" href="#client-vouchers">Vouchers</a>
+    <a class="client-cat-nav-item is-billing" href="#client-billing">Payments</a>
+    {% if back_url %}
+      <a class="client-cat-nav-item client-billing-nav-back" href="{{ back_url }}">← Client profile</a>
+    {% endif %}
+  </nav>
+
+  <section class="client-billing-deck" aria-labelledby="client-billing-title">
+    <div class="client-billing-deck-top">
+      <div class="client-billing-identity">
+        <span class="client-billing-avatar" aria-hidden="true">{{ initials }}</span>
+        <div>
+          <p class="client-billing-kicker">
+            <span class="client-cat client-cat-billing">
+              <span class="client-cat-ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 5h16v3H4Zm0 5h10v3H4Zm0 5h16v3H4Z"/></svg>
+              </span>
+              Client billing
+            </span>
+          </p>
+          <h1 class="client-billing-title" id="client-billing-title">{{ customer.full_name }}</h1>
+          <p class="client-billing-lead">
+            Vouchers and collections for
+            <span class="org-code">{{ customer.account_number }}</span>
+            {% if customer.plan %}
+              · {{ customer.plan.name }}{% if customer.plan.speed_label %} · {{ customer.plan.speed_label }}{% endif %}
+            {% endif %}
+            · {{ customer.get_service_type_display }}
+          </p>
+        </div>
+      </div>
+      <div class="client-billing-hero-meta">
+        <span class="client-billing-chip is-live">{{ valid_voucher_count }} valid voucher{{ valid_voucher_count|pluralize }}</span>
+        <span class="client-billing-chip is-money">KES {{ amount_paid }} collected</span>
+        <span class="client-billing-chip">{{ customer.get_status_display }}</span>
       </div>
     </div>
-    <div class="client-billing-hero-meta">
-      <span class="client-billing-chip is-live">{{ valid_voucher_count }} valid voucher{{ valid_voucher_count|pluralize }}</span>
-      <span class="client-billing-chip">KES {{ amount_paid }} collected</span>
-      {% if back_url %}
-        <a class="btn btn-ghost btn-sm" href="{{ back_url }}">← Client profile</a>
-      {% endif %}
-    </div>
-  </header>
 
-  <section class="panel client-simple-panel client-billing-panel" id="client-vouchers">
-    <header class="client-simple-head">
+    <ul class="client-billing-metrics" aria-label="Billing summary">
+      <li data-stat="collected"{% if amount_paid %} class="is-good"{% endif %}>
+        <span class="client-billing-metric-label">Collected</span>
+        <strong>KES {{ amount_paid }}</strong>
+        <em>All successful payments</em>
+      </li>
+      <li data-stat="paid"{% if invoice_paid %} class="is-good"{% endif %}>
+        <span class="client-billing-metric-label">Paid invoices</span>
+        <strong>{{ invoice_paid }}</strong>
+        <em>of {{ invoice_total }} total</em>
+      </li>
+      <li data-stat="pending"{% if invoice_pending %} class="is-idle"{% endif %}>
+        <span class="client-billing-metric-label">Pending</span>
+        <strong>{{ invoice_pending }}</strong>
+        <em>Awaiting payment</em>
+      </li>
+      <li data-stat="overdue"{% if invoice_overdue %} class="is-bad"{% endif %}>
+        <span class="client-billing-metric-label">Overdue</span>
+        <strong>{{ invoice_overdue }}</strong>
+        <em>Past due</em>
+      </li>
+    </ul>
+  </section>
+
+  <section class="panel client-simple-panel client-billing-panel" id="client-vouchers" data-cat="billing">
+    <header class="client-billing-section-head">
       <div>
-        <p class="client-simple-kicker">Device activation</p>
-        <h2 class="client-simple-section-title">Access vouchers</h2>
-        <p class="client-simple-meta">
+        <p class="client-cat client-cat-billing">
+          <span class="client-cat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 3v2h6V7H9Zm0 4v2h6v-2H9Zm0 4v2h4v-2H9Z"/></svg>
+          </span>
+          Device activation
+        </p>
+        <h2 class="client-billing-section-title">Access vouchers</h2>
+        <p class="client-billing-section-meta">
           One-time codes from successful M-Pesa payments. Hotspot packages issue one voucher per device.
           Share a valid code so that device can connect — a used voucher cannot be reused.
         </p>
       </div>
-      <div class="client-simple-badges">
+      <div class="client-billing-section-badges">
         <span class="org-status {% if valid_voucher_count %}org-status-active{% endif %}">
           {{ valid_voucher_count }} valid
         </span>
@@ -71,7 +113,7 @@
               <span class="org-code voucher-code client-voucher-code-btn" data-voucher-code>{{ row.code_display }}</span>
             {% endif %}
             <p class="client-voucher-card-meta">
-              {{ row.plan_name }}
+              <span class="client-voucher-plan">{{ row.plan_name }}</span>
               {% if row.mpesa_receipt %} · M-Pesa {{ row.mpesa_receipt }}{% endif %}
               · {{ row.created_at|date:"M j, Y g:i A" }}
               {% if row.status == "expired" and row.redeemed_at %}
@@ -129,41 +171,23 @@
     {% endif %}
   </section>
 
-  <section class="panel client-simple-panel client-billing-panel" id="client-billing">
-    <header class="client-simple-head">
+  <section class="panel client-simple-panel client-billing-panel" id="client-billing" data-cat="billing">
+    <header class="client-billing-section-head">
       <div>
-        <p class="client-simple-kicker">Collections</p>
-        <h2 class="client-simple-section-title">Successful payments</h2>
-        <p class="client-simple-meta">M-Pesa and other collections recorded for this subscriber.</p>
+        <p class="client-cat client-cat-billing">
+          <span class="client-cat-ico" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v5.2l3.2 1.9-.8 1.4L11 13V7Z"/></svg>
+          </span>
+          Collections
+        </p>
+        <h2 class="client-billing-section-title">Successful payments</h2>
+        <p class="client-billing-section-meta">M-Pesa and other collections recorded for this subscriber.</p>
       </div>
-      <div class="client-simple-badges">
+      <div class="client-billing-section-badges">
         <span class="org-status org-status-active">{{ payments|length }} listed</span>
         <span class="org-status">KES {{ amount_paid }} collected</span>
       </div>
     </header>
-
-    <ul class="client-simple-status client-billing-stats" aria-label="Billing summary">
-      <li data-stat="collected">
-        <span>Collected</span>
-        <strong>KES {{ amount_paid }}</strong>
-        <em>All successful payments</em>
-      </li>
-      <li data-stat="paid">
-        <span>Paid invoices</span>
-        <strong>{{ invoice_paid }}</strong>
-        <em>of {{ invoice_total }} total</em>
-      </li>
-      <li data-stat="pending">
-        <span>Pending</span>
-        <strong>{{ invoice_pending }}</strong>
-        <em>Awaiting payment</em>
-      </li>
-      <li data-stat="overdue">
-        <span>Overdue</span>
-        <strong>{{ invoice_overdue }}</strong>
-        <em>Past due</em>
-      </li>
-    </ul>
 
     {% if payments %}
       <div class="org-table-shell client-detail-table-shell client-billing-table-shell">
@@ -187,7 +211,9 @@
                   </div>
                 </td>
                 <td data-label="Amount"><strong class="client-billing-amount">KES {{ pay.amount }}</strong></td>
-                <td data-label="Method">{{ pay.get_method_display }}</td>
+                <td data-label="Method">
+                  <span class="client-billing-method">{{ pay.get_method_display }}</span>
+                </td>
                 <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.display_reference|default:"—" }}</span></td>
                 <td data-label="Invoice">
                   {% if pay.invoice %}
@@ -210,12 +236,43 @@
   </section>
 
 </div>
+{% endwith %}
 {% endblock %}
 
 {% block client_extra_js %}
 {{ block.super }}
 <script>
 (function () {
+  var nav = document.querySelector(".client-billing-page > .client-cat-nav");
+  var links = nav ? Array.prototype.slice.call(nav.querySelectorAll('a[href^="#"]')) : [];
+  var sections = links
+    .map(function (link) {
+      return document.querySelector(link.getAttribute("href"));
+    })
+    .filter(Boolean);
+
+  function setActive(id) {
+    links.forEach(function (link) {
+      var on = link.getAttribute("href") === "#" + id;
+      link.classList.toggle("is-active", on);
+      if (on) link.setAttribute("aria-current", "true");
+      else link.removeAttribute("aria-current");
+    });
+  }
+
+  if (sections.length && "IntersectionObserver" in window) {
+    var observer = new IntersectionObserver(
+      function (entries) {
+        var visible = entries
+          .filter(function (entry) { return entry.isIntersecting; })
+          .sort(function (a, b) { return b.intersectionRatio - a.intersectionRatio; })[0];
+        if (visible && visible.target && visible.target.id) setActive(visible.target.id);
+      },
+      { rootMargin: "-20% 0px -55% 0px", threshold: [0.15, 0.35, 0.6] }
+    );
+    sections.forEach(function (section) { observer.observe(section); });
+  }
+
   document.querySelectorAll("[data-copy-voucher]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       var text = btn.getAttribute("data-copy-text") || "";

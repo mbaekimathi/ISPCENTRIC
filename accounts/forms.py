@@ -2287,13 +2287,99 @@ class PppoeSettingsForm(forms.ModelForm):
         }
 
 
+class AdvertsSettingsForm(forms.ModelForm):
+    """Per-ISP Click to earn switch + optional external redirect URL."""
+
+    class Meta:
+        model = Organization
+        fields = ["adverts_enabled", "adverts_redirect_url"]
+        labels = {
+            "adverts_enabled": "Show Click to earn on pay pages",
+            "adverts_redirect_url": "External redirect link (optional)",
+        }
+        help_texts = {
+            "adverts_enabled": (
+                "When on, Hotspot and PPPoE Wi‑Fi pay / pause popups show a "
+                "Click to earn card."
+            ),
+            "adverts_redirect_url": (
+                "Leave blank for the built-in adverts page. "
+                "Or paste a full https:// URL — subscribers open that site when "
+                "they tap Click to earn. The host is added to Hotspot walled garden "
+                "on the next Hotspot push so unpaid phones can reach it."
+            ),
+        }
+        widgets = {
+            "adverts_enabled": forms.CheckboxInput(
+                attrs={"id": "id_adverts_enabled"}
+            ),
+            "adverts_redirect_url": forms.URLInput(
+                attrs={
+                    "id": "id_adverts_redirect_url",
+                    "class": "form-control",
+                    "placeholder": "https://example.com/earn",
+                    "autocomplete": "off",
+                    "inputmode": "url",
+                }
+            ),
+        }
+
+    def clean_adverts_redirect_url(self):
+        from urllib.parse import urlparse
+        import ipaddress
+
+        raw = (self.cleaned_data.get("adverts_redirect_url") or "").strip()
+        if not raw:
+            return ""
+        if not re.match(r"^https?://", raw, flags=re.IGNORECASE):
+            raw = f"https://{raw}"
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").strip().lower()
+        if not host:
+            raise forms.ValidationError("Enter a valid website URL.")
+        if host in {"localhost", "127.0.0.1", "::1"}:
+            raise forms.ValidationError(
+                "Localhost cannot be used — phones on Wi‑Fi cannot open it."
+            )
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_loopback or ip.is_link_local:
+                raise forms.ValidationError(
+                    "Use a reachable public or LAN website URL for subscribers."
+                )
+        except ValueError:
+            pass
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise forms.ValidationError("URL must start with http:// or https://.")
+        return raw
+
+
+class HotspotEnabledForm(forms.ModelForm):
+    """On/off switch for Hotspot service (pushes to MikroTik on save)."""
+
+    class Meta:
+        model = Organization
+        fields = ["hotspot_enabled"]
+        labels = {
+            "hotspot_enabled": "Enable Hotspot",
+        }
+        help_texts = {
+            "hotspot_enabled": (
+                "Turn on Hotspot portals and voucher defaults for this organization. "
+                "Saving also pushes Hotspot to this MikroTik."
+            ),
+        }
+        widgets = {
+            "hotspot_enabled": forms.CheckboxInput(attrs={"id": "id_hotspot_enabled"}),
+        }
+
+
 class HotspotSettingsForm(forms.ModelForm):
     """Portal, login page, welcome page, and voucher defaults for Hotspot access."""
 
     class Meta:
         model = Organization
         fields = [
-            "hotspot_enabled",
             "hotspot_portal_title",
             "hotspot_login_message",
             "hotspot_use_welcome_page",
@@ -2308,7 +2394,6 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_idle_timeout_minutes",
         ]
         labels = {
-            "hotspot_enabled": "Enable Hotspot",
             "hotspot_portal_title": "Portal title",
             "hotspot_login_message": "Login message",
             "hotspot_use_welcome_page": "Use ISPCENTRIC welcome page",
@@ -2323,9 +2408,6 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_idle_timeout_minutes": "Idle timeout (minutes)",
         }
         help_texts = {
-            "hotspot_enabled": (
-                "Turn on Hotspot portals and voucher defaults for this organization."
-            ),
             "hotspot_portal_title": "Shown as the heading on the Hotspot login page.",
             "hotspot_login_message": "Short welcome text clients see before they log in.",
             "hotspot_use_welcome_page": (
@@ -2345,7 +2427,6 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_idle_timeout_minutes": "0 means sessions stay open until validity ends.",
         }
         widgets = {
-            "hotspot_enabled": forms.CheckboxInput(attrs={"id": "id_hotspot_enabled"}),
             "hotspot_portal_title": forms.TextInput(
                 attrs={
                     "class": "form-control",

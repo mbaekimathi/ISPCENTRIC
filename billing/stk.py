@@ -28,19 +28,50 @@ logger = logging.getLogger(__name__)
 STK_QUERY_MIN_INTERVAL_SECONDS = 3
 
 # Keys that must survive Daraja callback/query overwrites of raw_callback.
+# Callback receipt fields must survive STK Query merges so a late/early
+# callback is not wiped when polling confirms payment first.
 _STK_RAW_PRESERVE_KEYS = (
     "lead_allocation_options",
     "environment",
     "initiate",
+    "callback",
+    "callback_receipt",
+    "awaiting_daraja_confirm",
+    "query",
 )
 
 
 def _merge_stk_raw_callback(existing, incoming) -> dict:
-    """Merge callback/query payload onto stored STK raw data without dropping options."""
+    """Merge callback/query payload onto stored STK raw data without dropping options.
+
+    STK Query polls often overwrite ``raw_callback`` after a late callback already
+    stored ``callback`` / ``callback_receipt``. Those receipt keys must survive
+    empty or partial query merges so Payment.reference can still be backfilled.
+    """
     base = existing if isinstance(existing, dict) else {}
     update = incoming if isinstance(incoming, dict) else {}
-    preserved = {key: base[key] for key in _STK_RAW_PRESERVE_KEYS if key in base}
-    return {**preserved, **update}
+    merged = {**base, **update}
+    for key in _STK_RAW_PRESERVE_KEYS:
+        if key not in base:
+            continue
+        # Always prefer the latest Daraja query payload when one is supplied.
+        if key == "query" and key in update:
+            continue
+        old = base[key]
+        new = merged.get(key)
+        if key == "callback_receipt":
+            old_r = str(old or "").strip()
+            new_r = str(new or "").strip()
+            if old_r and not new_r:
+                merged[key] = old_r
+            continue
+        if key == "callback":
+            if old and not new:
+                merged[key] = old
+            continue
+        if key not in update:
+            merged[key] = old
+    return merged
 
 
 def _callback_metadata_map(items) -> dict:
@@ -58,6 +89,118 @@ def _callback_metadata_map(items) -> dict:
             value = item.get("value")
         out[str(name)] = value
     return out
+
+
+def _receipt_from_mapping(data) -> str:
+    """Pull MpesaReceiptNumber (or aliases) from a flat mapping."""
+    if not isinstance(data, dict):
+        return ""
+    return str(
+        data.get("MpesaReceiptNumber")
+        or data.get("MpesaReceiptNo")
+        or data.get("mpesa_receipt")
+        or data.get("callback_receipt")
+        or ""
+    ).strip()
+
+
+def extract_mpesa_receipt_from_raw(raw) -> str:
+    """Find a real M-Pesa SMS receipt buried in stored STK raw_callback JSON."""
+    if not isinstance(raw, dict):
+        return ""
+
+    direct = _receipt_from_mapping(raw)
+    if direct:
+        return direct
+
+    # Deferred confirm path stores {"callback": <daraja body>, "callback_receipt": "…"}.
+    nested_callback = raw.get("callback")
+    if isinstance(nested_callback, dict):
+        nested = extract_mpesa_receipt_from_raw(nested_callback)
+        if nested:
+            return nested
+
+    body = raw.get("Body") if isinstance(raw.get("Body"), dict) else {}
+    stk_callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    if stk_callback:
+        meta = stk_callback.get("CallbackMetadata") or {}
+        if isinstance(meta, dict):
+            from_meta = _receipt_from_mapping(_callback_metadata_map(meta.get("Item")))
+            if from_meta:
+                return from_meta
+        from_cb = _receipt_from_mapping(stk_callback)
+        if from_cb:
+            return from_cb
+
+    query = raw.get("query")
+    if isinstance(query, dict):
+        from_query = _receipt_from_mapping(query)
+        if from_query:
+            return from_query
+
+    return ""
+
+
+def resolve_stk_mpesa_receipt(stk: StkPushRequest, explicit: str = "") -> str:
+    """Best-known receipt for an STK row: explicit arg, model field, then raw JSON."""
+    receipt = (explicit or "").strip()
+    if receipt:
+        return receipt[:64]
+    receipt = (stk.mpesa_receipt or "").strip()
+    if receipt:
+        return receipt[:64]
+    receipt = extract_mpesa_receipt_from_raw(
+        stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    )
+    return receipt[:64] if receipt else ""
+
+
+def ensure_stk_payment_receipt(
+    stk: StkPushRequest,
+    *,
+    receipt: str = "",
+    raw: dict | None = None,
+) -> str:
+    """
+    Persist a resolved M-Pesa receipt onto the STK row and linked Payment.
+
+    Safe to call repeatedly after query-first fulfillment (empty reference) once
+    a late callback or recovered raw payload finally supplies the receipt.
+    """
+    if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
+    found = resolve_stk_mpesa_receipt(stk, explicit=receipt)
+    if not found and raw is not None:
+        found = extract_mpesa_receipt_from_raw(raw)
+    if not found:
+        if raw is not None:
+            stk.save(update_fields=["raw_callback"])
+        return ""
+
+    update_fields: list[str] = []
+    if raw is not None:
+        update_fields.append("raw_callback")
+    # Always write the receipt field — callers may have set it only in-memory.
+    stk.mpesa_receipt = found[:64]
+    update_fields.append("mpesa_receipt")
+    stk.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    if stk.payment_id:
+        # Reload so a concurrent query-first fulfill's Payment row is visible.
+        from billing.models import Payment
+
+        payment = Payment.objects.filter(pk=stk.payment_id).first()
+        if payment is not None:
+            current_ref = (payment.reference or "").strip()
+            checkout_id = (stk.checkout_request_id or "").strip()
+            if (
+                not current_ref
+                or current_ref == checkout_id
+                or current_ref.startswith("ws_CO_")
+            ) and current_ref != found:
+                payment.reference = found[:100]
+                payment.save(update_fields=["reference"])
+    return found
 
 
 def redact_stk_callback_for_log(payload) -> dict:
@@ -809,21 +952,24 @@ def _persist_stk_receipt_fields(
     """Idempotent receipt/status updates after fulfillment already applied."""
     update_fields: list[str] = []
     if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
         update_fields.append("raw_callback")
     if result_desc:
+        stk.result_desc = result_desc[:255]
         update_fields.append("result_desc")
     if result_code is not None:
+        stk.result_code = result_code
         update_fields.append("result_code")
-    if receipt:
+    resolved = resolve_stk_mpesa_receipt(stk, explicit=receipt)
+    if resolved:
+        # Always persist: fulfill may have set the field in-memory only.
+        stk.mpesa_receipt = resolved[:64]
         update_fields.append("mpesa_receipt")
     if update_fields:
         stk.save(update_fields=list(dict.fromkeys(update_fields)))
-    if receipt and stk.payment_id:
-        payment = stk.payment
-        current_ref = (payment.reference or "").strip()
-        if not current_ref or current_ref == (stk.checkout_request_id or "").strip():
-            payment.reference = receipt[:100]
-            payment.save(update_fields=["reference"])
+    if resolved:
+        ensure_stk_payment_receipt(stk, receipt=resolved)
+    stk.refresh_from_db()
     return {
         "ok": True,
         "already_applied": True,
@@ -1067,7 +1213,9 @@ def fulfill_successful_stk(
     stk.result_code = result_code
     if result_desc:
         stk.result_desc = result_desc[:255]
-    receipt = (mpesa_receipt or "").strip()
+    receipt = resolve_stk_mpesa_receipt(stk, explicit=mpesa_receipt)
+    if not receipt and raw is not None:
+        receipt = extract_mpesa_receipt_from_raw(raw)
     if receipt:
         stk.mpesa_receipt = receipt[:64]
 
@@ -1295,6 +1443,21 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 "checkout_request_id": checkout_id,
             }
 
+        # Query often confirms first without a receipt. A late callback should
+        # backfill MpesaReceiptNumber without requiring another Daraja query.
+        if stk.status == StkPushRequest.Status.SUCCESS:
+            return fulfill_successful_stk(
+                stk,
+                result_code=0,
+                result_desc=result_desc
+                or "The service request is processed successfully.",
+                mpesa_receipt=receipt,
+                raw={
+                    "callback": payload,
+                    "callback_receipt": receipt,
+                },
+            )
+
         confirmed = _confirm_stk_success_with_daraja(stk)
         if confirmed.get("pending"):
             update_fields = ["raw_callback"]
@@ -1314,6 +1477,9 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 stk.mpesa_receipt = receipt[:64]
                 update_fields.append("mpesa_receipt")
             stk.save(update_fields=update_fields)
+            if receipt:
+                # Payment may already exist if a parallel poll fulfilled first.
+                ensure_stk_payment_receipt(stk, receipt=receipt)
             logger.info(
                 "STK callback deferred pending Daraja confirm stk_id=%s checkout=%s",
                 stk.pk,
@@ -1374,7 +1540,10 @@ def process_stk_callback_payload(payload: dict) -> dict:
             result_code=0,
             result_desc=result_desc or "The service request is processed successfully.",
             mpesa_receipt=receipt,
-            raw=payload,
+            raw={
+                "callback": payload,
+                "callback_receipt": receipt,
+            },
         )
         if result.get("ok"):
             stk.refresh_from_db()
@@ -1579,8 +1748,14 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             base["reason"] = stk_failure_reason(stk.result_code, stk.result_desc)
             base["cancelled"] = stk.status == StkPushRequest.Status.CANCELLED
             base["can_retry"] = True
-        elif stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
-            _apply_paid_subscription_to_status(base, stk, wait_for_nas=wait_for_nas)
+        else:
+            # Recover receipt from a late callback stored in raw_callback, and
+            # copy it onto Payment.reference when query confirmed first.
+            recovered = ensure_stk_payment_receipt(stk)
+            if recovered:
+                base["mpesa_receipt"] = recovered
+            if stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
+                _apply_paid_subscription_to_status(base, stk, wait_for_nas=wait_for_nas)
         return base
 
     if not stk.checkout_request_id:
@@ -1638,19 +1813,25 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
         )
 
     if query.get("success"):
-        receipt = ""
+        # Callback may have landed (and stored receipt) while this poll was
+        # waiting on Safaricom — reload before resolving the reference code.
+        stk.refresh_from_db()
         data = query.get("data") or {}
-        # Query response often lacks receipt; keep blank unless present
-        receipt = str(
-            data.get("MpesaReceiptNumber")
-            or data.get("mpesa_receipt")
-            or ""
-        ).strip()
+        # Query response often lacks receipt; prefer callback_receipt already
+        # stored on the STK row / raw_callback when the callback arrived first.
+        receipt = resolve_stk_mpesa_receipt(
+            stk,
+            explicit=str(
+                data.get("MpesaReceiptNumber")
+                or data.get("mpesa_receipt")
+                or ""
+            ).strip(),
+        )
         fulfill = fulfill_successful_stk(
             stk,
             result_code=int(query.get("result_code") or 0),
             result_desc=query.get("result_desc") or "Payment confirmed.",
-            mpesa_receipt=receipt or stk.mpesa_receipt,
+            mpesa_receipt=receipt,
             raw={"query": data},
         )
         stk.refresh_from_db()

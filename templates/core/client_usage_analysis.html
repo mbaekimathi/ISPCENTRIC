@@ -22,7 +22,7 @@
         Client usage
       </p>
       <h2>{{ customer.full_name }}</h2>
-      <p class="panel-sub">Simple picture of online time, speed, and data for the last {{ range_label|default:trend_hours }}.</p>
+      <p class="panel-sub">Online time, speed, data, and when they paid, started, got blocked, or the package ended.</p>
     </div>
     <div class="mikrotik-detail-actions">
       <span class="mikrotik-live-stamp" data-usage-stamp>
@@ -45,7 +45,7 @@
   </p>
 
   <dl class="client-kv-row client-usage-stats" id="usage-summary">
-    <div class="client-kv client-usage-stat{% if trends.summary.latest_active %} is-online{% elif trends.summary.tracking == 'empty' or trends.summary.tracking == 'warming' or not trends.sample_count %} is-waiting{% elif trends.sample_count %} is-offline{% endif %}" data-ico="status" data-stat="status">
+    <div class="client-kv client-usage-stat{% if trends.summary.access_state == 'surfing' or trends.summary.latest_active and trends.summary.access_state != 'not_surfing' and trends.summary.access_state != 'disconnected' %} is-online{% elif trends.summary.access_state == 'not_surfing' %} is-blocked{% elif trends.summary.tracking == 'empty' or trends.summary.tracking == 'warming' or not trends.sample_count %} is-waiting{% elif trends.sample_count %} is-offline{% endif %}" data-ico="status" data-stat="status">
       <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Now</dt>
       <dd><strong data-sum="status">{{ trends.summary.status|default:"—" }}</strong><span data-sum="status-hint">{{ trends.summary.status_hint|default:"Current connection" }}</span></dd>
     </div>
@@ -62,6 +62,50 @@
       <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
     </div>
   </dl>
+</section>
+
+<section class="panel" id="usage-access-timeline" data-cat="live">
+  <div class="mikrotik-detail-toolbar">
+    <div class="mikrotik-detail-toolbar-copy">
+      <p class="client-cat client-cat-billing">
+        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M7 2h10v2H7Zm-2 4h14v16H5Zm4 4v2h6v-2Zm0 4v2h6v-2Z"/></svg></span>
+        Access timeline
+      </p>
+      <h2>Payment, surfing &amp; block times</h2>
+      <p class="panel-sub">See each payment that started or extended a package, when surfing stopped, and whether that was before the subscription ended.</p>
+    </div>
+  </div>
+
+  <p class="client-usage-access-alert" data-access-alert {% if not trends.access.alert %}hidden{% endif %} role="status">
+    {{ trends.access.alert|default:"" }}
+  </p>
+
+  <dl class="client-usage-access-facts" data-access-facts>
+    <div>
+      <dt>Paid / started</dt>
+      <dd data-access-start>{% if trends.access.package_start_label %}{{ trends.access.package_start_label }}{% if trends.access.period_count > 1 %} · {{ trends.access.period_count }} periods{% endif %}{% else %}—{% endif %}</dd>
+    </div>
+    <div>
+      <dt>Subscription ends</dt>
+      <dd data-access-end>{% if trends.access.access_deadline_label %}{{ trends.access.access_deadline_label }}{% elif trends.access.package_end_label %}{{ trends.access.package_end_label }}{% else %}—{% endif %}</dd>
+    </div>
+    <div>
+      <dt>Now</dt>
+      <dd data-access-now>{{ trends.access.status|default:trends.summary.status|default:"—" }}</dd>
+    </div>
+  </dl>
+
+  <ol class="client-usage-timeline" data-access-timeline aria-label="Service access events">
+    {% for ev in trends.access.events %}
+      <li class="client-usage-timeline-item is-{{ ev.tone|default:ev.kind }}{% if ev.before_subscription_end %} is-early{% endif %}{% if ev.future %} is-future{% endif %}">
+        <span class="client-usage-timeline-time">{{ ev.at_label }}</span>
+        <strong class="client-usage-timeline-label">{{ ev.label }}</strong>
+        <span class="client-usage-timeline-detail">{{ ev.detail }}</span>
+      </li>
+    {% empty %}
+      <li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>
+    {% endfor %}
+  </ol>
 </section>
 
 {% if can_live_usage %}
@@ -93,9 +137,9 @@
   <div class="client-usage-chart-grid" data-usage-charts {% if not trends.sample_count %}hidden{% endif %}>
     <article class="client-usage-chart-card">
       <header>
-        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online</p>
-        <h3>When were they online?</h3>
-        <p>Green = surfing. Gaps = offline. Orange dots = dropped.</p>
+        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Access</p>
+        <h3>Surfing vs blocked</h3>
+        <p>Green = surfing · Amber = not surfing · Grey = disconnected. Markers show pay / start / block / end.</p>
       </header>
       <div class="client-usage-chart-wrap">
         <canvas id="chart-online" height="200" aria-label="Online presence over time"></canvas>
@@ -165,6 +209,11 @@
   var chartsBox = document.querySelector("[data-usage-charts]");
   var chartError = document.querySelector("[data-usage-chart-error]");
   var statusCard = document.querySelector('[data-stat="status"]');
+  var accessAlert = document.querySelector("[data-access-alert]");
+  var accessTimeline = document.querySelector("[data-access-timeline]");
+  var accessStart = document.querySelector("[data-access-start]");
+  var accessEnd = document.querySelector("[data-access-end]");
+  var accessNow = document.querySelector("[data-access-now]");
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
@@ -191,18 +240,84 @@
     if (el) el.textContent = value;
   }
 
+  function accessStateLabel(state) {
+    if (state === "surfing") return { status: "Surfing", hint: "Connected with internet" };
+    if (state === "not_surfing") return { status: "Not surfing", hint: "Blocked — cannot browse" };
+    if (state === "disconnected") return { status: "Disconnected", hint: "Package active, no session" };
+    if (state === "waiting") return { status: "Waiting", hint: "No readings yet" };
+    return null;
+  }
+
   function markPoints(len, markers) {
     var peak = markers && markers.peak_index;
     var stops = {};
     ((markers && markers.stop_indexes) || []).forEach(function (i) { stops[i] = true; });
+    var events = (markers && markers.event_indexes) || {};
+    var eventAt = {};
+    Object.keys(events).forEach(function (kind) {
+      (events[kind] || []).forEach(function (i) {
+        if (eventAt[i] == null) eventAt[i] = kind;
+      });
+    });
     var radius = [];
     var colors = [];
     for (var i = 0; i < len; i++) {
-      if (i === peak) { radius.push(6); colors.push("#e74c3c"); }
+      if (eventAt[i] === "payment") { radius.push(6); colors.push("#4f8cff"); }
+      else if (eventAt[i] === "subscription_started") { radius.push(6); colors.push("#2ecc71"); }
+      else if (eventAt[i] === "blocked" || eventAt[i] === "blocked_connected" || eventAt[i] === "early_offline") {
+        radius.push(6); colors.push("#e74c3c");
+      }
+      else if (eventAt[i] === "subscription_ended") { radius.push(6); colors.push("#9b59b6"); }
+      else if (i === peak) { radius.push(6); colors.push("#e74c3c"); }
       else if (stops[i]) { radius.push(5); colors.push("#e8a317"); }
       else { radius.push(len > 40 ? 0 : 2.5); colors.push(null); }
     }
     return { radius: radius, colors: colors };
+  }
+
+  function paintAccess(data) {
+    var access = (data && data.access) || {};
+    var summary = (data && data.summary) || {};
+    if (accessAlert) {
+      var alertText = access.alert || summary.access_alert || "";
+      accessAlert.textContent = alertText;
+      accessAlert.hidden = !alertText;
+    }
+    if (accessStart) {
+      var startLabel = access.package_start_label || "";
+      var periods = Number(access.period_count || 0);
+      if (startLabel && periods > 1) {
+        accessStart.textContent = startLabel + " · " + periods + " periods";
+      } else {
+        accessStart.textContent = startLabel || "—";
+      }
+    }
+    if (accessEnd) {
+      accessEnd.textContent = access.access_deadline_label || access.package_end_label || "—";
+    }
+    if (accessNow) {
+      accessNow.textContent = access.status || summary.status || "—";
+    }
+    if (!accessTimeline) return;
+    var events = access.events || [];
+    if (!events.length) {
+      accessTimeline.innerHTML =
+        '<li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>';
+      return;
+    }
+    accessTimeline.innerHTML = events.map(function (ev) {
+      var tone = ev.tone || ev.kind || "payment";
+      var cls = "client-usage-timeline-item is-" + tone;
+      if (ev.before_subscription_end) cls += " is-early";
+      if (ev.future) cls += " is-future";
+      return (
+        '<li class="' + cls + '">' +
+          '<span class="client-usage-timeline-time">' + (ev.at_label || "") + "</span>" +
+          '<strong class="client-usage-timeline-label">' + (ev.label || "") + "</strong>" +
+          '<span class="client-usage-timeline-detail">' + (ev.detail || "") + "</span>" +
+        "</li>"
+      );
+    }).join("");
   }
 
   function seriesPeak(values) {
@@ -267,13 +382,26 @@
 
   function applySummary(data) {
     var summary = (data && data.summary) || {};
+    var access = (data && data.access) || {};
     var prime = summary.prime_point;
     var tracking = summary.tracking || ((data && data.sample_count) ? "ready" : "empty");
     var latest = !!summary.latest_active;
     var liveError = (data && data.live_error) || "";
+    var accessState = summary.access_state || access.current_state || "";
+    var labeled = accessStateLabel(accessState);
 
-    setSum("status", summary.status || (latest ? "Online now" : (tracking === "empty" ? "Waiting" : "Offline now")));
-    setSum("status-hint", summary.status_hint || (latest ? "Connected" : "Not connected"));
+    setSum(
+      "status",
+      (labeled && labeled.status) ||
+        summary.status ||
+        (latest ? "Surfing" : tracking === "empty" ? "Waiting" : "Disconnected")
+    );
+    setSum(
+      "status-hint",
+      (labeled && labeled.hint) ||
+        summary.status_hint ||
+        (latest ? "Connected with internet" : "Not connected")
+    );
     setSum("data", fmtBytes(summary.data_used_bytes));
     setSum(
       "data-hint",
@@ -290,9 +418,16 @@
     );
 
     if (statusCard) {
-      statusCard.classList.toggle("is-online", latest);
-      statusCard.classList.toggle("is-offline", !latest && tracking !== "empty");
-      statusCard.classList.toggle("is-waiting", tracking === "empty" || tracking === "warming");
+      statusCard.classList.toggle("is-online", accessState === "surfing");
+      statusCard.classList.toggle("is-blocked", accessState === "not_surfing");
+      statusCard.classList.toggle(
+        "is-offline",
+        accessState === "disconnected" || (!latest && tracking !== "empty" && accessState !== "not_surfing" && accessState !== "surfing")
+      );
+      statusCard.classList.toggle(
+        "is-waiting",
+        tracking === "empty" || tracking === "warming" || accessState === "waiting"
+      );
     }
 
     if (insightEl) {
@@ -326,6 +461,7 @@
         });
     }
 
+    paintAccess(data);
     schedulePoll(tracking === "empty" || tracking === "warming");
   }
 
@@ -353,7 +489,10 @@
               if (label.indexOf("Kbps") >= 0) return label.replace(" (Kbps)", "") + ": " + Number(raw).toFixed(1) + " Kbps";
               if (label.indexOf("KB") >= 0) return "Data: " + Number(raw).toFixed(1) + " KB";
               if (label.indexOf("MB") >= 0) return "Data: " + Number(raw).toFixed(3) + " MB";
-              if (label === "Online") return raw ? "Online" : "Offline";
+              if (label === "Online" || label === "Access") {
+                var map = { 0: "Disconnected", 1: "Not surfing", 2: "Surfing" };
+                return map[raw] != null ? map[raw] : (raw ? "Online" : "Offline");
+              }
               return label + ": " + raw;
             }
           }
@@ -405,10 +544,15 @@
         plugins: Object.assign({}, base.plugins, { legend: { display: false } }),
         scales: Object.assign({}, base.scales, {
           y: Object.assign({}, base.scales.y, {
-            max: 1,
+            min: 0,
+            max: 2,
             ticks: Object.assign({}, base.scales.y.ticks, {
               stepSize: 1,
-              callback: function (v) { return v ? "Online" : "Offline"; }
+              callback: function (v) {
+                if (v === 2) return "Surfing";
+                if (v === 1) return "Not surfing";
+                return "Disconnected";
+              }
             })
           })
         })
@@ -453,13 +597,28 @@
       speed.up.some(function (v) { return v != null && Number(v) > 0; });
     var ySuggested = hasSpeed ? undefined : (speed.unit === "Kbps" ? 100 : 0.25);
 
+    var surfSeries = series.surf_state;
+    if (!surfSeries || !surfSeries.length) {
+      surfSeries = (series.online || []).map(function (v) {
+        if (v == null) return null;
+        return Number(v) ? 2 : 0;
+      });
+    }
+    var surfColors = surfSeries.map(function (v, i) {
+      if (marks.colors[i]) return marks.colors[i];
+      if (v === 2) return "#2ecc71";
+      if (v === 1) return "#e8a317";
+      if (v === 0) return "#94a3b8";
+      return "#2ecc71";
+    });
+
     charts.online.data = {
       labels: labels,
       datasets: [{
-        label: "Online",
-        data: series.online || [],
+        label: "Access",
+        data: surfSeries,
         borderColor: "#2ecc71",
-        backgroundColor: "rgba(46,204,113,0.22)",
+        backgroundColor: "rgba(46,204,113,0.14)",
         borderWidth: 2,
         fill: true,
         tension: 0.05,
@@ -467,9 +626,18 @@
         stepped: "before",
         pointRadius: marks.radius,
         pointHoverRadius: 5,
-        pointBackgroundColor: marks.colors.map(function (c) { return c || "#2ecc71"; }),
+        pointBackgroundColor: surfColors,
         pointBorderColor: "#fff",
-        pointBorderWidth: 1
+        pointBorderWidth: 1,
+        segment: {
+          borderColor: function (ctx) {
+            var y = ctx.p1 && ctx.p1.parsed ? ctx.p1.parsed.y : null;
+            if (y === 2) return "#2ecc71";
+            if (y === 1) return "#e8a317";
+            if (y === 0) return "#94a3b8";
+            return "#2ecc71";
+          }
+        }
       }]
     };
     charts.throughput.data = {

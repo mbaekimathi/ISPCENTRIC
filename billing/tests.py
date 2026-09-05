@@ -1189,6 +1189,135 @@ class FulfillIdempotencyTests(TestCase):
         self.assertEqual(payment.reference, "QWERTY99")
 
     @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_late_callback_backfills_without_daraja_reconfirm(self, sync_mock):
+        """After query-first success, a late callback must fill the receipt."""
+        from billing.models import Payment, StkPushRequest
+        from billing.stk import fulfill_successful_stk, process_stk_callback_payload
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_LATE_CB",
+            merchant_request_id="ws_MR_LATE_CB",
+            status=StkPushRequest.Status.PENDING,
+        )
+        fulfill_successful_stk(stk, mpesa_receipt="")
+        stk.refresh_from_db()
+        self.assertEqual(stk.status, StkPushRequest.Status.SUCCESS)
+        self.assertEqual(stk.payment.reference, "")
+
+        payload = {
+            "Body": {
+                "stkCallback": {
+                    "MerchantRequestID": "ws_MR_LATE_CB",
+                    "CheckoutRequestID": "ws_CO_LATE_CB",
+                    "ResultCode": 0,
+                    "ResultDesc": "The service request is processed successfully.",
+                    "CallbackMetadata": {
+                        "Item": [
+                            {"Name": "Amount", "Value": float(self.plan.price)},
+                            {"Name": "MpesaReceiptNumber", "Value": "LATECB01"},
+                            {"Name": "PhoneNumber", "Value": 254700000777},
+                        ]
+                    },
+                }
+            }
+        }
+        with patch(
+            "billing.stk._confirm_stk_success_with_daraja"
+        ) as confirm_mock:
+            result = process_stk_callback_payload(payload)
+
+        self.assertTrue(result["ok"])
+        confirm_mock.assert_not_called()
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "LATECB01")
+        payment = Payment.objects.get(pk=stk.payment_id)
+        self.assertEqual(payment.reference, "LATECB01")
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_refresh_recovers_receipt_from_raw_callback(self, sync_mock):
+        """Status polls copy a buried callback receipt onto Payment.reference."""
+        from billing.models import Payment, StkPushRequest
+        from billing.stk import fulfill_successful_stk, refresh_stk_status
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_RAW_RCPT",
+            status=StkPushRequest.Status.PENDING,
+        )
+        fulfill_successful_stk(stk, mpesa_receipt="")
+        stk.refresh_from_db()
+        stk.raw_callback = {
+            **(stk.raw_callback if isinstance(stk.raw_callback, dict) else {}),
+            "callback_receipt": "RAWRCPT1",
+            "callback": {
+                "Body": {
+                    "stkCallback": {
+                        "CallbackMetadata": {
+                            "Item": [
+                                {"Name": "MpesaReceiptNumber", "Value": "RAWRCPT1"},
+                            ]
+                        }
+                    }
+                }
+            },
+        }
+        stk.save(update_fields=["raw_callback"])
+
+        status = refresh_stk_status(stk)
+        self.assertTrue(status["success"])
+        self.assertEqual(status["mpesa_receipt"], "RAWRCPT1")
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "RAWRCPT1")
+        payment = Payment.objects.get(pk=stk.payment_id)
+        self.assertEqual(payment.reference, "RAWRCPT1")
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
+    def test_query_merge_preserves_callback_receipt(self, sync_mock):
+        """STK Query fulfillment must not wipe a prior callback_receipt."""
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        sync_mock.return_value = {"ok": True, "allowed": True}
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_PRESERVE",
+            status=StkPushRequest.Status.PENDING,
+            mpesa_receipt="KEEPME01",
+            raw_callback={
+                "callback_receipt": "KEEPME01",
+                "callback": {"Body": {}},
+                "environment": "sandbox",
+            },
+        )
+        result = fulfill_successful_stk(
+            stk,
+            mpesa_receipt="",
+            raw={"query": {"ResultCode": 0, "ResultDesc": "ok"}},
+        )
+        self.assertTrue(result["ok"])
+        stk.refresh_from_db()
+        self.assertEqual(stk.mpesa_receipt, "KEEPME01")
+        self.assertEqual(stk.raw_callback.get("callback_receipt"), "KEEPME01")
+        self.assertIn("callback", stk.raw_callback)
+        self.assertIn("query", stk.raw_callback)
+        self.assertEqual(stk.payment.reference, "KEEPME01")
+
+    @patch("core.mikrotik_connect.sync_customer_subscription_access")
     def test_fulfill_applies_the_package_that_was_charged(self, sync_mock):
         from billing.models import StkPushRequest
         from billing.stk import fulfill_successful_stk

@@ -16,7 +16,7 @@ from core.views import client_page_context, resolve_organization
 
 from .forms import BillingPackageRegisterForm
 from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
-from .services import customers_needing_renewal_attention
+from .services import customers_needing_renewal_attention, heal_payment_mpesa_reference
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
 _REVENUE_RANGE_CHOICES = ("day", "period", "month", "year")
@@ -514,10 +514,12 @@ def dashboard(request):
             "payment_count": revenue_stats["count"] or 0,
         }
         payments = list(
-            payments_qs.select_related("invoice", "invoice__customer").order_by(
-                "-received_at"
-            )
+            payments_qs.select_related("invoice", "invoice__customer")
+            .prefetch_related("stk_push_requests")
+            .order_by("-received_at")
         )
+        for pay in payments:
+            pay.display_reference = heal_payment_mpesa_reference(pay)
         attention_customers = customers_needing_renewal_attention(org)
         stats["attention_customers"] = len(attention_customers)
     else:
