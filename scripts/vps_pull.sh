@@ -57,14 +57,11 @@ if [[ -z "$RESTART_AFTER" ]]; then
   fi
 fi
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "!! Not a git repository: $ROOT"
-  exit 1
-fi
-
 run_as_app() {
+  # Repo is owned by www-data; root must not call git directly or Git's
+  # safe.directory check fails with "Not a git repository".
   if [[ "$(id -un)" == "root" ]]; then
-    sudo -u "$APP_USER" "$@"
+    sudo -u "$APP_USER" -- "$@"
   elif [[ "$(id -un)" == "$APP_USER" ]]; then
     "$@"
   else
@@ -72,6 +69,12 @@ run_as_app() {
     exit 1
   fi
 }
+
+if ! run_as_app git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "!! Not a git repository: $ROOT"
+  echo "   (checked as ${APP_USER}; confirm /opt/ispcentric/.git exists)"
+  exit 1
+fi
 
 BEFORE="$(run_as_app git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BEFORE_SUBJ="$(run_as_app git show -s --format=%s HEAD 2>/dev/null || echo "")"
