@@ -79,10 +79,11 @@ fi
 BEFORE="$(run_as_app git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 BEFORE_SUBJ="$(run_as_app git show -s --format=%s HEAD 2>/dev/null || echo "")"
 
-DIRTY="$(run_as_app git status --porcelain 2>/dev/null || true)"
+# Only tracked edits block deploy. Untracked logs/, .env.save*, media stay ignored.
+DIRTY="$(run_as_app git status --porcelain --untracked-files=no 2>/dev/null || true)"
 if [[ -n "$DIRTY" && "$FORCE" != true ]]; then
-  echo "!! Working tree has local changes. Re-run with --force to discard them, or stash first."
-  run_as_app git status --short
+  echo "!! Tracked files have local changes. Re-run with --force to discard them."
+  run_as_app git status --short --untracked-files=no
   exit 1
 fi
 
@@ -104,7 +105,14 @@ fi
 # Stay on the branch (not detached) so future pulls stay simple.
 run_as_app git checkout -B "$BRANCH" "$TARGET"
 run_as_app git reset --hard "$TARGET"
-run_as_app git clean -fd --exclude=.env --exclude=.venv --exclude=logs --exclude=media --exclude=.cache
+# Never wipe secrets, venv, runtime dirs, or .env backups.
+run_as_app git clean -fd \
+  --exclude=.env \
+  --exclude=.env.* \
+  --exclude=.venv \
+  --exclude=logs \
+  --exclude=media \
+  --exclude=.cache
 
 AFTER="$(run_as_app git rev-parse --short HEAD)"
 echo "==> Checked out ${AFTER} on ${BRANCH}"
