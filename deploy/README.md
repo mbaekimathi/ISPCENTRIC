@@ -242,13 +242,14 @@ PPPoE account." Route the PPPoE pool over the tunnel without NAT so
 ## Updating later
 
 ```bash
-cd /opt/ispcentric
-sudo -u www-data git pull
-sudo -u www-data bash scripts/vps_deploy.sh
-sudo systemctl restart ispcentric
+cd /opt/ispcentric && sudo bash scripts/vps_pull.sh
 ```
 
-`vps_deploy.sh` now also runs `manage.py sync_nas_config`, which re-pushes to
+That fetches `origin/main`, hard-resets, runs `vps_deploy.sh`, and restarts
+`ispcentric`. Prefer this over hand-typed `git fetch` / `migrate accounts` /
+duplicate restart blocks — full migrate is already inside `vps_deploy.sh`.
+
+`vps_deploy.sh` also runs `manage.py sync_nas_config`, which re-pushes to
 every **active** MikroTik:
 
 - PPPoE pool / blocked profile / secrets (when the org uses PPPoE)
