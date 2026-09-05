@@ -2393,6 +2393,74 @@ class HotspotMultiDeviceVoucherTests(TestCase):
         self.assertEqual(AccessVoucher.objects.filter(stk_request=stk).count(), 1)
 
 
+class BillingDashboardAttentionFilterTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user("owner-attn-filter", password="x")
+        self.org = Organization.objects.create(
+            name="Attention Filter ISP",
+            owner=self.owner,
+            join_code="334455",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        now = timezone.localtime()
+        self.pppoe = Customer.objects.create(
+            organization=self.org,
+            full_name="PPPoE Expired",
+            phone="254700000101",
+            account_number="ATTN-PPP-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(days=5),
+            package_end=now - timedelta(days=2),
+        )
+        self.hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Expired",
+            phone="254700000102",
+            account_number="ATTN-HS-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+            package_start=now - timedelta(days=5),
+            package_end=now - timedelta(days=2),
+        )
+
+    def test_defaults_to_pppoe_attention_rows(self):
+        self.client.force_login(self.owner)
+        response = self.client.get("/billing/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["attention_filter"]["value"], "pppoe")
+        names = [row["customer"].full_name for row in response.context["attention_customers"]]
+        self.assertIn("PPPoE Expired", names)
+        self.assertNotIn("Hotspot Expired", names)
+        self.assertContains(response, 'name="attention"')
+        self.assertContains(response, "PPPoE (")
+
+    def test_attention_filter_hotspot_and_all(self):
+        self.client.force_login(self.owner)
+        hotspot_resp = self.client.get("/billing/dashboard/?attention=hotspot")
+        self.assertEqual(hotspot_resp.status_code, 200)
+        hotspot_names = [
+            row["customer"].full_name
+            for row in hotspot_resp.context["attention_customers"]
+        ]
+        self.assertEqual(hotspot_names, ["Hotspot Expired"])
+
+        all_resp = self.client.get("/billing/dashboard/?attention=all")
+        all_names = {
+            row["customer"].full_name for row in all_resp.context["attention_customers"]
+        }
+        self.assertEqual(all_names, {"PPPoE Expired", "Hotspot Expired"})
+
+
 class CashRechargeTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user("owner-cash", password="x")
@@ -2447,6 +2515,164 @@ class CashRechargeTests(TestCase):
         self.assertEqual(invoice.status, Invoice.Status.PAID)
         self.assertTrue(invoice.invoice_number.startswith("CASH-"))
         self.assertTrue(customer_receives_internet(self.customer))
+
+    def test_billing_dashboard_shows_cash_employee_and_invoice(self):
+        self.owner.first_name = "Jane"
+        self.owner.last_name = "Cashier"
+        self.owner.save(update_fields=["first_name", "last_name"])
+        result = recharge_customer_cash(
+            customer=self.customer,
+            organization=self.org,
+            plan=self.plan,
+            amount="50.00",
+            reference="RCP-DASH",
+            recorded_by=self.owner,
+        )
+        invoice = result["invoice"]
+
+        self.client.force_login(self.owner)
+        response = self.client.get("/billing/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Cash")
+        self.assertContains(response, "by Jane Cashier")
+        self.assertContains(response, invoice.invoice_number)
+        self.assertContains(response, "RCP-DASH")
+        pay_row = response.context["payments"][0]
+        self.assertEqual(pay_row.method, "cash")
+        self.assertEqual(pay_row.recorder_label, "Jane Cashier")
+
+
+class BillingDashboardPaymentDisplayTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            "owner-dash-pay", password="x", first_name="Sam", last_name="Owner"
+        )
+        self.org = Organization.objects.create(
+            name="Dash Pay ISP",
+            owner=self.owner,
+            join_code="778899",
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="Daily",
+            price="100.00",
+            duration=BillingPlan.Duration.DAILY,
+            download_speed_mbps=10,
+            upload_speed_mbps=5,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Dash Client",
+            phone="254700000088",
+            account_number="DASH-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+
+    def test_billing_dashboard_shows_mpesa_receipt_and_invoice(self):
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="REN-DASH-MPESA-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="ws_CO_STALE_CHECKOUT",
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_STALE_CHECKOUT",
+            mpesa_receipt="REALDASH01",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=payment,
+            invoice=invoice,
+        )
+
+        self.client.force_login(self.owner)
+        response = self.client.get("/billing/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "REALDASH01")
+        self.assertContains(response, "REN-DASH-MPESA-1")
+        self.assertNotContains(response, "ws_CO_STALE_CHECKOUT")
+        pay_row = response.context["payments"][0]
+        self.assertEqual(pay_row.display_reference, "REALDASH01")
+        self.assertEqual(pay_row.invoice.invoice_number, "REN-DASH-MPESA-1")
+
+    def test_payments_filter_defaults_to_all_and_can_narrow(self):
+        from datetime import date
+
+        from billing.models import Invoice, Payment
+
+        hotspot_customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot Pay Client",
+            phone="254700000089",
+            account_number="DASH-HS-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        pppoe_inv = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="INV-PPP-FILTER-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        hotspot_inv = Invoice.objects.create(
+            organization=self.org,
+            customer=hotspot_customer,
+            invoice_number="INV-HS-FILTER-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        Payment.objects.create(
+            organization=self.org,
+            invoice=pppoe_inv,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="PPP-REF-1",
+        )
+        Payment.objects.create(
+            organization=self.org,
+            invoice=hotspot_inv,
+            amount=self.plan.price,
+            method=Payment.Method.CASH,
+            reference="HS-REF-1",
+        )
+
+        self.client.force_login(self.owner)
+        all_resp = self.client.get("/billing/dashboard/")
+        self.assertEqual(all_resp.context["payments_filter"]["value"], "all")
+        self.assertEqual(all_resp.context["payments_filter"]["filtered_count"], 2)
+        self.assertEqual(len(all_resp.context["payments"]), 2)
+        self.assertContains(all_resp, 'name="payments"')
+
+        pppoe_resp = self.client.get("/billing/dashboard/?payments=pppoe")
+        pppoe_refs = [p.reference for p in pppoe_resp.context["payments"]]
+        self.assertEqual(pppoe_refs, ["PPP-REF-1"])
+
+        hotspot_resp = self.client.get("/billing/dashboard/?payments=hotspot")
+        hotspot_refs = [p.reference for p in hotspot_resp.context["payments"]]
+        self.assertEqual(hotspot_refs, ["HS-REF-1"])
 
 
 class HotspotCashRechargeVoucherTests(TestCase):

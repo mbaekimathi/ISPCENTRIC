@@ -3254,6 +3254,67 @@ class MyClientsRegisterViewTests(TestCase):
             self.assertFalse(provision.call_args.kwargs.get("ensure_stack", True))
             self.assertEqual(provision.call_args.args[0].pk, customer.pk)
 
+    def test_pending_activations_only_visible_to_linked_isp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from billing.models import Customer
+
+        other_owner = User.objects.create_user("other-isp-owner", password="x")
+        other_org = Organization.objects.create(
+            name="Other ISP",
+            owner=other_owner,
+            join_code="667788",
+        )
+        mine = Customer.objects.create(
+            organization=self.org,
+            full_name="Mine Pending",
+            phone="0711000001",
+            account_number="PEND-MINE-1",
+            router=self.router,
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.INACTIVE,
+        )
+        theirs = Customer.objects.create(
+            organization=other_org,
+            full_name="Theirs Pending",
+            phone="0711000002",
+            account_number="PEND-THEIRS-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.INACTIVE,
+        )
+        active = Customer.objects.create(
+            organization=self.org,
+            full_name="Mine Active",
+            phone="0711000003",
+            account_number="PEND-ACTIVE-1",
+            router=self.router,
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+        )
+
+        pending = self.client.get("/app/clients/?tab=pppoe&view=pending")
+        self.assertEqual(pending.status_code, 200)
+        self.assertContains(pending, mine.full_name)
+        self.assertContains(pending, mine.account_number)
+        self.assertNotContains(pending, theirs.full_name)
+        self.assertNotContains(pending, theirs.account_number)
+        self.assertNotContains(pending, active.full_name)
+        self.assertEqual(pending.context["pending_activation_count"], 1)
+
+        pppoe = self.client.get("/app/clients/?tab=pppoe")
+        self.assertEqual(pppoe.status_code, 200)
+        self.assertContains(pppoe, active.full_name)
+        self.assertNotContains(pppoe, mine.full_name)
+        self.assertNotContains(pppoe, theirs.full_name)
+
+        self.client.force_login(other_owner)
+        other_pending = self.client.get("/app/clients/?tab=pppoe&view=pending")
+        self.assertEqual(other_pending.status_code, 200)
+        self.assertContains(other_pending, theirs.full_name)
+        self.assertNotContains(other_pending, mine.full_name)
+        self.assertEqual(other_pending.context["pending_activation_count"], 1)
+
 
 class CaptivePortalDhcpOptionTests(SimpleTestCase):
     """RFC 8910 option 114 is what raises the sign-in popup on connect."""

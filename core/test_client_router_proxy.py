@@ -195,8 +195,8 @@ class ClientRouterProxyTests(TestCase):
         probe.assert_not_called()
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, "core/client_cpe_access.html")
-        self.assertContains(response, "Opening the client router")
-        self.assertContains(response, "Advanced router admin")
+        self.assertContains(response, "Opening router")
+        self.assertContains(response, "Open client router")
         self.assertNotContains(response, "Wi‑Fi settings")
         self.assertContains(
             response,
@@ -588,7 +588,11 @@ class ClientRouterProxyTests(TestCase):
         self.assertTrue(payload["authenticated"])
         self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "nas-default-secret")
         self.assertEqual(login.call_args.kwargs.get("default_cpe_password"), "nas-default-secret")
-        self.assertEqual(login.call_args.kwargs.get("cpe_password"), "")
+        # Login uses the same resolved password as the probe (NAS default when
+        # the client row has none) so a matching fleet password signs in fast.
+        self.assertEqual(login.call_args.kwargs.get("cpe_password"), "nas-default-secret")
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.cpe_password, "nas-default-secret")
 
     def test_router_tab_surfaces_nas_default_password_for_autofill(self):
         self.nas.default_cpe_username = "cpeadmin"
@@ -686,6 +690,61 @@ class ClientRouterProxyTests(TestCase):
             cache.get("cpe-web-basic:" + digest)["header"],
             "Basic YWRtaW46c2VjcmV0",
         )
+
+    def test_start_matching_password_loop_stays_authenticated(self):
+        """Loop: correct saved password opens the router every attempt."""
+        self.customer.cpe_password = "match-secret"
+        self.customer.cpe_username = "admin"
+        self.customer.save(update_fields=["cpe_password", "cpe_username"])
+        self.cpe_login_patcher.stop()
+        self.addCleanup(self.cpe_login_patcher.start)
+
+        login_calls = []
+
+        def _login(*args, **kwargs):
+            login_calls.append(kwargs.get("cpe_password"))
+            return {
+                "ok": True,
+                "authenticated": True,
+                "cookies": {"SID": "ok"},
+                "basic_header": "Basic x",
+                "vendor": "mikrotik",
+                "cpe_username": "admin",
+                "cpe_password": kwargs.get("cpe_password") or "",
+                "support_user": False,
+                "error": "",
+                "steps": ["signed in to MikroTik WebFig as admin"],
+            }
+
+        with (
+            patch(
+                "core.views.probe_customer_cpe_web",
+                return_value={
+                    "ok": True,
+                    "session_active": True,
+                    "cpe_host": "10.20.0.55",
+                    "port": 8081,
+                    "reachable": True,
+                    "ping_ok": True,
+                    "steps": [],
+                },
+            ) as probe,
+            patch(
+                "core.views.login_customer_cpe_web_session",
+                side_effect=_login,
+            ),
+        ):
+            for attempt in range(1, 4):
+                response = self.client.get(
+                    f"/app/clients/{self.customer.pk}/router-login/start/",
+                )
+                payload = response.json()
+                self.assertTrue(payload["ok"], f"attempt {attempt}")
+                self.assertTrue(payload["authenticated"], f"attempt {attempt}")
+                self.assertFalse(payload.get("needs_password"), f"attempt {attempt}")
+                self.assertEqual(probe.call_args.kwargs.get("cpe_password"), "match-secret")
+
+        self.assertEqual(login_calls, ["match-secret", "match-secret", "match-secret"])
 
     def test_start_failed_auto_login_still_offers_password_form(self):
         """Wrong/missing CPE password must surface Save & connect, not hide it."""
@@ -847,6 +906,7 @@ class CpeWebAutoLoginTests(TestCase):
             pppoe_password="pppoe-secret",
             default_cpe_username="admin",
             default_cpe_password="nas-default",
+            known_password_only=False,
         )
         self.assertIn(("admin", "nas-default"), pairs)
         self.assertIn(("admin", "pppoe-secret"), pairs)
@@ -856,14 +916,56 @@ class CpeWebAutoLoginTests(TestCase):
             pairs.index(("admin", "pppoe-secret")),
         )
 
+    def test_known_password_skips_guesses(self):
+        pairs = mikrotik_connect._cpe_credential_candidates(
+            cpe_username="admin",
+            cpe_password="house-secret",
+            pppoe_password="pppoe-secret",
+            default_cpe_username="admin",
+            default_cpe_password="nas-default",
+        )
+        self.assertEqual(pairs, [("admin", "house-secret")])
+
+    def test_preferred_ports_put_last_success_first(self):
+        mikrotik_connect._CPE_LAST_WEB_PORT.clear()
+        mikrotik_connect._remember_last_cpe_web_port("10.9.0.2", "customer1", 8081)
+        ordered = mikrotik_connect._preferred_cpe_web_ports(
+            "10.9.0.2", "customer1", (80, 8081, 8080)
+        )
+        self.assertEqual(ordered[0], 8081)
+        self.assertEqual(set(ordered), {80, 8081, 8080})
+
+    def test_vendor_detection_from_login_html(self):
+        self.assertEqual(
+            mikrotik_connect._detect_cpe_web_vendor(
+                '<html><title>WebFig</title><form><input name="name" type="password"></form></html>'
+            ),
+            "mikrotik",
+        )
+        self.assertEqual(
+            mikrotik_connect._detect_cpe_web_vendor(
+                '<html>Tenda login.html<script src="/goform/getstok"></script></html>'
+            ),
+            "tenda",
+        )
+
     @patch.object(mikrotik_connect, "customer_cpe_web_proxy")
+    @patch.object(mikrotik_connect, "_cpe_web_http_request")
     @patch.object(mikrotik_connect, "_cpe_web_json_request")
-    def test_tenda_auto_login_returns_session_cookies(self, json_request, proxy):
+    def test_tenda_auto_login_returns_session_cookies(
+        self, json_request, http_request, proxy
+    ):
         @contextmanager
         def _proxy(*args, **kwargs):
             yield {"host": "10.9.0.2", "port": 39001, "cpe_host": "10.20.0.11"}
 
         proxy.side_effect = _proxy
+        http_request.return_value = (
+            200,
+            b"<html>Tenda login.html goform</html>",
+            {},
+            "",
+        )
 
         def _responses(_proxy, path, **kwargs):
             if path.endswith("getStatus") or "getStatus" in path:
@@ -889,6 +991,84 @@ class CpeWebAutoLoginTests(TestCase):
         self.assertTrue(result["authenticated"])
         self.assertEqual(result["vendor"], "tenda")
         self.assertEqual(result["cookies"].get("stok"), "ok")
+
+    @patch.object(mikrotik_connect, "customer_cpe_web_proxy")
+    @patch.object(mikrotik_connect, "_mikrotik_web_login")
+    @patch.object(mikrotik_connect, "_tenda_web_login")
+    @patch.object(mikrotik_connect, "_cpe_web_http_request")
+    def test_matching_mikrotik_password_skips_tenda(
+        self, http_request, tenda_login, mk_login, proxy
+    ):
+        """Correct MikroTik password must not burn time on Tenda /goform probes."""
+
+        @contextmanager
+        def _proxy(*args, **kwargs):
+            yield {"host": "10.9.0.2", "port": 39001, "cpe_host": "10.20.0.11"}
+
+        proxy.side_effect = _proxy
+        http_request.return_value = (
+            200,
+            b'<html><title>WebFig</title><form><input name="name"><input type="password"></form></html>',
+            {},
+            "",
+        )
+        mk_login.return_value = (True, {"SID": "1"}, "Basic abc")
+
+        result = mikrotik_connect.login_customer_cpe_web_session(
+            "10.9.0.2",
+            "admin",
+            "secret",
+            pppoe_username="customer1",
+            cpe_username="admin",
+            cpe_password="correct-secret",
+            cpe_port=80,
+        )
+
+        self.assertTrue(result["authenticated"])
+        self.assertEqual(result["vendor"], "mikrotik")
+        tenda_login.assert_not_called()
+        mk_login.assert_called_once()
+        self.assertEqual(mk_login.call_args.args[1], "admin")
+        self.assertEqual(mk_login.call_args.args[2], "correct-secret")
+
+    @patch.object(mikrotik_connect, "customer_cpe_web_proxy")
+    @patch.object(mikrotik_connect, "_mikrotik_web_login")
+    @patch.object(mikrotik_connect, "_tenda_web_login")
+    @patch.object(mikrotik_connect, "_cpe_web_http_request")
+    def test_password_match_login_loop_stays_on_first_try(
+        self, http_request, tenda_login, mk_login, proxy
+    ):
+        """Loop: every attempt with the matching password authenticates on try 1."""
+
+        @contextmanager
+        def _proxy(*args, **kwargs):
+            yield {"host": "10.9.0.2", "port": 39001, "cpe_host": "10.20.0.11"}
+
+        proxy.side_effect = _proxy
+        http_request.return_value = (
+            200,
+            b'<html><title>WebFig</title><input name="name" type="password"></html>',
+            {},
+            "",
+        )
+        mk_login.return_value = (True, {"SID": "ok"}, "Basic x")
+
+        for attempt in range(1, 6):
+            mk_login.reset_mock()
+            tenda_login.reset_mock()
+            result = mikrotik_connect.login_customer_cpe_web_session(
+                "10.9.0.2",
+                "admin",
+                "secret",
+                pppoe_username="customer1",
+                cpe_username="admin",
+                cpe_password="match-me",
+                cpe_port=80,
+            )
+            self.assertTrue(result["authenticated"], f"attempt {attempt}")
+            self.assertEqual(mk_login.call_count, 1, f"attempt {attempt}")
+            tenda_login.assert_not_called()
+            self.assertEqual(result["cpe_password"], "match-me")
 
 
 class CpeWebLoginLockoutTests(TestCase):

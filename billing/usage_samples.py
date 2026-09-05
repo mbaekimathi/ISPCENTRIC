@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import re
+from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from typing import Any
+from urllib.parse import urlencode
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -18,7 +21,7 @@ _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offl
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
-_CLIENT_TREND_CACHE_VERSION = "v3"  # bump when payload shape changes
+_CLIENT_TREND_CACHE_VERSION = "v4"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
 _CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
 # Chart y-values for access presence: surfing / not surfing / disconnected
@@ -41,7 +44,15 @@ _NETWORK_TREND_COLORS = [
 _ORG_SAMPLE_WORKERS = 4
 _ORG_SAMPLE_ROUTER_TIMEOUT = 4.0
 _MAX_USAGE_HOURS = 8760  # 1 year
-_USAGE_RANGE_CACHE_HOURS = (6, 24, 72, 168, 720, 8760)
+_USAGE_FILTER_RANGES = ("time", "day", "period", "month", "year")
+_USAGE_TIME_PRESETS = {
+    "1": (1, "Last 1 hour"),
+    "6": (6, "Last quarter day"),
+    "12": (12, "Last half day"),
+    "18": (18, "Last ¾ day"),
+}
+# Relative cache keys to clear when a fresh sample lands.
+_USAGE_RANGE_CACHE_HOURS = (1, 6, 12, 18, 24, 72, 168, 720, 8760)
 
 
 def clamp_usage_hours(hours, default: int = 72) -> int:
@@ -54,7 +65,10 @@ def clamp_usage_hours(hours, default: int = 72) -> int:
 
 def usage_range_label(hours: int) -> str:
     mapping = {
-        6: "6 hours",
+        1: "1 hour",
+        6: "quarter day",
+        12: "half day",
+        18: "¾ day",
         24: "24 hours",
         72: "3 days",
         168: "7 days",
@@ -68,6 +82,198 @@ def usage_range_label(hours: int) -> str:
         days = hours // 24
         return f"{days} day{'s' if days != 1 else ''}"
     return f"{hours} hour{'s' if hours != 1 else ''}"
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _aware_day_start(day: date):
+    return timezone.make_aware(datetime.combine(day, time.min))
+
+
+def resolve_usage_window(
+    *, hours: int = 24, since=None, until=None
+) -> tuple[datetime, datetime, int]:
+    """Return (since, until, hours) for usage sample queries and bucketing."""
+    now = timezone.now()
+    if since is not None and until is not None:
+        if timezone.is_naive(since):
+            since = timezone.make_aware(since, timezone.get_current_timezone())
+        if timezone.is_naive(until):
+            until = timezone.make_aware(until, timezone.get_current_timezone())
+        if since > until:
+            since, until = until, since
+        secs = max(1.0, (until - since).total_seconds())
+        hours = max(1, min(_MAX_USAGE_HOURS, int(math.ceil(secs / 3600.0))))
+        return since, until, hours
+    hours = clamp_usage_hours(hours, default=24)
+    return now - timedelta(hours=hours), now, hours
+
+
+def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
+    """
+    Build a usage window from GET params.
+
+    Modes:
+      time   — last 1h / quarter / half / ¾ day
+      day    — single calendar day
+      period — inclusive start→end dates
+      month  — whole calendar month
+      year   — whole calendar year
+
+    Legacy ``?hours=N`` (without ``range``) remains a relative lookback.
+    """
+    today = timezone.localdate()
+    now = timezone.now()
+    range_mode = (request.GET.get("range") or "").strip().lower()
+    time_raw = (request.GET.get("time") or "").strip()
+    legacy_hours_raw = request.GET.get("hours")
+
+    day_value = _parse_iso_date(request.GET.get("day")) or today
+    start_value = _parse_iso_date(request.GET.get("start")) or today.replace(day=1)
+    end_value = _parse_iso_date(request.GET.get("end")) or today
+    month_raw = (request.GET.get("month") or "").strip()
+    year_raw = (request.GET.get("year") or "").strip()
+
+    month_date = today.replace(day=1)
+    if month_raw:
+        try:
+            month_date = datetime.strptime(month_raw, "%Y-%m").date().replace(day=1)
+        except ValueError:
+            pass
+    month_value = month_date.strftime("%Y-%m")
+
+    year_int = today.year
+    if year_raw.isdigit():
+        parsed_year = int(year_raw)
+        if 2000 <= parsed_year <= 2100:
+            year_int = parsed_year
+    year_value = str(year_int)
+
+    if default_time not in _USAGE_TIME_PRESETS:
+        default_time = "6"
+    if time_raw not in _USAGE_TIME_PRESETS:
+        time_raw = default_time
+
+    # Legacy bookmarks: ?hours=72 without range → keep relative window.
+    if range_mode not in _USAGE_FILTER_RANGES:
+        if legacy_hours_raw is not None and str(legacy_hours_raw).strip() != "":
+            hours = clamp_usage_hours(legacy_hours_raw, default=int(default_time))
+            since = now - timedelta(hours=hours)
+            until = now
+            preset_key = str(hours) if str(hours) in _USAGE_TIME_PRESETS else default_time
+            label = (
+                _USAGE_TIME_PRESETS[preset_key][1]
+                if str(hours) in _USAGE_TIME_PRESETS
+                else f"Last {usage_range_label(hours)}"
+            )
+            return {
+                "range": "time" if str(hours) in _USAGE_TIME_PRESETS else "period",
+                "ui_range": "time" if str(hours) in _USAGE_TIME_PRESETS else "period",
+                "time": preset_key if str(hours) in _USAGE_TIME_PRESETS else default_time,
+                "day": day_value.isoformat(),
+                "start": timezone.localtime(since).date().isoformat(),
+                "end": timezone.localtime(until).date().isoformat(),
+                "month": month_value,
+                "year": year_value,
+                "since": since,
+                "until": until,
+                "hours": hours,
+                "label": label,
+                "relative": True,
+                "auto_widen": True,
+            }
+        range_mode = "time"
+
+    since = None
+    until = None
+    hours = int(default_time)
+    label = _USAGE_TIME_PRESETS[default_time][1]
+    relative = False
+    auto_widen = False
+
+    if range_mode == "time":
+        hours, label = _USAGE_TIME_PRESETS[time_raw]
+        since = now - timedelta(hours=hours)
+        until = now
+        relative = True
+        auto_widen = True
+    elif range_mode == "day":
+        since = _aware_day_start(day_value)
+        until = since + timedelta(days=1)
+        hours = 24
+        label = day_value.strftime("%d %b %Y")
+    elif range_mode == "period":
+        if start_value > end_value:
+            start_value, end_value = end_value, start_value
+        since = _aware_day_start(start_value)
+        until = _aware_day_start(end_value) + timedelta(days=1)
+        since, until, hours = resolve_usage_window(since=since, until=until)
+        if start_value == end_value:
+            label = start_value.strftime("%d %b %Y")
+        else:
+            label = (
+                f"{start_value.strftime('%d %b %Y')} → "
+                f"{end_value.strftime('%d %b %Y')}"
+            )
+    elif range_mode == "month":
+        last_day = monthrange(month_date.year, month_date.month)[1]
+        since = _aware_day_start(month_date)
+        until = _aware_day_start(month_date.replace(day=last_day)) + timedelta(days=1)
+        since, until, hours = resolve_usage_window(since=since, until=until)
+        label = month_date.strftime("%B %Y")
+    elif range_mode == "year":
+        since = _aware_day_start(date(year_int, 1, 1))
+        until = _aware_day_start(date(year_int + 1, 1, 1))
+        since, until, hours = resolve_usage_window(since=since, until=until)
+        label = str(year_int)
+
+    return {
+        "range": range_mode,
+        "ui_range": range_mode,
+        "time": time_raw,
+        "day": day_value.isoformat(),
+        "start": start_value.isoformat(),
+        "end": end_value.isoformat(),
+        "month": month_value,
+        "year": year_value,
+        "since": since,
+        "until": until,
+        "hours": hours,
+        "label": label,
+        "relative": relative,
+        "auto_widen": auto_widen,
+    }
+
+
+def usage_filter_querystring(filt: dict[str, Any], *, extra: dict | None = None) -> str:
+    """Serialize a usage filter to a GET query string (no leading ?)."""
+    params: dict[str, str] = {"range": filt.get("range") or "time"}
+    mode = params["range"]
+    if mode == "time":
+        params["time"] = str(filt.get("time") or "6")
+    elif mode == "day":
+        params["day"] = str(filt.get("day") or "")
+    elif mode == "period":
+        params["start"] = str(filt.get("start") or "")
+        params["end"] = str(filt.get("end") or "")
+    elif mode == "month":
+        params["month"] = str(filt.get("month") or "")
+    elif mode == "year":
+        params["year"] = str(filt.get("year") or "")
+    if extra:
+        for key, value in extra.items():
+            if value is None or value == "":
+                continue
+            params[str(key)] = str(value)
+    return urlencode(params)
 
 
 def _chart_label_format(hours: int) -> str:
@@ -172,8 +378,13 @@ def record_customer_usage_sample(
 
 def _invalidate_client_usage_trend_cache(customer_id: int) -> None:
     for hours in _USAGE_RANGE_CACHE_HOURS:
-        cache.delete(f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer_id}:{hours}")
-        # Legacy key from before access-timeline payload.
+        cache.delete(
+            f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer_id}:h{hours}"
+        )
+        # Pre-filter-window key shapes.
+        cache.delete(
+            f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer_id}:{hours}"
+        )
         cache.delete(f"client_usage_trend:{customer_id}:{hours}")
 
 
@@ -440,6 +651,10 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
         for top_n in (0, 25, 100, 200, 300):
             for service in ("all", "pppoe", "hotspot"):
                 for router_key in router_keys:
+                    cache.delete(
+                        f"org_usage_payload:v5:{organization.pk}:h{hours}:"
+                        f"{top_n}:{service}:{router_key}"
+                    )
                     cache.delete(
                         f"org_usage_payload:v4:{organization.pk}:{hours}:{top_n}:{service}:{router_key}"
                     )
@@ -811,10 +1026,13 @@ def _client_payment_events(customer: Customer, *, since, until, hours: int) -> l
         amount_label = f"KES {amount}" if amount is not None else "Payment"
         method = (pay.get_method_display() if hasattr(pay, "get_method_display") else "") or "Payment"
         ref = (pay.reference or "").strip()
+        # Keep receipt short on the timeline; full ref still lives on invoices.
+        if len(ref) > 14:
+            ref = f"{ref[:6]}…{ref[-4:]}"
         events.append(
             {
                 "kind": "payment",
-                "label": "Payment received",
+                "label": "Paid",
                 "detail": f"{amount_label} · {method}"
                 + (f" · {ref}" if ref else ""),
                 "at": timezone.localtime(stamp).isoformat(),
@@ -832,6 +1050,8 @@ def build_client_access_timeline(
     hours: int,
     samples: list[dict[str, Any]] | None = None,
     now=None,
+    since=None,
+    until=None,
 ) -> dict[str, Any]:
     """
     Payment / subscription / block timeline for support on the usage page.
@@ -846,11 +1066,10 @@ def build_client_access_timeline(
         customer_subscription_expired,
     )
 
-    hours = clamp_usage_hours(hours, default=24)
-    now = now or timezone.now()
+    since, until, hours = resolve_usage_window(hours=hours, since=since, until=until)
+    now = until if until is not None else (now or timezone.now())
     if timezone.is_naive(now):
         now = timezone.make_aware(now, timezone.get_current_timezone())
-    since = now - timedelta(hours=hours)
     bounds = _package_access_bounds(customer)
     service_type = (getattr(customer, "service_type", "") or "").strip()
 
@@ -877,11 +1096,8 @@ def build_client_access_timeline(
                 events.append(
                     {
                         "kind": "subscription_started",
-                        "label": "Subscription extended",
-                        "detail": (
-                            "Another payment stacked onto the active package — "
-                            "surfing continued without a gap."
-                        ),
+                        "label": "Extended",
+                        "detail": "Added time — surfing continued",
                         "at": timezone.localtime(stamp).isoformat(),
                         "at_label": _access_stamp_label(stamp, hours),
                         "in_window": True,
@@ -929,15 +1145,11 @@ def build_client_access_timeline(
             {
                 "kind": "subscription_started",
                 "label": (
-                    f"Subscription started ({idx + 1} of {len(start_stamps)})"
+                    f"Started ({idx + 1}/{len(start_stamps)})"
                     if multi
-                    else "Subscription started"
+                    else "Started"
                 ),
-                "detail": (
-                    "Package window began after payment — surfing allowed after this point."
-                    if multi
-                    else "Package window began — surfing allowed after this point."
-                ),
+                "detail": "Surfing allowed",
                 "at": timezone.localtime(stamp).isoformat(),
                 "at_label": _access_stamp_label(stamp, hours),
                 "in_window": since <= stamp <= now,
@@ -953,11 +1165,11 @@ def build_client_access_timeline(
         events.append(
             {
                 "kind": "blocked",
-                "label": "Blocked (package paused)",
+                "label": "Paused",
                 "detail": (
-                    "Staff paused the package — surfing stopped while time left was preserved."
+                    "Staff paused — surfing stopped, time preserved"
                     if before_end
-                    else "Package paused; surfing blocked."
+                    else "Package paused — surfing blocked"
                 ),
                 "at": timezone.localtime(paused_at).isoformat(),
                 "at_label": _access_stamp_label(paused_at, hours),
@@ -997,18 +1209,14 @@ def build_client_access_timeline(
                 "kind": "subscription_ended",
                 "label": (
                     (
-                        f"Subscription ended ({idx + 1} of {len(end_stamps)})"
+                        f"Ended ({idx + 1}/{len(end_stamps)})"
                         if ended
-                        else f"Subscription ends ({idx + 1} of {len(end_stamps)})"
+                        else f"Ends ({idx + 1}/{len(end_stamps)})"
                     )
                     if multi
-                    else ("Subscription ended" if ended else "Subscription ends")
+                    else ("Ended" if ended else "Ends")
                 ),
-                "detail": (
-                    "Access cut-off — surfing should stop at this time."
-                    if ended
-                    else "Scheduled access cut-off for this package period."
-                ),
+                "detail": "Surfing stops" if ended else "Scheduled cut-off",
                 "at": timezone.localtime(stamp).isoformat(),
                 "at_label": _access_stamp_label(stamp, hours),
                 "in_window": since <= stamp <= now or (not ended and stamp > now),
@@ -1042,11 +1250,8 @@ def build_client_access_timeline(
         events.append(
             {
                 "kind": "early_offline",
-                "label": "Went offline while package active",
-                "detail": (
-                    "Session dropped before the subscription ended — useful when "
-                    "the client says they were blocked early."
-                ),
+                "label": "Went offline early",
+                "detail": "Dropped while package was still active",
                 "at": timezone.localtime(early_offline).isoformat(),
                 "at_label": _access_stamp_label(early_offline, hours),
                 "in_window": True,
@@ -1058,11 +1263,8 @@ def build_client_access_timeline(
         events.append(
             {
                 "kind": "blocked_connected",
-                "label": "Connected but unable to surf",
-                "detail": (
-                    "Session was up while billing blocked internet "
-                    "(expired, paused, or unpaid)."
-                ),
+                "label": "Blocked while online",
+                "detail": "Connected, but billing blocked internet",
                 "at": timezone.localtime(blocked_while_connected).isoformat(),
                 "at_label": _access_stamp_label(blocked_while_connected, hours),
                 "in_window": True,
@@ -1247,7 +1449,14 @@ def _client_bucket_seconds(hours: int) -> int:
 
 
 def usage_trend_payload(
-    customer: Customer, *, hours: int = 24, use_cache: bool = True
+    customer: Customer,
+    *,
+    hours: int = 24,
+    since=None,
+    until=None,
+    range_label: str | None = None,
+    relative: bool = True,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
     """
     Build chart-ready series for one client.
@@ -1255,18 +1464,26 @@ def usage_trend_payload(
     Bucketed across the selected filter (capped point count), with a short
     cache so refreshes stay cheap.
     """
-    hours = clamp_usage_hours(hours, default=24)
-    cache_key = f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer.pk}:{hours}"
+    since, until, hours = resolve_usage_window(hours=hours, since=since, until=until)
+    display_label = range_label or (
+        f"Last {usage_range_label(hours)}" if relative else usage_range_label(hours)
+    )
+    if relative:
+        cache_suffix = f"h{hours}"
+    else:
+        cache_suffix = f"{since.isoformat()}_{until.isoformat()}"
+    cache_key = (
+        f"client_usage_trend:{_CLIENT_TREND_CACHE_VERSION}:{customer.pk}:{cache_suffix}"
+    )
     if use_cache:
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
 
-    now = timezone.now()
-    since = now - timedelta(hours=hours)
+    now = until
     bucket_secs = _client_bucket_seconds(hours)
     window_start = int(since.timestamp() // bucket_secs) * bucket_secs
-    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(until.timestamp() // bucket_secs) * bucket_secs
     chart_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
     if not chart_keys:
         chart_keys = [window_start]
@@ -1276,7 +1493,11 @@ def usage_trend_payload(
         chart_keys = chart_keys[::step][:_CLIENT_TREND_MAX_POINTS]
 
     samples = list(
-        CustomerUsageSample.objects.filter(customer=customer, sampled_at__gte=since)
+        CustomerUsageSample.objects.filter(
+            customer=customer,
+            sampled_at__gte=since,
+            sampled_at__lt=until,
+        )
         .order_by("sampled_at")
         .values(
             "sampled_at",
@@ -1295,7 +1516,12 @@ def usage_trend_payload(
         samples = [samples[min(len(samples) - 1, int(i * step))] for i in range(_CLIENT_SAMPLE_CAP)]
 
     access = build_client_access_timeline(
-        customer, hours=hours, samples=samples, now=now
+        customer,
+        hours=hours,
+        samples=samples,
+        now=now,
+        since=since,
+        until=until,
     )
     access_bounds = access.get("bounds") or _package_access_bounds(customer)
     service_type = (getattr(customer, "service_type", "") or "").strip()
@@ -1541,7 +1767,7 @@ def usage_trend_payload(
     payload = {
         "ok": True,
         "hours": hours,
-        "range_label": usage_range_label(hours),
+        "range_label": display_label,
         "sample_count": len(samples),
         "labels": labels,
         "series": {
@@ -1688,19 +1914,20 @@ def _build_org_usage_payload(
     organization,
     *,
     hours: int = 24,
+    since=None,
+    until=None,
     top_n: int = 0,
     service: str = "",
     router_id: int | None = None,
     unassigned_only: bool = False,
 ) -> dict[str, Any]:
-    hours = clamp_usage_hours(hours)
+    since, until, hours = resolve_usage_window(hours=hours, since=since, until=until)
     top_n = max(0, min(int(top_n if top_n is not None else 0), 5000))
     service = _normalize_usage_service(service)
-    now = timezone.now()
-    since = now - timedelta(hours=hours)
+    now = until
     bucket_secs = _bucket_seconds(hours)
     window_start = int(since.timestamp() // bucket_secs) * bucket_secs
-    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(until.timestamp() // bucket_secs) * bucket_secs
     bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
     if not bucket_keys:
         bucket_keys = [window_start]
@@ -1727,6 +1954,7 @@ def _build_org_usage_payload(
     samples_qs = CustomerUsageSample.objects.filter(
         organization=organization,
         sampled_at__gte=since,
+        sampled_at__lt=until,
     )
     if customer_ids:
         samples_qs = samples_qs.filter(customer_id__in=customer_ids)
@@ -1867,7 +2095,8 @@ def _build_org_usage_payload(
 
         from billing.models import CustomerDevice
 
-        recent_cut = now - timedelta(minutes=15)
+        # Gadgets "online now" always use wall-clock now, even for past windows.
+        recent_cut = timezone.now() - timedelta(minutes=15)
         for row in (
             CustomerDevice.objects.filter(
                 organization=organization,
@@ -2440,6 +2669,10 @@ def org_usage_payload(
     organization,
     *,
     hours: int = 24,
+    since=None,
+    until=None,
+    range_label: str | None = None,
+    relative: bool = True,
     top_n: int = 0,
     service: str = "",
     router_id: int | None = None,
@@ -2451,14 +2684,19 @@ def org_usage_payload(
     if not organization:
         return _empty_org_payload(hours, error="No organization.")
 
-    hours = clamp_usage_hours(hours, default=24)
+    since, until, hours = resolve_usage_window(hours=hours, since=since, until=until)
     top_n = max(0, min(int(top_n or 0), 5000))
     service = _normalize_usage_service(service)
     router_key = _usage_router_cache_key(
         router_id=router_id, unassigned_only=unassigned_only
     )
+    if relative:
+        cache_suffix = f"h{hours}"
+    else:
+        cache_suffix = f"{since.isoformat()}_{until.isoformat()}"
     cache_key = (
-        f"org_usage_payload:v4:{organization.pk}:{hours}:{top_n}:{service or 'all'}:{router_key}"
+        f"org_usage_payload:v5:{organization.pk}:{cache_suffix}:"
+        f"{top_n}:{service or 'all'}:{router_key}"
     )
     if use_cache:
         cached = cache.get(cache_key)
@@ -2468,6 +2706,8 @@ def org_usage_payload(
     payload = _build_org_usage_payload(
         organization,
         hours=hours,
+        since=since,
+        until=until,
         top_n=top_n,
         service=service,
         router_id=router_id,
@@ -2482,7 +2722,7 @@ def org_usage_payload(
         or summary.get("clients_tracked")
         or payload.get("sample_count")
     )
-    if auto_widen and not has_signal and hours < _MAX_USAGE_HOURS:
+    if auto_widen and relative and not has_signal and hours < _MAX_USAGE_HOURS:
         for candidate in (72, 168, 720, 8760):
             if candidate <= hours:
                 continue
@@ -2508,10 +2748,16 @@ def org_usage_payload(
                 payload = wider
                 break
 
-    payload["range_label"] = usage_range_label(payload.get("hours") or hours)
-    payload["requested_range_label"] = usage_range_label(
-        payload.get("requested_hours") or hours
+    requested_label = range_label or (
+        f"Last {usage_range_label(hours)}" if relative else usage_range_label(hours)
     )
+    effective_hours = payload.get("hours") or hours
+    if payload.get("auto_widened"):
+        payload["range_label"] = f"Last {usage_range_label(effective_hours)}"
+        payload["requested_range_label"] = requested_label
+    else:
+        payload["range_label"] = requested_label
+        payload["requested_range_label"] = requested_label
     payload["service"] = service or "all"
 
     if use_cache:

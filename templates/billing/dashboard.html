@@ -95,12 +95,21 @@
         </div>
         {% if revenue_filter.active %}
           <div class="billing-section-actions">
-            <a class="btn btn-ghost btn-sm" href="{% url 'billing:dashboard' %}">Clear filter</a>
+            <a
+              class="btn btn-ghost btn-sm"
+              href="{% url 'billing:dashboard' %}{% if attention_filter.value != 'pppoe' or payments_filter.value != 'all' %}?{% if attention_filter.value != 'pppoe' %}attention={{ attention_filter.value }}{% endif %}{% if attention_filter.value != 'pppoe' and payments_filter.value != 'all' %}&{% endif %}{% if payments_filter.value != 'all' %}payments={{ payments_filter.value }}{% endif %}{% endif %}"
+            >Clear filter</a>
           </div>
         {% endif %}
       </div>
 
       <form class="billing-revenue-filter" method="get" action="{% url 'billing:dashboard' %}" id="billing-revenue-filter">
+        {% if attention_filter.value != "pppoe" %}
+          <input type="hidden" name="attention" value="{{ attention_filter.value }}">
+        {% endif %}
+        {% if payments_filter.value != "all" %}
+          <input type="hidden" name="payments" value="{{ payments_filter.value }}">
+        {% endif %}
         <div class="billing-revenue-modes" role="group" aria-label="Revenue period">
           <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'day' %} is-active{% endif %}">
             <input type="radio" name="range" value="day"{% if revenue_filter.ui_range == 'day' %} checked{% endif %}>
@@ -198,9 +207,56 @@
       <div class="billing-section-head">
         <div>
           <h2>Needs attention</h2>
-          <p class="billing-section-sub">Expired packages or clients at ¾ or more of their period.</p>
+          <p class="billing-section-sub">
+            Expired packages or clients at ¾ or more of their period
+            {% if attention_filter.value != "all" %}
+              · showing {{ attention_filter.label }}
+            {% endif %}.
+          </p>
         </div>
         <div class="billing-section-actions">
+          <form
+            class="billing-attention-filter"
+            method="get"
+            action="{% url 'billing:dashboard' %}"
+            id="billing-attention-filter"
+          >
+            {% if revenue_filter.active %}
+              <input type="hidden" name="range" value="{{ revenue_filter.range }}">
+              {% if revenue_filter.range == "day" %}
+                <input type="hidden" name="day" value="{{ revenue_filter.day }}">
+              {% elif revenue_filter.range == "period" %}
+                <input type="hidden" name="start" value="{{ revenue_filter.start }}">
+                <input type="hidden" name="end" value="{{ revenue_filter.end }}">
+              {% elif revenue_filter.range == "month" %}
+                <input type="hidden" name="month" value="{{ revenue_filter.month }}">
+              {% elif revenue_filter.range == "year" %}
+                <input type="hidden" name="year" value="{{ revenue_filter.year }}">
+              {% endif %}
+            {% endif %}
+            {% if payments_filter.value != "all" %}
+              <input type="hidden" name="payments" value="{{ payments_filter.value }}">
+            {% endif %}
+            <label class="billing-attention-filter-label" for="billing-attention-service">
+              <span class="billing-attention-filter-caption">Service</span>
+              <select
+                id="billing-attention-service"
+                name="attention"
+                class="billing-attention-select"
+                onchange="this.form.submit()"
+              >
+                <option value="pppoe"{% if attention_filter.value == "pppoe" %} selected{% endif %}>
+                  PPPoE ({{ attention_filter.pppoe_count }})
+                </option>
+                <option value="hotspot"{% if attention_filter.value == "hotspot" %} selected{% endif %}>
+                  Hotspot ({{ attention_filter.hotspot_count }})
+                </option>
+                <option value="all"{% if attention_filter.value == "all" %} selected{% endif %}>
+                  All ({{ attention_filter.total_count }})
+                </option>
+              </select>
+            </label>
+          </form>
           <a class="btn btn-ghost btn-sm" href="{% url 'core:my_clients' %}">All clients</a>
         </div>
       </div>
@@ -310,7 +366,16 @@
       {% else %}
         <div class="billing-dash-empty">
           <p class="billing-dash-empty-title">All clear</p>
-          <p class="billing-dash-empty-copy">No expired or nearly exhausted subscriptions right now.</p>
+          <p class="billing-dash-empty-copy">
+            {% if attention_filter.value == "all" %}
+              No expired or nearly exhausted subscriptions right now.
+            {% else %}
+              No expired or nearly exhausted {{ attention_filter.label }} subscriptions right now.
+              {% if attention_filter.total_count %}
+                Switch the service filter to see {{ attention_filter.total_count }} other client{{ attention_filter.total_count|pluralize }}.
+              {% endif %}
+            {% endif %}
+          </p>
         </div>
       {% endif %}
     </section>
@@ -321,14 +386,59 @@
           <h2>Payments</h2>
           <p class="billing-section-sub">
             {% if revenue_filter.active %}
-              Successful collections for {{ revenue_filter.label }}.
+              Successful collections for {{ revenue_filter.label }}
             {% else %}
-              Successful collections for this organization.
+              Successful collections for this organization
             {% endif %}
+            {% if payments_filter.value != "all" %}
+              · showing {{ payments_filter.label }}
+            {% endif %}.
           </p>
         </div>
         <div class="billing-section-actions">
-          <span class="billing-count-chip">{{ stats.payment_count }} recorded</span>
+          <form
+            class="billing-attention-filter"
+            method="get"
+            action="{% url 'billing:dashboard' %}"
+            id="billing-payments-filter"
+          >
+            {% if revenue_filter.active %}
+              <input type="hidden" name="range" value="{{ revenue_filter.range }}">
+              {% if revenue_filter.range == "day" %}
+                <input type="hidden" name="day" value="{{ revenue_filter.day }}">
+              {% elif revenue_filter.range == "period" %}
+                <input type="hidden" name="start" value="{{ revenue_filter.start }}">
+                <input type="hidden" name="end" value="{{ revenue_filter.end }}">
+              {% elif revenue_filter.range == "month" %}
+                <input type="hidden" name="month" value="{{ revenue_filter.month }}">
+              {% elif revenue_filter.range == "year" %}
+                <input type="hidden" name="year" value="{{ revenue_filter.year }}">
+              {% endif %}
+            {% endif %}
+            {% if attention_filter.value != "pppoe" %}
+              <input type="hidden" name="attention" value="{{ attention_filter.value }}">
+            {% endif %}
+            <label class="billing-attention-filter-label" for="billing-payments-service">
+              <span class="billing-attention-filter-caption">Service</span>
+              <select
+                id="billing-payments-service"
+                name="payments"
+                class="billing-attention-select"
+                onchange="this.form.submit()"
+              >
+                <option value="all"{% if payments_filter.value == "all" %} selected{% endif %}>
+                  All ({{ payments_filter.total_count }})
+                </option>
+                <option value="pppoe"{% if payments_filter.value == "pppoe" %} selected{% endif %}>
+                  PPPoE ({{ payments_filter.pppoe_count }})
+                </option>
+                <option value="hotspot"{% if payments_filter.value == "hotspot" %} selected{% endif %}>
+                  Hotspot ({{ payments_filter.hotspot_count }})
+                </option>
+              </select>
+            </label>
+          </form>
+          <span class="billing-count-chip">{{ payments_filter.filtered_count }} recorded</span>
         </div>
       </div>
 
@@ -342,6 +452,7 @@
               <col class="col-amount">
               <col class="col-method">
               <col class="col-ref">
+              <col class="col-invoice">
             </colgroup>
             <thead>
               <tr>
@@ -351,6 +462,7 @@
                 <th scope="col">Amount</th>
                 <th scope="col">Method</th>
                 <th scope="col">M-Pesa / Ref</th>
+                <th scope="col">Invoice</th>
               </tr>
             </thead>
             <tbody>
@@ -385,10 +497,30 @@
                     <strong class="billing-dash-amount">KES {{ pay.amount }}</strong>
                   </td>
                   <td data-label="Method" class="billing-dash-col-method">
-                    <span class="billing-dash-cell-primary">{{ pay.get_method_display }}</span>
+                    <div class="billing-dash-stack">
+                      <span class="billing-dash-cell-primary">{{ pay.get_method_display }}</span>
+                      {% if pay.method == "cash" and pay.recorder_label %}
+                        <span class="billing-dash-cell-secondary">by {{ pay.recorder_label }}</span>
+                      {% endif %}
+                    </div>
                   </td>
                   <td data-label="M-Pesa / Ref" class="billing-dash-col-ref">
-                    <span class="org-code billing-dash-ref">{{ pay.display_reference|default:pay.reference|default:"—" }}</span>
+                    {% if pay.method == "cash" %}
+                      {% if pay.reference %}
+                        <span class="org-code billing-dash-ref">{{ pay.reference }}</span>
+                      {% else %}
+                        <span class="billing-dash-muted">Cash</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="org-code billing-dash-ref">{{ pay.display_reference|default:"—" }}</span>
+                    {% endif %}
+                  </td>
+                  <td data-label="Invoice" class="billing-dash-col-invoice">
+                    {% if pay.invoice %}
+                      <span class="org-code billing-dash-ref">{{ pay.invoice.invoice_number }}</span>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
                   </td>
                 </tr>
               {% endfor %}
@@ -399,8 +531,14 @@
         <div class="billing-dash-empty">
           <p class="billing-dash-empty-title">No payments yet</p>
           <p class="billing-dash-empty-copy">
-            {% if revenue_filter.active %}
+            {% if revenue_filter.active and payments_filter.value == "all" %}
               No collections in this calendar range.
+            {% elif payments_filter.value != "all" %}
+              No {{ payments_filter.label }} collections
+              {% if revenue_filter.active %} in this calendar range{% endif %}.
+              {% if payments_filter.total_count %}
+                Switch the service filter to see {{ payments_filter.total_count }} other payment{{ payments_filter.total_count|pluralize }}.
+              {% endif %}
             {% else %}
               Successful M-Pesa and other collections will appear here.
             {% endif %}

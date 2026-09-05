@@ -141,7 +141,7 @@
 
     <div class="clients-workspace-meta">
         {% if active_tab == 'hotspot' %}
-          <p class="clients-status-hint">Phone is the primary contact · MAC stays as device technical ID · live status refreshes every 10s.</p>
+          <p class="clients-status-hint">Ordered by live status: surfing, then connected (not surfing), then disconnected · Phone is the primary contact · MAC stays as device technical ID · refreshes every 10s.</p>
         {% endif %}
       <div class="clients-search-meta" data-clients-search-meta {% if not clients_query and not clients_router_param %}hidden{% endif %}>
         <span class="clients-search-meta-ico" aria-hidden="true">
@@ -608,6 +608,41 @@
     }
   }
 
+  function hotspotSessionRank(item) {
+    if (!item) return 3;
+    if (item.state === "surfing" || item.surfing) return 0;
+    if (item.state === "not_surfing" || item.connected) return 1;
+    if (item.state === "disconnected") return 2;
+    return 3;
+  }
+
+  function reorderHotspotRows(byId) {
+    if (service !== "hotspot" || !byId) return;
+    var tbody = document.querySelector(".clients-list-table.is-hotspot-table tbody")
+      || document.querySelector(".clients-list-table-wrap.is-hotspot-table tbody")
+      || document.querySelector("#clients-list-host .clients-list-table tbody");
+    if (!tbody) return;
+    var rows = Array.prototype.slice.call(tbody.querySelectorAll("[data-client-row]"));
+    if (rows.length < 2) return;
+    rows.sort(function (a, b) {
+      var aBadge = a.querySelector("[data-hotspot-surf]");
+      var bBadge = b.querySelector("[data-hotspot-surf]");
+      var aId = aBadge ? aBadge.getAttribute("data-hotspot-surf") : "";
+      var bId = bBadge ? bBadge.getAttribute("data-hotspot-surf") : "";
+      var aItem = byId[String(aId)] || {};
+      var bItem = byId[String(bId)] || {};
+      var aRank = hotspotSessionRank(aItem);
+      var bRank = hotspotSessionRank(bItem);
+      if (aRank !== bRank) return aRank - bRank;
+      var aName = String(aItem.full_name || a.getAttribute("data-search") || "").toLowerCase();
+      var bName = String(bItem.full_name || b.getAttribute("data-search") || "").toLowerCase();
+      return aName.localeCompare(bName);
+    });
+    var frag = document.createDocumentFragment();
+    rows.forEach(function (row) { frag.appendChild(row); });
+    tbody.appendChild(frag);
+  }
+
   function refreshSurf(force) {
     var surfBadges = document.querySelectorAll("[data-client-surf], [data-hotspot-surf]");
     var connectionBadges = document.querySelectorAll("[data-hotspot-connected]");
@@ -656,6 +691,7 @@
             item.connected_wifi_ssid || ""
           );
         });
+        reorderHotspotRows(byId);
       })
       .catch(function () {
         surfBadges.forEach(function (el) {

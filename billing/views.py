@@ -20,6 +20,8 @@ from .services import customers_needing_renewal_attention, heal_payment_mpesa_re
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
 _REVENUE_RANGE_CHOICES = ("day", "period", "month", "year")
+_ATTENTION_SERVICE_CHOICES = ("pppoe", "hotspot", "all")
+_PAYMENT_SERVICE_CHOICES = ("all", "pppoe", "hotspot")
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,71 @@ def _parse_iso_date(value: str | None) -> date | None:
 
 def _aware_day_start(day: date):
     return dj_tz.make_aware(datetime.combine(day, time.min))
+
+
+def _parse_attention_service_filter(request) -> dict:
+    """PPPoE / Hotspot / All filter for the Needs attention table (default PPPoE)."""
+    raw = (request.GET.get("attention") or "").strip().lower()
+    if raw not in _ATTENTION_SERVICE_CHOICES:
+        raw = "pppoe"
+    labels = {
+        "pppoe": "PPPoE",
+        "hotspot": "Hotspot",
+        "all": "All services",
+    }
+    return {
+        "value": raw,
+        "label": labels[raw],
+    }
+
+
+def _parse_payment_service_filter(request) -> dict:
+    """All / PPPoE / Hotspot filter for the Payments table (default All)."""
+    raw = (request.GET.get("payments") or "").strip().lower()
+    if raw not in _PAYMENT_SERVICE_CHOICES:
+        raw = "all"
+    labels = {
+        "all": "All services",
+        "pppoe": "PPPoE",
+        "hotspot": "Hotspot",
+    }
+    return {
+        "value": raw,
+        "label": labels[raw],
+    }
+
+
+def _filter_attention_by_service(rows, service: str):
+    """Filter renewal-attention rows by customer service type."""
+    if service == "all":
+        return list(rows)
+    if service == "hotspot":
+        return [
+            row
+            for row in rows
+            if getattr(row["customer"], "service_type", "") == Customer.ServiceType.HOTSPOT
+        ]
+    # Default / pppoe: include static lines with PPPoE renewals.
+    return [
+        row
+        for row in rows
+        if getattr(row["customer"], "service_type", "")
+        in (Customer.ServiceType.PPPOE, Customer.ServiceType.STATIC)
+    ]
+
+
+def _payment_service_q(service: str) -> Q | None:
+    """ORM filter for payment rows by customer service type."""
+    if service == "hotspot":
+        return Q(invoice__customer__service_type=Customer.ServiceType.HOTSPOT)
+    if service == "pppoe":
+        return Q(
+            invoice__customer__service_type__in=(
+                Customer.ServiceType.PPPOE,
+                Customer.ServiceType.STATIC,
+            )
+        )
+    return None
 
 
 def _parse_revenue_filter(request) -> dict:
@@ -477,6 +544,8 @@ def dashboard(request):
 
     org = resolve_organization(request.user, request)
     revenue_filter = _parse_revenue_filter(request)
+    attention_filter = _parse_attention_service_filter(request)
+    payments_filter = _parse_payment_service_filter(request)
 
     if org:
         customer_stats = Customer.objects.filter(organization=org).aggregate(
@@ -503,6 +572,19 @@ def dashboard(request):
                 filter=Q(invoice__customer__service_type=Customer.ServiceType.HOTSPOT),
             ),
             count=Count("id"),
+            pppoe_count=Count(
+                "id",
+                filter=Q(
+                    invoice__customer__service_type__in=(
+                        Customer.ServiceType.PPPOE,
+                        Customer.ServiceType.STATIC,
+                    )
+                ),
+            ),
+            hotspot_count=Count(
+                "id",
+                filter=Q(invoice__customer__service_type=Customer.ServiceType.HOTSPOT),
+            ),
         )
         stats = {
             "customers": customer_stats["customers"] or 0,
@@ -513,15 +595,48 @@ def dashboard(request):
             "revenue_hotspot": revenue_stats["hotspot"] or 0,
             "payment_count": revenue_stats["count"] or 0,
         }
+        payments_filter["total_count"] = revenue_stats["count"] or 0
+        payments_filter["pppoe_count"] = revenue_stats["pppoe_count"] or 0
+        payments_filter["hotspot_count"] = revenue_stats["hotspot_count"] or 0
+
+        display_payments_qs = payments_qs
+        service_q = _payment_service_q(payments_filter["value"])
+        if service_q is not None:
+            display_payments_qs = display_payments_qs.filter(service_q)
+
         payments = list(
-            payments_qs.select_related("invoice", "invoice__customer")
+            display_payments_qs.select_related(
+                "invoice",
+                "invoice__customer",
+                "recorded_by",
+            )
             .prefetch_related("stk_push_requests")
             .order_by("-received_at")
         )
         for pay in payments:
             pay.display_reference = heal_payment_mpesa_reference(pay)
-        attention_customers = customers_needing_renewal_attention(org)
-        stats["attention_customers"] = len(attention_customers)
+            recorder = pay.recorded_by
+            if recorder is not None:
+                pay.recorder_label = (
+                    (recorder.get_full_name() or "").strip() or recorder.username
+                )
+            else:
+                pay.recorder_label = ""
+        payments_filter["filtered_count"] = len(payments)
+
+        attention_all = customers_needing_renewal_attention(org)
+        attention_customers = _filter_attention_by_service(
+            attention_all, attention_filter["value"]
+        )
+        attention_filter["total_count"] = len(attention_all)
+        attention_filter["pppoe_count"] = len(
+            _filter_attention_by_service(attention_all, "pppoe")
+        )
+        attention_filter["hotspot_count"] = len(
+            _filter_attention_by_service(attention_all, "hotspot")
+        )
+        attention_filter["filtered_count"] = len(attention_customers)
+        stats["attention_customers"] = attention_filter["total_count"]
     else:
         stats = {
             "customers": 0,
@@ -535,6 +650,14 @@ def dashboard(request):
         }
         payments = []
         attention_customers = []
+        attention_filter["total_count"] = 0
+        attention_filter["pppoe_count"] = 0
+        attention_filter["hotspot_count"] = 0
+        attention_filter["filtered_count"] = 0
+        payments_filter["total_count"] = 0
+        payments_filter["pppoe_count"] = 0
+        payments_filter["hotspot_count"] = 0
+        payments_filter["filtered_count"] = 0
 
     return render(
         request,
@@ -547,6 +670,8 @@ def dashboard(request):
             stats=stats,
             payments=payments,
             attention_customers=attention_customers,
+            attention_filter=attention_filter,
+            payments_filter=payments_filter,
             revenue_filter=revenue_filter,
         ),
     )

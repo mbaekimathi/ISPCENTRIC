@@ -1,0 +1,168 @@
+{# Shared usage window filter: Time / Day / Period / Month / Year #}
+<form
+  class="usage-range-filter"
+  method="get"
+  action="{{ usage_filter_action|default:'' }}"
+  id="{{ usage_filter_id|default:'usage-range-filter' }}"
+>
+  {% if usage_filter_hidden %}
+    {% for key, value in usage_filter_hidden.items %}
+      {% if value %}<input type="hidden" name="{{ key }}" value="{{ value }}">{% endif %}
+    {% endfor %}
+  {% endif %}
+
+  <div class="urf-modes" role="group" aria-label="Usage period">
+    <label class="urf-mode{% if usage_filter.ui_range == 'time' %} is-active{% endif %}">
+      <input type="radio" name="range" value="time"{% if usage_filter.ui_range == 'time' %} checked{% endif %}>
+      <span>Time</span>
+    </label>
+    <label class="urf-mode{% if usage_filter.ui_range == 'day' %} is-active{% endif %}">
+      <input type="radio" name="range" value="day"{% if usage_filter.ui_range == 'day' %} checked{% endif %}>
+      <span>Day</span>
+    </label>
+    <label class="urf-mode{% if usage_filter.ui_range == 'period' %} is-active{% endif %}">
+      <input type="radio" name="range" value="period"{% if usage_filter.ui_range == 'period' %} checked{% endif %}>
+      <span>Period</span>
+    </label>
+    <label class="urf-mode{% if usage_filter.ui_range == 'month' %} is-active{% endif %}">
+      <input type="radio" name="range" value="month"{% if usage_filter.ui_range == 'month' %} checked{% endif %}>
+      <span>Month</span>
+    </label>
+    <label class="urf-mode{% if usage_filter.ui_range == 'year' %} is-active{% endif %}">
+      <input type="radio" name="range" value="year"{% if usage_filter.ui_range == 'year' %} checked{% endif %}>
+      <span>Year</span>
+    </label>
+  </div>
+
+  <div class="urf-controls">
+    <div
+      class="urf-panel"
+      data-range-panel="time"
+      {% if usage_filter.ui_range != 'time' %}hidden{% endif %}
+    >
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-time">
+        <span class="urf-label">Window</span>
+        <select id="{{ usage_filter_id|default:'usage-range-filter' }}-time" name="time">
+          <option value="1"{% if usage_filter.time == '1' %} selected{% endif %}>Last 1 hour</option>
+          <option value="6"{% if usage_filter.time == '6' %} selected{% endif %}>Last quarter day</option>
+          <option value="12"{% if usage_filter.time == '12' %} selected{% endif %}>Last half day</option>
+          <option value="18"{% if usage_filter.time == '18' %} selected{% endif %}>Last ¾ day</option>
+        </select>
+      </label>
+    </div>
+
+    <div
+      class="urf-panel"
+      data-range-panel="day"
+      {% if usage_filter.ui_range != 'day' %}hidden{% endif %}
+    >
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-day">
+        <span class="urf-label">Day</span>
+        <input
+          id="{{ usage_filter_id|default:'usage-range-filter' }}-day"
+          type="date"
+          name="day"
+          value="{{ usage_filter.day }}"
+        >
+      </label>
+    </div>
+
+    <div
+      class="urf-panel urf-panel-period"
+      data-range-panel="period"
+      {% if usage_filter.ui_range != 'period' %}hidden{% endif %}
+    >
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-start">
+        <span class="urf-label">From</span>
+        <input
+          id="{{ usage_filter_id|default:'usage-range-filter' }}-start"
+          type="date"
+          name="start"
+          value="{{ usage_filter.start }}"
+        >
+      </label>
+      <span class="urf-range-sep" aria-hidden="true">–</span>
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-end">
+        <span class="urf-label">To</span>
+        <input
+          id="{{ usage_filter_id|default:'usage-range-filter' }}-end"
+          type="date"
+          name="end"
+          value="{{ usage_filter.end }}"
+        >
+      </label>
+    </div>
+
+    <div
+      class="urf-panel"
+      data-range-panel="month"
+      {% if usage_filter.ui_range != 'month' %}hidden{% endif %}
+    >
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-month">
+        <span class="urf-label">Month</span>
+        <input
+          id="{{ usage_filter_id|default:'usage-range-filter' }}-month"
+          type="month"
+          name="month"
+          value="{{ usage_filter.month }}"
+        >
+      </label>
+    </div>
+
+    <div
+      class="urf-panel"
+      data-range-panel="year"
+      {% if usage_filter.ui_range != 'year' %}hidden{% endif %}
+    >
+      <label class="urf-field" for="{{ usage_filter_id|default:'usage-range-filter' }}-year">
+        <span class="urf-label">Year</span>
+        <input
+          id="{{ usage_filter_id|default:'usage-range-filter' }}-year"
+          type="number"
+          name="year"
+          min="2000"
+          max="2100"
+          step="1"
+          placeholder="YYYY"
+          value="{{ usage_filter.year }}"
+        >
+      </label>
+    </div>
+
+    <button type="submit" class="urf-apply btn btn-primary btn-sm">Apply</button>
+  </div>
+</form>
+<script>
+(function () {
+  var form = document.getElementById("{{ usage_filter_id|default:'usage-range-filter' }}");
+  if (!form) return;
+  var modes = form.querySelectorAll('input[name="range"]');
+  var panels = form.querySelectorAll("[data-range-panel]");
+  var modeLabels = form.querySelectorAll(".urf-mode");
+
+  function selectedRange() {
+    var checked = form.querySelector('input[name="range"]:checked');
+    return checked ? checked.value : "time";
+  }
+
+  function syncPanels() {
+    var range = selectedRange();
+    modeLabels.forEach(function (label) {
+      var input = label.querySelector('input[name="range"]');
+      label.classList.toggle("is-active", !!(input && input.checked));
+    });
+    panels.forEach(function (panel) {
+      var match = panel.getAttribute("data-range-panel") === range;
+      panel.hidden = !match;
+      panel.querySelectorAll("input, select").forEach(function (input) {
+        input.disabled = !match;
+      });
+    });
+  }
+
+  modes.forEach(function (input) {
+    input.addEventListener("change", syncPanels);
+  });
+  syncPanels();
+})();
+</script>

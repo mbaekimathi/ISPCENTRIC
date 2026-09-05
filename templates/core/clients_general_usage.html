@@ -23,9 +23,9 @@
         </div>
         <p class="clients-usage-workspace-lead">
           {% if active_tab == 'hotspot' %}
-            Hotspot traffic, presence, and top users for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+            Hotspot traffic, presence, and top users for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
           {% else %}
-            PPPoE traffic, presence, and top users for the last {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+            PPPoE traffic, presence, and top users for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
           {% endif %}
         </p>
         <p class="clients-usage-workspace-summary">
@@ -56,7 +56,7 @@
       <nav class="clients-seg clients-general-usage-tabs" aria-label="Service type">
         <a
           class="clients-seg-item tone-pppoe{% if active_tab == 'pppoe' %} is-active{% endif %}"
-          href="?tab=pppoe&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+          href="?{{ usage_filter_qs_pppoe }}"
           {% if active_tab == 'pppoe' %}aria-current="page"{% endif %}
         >
           <span class="clients-seg-ico" aria-hidden="true">
@@ -66,7 +66,7 @@
         </a>
         <a
           class="clients-seg-item tone-hotspot{% if active_tab == 'hotspot' %} is-active{% endif %}"
-          href="?tab=hotspot&amp;hours={{ trend_hours }}{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}"
+          href="?{{ usage_filter_qs_hotspot }}"
           {% if active_tab == 'hotspot' %}aria-current="page"{% endif %}
         >
           <span class="clients-seg-ico" aria-hidden="true">
@@ -78,7 +78,19 @@
 
       <form class="clients-router-filter clients-usage-router-filter" method="get" action="{% url 'core:clients_general_usage' %}">
         <input type="hidden" name="tab" value="{{ active_tab|default:'pppoe' }}">
-        <input type="hidden" name="hours" value="{{ trend_hours }}">
+        <input type="hidden" name="range" value="{{ usage_filter.range }}">
+        {% if usage_filter.range == 'time' %}
+          <input type="hidden" name="time" value="{{ usage_filter.time }}">
+        {% elif usage_filter.range == 'day' %}
+          <input type="hidden" name="day" value="{{ usage_filter.day }}">
+        {% elif usage_filter.range == 'period' %}
+          <input type="hidden" name="start" value="{{ usage_filter.start }}">
+          <input type="hidden" name="end" value="{{ usage_filter.end }}">
+        {% elif usage_filter.range == 'month' %}
+          <input type="hidden" name="month" value="{{ usage_filter.month }}">
+        {% elif usage_filter.range == 'year' %}
+          <input type="hidden" name="year" value="{{ usage_filter.year }}">
+        {% endif %}
         <label class="clients-router-filter-label" for="usage-router-filter">MikroTik</label>
         <div class="clients-router-select">
           <select
@@ -107,22 +119,36 @@
       <p class="clients-general-usage-router-note">
         Showing {% if active_tab == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %} usage for
         <strong>{% if router_filter_label %}{{ router_filter_label }}{% elif clients_router_param == "none" %}unassigned clients{% else %}selected router{% endif %}</strong>.
-        <a href="?tab={{ active_tab|default:'pppoe' }}&amp;hours={{ trend_hours }}">Clear filter</a>
+        <a href="?{{ usage_filter_qs_clear_router }}">Clear filter</a>
       </p>
     {% endif %}
 
-    <nav class="client-cat-nav clients-usage-range-nav" aria-label="Usage ranges">
-      <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=6{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">6 hours</a>
-      <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=24{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">24 hours</a>
-      <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=72{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">3 days</a>
-      <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=168{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">7 days</a>
-      <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=720{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">30 days</a>
-      <a class="client-cat-nav-item is-live{% if trend_hours == 8760 %} is-active{% endif %}" href="?tab={{ active_tab|default:'pppoe' }}&amp;hours=8760{% if clients_router_param %}&amp;router={{ clients_router_param|urlencode }}{% endif %}">1 year</a>
-    </nav>
+    <div class="clients-usage-range-wrap">
+      {% include "core/includes/usage_range_filter.html" with usage_filter=usage_filter usage_filter_id="clients-usage-range-filter" usage_filter_action="" %}
+    </div>
+    {# Preserve tab + router when applying the range filter (hidden fields injected via small form merge) #}
+    <script>
+    (function () {
+      var form = document.getElementById("clients-usage-range-filter");
+      if (!form) return;
+      function addHidden(name, value) {
+        if (!value && value !== 0) return;
+        var existing = form.querySelector('input[type="hidden"][name="' + name + '"]');
+        if (existing) { existing.value = value; return; }
+        var input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.appendChild(input);
+      }
+      addHidden("tab", "{{ active_tab|default:'pppoe'|escapejs }}");
+      {% if clients_router_param %}addHidden("router", "{{ clients_router_param|escapejs }}");{% endif %}
+    })();
+    </script>
 
     {% if auto_widened %}
       <p class="panel-sub clients-general-usage-widen-note">
-        Little or no traffic in the last {{ requested_range_label|default:requested_hours }}; showing the last {{ range_label|default:trend_hours }} instead.
+        Little or no traffic in {{ requested_range_label|default:requested_hours }}; showing {{ range_label|default:trend_hours }} instead.
       </p>
     {% endif %}
 
@@ -177,7 +203,7 @@
       id="usage-charts"
       data-cat="live"
       data-trends-url="{{ trends_url }}"
-      data-hours="{{ trend_hours }}"
+      data-filter-qs="{{ usage_filter_qs|escape }}"
       data-tab="{{ active_tab|default:'pppoe' }}"
       data-router="{% if clients_router_param %}{{ clients_router_param|escape }}{% endif %}"
       data-range-label="{{ range_label|default:trend_hours|escape }}"
@@ -398,10 +424,10 @@
   var root = document.getElementById("usage-charts");
   if (!root) return;
   var trendsUrl = root.getAttribute("data-trends-url");
-  var hours = root.getAttribute("data-hours") || "24";
+  var filterQs = root.getAttribute("data-filter-qs") || "";
   var tab = root.getAttribute("data-tab") || "pppoe";
   var routerFilter = root.getAttribute("data-router") || "";
-  var rangeLabel = root.getAttribute("data-range-label") || hours;
+  var rangeLabel = root.getAttribute("data-range-label") || "";
   var showGadgets = tab === "hotspot";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
@@ -892,11 +918,10 @@
     if (!trendsUrl || inFlight) return Promise.resolve(null);
     inFlight = true;
     if (opts.stampText) setStamp(opts.stampText, true);
-    var url = trendsUrl +
-      "?hours=" + encodeURIComponent(hours) +
-      "&tab=" + encodeURIComponent(tab);
-    if (routerFilter) url += "&router=" + encodeURIComponent(routerFilter);
-    if (forceRefresh) url += "&refresh=1";
+    var url = trendsUrl + (filterQs ? ("?" + filterQs) : "?");
+    if (forceRefresh) {
+      url += (url.indexOf("?") >= 0 && url.slice(-1) !== "?" && url.slice(-1) !== "&" ? "&" : "") + "refresh=1";
+    }
     return fetch(url, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",

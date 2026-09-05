@@ -8,8 +8,11 @@ from billing.usage_samples import (
     network_performance_drops,
     org_usage_payload,
     parse_uptime_seconds,
+    parse_usage_filter,
+    resolve_usage_window,
     router_network_performance_trend,
     sample_organization_usage,
+    usage_filter_querystring,
     usage_trend_payload,
 )
 from core.models import MikroTikRouter
@@ -20,6 +23,75 @@ class ParseUptimeSecondsTests(SimpleTestCase):
         self.assertEqual(parse_uptime_seconds("1h2m3s"), 3723)
         self.assertEqual(parse_uptime_seconds("2d"), 2 * 24 * 3600)
         self.assertEqual(parse_uptime_seconds(""), 0)
+
+
+class ParseUsageFilterTests(SimpleTestCase):
+    class _Req:
+        def __init__(self, params):
+            self.GET = params
+
+    def test_time_presets(self):
+        filt = parse_usage_filter(self._Req({"range": "time", "time": "12"}), default_time="6")
+        self.assertEqual(filt["range"], "time")
+        self.assertEqual(filt["hours"], 12)
+        self.assertTrue(filt["relative"])
+        self.assertEqual(filt["label"], "Last half day")
+
+    def test_day_mode(self):
+        filt = parse_usage_filter(
+            self._Req({"range": "day", "day": "2026-03-15"}), default_time="6"
+        )
+        self.assertEqual(filt["range"], "day")
+        self.assertFalse(filt["relative"])
+        self.assertEqual(filt["hours"], 24)
+        self.assertIn("15", filt["label"])
+
+    def test_period_mode_swaps_reversed_dates(self):
+        filt = parse_usage_filter(
+            self._Req({"range": "period", "start": "2026-03-20", "end": "2026-03-10"}),
+            default_time="6",
+        )
+        self.assertEqual(filt["start"], "2026-03-10")
+        self.assertEqual(filt["end"], "2026-03-20")
+        self.assertFalse(filt["relative"])
+
+    def test_month_and_year(self):
+        month = parse_usage_filter(
+            self._Req({"range": "month", "month": "2026-02"}), default_time="6"
+        )
+        self.assertEqual(month["label"], "February 2026")
+        year = parse_usage_filter(
+            self._Req({"range": "year", "year": "2025"}), default_time="6"
+        )
+        self.assertEqual(year["label"], "2025")
+        self.assertGreaterEqual(year["hours"], 24 * 365)
+
+    def test_legacy_hours_still_works(self):
+        filt = parse_usage_filter(self._Req({"hours": "18"}), default_time="6")
+        self.assertEqual(filt["hours"], 18)
+        self.assertTrue(filt["relative"])
+        self.assertEqual(filt["range"], "time")
+
+    def test_querystring_roundtrip_keys(self):
+        filt = parse_usage_filter(
+            self._Req({"range": "period", "start": "2026-01-01", "end": "2026-01-07"}),
+            default_time="6",
+        )
+        qs = usage_filter_querystring(filt, extra={"tab": "pppoe"})
+        self.assertIn("range=period", qs)
+        self.assertIn("start=2026-01-01", qs)
+        self.assertIn("end=2026-01-07", qs)
+        self.assertIn("tab=pppoe", qs)
+
+    def test_resolve_usage_window_absolute(self):
+        from django.utils import timezone as dj_tz
+
+        until = dj_tz.now()
+        since = until - dj_tz.timedelta(hours=3)
+        s, u, hours = resolve_usage_window(since=since, until=until)
+        self.assertEqual(hours, 3)
+        self.assertEqual(s, since)
+        self.assertEqual(u, until)
 
 
 class UsageTrendPayloadTests(TestCase):

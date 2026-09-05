@@ -408,7 +408,9 @@
     if (frame) {
       frame.hidden = false;
       frame.src = url;
-      if (cpePass) {
+      // Only autofill when server-side sign-in failed — otherwise the matching
+      // password already opened an authenticated session.
+      if (cpePass && !data.authenticated) {
         frame.addEventListener("load", watchFrame, { once: true });
       }
     }

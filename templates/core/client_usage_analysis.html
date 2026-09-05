@@ -4,190 +4,260 @@
 {% block title %}Usage — {{ customer.full_name }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="client-detail-page client-usage-analysis-page">
+<div class="client-detail-page client-usage-analysis-page is-service-{{ customer.service_type|default:'pppoe' }}">
 
-<nav class="client-cat-nav" aria-label="Time range">
-  <a class="client-cat-nav-item is-live{% if trend_hours == 6 %} is-active{% endif %}" href="?hours=6">6 hours</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 24 %} is-active{% endif %}" href="?hours=24">Today</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 72 %} is-active{% endif %}" href="?hours=72">3 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 168 %} is-active{% endif %}" href="?hours=168">7 days</a>
-  <a class="client-cat-nav-item is-live{% if trend_hours == 720 %} is-active{% endif %}" href="?hours=720">30 days</a>
-</nav>
+  <section class="clients-usage-workspace client-usage-workspace">
+    <header class="clients-usage-workspace-head">
+      <div class="clients-usage-workspace-title">
+        <div class="clients-usage-workspace-brand">
+          <span class="clients-usage-workspace-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M4 19V9m5 10V5m5 14v-7m5 7V8" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <div>
+            <p class="clients-usage-workspace-kicker">Client usage</p>
+            <h1>{{ customer.full_name }}</h1>
+          </div>
+        </div>
+        <p class="clients-usage-workspace-lead">
+          Online time, speed, data, and when they paid, started, got blocked, or the package ended.
+        </p>
+        <p class="clients-usage-workspace-summary">
+          <span class="clients-usage-pill tone-{{ customer.service_type|default:'pppoe' }}">
+            {% if customer.service_type == 'hotspot' %}Hotspot{% else %}PPPoE{% endif %}
+          </span>
+          <span class="clients-usage-pill tone-range">{{ range_label|default:trend_hours }}</span>
+          {% if customer.router %}
+            <span class="clients-usage-pill tone-router">{{ customer.router.name }}</span>
+          {% endif %}
+        </p>
+      </div>
+      <div class="clients-usage-workspace-actions">
+        {% if back_url %}
+        <a class="btn btn-ghost btn-sm clients-usage-hero-btn" href="{{ back_url }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></svg>
+          Profile
+        </a>
+        {% endif %}
+        <button type="button" class="btn btn-primary btn-sm clients-usage-hero-btn" data-usage-refresh>
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 1 1-2.6-6.3M21 3v6h-6"/></svg>
+          Refresh
+        </button>
+      </div>
+    </header>
 
-<section class="panel client-hero" id="usage-overview" data-cat="live">
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="client-cat client-cat-live">
-        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>
-        Client usage
-      </p>
-      <h2>{{ customer.full_name }}</h2>
-      <p class="panel-sub">Online time, speed, data, and when they paid, started, got blocked, or the package ended.</p>
-    </div>
-    <div class="mikrotik-detail-actions">
-      <span class="mikrotik-live-stamp" data-usage-stamp>
+    <div class="clients-usage-toolbar client-usage-toolbar">
+      <nav class="client-usage-range-wrap" aria-label="Time range">
+        {% include "core/includes/usage_range_filter.html" with usage_filter=usage_filter usage_filter_id="client-usage-range-filter" usage_filter_action="" %}
+      </nav>
+      <span class="mikrotik-live-stamp clients-usage-stamp" data-usage-stamp>
         {% if trends.sample_count %}{{ trends.sample_count }} reading{{ trends.sample_count|pluralize }}{% else %}Waiting for readings{% endif %}
       </span>
-      <button type="button" class="btn btn-ghost" data-usage-refresh>Refresh</button>
     </div>
-  </div>
 
-  <p class="client-usage-insight" data-usage-insight role="status" data-tracking="{{ trends.summary.tracking|default:'empty' }}">
-    {% if trends.live_error and not trends.sample_count %}
-      {{ trends.live_error }}
-    {% elif trends.summary.insight %}
-      {{ trends.summary.insight }}
-    {% elif can_live_usage %}
-      Collecting the first reading…
-    {% else %}
-      Usage trends need a live PPPoE or Hotspot client with a reachable router.
-    {% endif %}
-  </p>
+    <section class="clients-usage-overview" id="usage-overview" data-cat="live">
+      <header class="clients-usage-section-head">
+        <div>
+          <p class="clients-usage-section-kicker">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg>
+            </span>
+            Snapshot
+          </p>
+          <h2>Usage overview</h2>
+          <p class="clients-usage-section-meta">Live status and totals for the selected window.</p>
+        </div>
+      </header>
 
-  <dl class="client-kv-row client-usage-stats" id="usage-summary">
-    <div class="client-kv client-usage-stat{% if trends.summary.access_state == 'surfing' or trends.summary.latest_active and trends.summary.access_state != 'not_surfing' and trends.summary.access_state != 'disconnected' %} is-online{% elif trends.summary.access_state == 'not_surfing' %} is-blocked{% elif trends.summary.tracking == 'empty' or trends.summary.tracking == 'warming' or not trends.sample_count %} is-waiting{% elif trends.sample_count %} is-offline{% endif %}" data-ico="status" data-stat="status">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Now</dt>
-      <dd><strong data-sum="status">{{ trends.summary.status|default:"—" }}</strong><span data-sum="status-hint">{{ trends.summary.status_hint|default:"Current connection" }}</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="data">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
-      <dd><strong data-sum="data">—</strong><span data-sum="data-hint">In this period</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="prime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Fastest</dt>
-      <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">{% if trends.summary.prime_point %}Around {{ trends.summary.prime_point.at_label }}{% else %}Peak download{% endif %}</span></dd>
-    </div>
-    <div class="client-kv client-usage-stat" data-ico="uptime">
-      <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
-      <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
-    </div>
-  </dl>
-</section>
-
-<section class="panel" id="usage-access-timeline" data-cat="live">
-  <div class="mikrotik-detail-toolbar">
-    <div class="mikrotik-detail-toolbar-copy">
-      <p class="client-cat client-cat-billing">
-        <span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M7 2h10v2H7Zm-2 4h14v16H5Zm4 4v2h6v-2Zm0 4v2h6v-2Z"/></svg></span>
-        Access timeline
+      <p class="client-usage-insight" data-usage-insight role="status" data-tracking="{{ trends.summary.tracking|default:'empty' }}">
+        {% if trends.live_error and not trends.sample_count %}
+          {{ trends.live_error }}
+        {% elif trends.summary.insight %}
+          {{ trends.summary.insight }}
+        {% elif can_live_usage %}
+          Collecting the first reading…
+        {% else %}
+          Usage trends need a live PPPoE or Hotspot client with a reachable router.
+        {% endif %}
       </p>
-      <h2>Payment, surfing &amp; block times</h2>
-      <p class="panel-sub">See each payment that started or extended a package, when surfing stopped, and whether that was before the subscription ended.</p>
-    </div>
-  </div>
 
-  <p class="client-usage-access-alert" data-access-alert {% if not trends.access.alert %}hidden{% endif %} role="status">
-    {{ trends.access.alert|default:"" }}
-  </p>
+      <dl class="client-kv-row client-usage-stats clients-usage-stat-grid" id="usage-summary">
+        <div class="client-kv client-usage-stat{% if trends.summary.access_state == 'surfing' or trends.summary.latest_active and trends.summary.access_state != 'not_surfing' and trends.summary.access_state != 'disconnected' %} is-online{% elif trends.summary.access_state == 'not_surfing' %} is-blocked{% elif trends.summary.tracking == 'empty' or trends.summary.tracking == 'warming' or not trends.sample_count %} is-waiting{% elif trends.sample_count %} is-offline{% endif %}" data-ico="status" data-stat="status">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-1 5h2v6h-2Zm0 8h2v2h-2Z"/></svg></span>Now</dt>
+          <dd><strong data-sum="status">{{ trends.summary.status|default:"—" }}</strong><span data-sum="status-hint">{{ trends.summary.status_hint|default:"Current connection" }}</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="data">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data used</dt>
+          <dd><strong data-sum="data">—</strong><span data-sum="data-hint">In this period</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="prime">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.5 8.5 2 9.3l5.5 4.7L5.8 21 12 17.3 18.2 21l-1.7-7 5.5-4.7-7.5-.8Z"/></svg></span>Fastest</dt>
+          <dd><strong data-sum="prime">—</strong><span data-sum="prime-at">{% if trends.summary.prime_point %}Around {{ trends.summary.prime_point.at_label }}{% else %}Peak download{% endif %}</span></dd>
+        </div>
+        <div class="client-kv client-usage-stat" data-ico="uptime">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
+          <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
+        </div>
+      </dl>
+    </section>
 
-  <dl class="client-usage-access-facts" data-access-facts>
-    <div>
-      <dt>Paid / started</dt>
-      <dd data-access-start>{% if trends.access.package_start_label %}{{ trends.access.package_start_label }}{% if trends.access.period_count > 1 %} · {{ trends.access.period_count }} periods{% endif %}{% else %}—{% endif %}</dd>
-    </div>
-    <div>
-      <dt>Subscription ends</dt>
-      <dd data-access-end>{% if trends.access.access_deadline_label %}{{ trends.access.access_deadline_label }}{% elif trends.access.package_end_label %}{{ trends.access.package_end_label }}{% else %}—{% endif %}</dd>
-    </div>
-    <div>
-      <dt>Now</dt>
-      <dd data-access-now>{{ trends.access.status|default:trends.summary.status|default:"—" }}</dd>
-    </div>
-  </dl>
-
-  <ol class="client-usage-timeline" data-access-timeline aria-label="Service access events">
-    {% for ev in trends.access.events %}
-      <li class="client-usage-timeline-item is-{{ ev.tone|default:ev.kind }}{% if ev.before_subscription_end %} is-early{% endif %}{% if ev.future %} is-future{% endif %}">
-        <span class="client-usage-timeline-time">{{ ev.at_label }}</span>
-        <strong class="client-usage-timeline-label">{{ ev.label }}</strong>
-        <span class="client-usage-timeline-detail">{{ ev.detail }}</span>
-      </li>
-    {% empty %}
-      <li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>
-    {% endfor %}
-  </ol>
-</section>
-
-{% if can_live_usage %}
-<section
-  class="panel"
-  id="usage-charts"
-  data-cat="live"
-  data-trends-url="{{ trends_url }}"
-  data-usage-url="{{ usage_url }}"
-  data-hours="{{ trend_hours }}"
->
-  <div class="client-usage-empty" data-usage-empty {% if trends.sample_count %}hidden{% endif %}>
-    <p class="client-usage-empty-title" data-usage-empty-title>
-      {% if trends.live_error %}Router not reachable{% else %}Collecting usage…{% endif %}
-    </p>
-    <p class="client-usage-empty-text" data-usage-empty-text>
-      {% if trends.live_error %}
-        {{ trends.live_error }} Charts will fill in once the MikroTik answers again.
-      {% else %}
-        The app saves usage automatically. Charts fill in as readings arrive.
-      {% endif %}
-    </p>
-  </div>
-
-  <p class="client-usage-chart-error" data-usage-chart-error hidden role="alert">
-    Charts could not load. Refresh the page or check that static assets are available.
-  </p>
-
-  <div class="client-usage-chart-grid" data-usage-charts {% if not trends.sample_count %}hidden{% endif %}>
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Access</p>
-        <h3>Surfing vs blocked</h3>
-        <p>Green = surfing · Amber = not surfing · Grey = disconnected. Markers show pay / start / block / end.</p>
+    {% if can_live_usage %}
+    <section
+      class="clients-usage-charts"
+      id="usage-charts"
+      data-cat="live"
+      data-trends-url="{{ trends_url }}"
+      data-usage-url="{{ usage_url }}"
+      data-filter-qs="{{ usage_filter_qs|escape }}"
+    >
+      <header class="clients-usage-section-head">
+        <div>
+          <p class="clients-usage-section-kicker">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg>
+            </span>
+            Trends
+          </p>
+          <h2>Charts</h2>
+          <p class="clients-usage-section-meta">Access, speed, and data over the selected window.</p>
+        </div>
       </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-online" height="200" aria-label="Online presence over time"></canvas>
-      </div>
-    </article>
 
-    <article class="client-usage-chart-card">
-      <header>
-        <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Speed</p>
-        <h3>How fast?</h3>
-        <p>Blue = download · Amber = upload. Red mark = fastest moment.</p>
-      </header>
-      <div class="client-usage-chart-wrap">
-        <canvas id="chart-throughput" height="200" aria-label="Download and upload speed over time"></canvas>
+      <div class="client-usage-empty" data-usage-empty {% if trends.sample_count %}hidden{% endif %}>
+        <span class="client-usage-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19V9m5 10V5m5 14v-7m5 7V8" stroke-linecap="round"/><circle cx="19" cy="5" r="2.2"/></svg>
+        </span>
+        <p class="client-usage-empty-title" data-usage-empty-title>
+          {% if trends.live_error %}Router not reachable{% else %}Collecting usage…{% endif %}
+        </p>
+        <p class="client-usage-empty-text" data-usage-empty-text>
+          {% if trends.live_error %}
+            {{ trends.live_error }} Charts will fill in once the MikroTik answers again.
+          {% else %}
+            The app saves usage automatically. Charts fill in as readings arrive.
+          {% endif %}
+        </p>
       </div>
-    </article>
 
-    <article class="client-usage-chart-card client-usage-chart-card-wide">
-      <header>
-        <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data</p>
-        <h3>How much data?</h3>
-        <p>Megabytes used in each time slot.</p>
-      </header>
-      <div class="client-usage-chart-wrap client-usage-chart-wrap-tall">
-        <canvas id="chart-data" height="220" aria-label="Data used over time"></canvas>
+      <p class="client-usage-chart-error" data-usage-chart-error hidden role="alert">
+        Charts could not load. Refresh the page or check that static assets are available.
+      </p>
+
+      <div class="client-usage-chart-grid" data-usage-charts {% if not trends.sample_count %}hidden{% endif %}>
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-live"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Access</p>
+            <h3>Surfing vs blocked</h3>
+            <p>Green = surfing · Amber = not surfing · Grey = disconnected. Markers show pay / start / block / end.</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-online" height="200" aria-label="Online presence over time"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card">
+          <header>
+            <p class="client-cat client-cat-access"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 13h2v7H3Zm4-4h2v11H7Zm4-6h2v17h-2Zm4 8h2v9h-2Zm4-5h2v14h-2Z"/></svg></span>Speed</p>
+            <h3>How fast?</h3>
+            <p>Blue = download · Amber = upload. Red mark = fastest moment.</p>
+          </header>
+          <div class="client-usage-chart-wrap">
+            <canvas id="chart-throughput" height="200" aria-label="Download and upload speed over time"></canvas>
+          </div>
+        </article>
+
+        <article class="client-usage-chart-card client-usage-chart-card-wide">
+          <header>
+            <p class="client-cat client-cat-billing"><span class="client-cat-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 4h16v4H4Zm0 6h10v4H4Zm0 6h16v4H4Z"/></svg></span>Data</p>
+            <h3>How much data?</h3>
+            <p>Megabytes used in each time slot.</p>
+          </header>
+          <div class="client-usage-chart-wrap client-usage-chart-wrap-tall">
+            <canvas id="chart-data" height="220" aria-label="Data used over time"></canvas>
+          </div>
+        </article>
       </div>
-    </article>
-  </div>
-</section>
-{% else %}
-<section class="panel" data-cat="live">
-  <p class="client-live-empty-text">
-    {% if customer.service_type == "hotspot" %}
-      {% if not customer.hotspot_mac and not can_live_usage %}
-        Add a device MAC to collect Hotspot gadget usage.
-      {% else %}
-        No MikroTik router is available to collect usage for this Hotspot gadget.
-      {% endif %}
-    {% elif not customer.router %}
-      Assign a MikroTik router to this client to collect usage trends.
-    {% elif customer.service_type != "pppoe" %}
-      Usage trends are available for PPPoE and Hotspot clients.
+    </section>
     {% else %}
-      Add a PPPoE username to enable usage analysis.
+    <section class="clients-usage-charts client-usage-unavailable" data-cat="live">
+      <div class="client-usage-empty">
+        <span class="client-usage-empty-ico" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3.5h.01" stroke-linecap="round"/></svg>
+        </span>
+        <p class="client-usage-empty-title">Usage not available</p>
+        <p class="client-usage-empty-text client-live-empty-text">
+          {% if customer.service_type == "hotspot" %}
+            {% if not customer.hotspot_mac and not can_live_usage %}
+              Add a device MAC to collect Hotspot gadget usage.
+            {% else %}
+              No MikroTik router is available to collect usage for this Hotspot gadget.
+            {% endif %}
+          {% elif not customer.router %}
+            Assign a MikroTik router to this client to collect usage trends.
+          {% elif customer.service_type != "pppoe" %}
+            Usage trends are available for PPPoE and Hotspot clients.
+          {% else %}
+            Add a PPPoE username to enable usage analysis.
+          {% endif %}
+        </p>
+      </div>
+    </section>
     {% endif %}
-  </p>
-</section>
-{% endif %}
+
+    <section class="clients-usage-overview client-usage-access-section" id="usage-access-timeline" data-cat="live">
+      <header class="clients-usage-section-head client-usage-access-head">
+        <div>
+          <p class="clients-usage-section-kicker clients-usage-section-kicker-billing">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M7 2h10v2H7Zm-2 4h14v16H5Zm4 4v2h6v-2Zm0 4v2h6v-2Z"/></svg>
+            </span>
+            Access story
+          </p>
+          <h2>What happened</h2>
+          <p class="clients-usage-section-meta">Paid → started → surfing or blocked → package ended.</p>
+        </div>
+        <ul class="client-usage-access-legend" aria-label="Event colors">
+          <li><span class="is-payment"></span>Paid</li>
+          <li><span class="is-start"></span>Started</li>
+          <li><span class="is-end"></span>Ended</li>
+          <li><span class="is-blocked"></span>Blocked</li>
+        </ul>
+      </header>
+
+      <p class="client-usage-access-alert" data-access-alert {% if not trends.access.alert %}hidden{% endif %} role="status">
+        {{ trends.access.alert|default:"" }}
+      </p>
+
+      <dl class="client-usage-access-facts" data-access-facts>
+        <div>
+          <dt>Started</dt>
+          <dd data-access-start>{% if trends.access.package_start_label %}{{ trends.access.package_start_label }}{% if trends.access.period_count > 1 %} · {{ trends.access.period_count }} periods{% endif %}{% else %}—{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Ends</dt>
+          <dd data-access-end>{% if trends.access.access_deadline_label %}{{ trends.access.access_deadline_label }}{% elif trends.access.package_end_label %}{{ trends.access.package_end_label }}{% else %}—{% endif %}</dd>
+        </div>
+        <div class="client-usage-access-fact-now">
+          <dt>Status now</dt>
+          <dd data-access-now>{{ trends.access.status|default:trends.summary.status|default:"—" }}</dd>
+        </div>
+      </dl>
+
+      <ol class="client-usage-timeline" data-access-timeline aria-label="Service access events">
+        {% for ev in trends.access.events %}
+          <li class="client-usage-timeline-item is-{{ ev.tone|default:ev.kind }}{% if ev.before_subscription_end %} is-early{% endif %}{% if ev.future %} is-future{% endif %}">
+            <span class="client-usage-timeline-rail" aria-hidden="true"><span class="client-usage-timeline-dot"></span></span>
+            <time class="client-usage-timeline-time">{{ ev.at_label }}</time>
+            <span class="client-usage-timeline-badge">{{ ev.label }}</span>
+            {% if ev.detail %}<span class="client-usage-timeline-detail">{{ ev.detail }}</span>{% endif %}
+          </li>
+        {% empty %}
+          <li class="client-usage-timeline-empty" data-access-empty>No payment or package events in this range yet.</li>
+        {% endfor %}
+      </ol>
+    </section>
+  </section>
 
 </div>
 {% endblock %}
@@ -199,7 +269,7 @@
   var root = document.getElementById("usage-charts");
   if (!root) return;
   var trendsUrl = root.getAttribute("data-trends-url");
-  var hours = root.getAttribute("data-hours") || "24";
+  var filterQs = root.getAttribute("data-filter-qs") || "";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var insightEl = document.querySelector("[data-usage-insight]");
@@ -310,11 +380,15 @@
       var cls = "client-usage-timeline-item is-" + tone;
       if (ev.before_subscription_end) cls += " is-early";
       if (ev.future) cls += " is-future";
+      var detail = ev.detail
+        ? '<span class="client-usage-timeline-detail">' + ev.detail + "</span>"
+        : "";
       return (
         '<li class="' + cls + '">' +
-          '<span class="client-usage-timeline-time">' + (ev.at_label || "") + "</span>" +
-          '<strong class="client-usage-timeline-label">' + (ev.label || "") + "</strong>" +
-          '<span class="client-usage-timeline-detail">' + (ev.detail || "") + "</span>" +
+          '<span class="client-usage-timeline-rail" aria-hidden="true"><span class="client-usage-timeline-dot"></span></span>' +
+          '<time class="client-usage-timeline-time">' + (ev.at_label || "") + "</time>" +
+          '<span class="client-usage-timeline-badge">' + (ev.label || "") + "</span>" +
+          detail +
         "</li>"
       );
     }).join("");
@@ -714,9 +788,9 @@
     opts = opts || {};
     if (!trendsUrl || inFlight) return Promise.resolve();
     inFlight = true;
-    var qs = "?hours=" + encodeURIComponent(hours);
-    if (opts.sample) qs += "&sample=1";
-    if (opts.refresh) qs += "&refresh=1";
+    var qs = filterQs ? ("?" + filterQs) : "?";
+    if (opts.sample) qs += (qs.length > 1 ? "&" : "") + "sample=1";
+    if (opts.refresh) qs += (qs.length > 1 ? "&" : "") + "refresh=1";
     return fetch(trendsUrl + qs, {
       headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",

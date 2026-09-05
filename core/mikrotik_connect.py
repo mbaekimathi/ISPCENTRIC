@@ -2986,6 +2986,133 @@ def _html_looks_like_admin_ui(text: str) -> bool:
     )
 
 
+def _detect_cpe_web_vendor(text: str) -> str:
+    """Return 'mikrotik', 'tenda', or '' from a CPE web HTML body."""
+    lower = (text or "").lower()
+    if not lower.strip():
+        return ""
+    mikrotik_hits = sum(
+        1
+        for marker in ("webfig", "mikrotik", "dhtmlx", 'name="name"', "ros_")
+        if marker in lower
+    )
+    tenda_hits = sum(
+        1
+        for marker in ("tenda", "goform", "login.html", "ecos_pw", "getstok")
+        if marker in lower
+    )
+    if mikrotik_hits and mikrotik_hits >= tenda_hits:
+        return "mikrotik"
+    if tenda_hits and tenda_hits > mikrotik_hits:
+        return "tenda"
+    if _html_looks_like_login_page(lower) and 'name="name"' in lower:
+        return "mikrotik"
+    return ""
+
+
+# Last successful CPE web port per (NAS dial host, client scope) — probe this first.
+_CPE_LAST_WEB_PORT: dict[tuple[str, str], int] = {}
+_CPE_LAST_WEB_VENDOR: dict[tuple[str, str], str] = {}
+
+
+def _cpe_last_web_cache_key(nas_host: str, scope: str) -> tuple[str, str]:
+    return (dial_host(nas_host), (scope or "").strip())
+
+
+def _remember_last_cpe_web_port(nas_host: str, scope: str, port: int) -> None:
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return
+    if port <= 0 or not (scope or "").strip():
+        return
+    key = _cpe_last_web_cache_key(nas_host, scope)
+    _CPE_LAST_WEB_PORT[key] = port
+    try:
+        from django.core.cache import cache
+
+        cache.set(f"cpe-last-web-port:v1:{key[0]}|{key[1]}", port, 6 * 3600)
+    except Exception:
+        pass
+
+
+def _remember_last_cpe_web_vendor(nas_host: str, scope: str, vendor: str) -> None:
+    vendor = (vendor or "").strip().lower()
+    if vendor not in {"mikrotik", "tenda"} or not (scope or "").strip():
+        return
+    key = _cpe_last_web_cache_key(nas_host, scope)
+    _CPE_LAST_WEB_VENDOR[key] = vendor
+    try:
+        from django.core.cache import cache
+
+        cache.set(f"cpe-last-web-vendor:v1:{key[0]}|{key[1]}", vendor, 6 * 3600)
+    except Exception:
+        pass
+
+
+def _load_last_cpe_web_port(nas_host: str, scope: str) -> int | None:
+    if not (scope or "").strip():
+        return None
+    key = _cpe_last_web_cache_key(nas_host, scope)
+    port = _CPE_LAST_WEB_PORT.get(key)
+    if port:
+        return int(port)
+    try:
+        from django.core.cache import cache
+
+        shared = cache.get(f"cpe-last-web-port:v1:{key[0]}|{key[1]}")
+        if shared:
+            port = int(shared)
+            _CPE_LAST_WEB_PORT[key] = port
+            return port
+    except Exception:
+        pass
+    return None
+
+
+def _load_last_cpe_web_vendor(nas_host: str, scope: str) -> str:
+    if not (scope or "").strip():
+        return ""
+    key = _cpe_last_web_cache_key(nas_host, scope)
+    vendor = (_CPE_LAST_WEB_VENDOR.get(key) or "").strip().lower()
+    if vendor in {"mikrotik", "tenda"}:
+        return vendor
+    try:
+        from django.core.cache import cache
+
+        shared = (cache.get(f"cpe-last-web-vendor:v1:{key[0]}|{key[1]}") or "").strip().lower()
+        if shared in {"mikrotik", "tenda"}:
+            _CPE_LAST_WEB_VENDOR[key] = shared
+            return shared
+    except Exception:
+        pass
+    return ""
+
+
+def _preferred_cpe_web_ports(
+    nas_host: str,
+    scope: str,
+    ports: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Put the last successful web port first so matching CPEs connect faster."""
+    ordered: list[int] = []
+    seen: set[int] = set()
+    preferred = _load_last_cpe_web_port(nas_host, scope)
+    if preferred:
+        ordered.append(preferred)
+        seen.add(preferred)
+    for port in ports or ():
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port <= 0 or port in seen:
+            continue
+        seen.add(port)
+        ordered.append(port)
+    return tuple(ordered)
+
+
 def _tenda_web_login(
     proxy: dict[str, Any],
     password: str,
@@ -3295,9 +3422,44 @@ def login_customer_cpe_web_session(
             default_user = (default_cpe_username or "").strip() or "admin"
             default_pass = (default_cpe_password or "").strip()
             user = (cpe_username or "").strip() or "admin"
+            # Sniff the login page once so a matching MikroTik password is not
+            # delayed by Tenda /goform probes (and vice versa).
+            sniff_status, sniff_raw, sniff_cookies, _ = _cpe_web_http_request(
+                proxy, "/", cpe_port=cpe_port, cookies=jar, timeout=min(timeout, 4.0)
+            )
+            jar.update(sniff_cookies)
+            sniff_text = sniff_raw.decode("utf-8", errors="replace") if sniff_raw else ""
+            vendor = _detect_cpe_web_vendor(sniff_text)
+            if not vendor:
+                vendor = _load_last_cpe_web_vendor(nas_host, scope)
+            sniff_lower = sniff_text.lower()
+            looks_like_login = (
+                _html_looks_like_login_page(sniff_text)
+                or "login.html" in sniff_lower
+                or 'type="password"' in sniff_lower
+                or "type='password'" in sniff_lower
+            )
+            if (
+                sniff_status == 200
+                and sniff_raw
+                and not looks_like_login
+                and _html_looks_like_admin_ui(sniff_text)
+            ):
+                steps.append("router web session already open")
+                detected = vendor or "mikrotik"
+                result.update(
+                    {
+                        "ok": True,
+                        "authenticated": True,
+                        "cookies": jar,
+                        "vendor": detected,
+                    }
+                )
+                _remember_last_cpe_web_vendor(nas_host, scope, detected)
+                return result
+
             if saved_password:
-                # Operator/client-saved password only — avoid burning lockout
-                # attempts on guesses when we already have an explicit secret.
+                # Explicit password only — avoid burning lockout attempts on guesses.
                 tenda_candidates = [(user, saved_password)]
             else:
                 tenda_candidates = []
@@ -3309,59 +3471,86 @@ def login_customer_cpe_web_session(
                     tenda_candidates.append((user, pppoe_password))
                 tenda_candidates.append(("admin", "admin"))
 
-            for user, password in tenda_candidates:
-                ok, jar, err = _tenda_web_login(
-                    proxy, password, cpe_port=cpe_port, timeout=timeout
-                )
-                if ok:
-                    steps.append(f"signed in to Tenda web UI as {user}")
-                    result.update(
-                        {
-                            "ok": True,
-                            "authenticated": True,
-                            "cookies": jar,
-                            "vendor": "tenda",
-                            "cpe_username": user,
-                            "cpe_password": password,
-                        }
-                    )
-                    return result
-                if err and "locked out" in err.lower():
-                    result["error"] = err
-                    break
-                if err and "rejected" in err.lower() and saved_password:
-                    result["error"] = err
-                    break
-
             mk_candidates = _cpe_credential_candidates(
                 cpe_username=cpe_username,
                 cpe_password=cpe_password,
                 pppoe_password=pppoe_password,
                 default_cpe_username=default_cpe_username,
                 default_cpe_password=default_cpe_password,
+                known_password_only=bool(saved_password),
             )
-            if not saved_password:
-                if ("admin", "admin") not in mk_candidates:
-                    mk_candidates.append(("admin", "admin"))
+            if not saved_password and ("admin", "admin") not in mk_candidates:
+                mk_candidates.append(("admin", "admin"))
 
-            for user, password in mk_candidates:
-                ok, jar, basic = _mikrotik_web_login(
-                    proxy, user, password, cpe_port=cpe_port, timeout=timeout
-                )
-                if ok:
-                    steps.append(f"signed in to MikroTik WebFig as {user}")
-                    result.update(
-                        {
-                            "ok": True,
-                            "authenticated": True,
-                            "cookies": jar,
-                            "basic_header": basic,
-                            "vendor": "mikrotik",
-                            "cpe_username": user,
-                            "cpe_password": password,
-                        }
+            # Prefer the sniffed/cached vendor. When unknown and an explicit
+            # password is present, try MikroTik first — Tenda /goform probes
+            # often hang on RouterOS and delay a matching WebFig login.
+            if vendor == "mikrotik":
+                vendor_order = ("mikrotik",)
+            elif vendor == "tenda":
+                vendor_order = ("tenda",)
+            elif saved_password:
+                vendor_order = ("mikrotik", "tenda")
+            else:
+                vendor_order = ("tenda", "mikrotik")
+
+            for vendor_try in vendor_order:
+                if vendor_try == "tenda":
+                    tenda_timeout = min(timeout, 3.0 if vendor != "tenda" else timeout)
+                    for cand_user, password in tenda_candidates:
+                        ok, jar, err = _tenda_web_login(
+                            proxy,
+                            password,
+                            cpe_port=cpe_port,
+                            cookies=jar,
+                            timeout=tenda_timeout,
+                        )
+                        if ok:
+                            steps.append(f"signed in to Tenda web UI as {cand_user}")
+                            result.update(
+                                {
+                                    "ok": True,
+                                    "authenticated": True,
+                                    "cookies": jar,
+                                    "vendor": "tenda",
+                                    "cpe_username": cand_user,
+                                    "cpe_password": password,
+                                }
+                            )
+                            _remember_last_cpe_web_vendor(nas_host, scope, "tenda")
+                            return result
+                        if err and "locked out" in err.lower():
+                            result["error"] = err
+                            break
+                        if err and "rejected" in err.lower() and saved_password:
+                            result["error"] = err
+                            if vendor == "tenda":
+                                break
+                    continue
+
+                for cand_user, password in mk_candidates:
+                    ok, jar, basic = _mikrotik_web_login(
+                        proxy,
+                        cand_user,
+                        password,
+                        cpe_port=cpe_port,
+                        timeout=timeout,
                     )
-                    return result
+                    if ok:
+                        steps.append(f"signed in to MikroTik WebFig as {cand_user}")
+                        result.update(
+                            {
+                                "ok": True,
+                                "authenticated": True,
+                                "cookies": jar,
+                                "basic_header": basic,
+                                "vendor": "mikrotik",
+                                "cpe_username": cand_user,
+                                "cpe_password": password,
+                            }
+                        )
+                        _remember_last_cpe_web_vendor(nas_host, scope, "mikrotik")
+                        return result
 
             if api_ok or customer is not None:
                 support_user = CPE_WEB_SUPPORT_USER
@@ -3961,6 +4150,7 @@ def _try_cpe_web_ports(
                         proxy_port,
                         source_address,
                     )
+                    _remember_last_cpe_web_port(nas_host, scope, port)
                 return port, last_error
         except (TimeoutError, OSError):
             _uninstall_cpe_proxy(nas_sock, proxy_port)
@@ -4079,7 +4269,9 @@ def probe_customer_cpe_web(
     steps.append(f"found client IP {address}")
 
     connect_timeout = max(1.5, min(timeout, 2.5))
-    candidate_ports = tuple(ports or CPE_WEB_PORTS)
+    candidate_ports = _preferred_cpe_web_ports(
+        nas_host, scope, tuple(ports or CPE_WEB_PORTS)
+    )
 
     def _scan_ports(port_list: tuple[int, ...]) -> int | None:
         with _api_session(
@@ -4601,10 +4793,16 @@ def prepare_customer_cpe_access(
     cpe_host = (session.get("address") or "").strip()
     result["cpe_host"] = cpe_host
     steps.append(f"found client IP {cpe_host}")
+    default_user, default_pass = ("", "")
+    if customer is not None:
+        default_user, default_pass = customer_cpe_default_credentials(customer)
     candidates = _cpe_credential_candidates(
         cpe_username=cpe_username,
         cpe_password=cpe_password,
         pppoe_password=pppoe_password,
+        default_cpe_username=default_user,
+        default_cpe_password=default_pass,
+        known_password_only=bool((cpe_password or "").strip()),
     )
     proxy_port = _cpe_proxy_port(cpe_host, scope or pppoe_username)
 
@@ -8402,11 +8600,20 @@ def _cpe_credential_candidates(
     pppoe_password: str = "",
     default_cpe_username: str = "",
     default_cpe_password: str = "",
+    known_password_only: bool | None = None,
 ) -> list[tuple[str, str]]:
-    """Ordered (username, password) pairs to try against the CPE RouterOS API."""
+    """Ordered (username, password) pairs to try against the CPE RouterOS API/WebFig.
+
+    When an explicit CPE password is set, default to known_password_only so a
+    matching password signs in on the first try without burning lockout attempts
+    on empty/PPPoE/factory guesses.
+    """
     username = ((cpe_username or "").strip() or "admin")
     default_user = (default_cpe_username or "").strip() or "admin"
     default_pass = default_cpe_password or ""
+    explicit = (cpe_password or "").strip()
+    if known_password_only is None:
+        known_password_only = bool(explicit)
     candidates: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -8417,15 +8624,19 @@ def _cpe_credential_candidates(
         seen.add(key)
         candidates.append(key)
 
-    add(username, cpe_password or "")
-    if default_pass and default_pass != (cpe_password or ""):
+    add(username, explicit)
+    if username.lower() != "admin" and explicit:
+        add("admin", explicit)
+    if known_password_only:
+        return candidates
+
+    if default_pass and default_pass != explicit:
         add(default_user, default_pass)
         if default_user.lower() != username.lower():
             add(username, default_pass)
-    if pppoe_password and pppoe_password != (cpe_password or ""):
+    if pppoe_password and pppoe_password != explicit:
         add(username, pppoe_password)
     if username.lower() != "admin":
-        add("admin", cpe_password or "")
         if default_pass:
             add("admin", default_pass)
         if pppoe_password:

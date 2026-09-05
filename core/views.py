@@ -322,11 +322,6 @@ CLIENT_SIDEBARS = {
         "label": "Billings",
         "items": [
             {"key": "billing", "label": "Billing overview", "url_name": "billing:dashboard"},
-            {
-                "key": "leads_billing",
-                "label": "Lead payments",
-                "url_name": "billing:lead_payments",
-            },
             {"key": "packages", "label": "Packages", "url_name": "billing:packages"},
             {
                 "key": "register_package",
@@ -3572,6 +3567,11 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
     sidebar = CLIENT_SIDEBARS.get(active_nav, CLIENT_SIDEBARS["workspace"])
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     nav = build_client_nav(active_nav, referral_enabled=referral_enabled)
+    active_sidebar = sidebar_active or active_nav
+    # Register package opens a modal that only exists on the packages page.
+    nav_main = nav["main"]
+    if active_sidebar != "packages":
+        nav_main = [item for item in nav_main if item.get("key") != "register_package"]
 
     owner_profile_form = extra.pop("owner_profile_form", None)
     open_owner_profile_modal = bool(extra.pop("open_owner_profile_modal", False))
@@ -3592,8 +3592,8 @@ def client_page_context(request, *, active_nav: str, sidebar_active: str | None 
         "is_owner": is_owner,
         "active_nav": active_nav,
         "sidebar_label": sidebar["label"],
-        "sidebar_active": sidebar_active or active_nav,
-        "client_nav_main": nav["main"],
+        "sidebar_active": active_sidebar,
+        "client_nav_main": nav_main,
         "client_nav_end": nav["end"],
         "referral_enabled": referral_enabled,
         "is_viewing_as_client": viewing_client,
@@ -9051,7 +9051,7 @@ def my_clients(request):
                 Customer.objects.select_related("plan", "router", "organization")
                 .filter(
                     pk=int(raw_id),
-                    organization=org,
+                    organization_id=org.pk,
                     service_type=Customer.ServiceType.PPPOE,
                     status=Customer.Status.INACTIVE,
                 )
@@ -9112,7 +9112,7 @@ def my_clients(request):
                 ),
             )
             remaining = Customer.objects.filter(
-                organization=org,
+                organization_id=org.pk,
                 service_type=Customer.ServiceType.PPPOE,
                 status=Customer.Status.INACTIVE,
             ).exists()
@@ -9181,24 +9181,33 @@ def my_clients(request):
         tab = "pppoe"
     pending_view = tab == "pppoe" and clients_view == "pending"
 
-    base_qs = Customer.objects.filter(organization=org) if org else Customer.objects.none()
-    counts = (
-        base_qs.values("service_type")
-        .annotate(total=Count("id"))
+    # Strict org scope: pending activations (and all client lists) only for the
+    # ISP organization linked on the customer row — never cross-tenant.
+    base_qs = (
+        Customer.objects.filter(organization_id=org.pk)
         if org
-        else []
+        else Customer.objects.none()
     )
-    count_map = {row["service_type"]: row["total"] for row in counts}
-    pppoe_count = count_map.get(Customer.ServiceType.PPPOE, 0)
-    static_count = count_map.get(Customer.ServiceType.STATIC, 0)
-    hotspot_count = count_map.get(Customer.ServiceType.HOTSPOT, 0)
-    pending_activation_count = (
-        base_qs.filter(
-            service_type=Customer.ServiceType.PPPOE,
-            status=Customer.Status.INACTIVE,
-        ).count()
+    pending_activation_qs = base_qs.filter(
+        service_type=Customer.ServiceType.PPPOE,
+        status=Customer.Status.INACTIVE,
+    )
+    pending_activation_count = pending_activation_qs.count() if org else 0
+
+    # PPPoE tab counts/lists exclude pending activation; those live only on
+    # ?tab=pppoe&view=pending for this ISP.
+    pppoe_count = (
+        base_qs.filter(service_type=Customer.ServiceType.PPPOE)
+        .exclude(status=Customer.Status.INACTIVE)
+        .count()
         if org
         else 0
+    )
+    static_count = (
+        base_qs.filter(service_type=Customer.ServiceType.STATIC).count() if org else 0
+    )
+    hotspot_count = (
+        base_qs.filter(service_type=Customer.ServiceType.HOTSPOT).count() if org else 0
     )
 
     service_type = {
@@ -9246,13 +9255,18 @@ def my_clients(request):
             clients_router_id = None
             clients_router_param = ""
 
-    tab_qs = (
-        base_qs.filter(service_type=service_type)
-        .select_related("plan", "router")
-        .order_by("-created_at")
-    )
     if pending_view:
-        tab_qs = tab_qs.filter(status=Customer.Status.INACTIVE)
+        tab_qs = pending_activation_qs.select_related("plan", "router").order_by(
+            "-created_at"
+        )
+    else:
+        tab_qs = (
+            base_qs.filter(service_type=service_type)
+            .select_related("plan", "router")
+            .order_by("-created_at")
+        )
+        if tab == "pppoe":
+            tab_qs = tab_qs.exclude(status=Customer.Status.INACTIVE)
     if clients_router_param == "none":
         tab_qs = tab_qs.filter(router__isnull=True)
     elif clients_router_id:
@@ -9264,7 +9278,10 @@ def my_clients(request):
             | Q(account_number__icontains=clients_query)
             | Q(pppoe_username__icontains=clients_query)
         )
-    paginator = Paginator(tab_qs, 100)
+    # Hotspot list is reordered live by session state (surfing → connected →
+    # disconnected), so load the full set instead of paginating mid-list.
+    page_size = 10000 if tab == "hotspot" else 100
+    paginator = Paginator(tab_qs, page_size)
     page_obj = paginator.get_page(request.GET.get("page") or 1)
     page_customers = list(page_obj)
 
@@ -10367,7 +10384,7 @@ def client_router_login_start(request, customer_id: int):
         nas.password or "",
         customer=customer,
         cpe_username=cpe_user,
-        cpe_password=cpe_pass,
+        cpe_password=probe_password,
         pppoe_password=customer.pppoe_password or "",
         default_cpe_username=default_cpe_user,
         default_cpe_password=default_cpe_pass,
@@ -10394,19 +10411,26 @@ def client_router_login_start(request, customer_id: int):
     working_user = (login.get("cpe_username") or "").strip()
     working_pass = login.get("cpe_password")
     authenticated = bool(login.get("authenticated"))
-    # Only persist passwords the operator entered (POST) or that were already empty —
-    # never store guessed factory defaults from auto-login.
+    # Persist credentials the operator entered, or a working NAS-default that
+    # signed in — so the next open uses the fast known-password path.
     password_from_operator = request.method == "POST" and (
         bool((request.POST.get("cpe_password") or "").strip())
         or bool((request.POST.get("cpe_username") or "").strip())
+    )
+    matched_nas_default = (
+        authenticated
+        and bool(working_pass)
+        and not (customer.cpe_password or "").strip()
+        and bool(default_cpe_pass)
+        and working_pass == default_cpe_pass
+        and not login.get("support_user")
     )
     if (
         authenticated
         and working_pass
         and not login.get("support_user")
-        and password_from_operator
+        and (password_from_operator or matched_nas_default)
     ):
-        # Operator explicitly entered credentials — keep them as the saved CPE login.
         update_fields: list[str] = []
         if working_pass != (customer.cpe_password or ""):
             customer.cpe_password = working_pass
@@ -11464,26 +11488,56 @@ def clients_general_usage(request):
     """Organization-wide usage analytics and highest-users ranking."""
     org = resolve_organization(request.user, request)
     from billing.usage_samples import (
-        clamp_usage_hours,
         org_usage_payload,
-        usage_range_label,
+        parse_usage_filter,
+        usage_filter_querystring,
     )
 
     # First paint stays snappy: ranked preview from DB/cache only.
     # Live MikroTik sampling continues in the background via trends JSON.
     _USAGE_PAGE_PREVIEW = 30
 
-    hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
+    usage_filter = parse_usage_filter(request, default_time="6")
+    hours = usage_filter["hours"]
     tab = (request.GET.get("tab") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
         tab = "pppoe"
     router_ctx = _clients_usage_router_filter(request, org)
+    filter_qs = usage_filter_querystring(
+        usage_filter,
+        extra={
+            "tab": tab,
+            "router": router_ctx.get("clients_router_param") or "",
+        },
+    )
+    filter_qs_pppoe = usage_filter_querystring(
+        usage_filter,
+        extra={
+            "tab": "pppoe",
+            "router": router_ctx.get("clients_router_param") or "",
+        },
+    )
+    filter_qs_hotspot = usage_filter_querystring(
+        usage_filter,
+        extra={
+            "tab": "hotspot",
+            "router": router_ctx.get("clients_router_param") or "",
+        },
+    )
+    filter_qs_clear_router = usage_filter_querystring(
+        usage_filter,
+        extra={"tab": tab},
+    )
 
     if org:
         trends = org_usage_payload(
             org,
             hours=hours,
-            auto_widen=True,
+            since=usage_filter["since"],
+            until=usage_filter["until"],
+            range_label=usage_filter["label"],
+            relative=usage_filter["relative"],
+            auto_widen=usage_filter["auto_widen"],
             use_cache=True,
             top_n=_USAGE_PAGE_PREVIEW,
             service=tab,
@@ -11516,8 +11570,8 @@ def clients_general_usage(request):
             "top_users": [],
             "top_chart": {"labels": [], "data_used_mb": []},
             "error": "No organization is linked to this workspace.",
-            "range_label": usage_range_label(hours),
-            "requested_range_label": usage_range_label(hours),
+            "range_label": usage_filter["label"],
+            "requested_range_label": usage_filter["label"],
             "users_partial": False,
             "users_loaded": 0,
             "users_total_count": 0,
@@ -11540,9 +11594,14 @@ def clients_general_usage(request):
             trend_hours=effective_hours,
             requested_hours=requested,
             auto_widened=bool(trends.get("auto_widened")),
-            range_label=trends.get("range_label") or usage_range_label(effective_hours),
+            range_label=trends.get("range_label") or usage_filter["label"],
             requested_range_label=trends.get("requested_range_label")
-            or usage_range_label(requested),
+            or usage_filter["label"],
+            usage_filter=usage_filter,
+            usage_filter_qs=filter_qs,
+            usage_filter_qs_pppoe=filter_qs_pppoe,
+            usage_filter_qs_hotspot=filter_qs_hotspot,
+            usage_filter_qs_clear_router=filter_qs_clear_router,
             trends=trends,
             trends_json=json.dumps(trends),
             top_users=trends.get("top_users") or [],
@@ -11560,12 +11619,13 @@ def clients_general_usage_trends(request):
     if not org:
         return JsonResponse({"ok": False, "error": "No organization."}, status=400)
     from billing.usage_samples import (
-        clamp_usage_hours,
         org_usage_payload,
+        parse_usage_filter,
         sample_organization_usage,
     )
 
-    hours = clamp_usage_hours(request.GET.get("hours") or 72, default=72)
+    usage_filter = parse_usage_filter(request, default_time="6")
+    hours = usage_filter["hours"]
     tab = (request.GET.get("tab") or request.GET.get("service") or "pppoe").strip().lower()
     if tab not in {"pppoe", "hotspot"}:
         tab = "pppoe"
@@ -11582,7 +11642,11 @@ def clients_general_usage_trends(request):
         org_usage_payload(
             org,
             hours=hours,
-            auto_widen=True,
+            since=usage_filter["since"],
+            until=usage_filter["until"],
+            range_label=usage_filter["label"],
+            relative=usage_filter["relative"],
+            auto_widen=usage_filter["auto_widen"],
             use_cache=not force,
             top_n=0,
             service=tab,
@@ -11610,25 +11674,43 @@ def client_usage_analysis(request, customer_id: int):
     can_access_wifi = customer_can_access_router(customer, org)
     from billing.usage_samples import (
         build_client_access_timeline,
-        clamp_usage_hours,
-        usage_range_label,
+        parse_usage_filter,
+        usage_filter_querystring,
         usage_trend_payload,
     )
 
-    hours = clamp_usage_hours(request.GET.get("hours"), default=24)
+    usage_filter = parse_usage_filter(request, default_time="1")
+    hours = usage_filter["hours"]
+    filter_qs = usage_filter_querystring(usage_filter)
     live_error = ""
 
     if can_live:
         # Seed a live reading when history is empty so the first visit is not
         # stuck on “Collecting…”. When history already exists, stay fast and
         # let JS / the background sampler continue the trend.
-        trends = usage_trend_payload(customer, hours=hours, use_cache=False)
+        trends = usage_trend_payload(
+            customer,
+            hours=hours,
+            since=usage_filter["since"],
+            until=usage_filter["until"],
+            range_label=usage_filter["label"],
+            relative=usage_filter["relative"],
+            use_cache=False,
+        )
         if int(trends.get("sample_count") or 0) <= 0:
             try:
                 sample_result = _record_live_usage_sample(customer, org, force=True)
                 if isinstance(sample_result, dict) and sample_result.get("error"):
                     live_error = str(sample_result.get("error") or "")
-                trends = usage_trend_payload(customer, hours=hours, use_cache=False)
+                trends = usage_trend_payload(
+                    customer,
+                    hours=hours,
+                    since=usage_filter["since"],
+                    until=usage_filter["until"],
+                    range_label=usage_filter["label"],
+                    relative=usage_filter["relative"],
+                    use_cache=False,
+                )
             except Exception:
                 live_error = "Could not reach the MikroTik for a live reading."
         if live_error:
@@ -11643,12 +11725,17 @@ def client_usage_analysis(request, customer_id: int):
             )
         else:
             error = "Live usage trends are available for PPPoE clients with an assigned router."
-        access = build_client_access_timeline(customer, hours=hours)
+        access = build_client_access_timeline(
+            customer,
+            hours=hours,
+            since=usage_filter["since"],
+            until=usage_filter["until"],
+        )
         access_public = {k: v for k, v in access.items() if k != "bounds"}
         trends = {
             "ok": False,
             "hours": hours,
-            "range_label": usage_range_label(hours),
+            "range_label": usage_filter["label"],
             "sample_count": 0,
             "labels": [],
             "series": {
@@ -11686,7 +11773,9 @@ def client_usage_analysis(request, customer_id: int):
         can_live_usage=can_live,
         can_access_wifi=can_access_wifi,
         trend_hours=hours,
-        range_label=trends.get("range_label") or usage_range_label(hours),
+        range_label=trends.get("range_label") or usage_filter["label"],
+        usage_filter=usage_filter,
+        usage_filter_qs=filter_qs,
         trends=trends,
         trends_json=json.dumps(trends),
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
@@ -11811,9 +11900,10 @@ def client_usage_trends(request, customer_id: int):
             {"ok": False, "error": "No MikroTik router is available for this client."},
             status=400,
         )
-    from billing.usage_samples import clamp_usage_hours, usage_trend_payload
+    from billing.usage_samples import parse_usage_filter, usage_trend_payload
 
-    hours = clamp_usage_hours(request.GET.get("hours"), default=24)
+    usage_filter = parse_usage_filter(request, default_time="1")
+    hours = usage_filter["hours"]
     sample = (request.GET.get("sample") or "").strip() in {"1", "true", "yes"}
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     live_error = ""
@@ -11828,7 +11918,13 @@ def client_usage_trends(request, customer_id: int):
             live_error = "Could not reach the MikroTik for a live reading."
     # Always rebuild after a sample attempt so a just-written row is visible.
     payload = usage_trend_payload(
-        customer, hours=hours, use_cache=not (sample or force)
+        customer,
+        hours=hours,
+        since=usage_filter["since"],
+        until=usage_filter["until"],
+        range_label=usage_filter["label"],
+        relative=usage_filter["relative"],
+        use_cache=not (sample or force),
     )
     if live_error:
         payload = {**payload, "live_error": live_error}
@@ -12340,6 +12436,20 @@ def clients_surfing_status(request):
             invalidate_vouchers_for_surfing_customers(surfing_customers)
         except Exception:
             pass
+
+    if service == "hotspot":
+        _hotspot_rank = {"surfing": 0, "not_surfing": 1, "disconnected": 2}
+
+        def _hotspot_sort_key(row: dict) -> tuple:
+            state = (row.get("state") or "").strip().lower()
+            rank = _hotspot_rank.get(state, 3)
+            if rank == 3 and row.get("surfing"):
+                rank = 0
+            elif rank == 3 and row.get("connected"):
+                rank = 1
+            return (rank, (row.get("full_name") or "").lower(), row.get("id") or 0)
+
+        clients_payload.sort(key=_hotspot_sort_key)
 
     payload = {
         "ok": True,
