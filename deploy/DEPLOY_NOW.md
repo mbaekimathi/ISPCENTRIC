@@ -8,26 +8,29 @@ SSH from your machine was not reachable from the dev PC (port 22 timeout). Run t
 
 ## Daily update (pull latest main)
 
-After code is pushed to GitHub, on the VPS as **root**:
-
-```bash
-cd /opt/ispcentric && sudo bash scripts/vps_pull.sh
-```
-
-That one command: fetches `origin/main`, hard-resets to it, runs full migrate/static/WireGuard/NAS sync, and restarts `ispcentric`.
-
-**First time only** (if `vps_pull.sh` is not on the server yet):
+After code is pushed to GitHub, on the VPS:
 
 ```bash
 cd /opt/ispcentric
 sudo -u www-data git fetch origin
 sudo -u www-data git reset --hard origin/main
-sudo bash scripts/vps_pull.sh
+sudo -u www-data bash scripts/vps_deploy.sh
+sudo systemctl restart ispcentric
 ```
 
-Useful flags: `--no-restart`, `--skip-deploy` (git only), `--force` (discard local edits).
+That fetches `origin/main`, hard-resets, runs migrate/static/WireGuard, then restarts the app.
+
+**Deploy-safe:** NAS fleet push is **off by default** so live PPPoE/Hotspot clients are not disrupted. To push captive/firewall templates after a release:
+
+```bash
+sudo -u www-data bash scripts/vps_deploy.sh --sync-nas
+# or later:
+sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py sync_nas_config
+```
 
 Do **not** run `migrate accounts` by itself — `vps_deploy.sh` already migrates every app.
+
+Optional helper (same steps, plus restart when run as root): `sudo bash scripts/vps_pull.sh`
 
 ---
 

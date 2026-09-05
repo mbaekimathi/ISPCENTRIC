@@ -521,10 +521,9 @@
   function startPolling() {
     if (started) return;
     started = true;
-    // Soft first paint from cache; forced probe only when status is stale.
+    # Soft first paint from cache; avoid an immediate forced NAS probe.
     refreshStatus(false);
-    timer = setInterval(function () { refreshStatus(false); }, 30000);
-    setTimeout(function () { refreshStatus(true); }, 2000);
+    timer = setInterval(function () { refreshStatus(false); }, 45000);
   }
 
   if (window.requestIdleCallback) {
@@ -706,8 +705,7 @@
 
   window.__clientsRefreshSurf = refreshSurf;
   refreshSurf(false);
-  setTimeout(function () { refreshSurf(true); }, 2500);
-  timer = setInterval(function () { refreshSurf(false); }, 10000);
+  timer = setInterval(function () { refreshSurf(false); }, 25000);
   var lastSurfForceAt = 0;
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) return;

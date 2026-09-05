@@ -90,24 +90,44 @@ if [[ "$WG_SYNC_RC" -ne 0 ]]; then
   echo "   Ensure wg-quick@wg0 is enabled and sudoers allows wireguard_apply_peer.sh."
 fi
 
-echo "==> Pushing NAS config to active MikroTiks"
-# Stamp so the app process also re-pushes after WireGuard comes up on restart.
+# Deploy-safe default: do NOT push MikroTik fleets on every code release.
+# Firewall rebuilds can briefly disrupt LAN; secret rewrites can redial CPEs.
+# Opt in: NAS_CONFIG_SYNC_ON_DEPLOY=1  or  bash scripts/vps_deploy.sh --sync-nas
+SYNC_NAS="${NAS_CONFIG_SYNC_ON_DEPLOY:-0}"
+for arg in "$@"; do
+  case "$arg" in
+    --sync-nas) SYNC_NAS=1 ;;
+    --no-sync-nas) SYNC_NAS=0 ;;
+  esac
+done
+
 mkdir -p logs
-touch logs/.nas_config_sync_pending
-# Routers keep old login.html / blocked profiles until this runs. Failures are
-# logged but do not abort deploy — unreachable NAS boxes should not block a
-# code release.
-set +e
-"$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
-NAS_SYNC_RC=${PIPESTATUS[0]}
-set -e
-if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
-  rm -f logs/.nas_config_sync_pending
+if [[ "$SYNC_NAS" =~ ^(1|true|yes|on)$ ]]; then
+  echo "==> Pushing NAS config to active MikroTiks (opt-in)"
+  # Stamp so the app process also re-pushes after WireGuard comes up on restart.
+  touch logs/.nas_config_sync_pending
+  # Failures are logged but do not abort deploy — unreachable NAS must not
+  # block a code release.
+  set +e
+  "$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
+  NAS_SYNC_RC=${PIPESTATUS[0]}
+  set -e
+  if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
+    rm -f logs/.nas_config_sync_pending
+  else
+    echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
+    echo "   App deploy continues; pending stamp kept for boot retry after restart."
+    echo "   Or fix unreachable routers then re-run:"
+    echo "     $PYTHON_BIN manage.py sync_nas_config"
+  fi
 else
-  echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
-  echo "   App deploy continues; pending stamp kept for boot retry after restart."
-  echo "   Or fix unreachable routers then re-run:"
-  echo "     $PYTHON_BIN manage.py sync_nas_config"
+  # Clear any leftover stamp so a service restart does not fleet-push routers.
+  rm -f logs/.nas_config_sync_pending
+  echo "==> Skipping NAS fleet push (deploy-safe — live clients stay dialed)."
+  echo "   To push captive/firewall templates after release:"
+  echo "     NAS_CONFIG_SYNC_ON_DEPLOY=1 bash scripts/vps_deploy.sh"
+  echo "     # or: bash scripts/vps_deploy.sh --sync-nas"
+  echo "     # or later: $PYTHON_BIN manage.py sync_nas_config"
 fi
 
 echo

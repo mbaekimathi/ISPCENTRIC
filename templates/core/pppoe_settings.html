@@ -4,45 +4,36 @@
 
 {% block client_content %}
 <div class="access-settings-shell account-page-shell">
-  <header class="access-settings-intro account-page-intro">
-    <p class="account-page-kicker">Access · {{ router.name }}</p>
-    <h2 class="access-settings-title">PPPoE settings</h2>
-    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+  <header class="access-settings-hero">
+    <div class="access-settings-hero-copy">
+      <p class="account-page-kicker">Access · {{ router.name }}</p>
+      <h2 class="access-settings-title">PPPoE settings</h2>
+      <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
+    </div>
+    <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}" id="pppoe-status-pill">
+      {% if pppoe_compulsory %}Enforcement on{% else %}Enforcement off{% endif %}
+    </span>
   </header>
 
   {% include "core/includes/access_settings_tabs.html" %}
 
   {% if organization %}
-    <div class="access-settings-stack account-page">
-      {% if pppoe_compulsory %}
-        <div class="settings-policy-banner access-settings-banner" role="status">
-          Enforcement is <strong>on</strong>. Free LAN/DHCP browsing is blocked on your MikroTik routers.
-          Dialed PPPoE clients keep internet; other devices can still get online via Hotspot login if Hotspot is enabled.
-        </div>
-      {% endif %}
+    {% if form and can_edit %}
+      <form method="post" class="access-settings-stack account-page" id="pppoe-settings-form" novalidate>
+        {% csrf_token %}
 
-      <section class="panel account-card settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
-        <header class="account-card-head">
-          <div class="account-card-head-main">
-            <span class="account-step" aria-hidden="true">1</span>
+        <section class="panel account-card access-control-card settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
+          <header class="access-control-head">
             <div>
               <h3>PPPoE enforcement</h3>
               <p>
-                When this is on, free LAN/DHCP browsing to the internet is blocked.
-                Registered PPPoE clients that dial in stay online. If Hotspot is also enabled,
-                other devices can log in through the Hotspot portal instead.
+                On: blocks free LAN browsing — dialed PPPoE clients stay online; other devices use Hotspot.
+                Off: any LAN/DHCP device can reach the internet (open access).
               </p>
             </div>
-          </div>
-          <span class="mikrotik-wifi-pill{% if pppoe_compulsory %} is-on{% else %} is-off{% endif %}" id="pppoe-status-pill">
-            {% if pppoe_compulsory %}On{% else %}Off{% endif %}
-          </span>
-        </header>
+          </header>
 
-        {% if form and can_edit %}
-          <form method="post" class="settings-policy-form access-toggle-row" id="pppoe-settings-form">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="save_policy" id="pppoe-settings-action">
+          <div class="access-toggle-bar">
             <label class="mikrotik-wifi-switch settings-policy-switch" for="{{ form.pppoe_compulsory.id_for_label }}">
               {{ form.pppoe_compulsory }}
               <span class="mikrotik-wifi-switch-track" aria-hidden="true"></span>
@@ -53,73 +44,82 @@
             {% if form.pppoe_compulsory.errors %}
               <div class="field-error">{{ form.pppoe_compulsory.errors|striptags }}</div>
             {% endif %}
-            <p class="settings-policy-hint">{{ form.pppoe_compulsory.help_text }}</p>
-            <noscript>
-              <div class="form-actions" style="margin-top:1rem;">
-                <button type="submit" class="btn btn-primary">Save settings</button>
-              </div>
-            </noscript>
-          </form>
-        {% elif not can_edit %}
-          <p class="empty">You do not have permission to change PPPoE settings.</p>
-        {% endif %}
+          </div>
 
-        <div class="account-summary-grid access-settings-stats" aria-label="PPPoE policy summary">
-          <div class="account-summary-item">
-            <span>Policy</span>
-            <strong id="pppoe-policy-label">
-              {% if pppoe_compulsory %}PPPoE clients only{% else %}All active clients{% endif %}
-            </strong>
+          <p class="mikrotik-section-hint is-warning" id="pppoe-open-lan-warn"{% if pppoe_compulsory %} hidden{% endif %}>
+            Enforcement off means unpaid and unregistered devices on this MikroTik’s LAN can surf freely.
+            Dialed PPPoE sessions and Hotspot logins are not torn down when you save.
+          </p>
+
+          {% if hotspot_enabled %}
+            <p class="settings-policy-hint" id="pppoe-hotspot-keep-hint">
+              Hotspot is enabled for this organization. Turning enforcement off does not remove Hotspot,
+              so existing Hotspot clients keep their sessions.
+            </p>
+          {% endif %}
+
+          <div class="access-metric-row" aria-label="PPPoE policy summary">
+            <div class="access-metric">
+              <span>Policy</span>
+              <strong id="pppoe-policy-label">
+                {% if pppoe_compulsory %}PPPoE + Hotspot only{% else %}Open LAN (all clients){% endif %}
+              </strong>
+            </div>
+            <div class="access-metric">
+              <span>Eligible</span>
+              <strong>{{ pppoe_eligible_count }}</strong>
+            </div>
+            {% if pppoe_compulsory %}
+              <div class="access-metric" id="pppoe-blocked-metric">
+                <span>Blocked</span>
+                <strong>{{ blocked_count }}</strong>
+              </div>
+            {% endif %}
           </div>
-          <div class="account-summary-item">
-            <span>Eligible PPPoE clients</span>
-            <strong>{{ pppoe_eligible_count }}</strong>
-          </div>
-          {% if pppoe_compulsory %}
-            <div class="account-summary-item">
-              <span>Blocked without PPPoE</span>
-              <strong>{{ blocked_count }}</strong>
+
+          {% if org_router_count > 1 %}
+            <div class="access-apply-all">
+              <label class="access-apply-all-label" for="{{ form.apply_to_all_routers.id_for_label }}">
+                {{ form.apply_to_all_routers }}
+                <span>
+                  <strong>{{ form.apply_to_all_routers.label }}</strong>
+                  <small>{{ form.apply_to_all_routers.help_text }}</small>
+                </span>
+              </label>
+              {% if form.apply_to_all_routers.errors %}
+                <div class="field-error">{{ form.apply_to_all_routers.errors|striptags }}</div>
+              {% endif %}
+              <p class="settings-policy-hint">
+                This organization has {{ org_router_count }} MikroTiks. Saving always updates the org flag;
+                by default only <strong>{{ router.name }}</strong> receives a firewall push.
+              </p>
             </div>
           {% endif %}
-          <div class="account-summary-item">
-            <span>This router</span>
-            <strong>{{ router.name }}</strong>
-          </div>
-        </div>
-      </section>
-
-      {% include "core/includes/adverts_settings_panel.html" %}
-
-      {% if form and can_edit %}
-        <section class="panel account-card access-push-card">
-          <header class="account-card-head">
-            <div class="account-card-head-main">
-              <span class="account-step" aria-hidden="true">3</span>
-              <div>
-                <h3>Push to this router</h3>
-                <p>
-                  Installs the PPPoE server and every registered client username/password on
-                  <strong>{{ router.name }}</strong> so CPE dial-in works.
-                </p>
-              </div>
-            </div>
-          </header>
-          <form method="post" class="access-push-form">
-            {% csrf_token %}
-            <input type="hidden" name="action" value="push_policy">
-            {% if pppoe_compulsory %}
-              <input type="hidden" name="pppoe_compulsory" value="on">
-            {% endif %}
-            <button type="submit" class="btn btn-primary" data-loading-label="Pushing PPPoE policy…">
-              {% if pppoe_compulsory %}Push block &amp; PPPoE logins{% else %}Push PPPoE server &amp; logins{% endif %}
-            </button>
-            <p class="settings-policy-hint">
-              Use after reconnecting, or if clients see “confirm username and password”.
-            </p>
-          </form>
         </section>
-      {% endif %}
-    </div>
+
+        {% include "core/includes/adverts_settings_panel.html" %}
+
+        <div class="form-actions hotspot-settings-actions account-page-actions--sticky access-settings-actions">
+          <div class="access-settings-actions-copy">
+            <strong>Save &amp; push</strong>
+            <span>Saves settings and pushes firewall policy only (no PPP secret rewrite — clients stay dialed).</span>
+          </div>
+          <button type="submit" class="btn btn-primary" data-loading-label="Saving &amp; pushing…">Save &amp; push</button>
+        </div>
+      </form>
+    {% elif not can_edit %}
+      <div class="access-settings-stack account-page">
+        <section class="panel account-card">
+          <p class="empty">You do not have permission to change PPPoE settings.</p>
+        </section>
+      </div>
+    {% else %}
+      <div class="access-settings-stack account-page">
+        <section class="panel account-card">
+          <p class="empty">PPPoE settings are unavailable for this workspace.</p>
+        </section>
+      </div>
+    {% endif %}
   {% else %}
     <section class="panel account-card">
       <p class="empty">No organization is linked to this workspace.</p>
@@ -129,52 +129,74 @@
 {% endblock %}
 
 {% block client_extra_js %}
-{% if form and can_edit or adverts_form and can_edit %}
+{% if form and can_edit %}
 <script>
 (function () {
-  var form = document.getElementById("pppoe-settings-form");
   var input = document.getElementById("id_pppoe_compulsory");
   var label = document.getElementById("pppoe-enforcement-label");
   var pill = document.getElementById("pppoe-status-pill");
   var policy = document.getElementById("pppoe-policy-label");
-  var panel = document.querySelector(".settings-policy-panel");
-  if (form && input) {
-    function syncUi() {
-      var on = !!input.checked;
-      if (label) label.textContent = on ? "On" : "Off";
-      if (pill) {
-        pill.textContent = on ? "On" : "Off";
-        pill.classList.toggle("is-on", on);
-        pill.classList.toggle("is-off", !on);
-      }
-      if (policy) policy.textContent = on ? "PPPoE clients only" : "All active clients";
-      if (panel) panel.classList.toggle("is-policy-on", on);
+  var panel = document.querySelector("#pppoe-settings-form .settings-policy-panel");
+  var openWarn = document.getElementById("pppoe-open-lan-warn");
+  var form = document.getElementById("pppoe-settings-form");
+  var wasOn = !!(input && input.checked);
+
+  function syncUi() {
+    if (!input) return;
+    var on = !!input.checked;
+    if (label) label.textContent = on ? "On" : "Off";
+    if (pill) {
+      pill.textContent = on ? "Enforcement on" : "Enforcement off";
+      pill.classList.toggle("is-on", on);
+      pill.classList.toggle("is-off", !on);
     }
-    input.addEventListener("change", function () {
-      syncUi();
-      form.submit();
-    });
+    if (policy) {
+      policy.textContent = on ? "PPPoE + Hotspot only" : "Open LAN (all clients)";
+    }
+    if (panel) panel.classList.toggle("is-policy-on", on);
+    if (openWarn) openWarn.hidden = on;
+  }
+  if (input) {
+    input.addEventListener("change", syncUi);
     syncUi();
   }
 
-  var advertsForm = document.getElementById("pppoe-adverts-form");
-  var advertsInput = advertsForm && advertsForm.querySelector("#id_adverts_enabled");
+  if (form && input) {
+    form.addEventListener("submit", function (ev) {
+      var turningOff = wasOn && !input.checked;
+      if (!turningOff) return;
+      var ok = window.confirm(
+        "Turn off PPPoE enforcement?\n\n" +
+        "This opens free LAN browsing on the router you push — " +
+        "unpaid and unregistered devices can reach the internet.\n\n" +
+        "Dialed PPPoE and Hotspot clients are not disconnected.\n" +
+        "Deploying the app alone never pushes routers."
+      );
+      if (!ok) {
+        ev.preventDefault();
+        input.checked = true;
+        syncUi();
+      }
+    });
+  }
+
+  var advertsInput = document.getElementById("id_adverts_enabled");
   var advertsLabel = document.getElementById("adverts-enabled-label");
   var advertsPill = document.getElementById("adverts-status-pill");
-  if (advertsForm && advertsInput) {
-    function syncAdvertsUi() {
-      var on = !!advertsInput.checked;
-      if (advertsLabel) advertsLabel.textContent = on ? "On" : "Off";
-      if (advertsPill) {
-        advertsPill.textContent = on ? "On" : "Off";
-        advertsPill.classList.toggle("is-on", on);
-        advertsPill.classList.toggle("is-off", !on);
-      }
+  var advertsPanel = document.getElementById("org-adverts-panel");
+  function syncAdvertsUi() {
+    if (!advertsInput) return;
+    var on = !!advertsInput.checked;
+    if (advertsLabel) advertsLabel.textContent = on ? "On" : "Off";
+    if (advertsPill) {
+      advertsPill.textContent = on ? "On" : "Off";
+      advertsPill.classList.toggle("is-on", on);
+      advertsPill.classList.toggle("is-off", !on);
     }
-    advertsInput.addEventListener("change", function () {
-      syncAdvertsUi();
-      advertsForm.submit();
-    });
+    if (advertsPanel) advertsPanel.classList.toggle("is-policy-on", on);
+  }
+  if (advertsInput) {
+    advertsInput.addEventListener("change", syncAdvertsUi);
     syncAdvertsUi();
   }
 })();

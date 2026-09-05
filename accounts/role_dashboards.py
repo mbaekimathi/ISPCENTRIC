@@ -614,14 +614,33 @@ def _prepare_manager_view(request):
 
 @role_required(Employee.Role.MANAGER)
 def manager_isp_clients(request):
-    from django.db.models import Count
+    from django.db.models import Count, IntegerField, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+
+    from billing.models import Customer
 
     _prepare_manager_view(request)
+
+    def _count_subquery(model, org_field="organization_id"):
+        return (
+            model.objects.filter(**{org_field: OuterRef("pk")})
+            .order_by()
+            .values(org_field)
+            .annotate(_c=Count("id"))
+            .values("_c")
+        )
+
     clients = list(
         Organization.objects.select_related("owner")
         .annotate(
-            staff_count=Count("employees", distinct=True),
-            customer_count=Count("customers", distinct=True),
+            staff_count=Coalesce(
+                Subquery(_count_subquery(Employee), output_field=IntegerField()),
+                0,
+            ),
+            customer_count=Coalesce(
+                Subquery(_count_subquery(Customer), output_field=IntegerField()),
+                0,
+            ),
         )
         .order_by("-created_at")
     )
@@ -1410,26 +1429,81 @@ def _it_support_company_clients_context(**extra):
 
 
 def _isp_client_queryset():
-    from django.db.models import Count
+    from django.db.models import Count, IntegerField, OuterRef, Subquery
+    from django.db.models.functions import Coalesce
+
+    from accounts.models import Employee
+    from billing.models import BillingPlan, Customer
+    from core.models import MikroTikRouter
+
+    def _count_subquery(model, org_field="organization_id"):
+        return (
+            model.objects.filter(**{org_field: OuterRef("pk")})
+            .order_by()
+            .values(org_field)
+            .annotate(_c=Count("id"))
+            .values("_c")
+        )
 
     return (
         Organization.objects.select_related("owner")
         .annotate(
-            staff_count=Count("employees", distinct=True),
-            customer_count=Count("customers", distinct=True),
-            plan_count=Count("plans", distinct=True),
-            router_count=Count("mikrotik_routers", distinct=True),
+            staff_count=Coalesce(
+                Subquery(_count_subquery(Employee), output_field=IntegerField()),
+                0,
+            ),
+            customer_count=Coalesce(
+                Subquery(_count_subquery(Customer), output_field=IntegerField()),
+                0,
+            ),
+            plan_count=Coalesce(
+                Subquery(_count_subquery(BillingPlan), output_field=IntegerField()),
+                0,
+            ),
+            router_count=Coalesce(
+                Subquery(_count_subquery(MikroTikRouter), output_field=IntegerField()),
+                0,
+            ),
         )
         .order_by("-created_at")
     )
 
 
+_IT_SUPPORT_ISP_CLIENTS_CACHE = "it_support:isp_clients:v2"
+_IT_SUPPORT_HR_CACHE = "it_support:hr_employees:v1"
+
+
+def _invalidate_it_support_list_caches():
+    from django.core.cache import cache
+
+    cache.delete(_IT_SUPPORT_ISP_CLIENTS_CACHE)
+    cache.delete(_IT_SUPPORT_HR_CACHE)
+
+
 def _render_it_support_company_clients(request, **extra):
+    from django.core.cache import cache
+    from django.db.models import Count, Q
+
     _prepare_it_support_view(request)
-    clients = list(_isp_client_queryset())
-    suspended_count = sum(
-        1 for client in clients if client.status == Organization.Status.SUSPENDED
+    force_fresh = bool(
+        extra.get("edit_form")
+        or extra.get("edit_owner_form")
+        or extra.get("open_register_modal")
     )
+    clients = None if force_fresh else cache.get(_IT_SUPPORT_ISP_CLIENTS_CACHE)
+    if clients is None:
+        clients = list(_isp_client_queryset())
+        if not force_fresh:
+            cache.set(_IT_SUPPORT_ISP_CLIENTS_CACHE, clients, 45)
+
+    status_counts = Organization.objects.aggregate(
+        suspended_count=Count(
+            "id", filter=Q(status=Organization.Status.SUSPENDED)
+        ),
+        total_count=Count("id"),
+    )
+    suspended_count = status_counts["suspended_count"] or 0
+    clients_count = status_counts["total_count"] or 0
     open_edit_id = extra.pop("open_edit_id", None)
     if open_edit_id is None:
         raw = (request.GET.get("edit") or "").strip()
@@ -1447,8 +1521,8 @@ def _render_it_support_company_clients(request, **extra):
         "accounts/it_support_company_clients.html",
         _it_support_company_clients_context(
             clients=clients,
-            clients_count=len(clients),
-            active_count=len(clients) - suspended_count,
+            clients_count=clients_count,
+            active_count=clients_count - suspended_count,
             suspended_count=suspended_count,
             status_choices=Organization.Status.choices,
             open_edit_id=open_edit_id,
@@ -1492,6 +1566,7 @@ def it_support_company_clients(request):
                     register_form,
                     registered_by=request.user,
                 )
+            _invalidate_it_support_list_caches()
             messages.success(
                 request,
                 (
@@ -1549,6 +1624,7 @@ def it_support_company_client_edit(request, pk):
         form.save()
         if owner_form is not None:
             owner_form.save()
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Updated {client.name}.")
         return redirect("roles:it_support_company_clients")
 
@@ -1571,6 +1647,7 @@ def it_support_company_client_suspend(request, pk):
     else:
         client.status = Organization.Status.SUSPENDED
         client.save(update_fields=["status"])
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Suspended {client.name}.")
     return redirect("roles:it_support_company_clients")
 
@@ -1585,6 +1662,7 @@ def it_support_company_client_unsuspend(request, pk):
     else:
         client.status = Organization.Status.ACTIVE
         client.save(update_fields=["status"])
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Unsuspended {client.name}.")
     return redirect("roles:it_support_company_clients")
 
@@ -1601,6 +1679,7 @@ def it_support_company_client_delete(request, pk):
     if request.method == "POST":
         name = client.name
         client.purge_account(actor_user_id=request.user.pk)
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Deleted {name} and all of its account data.")
         return redirect("roles:it_support_company_clients")
 
@@ -1619,30 +1698,52 @@ def it_support_company_client_delete(request, pk):
 def it_support_hr(request):
     _prepare_it_support_view(request)
 
-    employees = list(
-        Employee.objects.select_related("user", "organization")
-        .order_by("-created_at")
-    )
-    suspended_count = sum(
-        1 for member in employees if member.status == Employee.Status.SUSPENDED
-    )
-    pending_count = sum(
-        1
-        for member in employees
-        if member.status == Employee.Status.PENDING_APPROVAL
-    )
-    active_count = sum(
-        1 for member in employees if member.status == Employee.Status.ACTIVE
+    from django.core.cache import cache
+    from django.db.models import Count, Q
+
+    employees = cache.get(_IT_SUPPORT_HR_CACHE)
+    if employees is None:
+        employees = list(
+            Employee.objects.select_related("user", "organization")
+            .only(
+                "id",
+                "status",
+                "role",
+                "phone",
+                "login_code",
+                "profile_photo",
+                "organization_id",
+                "user_id",
+                "user__id",
+                "user__username",
+                "user__first_name",
+                "user__last_name",
+                "user__email",
+                "organization__id",
+                "organization__name",
+            )
+            .order_by("-created_at")
+        )
+        cache.set(_IT_SUPPORT_HR_CACHE, employees, 45)
+    status_counts = Employee.objects.aggregate(
+        suspended_count=Count(
+            "id", filter=Q(status=Employee.Status.SUSPENDED)
+        ),
+        pending_count=Count(
+            "id", filter=Q(status=Employee.Status.PENDING_APPROVAL)
+        ),
+        active_count=Count("id", filter=Q(status=Employee.Status.ACTIVE)),
+        total_count=Count("id"),
     )
     return render(
         request,
         "accounts/it_support_hr.html",
         _it_support_hr_context(
             employees=employees,
-            employees_count=len(employees),
-            active_count=active_count,
-            suspended_count=suspended_count,
-            pending_count=pending_count,
+            employees_count=status_counts["total_count"] or 0,
+            active_count=status_counts["active_count"] or 0,
+            suspended_count=status_counts["suspended_count"] or 0,
+            pending_count=status_counts["pending_count"] or 0,
         ),
     )
 
@@ -1674,6 +1775,7 @@ def it_support_hr_edit(request, pk):
         form = EmployeeAdminEditForm(request.POST, request.FILES, employee=member)
         if form.is_valid():
             form.save()
+            _invalidate_it_support_list_caches()
             name = member.user.get_full_name() or member.user.username
             messages.success(request, f"Updated {name}.")
             return redirect("roles:it_support_hr_edit", pk=member.pk)
@@ -1708,6 +1810,7 @@ def it_support_hr_suspend(request, pk):
     else:
         member.status = Employee.Status.SUSPENDED
         member.save(update_fields=["status", "updated_at"])
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Suspended {name}.")
     return redirect("roles:it_support_hr")
 
@@ -1724,6 +1827,7 @@ def it_support_hr_unsuspend(request, pk):
     else:
         member.status = Employee.Status.ACTIVE
         member.save(update_fields=["status", "updated_at"])
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Unsuspended {name}.")
     return redirect("roles:it_support_hr")
 
@@ -1742,6 +1846,7 @@ def it_support_hr_delete(request, pk):
     if request.method == "POST":
         user = member.user
         user.delete()
+        _invalidate_it_support_list_caches()
         messages.success(request, f"Deleted {name}.")
         return redirect("roles:it_support_hr")
 
@@ -2019,7 +2124,7 @@ def it_support_company_system_settings(request):
                 {
                     "key": "company_themes",
                     "label": "Company themes",
-                    "description": "Preview pay/pause pages, and toggle Click to earn adverts for each ISP.",
+                    "description": "Preview pay/pause pages, and toggle Refer & earn for each ISP.",
                     "url_name": "roles:it_support_company_themes",
                 },
             ],
@@ -2031,18 +2136,11 @@ def it_support_company_system_settings(request):
 def it_support_company_themes(request):
     """Preview client-facing Hotspot / PPPoE payment pages for company themes."""
     _prepare_it_support_view(request)
+    # Dropdown only needs id/name/join_code; load the selected org fully once.
     organizations = list(
         Organization.objects.exclude(join_code="")
         .order_by("name")
-        .only(
-            "id",
-            "name",
-            "join_code",
-            "hotspot_enabled",
-            "pppoe_compulsory",
-            "adverts_enabled",
-            "adverts_redirect_url",
-        )
+        .only("id", "name", "join_code")
     )
     selected = None
     org_id = (
@@ -2051,9 +2149,32 @@ def it_support_company_themes(request):
         or ""
     )
     if org_id:
-        selected = next((row for row in organizations if str(row.pk) == str(org_id)), None)
+        selected = (
+            Organization.objects.filter(pk=org_id)
+            .exclude(join_code="")
+            .only(
+                "id",
+                "name",
+                "join_code",
+                "hotspot_enabled",
+                "pppoe_compulsory",
+                "adverts_enabled",
+            )
+            .first()
+        )
     if selected is None and organizations:
-        selected = organizations[0]
+        selected = (
+            Organization.objects.filter(pk=organizations[0].pk)
+            .only(
+                "id",
+                "name",
+                "join_code",
+                "hotspot_enabled",
+                "pppoe_compulsory",
+                "adverts_enabled",
+            )
+            .first()
+        )
 
     if request.method == "POST" and selected is not None:
         action = (request.POST.get("action") or "").strip()
@@ -2064,25 +2185,16 @@ def it_support_company_themes(request):
                 "on",
                 "yes",
             }
-            redirect_url = (request.POST.get("adverts_redirect_url") or "").strip()
-            if redirect_url and not redirect_url.lower().startswith(("http://", "https://")):
-                redirect_url = f"https://{redirect_url}"
             Organization.objects.filter(pk=selected.pk).update(
                 adverts_enabled=enabled,
-                adverts_redirect_url=redirect_url,
             )
             selected.adverts_enabled = enabled
-            selected.adverts_redirect_url = redirect_url
-            for row in organizations:
-                if row.pk == selected.pk:
-                    row.adverts_enabled = enabled
-                    row.adverts_redirect_url = redirect_url
             messages.success(
                 request,
                 (
-                    f"Click to earn is on for {selected.name}."
+                    f"Refer & earn is on for {selected.name}."
                     if enabled
-                    else f"Click to earn is off for {selected.name}."
+                    else f"Refer & earn is off for {selected.name}."
                 ),
             )
             return redirect(
@@ -2103,8 +2215,7 @@ def it_support_company_themes(request):
         earn_url = reverse(
             "core:click_to_earn", kwargs={"join_code": selected.join_code}
         )
-        custom = (getattr(selected, "adverts_redirect_url", None) or "").strip()
-        earn_preview_url = custom or earn_url
+        earn_preview_url = earn_url
 
     return render(
         request,
@@ -2113,8 +2224,8 @@ def it_support_company_themes(request):
             "page_title": "Company themes",
             "page_kicker": "Settings",
             "page_subtitle": (
-                "Preview captive pay and pause pages, and turn on Click to earn "
-                "so Wi‑Fi visitors can open the ISP adverts page."
+                "Preview captive pay and pause pages, and turn on Refer & earn "
+                "so Wi‑Fi visitors can open the ISP referral page."
             ),
             "current_page": "company_themes",
             "dashboard_url_name": "roles:it_support",
@@ -2126,11 +2237,6 @@ def it_support_company_themes(request):
             "earn_preview_url": earn_preview_url,
             "adverts_enabled": bool(
                 getattr(selected, "adverts_enabled", False) if selected else False
-            ),
-            "adverts_redirect_url": (
-                (getattr(selected, "adverts_redirect_url", None) or "").strip()
-                if selected
-                else ""
             ),
             "hotspot_demo_preview_url": (
                 f"{hotspot_pay_url}?preview=demo" if hotspot_pay_url else ""

@@ -29,6 +29,9 @@ _SURF_STATE_SURFING = 2
 _SURF_STATE_NOT_SURFING = 1
 _SURF_STATE_DISCONNECTED = 0
 _NETWORK_TREND_TTL = 20
+_NS_CONNECTED_TREND_TTL = 60 * 60 * 26  # keep ~24h of live points
+_NS_CONNECTED_TREND_MIN_INTERVAL = 45  # seconds between new ring points
+_NS_CONNECTED_TREND_MAX_POINTS = 1200
 _NETWORK_TREND_COLORS = [
     "#2ecc71",
     "#4f8cff",
@@ -2464,6 +2467,390 @@ def router_network_performance_trend(
     if use_cache:
         cache.set(cache_key, payload, _NETWORK_TREND_TTL)
     return payload
+
+
+def _pppoe_ns_connected_cache_key(organization_id: int) -> str:
+    return f"pppoe_ns_connected_trend:v1:{organization_id}"
+
+
+def record_pppoe_connected_not_surfing_count(
+    organization_id: int | None, count: int
+) -> None:
+    """
+    Append a live sample for PPPoE clients that are dialed, in-package, but not surfing.
+    Used by the workspace "Connected, not surfing" downtime chart.
+    """
+    if not organization_id:
+        return
+    try:
+        count = max(0, int(count))
+    except (TypeError, ValueError):
+        count = 0
+    key = _pppoe_ns_connected_cache_key(int(organization_id))
+    now = timezone.now()
+    points = list(cache.get(key) or [])
+    cutoff = now - timedelta(hours=26)
+    pruned: list[dict[str, Any]] = []
+    for row in points:
+        raw = row.get("t") if isinstance(row, dict) else None
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        if stamp < cutoff:
+            continue
+        pruned.append({"t": stamp.isoformat(), "c": max(0, int(row.get("c") or 0))})
+
+    if pruned:
+        try:
+            last_stamp = datetime.fromisoformat(str(pruned[-1]["t"]))
+            if timezone.is_naive(last_stamp):
+                last_stamp = timezone.make_aware(
+                    last_stamp, timezone.get_current_timezone()
+                )
+            if (now - last_stamp).total_seconds() < _NS_CONNECTED_TREND_MIN_INTERVAL:
+                pruned[-1] = {"t": now.isoformat(), "c": count}
+                cache.set(key, pruned[-_NS_CONNECTED_TREND_MAX_POINTS:], _NS_CONNECTED_TREND_TTL)
+                return
+        except (TypeError, ValueError):
+            pass
+
+    pruned.append({"t": now.isoformat(), "c": count})
+    cache.set(key, pruned[-_NS_CONNECTED_TREND_MAX_POINTS:], _NS_CONNECTED_TREND_TTL)
+
+
+def _pppoe_ns_episodes_cache_key(organization_id: int) -> str:
+    return f"pppoe_ns_episodes:v1:{organization_id}"
+
+
+def _parse_iso_stamp(raw) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    return stamp
+
+
+def _sample_surfing_loss_stats(
+    organization, customer_ids: set[int], *, hours: int = 24
+) -> dict[int, dict[str, Any]]:
+    """
+    Count surfing→not-surfing transitions from usage samples (24h).
+
+    Surfing = dialed + package allows internet. Not surfing = dialed without
+    package allowance, or dropped while the package still allowed surfing.
+    """
+    out: dict[int, dict[str, Any]] = {}
+    if not organization or not customer_ids:
+        return out
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    customers = {
+        c.pk: c
+        for c in Customer.objects.filter(
+            organization=organization, pk__in=customer_ids
+        ).select_related("plan")
+    }
+    if not customers:
+        return out
+
+    bounds_by_id = {cid: _package_access_bounds(cust) for cid, cust in customers.items()}
+    samples = (
+        CustomerUsageSample.objects.filter(
+            organization=organization,
+            customer_id__in=customer_ids,
+            sampled_at__gte=since,
+        )
+        .order_by("customer_id", "sampled_at")
+        .values("customer_id", "sampled_at", "session_active")[:20000]
+    )
+
+    prev_state: dict[int, bool | None] = {}
+    for row in samples:
+        cid = int(row["customer_id"])
+        cust = customers.get(cid)
+        if not cust:
+            continue
+        stamp = row["sampled_at"]
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        active = bool(row["session_active"])
+        allowed = _surf_allowed_at(
+            stamp,
+            bounds=bounds_by_id.get(cid) or {},
+            service_type=getattr(cust, "service_type", Customer.ServiceType.PPPOE),
+        )
+        surfing = bool(active and allowed)
+        stats = out.setdefault(
+            cid, {"count": 0, "last_lost_at": None, "last_lost_reason": ""}
+        )
+        was = prev_state.get(cid)
+        if was is True and not surfing:
+            stats["count"] += 1
+            stats["last_lost_at"] = stamp
+            if active and not allowed:
+                stats["last_lost_reason"] = "Package blocked internet while dialed"
+            else:
+                stats["last_lost_reason"] = "Dropped while package was still active"
+        prev_state[cid] = surfing
+
+    return out
+
+
+def track_pppoe_connected_not_surfing_episodes(
+    organization,
+    current_rows: list[dict[str, Any]],
+    *,
+    hours: int = 24,
+) -> list[dict[str, Any]]:
+    """
+    Attach lost-surfing timing + episode counts for currently affected PPPoE clients.
+
+    Only enriches clients that are dialed, in-package, and not surfing right now.
+    """
+    if not organization:
+        return current_rows
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    key = _pppoe_ns_episodes_cache_key(organization.pk)
+    state = cache.get(key) or {}
+    open_eps: dict[str, dict[str, Any]] = dict(state.get("open") or {})
+    closed: list[dict[str, Any]] = list(state.get("closed") or [])
+
+    current_map: dict[str, dict[str, Any]] = {}
+    for row in current_rows:
+        if not (
+            row.get("internet_allowed")
+            and row.get("connected")
+            and not row.get("surfing")
+        ):
+            continue
+        cid = str(row.get("id") or "")
+        if not cid:
+            continue
+        current_map[cid] = row
+
+    # Close recovered clients.
+    for cid in list(open_eps.keys()):
+        if cid in current_map:
+            continue
+        ep = open_eps.pop(cid) or {}
+        closed.append(
+            {
+                "id": cid,
+                "since": ep.get("since"),
+                "until": now.isoformat(),
+                "reason": ep.get("reason") or "",
+            }
+        )
+
+    # Open / refresh current downtime episodes.
+    for cid, row in current_map.items():
+        reason = (row.get("reason") or "").strip()
+        if cid not in open_eps:
+            open_eps[cid] = {"since": now.isoformat(), "reason": reason}
+        else:
+            if reason:
+                open_eps[cid]["reason"] = reason
+
+    # Prune closed episodes outside the window.
+    pruned_closed: list[dict[str, Any]] = []
+    for ep in closed:
+        until = _parse_iso_stamp(ep.get("until")) or _parse_iso_stamp(ep.get("since"))
+        if until is None or until < since:
+            continue
+        pruned_closed.append(ep)
+    closed = pruned_closed[-2000:]
+
+    cache.set(
+        key,
+        {"open": open_eps, "closed": closed},
+        _NS_CONNECTED_TREND_TTL,
+    )
+
+    sample_stats = _sample_surfing_loss_stats(
+        organization,
+        {int(cid) for cid in current_map.keys() if str(cid).isdigit()},
+        hours=hours,
+    )
+
+    for cid, row in current_map.items():
+        ep = open_eps.get(cid) or {}
+        since_stamp = _parse_iso_stamp(ep.get("since"))
+        episode_count = 1 + sum(1 for item in closed if str(item.get("id")) == cid)
+        sample = sample_stats.get(int(cid)) if str(cid).isdigit() else None
+        sample_count = int((sample or {}).get("count") or 0)
+        sample_lost = (sample or {}).get("last_lost_at")
+
+        # Prefer the open episode start; fall back to sample history.
+        lost_at = since_stamp
+        if lost_at is None and sample_lost is not None:
+            lost_at = sample_lost
+        # If samples show an older continuous loss, keep the earlier stamp.
+        if (
+            sample_lost is not None
+            and lost_at is not None
+            and sample_lost < lost_at
+            and sample_count
+        ):
+            # Only pull earlier when this looks like the same ongoing outage.
+            if (lost_at - sample_lost) <= timedelta(hours=hours):
+                lost_at = sample_lost
+
+        times = max(episode_count, sample_count, 1)
+        reason = (
+            (ep.get("reason") or "").strip()
+            or (row.get("reason") or "").strip()
+            or ((sample or {}).get("last_lost_reason") or "").strip()
+            or "Dialed with an active package, but not surfing"
+        )
+
+        row["lost_surfing_at"] = (
+            timezone.localtime(lost_at).isoformat() if lost_at is not None else ""
+        )
+        row["lost_surfing_label"] = (
+            _access_stamp_label(lost_at, hours) if lost_at is not None else "Just now"
+        )
+        row["lost_surfing_ago"] = (
+            _human_duration((now - lost_at).total_seconds())
+            if lost_at is not None
+            else "—"
+        )
+        row["downtime_count"] = times
+        row["downtime_reason"] = reason
+        # Keep list reason aligned with the downtime explanation.
+        if reason and not (row.get("reason") or "").strip():
+            row["reason"] = reason
+
+    return current_rows
+
+
+def pppoe_connected_not_surfing_trend(
+    organization, *, hours: int = 24, live_count: int | None = None
+) -> dict[str, Any]:
+    """
+    24h trend of PPPoE clients dialed with an active package but not surfing.
+
+    Built from the live ring buffer written by clients_surfing_status each time
+    the dashboard / clients list probes MikroTik sessions.
+    """
+    empty = {
+        "ok": False,
+        "hours": hours,
+        "labels": [],
+        "datasets": [],
+        "summary": {"current": 0, "peak": 0, "sample_points": 0},
+    }
+    if not organization:
+        return empty
+
+    hours = clamp_usage_hours(hours, default=24)
+    now = timezone.now()
+    since = now - timedelta(hours=hours)
+    bucket_secs = _bucket_seconds(hours)
+    window_start = int(since.timestamp() // bucket_secs) * bucket_secs
+    window_end = int(now.timestamp() // bucket_secs) * bucket_secs
+    bucket_keys = list(range(window_start, window_end + bucket_secs, bucket_secs))
+    if not bucket_keys:
+        bucket_keys = [window_start]
+
+    bucket_values: dict[int, list[int]] = {k: [] for k in bucket_keys}
+    live_points = list(cache.get(_pppoe_ns_connected_cache_key(organization.pk)) or [])
+    for row in live_points:
+        raw = row.get("t") if isinstance(row, dict) else None
+        if not raw:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(raw))
+        except (TypeError, ValueError):
+            continue
+        if timezone.is_naive(stamp):
+            stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+        if stamp < since:
+            continue
+        bucket = int(stamp.timestamp() // bucket_secs) * bucket_secs
+        if bucket < window_start:
+            bucket = window_start
+        if bucket > window_end:
+            bucket = window_end
+        bucket_values.setdefault(bucket, []).append(max(0, int(row.get("c") or 0)))
+
+    live_filled = sum(1 for vals in bucket_values.values() if vals)
+
+    if live_count is not None:
+        try:
+            live_count = max(0, int(live_count))
+        except (TypeError, ValueError):
+            live_count = None
+        if live_count is not None:
+            bucket_values.setdefault(window_end, []).append(live_count)
+
+    labels: list[str] = []
+    series: list[int | None] = []
+    peak = 0
+    for key in bucket_keys:
+        stamp = timezone.localtime(datetime.fromtimestamp(key, tz=dt_timezone.utc))
+        labels.append(stamp.strftime(_chart_label_format(hours)))
+        vals = bucket_values.get(key) or []
+        if not vals:
+            # Baseline zeros until live probes fill the ring — keeps the chart readable.
+            series.append(0 if live_filled == 0 else None)
+            continue
+        value = int(round(sum(vals) / len(vals)))
+        series.append(value)
+        peak = max(peak, value)
+
+    if live_count is not None and series:
+        series[-1] = int(live_count)
+        peak = max(peak, int(live_count))
+
+    current = live_count
+    if current is None:
+        for value in reversed(series):
+            if value is not None:
+                current = value
+                break
+        if current is None:
+            current = 0
+
+    if peak == 0 and current:
+        peak = int(current)
+
+    return {
+        "ok": True,
+        "hours": hours,
+        "labels": labels,
+        "datasets": [
+            {
+                "label": "Connected, not surfing",
+                "data": series,
+                "borderColor": "#c45c26",
+                "backgroundColor": "rgba(196,92,38,0.12)",
+                "tension": 0.3,
+                "spanGaps": True,
+                "pointRadius": 0 if len(bucket_keys) > 40 else 2,
+                "borderWidth": 2.5,
+                "fill": True,
+            }
+        ],
+        "summary": {
+            "current": int(current),
+            "peak": int(peak),
+            "sample_points": live_filled,
+        },
+    }
 
 
 def _wifi_drop_reason(

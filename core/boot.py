@@ -340,8 +340,8 @@ def _nas_config_sync_requested() -> bool:
         return True
     if env in {"0", "false", "no"}:
         return False
-    # Deploy scripts touch this stamp so the first app boot after pull
-    # re-pushes MikroTiks even if the deploy-time sync ran before WireGuard.
+    # Only when deploy explicitly opted into a fleet push and left a stamp
+    # (see vps_deploy.sh / cpanel_after_pull.sh --sync-nas).
     try:
         return os.path.exists(_nas_config_pending_path())
     except Exception:
@@ -352,9 +352,8 @@ def _run_nas_config_sync_once() -> None:
     """
     One-shot post-deploy NAS push (single winner across gunicorn workers).
 
-    Deploy scripts also call ``sync_nas_config`` directly; this boot path
-    covers the case where routers are only reachable after WireGuard comes up
-    inside the app process.
+    Deploy scripts only leave the pending stamp when NAS sync is opted in.
+    Routine code deploys must not rewrite MikroTik firewalls or kick clients.
     """
     if not _nas_config_sync_requested():
         return
@@ -377,8 +376,23 @@ def _run_nas_config_sync_once() -> None:
 
         from django.core.management import call_command
 
+        # Let WireGuard settle before touching NAS boxes after a service restart.
+        try:
+            settle = max(
+                0.0,
+                float(os.getenv("NAS_CONFIG_SYNC_BOOT_DELAY_SEC", "45")),
+            )
+        except (TypeError, ValueError):
+            settle = 45.0
+        if settle:
+            logger.info(
+                "NAS config sync waiting %.0fs after boot (deploy-safe settle).",
+                settle,
+            )
+            time.sleep(settle)
+
         out = StringIO()
-        logger.info("NAS config sync starting (post-deploy / boot).")
+        logger.info("NAS config sync starting (opt-in post-deploy / boot).")
         call_command("sync_nas_config", stdout=out, stderr=out)
         text = out.getvalue().strip()
         if text:
@@ -408,7 +422,7 @@ def start_runtime_tasks() -> None:
 
     def _boot() -> None:
         _sync_wireguard()
-        # After the tunnel is up, push any pending post-deploy NAS config.
+        # After the tunnel is up, push any pending *opt-in* post-deploy NAS config.
         try:
             _run_nas_config_sync_once()
         except Exception:

@@ -6179,23 +6179,47 @@ def check_mikrotik_reachable(
 
     open_ports: dict[int, str] = {}
     errors: list[str] = []
-    pool = ThreadPoolExecutor(max_workers=min(4, len(ports)))
+    api_hit: dict[str, Any] | None = None
+
+    def _consume(probe_port: int, ok: bool, err: str) -> bool:
+        """Record one probe. Return True when API is open (caller may stop early)."""
+        nonlocal api_hit
+        if ok:
+            open_ports[probe_port] = via_map.get(probe_port, f"tcp/{probe_port}")
+            if probe_port == api_port:
+                api_hit = {
+                    "online": True,
+                    "via": "api",
+                    "port": probe_port,
+                }
+                return True
+        elif err:
+            errors.append(err)
+        return False
+
+    # Django StatReloader can flip concurrent.futures' global shutdown flag while
+    # the old worker still serves a few requests. Fall back to sequential probes
+    # so mikrotik_detail / status checks do not 500 mid-reload.
+    pool = None
     try:
+        pool = ThreadPoolExecutor(max_workers=min(4, len(ports)))
         futures = [pool.submit(_probe, p) for p in ports]
         for future in as_completed(futures):
-            probe_port, ok, err = future.result()
-            if ok:
-                open_ports[probe_port] = via_map.get(probe_port, f"tcp/{probe_port}")
-                if probe_port == api_port:
-                    return {
-                        "online": True,
-                        "via": "api",
-                        "port": probe_port,
-                    }
-            elif err:
-                errors.append(err)
+            if _consume(*future.result()):
+                break
+    except RuntimeError as exc:
+        if "shutdown" not in str(exc).lower():
+            raise
+        ordered = [api_port] + [p for p in ports if p != api_port]
+        for p in ordered:
+            if _consume(*_probe(p)):
+                break
     finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    if api_hit:
+        return api_hit
 
     if open_ports:
         def _rank(probe_port: int) -> tuple[int, int, int]:
@@ -10073,7 +10097,7 @@ STATIC_CLIENT_DHCP_TAG = "ispcentric-static-client"
 
 # Short-lived caches for captive-portal critical path (connect → pay redirect).
 # Keys are intentionally narrow so a reconnect after renew still re-resolves.
-_CAPTIVE_ORG_CACHE_TTL = 20
+_CAPTIVE_ORG_CACHE_TTL = 45
 _CAPTIVE_SESSION_CACHE_TTL = 15
 # PPP IP → customer must outlive brief API blips after block/kick/redial so the
 # dst-nat renew page can still auto-fill without a signed CPE token.
@@ -13117,8 +13141,12 @@ def resolve_router_management_mode(router) -> str:
 
     lan — on the router LAN subnet (full local control)
     tunnel — off LAN but tunnel API reachable from this PC
-    remote_only — router is on VPS WireGuard; use hosted dashboard from this PC
+    remote_only — local (non-hosted) PC cannot dial the tunnel; use hosted dashboard
+
+    Hosted ISPCENTRIC never returns remote_only — it *is* the management surface.
     """
+    if bool(getattr(settings, "HOSTED", False)):
+        return "tunnel" if (getattr(router, "vpn_address", None) or "").strip() else "lan"
     if not on_router_lan():
         return "tunnel" if (getattr(router, "vpn_address", None) or "").strip() else "lan"
     if operator_on_router_lan(router):
@@ -14841,7 +14869,7 @@ def refresh_onboarded_router_config(
     skip_pppoe: bool = False,
     skip_hotspot: bool = False,
     reauthenticate: bool = False,
-    sync_pppoe_secrets: bool = True,
+    sync_pppoe_secrets: bool = False,
 ) -> dict[str, Any]:
     """
     Push the latest PPPoE / Hotspot / captive templates to one onboarded NAS.
@@ -14850,9 +14878,9 @@ def refresh_onboarded_router_config(
     pick up code changes (firewall rules, login.html, bypass cleanup, MAC blocks)
     without a manual push from the UI.
 
-    ``sync_pppoe_secrets=False`` (subscription sweep): refresh firewall / captive
-    stack only. Per-customer sync already applied access; rewriting every secret
-    again was disconnecting paid CPEs first→last every cycle.
+    ``sync_pppoe_secrets`` defaults to False so deploy / sweep / reconnect
+    stack refreshes do not rewrite every /ppp/secret and disconnect dialed
+    CPEs. Pass True only for an intentional full provision (e.g. Reconnect).
     """
     router_id = getattr(router, "pk", None)
     router_name = getattr(router, "name", "") or getattr(router, "host", "") or ""
@@ -15528,9 +15556,9 @@ def resolve_captive_organization(client_ip: str = ""):
                             props="address",
                             query={"address": client_ip},
                         )
-                        if not rows:
-                            rows = _print(sock, "/ppp/active", props="address")
-                        for row in rows:
+                        # Prefer the filtered lookup; skip full-table dumps so
+                        # captive probe bursts do not stall app workers.
+                        for row in rows or []:
                             if (row.get("address") or "").strip() == client_ip:
                                 org = router.organization
                                 _captive_cache_set(
@@ -15545,9 +15573,7 @@ def resolve_captive_organization(client_ip: str = ""):
                                 props="address",
                                 query={"address": client_ip},
                             )
-                            if not rows:
-                                rows = _print(sock, path, props="address")
-                            for row in rows:
+                            for row in rows or []:
                                 if (row.get("address") or "").strip() == client_ip:
                                     org = router.organization
                                     _captive_cache_set(
@@ -16279,8 +16305,12 @@ def apply_pppoe_enforcement_on_router(
     are not dialed in via PPPoE are redirected to the payment portal instead
     of being silently dropped.
 
-    ``sync_secrets=False`` skips rewriting every /ppp/secret (used by the
-    subscription sweep after per-customer access sync already ran).
+    When compulsory is False, free LAN browsing is allowed again. Hotspot is
+    intentionally left as-is so paid Hotspot sessions are not torn down.
+
+    ``sync_secrets=False`` skips rewriting every /ppp/secret (settings-page
+    policy pushes and the subscription sweep use this so dialed CPEs are not
+    kicked by a routine firewall refresh).
     """
     if router is None:
         return {"ok": False, "error": "No router provided."}
@@ -16459,13 +16489,25 @@ def apply_pppoe_enforcement_on_router(
             "Free LAN browsing blocked; paid PPPoE clients surf automatically and "
             "other devices are sent to the Hotspot payment portal."
             if compulsory
-            else "LAN browsing allowed again alongside PPPoE clients."
+            else (
+                "LAN browsing allowed again alongside PPPoE clients. "
+                "Existing Hotspot (if any) was left running so Hotspot clients stay online."
+            )
         ),
     }
 
 
-def apply_pppoe_enforcement_for_organization(organization, *, compulsory: bool | None = None) -> dict[str, Any]:
-    """Apply PPPoE enforcement firewall policy on every router for an organization."""
+def apply_pppoe_enforcement_for_organization(
+    organization,
+    *,
+    compulsory: bool | None = None,
+    sync_secrets: bool = False,
+) -> dict[str, Any]:
+    """Apply PPPoE enforcement firewall policy on every router for an organization.
+
+    Defaults to ``sync_secrets=False`` so a bulk policy push does not rewrite
+    every PPP secret and disconnect dialed CPEs.
+    """
     if organization is None:
         return {"ok": False, "applied": 0, "failed": 0, "results": [], "error": "No organization."}
 
@@ -16502,7 +16544,12 @@ def apply_pppoe_enforcement_for_organization(organization, *, compulsory: bool |
     workers = min(6, len(routers))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(apply_pppoe_enforcement_on_router, router, compulsory=bool(compulsory))
+            pool.submit(
+                apply_pppoe_enforcement_on_router,
+                router,
+                compulsory=bool(compulsory),
+                sync_secrets=bool(sync_secrets),
+            )
             for router in routers
         ]
         for future in as_completed(futures):
@@ -16517,6 +16564,7 @@ def apply_pppoe_enforcement_for_organization(organization, *, compulsory: bool |
         "failed": failed,
         "router_count": len(routers),
         "results": results,
+        "sync_secrets": bool(sync_secrets),
     }
 
 
@@ -18838,9 +18886,6 @@ def _ensure_isp_hotspot_stack(
     notes.extend(_ensure_hotspot_walled_garden(sock, garden_url))
     if redirect_url and redirect_url != garden_url:
         notes.extend(_ensure_hotspot_walled_garden(sock, redirect_url))
-    earn_redirect = (getattr(org, "adverts_redirect_url", None) or "").strip()
-    if earn_redirect and earn_redirect not in {garden_url, redirect_url}:
-        notes.extend(_ensure_hotspot_walled_garden(sock, earn_redirect))
     notes.extend(_ensure_hotspot_server_bypass(sock, garden_url))
 
     # login.html BEFORE option 114 so we never advertise a broken portal.

@@ -242,17 +242,29 @@ PPPoE account." Route the PPPoE pool over the tunnel without NAT so
 ## Updating later
 
 ```bash
-cd /opt/ispcentric && sudo bash scripts/vps_pull.sh
+cd /opt/ispcentric
+sudo -u www-data git fetch origin
+sudo -u www-data git reset --hard origin/main
+sudo -u www-data bash scripts/vps_deploy.sh
+sudo systemctl restart ispcentric
 ```
 
-That fetches `origin/main`, hard-resets, runs `vps_deploy.sh`, and restarts
-`ispcentric`. Prefer this over hand-typed `git fetch` / `migrate accounts` /
-duplicate restart blocks — full migrate is already inside `vps_deploy.sh`.
+Prefer this over a separate `migrate accounts` step — full migrate is already
+inside `vps_deploy.sh`. Optional shorthand: `sudo bash scripts/vps_pull.sh`.
 
-`vps_deploy.sh` also runs `manage.py sync_nas_config`, which re-pushes to
-every **active** MikroTik:
+**Deploy-safe default:** `vps_deploy.sh` does **not** push MikroTik fleets on
+every release (avoids brief LAN blips and accidental CPE redials). To refresh
+captive/firewall templates after a code change that needs it:
 
-- PPPoE pool / blocked profile / secrets (when the org uses PPPoE)
+```bash
+sudo -u www-data bash scripts/vps_deploy.sh --sync-nas
+# or later:
+sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py sync_nas_config
+```
+
+`sync_nas_config` (when opted in) re-pushes to every **active** MikroTik:
+
+- PPPoE pool / blocked profile / firewall stack (secrets only with `--sync-secrets`)
 - Expired-client pay redirect rules
 - Hotspot `login.html` / captive portal (when Hotspot is enabled)
 
@@ -262,15 +274,10 @@ Check the result:
 sudo -u www-data tail -n 50 /opt/ispcentric/logs/nas_config_sync.log
 ```
 
-If a router was offline during deploy, the pending stamp is kept and the app
-retries once after WireGuard comes up on restart. You can also re-run manually:
-
-```bash
-sudo -u www-data /opt/ispcentric/.venv/bin/python manage.py sync_nas_config
-```
-
-Set `NAS_CONFIG_SYNC_ON_BOOT=true` in `.env` only if you want **every** app
-restart to re-push all routers (slower; usually unnecessary).
+If a router was offline during an **opt-in** NAS sync, the pending stamp is kept
+and the app retries once after WireGuard comes up on restart (after a settle
+delay). Set `NAS_CONFIG_SYNC_ON_BOOT=true` in `.env` only if you want **every**
+app restart to re-push all routers (slower; usually unnecessary).
 
 ## Security hardening (production checklist)
 

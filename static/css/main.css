@@ -14279,92 +14279,101 @@ a.packages-stat:focus-visible {
 
 /* MikroTik list page shell (aligned with packages page) */
 .mikrotik-page {
+  --mikrotik-tone: #0e7c86;
   display: grid;
-  gap: 1.1rem;
-  width: 100%;
-  max-width: min(76rem, 100%);
+  gap: 0;
+  width: min(100%, var(--max, 76rem));
+  max-width: var(--max, 76rem);
+  min-width: 0;
   margin-inline: auto;
   padding-bottom: 1.5rem;
 }
 
-.mikrotik-hero {
+.mikrotik-fleet {
+  display: grid;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--mikrotik-tone) 18%, var(--border-strong, var(--border)));
+  border-radius: 18px;
+  background: var(--surface-solid, var(--surface));
+  box-shadow: var(--card-shadow, 0 14px 34px color-mix(in srgb, var(--ink) 8%, transparent));
+  overflow: hidden;
+}
+
+.mikrotik-fleet-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1rem 1.5rem;
-  padding: 1.25rem 1.35rem;
-  border-radius: calc(var(--radius, 14px) + 6px);
-  border: 1px solid var(--border);
+  gap: 0.85rem 1.25rem;
+  padding: 1rem 1.15rem 0.95rem;
+  border-bottom: 1px solid var(--border);
   background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 18%, transparent), transparent 42%),
-    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, var(--signal) 14%, transparent), transparent 38%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #fff), var(--surface));
-  box-shadow: var(--shadow, 0 10px 28px rgba(0, 0, 0, 0.12));
+    linear-gradient(180deg, color-mix(in srgb, var(--mikrotik-tone) 9%, transparent), transparent 72%);
 }
 
-.mikrotik-hero-main {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.95rem;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-
-.mikrotik-hero-mark {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 3rem;
-  height: 3rem;
-  border-radius: 16px;
-  color: var(--sea, #0e7c86);
-  background: color-mix(in srgb, var(--sea) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sea) 24%, transparent);
-}
-
-.mikrotik-hero-copy {
+.mikrotik-fleet-title {
   min-width: 0;
 }
 
-.mikrotik-kicker {
-  margin: 0 0 0.2rem;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--sea, #0e7c86);
-}
-
-.mikrotik-title {
-  margin: 0 0 0.35rem;
-  font-family: var(--font-display);
-  font-size: clamp(1.25rem, 1.1rem + 0.7vw, 1.55rem);
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
-}
-
-.mikrotik-lead {
+.mikrotik-fleet-title h1 {
   margin: 0;
-  max-width: 52ch;
-  color: var(--ink-soft);
-  font-size: 0.95rem;
-  line-height: 1.5;
+  font-family: var(--font-display);
+  font-size: clamp(1.15rem, 1.02rem + 0.45vw, 1.45rem);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  color: var(--ink);
 }
 
-.mikrotik-hero-actions {
+.mikrotik-fleet-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  margin: 0.45rem 0 0;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+}
+
+.mikrotik-fleet-summary strong {
+  color: var(--ink);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-fleet-pill {
+  --pill-tone: var(--mikrotik-tone);
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  color: var(--pill-tone);
+  background: color-mix(in srgb, var(--pill-tone) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pill-tone) 22%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+
+.mikrotik-fleet-pill.tone-active { --pill-tone: #059669; }
+.mikrotik-fleet-pill.tone-suspended { --pill-tone: #d68910; }
+
+.mikrotik-fleet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
   flex: 0 0 auto;
-  align-items: flex-start;
+  align-items: center;
 }
 
 .mikrotik-hero-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.4rem;
   white-space: nowrap;
+  min-height: 2.4rem;
 }
 
 .mikrotik-hero-btn .mikrotik-btn-spinner {
@@ -14380,138 +14389,126 @@ a.packages-stat:focus-visible {
   display: none;
 }
 
-.mikrotik-stats {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.75rem;
-}
-
-.mikrotik-stat {
-  --stat-tone: var(--sea, #0e7c86);
-  position: relative;
+.mikrotik-fleet-tools {
   display: flex;
-  align-items: center;
-  gap: 0.8rem;
-  min-height: 4.5rem;
-  padding: 1rem 1.05rem;
-  border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--stat-tone) 18%, var(--border));
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--stat-tone) 10%, transparent), transparent 55%),
-    color-mix(in srgb, var(--surface) 94%, var(--stat-tone) 6%);
-  box-shadow: var(--card-shadow, 0 8px 20px rgba(11, 31, 42, 0.04));
-  animation: clientsRise 0.4s ease both;
-  animation-delay: calc(0.04s + (var(--i, 0) * 0.05s));
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.85rem 1.15rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--mikrotik-tone) 3.5%, transparent);
 }
 
-.mikrotik-stat.tone-total { --stat-tone: #0e7c86; }
-.mikrotik-stat.tone-active { --stat-tone: #059669; }
-.mikrotik-stat.tone-suspended { --stat-tone: #d68910; }
+.mikrotik-fleet-lead {
+  margin: 0;
+  flex: 1 1 16rem;
+  max-width: 48rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
 
-.mikrotik-stat-ico {
+.mikrotik-search-field {
   display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 2.35rem;
-  height: 2.35rem;
-  border-radius: 12px;
-  color: var(--stat-tone);
-  background: color-mix(in srgb, var(--stat-tone) 14%, transparent);
+  gap: 0.3rem;
+  flex: 0 1 18rem;
+  min-width: min(100%, 14rem);
 }
 
-.mikrotik-stat-text {
-  min-width: 0;
-}
-
-.mikrotik-stat-label {
-  margin: 0 0 0.15rem;
-  font-size: 0.72rem;
-  font-weight: 750;
+.mikrotik-search-label {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--ink-soft);
 }
 
-.mikrotik-stat-value {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(1.35rem, 1.2rem + 0.55vw, 1.7rem);
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-}
-
-.mikrotik-list-panel {
-  gap: 1rem;
-}
-
-.mikrotik-list-head {
-  margin: 0;
-}
-
-.mikrotik-list-title-row {
+.mikrotik-search {
   display: flex;
-  align-items: flex-start;
-  gap: 0.8rem;
-  min-width: 0;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.55rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--mikrotik-tone) 20%, var(--border));
+  background: var(--surface-solid, var(--surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 4%, transparent);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.mikrotik-list-ico {
+.mikrotik-search:focus-within {
+  border-color: color-mix(in srgb, var(--mikrotik-tone) 45%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mikrotik-tone) 16%, transparent);
+}
+
+.mikrotik-search-icon {
   display: grid;
   place-items: center;
+  color: var(--ink-soft);
   flex: 0 0 auto;
-  width: 2.35rem;
-  height: 2.35rem;
-  border-radius: 12px;
-  color: var(--sea, #0e7c86);
-  background: color-mix(in srgb, var(--sea) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--sea) 18%, transparent);
 }
 
-.mikrotik-list-copy {
+.mikrotik-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.92rem;
+}
+
+.mikrotik-search-input::placeholder {
+  color: color-mix(in srgb, var(--ink-soft) 82%, transparent);
+}
+
+.mikrotik-fleet-meta {
+  padding: 0 1.15rem;
+}
+
+.mikrotik-fleet-meta:not(:has(.mikrotik-search-meta:not([hidden]))) {
+  display: none;
+}
+
+.mikrotik-search-meta {
+  margin: 0.65rem 0 0;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.mikrotik-fleet-body {
+  padding: 0.95rem 1.15rem 1.15rem;
   min-width: 0;
 }
 
-.mikrotik-list-copy h2 {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0.45rem;
-  margin: 0 0 0.25rem;
-  font-size: clamp(1.05rem, 0.98rem + 0.35vw, 1.2rem);
-  font-weight: 800;
-  letter-spacing: -0.02em;
+.mikrotik-fleet-empty-search {
+  display: grid;
+  gap: 0.3rem;
+  justify-items: start;
+  margin-top: 0.35rem;
+  padding: 1.25rem 1.1rem;
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--border) 85%, var(--mikrotik-tone));
+  background: color-mix(in srgb, var(--mikrotik-tone) 5%, transparent);
 }
 
-.mikrotik-list-count {
-  display: inline-grid;
-  place-items: center;
-  min-width: 1.55rem;
-  height: 1.4rem;
-  padding: 0 0.45rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 800;
-  color: var(--sea-deep, #07545c);
-  background: color-mix(in srgb, var(--sea) 16%, transparent);
+.mikrotik-fleet-empty-search[hidden] {
+  display: none !important;
 }
 
-[data-theme="dark"] .mikrotik-list-count {
-  color: var(--sea);
-}
-
-.mikrotik-list-copy .panel-sub {
-  margin: 0;
+.mikrotik-router-row.is-search-hidden {
+  display: none !important;
 }
 
 .mikrotik-empty {
   display: grid;
   gap: 0.4rem;
   justify-items: start;
-  margin-top: 0.15rem;
-  padding: 1.55rem 1.25rem;
+  margin: 0;
+  padding: 1.7rem 1.25rem;
   border-radius: 16px;
   border: 1px dashed color-mix(in srgb, var(--border) 85%, var(--sea));
   background: color-mix(in srgb, var(--sea) 6%, transparent);
@@ -14772,19 +14769,13 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-router-profile-facts {
-  margin: 0;
-  padding: 0.15rem 0 0.75rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.55rem 0.85rem;
-  border-bottom: 1px solid var(--border-strong);
-}
-
-.mikrotik-router-profile-facts .mikrotik-live-fact {
-  padding: 0.2rem 0;
+  display: none !important;
 }
 
 .mikrotik-router-profile-session {
   padding-top: 0.35rem;
+  max-height: min(55vh, 26rem);
+  overflow: auto;
 }
 
 .mikrotik-router-profile-group {
@@ -14891,8 +14882,13 @@ a.packages-stat:focus-visible {
 }
 
 .mikrotik-table-shell {
-  border-radius: 16px;
+  border-radius: 14px;
   overflow: auto;
+}
+
+.mikrotik-fleet-body .mikrotik-table-shell {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2, var(--surface)) 40%, transparent);
 }
 
 .mikrotik-router-primary,
@@ -14902,12 +14898,17 @@ a.packages-stat:focus-visible {
   word-break: break-word;
 }
 
+.org-table-mikrotik {
+  width: 100%;
+}
+
 .org-table-mikrotik thead th {
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   font-weight: 800;
   color: var(--ink-soft);
+  background: color-mix(in srgb, var(--mikrotik-tone, var(--sea)) 5%, transparent);
 }
 
 .org-table-mikrotik tbody tr.mikrotik-router-row {
@@ -15490,10 +15491,11 @@ a.packages-stat:focus-visible {
   color: #b91c1c;
 }
 
-/* Stack MikroTik routers as cards ? no horizontal scroll on small / mid screens */
+/* Stack MikroTik routers as cards — no horizontal scroll on small / mid screens */
 @media (max-width: 1100px) {
   .org-table-shell.mikrotik-table-shell,
-  .org-table-shell:has(.org-table-mikrotik) {
+  .org-table-shell:has(.org-table-mikrotik),
+  .mikrotik-fleet-body .mikrotik-table-shell {
     overflow: visible;
     border: 0;
     background: transparent;
@@ -15609,7 +15611,8 @@ a.packages-stat:focus-visible {
     justify-content: flex-end;
   }
 
-  .org-table-mikrotik td[data-label="Wi?Fi"] .mikrotik-wifi-chip {
+  .org-table-mikrotik td[data-label="Wi‑Fi"] .mikrotik-wifi-chip,
+  .org-table-mikrotik td[data-label="Wi-Fi"] .mikrotik-wifi-chip {
     max-width: min(14rem, 58vw);
   }
 
@@ -15630,58 +15633,60 @@ a.packages-stat:focus-visible {
 }
 
 @media (max-width: 720px) {
-  .mikrotik-hero {
+  .mikrotik-fleet-head {
     flex-direction: column;
     align-items: stretch;
-    padding: 1.1rem 1.05rem;
+    padding: 0.95rem 1rem 0.9rem;
   }
 
-  .mikrotik-hero-actions {
+  .mikrotik-fleet-actions {
     width: 100%;
   }
 
-  .mikrotik-hero-actions .btn {
-    flex: 1 1 calc(50% - 0.35rem);
+  .mikrotik-fleet-actions .btn {
+    flex: 1 1 calc(50% - 0.3rem);
     justify-content: center;
   }
 
-  .mikrotik-stats {
-    grid-template-columns: 1fr;
+  .mikrotik-fleet-tools {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0.8rem 1rem;
   }
 
-  .mikrotik-stat {
-    min-height: 4.1rem;
+  .mikrotik-search-field {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .mikrotik-fleet-body {
+    padding: 0.85rem 1rem 1rem;
+  }
+
+  .mikrotik-fleet-meta {
+    padding: 0 1rem;
   }
 }
 
 @media (max-width: 560px) {
-  .mikrotik-page {
-    gap: 0.9rem;
+  .mikrotik-fleet {
+    border-radius: 16px;
   }
 
-  .mikrotik-hero-main {
-    gap: 0.7rem;
-  }
-
-  .mikrotik-hero-mark {
-    width: 2.55rem;
-    height: 2.55rem;
-    border-radius: 13px;
-  }
-
-  .mikrotik-title {
+  .mikrotik-fleet-title h1 {
     font-size: 1.2rem;
   }
 
-  .mikrotik-lead {
-    font-size: 0.9rem;
+  .mikrotik-fleet-lead {
+    font-size: 0.84rem;
   }
 
-  .mikrotik-hero-actions {
+  .mikrotik-fleet-actions {
     flex-direction: column;
   }
 
-  .mikrotik-hero-actions .btn {
+  .mikrotik-fleet-actions .btn {
     flex: 1 1 auto;
     width: 100%;
   }
@@ -15734,8 +15739,8 @@ a.packages-stat:focus-visible {
 }
 
 @media (min-width: 721px) and (max-width: 960px) {
-  .mikrotik-stats {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .mikrotik-fleet-tools {
+    align-items: center;
   }
 }
 
@@ -16083,9 +16088,31 @@ a.packages-stat:focus-visible {
 /* Access settings (PPPoE / Hotspot) */
 .access-settings-shell {
   width: 100%;
-  max-width: 960px;
+  max-width: 780px;
   margin-left: auto;
   margin-right: auto;
+}
+
+.access-settings-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem 1.25rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.15rem;
+  padding: 1.05rem 1.15rem;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--sea) 18%, var(--border));
+  background:
+    radial-gradient(ellipse 80% 90% at 0% 0%, color-mix(in srgb, var(--sea) 14%, transparent), transparent 55%),
+    radial-gradient(ellipse 55% 70% at 100% 100%, color-mix(in srgb, var(--signal) 8%, transparent), transparent 50%),
+    var(--surface-solid, var(--surface));
+  box-shadow: var(--card-shadow);
+}
+
+.access-settings-hero-copy {
+  min-width: 0;
+  flex: 1 1 14rem;
 }
 
 .access-settings-intro {
@@ -16093,37 +16120,179 @@ a.packages-stat:focus-visible {
 }
 
 .access-settings-title {
-  margin: 0.1rem 0 0.35rem;
+  margin: 0.15rem 0 0.35rem;
   font-family: var(--font-display);
   font-size: clamp(1.35rem, 1.15rem + 0.7vw, 1.7rem);
   letter-spacing: var(--tracking-tight);
   line-height: var(--leading-tight);
 }
 
+.access-settings-hero .client-page-lead {
+  margin: 0;
+  max-width: 36rem;
+}
+
 .access-settings-tabs {
   width: 100%;
-  max-width: 22rem;
+  max-width: 20rem;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.25rem;
-  margin: 0.9rem 0 1.15rem;
+  margin: 0.95rem 0 1.1rem;
   border-radius: 16px;
 }
 
 .access-settings-tabs .client-type-tab {
   justify-content: center;
-  min-height: 2.65rem;
-  padding: 0.55rem 0.7rem;
+  min-height: 2.55rem;
+  padding: 0.5rem 0.65rem;
 }
 
 .access-settings-stack {
   display: grid;
-  gap: 1rem;
+  gap: 0.9rem;
 }
 
 .access-settings-banner,
 .access-settings-notice {
-  margin: 0 0 0.15rem;
+  margin: 0;
+}
+
+.access-control-card,
+.access-form-card {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.access-control-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem 1rem;
+  flex-wrap: wrap;
+}
+
+.access-control-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.02rem, 0.96rem + 0.25vw, 1.15rem);
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.25;
+}
+
+.access-control-head p {
+  margin: 0.3rem 0 0;
+  max-width: 38rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.access-toggle-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.9rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--sea) 5%, var(--surface-solid, var(--surface)));
+}
+
+.settings-policy-panel.is-policy-on .access-toggle-bar {
+  border-color: color-mix(in srgb, var(--sea) 28%, var(--border));
+  background: color-mix(in srgb, var(--sea) 10%, var(--surface-solid, var(--surface)));
+}
+
+.access-inline-save {
+  margin-left: auto;
+}
+
+.access-metric-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.55rem;
+}
+
+.access-metric {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-3) 65%, transparent);
+}
+
+.access-metric span {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.access-metric strong {
+  font-size: 0.95rem;
+  line-height: 1.25;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.access-metric--wide {
+  grid-column: 1 / -1;
+}
+
+.access-field-group {
+  margin-top: 0.15rem;
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--sea) 22%, var(--border));
+  background: color-mix(in srgb, var(--sea) 4%, transparent);
+}
+
+.access-field-group-label {
+  margin: 0 0 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.access-field-group-label span {
+  font-weight: 550;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--muted);
+}
+
+.access-action-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.15rem;
+}
+
+.access-action-copy {
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+.access-action-copy h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  letter-spacing: var(--tracking-tight);
+}
+
+.access-action-copy p {
+  margin: 0.28rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.4;
 }
 
 .access-settings-stats {
@@ -16138,7 +16307,7 @@ a.packages-stat:focus-visible {
 }
 
 .access-toggle-row {
-  margin-bottom: 1rem;
+  margin-bottom: 0;
 }
 
 .access-toggle-row--choice {
@@ -16153,11 +16322,12 @@ a.packages-stat:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.75rem 1rem;
+  gap: 0.65rem 0.85rem;
 }
 
 .access-push-form .btn {
   flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .access-push-form .settings-policy-hint {
@@ -16220,13 +16390,13 @@ a.packages-stat:focus-visible {
 }
 
 .access-settings-shell .mikrotik-wifi-switch-text {
-  min-width: 6.5rem;
+  min-width: 2.5rem;
   font-size: 0.88rem;
 }
 
 .settings-policy-panel {
   display: grid;
-  gap: 1rem;
+  gap: 0.95rem;
 }
 
 .settings-policy-head {
@@ -16288,6 +16458,42 @@ a.packages-stat:focus-visible {
 
 .access-settings-shell .settings-policy-banner {
   margin-bottom: 0;
+}
+
+.access-apply-all {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--sea) 28%, var(--border));
+  background: color-mix(in srgb, var(--sea) 4%, var(--surface-solid, var(--surface)));
+}
+
+.access-apply-all-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.access-apply-all-label input {
+  margin-top: 0.2rem;
+  flex: 0 0 auto;
+}
+
+.access-apply-all-label span {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.access-apply-all-label small {
+  color: var(--ink-soft);
+  font-size: 0.84rem;
+  line-height: 1.4;
 }
 
 .stk-live-panel {
@@ -16371,13 +16577,9 @@ a.packages-stat:focus-visible {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.hotspot-settings-form .settings-policy-stats {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .hotspot-settings-form {
   display: grid;
-  gap: 1rem;
+  gap: 0.9rem;
 }
 
 .hotspot-settings-form .account-card-span {
@@ -16388,7 +16590,7 @@ a.packages-stat:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin: 0.25rem 0 0.5rem;
+  margin: 0.15rem 0 0.35rem;
 }
 
 .hotspot-push-form {
@@ -16396,18 +16598,20 @@ a.packages-stat:focus-visible {
 }
 
 .access-settings-shell .hotspot-settings-form > .account-card,
-.access-settings-shell .access-settings-stack > .account-card {
+.access-settings-shell .access-settings-stack > .account-card,
+.access-settings-shell .access-settings-hero {
   animation: uiRise 0.45s var(--ease-out) both;
 }
 
+.access-settings-shell .access-settings-hero { animation-delay: 0.02s; }
 .access-settings-shell .hotspot-settings-form > .account-card:nth-child(1),
-.access-settings-shell .access-settings-stack > .account-card:nth-child(1) { animation-delay: 0.04s; }
+.access-settings-shell .access-settings-stack > .account-card:nth-child(1) { animation-delay: 0.05s; }
 .access-settings-shell .hotspot-settings-form > .account-card:nth-child(2),
-.access-settings-shell .access-settings-stack > .account-card:nth-child(2) { animation-delay: 0.08s; }
+.access-settings-shell .access-settings-stack > .account-card:nth-child(2) { animation-delay: 0.09s; }
 .access-settings-shell .hotspot-settings-form > .account-card:nth-child(3),
-.access-settings-shell .access-settings-stack > .account-card:nth-child(3) { animation-delay: 0.12s; }
+.access-settings-shell .access-settings-stack > .account-card:nth-child(3) { animation-delay: 0.13s; }
 .access-settings-shell .hotspot-settings-form > .account-card:nth-child(4),
-.access-settings-shell .access-settings-stack > .account-card:nth-child(4) { animation-delay: 0.16s; }
+.access-settings-shell .access-settings-stack > .account-card:nth-child(4) { animation-delay: 0.17s; }
 
 @media (max-width: 720px) {
   .settings-policy-stats,
@@ -16420,9 +16624,18 @@ a.packages-stat:focus-visible {
     max-width: 100%;
   }
 
+  .access-settings-hero {
+    padding: 0.95rem 1rem;
+  }
+
+  .access-settings-hero .mikrotik-wifi-pill {
+    width: 100%;
+    justify-content: center;
+  }
+
   .access-settings-tabs {
     max-width: none;
-    margin: 0.65rem 0 0.95rem;
+    margin: 0.7rem 0 0.95rem;
   }
 
   .access-settings-tabs .client-type-tab {
@@ -16430,6 +16643,7 @@ a.packages-stat:focus-visible {
     min-width: 0;
   }
 
+  .access-toggle-bar,
   .access-toggle-row,
   .settings-policy-form {
     flex-direction: column;
@@ -16437,6 +16651,13 @@ a.packages-stat:focus-visible {
     gap: 0.65rem;
   }
 
+  .access-inline-save {
+    margin-left: 0;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .access-toggle-bar .mikrotik-wifi-switch,
   .access-toggle-row .mikrotik-wifi-switch,
   .settings-policy-form .mikrotik-wifi-switch {
     min-height: 2.75rem;
@@ -16446,6 +16667,11 @@ a.packages-stat:focus-visible {
   .access-toggle-row .settings-policy-hint,
   .settings-policy-form .settings-policy-hint {
     flex-basis: auto;
+  }
+
+  .access-action-card {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .access-push-form {
@@ -16468,13 +16694,35 @@ a.packages-stat:focus-visible {
     justify-content: center;
   }
 
-  .access-preview-btn {
+  .access-preview-btn,
+  .access-preview-actions {
     width: 100%;
+  }
+
+  .access-preview-actions {
+    justify-content: stretch;
+  }
+
+  .access-preview-actions .btn {
+    flex: 1 1 auto;
     justify-content: center;
   }
 
-  .access-voucher-grid {
+  .access-voucher-grid,
+  .access-link-grid {
     grid-template-columns: 1fr;
+  }
+
+  .access-metric-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .access-metric--wide {
+    grid-column: 1 / -1;
+  }
+
+  .access-control-head {
+    flex-direction: column;
   }
 }
 
@@ -16486,7 +16734,8 @@ a.packages-stat:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .access-settings-shell .hotspot-settings-form > .account-card,
-  .access-settings-shell .access-settings-stack > .account-card {
+  .access-settings-shell .access-settings-stack > .account-card,
+  .access-settings-shell .access-settings-hero {
     animation: none;
   }
 }
@@ -17787,14 +18036,18 @@ a.packages-stat:focus-visible {
   border-color: rgba(31, 138, 91, 0.28);
 }
 
-/* MikroTik router detail (overview) */
+/* MikroTik router detail (overview) — compact modern layout */
 .mk-detail-page {
-  width: min(100%, 72rem);
+  width: min(100%, 64rem);
+  display: grid;
+  gap: 0.85rem;
 }
 
 .mk-detail-hero {
   flex-wrap: wrap;
-  align-items: stretch;
+  align-items: center;
+  gap: 0.85rem 1.25rem;
+  padding: 1rem 1.15rem;
 }
 
 .mk-detail-hero.is-online {
@@ -17818,8 +18071,8 @@ a.packages-stat:focus-visible {
 .mk-detail-hero-main {
   display: flex;
   align-items: center;
-  gap: 1rem 1.15rem;
-  flex: 1 1 18rem;
+  gap: 0.85rem 1rem;
+  flex: 1 1 16rem;
   min-width: 0;
 }
 
@@ -17827,14 +18080,12 @@ a.packages-stat:focus-visible {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  width: 5.5rem;
-  height: 4.25rem;
-  padding: 0.35rem;
-  border-radius: 14px;
+  width: 4.25rem;
+  height: 3.25rem;
+  padding: 0.3rem;
+  border-radius: 12px;
   border: 1px solid var(--border);
-  background:
-    linear-gradient(180deg, var(--surface-2), var(--surface));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
 }
 
 .mk-detail-hero-thumb img {
@@ -17843,28 +18094,69 @@ a.packages-stat:focus-visible {
   object-fit: contain;
 }
 
+.mk-detail-hero-topline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.mk-detail-back {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.65rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  color: var(--ink-soft);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.mk-detail-back:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+}
+
+.mk-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.45rem;
+  margin-top: 0.35rem;
+  font-size: 0.88rem;
+}
+
+.mk-detail-meta .mk-host-chip {
+  margin-left: 0;
+}
+
 .mk-detail-location {
-  display: inline-block;
-  margin-left: 0.35rem;
   font-size: 0.85rem;
   color: var(--ink-soft);
 }
 
+.mk-detail-hero .mk-page-title {
+  font-size: clamp(1.25rem, 2.2vw, 1.55rem);
+}
+
 .mk-detail-hero-status {
-  display: grid;
-  gap: 0.55rem;
-  justify-items: end;
-  align-content: start;
+  display: none;
 }
 
 .mk-detail-link-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  min-height: 2rem;
-  padding: 0.25rem 0.8rem;
+  gap: 0.35rem;
+  min-height: 1.65rem;
+  padding: 0.15rem 0.65rem;
   border-radius: 999px;
-  font-size: 0.8rem;
+  font-size: 0.74rem;
   font-weight: 700;
   border: 1px solid var(--border);
   background: var(--surface-2);
@@ -17891,46 +18183,109 @@ a.packages-stat:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.45rem;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+.mk-detail-hero-actions .btn {
+  min-height: 2.15rem;
 }
 
 .mk-detail-quicknav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-  padding: 0.15rem 0;
+  flex-wrap: nowrap;
+  gap: 0.2rem;
+  padding: 0.25rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
 }
 
 .mk-detail-quicklink {
   display: inline-flex;
   align-items: center;
-  min-height: 2.15rem;
-  padding: 0.35rem 0.85rem;
-  border-radius: 999px;
-  font-size: 0.84rem;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 2.05rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 10px;
+  font-size: 0.82rem;
   font-weight: 600;
   color: var(--ink-soft);
   text-decoration: none;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  border: 0;
+  background: transparent;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .mk-detail-quicklink:hover {
   color: var(--ink);
-  border-color: var(--border-strong);
-  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  transform: none;
 }
 
 .mk-detail-quicklink.is-active {
   color: var(--chip-sea-fg);
-  background: var(--chip-sea-bg);
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(11, 31, 42, 0.08);
   border-color: transparent;
+}
+
+[data-theme="dark"] .mk-detail-quicklink.is-active {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.mk-setup-page {
+  width: min(100%, 52rem);
+  display: grid;
+  gap: 0.85rem;
+}
+
+.mk-setup-stack {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.mk-setup-card {
+  padding: 1.1rem 1.15rem 1.2rem;
+}
+
+.mk-setup-card-head {
+  margin-bottom: 0.85rem;
+}
+
+.mk-setup-card-sub {
+  margin: 0.25rem 0 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  line-height: 1.4;
+}
+
+.mk-setup-form {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.mk-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.15rem;
+}
+
+.mk-setup-card[data-focus] {
+  border-color: color-mix(in srgb, var(--sea) 35%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sea) 16%, transparent);
 }
 
 .mk-detail-surface.mikrotik-live {
   margin: 0;
   border-bottom: 0;
+  padding: 1rem 1.1rem 1.15rem;
 }
 
 .mk-detail-surface > .mikrotik-live-loading,
@@ -17946,99 +18301,142 @@ a.packages-stat:focus-visible {
 
 .mk-detail-surface > .mikrotik-live-loading {
   margin-top: 0;
-  margin-bottom: 0.85rem;
+  margin-bottom: 0.75rem;
 }
 
 .mk-detail-section-title {
-  margin: 0.15rem 0 0.35rem;
+  margin: 0;
   font-family: var(--font-display);
-  font-size: clamp(1.1rem, 2vw, 1.35rem);
+  font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--ink);
-  line-height: 1.2;
+  line-height: 1.25;
 }
 
 .mk-detail-stamp {
-  padding: 0.3rem 0.65rem;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: var(--ink-soft);
   background: var(--surface-2);
   border: 1px solid var(--border);
 }
 
-.mk-detail-facts {
+.mk-detail-live-head {
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.85rem;
+}
+
+.mk-detail-live-head .mikrotik-live-sub {
+  margin: 0.2rem 0 0;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.mk-detail-facts,
+.mk-detail-facts-sr,
+.mk-detail-metrics-sr {
+  display: none !important;
+}
+
+.mk-detail-metrics {
+  display: grid;
+  gap: 0.65rem;
+  padding-bottom: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mk-detail-metric {
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  min-height: 0;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.mk-detail-metric:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border-strong);
+}
+
+.mk-detail-metric .mikrotik-live-label {
+  margin-bottom: 0.25rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mk-detail-metric .mikrotik-live-value {
+  font-size: clamp(1.15rem, 2.4vw, 1.35rem);
+  line-height: 1.2;
+}
+
+.mk-detail-metric .mikrotik-live-hint:not([hidden]) {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.mk-detail-metric .mikrotik-meter {
+  margin-top: 0.45rem;
+}
+
+.mk-detail-uplink {
+  padding-top: 1rem !important;
+  margin-top: 0.95rem;
+  border-top: 1px solid var(--border);
+}
+
+.mk-detail-uplink-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.mk-detail-uplink-head .mikrotik-uplink-sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.mk-detail-uplink-list {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.55rem;
-  margin: 0.85rem 0 1rem;
-  padding: 0.75rem 1rem;
-  border-radius: 14px;
+  margin: 0;
+}
+
+.mk-detail-uplink-item {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 12px;
   border: 1px solid var(--border);
   background: var(--surface-2);
 }
 
-.mk-detail-facts .mikrotik-live-fact {
-  padding: 0.15rem 0;
+.mk-detail-uplink-item dt {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
 }
 
-.mk-detail-facts .mikrotik-live-fact strong {
-  white-space: normal;
-  overflow: visible;
-  text-overflow: unset;
+.mk-detail-uplink-item dd {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+  color: var(--ink);
   line-height: 1.3;
-}
-
-.mk-detail-metrics {
-  padding-bottom: 0.25rem;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-@media (max-width: 1100px) {
-  .mk-detail-metrics {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 960px) {
-  .mk-detail-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 560px) {
-  .mk-detail-metrics {
-    grid-template-columns: 1fr;
-  }
-}
-
-.mk-detail-metric {
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.mk-detail-metric:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 22px rgba(11, 31, 42, 0.08);
-}
-
-[data-theme="dark"] .mk-detail-metric:hover {
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
-}
-
-.mk-detail-uplink {
-  padding-top: 1.15rem !important;
-  margin-top: 0.85rem;
-  border-top: 1px solid var(--border);
-}
-
-.mk-detail-uplink .mikrotik-uplink-head {
-  margin-bottom: 0.85rem;
-}
-
-.mk-detail-live-head {
-  align-items: flex-start;
+  word-break: break-word;
 }
 
 .mk-detail-surface.mikrotik-live.is-online {
@@ -18049,56 +18447,43 @@ a.packages-stat:focus-visible {
   border-color: rgba(192, 57, 43, 0.18);
 }
 
-@media (max-width: 1100px) {
-  .mk-detail-facts {
+@media (max-width: 900px) {
+  .mk-detail-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mk-detail-uplink-list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 720px) {
+  .mk-detail-hero {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .mk-detail-hero-main {
     width: 100%;
   }
 
-  .mk-detail-hero-status {
-    width: 100%;
-    justify-items: stretch;
-  }
-
-  .mk-detail-link-pill,
-  .mk-detail-hero-status .mikrotik-account-pill {
-    justify-self: start;
-  }
-
   .mk-detail-hero-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
     width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .mk-detail-hero-actions .btn {
     width: 100%;
-  }
-
-  .mk-detail-hero-actions .btn:last-child {
-    grid-column: 1 / -1;
+    justify-content: center;
   }
 
   .mk-detail-quicknav {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding-bottom: 0.35rem;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    padding: 0.2rem;
   }
 
   .mk-detail-quicklink {
     flex: 0 0 auto;
-    white-space: nowrap;
-  }
-
-  .mk-detail-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .mk-detail-live-head {
@@ -18109,19 +18494,27 @@ a.packages-stat:focus-visible {
   .mk-detail-stamp {
     align-self: flex-start;
   }
+
+  .mk-detail-uplink-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 480px) {
   .mk-detail-hero-thumb {
-    width: 4.5rem;
-    height: 3.5rem;
-  }
-
-  .mk-detail-facts {
-    grid-template-columns: 1fr;
+    width: 3.5rem;
+    height: 2.75rem;
   }
 
   .mk-detail-hero-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .mk-detail-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mk-detail-uplink-list {
     grid-template-columns: 1fr;
   }
 }
@@ -20356,6 +20749,10 @@ a.packages-stat:focus-visible {
   gap: 0.85rem 1rem;
 }
 
+.account-form-block-grid .field-span-2 {
+  grid-column: 1 / -1;
+}
+
 .account-form-block--signin {
   border-color: color-mix(in srgb, var(--sea) 22%, var(--border));
   background:
@@ -20470,6 +20867,7 @@ a.packages-stat:focus-visible {
   line-height: 1;
 }
 
+.account-card-head h2,
 .account-card-head h3 {
   margin: 0;
   font-family: var(--font-display);
@@ -20919,23 +21317,111 @@ a.packages-stat:focus-visible {
   word-break: break-word;
 }
 
+.account-hero-lead {
+  margin: 0.35rem 0 0.65rem;
+  max-width: 36rem;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.account-hero--comms {
+  align-items: flex-start;
+}
+
+.account-hero-edit,
+.account-hero-cancel {
+  margin-top: 0.75rem;
+}
+
+.account-hero-aside .account-hero-edit {
+  display: inline-flex;
+  margin-top: 0.85rem;
+}
+
+.account-page-shell--comms {
+  max-width: min(980px, 100%);
+}
+
+.account-page-shell--edit .account-hero {
+  border-radius: 18px;
+}
+
+.account-summary-item.is-ready {
+  border-color: color-mix(in srgb, var(--success, #1f8a5b) 28%, var(--border));
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--success, #1f8a5b) 10%, var(--surface-solid)), var(--surface-solid));
+}
+
+.account-summary-item.is-warn {
+  border-color: color-mix(in srgb, var(--signal) 26%, var(--border));
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--signal) 8%, var(--surface-solid)), var(--surface-solid));
+}
+
+.comms-events-col h3 {
+  margin: 0 0 0.3rem;
+  font-family: var(--font-display);
+  font-size: 1.02rem;
+  letter-spacing: var(--tracking-tight);
+}
+
+.comms-event {
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.comms-event:hover {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface-solid) 88%, var(--sea) 6%);
+}
+
 .account-package-groups {
   display: grid;
-  gap: 1.5rem;
-  margin-top: 1rem;
+  gap: 1rem;
+  margin-top: 0;
 }
+
 .account-package-group-head {
-  margin-bottom: 0.75rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
 }
+
+.account-package-group-head h2,
 .account-package-group-head h3 {
-  margin: 0 0 0.2rem;
-  font-size: 1.05rem;
+  margin: 0 0 0.25rem;
+  font-family: var(--font-display);
+  font-size: clamp(1.05rem, 0.98rem + 0.3vw, 1.2rem);
+  letter-spacing: var(--tracking-tight);
 }
+
 .account-package-group-head p {
   margin: 0;
-  color: var(--muted, #6b7280);
-  font-size: 0.9rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+  line-height: 1.4;
 }
+
+.account-package-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.55rem;
+  height: 1.55rem;
+  margin-left: 0.35rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 750;
+  vertical-align: middle;
+  color: var(--chip-sea-fg);
+  background: var(--chip-sea-bg);
+}
+
 .account-packages-panel .panel-head-row {
   margin-bottom: 1rem;
   padding-bottom: 0.95rem;
@@ -20944,16 +21430,82 @@ a.packages-stat:focus-visible {
 
 .account-packages-panel .org-table-shell,
 .account-packages-panel .table-scroll,
-.account-packages-panel .packages-table-shell {
+.account-packages-panel .packages-table-shell,
+.account-package-group .org-table-shell,
+.account-package-group .table-scroll,
+.account-package-group .packages-table-shell {
   border-radius: 14px;
 }
 
-.account-packages-panel .packages-empty {
+.account-packages-panel .packages-empty,
+.account-package-group .packages-empty {
   --group-tone: var(--sea, #0e7c86);
 }
 
+.account-page-shell--payments {
+  max-width: min(1120px, 100%);
+}
+
+.account-hero--payments {
+  align-items: flex-start;
+}
+
+.account-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.account-package-group.tone-pppoe {
+  border-color: color-mix(in srgb, var(--sea) 22%, var(--border));
+  background:
+    radial-gradient(ellipse 70% 55% at 0% 0%, color-mix(in srgb, var(--sea) 8%, transparent), transparent 55%),
+    var(--surface-solid, var(--surface));
+}
+
+.account-package-group.tone-hotspot {
+  border-color: color-mix(in srgb, var(--signal) 18%, var(--border));
+  background:
+    radial-gradient(ellipse 70% 55% at 100% 0%, color-mix(in srgb, var(--signal) 7%, transparent), transparent 55%),
+    var(--surface-solid, var(--surface));
+}
+
+.account-package-group.tone-hotspot .account-package-count {
+  color: color-mix(in srgb, var(--signal) 78%, var(--ink));
+  background: color-mix(in srgb, var(--signal) 12%, var(--surface-solid));
+}
+
+.account-status-card.is-ready {
+  border-color: color-mix(in srgb, var(--success, #1f8a5b) 26%, var(--border));
+}
+
+.account-status-card.is-warn {
+  border-color: color-mix(in srgb, var(--signal) 24%, var(--border));
+}
+
+.account-payments-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.account-status-link {
+  margin: 0.95rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.account-status-link a {
+  font-weight: 650;
+  color: var(--sea-deep, var(--sea));
+}
+
+
 @media (max-width: 900px) {
-  .account-summary-grid {
+  .account-summary-grid,
+  .account-payments-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -20970,6 +21522,7 @@ a.packages-stat:focus-visible {
   .account-hero {
     align-items: flex-start;
     padding: 1.1rem;
+    flex-direction: column;
   }
 
   .account-hero-main {
@@ -20978,20 +21531,49 @@ a.packages-stat:focus-visible {
 
   .account-hero-avatar,
   .account-hero-avatar-fallback {
-    width: 72px;
-    height: 72px;
-    border-radius: 18px;
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
   }
 
   .account-hero-aside {
     width: 100%;
   }
 
+  .account-hero-cancel,
+  .account-hero--comms > .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .account-hero-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .account-hero-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
   .account-card-grid,
   .account-form-block-grid,
   .account-summary-grid,
-  .account-receive-options {
+  .account-payments-summary,
+  .account-receive-options,
+  .comms-events-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-form-block {
+    padding: 0.85rem 0.9rem;
+  }
+
+  .account-page-form .account-code-input-wrap .join-code-input {
+    font-size: 1.15rem;
+    letter-spacing: 0.28em;
+    min-height: 2.85rem;
   }
 
   .account-page-actions--sticky {
@@ -21011,7 +21593,7 @@ a.packages-stat:focus-visible {
   }
 
   .account-page-actions--sticky .btn {
-    width: 100%;
+    flex: 1 1 auto;
     justify-content: center;
   }
 
@@ -37458,49 +38040,31 @@ a.module-card:focus-visible {
 }
 
 /* ==========================================================================
-   MikroTik / network family ? appearance consistency (pass 2)
+   MikroTik / network family — appearance consistency (pass 2)
    ========================================================================== */
 
-.mikrotik-hero,
+.mikrotik-fleet {
+  border-radius: 18px;
+  border-color: color-mix(in srgb, var(--mikrotik-tone, var(--sea)) 18%, var(--border-strong, var(--border)));
+  box-shadow: var(--card-shadow);
+}
+
 .mk-page-hero {
   border-radius: 20px;
   border-color: var(--border-strong);
   box-shadow: var(--card-shadow);
 }
 
-[data-theme="dark"] .mikrotik-hero,
-[data-theme="dark"] .mk-page-hero {
+[data-theme="dark"] .mikrotik-fleet-head {
   background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 22%, transparent), transparent 42%),
-    radial-gradient(90% 120% at 100% 0%, color-mix(in srgb, var(--signal) 12%, transparent), transparent 38%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-solid) 92%, var(--sea) 8%), var(--surface-solid));
-}
-
-.mikrotik-stats {
-  gap: var(--ui-gap, 0.85rem);
-}
-
-.mikrotik-stat {
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background:
-    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--stat-tone, var(--sea)) 14%, transparent), transparent 55%),
-    var(--surface-solid, var(--surface));
-  box-shadow: var(--card-shadow);
-  transition: transform var(--dur-fast, 0.16s) ease, border-color var(--dur-fast, 0.16s) ease;
-}
-
-.mikrotik-stat:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--stat-tone, var(--sea)) 35%, var(--border));
-}
-
-.mikrotik-list-panel {
-  border-radius: 20px;
+    linear-gradient(180deg, color-mix(in srgb, var(--sea) 14%, transparent), transparent 72%);
 }
 
 .mikrotik-table-shell {
-  border-radius: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2, var(--surface)) 55%, transparent);
+  overflow: auto;
 }
 
 .mk-surface,
@@ -37511,28 +38075,20 @@ a.module-card:focus-visible {
 }
 
 @media (max-width: 720px) {
-  .mikrotik-stats {
-    grid-template-columns: 1fr;
+  .mikrotik-fleet-actions .btn {
+    min-height: 2.75rem;
   }
 
-  .mikrotik-hero {
-    flex-direction: column;
-  }
-
-  .mikrotik-hero-actions {
-    width: 100%;
-  }
-
-  .mikrotik-hero-actions .btn {
-    flex: 1 1 auto;
-    justify-content: center;
-    min-height: 2.85rem;
+  .mikrotik-table-shell {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .mikrotik-stat:hover {
-    transform: none;
+  .mikrotik-router-row {
+    animation: none !important;
   }
 }
 
@@ -37562,7 +38118,6 @@ a.module-card:focus-visible {
   border-color: color-mix(in srgb, var(--signal) 30%, transparent);
 }
 
-[data-theme="light"] .mikrotik-hero,
 [data-theme="light"] .mk-page-hero {
   background:
     radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sea) 16%, transparent), transparent 42%),
@@ -37574,6 +38129,29 @@ a.module-card:focus-visible {
   background:
     linear-gradient(135deg, var(--signal-soft), transparent 46%),
     var(--surface);
+}
+
+.mk-detail-hero.is-online {
+  background:
+    linear-gradient(135deg, var(--success-soft), transparent 48%),
+    var(--surface);
+}
+
+.mk-detail-hero.is-offline {
+  background:
+    linear-gradient(135deg, var(--danger-soft), transparent 48%),
+    var(--surface);
+}
+
+.mk-detail-hero-topline .mikrotik-account-pill {
+  min-height: 1.65rem;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.7rem;
+}
+
+.mk-detail-hero-topline .mikrotik-auto-restore-badge {
+  min-height: 1.65rem;
+  font-size: 0.7rem;
 }
 
 .mk-detail-surface.mikrotik-live.is-online {
@@ -37719,8 +38297,9 @@ a.module-card:focus-visible {
 }
 
 .mk-detail-facts,
+.mk-detail-facts-sr,
 .mikrotik-router-profile-facts {
-  background: color-mix(in srgb, var(--surface-2) 90%, var(--sea) 3%);
+  display: none !important;
 }
 
 .mk-detail-stamp.is-loading {

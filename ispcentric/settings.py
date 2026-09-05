@@ -450,7 +450,7 @@ CSRF_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_AGE = int(os.getenv("DJANGO_SESSION_COOKIE_AGE") or str(60 * 60 * 12))
 SESSION_SAVE_EVERY_REQUEST = env_flag(
     "DJANGO_SESSION_SAVE_EVERY_REQUEST",
-    "false" if DEBUG else "true",
+    "false",
 )
 
 # Email (password reset). Console backend in DEBUG when unset.

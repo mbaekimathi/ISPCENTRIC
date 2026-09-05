@@ -33,6 +33,11 @@ urlpatterns = [
     path("app/mikrotik/<int:router_id>/", views.mikrotik_detail, name="mikrotik_detail"),
     path("app/mikrotik/<int:router_id>/ports/", views.mikrotik_ports, name="mikrotik_ports"),
     path(
+        "app/mikrotik/<int:router_id>/setup/",
+        views.mikrotik_setup,
+        name="mikrotik_setup",
+    ),
+    path(
         "app/mikrotik/<int:router_id>/assigned-ports/",
         views.mikrotik_assigned_ports,
         name="mikrotik_assigned_ports",

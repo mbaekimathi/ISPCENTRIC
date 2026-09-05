@@ -235,6 +235,10 @@
       gap: 0.5rem;
     }
 
+    .quick-links.is-single {
+      grid-template-columns: 1fr;
+    }
+
     .quick-links a {
       display: block;
       padding: 0.75rem 0.7rem;
@@ -310,10 +314,13 @@
       <div class="body" data-welcome-body{% if paid and activation_url %} hidden{% endif %}>
         <a class="ok" id="continue-browsing" href="{{ button_url }}">{{ button_label }}</a>
 
-        <div class="quick-links" aria-label="Open a site">
-          <a href="https://www.google.com/" rel="noopener">Google</a>
-          <a href="https://www.youtube.com/" rel="noopener">YouTube</a>
+        {% if quick_links %}
+        <div class="quick-links{% if quick_links|length == 1 %} is-single{% endif %}" aria-label="Website pages">
+          {% for link in quick_links %}
+            <a href="{{ link.url }}" rel="noopener">{{ link.label }}</a>
+          {% endfor %}
         </div>
+        {% endif %}
 
         <p class="hint">
           Tap <strong>{{ button_label }}</strong> to leave this page and start surfing.

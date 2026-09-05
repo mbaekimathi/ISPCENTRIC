@@ -756,6 +756,39 @@ class WireGuardKeyTests(SimpleTestCase):
         with patch("core.boot.sys.argv", ["manage.py", "test", "core.tests"]):
             self.assertFalse(should_start_runtime_tasks())
 
+    def test_nas_boot_sync_off_without_pending_stamp(self):
+        from core.boot import _nas_config_sync_requested
+
+        with (
+            patch.dict("os.environ", {"NAS_CONFIG_SYNC_ON_BOOT": ""}, clear=False),
+            patch("core.boot._nas_config_pending_path", return_value="/tmp/no-nas-stamp"),
+            patch("core.boot.os.path.exists", return_value=False),
+        ):
+            self.assertFalse(_nas_config_sync_requested())
+
+    def test_nas_boot_sync_honors_explicit_disable(self):
+        from core.boot import _nas_config_sync_requested
+
+        with patch.dict("os.environ", {"NAS_CONFIG_SYNC_ON_BOOT": "0"}, clear=False):
+            self.assertFalse(_nas_config_sync_requested())
+
+    def test_refresh_onboarded_defaults_to_no_secret_rewrite(self):
+        from inspect import signature
+
+        from core.mikrotik_connect import refresh_onboarded_router_config
+
+        params = signature(refresh_onboarded_router_config).parameters
+        self.assertFalse(params["sync_pppoe_secrets"].default)
+        self.assertFalse(params["reauthenticate"].default)
+
+    def test_user_nas_refresh_still_syncs_secrets_by_default(self):
+        from inspect import signature
+
+        from core.mikrotik_jobs import run_nas_refresh_with_retry
+
+        params = signature(run_nas_refresh_with_retry).parameters
+        self.assertTrue(params["sync_pppoe_secrets"].default)
+
     def test_subscription_sweep_startup_is_delayed(self):
         from core.boot import _subscription_sweep_startup_delay_sec
 
@@ -1262,6 +1295,40 @@ class ReachabilityFingerprintTests(SimpleTestCase):
         self.assertEqual(result["via"], "api")
         self.assertLess(elapsed, 0.25)
 
+    def test_reachable_falls_back_when_futures_interpreter_shutdown(self):
+        """Autoreload can set futures._shutdown while the old worker still serves."""
+        from concurrent.futures import ThreadPoolExecutor as RealExecutor
+        from unittest.mock import MagicMock
+
+        from core.mikrotik_connect import check_mikrotik_reachable
+
+        class ShutdownExecutor(RealExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                raise RuntimeError(
+                    "cannot schedule new futures after interpreter shutdown"
+                )
+
+        def only_api(address, timeout=None):
+            if address[1] == 8728:
+                return MagicMock()
+            raise ConnectionRefusedError("refused")
+
+        with (
+            patch(
+                "concurrent.futures.ThreadPoolExecutor",
+                ShutdownExecutor,
+            ),
+            patch(
+                "core.mikrotik_connect.socket.create_connection",
+                side_effect=only_api,
+            ),
+            patch("core.mikrotik_connect._icmp_ping", return_value=False),
+        ):
+            result = check_mikrotik_reachable("192.168.88.1", timeout=0.1)
+
+        self.assertTrue(result["online"])
+        self.assertEqual(result["via"], "api")
+
     def test_hotspot_redirect_page_identifies_the_router(self):
         from core.mikrotik_connect import _looks_like_routeros_http
 
@@ -1749,13 +1816,17 @@ class ClickToEarnPortalTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
-    def test_earn_external_redirects_to_custom_url(self):
+    def test_earn_always_shows_referral_page_even_with_external_url(self):
         self.org.adverts_enabled = True
         self.org.adverts_redirect_url = "https://ads.example.com/earn"
-        self.org.save(update_fields=["adverts_enabled", "adverts_redirect_url"])
+        self.org.phone = "0712345678"
+        self.org.save(
+            update_fields=["adverts_enabled", "adverts_redirect_url", "phone"]
+        )
         response = self.client.get(f"/hotspot/{self.org.join_code}/earn/")
-        self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "https://ads.example.com/earn")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Refer a Wi‑Fi client")
+        self.assertContains(response, "0712345678")
 
     def test_earn_builtin_shows_referral_page(self):
         self.org.adverts_enabled = True
@@ -1773,16 +1844,18 @@ class ClickToEarnPortalTests(TestCase):
         self.assertNotContains(response, "Live adverts")
         self.assertNotContains(response, "Post an advert")
 
-    def test_portal_bits_prefer_external_url(self):
+    def test_portal_bits_always_use_referral_page(self):
         from core.views import _click_to_earn_portal_bits
 
         self.org.adverts_enabled = True
         self.org.adverts_redirect_url = "https://partner.example/ads"
         bits = _click_to_earn_portal_bits(self.org, portal="hotspot")
         self.assertTrue(bits["adverts_enabled"])
-        self.assertEqual(bits["click_to_earn_url"], "https://partner.example/ads")
-        self.assertTrue(bits["click_to_earn_is_external"])
-        self.assertEqual(bits["click_to_earn_mode"], "external")
+        self.assertIn("/earn/", bits["click_to_earn_url"])
+        self.assertIn("from=hotspot", bits["click_to_earn_url"])
+        self.assertFalse(bits["click_to_earn_is_external"])
+        self.assertEqual(bits["click_to_earn_mode"], "builtin")
+        self.assertEqual(bits["click_to_earn_label"], "Refer & earn")
 
     def test_portal_bits_builtin_includes_from_query(self):
         from core.views import _click_to_earn_portal_bits
@@ -1793,6 +1866,7 @@ class ClickToEarnPortalTests(TestCase):
         self.assertIn("/earn/", bits["click_to_earn_url"])
         self.assertIn("from=pppoe", bits["click_to_earn_url"])
         self.assertEqual(bits["click_to_earn_mode"], "builtin")
+        self.assertEqual(bits["click_to_earn_label"], "Refer & earn")
 
 
 class CaptiveProbeMiddlewareTests(TestCase):
@@ -3896,6 +3970,178 @@ class CompulsoryHotspotFallbackTests(SimpleTestCase):
         hotspot_push.assert_called_once()
         self.assertTrue(org.hotspot_enabled)
 
+    def test_pppoe_enforcement_off_skips_hotspot_and_can_skip_secrets(self):
+        from core.mikrotik_connect import apply_pppoe_enforcement_on_router
+
+        org = type(
+            "Org",
+            (),
+            {
+                "join_code": "505050",
+                "hotspot_enabled": True,
+                "hotspot_redirect_url": "",
+                "hotspot_use_welcome_page": True,
+                "save": lambda self, **kwargs: None,
+            },
+        )()
+        router = type(
+            "Router",
+            (),
+            {
+                "pk": 8,
+                "name": "NAS-2",
+                "host": "192.168.88.2",
+                "username": "admin",
+                "password": "x",
+                "lan_bridge": "bridge",
+                "wan_interface": "ether1",
+                "vpn_address": "",
+                "organization": org,
+                "save": lambda self, **kwargs: None,
+            },
+        )()
+
+        with (
+            patch(
+                "core.mikrotik_connect._router_api_host_candidates",
+                return_value=["192.168.88.2"],
+            ),
+            patch(
+                "core.mikrotik_connect.check_mikrotik_reachable",
+                return_value={"online": True, "via": "api"},
+            ),
+            patch("core.mikrotik_connect._api_session") as api_session,
+            patch(
+                "core.mikrotik_connect._ensure_pppoe_stack",
+                return_value=("ispcentric-pppoe", ["LAN forward allow"]),
+            ) as ensure_stack,
+            patch(
+                "core.mikrotik_connect._sync_organization_pppoe_secrets_on_socket",
+                return_value=3,
+            ) as sync_secrets,
+            patch(
+                "core.mikrotik_connect.apply_hotspot_on_router",
+                return_value={"ok": True},
+            ) as hotspot_push,
+        ):
+            api_session.return_value.__enter__.return_value = object()
+            api_session.return_value.__exit__.return_value = False
+            result = apply_pppoe_enforcement_on_router(
+                router, compulsory=False, sync_secrets=False
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["compulsory"])
+        self.assertFalse(result["hotspot_fallback"])
+        self.assertEqual(result["secrets_synced"], 0)
+        ensure_stack.assert_called_once()
+        self.assertFalse(ensure_stack.call_args.kwargs.get("compulsory"))
+        sync_secrets.assert_not_called()
+        hotspot_push.assert_not_called()
+        self.assertIn("Hotspot", result["message"])
+
+
+class PppoeSettingsSafePushTests(TestCase):
+    """Settings page pushes firewall only — never kicks clients on save/deploy."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        from accounts.models import Organization
+        from core.models import MikroTikRouter
+
+        self.owner = User.objects.create_user("pppoe-set-owner", password="x")
+        self.org = Organization.objects.create(
+            name="PPPoE Settings ISP",
+            owner=self.owner,
+            join_code="667788",
+            pppoe_compulsory=True,
+            hotspot_enabled=True,
+        )
+        self.router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Settings NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.60",
+            username="admin",
+            password="secret",
+        )
+        self.router_b = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Other NAS",
+            model=MikroTikRouter.ModelChoice.HEX,
+            host="192.168.88.61",
+            username="admin",
+            password="secret",
+        )
+        self.client.force_login(self.owner)
+
+    def test_save_defaults_to_this_router_policy_only(self):
+        from unittest.mock import patch
+
+        scheduled = []
+
+        def _capture(fn, **kwargs):
+            scheduled.append(fn)
+            return None
+
+        with (
+            patch("core.views.schedule_mikrotik_job", side_effect=_capture),
+            patch(
+                "core.views.apply_pppoe_enforcement_on_router",
+                return_value={"ok": True, "compulsory": False},
+            ) as single,
+            patch("core.views.apply_pppoe_enforcement_for_organization") as bulk,
+        ):
+            response = self.client.post(
+                f"/app/mikrotik/{self.router.pk}/pppoe-settings/",
+                {
+                    "adverts_enabled": "on",
+                    # pppoe_compulsory omitted => False (open LAN)
+                },
+            )
+            self.assertEqual(response.status_code, 302)
+            self.org.refresh_from_db()
+            self.assertFalse(self.org.pppoe_compulsory)
+            self.assertEqual(len(scheduled), 1)
+            scheduled[0]()
+            single.assert_called_once()
+            self.assertFalse(single.call_args.kwargs.get("sync_secrets", True))
+            self.assertFalse(single.call_args.kwargs.get("compulsory"))
+            bulk.assert_not_called()
+
+    def test_apply_to_all_uses_org_push_without_secret_rewrite(self):
+        from unittest.mock import patch
+
+        scheduled = []
+
+        def _capture(fn, **kwargs):
+            scheduled.append(fn)
+            return None
+
+        with (
+            patch("core.views.schedule_mikrotik_job", side_effect=_capture),
+            patch(
+                "core.views.apply_pppoe_enforcement_for_organization",
+                return_value={"ok": True, "applied": 2},
+            ) as bulk,
+            patch("core.views.apply_pppoe_enforcement_on_router") as single,
+        ):
+            response = self.client.post(
+                f"/app/mikrotik/{self.router.pk}/pppoe-settings/",
+                {
+                    "pppoe_compulsory": "on",
+                    "apply_to_all_routers": "on",
+                },
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(len(scheduled), 1)
+            scheduled[0]()
+            bulk.assert_called_once()
+            self.assertFalse(bulk.call_args.kwargs.get("sync_secrets", True))
+            self.assertTrue(bulk.call_args.kwargs.get("compulsory"))
+            single.assert_not_called()
+
 
 @override_settings(
     WIREGUARD_ENDPOINT="isp.richcom.co.ke:51820",
@@ -4848,7 +5094,7 @@ class ClientsSurfingStatusTests(TestCase):
         self.assertNotContains(response, 'id="panel-pppoe"')
         self.assertNotContains(response, "Home / PPPoE")
         self.assertContains(response, 'value="0700000099"')
-        self.assertContains(response, "Choose a package")
+        self.assertContains(response, "Choose your access")
         hotspot_customer.refresh_from_db()
         self.assertEqual(hotspot_customer.service_type, "hotspot")
 

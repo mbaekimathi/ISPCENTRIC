@@ -120,7 +120,7 @@ echo "==> Checked out ${AFTER} on ${BRANCH}"
 if [[ "$SKIP_DEPLOY" == true ]]; then
   echo "==> Skipping deploy (--skip-deploy)"
 else
-  echo "==> Running vps_deploy.sh (migrate all apps, static, WireGuard, NAS sync)"
+  echo "==> Running vps_deploy.sh (migrate, static, WireGuard; NAS push opt-in)"
   run_as_app bash "$ROOT/scripts/vps_deploy.sh"
 fi
 

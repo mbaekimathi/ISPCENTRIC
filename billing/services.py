@@ -292,15 +292,35 @@ def customers_needing_renewal_attention(organization):
     """
     if not organization:
         return []
+    from datetime import timedelta
+
+    from django.db.models import Q
+    from django.db.models.expressions import RawSQL
+
     now = timezone.localtime()
+    # Narrow the scan before Python progress checks:
+    # - package_end already past (with +1 day buffer for calendar midnight cut-off)
+    # - or MySQL says ≥ 75% of the package window has elapsed
+    past_three_quarters = RawSQL(
+        "(CASE WHEN package_start IS NULL OR package_end IS NULL OR "
+        "TIMESTAMPDIFF(SECOND, package_start, package_end) <= 0 THEN 0 "
+        "WHEN TIMESTAMPDIFF(SECOND, package_start, %s) * 4 >= "
+        "TIMESTAMPDIFF(SECOND, package_start, package_end) * 3 THEN 1 "
+        "ELSE 0 END)",
+        (now,),
+    )
     qs = (
         Customer.objects.filter(organization=organization)
         .filter(package_end__isnull=False)
+        .annotate(_past_three_quarters=past_three_quarters)
+        .filter(
+            Q(package_end__lt=now + timedelta(days=1)) | Q(_past_three_quarters=1)
+        )
         .select_related("plan")
         .order_by("package_end", "full_name")
     )
     rows = []
-    for customer in qs:
+    for customer in qs.iterator(chunk_size=200):
         expired = customer_subscription_expired(customer)
         progress = subscription_period_progress(customer, now=now)
         if expired:
@@ -1313,7 +1333,9 @@ def resolve_lead_allocation_technician_options(
     }
 
 
-def resolve_lead_allocation_fee(*, organization=None, customer=None) -> dict:
+def resolve_lead_allocation_fee(
+    *, organization=None, customer=None, commission=None
+) -> dict:
     """
     Price a lead-allocation STK from IT Support → Sales commission settings.
 
@@ -1322,7 +1344,8 @@ def resolve_lead_allocation_fee(*, organization=None, customer=None) -> dict:
     """
     from accounts.models import Employee, RoleCommission
 
-    commission = RoleCommission.for_role(Employee.Role.SALES)
+    if commission is None:
+        commission = RoleCommission.for_role(Employee.Role.SALES)
     if not commission.enabled:
         return {
             "ok": False,

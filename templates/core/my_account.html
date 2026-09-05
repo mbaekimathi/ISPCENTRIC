@@ -1,19 +1,9 @@
 {% extends "core/client_base.html" %}
 
-{% block title %}Company profile — ISPCENTRIC{% endblock %}
+{% block title %}{% if account_editing %}Edit profile{% else %}Company profile{% endif %} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
 <div class="account-page-shell{% if account_editing %} account-page-shell--edit{% endif %}">
-  <header class="account-page-intro">
-    <p class="account-page-kicker">My account</p>
-    {% if account_editing %}
-      <h1 class="account-page-title">Edit profile</h1>
-      <p class="page-sub client-page-lead">Update sign-in credentials and company details, then save your changes.</p>
-    {% else %}
-      <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-    {% endif %}
-  </header>
-
   {% if not organization %}
     <section class="panel staff-panel account-card">
       <p class="empty">No organization is linked to this account yet.</p>
@@ -21,7 +11,7 @@
   {% else %}
     <div class="account-page" id="account-page"{% if account_editing %} data-editing="1"{% endif %}>
 
-      <section class="panel account-card account-hero{% if account_editing %} account-hero--compact{% endif %}">
+      <header class="account-hero{% if account_editing %} account-hero--compact{% endif %}">
         <div class="account-hero-main">
           {% if organization.profile_photo %}
             <img class="account-hero-avatar" src="{{ organization.profile_photo.url }}" alt="" width="84" height="84" loading="lazy" decoding="async">
@@ -30,14 +20,21 @@
           {% endif %}
           <div class="account-hero-copy">
             <div class="account-hero-title-row">
-              <p class="account-page-kicker">Company</p>
+              <p class="account-page-kicker">My account</p>
               {% if account_editing %}
                 <span class="account-edit-badge">Editing</span>
               {% endif %}
             </div>
-            <h2>{{ organization.name }}</h2>
+            <h1 class="account-page-title">{% if account_editing %}Edit profile{% else %}{{ organization.name }}{% endif %}</h1>
+            {% if account_editing %}
+              <p class="account-hero-lead">Update sign-in credentials and company details, then save.</p>
+            {% else %}
+              <p class="account-hero-lead">{{ page_subtitle }}</p>
+            {% endif %}
             <div class="account-hero-meta">
-              <span class="account-chip account-chip--sea">{{ organization.get_status_display }}</span>
+              {% if not account_editing %}
+                <span class="account-chip account-chip--sea">{{ organization.get_status_display }}</span>
+              {% endif %}
               {% if organization.phone %}
                 <span class="account-chip">{{ organization.phone }}</span>
               {% endif %}
@@ -46,12 +43,17 @@
           </div>
         </div>
         {% if not account_editing %}
-        <aside class="account-hero-aside">
-          <p class="account-hero-aside-label">Owner</p>
-          <strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong>
-        </aside>
+          <aside class="account-hero-aside">
+            <p class="account-hero-aside-label">Owner</p>
+            <strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong>
+            {% if can_edit or can_edit_profile %}
+              <a class="btn btn-primary btn-sm account-hero-edit" href="{% url 'core:my_account' %}?edit=1">Edit profile</a>
+            {% endif %}
+          </aside>
+        {% else %}
+          <a class="btn btn-ghost btn-sm account-hero-cancel" href="{% url 'core:my_account' %}">Cancel</a>
         {% endif %}
-      </section>
+      </header>
 
       {% if account_editing and form or account_editing and account_profile_form %}
         <form method="post" enctype="multipart/form-data" class="account-page-form" id="org-account-form" novalidate>
@@ -74,10 +76,10 @@
                   </span>
                   <div>
                     {% if is_viewing_as_client %}
-                      <h3>Client login credentials</h3>
+                      <h2>Login credentials</h2>
                       <p>6-digit login code and password the ISP client owner uses to sign in.</p>
                     {% else %}
-                      <h3>Your login profile</h3>
+                      <h2>Your login</h2>
                       <p>6-digit login code and password used to sign in.</p>
                     {% endif %}
                   </div>
@@ -96,7 +98,7 @@
                     {% if account_profile_form.username.errors %}<div class="field-error">{{ account_profile_form.username.errors|striptags }}</div>{% endif %}
                   </div>
                   <div class="account-form-block-grid">
-                    <div class="field">
+                    <div class="field field-span-2">
                       <label for="{{ account_profile_form.email.id_for_label }}">{{ account_profile_form.email.label }}</label>
                       {{ account_profile_form.email }}
                       {% if account_profile_form.email.errors %}<div class="field-error">{{ account_profile_form.email.errors|striptags }}</div>{% endif %}
@@ -148,7 +150,7 @@
                     <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 2 2 7v2h20V7L12 2zm0 3.2L18.5 9H5.5L12 5.2zM4 11v8h6v-5h4v5h6v-8H4z"/></svg>
                   </span>
                   <div>
-                    <h3>Company details</h3>
+                    <h2>Company</h2>
                     <p>Name, contact details, and logo shown across your workspace.</p>
                   </div>
                 </div>
@@ -203,13 +205,10 @@
           <header class="account-card-head">
             <div class="account-card-head-main">
               <div>
-                <h3>Profile details</h3>
+                <h2>Profile details</h2>
                 <p>Your sign-in identity and company information.</p>
               </div>
             </div>
-            {% if can_edit or can_edit_profile %}
-              <a class="btn btn-primary" href="{% url 'core:my_account' %}?edit=1">Edit</a>
-            {% endif %}
           </header>
           <dl class="account-session-rows">
             <div class="account-session-row"><span>Login code</span><strong>{{ organization.login_code|default:"—" }}</strong></div>
@@ -221,11 +220,6 @@
             <div class="account-session-row"><span>Status</span><strong>{{ organization.get_status_display }}</strong></div>
             <div class="account-session-row"><span>Owner</span><strong>{{ organization.owner.get_full_name|default:organization.owner.username }}</strong></div>
           </dl>
-          {% if can_edit or can_edit_profile %}
-            <div class="account-page-actions" style="margin-top:1rem;">
-              <a class="btn btn-primary" href="{% url 'core:my_account' %}?edit=1">Edit profile</a>
-            </div>
-          {% endif %}
         </section>
       {% endif %}
     </div>

@@ -10,7 +10,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PYTHON_BIN="${1:-}"
+# Deploy-safe default: skip MikroTik fleet push (keeps dialed clients online).
+# Opt in: NAS_CONFIG_SYNC_ON_DEPLOY=1  or  --sync-nas
+SYNC_NAS="${NAS_CONFIG_SYNC_ON_DEPLOY:-0}"
+PYTHON_BIN=""
+for arg in "$@"; do
+  case "$arg" in
+    --sync-nas) SYNC_NAS=1 ;;
+    --no-sync-nas) SYNC_NAS=0 ;;
+    -*)
+      echo "!! Unknown argument: $arg"
+      exit 1
+      ;;
+    *)
+      if [[ -z "$PYTHON_BIN" ]]; then
+        PYTHON_BIN="$arg"
+      fi
+      ;;
+  esac
+done
 
 if [[ -z "$PYTHON_BIN" ]]; then
   if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
@@ -39,19 +57,25 @@ find "$ROOT/scripts" -maxdepth 1 -name '*.sh' -type f -print0 \
   | xargs -0 -r sed -i 's/\r$//'
 chmod +x "$ROOT/scripts"/*.sh 2>/dev/null || true
 
-echo "==> Pushing NAS config to active MikroTiks"
 mkdir -p logs
-touch logs/.nas_config_sync_pending
-set +e
-"$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
-NAS_SYNC_RC=${PIPESTATUS[0]}
-set -e
-if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
-  rm -f logs/.nas_config_sync_pending
+if [[ "$SYNC_NAS" =~ ^(1|true|yes|on)$ ]]; then
+  echo "==> Pushing NAS config to active MikroTiks (opt-in)"
+  touch logs/.nas_config_sync_pending
+  set +e
+  "$PYTHON_BIN" manage.py sync_nas_config 2>&1 | tee logs/nas_config_sync.log
+  NAS_SYNC_RC=${PIPESTATUS[0]}
+  set -e
+  if [[ "$NAS_SYNC_RC" -eq 0 ]]; then
+    rm -f logs/.nas_config_sync_pending
+  else
+    echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
+    echo "   Pending stamp kept — Passenger restart will retry after WireGuard."
+    echo "   Or re-run: $PYTHON_BIN manage.py sync_nas_config"
+  fi
 else
-  echo "!! NAS config sync reported errors (see logs/nas_config_sync.log)."
-  echo "   Pending stamp kept — Passenger restart will retry after WireGuard."
-  echo "   Or re-run: $PYTHON_BIN manage.py sync_nas_config"
+  rm -f logs/.nas_config_sync_pending
+  echo "==> Skipping NAS fleet push (deploy-safe — live clients stay dialed)."
+  echo "   To push later: $PYTHON_BIN manage.py sync_nas_config"
 fi
 
 echo "==> Restarting Passenger"

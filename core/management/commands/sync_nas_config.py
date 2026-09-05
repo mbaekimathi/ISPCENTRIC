@@ -14,9 +14,10 @@ from core.subscription_sync import (
 class Command(BaseCommand):
     help = (
         "Re-push PPPoE stack / blocked profile, expired pay redirects, and "
-        "Hotspot captive portal pages to every active MikroTik. Run after "
-        "deploy so routers pick up code changes without a manual UI push. "
-        "Holds the subscription fleet lock so it never races the sweep."
+        "Hotspot captive portal pages to every active MikroTik. Opt-in after "
+        "deploy (vps_deploy.sh --sync-nas) so routine releases do not touch "
+        "live routers. Holds the subscription fleet lock so it never races "
+        "the sweep. Default skips /ppp/secret rewrites."
     )
 
     def add_arguments(self, parser):

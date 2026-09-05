@@ -1,0 +1,277 @@
+{% extends "core/client_base.html" %}
+
+{% block title %}{{ router.name }} — Setup — ISPCENTRIC{% endblock %}
+
+{% block client_content %}
+{% include "core/includes/mikrotik_job_poll.html" %}
+<div class="mk-page mk-setup-page">
+  <header class="mk-page-hero">
+    <div class="mk-page-hero-copy">
+      <p class="mk-page-kicker">Router settings</p>
+      <h1 class="mk-page-title">MikroTik setup</h1>
+      <p class="mk-page-lead">
+        Edit details, turn Wi‑Fi on or off, and update the Wi‑Fi name and password for
+        <strong>{{ router.name }}</strong>
+        <span class="mk-host-chip">{{ router.host }}</span>.
+      </p>
+    </div>
+    <div class="mk-page-hero-status">
+      <span class="mikrotik-wifi-pill{% if wifi_enabled %} is-on{% else %} is-off{% endif %}" data-mt-wifi-pill>
+        {% if wifi_checking %}Checking…{% elif wifi_enabled %}Wi‑Fi on{% else %}Wi‑Fi off{% endif %}
+      </span>
+      <p class="mk-page-hero-meta" data-mt-wifi-ssid-row {% if not wifi_enabled %}hidden{% endif %}>
+        SSID <strong data-mt-wifi-ssid>{{ wifi_ssid_display|default:"—" }}</strong>
+      </p>
+    </div>
+  </header>
+
+  {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+  {% if is_suspended %}
+    <div class="mk-banner is-warn" role="status">
+      Activate this MikroTik account before changing details or Wi‑Fi.
+    </div>
+  {% endif %}
+
+  <div class="mk-setup-stack">
+    <section class="mk-surface mk-setup-card" id="mk-setup-wifi-toggle"{% if focus_section == "wifi-toggle" %} data-focus{% endif %}>
+      <header class="mk-setup-card-head">
+        <div>
+          <h2 class="mk-detail-section-title">Wi‑Fi power</h2>
+          <p class="mk-setup-card-sub">Turn the radio on or off. Credentials stay saved while Wi‑Fi is off.</p>
+        </div>
+      </header>
+      <form method="post" class="mk-setup-form" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="toggle_wifi">
+        {% if wifi_form.non_field_errors %}
+          <div class="field-error mk-form-banner">{{ wifi_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <label class="mikrotik-confirm-check">
+          {{ wifi_form.confirm }}
+          <span data-mt-wifi-confirm>
+            {% if wifi_enabled %}
+              I confirm I want to deactivate Wi‑Fi on this MikroTik.
+            {% else %}
+              I confirm I want to activate Wi‑Fi on this MikroTik.
+            {% endif %}
+          </span>
+        </label>
+        {% if wifi_form.confirm.errors %}<div class="field-error">{{ wifi_form.confirm.errors|striptags }}</div>{% endif %}
+        <div class="mk-setup-actions">
+          <button
+            type="submit"
+            class="btn {% if wifi_enabled %}btn-danger{% else %}btn-primary{% endif %}"
+            data-mt-wifi-submit
+            {% if is_suspended %}disabled{% endif %}
+          >
+            {% if wifi_enabled %}Deactivate Wi‑Fi{% else %}Activate Wi‑Fi{% endif %}
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <section class="mk-surface mk-setup-card" id="mk-setup-wifi-credentials"{% if focus_section == "wifi-credentials" %} data-focus{% endif %}>
+      <header class="mk-setup-card-head">
+        <div>
+          <h2 class="mk-detail-section-title">Wi‑Fi name &amp; password</h2>
+          <p class="mk-setup-card-sub">Update the network name (SSID) and Wi‑Fi password on this router.</p>
+        </div>
+      </header>
+      <form method="post" class="mk-setup-form" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="change_credentials">
+        {% if credentials_form.non_field_errors %}
+          <div class="field-error mk-form-banner">{{ credentials_form.non_field_errors|striptags }}</div>
+        {% endif %}
+        <div class="pppoe-grid">
+          <div class="field field-span-2">
+            <label for="{{ credentials_form.wifi_ssid.id_for_label }}">{{ credentials_form.wifi_ssid.label }}</label>
+            {{ credentials_form.wifi_ssid }}
+            {% if credentials_form.wifi_ssid.errors %}<div class="field-error">{{ credentials_form.wifi_ssid.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ credentials_form.wifi_password.id_for_label }}">{{ credentials_form.wifi_password.label }}</label>
+            <div class="password-field">
+              {{ credentials_form.wifi_password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ credentials_form.wifi_password.id_for_label }}" aria-label="Show Wi‑Fi password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if credentials_form.wifi_password.errors %}<div class="field-error">{{ credentials_form.wifi_password.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+        <div class="mk-setup-actions">
+          <button type="submit" class="btn btn-primary" {% if is_suspended %}disabled{% endif %}>Save Wi‑Fi credentials</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="mk-surface mk-setup-card" id="mk-setup-details"{% if focus_section == "details" %} data-focus{% endif %}>
+      <header class="mk-setup-card-head">
+        <div>
+          <h2 class="mk-detail-section-title">MikroTik details</h2>
+          <p class="mk-setup-card-sub">Name, model, place, login, and default client-router credentials.</p>
+        </div>
+      </header>
+      <form method="post" class="mk-setup-form" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="edit_details">
+        {{ edit_form.place_id }}
+        {{ edit_form.location_lat }}
+        {{ edit_form.location_lng }}
+        {% if edit_form.non_field_errors %}
+          <div class="field-error mk-form-banner">{{ edit_form.non_field_errors|striptags }}</div>
+        {% endif %}
+
+        <div class="pppoe-grid">
+          <div class="field field-span-2">
+            <label for="{{ edit_form.name.id_for_label }}">{{ edit_form.name.label }}</label>
+            {{ edit_form.name }}
+            {% if edit_form.name.errors %}<div class="field-error">{{ edit_form.name.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.model.id_for_label }}">{{ edit_form.model.label }}</label>
+            <div class="pppoe-select">{{ edit_form.model }}</div>
+            {% if edit_form.model.errors %}<div class="field-error">{{ edit_form.model.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.location.id_for_label }}">{{ edit_form.location.label }}</label>
+            {{ edit_form.location }}
+            {% if edit_form.location.errors %}<div class="field-error">{{ edit_form.location.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field field-span-2">
+            <label for="{{ edit_form.host.id_for_label }}">{{ edit_form.host.label }}</label>
+            {{ edit_form.host }}
+            {% if edit_form.host.errors %}<div class="field-error">{{ edit_form.host.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.username.id_for_label }}">{{ edit_form.username.label }}</label>
+            {{ edit_form.username }}
+            {% if edit_form.username.errors %}<div class="field-error">{{ edit_form.username.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.password.id_for_label }}">{{ edit_form.password.label }}</label>
+            <div class="password-field">
+              {{ edit_form.password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ edit_form.password.id_for_label }}" aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            {% if edit_form.password.errors %}<div class="field-error">{{ edit_form.password.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.default_cpe_username.id_for_label }}">{{ edit_form.default_cpe_username.label }}</label>
+            {{ edit_form.default_cpe_username }}
+            {% if edit_form.default_cpe_username.errors %}<div class="field-error">{{ edit_form.default_cpe_username.errors|striptags }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ edit_form.default_cpe_password.id_for_label }}">{{ edit_form.default_cpe_password.label }}</label>
+            <div class="password-field">
+              {{ edit_form.default_cpe_password }}
+              <button type="button" class="password-toggle" data-toggle-password="{{ edit_form.default_cpe_password.id_for_label }}" aria-label="Show password">
+                <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z"/></svg>
+                <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden><path fill="currentColor" d="M3.7 2.3 2.3 3.7l3.1 3.1C3.4 8.4 2 12 2 12s3 7 10 7c1.8 0 3.3-.4 4.6-1l3.7 3.7 1.4-1.4L3.7 2.3zM12 17c-5.1 0-7.6-4.1-8.5-5.5.6-.9 1.8-2.4 3.5-3.5l1.7 1.7A5 5 0 0 0 12 17zm0-10c5.1 0 7.6 4.1 8.5 5.5-.4.6-1 1.4-1.9 2.2l-1.5-1.5A5 5 0 0 0 12 7z"/></svg>
+              </button>
+            </div>
+            <p class="field-hint">Pre-filled when registering PPPoE clients on this MikroTik.</p>
+            {% if edit_form.default_cpe_password.errors %}<div class="field-error">{{ edit_form.default_cpe_password.errors|striptags }}</div>{% endif %}
+          </div>
+        </div>
+        <div class="mk-setup-actions">
+          <button type="submit" class="btn btn-primary">Save details</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  document.querySelectorAll("[data-toggle-password]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = document.getElementById(btn.getAttribute("data-toggle-password"));
+      if (!input) return;
+      var show = input.type === "password";
+      input.type = show ? "text" : "password";
+      btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      var eye = btn.querySelector(".icon-eye");
+      var eyeOff = btn.querySelector(".icon-eye-off");
+      if (eye && eyeOff) {
+        eye.hidden = show;
+        eyeOff.hidden = !show;
+      }
+    });
+  });
+
+  var focus = document.querySelector("[data-focus]");
+  if (focus && focus.scrollIntoView) {
+    focus.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+})();
+</script>
+{% if wifi_live_url %}
+<script>
+(function () {
+  var url = "{{ wifi_live_url|escapejs }}";
+  var routerName = "{{ router.name|escapejs }}";
+  if (!url) return;
+
+  function setHidden(el, hidden) {
+    if (!el) return;
+    if (hidden) el.setAttribute("hidden", "");
+    else el.removeAttribute("hidden");
+  }
+
+  function apply(data) {
+    var on = !!(data && data.wifi_enabled);
+    var ssid = (data && data.wifi_ssid) || "";
+
+    var pill = document.querySelector("[data-mt-wifi-pill]");
+    if (pill) {
+      pill.classList.remove("is-on", "is-off");
+      pill.classList.add(on ? "is-on" : "is-off");
+      pill.textContent = on ? "Wi‑Fi on" : "Wi‑Fi off";
+    }
+
+    var ssidEl = document.querySelector("[data-mt-wifi-ssid]");
+    if (ssidEl) ssidEl.textContent = ssid || "—";
+    setHidden(document.querySelector("[data-mt-wifi-ssid-row]"), !on);
+
+    var label = on ? "Deactivate Wi‑Fi" : "Activate Wi‑Fi";
+    var confirm = document.querySelector("[data-mt-wifi-confirm]");
+    if (confirm) {
+      confirm.textContent = on
+        ? "I confirm I want to deactivate Wi‑Fi on this MikroTik."
+        : "I confirm I want to activate Wi‑Fi on this MikroTik.";
+    }
+    var submit = document.querySelector("[data-mt-wifi-submit]");
+    if (submit) {
+      submit.textContent = label;
+      submit.classList.toggle("btn-danger", on);
+      submit.classList.toggle("btn-primary", !on);
+    }
+  }
+
+  fetch(url + "?refresh=1", {
+    headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    credentials: "same-origin"
+  })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      if (data && data.ok) apply(data);
+      else {
+        var pill = document.querySelector("[data-mt-wifi-pill]");
+        if (pill && pill.textContent.indexOf("Checking") >= 0) pill.textContent = "Wi‑Fi off";
+      }
+    })
+    .catch(function () {
+      var pill = document.querySelector("[data-mt-wifi-pill]");
+      if (pill && pill.textContent.indexOf("Checking") >= 0) pill.textContent = "Wi‑Fi off";
+    });
+})();
+</script>
+{% endif %}
+{% endblock %}

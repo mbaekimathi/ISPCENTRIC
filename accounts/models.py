@@ -115,6 +115,34 @@ class Organization(models.Model):
         default="",
         help_text="Optional link for the welcome page button (e.g. your website).",
     )
+    hotspot_welcome_link1_label = models.CharField(
+        "Quick link 1 label",
+        max_length=40,
+        blank=True,
+        default="",
+        help_text="Label for the first website shortcut on the success page.",
+    )
+    hotspot_welcome_link1_url = models.URLField(
+        "Quick link 1 URL",
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="First website page shown under the success-page button.",
+    )
+    hotspot_welcome_link2_label = models.CharField(
+        "Quick link 2 label",
+        max_length=40,
+        blank=True,
+        default="",
+        help_text="Label for the second website shortcut on the success page.",
+    )
+    hotspot_welcome_link2_url = models.URLField(
+        "Quick link 2 URL",
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Second website page shown under the success-page button.",
+    )
     hotspot_voucher_validity_hours = models.PositiveIntegerField(
         "Default voucher validity (hours)",
         default=24,
@@ -1243,13 +1271,23 @@ class ClientSettings(models.Model):
             # Keep amount stored for when the toggle is turned back on.
             pass
         super().save(*args, **kwargs)
+        from django.core.cache import cache
+
+        cache.delete("client_settings:solo:v1")
 
     def delete(self, *args, **kwargs):
         pass
 
     @classmethod
     def get_solo(cls):
+        from django.core.cache import cache
+
+        cache_key = "client_settings:solo:v1"
+        obj = cache.get(cache_key)
+        if obj is not None:
+            return obj
         obj, _ = cls.objects.get_or_create(pk=1)
+        cache.set(cache_key, obj, 120)
         return obj
 
     @property

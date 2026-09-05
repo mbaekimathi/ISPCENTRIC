@@ -74,144 +74,42 @@
     </div>
   </section>
 
-  <div class="workspace-dash-grid">
-    <section class="workspace-dash-panel">
-      <div class="workspace-dash-panel-head">
-        <div>
-          <p class="workspace-dash-panel-kicker">Wi‑Fi</p>
-          <h2>Wi‑Fi / network</h2>
-          <p class="panel-sub">Clients on an active subscription who are not surfing yet — package OK, router reachable, no live internet session.</p>
-        </div>
-        <div class="workspace-dash-perf-summary">
-          <span class="workspace-dash-chip"><strong data-stat="not-surfing">—</strong> not surfing</span>
-          <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}">Clients</a>
-        </div>
+  <section class="workspace-dash-panel workspace-dash-panel-chart">
+    <div class="workspace-dash-panel-head">
+      <div>
+        <p class="workspace-dash-panel-kicker">Downtime</p>
+        <h2>Connected, not surfing</h2>
+        <p class="panel-sub">PPPoE clients dialed in with an active subscription but still without internet — last 24 hours.</p>
       </div>
-      <div data-not-surfing-body>
-        <div class="workspace-dash-empty is-loading">
-          <p class="workspace-dash-empty-title">Checking clients…</p>
-          <p class="workspace-dash-empty-copy">Live PPPoE and Hotspot sessions load in the background.</p>
-        </div>
+      <div class="workspace-dash-perf-summary">
+        <span class="workspace-dash-chip"><strong data-stat="ns-connected">—</strong> now</span>
+        <span class="workspace-dash-chip">Peak <strong data-stat="ns-peak">—</strong></span>
       </div>
-    </section>
+    </div>
+    <div class="workspace-dash-chart-wrap">
+      <canvas id="chart-network-trend" height="280"></canvas>
+    </div>
+  </section>
 
-    <section class="workspace-dash-panel workspace-dash-panel-chart-compact">
-      <div class="workspace-dash-panel-head">
-        <div>
-          <p class="workspace-dash-panel-kicker">Usage</p>
-          <h2>Clients online</h2>
-          <p class="panel-sub">Online PPPoE and Wi‑Fi clients per router over 24 hours. Drop reasons appear below.</p>
-        </div>
-        <div class="workspace-dash-perf-summary">
-          <span class="workspace-dash-chip"><strong data-stat="network-online">—</strong> online now</span>
-          <span class="workspace-dash-chip">Peak <strong data-stat="network-peak">—</strong></span>
-        </div>
+  <section class="workspace-dash-panel">
+    <div class="workspace-dash-panel-head">
+      <div>
+        <p class="workspace-dash-panel-kicker">Now</p>
+        <h2>Current clients</h2>
+        <p class="panel-sub">Only PPPoE clients who are dialed and in-package right now, but not surfing — with when they lost access, why, and how many times in 24 hours.</p>
       </div>
-      <div class="workspace-dash-chart-wrap workspace-dash-chart-wrap-compact">
-        <canvas id="chart-network-trend" height="220"></canvas>
+      <div class="workspace-dash-perf-summary">
+        <span class="workspace-dash-chip"><strong data-stat="ns-connected">—</strong> clients</span>
+        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'core:my_clients' %}?tab=pppoe">PPPoE clients</a>
       </div>
-      <div class="workspace-dash-drops" data-network-drops>
-        <h3>Why it dropped</h3>
-        <div class="workspace-dash-empty is-loading">
-          <p class="workspace-dash-empty-title">Checking Wi‑Fi and client sessions…</p>
-        </div>
+    </div>
+    <div data-connected-not-surfing-body>
+      <div class="workspace-dash-empty is-loading">
+        <p class="workspace-dash-empty-title">Checking PPPoE sessions…</p>
+        <p class="workspace-dash-empty-copy">Clients on an active package who are dialed but not surfing appear here.</p>
       </div>
-      <p class="workspace-dash-muted workspace-dash-more">
-        <a href="{% url 'core:clients_general_usage' %}?range=time&amp;time=6">Open full usage analytics</a>
-      </p>
-    </section>
-  </div>
-
-  <div class="workspace-dash-grid">
-    <section class="workspace-dash-panel">
-      <div class="workspace-dash-panel-head">
-        <div>
-          <p class="workspace-dash-panel-kicker">Revenue</p>
-          <h2>Collected today</h2>
-          <p class="panel-sub">
-            Since midnight · STK pending <strong data-stat="stk-pending">{{ analytics.stk_pending }}</strong>
-            {% if analytics.stk_failed_today %} · failed <strong data-stat="stk-failed">{{ analytics.stk_failed_today }}</strong>{% endif %}
-          </p>
-        </div>
-        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">All payments</a>
-      </div>
-      {% if analytics.recent_payments %}
-        <div class="workspace-dash-scroll">
-          <table class="workspace-dash-table is-stack">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th class="workspace-dash-name-col">Client</th>
-                <th>Method</th>
-                <th>Amount</th>
-                <th>Reference</th>
-              </tr>
-            </thead>
-            <tbody data-payments-body>
-              {% for pay in analytics.recent_payments %}
-                <tr>
-                  <td data-label="Time"><span class="workspace-dash-time">{{ pay.received_at }}</span></td>
-                  <td class="workspace-dash-name-col" data-label="Client">
-                    {% if pay.customer_url %}
-                      <a class="workspace-dash-client" href="{{ pay.customer_url }}"><strong>{{ pay.customer_name }}</strong></a>
-                    {% else %}
-                      {{ pay.customer_name }}
-                    {% endif %}
-                  </td>
-                  <td data-label="Method">{{ pay.method }}</td>
-                  <td data-label="Amount"><strong class="workspace-dash-amount">KES {{ pay.amount }}</strong></td>
-                  <td class="workspace-dash-muted" data-label="Reference">{{ pay.reference|default:"—" }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% else %}
-        <div class="workspace-dash-empty" data-payments-empty>
-          <p class="workspace-dash-empty-title">No collections yet today</p>
-          <p class="workspace-dash-empty-copy">Successful M-Pesa and other payments will appear here.</p>
-        </div>
-      {% endif %}
-    </section>
-
-    <section class="workspace-dash-panel">
-      <div class="workspace-dash-panel-head">
-        <div>
-          <p class="workspace-dash-panel-kicker">Renewals</p>
-          <h2>Expired clients</h2>
-          <p class="panel-sub">Packages past their end date.</p>
-        </div>
-        <a class="btn btn-ghost workspace-dash-btn" href="{% url 'billing:dashboard' %}">Billing</a>
-      </div>
-      <div class="workspace-dash-tabs" role="tablist" aria-label="Expired client service types" data-expired-tabs>
-        <button
-          type="button"
-          class="workspace-dash-tab is-active"
-          role="tab"
-          aria-selected="true"
-          data-expired-tab="pppoe"
-        >
-          PPPoE
-          <span class="workspace-dash-tab-count" data-expired-count="pppoe">{{ analytics.expired_pppoe_count|default:0 }}</span>
-        </button>
-        <button
-          type="button"
-          class="workspace-dash-tab"
-          role="tab"
-          aria-selected="false"
-          data-expired-tab="hotspot"
-        >
-          Hotspot
-          <span class="workspace-dash-tab-count" data-expired-count="hotspot">{{ analytics.expired_hotspot_count|default:0 }}</span>
-        </button>
-      </div>
-      <div data-expired-host>
-        <div class="workspace-dash-empty is-loading">
-          <p class="workspace-dash-empty-title">Loading expired clients…</p>
-        </div>
-      </div>
-    </section>
-  </div>
+    </div>
+  </section>
 
 </div>
 {% endblock %}
@@ -233,6 +131,7 @@
   var lastRouters = null;
   var lastMikrotikDrops = (initial && initial.mikrotik_drops) || { events: [] };
   var lastNetworkDrops = (initial && initial.network_drops) || { events: [] };
+  var lastNotSurfingTrend = (initial && initial.not_surfing_trend) || null;
   var statusCatalog = (initial && initial.mikrotik_status_catalog) || {};
   var scoreMap = Object.assign({
     connected: 100,
@@ -250,12 +149,6 @@
     if (ev.router_id == null || ev.to_score == null) return;
     lastScoreByRouter[ev.router_id] = ev.to_score;
   });
-  var lastExpired = Array.isArray(initial && initial.expired) ? initial.expired : [];
-  var lastExpiredMeta = {
-    expired_pppoe_count: initial && initial.expired_pppoe_count,
-    expired_hotspot_count: initial && initial.expired_hotspot_count
-  };
-  var expiredTab = "pppoe";
   // Avoid hammering MikroTik on every back/focus — force probes at most this often.
   var FORCE_MIN_MS = 45000;
   var lastForceAt = 0;
@@ -266,99 +159,6 @@
     if (now - lastForceAt < FORCE_MIN_MS) return false;
     lastForceAt = now;
     return true;
-  }
-
-  function filterExpiredByTab(rows, tab) {
-    return (rows || []).filter(function (row) {
-      var service = String(row.service_type || "").toLowerCase();
-      if (tab === "hotspot") return service === "hotspot";
-      return service === "pppoe" || service === "static" || !service;
-    });
-  }
-
-  function renderExpired(rows, tab, meta) {
-    var host = root.querySelector("[data-expired-host]");
-    if (!host) return;
-    var activeTab = tab || expiredTab || "pppoe";
-    var filtered = filterExpiredByTab(rows, activeTab);
-    var pppoeLabel =
-      meta && meta.expired_pppoe_count != null
-        ? meta.expired_pppoe_count
-        : filterExpiredByTab(rows, "pppoe").length;
-    var hotspotLabel =
-      meta && meta.expired_hotspot_count != null
-        ? meta.expired_hotspot_count
-        : filterExpiredByTab(rows, "hotspot").length;
-    setText('[data-expired-count="pppoe"]', String(pppoeLabel));
-    setText('[data-expired-count="hotspot"]', String(hotspotLabel));
-
-    if (!filtered.length) {
-      host.innerHTML =
-        '<div class="workspace-dash-empty">' +
-        '<p class="workspace-dash-empty-title">No expired ' +
-        (activeTab === "hotspot" ? "Hotspot" : "PPPoE") +
-        " packages</p>" +
-        '<p class="workspace-dash-empty-copy">All tracked ' +
-        (activeTab === "hotspot" ? "Hotspot" : "PPPoE") +
-        " package periods are still current.</p>" +
-        "</div>";
-      return;
-    }
-    var html =
-      '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack">' +
-      '<thead><tr><th class="workspace-dash-name-col">Client</th><th>Package</th><th>Ended</th><th></th></tr></thead><tbody>';
-    filtered.slice(0, 12).forEach(function (row) {
-      html +=
-        "<tr>" +
-        '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' +
-        escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
-        '"><strong>' +
-        escapeHtml(row.full_name || "Client") +
-        "</strong><small>" +
-        escapeHtml(row.account_number || "") +
-        "</small></a></td>" +
-        '<td data-label="Package">' +
-        (row.plan_name
-          ? '<span class="workspace-dash-plan">' + escapeHtml(row.plan_name) + "</span>"
-          : "—") +
-        "</td>" +
-        '<td data-label="Ended">' +
-        escapeHtml(row.package_end || "—") +
-        "</td>" +
-        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
-        escapeHtml(row.url || ("/app/clients/" + row.id + "/")) +
-        '">Open</a></td>' +
-        "</tr>";
-    });
-    html += "</tbody></table></div>";
-    if (filtered.length > 12) {
-      html +=
-        '<p class="workspace-dash-muted" style="margin:0.75rem 0 0;">Showing 12 of ' +
-        filtered.length +
-        ' · <a href="{% url 'core:my_clients' %}?tab=' +
-        encodeURIComponent(activeTab) +
-        '">View all</a></p>';
-    }
-    host.innerHTML = html;
-  }
-
-  function setExpiredTab(tab) {
-    expiredTab = tab === "hotspot" ? "hotspot" : "pppoe";
-    root.querySelectorAll("[data-expired-tab]").forEach(function (btn) {
-      var active = btn.getAttribute("data-expired-tab") === expiredTab;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-selected", active ? "true" : "false");
-    });
-    renderExpired(lastExpired, expiredTab, lastExpiredMeta);
-  }
-
-  function money(n) {
-    var v = Number(n) || 0;
-    try {
-      return "KES " + v.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    } catch (e) {
-      return "KES " + v;
-    }
   }
 
   function setText(sel, value) {
@@ -538,11 +338,18 @@
     if (!canvas || !window.Chart) return;
     var labels = (trend && trend.labels) || [];
     var summary = (trend && trend.summary) || {};
-    setText('[data-stat="network-online"]', summary.clients_online != null ? summary.clients_online : "0");
-    setText('[data-stat="network-peak"]', fmtBps(summary.peak_download_bps));
+    setText('[data-stat="ns-connected"]', summary.current != null ? summary.current : "0");
+    setText('[data-stat="ns-peak"]', summary.peak != null ? summary.peak : "0");
+    // Keep top KPI clients-online from network_trend when provided separately.
+    if (summary.clients_online != null) {
+      setText('[data-stat="network-online"]', summary.clients_online);
+    }
+    if (summary.peak_download_bps != null) {
+      setText('[data-stat="network-peak"]', fmtBps(summary.peak_download_bps));
+    }
     var datasets = ((trend && trend.datasets) || []).map(function (ds) {
       return Object.assign({}, ds, {
-        fill: false,
+        fill: ds.fill != null ? ds.fill : true,
         spanGaps: true
       });
     });
@@ -557,6 +364,23 @@
       networkTrendChart.data.datasets = datasets;
       networkTrendChart.update("none");
     }
+  }
+
+  function paintNotSurfingTrend(trend, liveCount) {
+    if (!trend) return;
+    var summary = Object.assign({}, trend.summary || {});
+    if (liveCount != null) {
+      summary.current = liveCount;
+      if (summary.peak == null || liveCount > summary.peak) summary.peak = liveCount;
+      var datasets = (trend.datasets || []).map(function (ds) {
+        var data = (ds.data || []).slice();
+        if (data.length) data[data.length - 1] = liveCount;
+        return Object.assign({}, ds, { data: data });
+      });
+      paintNetworkTrend(Object.assign({}, trend, { datasets: datasets, summary: summary }));
+      return;
+    }
+    paintNetworkTrend(Object.assign({}, trend, { summary: summary }));
   }
 
   function paintTrend(trend) {
@@ -738,10 +562,96 @@
     body.innerHTML = html;
   }
 
+  function renderConnectedNotSurfing(rows) {
+    var body = root.querySelector("[data-connected-not-surfing-body]");
+    var count = rows ? rows.length : 0;
+    setText('[data-stat="ns-connected"]', String(count));
+    if (lastNotSurfingTrend) {
+      paintNotSurfingTrend(lastNotSurfingTrend, count);
+    }
+    if (!body) return;
+    if (!rows || !rows.length) {
+      body.innerHTML =
+        '<div class="workspace-dash-empty">' +
+        '<p class="workspace-dash-empty-title">No connected PPPoE downtime</p>' +
+        '<p class="workspace-dash-empty-copy">Every dialed PPPoE client with an active subscription is surfing.</p>' +
+        "</div>";
+      return;
+    }
+    var sorted = rows.slice().sort(function (a, b) {
+      var at = String(a.lost_surfing_at || "");
+      var bt = String(b.lost_surfing_at || "");
+      if (at && bt && at !== bt) return at < bt ? -1 : 1;
+      var ac = Number(a.downtime_count || 0);
+      var bc = Number(b.downtime_count || 0);
+      if (ac !== bc) return bc - ac;
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""));
+    });
+    var html =
+      '<div class="workspace-dash-scroll"><table class="workspace-dash-table is-stack">' +
+      "<thead><tr>" +
+      '<th class="workspace-dash-name-col">Client</th>' +
+      "<th>Lost surfing</th>" +
+      "<th>Times</th>" +
+      "<th>Reason</th>" +
+      "<th></th>" +
+      "</tr></thead><tbody>";
+    sorted.slice(0, 20).forEach(function (row) {
+      var url = row.url || ("/app/clients/" + row.id + "/");
+      var times = Number(row.downtime_count || 1);
+      var timesLabel = times === 1 ? "1 time" : times + " times";
+      var lostLabel = row.lost_surfing_label || "Just now";
+      var ago = row.lost_surfing_ago ? " · " + row.lost_surfing_ago + " ago" : "";
+      var reason = row.downtime_reason || row.reason || "Not surfing while connected";
+      html +=
+        "<tr>" +
+        '<td class="workspace-dash-name-col" data-label="Client"><a class="workspace-dash-client" href="' +
+        escapeHtml(url) +
+        '"><strong>' +
+        escapeHtml(row.full_name || "Client") +
+        "</strong><small>" +
+        escapeHtml(row.account_number || "—") +
+        (row.plan_name ? " · " + escapeHtml(row.plan_name) : "") +
+        "</small></a></td>" +
+        '<td data-label="Lost surfing"><strong>' +
+        escapeHtml(lostLabel) +
+        '</strong><small class="workspace-dash-muted">' +
+        escapeHtml(ago.replace(/^ · /, "")) +
+        "</small></td>" +
+        '<td data-label="Times"><span class="workspace-dash-badge is-warn">' +
+        escapeHtml(timesLabel) +
+        "</span></td>" +
+        '<td class="workspace-dash-reason" data-label="Reason">' +
+        escapeHtml(reason) +
+        "</td>" +
+        '<td data-label=""><a class="btn btn-ghost workspace-dash-btn-sm" href="' +
+        escapeHtml(url) +
+        '">Open</a></td>' +
+        "</tr>";
+    });
+    html += "</tbody></table></div>";
+    if (count > 20) {
+      html +=
+        '<p class="workspace-dash-muted" style="margin:0.75rem 0 0;">Showing 20 of ' +
+        count +
+        ' · <a href="{% url 'core:my_clients' %}?tab=pppoe">View all PPPoE</a></p>';
+    }
+    body.innerHTML = html;
+  }
+
   function filterNotSurfing(clients) {
     return (clients || []).filter(function (row) {
       // Active subscription (internet allowed) but not surfing, while router is up.
       return !!row.internet_allowed && !row.surfing && !!row.router_reachable;
+    });
+  }
+
+  function filterConnectedNotSurfing(clients) {
+    return (clients || []).filter(function (row) {
+      var service = String(row.service_type || "").toLowerCase();
+      if (service && service !== "pppoe") return false;
+      // Dialed PPPoE with active package, but still no internet.
+      return !!row.internet_allowed && !!row.connected && !row.surfing;
     });
   }
 
@@ -772,24 +682,47 @@
     return rows;
   }
 
+  function mergeConnectedNotSurfingRows(parts) {
+    var rows = [];
+    var seen = {};
+    (parts || []).forEach(function (data) {
+      if (!data || data.ok === false || !Array.isArray(data.clients)) return;
+      filterConnectedNotSurfing(data.clients).forEach(function (row) {
+        var key = String(row.id || "");
+        if (seen[key]) return;
+        seen[key] = true;
+        rows.push(row);
+      });
+    });
+    rows.sort(function (a, b) {
+      return String(a.full_name || "").localeCompare(String(b.full_name || ""));
+    });
+    return rows;
+  }
+
   function loadNotSurfing(force) {
     if (!surfingUrl) {
       renderNotSurfing([]);
+      renderConnectedNotSurfing([]);
       return Promise.resolve([]);
     }
     // Paint PPPoE first (usually what ops care about), then merge Hotspot.
     return fetchSurfingService("pppoe", force)
       .then(function (pppoeData) {
         var rows = mergeNotSurfingRows([pppoeData]);
+        var connectedRows = mergeConnectedNotSurfingRows([pppoeData]);
         renderNotSurfing(rows);
+        renderConnectedNotSurfing(connectedRows);
         return fetchSurfingService("hotspot", force).then(function (hotspotData) {
           rows = mergeNotSurfingRows([pppoeData, hotspotData]);
           renderNotSurfing(rows);
+          // Connected-not-surfing panel is PPPoE-only.
           return rows;
         });
       })
       .catch(function () {
         renderNotSurfing([]);
+        renderConnectedNotSurfing([]);
         return [];
       });
   }
@@ -927,18 +860,26 @@
 
   function applyAnalytics(data) {
     if (!data) return;
-    setText('[data-stat="collected"]', money(data.collected_today));
-    setText('[data-stat="payments-today"]', data.payments_today != null ? data.payments_today : "0");
     setText('[data-stat="expired"]', data.expired_count != null ? data.expired_count : "0");
     var expiredMetric = root.querySelector("[data-expired-metric]");
     if (expiredMetric) expiredMetric.classList.toggle("is-hot", Number(data.expired_count || 0) > 0);
     setText('[data-stat="active"]', data.active_customers != null ? data.active_customers : "0");
     setText('[data-stat="customers"]', data.customers != null ? data.customers : "0");
-    setText('[data-stat="pending"]', data.pending_invoices != null ? data.pending_invoices : "0");
-    setText('[data-stat="stk-pending"]', data.stk_pending != null ? data.stk_pending : "0");
-    if (data.stk_failed_today != null) setText('[data-stat="stk-failed"]', data.stk_failed_today);
     if (data.mikrotik_trend) paintTrend(data.mikrotik_trend);
-    if (data.network_trend) paintNetworkTrend(data.network_trend);
+    if (data.network_trend && data.network_trend.summary) {
+      var netSummary = data.network_trend.summary;
+      setText(
+        '[data-stat="network-online"]',
+        netSummary.clients_online != null ? netSummary.clients_online : "0"
+      );
+      if (netSummary.peak_download_bps != null) {
+        setText('[data-stat="network-peak"]', fmtBps(netSummary.peak_download_bps));
+      }
+    }
+    if (data.not_surfing_trend) {
+      lastNotSurfingTrend = data.not_surfing_trend;
+      paintNotSurfingTrend(lastNotSurfingTrend);
+    }
     lastMikrotikDrops = data.mikrotik_drops || lastMikrotikDrops;
     if (data.mikrotik_status_catalog) {
       statusCatalog = data.mikrotik_status_catalog;
@@ -954,20 +895,6 @@
       "No MikroTik health drops",
       "All routers stayed reachable with a successful API login over the last 24 hours."
     );
-    renderDrops(
-      "[data-network-drops]",
-      lastNetworkDrops,
-      "No Wi‑Fi / network drops",
-      "Online PPPoE and Wi‑Fi client counts stayed steady on every MikroTik over the last 24 hours."
-    );
-    if (Array.isArray(data.expired)) {
-      lastExpired = data.expired;
-      lastExpiredMeta = {
-        expired_pppoe_count: data.expired_pppoe_count,
-        expired_hotspot_count: data.expired_hotspot_count
-      };
-      renderExpired(lastExpired, expiredTab, lastExpiredMeta);
-    }
   }
 
   function applyMikrotik(perf) {
@@ -1064,11 +991,6 @@
       boot();
     }, 40);
   }
-  root.querySelectorAll("[data-expired-tab]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      setExpiredTab(btn.getAttribute("data-expired-tab") || "pppoe");
-    });
-  });
   // Soft polls keep the UI fresh from cache; force a live probe about once a
   // minute so health samples (and outages) keep landing in the trend chart.
   var pollTick = 0;
@@ -1077,8 +999,13 @@
     loadLive(pollTick % 4 === 0);
   }, 15000);
   document.addEventListener("visibilitychange", function () {
-    // Returning to the tab / previous page: prefer cache; force only if stale.
-    if (!document.hidden) loadLive(true);
+    // Returning to the tab: prefer cache; force only about once a minute.
+    if (document.hidden) return;
+    var now = Date.now();
+    if (!window.__wsLastForceAt) window.__wsLastForceAt = 0;
+    var force = now - window.__wsLastForceAt > 60000;
+    if (force) window.__wsLastForceAt = now;
+    loadLive(force);
   });
   window.addEventListener("pageshow", function (event) {
     if (event.persisted) loadLive(false);

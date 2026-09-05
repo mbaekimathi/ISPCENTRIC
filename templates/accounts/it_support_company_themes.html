@@ -57,10 +57,10 @@
           </svg>
         </div>
         <div class="css-themes-card-body">
-          <h3 id="css-adverts-title">Adverts · Click to earn</h3>
+          <h3 id="css-adverts-title">Refer &amp; earn</h3>
           <p>
-            When on, Wi‑Fi pay and pause pages show a <strong>Click to earn</strong> link.
-            It opens this ISP’s adverts page where subscribers can browse and post ads.
+            When on, Wi‑Fi pay and pause pages show a <strong>Refer &amp; earn</strong> link
+            that always opens this ISP’s referral page.
           </p>
           {% if selected_organization and earn_url %}
             <p class="css-themes-card-meta">{{ selected_organization.name }} · {{ earn_url }}</p>
@@ -77,35 +77,20 @@
               value="1"
               {% if adverts_enabled %}checked{% endif %}
             >
-            <span>{% if adverts_enabled %}Adverts page is on{% else %}Adverts page is off{% endif %}</span>
+            <span>{% if adverts_enabled %}Refer &amp; earn is on{% else %}Refer &amp; earn is off{% endif %}</span>
           </label>
-          <div class="field" style="margin-top:0.75rem;text-align:left;">
-            <label for="css-adverts-redirect">External redirect link (optional)</label>
-            <input
-              class="form-control"
-              type="url"
-              name="adverts_redirect_url"
-              id="css-adverts-redirect"
-              value="{{ adverts_redirect_url }}"
-              placeholder="https://example.com/earn"
-              autocomplete="off"
-            >
-            <p class="css-themes-card-meta" style="margin-top:0.35rem;">
-              Leave blank for the built-in page. Save applies toggle + link.
-            </p>
-          </div>
-          <button type="submit" class="btn btn-primary" style="margin-top:0.65rem;">Save Click to earn</button>
+          <button type="submit" class="btn btn-primary" style="margin-top:0.65rem;">Save Refer &amp; earn</button>
         </form>
         <div class="css-themes-card-actions">
           <button
             type="button"
             class="btn btn-ghost"
             data-pay-preview
-            data-preview-title="Click to earn"
+            data-preview-title="Refer &amp; earn"
             data-preview-url="{{ earn_preview_url }}"
             {% if not earn_preview_url or not adverts_enabled %}disabled{% endif %}
           >
-            Open adverts popup
+            Open referral page
           </button>
         </div>
       </article>

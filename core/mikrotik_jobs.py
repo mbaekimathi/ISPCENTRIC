@@ -252,8 +252,14 @@ def run_nas_refresh_with_retry(
     *,
     reauthenticate: bool = True,
     verify: bool = True,
+    sync_pppoe_secrets: bool = True,
 ) -> dict[str, Any]:
-    """Push NAS config with bounded retries and optional post-push API verification."""
+    """Push NAS config with bounded retries and optional post-push API verification.
+
+    Defaults to rewriting PPP secrets because this path is user-initiated
+    (Reconnect / billing settings). Fleet deploy and the subscription sweep call
+    ``refresh_onboarded_router_config`` directly with ``sync_pppoe_secrets=False``.
+    """
     from core.mikrotik_connect import refresh_onboarded_router_config
 
     router_id = getattr(router, "pk", None)
@@ -285,7 +291,11 @@ def run_nas_refresh_with_retry(
             f"Applying billing settings (attempt {attempt}/{NAS_REFRESH_MAX_ATTEMPTS})…",
             "push",
         )
-        last = refresh_onboarded_router_config(router, reauthenticate=reauthenticate)
+        last = refresh_onboarded_router_config(
+            router,
+            reauthenticate=reauthenticate,
+            sync_pppoe_secrets=sync_pppoe_secrets,
+        )
         if last.get("ok") or last.get("skipped"):
             break
         err = (last.get("error") or "").lower()

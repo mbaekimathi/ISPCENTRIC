@@ -35,9 +35,7 @@ from accounts.communications import (
     fetch_provider_options,
 )
 from accounts.forms import (
-    AdvertsSettingsForm,
     CommunicationSettingsForm,
-    HotspotEnabledForm,
     HotspotSettingsForm,
     OrganizationEditForm,
     OwnerProfileForm,
@@ -123,6 +121,7 @@ from core.mikrotik_connect import (
     apply_mikrotik_single_wan,
     switch_mikrotik_single_wan,
     apply_pppoe_enforcement_on_router,
+    apply_pppoe_enforcement_for_organization,
     apply_hotspot_on_router,
     check_mikrotik_reachable,
     clear_mikrotik_uplink_multi,
@@ -235,26 +234,7 @@ CLIENT_SIDEBARS = {
     },
     "mikrotik_detail": {
         "label": "MikroTik",
-        "items": [
-            {
-                "key": "edit_details",
-                "label": "Edit details",
-                "action": "open_modal",
-                "modal": "mikrotik-edit-modal",
-            },
-            {
-                "key": "wifi_credentials",
-                "label": "Wi‑Fi credentials",
-                "action": "open_modal",
-                "modal": "mikrotik-credentials-modal",
-            },
-            {
-                "key": "toggle_wifi",
-                "label": "Activate Wi‑Fi",
-                "action": "open_modal",
-                "modal": "mikrotik-wifi-modal",
-            },
-        ],
+        "items": [],
     },
     "clients": {
         "label": "My clients",
@@ -746,10 +726,28 @@ def _cached_mikrotik_live_snapshot(org_pk: int, router_pk: int) -> dict | None:
     return dict(cached)
 
 
+def _strip_remote_only_live_flags(payload: dict) -> dict:
+    """Hosted dashboard must never present local-only view-only state."""
+    if not bool(getattr(settings, "HOSTED", False)):
+        return payload
+    out = dict(payload)
+    out.pop("remote_management_only", None)
+    out.pop("management_deferred", None)
+    out.pop("deferred_reason", None)
+    out.pop("remote_manage_url", None)
+    if out.get("management_mode") == "remote_only":
+        out["management_mode"] = "tunnel"
+    if out.get("controls_live") is False and out.get("ok") and out.get("online"):
+        out["controls_live"] = True
+    return out
+
+
 def _apply_remote_live_fallback(router, org, failed: dict) -> dict:
     """
-    When the router is tunnel-managed on the VPS but this PC cannot dial it,
-    return cached read-only data plus a hosted dashboard link for real control.
+    When a local (non-hosted) PC cannot dial the router tunnel, return cached
+    read-only data plus a hosted dashboard link for real control.
+
+    Never applies on the hosted dashboard itself.
     """
     from core.mikrotik_connect import (
         hosted_dashboard_url,
@@ -757,6 +755,8 @@ def _apply_remote_live_fallback(router, org, failed: dict) -> dict:
     )
 
     if failed.get("ok"):
+        return failed
+    if bool(getattr(settings, "HOSTED", False)):
         return failed
     if resolve_router_management_mode(router) != "remote_only":
         return failed
@@ -811,6 +811,8 @@ def _remote_management_only_response(router):
     """Block router control actions when this PC must use the hosted dashboard."""
     from core.mikrotik_connect import hosted_dashboard_url, resolve_router_management_mode
 
+    if bool(getattr(settings, "HOSTED", False)):
+        return None
     if resolve_router_management_mode(router) != "remote_only":
         return None
     hosted = hosted_dashboard_url()
@@ -846,8 +848,8 @@ def _invalidate_mikrotik_router_caches(org_pk: int, router_pk: int) -> None:
 
 def _mikrotik_status_cache_ttl(all_connected: bool) -> int:
     if getattr(settings, "HOSTED", False):
-        return 20 if all_connected else 15
-    return 5 if all_connected else 3
+        return 45 if all_connected else 25
+    return 12 if all_connected else 8
 
 
 def _redirect_with_mikrotik_job(request, url_name: str, router_id: int, job_type: str):
@@ -988,8 +990,14 @@ def build_mikrotik_detail_nav(
     clean_uplink_enabled: bool = False,
     is_suspended: bool = False,
     include_modals: bool = True,
+    nav_set: str = "overview",
 ) -> list[dict]:
-    """Sidebar items for a single router (overview + ports + access + optional modal actions)."""
+    """
+    Sidebar items for a single router.
+
+    overview — Ports setup, PPPoE & Hotspot, MikroTik setup
+    ports — MikroTik overview, Assigned ports, Clean uplink
+    """
     detail_url = reverse("core:mikrotik_detail", kwargs={"router_id": router.pk})
     ports_url = reverse("core:mikrotik_ports", kwargs={"router_id": router.pk})
     assigned_ports_url = reverse(
@@ -997,27 +1005,30 @@ def build_mikrotik_detail_nav(
     )
     access_url = reverse("core:mikrotik_pppoe_settings", kwargs={"router_id": router.pk})
     clean_url = reverse("core:mikrotik_clean_uplink", kwargs={"router_id": router.pk})
-    nav: list[dict] = [
-        {"key": "overview", "label": "Router overview", "href": detail_url},
-        {"key": "ports", "label": "Port setup", "href": ports_url},
-        {"key": "assigned_ports", "label": "Assigned ports", "href": assigned_ports_url},
-        {
-            "key": "pppoe_hotspot_settings",
-            "label": "PPPoE & Hotspot settings",
-            "href": access_url,
-        },
-        {"key": "clean_uplink", "label": "Clean uplink", "href": clean_url},
-    ]
-    if not include_modals:
-        return nav
+    setup_url = reverse("core:mikrotik_setup", kwargs={"router_id": router.pk})
 
-    for item in CLIENT_SIDEBARS["mikrotik_detail"]["items"]:
-        if item.get("key") == "ports":
-            continue
-        row = dict(item)
-        if row.get("key") == "toggle_wifi":
-            row["label"] = "Deactivate Wi‑Fi" if wifi_enabled else "Activate Wi‑Fi"
-        nav.append(row)
+    if nav_set == "ports":
+        return [
+            {"key": "overview", "label": "MikroTik overview", "href": detail_url},
+            {"key": "assigned_ports", "label": "Assigned ports", "href": assigned_ports_url},
+            {"key": "clean_uplink", "label": "Clean uplink", "href": clean_url},
+        ]
+
+    nav: list[dict] = []
+    if not include_modals:
+        # PPPoE / Hotspot pages: include overview so users can return to the router.
+        nav.append({"key": "overview", "label": "MikroTik overview", "href": detail_url})
+    nav.extend(
+        [
+            {"key": "ports", "label": "Ports setup", "href": ports_url},
+            {
+                "key": "pppoe_hotspot_settings",
+                "label": "PPPoE & Hotspot setup",
+                "href": access_url,
+            },
+            {"key": "setup", "label": "MikroTik setup", "href": setup_url},
+        ]
+    )
     return nav
 
 
@@ -1047,6 +1058,7 @@ def mikrotik_assigned_ports(request, router_id: int):
         router,
         is_suspended=is_suspended,
         include_modals=False,
+        nav_set="ports",
     )
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
     ctx = client_page_context(
@@ -1065,6 +1077,7 @@ def mikrotik_assigned_ports(request, router_id: int):
         uplink_mode_label=dict(MikroTikRouter.UplinkMode.choices).get(
             uplink_mode, "Single WAN"
         ),
+        mikrotik_quicknav_set="ports",
         mikrotik_quicknav_active="assigned_ports",
     )
     return render(
@@ -3640,11 +3653,13 @@ def workspace(request):
     try:
         from billing.usage_samples import (
             network_performance_drops,
+            pppoe_connected_not_surfing_trend,
             router_network_performance_trend,
         )
 
         snapshot["network_trend"] = router_network_performance_trend(org, hours=24)
         snapshot["network_drops"] = network_performance_drops(org, hours=24)
+        snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(org, hours=24)
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -3654,6 +3669,12 @@ def workspace(request):
             "summary": {"clients_online": 0, "peak_download_bps": 0},
         }
         snapshot["network_drops"] = {"ok": False, "events": [], "current_count": 0}
+        snapshot["not_surfing_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "summary": {"current": 0, "peak": 0, "sample_points": 0},
+        }
     referral_enabled = bool(ClientSettings.get_solo().referral_enabled)
     referral_count = 0
     referral_active_count = 0
@@ -3698,13 +3719,17 @@ def _local_day_bounds():
     return day_start, day_start + timedelta(days=1), now.date()
 
 
-def _workspace_day_snapshot(org) -> dict:
+def _workspace_day_snapshot(org, *, force: bool = False) -> dict:
     """Fast DB-backed analytics for the workspace dashboard (no MikroTik probes)."""
     from datetime import timedelta
 
     from django.utils import timezone as dj_tz
 
     day_start, day_end, today = _local_day_bounds()
+    if org and not force:
+        cached = cache.get(f"workspace_day_snapshot:{org.pk}:{today.isoformat()}")
+        if cached is not None:
+            return cached
     empty = {
         "ok": True,
         "day": today.isoformat(),
@@ -3811,11 +3836,15 @@ def _workspace_day_snapshot(org) -> dict:
         )
         soon_ids.add(customer.pk)
 
-    routers_total = MikroTikRouter.objects.filter(organization=org).count()
-    routers_suspended = MikroTikRouter.objects.filter(
-        organization=org,
-        account_status=MikroTikRouter.AccountStatus.SUSPENDED,
-    ).count()
+    router_stats = MikroTikRouter.objects.filter(organization=org).aggregate(
+        routers_total=Count("id"),
+        routers_suspended=Count(
+            "id",
+            filter=Q(account_status=MikroTikRouter.AccountStatus.SUSPENDED),
+        ),
+    )
+    routers_total = router_stats["routers_total"] or 0
+    routers_suspended = router_stats["routers_suspended"] or 0
     stk_pending = StkPushRequest.objects.filter(
         organization=org, status=StkPushRequest.Status.PENDING
     ).count()
@@ -3870,7 +3899,7 @@ def _workspace_day_snapshot(org) -> dict:
         == Customer.ServiceType.HOTSPOT
     )
 
-    return {
+    payload = {
         "ok": True,
         "day": today.isoformat(),
         "day_label": day_start.strftime("%A, %d %b %Y"),
@@ -3923,6 +3952,8 @@ def _workspace_day_snapshot(org) -> dict:
             "online_ratio": None,
         },
     }
+    cache.set(f"workspace_day_snapshot:{org.pk}:{today.isoformat()}", payload, 30)
+    return payload
 
 
 def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
@@ -3995,7 +4026,8 @@ def _mikrotik_performance_from_status(routers: list[dict]) -> dict:
 def workspace_analytics(request):
     """Live dashboard payload for day money/renewals + MikroTik performance trend."""
     org = resolve_organization(request.user, request)
-    snapshot = _workspace_day_snapshot(org)
+    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
+    snapshot = _workspace_day_snapshot(org, force=force)
     if not org:
         return JsonResponse(snapshot, status=400)
 
@@ -4039,10 +4071,10 @@ def workspace_analytics(request):
         snapshot["mikrotik_drops"] = {"ok": False, "events": [], "current_count": 0}
         snapshot["mikrotik_status_catalog"] = {}
 
-    force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     try:
         from billing.usage_samples import (
             network_performance_drops,
+            pppoe_connected_not_surfing_trend,
             router_network_performance_trend,
             sample_organization_usage,
         )
@@ -4058,6 +4090,9 @@ def workspace_analytics(request):
             org, hours=hours, use_cache=not force
         )
         snapshot["network_drops"] = network_performance_drops(org, hours=hours)
+        snapshot["not_surfing_trend"] = pppoe_connected_not_surfing_trend(
+            org, hours=hours
+        )
     except Exception:
         snapshot["network_trend"] = {
             "ok": False,
@@ -4067,12 +4102,20 @@ def workspace_analytics(request):
             "summary": {"clients_online": 0, "peak_download_bps": 0},
         }
         snapshot["network_drops"] = {"ok": False, "events": [], "current_count": 0}
+        snapshot["not_surfing_trend"] = {
+            "ok": False,
+            "labels": [],
+            "datasets": [],
+            "summary": {"current": 0, "peak": 0, "sample_points": 0},
+        }
 
     return JsonResponse(snapshot)
 
 
 def _mikrotik_list_routers(org):
-    return (
+    from core.mikrotik_catalog import mikrotik_model_image
+
+    routers = (
         MikroTikRouter.objects.filter(organization=org)
         .annotate(customer_count=Count("customers"))
         .only(
@@ -4094,6 +4137,10 @@ def _mikrotik_list_routers(org):
         if org
         else MikroTikRouter.objects.none()
     )
+    router_list = list(routers)
+    for router in router_list:
+        router.model_image = mikrotik_model_image(router.model)
+    return router_list
 
 
 def _find_router_by_hardware(
@@ -4953,20 +5000,84 @@ def mikrotik_detail(request, router_id: int):
     wifi_ssid_display = (router.wifi_ssid or "").strip()
     wifi_password_display = router.wifi_password or ""
     wifi_checking = not is_suspended
-
-    edit_form = MikroTikEditDetailsForm(instance=router)
-    credentials_form = MikroTikCredentialsForm(instance=router)
-    wifi_form = MikroTikWifiToggleForm()
     clean_uplink_enabled = bool(router.clean_uplink_enabled)
-    open_modal = ""
 
-    # Detail sidebar: overview + ports + modal actions (labels flip with state).
     detail_nav = build_mikrotik_detail_nav(
         router,
         wifi_enabled=wifi_enabled,
         clean_uplink_enabled=clean_uplink_enabled,
         is_suspended=is_suspended,
+        nav_set="overview",
     )
+
+    ctx = client_page_context(
+        request,
+        active_nav="mikrotik_detail",
+        sidebar_active="overview",
+        page_title=router.name,
+        page_subtitle="Router details and connection settings for this MikroTik.",
+        router=router,
+        router_model_image=mikrotik_model_image(router.model),
+        is_suspended=is_suspended,
+        wifi_enabled=wifi_enabled,
+        wifi_checking=wifi_checking,
+        wifi_ssid_display=wifi_ssid_display,
+        wifi_password_display=wifi_password_display,
+        wifi_live_url=(
+            reverse("core:mikrotik_wifi", args=[router.pk]) if wifi_checking else ""
+        ),
+        clean_uplink_enabled=clean_uplink_enabled,
+        mikrotik_models=mikrotik_model_catalog(),
+    )
+    ctx["client_nav_main"] = [
+        *CLIENT_COMMON_NAV_START,
+        *detail_nav,
+    ]
+    ctx["sidebar_label"] = "MikroTik"
+    from core.mikrotik_auto_restore import get_auto_restore_record
+
+    ctx["auto_restore"] = get_auto_restore_record(router.pk)
+    initial_live = None
+    if not is_suspended:
+        initial_live = _cached_mikrotik_live_snapshot(org.pk, router.pk)
+        if initial_live is not None:
+            initial_live["auto_restore"] = ctx["auto_restore"]
+    ctx["initial_live"] = initial_live
+    from core.mikrotik_connect import hosted_dashboard_url, resolve_router_management_mode
+
+    is_hosted_dashboard = bool(getattr(settings, "HOSTED", False))
+    management_mode = resolve_router_management_mode(router)
+    ctx["hosted_dashboard_url"] = hosted_dashboard_url()
+    ctx["router_management_mode"] = management_mode
+    ctx["show_remote_manage_banner"] = (
+        (not is_hosted_dashboard) and management_mode == "remote_only"
+    )
+    ctx["is_hosted_dashboard"] = is_hosted_dashboard
+    ctx["mikrotik_quicknav_set"] = "overview"
+    ctx["mikrotik_quicknav_active"] = ""
+    return render(request, "core/mikrotik_detail.html", ctx)
+
+
+@client_workspace_required
+def mikrotik_setup(request, router_id: int):
+    """Edit router details, Wi‑Fi credentials, and activate/deactivate Wi‑Fi."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        messages.error(request, "No organization is linked to this workspace.")
+        return redirect("core:mikrotik")
+
+    router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
+    is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
+
+    wifi_enabled = False
+    wifi_ssid_display = (router.wifi_ssid or "").strip()
+    wifi_password_display = router.wifi_password or ""
+    wifi_checking = not is_suspended
+
+    edit_form = MikroTikEditDetailsForm(instance=router)
+    credentials_form = MikroTikCredentialsForm(instance=router)
+    wifi_form = MikroTikWifiToggleForm()
+    focus_section = ""
 
     if request.method == "POST":
         action = (request.POST.get("action") or "").strip()
@@ -4980,7 +5091,7 @@ def mikrotik_detail(request, router_id: int):
                         None,
                         "Activate this MikroTik account before changing login credentials.",
                     )
-                    open_modal = "mikrotik-edit-modal"
+                    focus_section = "details"
                 elif login_changed:
                     new_host = cleaned.get("host") or ""
                     new_username = cleaned.get("username") or ""
@@ -4995,7 +5106,7 @@ def mikrotik_detail(request, router_id: int):
                             new_host=new_host,
                             new_username=new_username,
                             new_password=new_password,
-                            redirect_url_name="core:mikrotik_detail",
+                            redirect_url_name="core:mikrotik_setup",
                         )
 
                     apply_result = _apply_mikrotik_login_credentials(
@@ -5011,26 +5122,26 @@ def mikrotik_detail(request, router_id: int):
                             apply_result.get("error")
                             or "Could not update login credentials on the MikroTik.",
                         )
-                        open_modal = "mikrotik-edit-modal"
+                        focus_section = "details"
                     else:
                         edit_form.save()
                         cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
                         messages.success(request, "MikroTik details updated.")
-                        return redirect("core:mikrotik_detail", router_id=router.pk)
+                        return redirect("core:mikrotik_setup", router_id=router.pk)
                 else:
                     edit_form.save()
                     cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
                     messages.success(request, "MikroTik details updated.")
-                    return redirect("core:mikrotik_detail", router_id=router.pk)
+                    return redirect("core:mikrotik_setup", router_id=router.pk)
             else:
-                open_modal = "mikrotik-edit-modal"
+                focus_section = "details"
         elif action == "change_credentials":
             if is_suspended:
                 messages.error(
                     request,
                     "Activate this MikroTik account before changing Wi‑Fi credentials.",
                 )
-                return redirect("core:mikrotik_detail", router_id=router.pk)
+                return redirect("core:mikrotik_setup", router_id=router.pk)
 
             current_host = router.host
             current_username = router.username
@@ -5086,7 +5197,7 @@ def mikrotik_detail(request, router_id: int):
                         "This page will show progress shortly.",
                     )
                     return _redirect_with_mikrotik_job(
-                        request, "core:mikrotik_detail", router.pk, "credentials"
+                        request, "core:mikrotik_setup", router.pk, "credentials"
                     )
 
                 apply_result = _apply_wifi_credentials()
@@ -5096,23 +5207,23 @@ def mikrotik_detail(request, router_id: int):
                         apply_result.get("error")
                         or "Could not update Wi‑Fi credentials on the MikroTik.",
                     )
-                    open_modal = "mikrotik-credentials-modal"
+                    focus_section = "wifi-credentials"
                 else:
                     messages.success(
                         request,
                         apply_result.get("message")
                         or "Wi‑Fi credentials updated on the MikroTik.",
                     )
-                    return redirect("core:mikrotik_detail", router_id=router.pk)
+                    return redirect("core:mikrotik_setup", router_id=router.pk)
             else:
-                open_modal = "mikrotik-credentials-modal"
+                focus_section = "wifi-credentials"
         elif action == "toggle_wifi":
             if is_suspended:
                 messages.error(
                     request,
                     "Activate this MikroTik account before changing Wi‑Fi.",
                 )
-                return redirect("core:mikrotik_detail", router_id=router.pk)
+                return redirect("core:mikrotik_setup", router_id=router.pk)
 
             wifi_form = MikroTikWifiToggleForm(request.POST)
             if wifi_form.is_valid():
@@ -5162,7 +5273,7 @@ def mikrotik_detail(request, router_id: int):
                         "This page will show progress shortly.",
                     )
                     return _redirect_with_mikrotik_job(
-                        request, "core:mikrotik_detail", router.pk, "wifi"
+                        request, "core:mikrotik_setup", router.pk, "wifi"
                     )
 
                 result = _toggle_wifi()
@@ -5172,36 +5283,34 @@ def mikrotik_detail(request, router_id: int):
                         result.get("error") or "Could not update Wi‑Fi on the MikroTik.",
                     )
                     wifi_enabled = bool(result.get("wifi_enabled"))
-                    open_modal = "mikrotik-wifi-modal"
+                    focus_section = "wifi-toggle"
                 else:
                     messages.success(
                         request,
                         result.get("message") or "Wi‑Fi updated on the MikroTik.",
                     )
-                    return redirect("core:mikrotik_detail", router_id=router.pk)
+                    return redirect("core:mikrotik_setup", router_id=router.pk)
             else:
-                open_modal = "mikrotik-wifi-modal"
+                focus_section = "wifi-toggle"
 
-    # Keep sidebar labels in sync if a failed POST left the modal open.
     detail_nav = build_mikrotik_detail_nav(
         router,
         wifi_enabled=wifi_enabled,
-        clean_uplink_enabled=clean_uplink_enabled,
+        clean_uplink_enabled=bool(router.clean_uplink_enabled),
         is_suspended=is_suspended,
+        nav_set="overview",
     )
-
     ctx = client_page_context(
         request,
         active_nav="mikrotik_detail",
-        sidebar_active="overview",
-        page_title=router.name,
-        page_subtitle="Router details and connection settings for this MikroTik.",
+        sidebar_active="setup",
+        page_title=f"{router.name} — Setup",
+        page_subtitle="Edit router details, Wi‑Fi name and password, and turn Wi‑Fi on or off.",
         router=router,
         router_model_image=mikrotik_model_image(router.model),
         edit_form=edit_form,
         credentials_form=credentials_form,
         wifi_form=wifi_form,
-        open_mikrotik_modal=open_modal,
         is_suspended=is_suspended,
         wifi_enabled=wifi_enabled,
         wifi_checking=wifi_checking,
@@ -5210,30 +5319,16 @@ def mikrotik_detail(request, router_id: int):
         wifi_live_url=(
             reverse("core:mikrotik_wifi", args=[router.pk]) if wifi_checking else ""
         ),
-        clean_uplink_enabled=clean_uplink_enabled,
         mikrotik_models=mikrotik_model_catalog(),
+        focus_section=focus_section,
+        mikrotik_quicknav_set="overview",
+        mikrotik_quicknav_active="setup",
     )
-    # Replace middle nav with detail-only actions (keep Dashboard + settings/logout).
-    ctx["client_nav_main"] = [
-        *CLIENT_COMMON_NAV_START,
-        *detail_nav,
-    ]
-    ctx["sidebar_label"] = "MikroTik"
-    from core.mikrotik_auto_restore import get_auto_restore_record
-
-    ctx["auto_restore"] = get_auto_restore_record(router.pk)
-    initial_live = None
-    if not is_suspended:
-        initial_live = _cached_mikrotik_live_snapshot(org.pk, router.pk)
-        if initial_live is not None:
-            initial_live["auto_restore"] = ctx["auto_restore"]
-    ctx["initial_live"] = initial_live
-    from core.mikrotik_connect import hosted_dashboard_url, resolve_router_management_mode
-
-    ctx["hosted_dashboard_url"] = hosted_dashboard_url()
-    ctx["router_management_mode"] = resolve_router_management_mode(router)
-    return render(request, "core/mikrotik_detail.html", ctx)
-
+    return render(
+        request,
+        "core/mikrotik_setup.html",
+        apply_mikrotik_detail_sidebar(ctx, router, detail_nav=detail_nav),
+    )
 
 
 @client_workspace_required
@@ -6766,6 +6861,7 @@ def mikrotik_ports(request, router_id: int):
         router,
         is_suspended=is_suspended,
         include_modals=False,
+        nav_set="ports",
     )
     uplink_mode = router.uplink_mode or MikroTikRouter.UplinkMode.SINGLE
 
@@ -6814,6 +6910,8 @@ def mikrotik_ports(request, router_id: int):
         suggested_wan=suggested_wan,
         auto_assigned=auto_assigned,
         api_terminal_script=build_api_enable_terminal_script(),
+        mikrotik_quicknav_set="ports",
+        mikrotik_quicknav_active="",
     )
     return render(
         request,
@@ -6950,6 +7048,7 @@ def mikrotik_clean_uplink(request, router_id: int):
         clean_uplink_enabled=bool(router.clean_uplink_enabled),
         is_suspended=is_suspended,
         include_modals=False,
+        nav_set="ports",
     )
     ctx = client_page_context(
         request,
@@ -6963,6 +7062,8 @@ def mikrotik_clean_uplink(request, router_id: int):
         form=form,
         is_suspended=is_suspended,
         clean_uplink_enabled=bool(router.clean_uplink_enabled),
+        mikrotik_quicknav_set="ports",
+        mikrotik_quicknav_active="clean_uplink",
     )
     return render(
         request,
@@ -6981,28 +7082,46 @@ def _ports_live_payload(router: MikroTikRouter) -> dict:
     member_ports_for_read = [
         str(p).strip() for p in (router.uplink_ports or []) if str(p).strip()
     ]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        ports_future = pool.submit(
-            list_mikrotik_ports,
-            api_host,
-            router.username,
-            router.password or "",
-            timeout=5.0,
-            management_hosts=_management_hosts_for_router(router),
-        )
-        uplink_future = pool.submit(
-            read_mikrotik_uplink_multi,
-            api_host,
-            router.username,
-            router.password or "",
-            timeout=8.0,
-            member_ports=member_ports_for_read or None,
-        )
-        listed = ports_future.result()
+    ports_args = (
+        api_host,
+        router.username,
+        router.password or "",
+    )
+    ports_kwargs = {
+        "timeout": 5.0,
+        "management_hosts": _management_hosts_for_router(router),
+    }
+    uplink_kwargs = {
+        "timeout": 8.0,
+        "member_ports": member_ports_for_read or None,
+    }
+
+    def _read_sequential() -> tuple[dict, dict]:
+        listed_local = list_mikrotik_ports(*ports_args, **ports_kwargs)
         try:
-            uplink_live = uplink_future.result()
+            uplink_local = read_mikrotik_uplink_multi(*ports_args, **uplink_kwargs)
         except Exception:
-            uplink_live = {"ok": False}
+            uplink_local = {"ok": False}
+        return listed_local, uplink_local
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ports_future = pool.submit(
+                list_mikrotik_ports, *ports_args, **ports_kwargs
+            )
+            uplink_future = pool.submit(
+                read_mikrotik_uplink_multi, *ports_args, **uplink_kwargs
+            )
+            listed = ports_future.result()
+            try:
+                uplink_live = uplink_future.result()
+            except Exception:
+                uplink_live = {"ok": False}
+    except RuntimeError as exc:
+        # Autoreload can mark futures shut down while this request is still alive.
+        if "shutdown" not in str(exc).lower():
+            raise
+        listed, uplink_live = _read_sequential()
 
     wan_rollback = _wan_switch_rollback_payload(router)
 
@@ -7837,7 +7956,7 @@ def mikrotik_live(request, router_id: int):
                 rollback = _wan_switch_rollback_payload(router)
                 if rollback:
                     cached["wan_rollback"] = rollback
-            return JsonResponse(cached)
+            return JsonResponse(_strip_remote_only_live_flags(cached))
 
     from core.mikrotik_connect import is_off_lan_tunnel_managed, resolve_router_management_mode
     from core.wireguard import server_on_tunnel
@@ -7854,7 +7973,7 @@ def mikrotik_live(request, router_id: int):
 
             snapshot["auto_restore"] = get_auto_restore_record(router.pk)
             cache.set(cache_key, snapshot, 60)
-            return JsonResponse(snapshot)
+            return JsonResponse(_strip_remote_only_live_flags(snapshot))
 
     # Try LAN + tunnel candidates (same order as dashboard status probes).
     snapshot = fetch_mikrotik_live_snapshot_for_router(
@@ -7929,7 +8048,7 @@ def mikrotik_live(request, router_id: int):
     if snapshot.get("management_deferred"):
         ttl = 60
     cache.set(cache_key, snapshot, ttl)
-    return JsonResponse(snapshot)
+    return JsonResponse(_strip_remote_only_live_flags(snapshot))
 
 
 @client_workspace_required
@@ -9278,9 +9397,9 @@ def my_clients(request):
             | Q(account_number__icontains=clients_query)
             | Q(pppoe_username__icontains=clients_query)
         )
-    # Hotspot list is reordered live by session state (surfing → connected →
-    # disconnected), so load the full set instead of paginating mid-list.
-    page_size = 10000 if tab == "hotspot" else 100
+    # Hotspot list is reordered live by session state on the current page.
+    # Cap page size so large ISPs are not forced to render thousands of rows.
+    page_size = 200 if tab == "hotspot" else 100
     paginator = Paginator(tab_qs, page_size)
     page_obj = paginator.get_page(request.GET.get("page") or 1)
     page_customers = list(page_obj)
@@ -12075,7 +12194,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v3"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v4"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -12090,13 +12209,17 @@ def clients_surfing_status(request):
         .order_by("id")
     )
 
-    routers_by_id = {
-        router.pk: router
-        for router in MikroTikRouter.objects.filter(
-            organization=org,
-            account_status=MikroTikRouter.AccountStatus.ACTIVE,
-        )
-    }
+    assigned_router_ids = {c.router_id for c in customers if c.router_id}
+    has_unassigned = any(not c.router_id for c in customers)
+    router_qs = MikroTikRouter.objects.filter(
+        organization=org,
+        account_status=MikroTikRouter.AccountStatus.ACTIVE,
+    )
+    # Probe only routers that can match these clients (all active when some
+    # clients have no assigned router, so identity can be found across NAS).
+    if assigned_router_ids and not has_unassigned:
+        router_qs = router_qs.filter(pk__in=assigned_router_ids)
+    routers_by_id = {router.pk: router for router in router_qs}
     for customer in customers:
         if customer.router_id and customer.router is not None:
             routers_by_id.setdefault(customer.router_id, customer.router)
@@ -12459,6 +12582,28 @@ def clients_surfing_status(request):
         "connected_count": connected_count,
         "checked": len(clients_payload),
     }
+    if service == "pppoe":
+        try:
+            from billing.usage_samples import (
+                record_pppoe_connected_not_surfing_count,
+                track_pppoe_connected_not_surfing_episodes,
+            )
+
+            clients_payload = track_pppoe_connected_not_surfing_episodes(
+                org, clients_payload, hours=24
+            )
+            ns_connected = sum(
+                1
+                for row in clients_payload
+                if row.get("internet_allowed")
+                and row.get("connected")
+                and not row.get("surfing")
+            )
+            record_pppoe_connected_not_surfing_count(org.pk, ns_connected)
+            payload["connected_not_surfing_count"] = ns_connected
+            payload["clients"] = clients_payload
+        except Exception:
+            payload["connected_not_surfing_count"] = 0
     cache.set(cache_key, payload, 8)
     return JsonResponse(payload)
 
@@ -12560,7 +12705,10 @@ def _pppoe_push_messages(request, result: dict, *, enabled: bool, saved: bool = 
     else:
         messages.success(
             request,
-            f"{prefix}PPPoE server and logins pushed to {name}.{secret_bit}",
+            (
+                f"{prefix}Open LAN browsing restored on {name}.{secret_bit} "
+                "Dialed PPPoE clients keep their sessions; Hotspot was not removed."
+            ),
         )
 
 
@@ -12577,79 +12725,101 @@ def mikrotik_pppoe_settings(request, router_id: int):
     employee = getattr(request.user, "employee_profile", None)
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
     can_edit = bool(org.owner_id == request.user.id or viewing_client)
-    pppoe_compulsory = bool(org.pppoe_compulsory)
     form = None
-    adverts_form = None
+    org_router_count = MikroTikRouter.objects.filter(organization=org).count()
 
     if request.method == "POST" and can_edit:
-        action = (request.POST.get("action") or "save_policy").strip()
-        if action == "push_policy":
+        form = PppoeSettingsForm(request.POST, instance=org)
+        if form.is_valid():
+            previous_compulsory = bool(org.pppoe_compulsory)
+            apply_all = bool(form.cleaned_data.get("apply_to_all_routers"))
+            form.save()
+            org.refresh_from_db()
             enabled = bool(org.pppoe_compulsory)
             router_pk = router.pk
+            org_pk = org.pk
 
-            def _bg_push(pk: int = router_pk, compulsory: bool = enabled):
+            # Policy-only push: do not rewrite /ppp/secret on every toggle.
+            # Secret sync elsewhere already manages allow/block; rewriting here
+            # can disconnect dialed CPEs. Deploy alone never schedules this job.
+            def _bg_save_push(
+                pk: int = router_pk,
+                organization_id: int = org_pk,
+                compulsory: bool = enabled,
+                all_routers: bool = apply_all,
+            ):
+                if all_routers:
+                    live_org = Organization.objects.get(pk=organization_id)
+                    return apply_pppoe_enforcement_for_organization(
+                        live_org,
+                        compulsory=compulsory,
+                        sync_secrets=False,
+                    )
                 live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
-                return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
+                return apply_pppoe_enforcement_on_router(
+                    live,
+                    compulsory=compulsory,
+                    sync_secrets=False,
+                )
 
             set_job(router_pk, "pppoe_push", "pending")
             schedule_mikrotik_job(
-                _bg_push,
-                name=f"pppoe-push-{router_pk}",
+                _bg_save_push,
+                name=f"pppoe-save-{router_pk}",
                 router_id=router_pk,
                 job_type="pppoe_push",
             )
-            messages.success(
-                request,
-                f"Pushing PPPoE policy to {router.name} in the background. "
-                "Refresh this page in a minute if clients are still catching up.",
+            target = (
+                f"all {org_router_count} MikroTik(s)"
+                if apply_all and org_router_count
+                else router.name
             )
-            return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
-
-        if action == "save_adverts":
-            adverts_form, saved = _save_org_adverts_settings(request, org)
-            if saved:
-                return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
-            form = PppoeSettingsForm(instance=org) if can_edit else None
-        else:
-            form = PppoeSettingsForm(request.POST, instance=org)
-            if form.is_valid():
-                form.save()
-                org.refresh_from_db()
-                enabled = bool(form.cleaned_data.get("pppoe_compulsory"))
-                router_pk = router.pk
-
-                def _bg_save_push(pk: int = router_pk, compulsory: bool = enabled):
-                    live = MikroTikRouter.objects.select_related("organization").get(pk=pk)
-                    return apply_pppoe_enforcement_on_router(live, compulsory=compulsory)
-
-                set_job(router_pk, "pppoe_push", "pending")
-                schedule_mikrotik_job(
-                    _bg_save_push,
-                    name=f"pppoe-save-{router_pk}",
-                    router_id=router_pk,
-                    job_type="pppoe_push",
+            if enabled:
+                messages.success(
+                    request,
+                    (
+                        f"Settings saved. Pushing PPPoE enforcement to {target} "
+                        "(firewall only — dialed clients are not kicked). "
+                        "Paid PPPoE keeps surfing; other devices use Hotspot."
+                    ),
                 )
-                if enabled:
-                    messages.success(
-                        request,
-                        "PPPoE enforcement enabled. Pushing to this MikroTik in the background — "
-                        "paid PPPoE clients will surf automatically; other devices use Hotspot.",
-                    )
-                else:
-                    messages.success(
-                        request,
-                        "PPPoE enforcement disabled. Updating this MikroTik in the background.",
-                    )
-                return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
-            adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
-    else:
-        form = PppoeSettingsForm(instance=org) if can_edit else None
-        adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
+            else:
+                messages.warning(
+                    request,
+                    (
+                        f"Settings saved. Opening free LAN browsing on {target} "
+                        "(firewall only — dialed PPPoE and Hotspot sessions stay up). "
+                        "Any DHCP device on the LAN can reach the internet until "
+                        "enforcement is turned back on."
+                    ),
+                )
+            if (
+                previous_compulsory != enabled
+                and not apply_all
+                and org_router_count > 1
+            ):
+                messages.info(
+                    request,
+                    (
+                        f"Organization flag updated for all sites, but only "
+                        f"{router.name} was pushed. Other MikroTiks keep their "
+                        "previous firewall until you save with "
+                        "“Also push … every MikroTik” checked."
+                    ),
+                )
+            return redirect("core:mikrotik_pppoe_settings", router_id=router.pk)
+    elif can_edit:
+        form = PppoeSettingsForm(instance=org)
 
-    if adverts_form is None and can_edit:
-        adverts_form = AdvertsSettingsForm(instance=org)
+    pppoe_compulsory = bool(
+        form["pppoe_compulsory"].value() if form is not None else org.pppoe_compulsory
+    )
+    adverts_enabled = bool(
+        form["adverts_enabled"].value() if form is not None else org.adverts_enabled
+    )
 
     bits = _adverts_context_for_settings(org)
+    bits["adverts_enabled"] = adverts_enabled
     pay_preview_path = ""
     if org.join_code:
         pay_preview_path = (
@@ -12680,6 +12850,7 @@ def mikrotik_pppoe_settings(request, router_id: int):
         clean_uplink_enabled=bool(router.clean_uplink_enabled),
         is_suspended=router.account_status == MikroTikRouter.AccountStatus.SUSPENDED,
         include_modals=False,
+        nav_set="overview",
     )
     ctx = client_page_context(
         request,
@@ -12689,14 +12860,14 @@ def mikrotik_pppoe_settings(request, router_id: int):
         page_kicker="Access",
         page_subtitle=f"PPPoE enforcement and client logins for {router.name}.",
         form=form,
-        adverts_form=adverts_form,
-        adverts_form_id="pppoe-adverts-form",
         pay_preview_path=pay_preview_path,
         can_edit=can_edit,
         organization=org,
         pppoe_compulsory=pppoe_compulsory,
         pppoe_eligible_count=pppoe_eligible_count,
         blocked_count=blocked_count,
+        org_router_count=org_router_count,
+        hotspot_enabled=bool(getattr(org, "hotspot_enabled", False)),
         access_settings_tab="pppoe",
         **bits,
     )
@@ -12705,6 +12876,36 @@ def mikrotik_pppoe_settings(request, router_id: int):
         "core/pppoe_settings.html",
         apply_mikrotik_detail_sidebar(ctx, router, detail_nav=detail_nav),
     )
+
+
+def _ensure_hotspot_lands_on_success_page(org, urls) -> None:
+    """
+    After login always opens the success/welcome page.
+
+    Any previous custom after-login URL is moved onto the success-page button
+    when that button link is empty.
+    """
+    welcome = (urls.get("welcome_url") or "").strip()
+    update_fields: list[str] = []
+    custom = (org.hotspot_redirect_url or "").strip()
+    button = (org.hotspot_welcome_button_url or "").strip()
+    if (
+        custom
+        and welcome
+        and custom != welcome
+        and not button
+        and not org.hotspot_use_welcome_page
+    ):
+        org.hotspot_welcome_button_url = custom
+        update_fields.append("hotspot_welcome_button_url")
+    if not org.hotspot_use_welcome_page:
+        org.hotspot_use_welcome_page = True
+        update_fields.append("hotspot_use_welcome_page")
+    if welcome and org.hotspot_redirect_url != welcome:
+        org.hotspot_redirect_url = welcome
+        update_fields.append("hotspot_redirect_url")
+    if update_fields:
+        org.save(update_fields=update_fields)
 
 
 @client_workspace_required
@@ -12726,148 +12927,44 @@ def mikrotik_hotspot_settings(request, router_id: int):
     def _portal_urls_for(organization):
         return hotspot_portal_urls(organization.join_code, request)
 
-    def _push_one(result: dict, *, enabled: bool, saved: bool = False) -> None:
-        prefix = "Settings saved. " if saved else ""
-        if result.get("skipped"):
-            messages.info(
-                request,
-                f"{prefix}{result.get('message') or 'Router is offline — Hotspot push skipped.'}",
-            )
-            return
-        if not result.get("ok"):
-            messages.warning(
-                request,
-                f"{prefix}{result.get('error') or 'Could not push Hotspot to this router.'}",
-            )
-            return
-        users = int(result.get("users_synced") or 0)
-        user_bit = (
-            f" Synced {users} Hotspot login{'s' if users != 1 else ''}."
-            if users
-            else " No Hotspot clients to sync yet."
-        )
-        name = result.get("router_name") or router.name
-        if enabled:
-            messages.success(
-                request,
-                (
-                    f"{prefix}Hotspot pushed to {name}.{user_bit} "
-                    "Connecting to Wi‑Fi should open the payment/login page."
-                ),
-            )
-            notes = " ".join(str(n) for n in (result.get("notes") or []))
-            if "payment login page was not installed" in notes:
-                messages.warning(
-                    request,
-                    "Payment page could not be downloaded onto the router. "
-                    "Set PUBLIC_BASE_URL to this PC’s LAN IP, restart the server, then push again.",
-                )
-        else:
-            messages.success(request, f"{prefix}Hotspot removed from {name}.")
-
+    form = None
     if request.method == "POST" and can_edit:
-        action = (request.POST.get("action") or "save_settings").strip()
-        urls = _portal_urls_for(org)
+        form = HotspotSettingsForm(request.POST, instance=org)
+        if form.is_valid():
+            org = form.save(commit=False)
+            urls = _portal_urls_for(org)
+            custom = (org.hotspot_redirect_url or "").strip()
+            welcome = urls["welcome_url"]
+            button = (org.hotspot_welcome_button_url or "").strip()
+            if (
+                custom
+                and welcome
+                and custom != welcome
+                and not button
+                and not org.hotspot_use_welcome_page
+            ):
+                org.hotspot_welcome_button_url = custom
+            org.hotspot_use_welcome_page = True
+            org.hotspot_redirect_url = welcome
+            org.save()
 
-        if action == "save_adverts":
-            adverts_form, saved = _save_org_adverts_settings(request, org)
-            if saved:
-                return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
-            # Invalid — fall through to render with errors (form rebuilt below).
-        elif action == "save_hotspot_enabled":
-            enable_form = HotspotEnabledForm(request.POST, instance=org)
-            if enable_form.is_valid():
-                org = enable_form.save()
-                enabled = bool(org.hotspot_enabled)
-                urls = _portal_urls_for(org)
-                if enabled and org.hotspot_use_welcome_page:
-                    welcome = urls["welcome_url"]
-                    if org.hotspot_redirect_url != welcome:
-                        org.hotspot_redirect_url = welcome
-                        org.save(update_fields=["hotspot_redirect_url"])
-                router_pk = router.pk
-                org_pk = org.pk
-                push_urls = {
-                    "redirect_url": org.hotspot_redirect_url if enabled else "",
-                    "login_url": urls["login_url"] if enabled else "",
-                    "alogin_url": urls["alogin_url"] if enabled else "",
-                    "pay_url": urls["pay_url"] if enabled else "",
-                    "welcome_url": urls["welcome_url"] if enabled else "",
-                }
-
-                def _bg_hotspot_toggle(
-                    r_pk: int = router_pk,
-                    o_pk: int = org_pk,
-                    on: bool = enabled,
-                    portal: dict = push_urls,
-                ):
-                    live_router = MikroTikRouter.objects.select_related(
-                        "organization"
-                    ).get(pk=r_pk)
-                    live_org = Organization.objects.get(pk=o_pk)
-                    return apply_hotspot_on_router(
-                        live_router,
-                        enabled=on,
-                        organization=live_org,
-                        redirect_url=portal.get("redirect_url") or "",
-                        login_url=portal.get("login_url") or "",
-                        alogin_url=portal.get("alogin_url") or "",
-                        pay_url=portal.get("pay_url") or "",
-                        welcome_url=portal.get("welcome_url") or "",
-                    )
-
-                set_job(router_pk, "hotspot_push", "pending")
-                schedule_mikrotik_job(
-                    _bg_hotspot_toggle,
-                    name=f"hotspot-toggle-{router_pk}",
-                    router_id=router_pk,
-                    job_type="hotspot_push",
-                )
-                messages.success(
-                    request,
-                    (
-                        f"Hotspot turned {'on' if enabled else 'off'}. "
-                        f"{'Pushing to' if enabled else 'Removing from'} "
-                        f"{router.name} in the background."
-                    ),
-                )
-                if enabled and org.pppoe_compulsory:
-                    messages.info(
-                        request,
-                        "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
-                        "other devices must log in via Hotspot.",
-                    )
-                if enabled and urls.get("base_is_loopback"):
-                    messages.warning(
-                        request,
-                        "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
-                        "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
-                        "(e.g. http://10.10.0.168:8000) and run: "
-                        "python manage.py runserver 0.0.0.0:8000",
-                    )
-                elif enabled and urls.get("base_unreachable_reason"):
-                    messages.warning(request, urls["base_unreachable_reason"])
-            return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
-
-        elif action == "push_hotspot":
             enabled = bool(org.hotspot_enabled)
-            redirect_url = (org.hotspot_redirect_url or "").strip()
-            if enabled and org.hotspot_use_welcome_page:
-                redirect_url = urls["welcome_url"]
-                if org.hotspot_redirect_url != redirect_url:
-                    org.hotspot_redirect_url = redirect_url
-                    org.save(update_fields=["hotspot_redirect_url"])
+            if enabled:
+                _ensure_hotspot_lands_on_success_page(org, urls)
+                org.refresh_from_db()
+                urls = _portal_urls_for(org)
+
             router_pk = router.pk
             org_pk = org.pk
             push_urls = {
-                "redirect_url": redirect_url if enabled else "",
+                "redirect_url": org.hotspot_redirect_url if enabled else "",
                 "login_url": urls["login_url"] if enabled else "",
                 "alogin_url": urls["alogin_url"] if enabled else "",
                 "pay_url": urls["pay_url"] if enabled else "",
                 "welcome_url": urls["welcome_url"] if enabled else "",
             }
 
-            def _bg_hotspot_push(
+            def _bg_hotspot_save(
                 r_pk: int = router_pk,
                 o_pk: int = org_pk,
                 on: bool = enabled,
@@ -12890,14 +12987,15 @@ def mikrotik_hotspot_settings(request, router_id: int):
 
             set_job(router_pk, "hotspot_push", "pending")
             schedule_mikrotik_job(
-                _bg_hotspot_push,
-                name=f"hotspot-push-{router_pk}",
+                _bg_hotspot_save,
+                name=f"hotspot-save-{router_pk}",
                 router_id=router_pk,
                 job_type="hotspot_push",
             )
             messages.success(
                 request,
                 (
+                    f"Settings saved. "
                     f"{'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
                     f"{router.name} in the background."
                 ),
@@ -12912,110 +13010,22 @@ def mikrotik_hotspot_settings(request, router_id: int):
                 messages.warning(
                     request,
                     "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
-                    "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP (e.g. http://10.10.0.168:8000) "
-                    "and run: python manage.py runserver 0.0.0.0:8000",
+                    "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
+                    "(e.g. http://10.10.0.168:8000) and run: "
+                    "python manage.py runserver 0.0.0.0:8000",
                 )
             elif enabled and urls.get("base_unreachable_reason"):
                 messages.warning(request, urls["base_unreachable_reason"])
             return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
-
-        elif action != "save_adverts":
-            form = HotspotSettingsForm(request.POST, instance=org)
-            if form.is_valid():
-                org = form.save(commit=False)
-                urls = _portal_urls_for(org)
-                if org.hotspot_use_welcome_page:
-                    org.hotspot_redirect_url = urls["welcome_url"]
-                org.save()
-                enabled = bool(org.hotspot_enabled)
-                router_pk = router.pk
-                org_pk = org.pk
-                push_urls = {
-                    "redirect_url": org.hotspot_redirect_url if enabled else "",
-                    "login_url": urls["login_url"] if enabled else "",
-                    "alogin_url": urls["alogin_url"] if enabled else "",
-                    "pay_url": urls["pay_url"] if enabled else "",
-                    "welcome_url": urls["welcome_url"] if enabled else "",
-                }
-
-                def _bg_hotspot_save(
-                    r_pk: int = router_pk,
-                    o_pk: int = org_pk,
-                    on: bool = enabled,
-                    portal: dict = push_urls,
-                ):
-                    live_router = MikroTikRouter.objects.select_related(
-                        "organization"
-                    ).get(pk=r_pk)
-                    live_org = Organization.objects.get(pk=o_pk)
-                    return apply_hotspot_on_router(
-                        live_router,
-                        enabled=on,
-                        organization=live_org,
-                        redirect_url=portal.get("redirect_url") or "",
-                        login_url=portal.get("login_url") or "",
-                        alogin_url=portal.get("alogin_url") or "",
-                        pay_url=portal.get("pay_url") or "",
-                        welcome_url=portal.get("welcome_url") or "",
-                    )
-
-                set_job(router_pk, "hotspot_push", "pending")
-                schedule_mikrotik_job(
-                    _bg_hotspot_save,
-                    name=f"hotspot-save-{router_pk}",
-                    router_id=router_pk,
-                    job_type="hotspot_push",
-                )
-                messages.success(
-                    request,
-                    (
-                        f"Settings saved. {'Pushing Hotspot to' if enabled else 'Removing Hotspot from'} "
-                        f"{router.name} in the background."
-                    ),
-                )
-                if enabled and org.pppoe_compulsory:
-                    messages.info(
-                        request,
-                        "PPPoE enforcement stays on: dialed PPPoE clients keep internet; "
-                        "other devices must log in via Hotspot.",
-                    )
-                if enabled and urls.get("base_is_loopback"):
-                    messages.warning(
-                        request,
-                        "PUBLIC_BASE_URL is localhost — phones on Hotspot Wi‑Fi cannot reach it. "
-                        "Set PUBLIC_BASE_URL to this PC’s Hotspot LAN IP "
-                        "(e.g. http://10.10.0.168:8000) and run: "
-                        "python manage.py runserver 0.0.0.0:8000",
-                    )
-                elif enabled and urls.get("base_unreachable_reason"):
-                    messages.warning(request, urls["base_unreachable_reason"])
-                return redirect("core:mikrotik_hotspot_settings", router_id=router.pk)
-    else:
-        form = HotspotSettingsForm(instance=org) if can_edit else None
-
-    enable_form = HotspotEnabledForm(instance=org) if can_edit else None
-    try:
-        _af = adverts_form
-    except NameError:
-        _af = None
-    if _af is None:
-        adverts_form = AdvertsSettingsForm(instance=org) if can_edit else None
-    try:
-        _f = form
-    except NameError:
-        form = HotspotSettingsForm(instance=org) if can_edit else None
+    elif can_edit:
+        form = HotspotSettingsForm(instance=org)
 
     bits = _adverts_context_for_settings(org)
-
-    if enable_form is not None:
-        hotspot_enabled = bool(enable_form["hotspot_enabled"].value())
+    if form is not None:
+        hotspot_enabled = bool(form["hotspot_enabled"].value())
+        bits["adverts_enabled"] = bool(form["adverts_enabled"].value())
     else:
         hotspot_enabled = bool(org.hotspot_enabled)
-
-    if form is not None:
-        use_welcome_page = bool(form["hotspot_use_welcome_page"].value())
-    else:
-        use_welcome_page = bool(org.hotspot_use_welcome_page)
 
     urls = _portal_urls_for(org)
     hotspot_client_count = Customer.objects.filter(
@@ -13028,6 +13038,7 @@ def mikrotik_hotspot_settings(request, router_id: int):
         clean_uplink_enabled=bool(router.clean_uplink_enabled),
         is_suspended=router.account_status == MikroTikRouter.AccountStatus.SUSPENDED,
         include_modals=False,
+        nav_set="overview",
     )
     ctx = client_page_context(
         request,
@@ -13037,13 +13048,9 @@ def mikrotik_hotspot_settings(request, router_id: int):
         page_kicker="Access",
         page_subtitle=f"Hotspot portal, payment page, and voucher defaults for {router.name}.",
         form=form,
-        enable_form=enable_form,
-        adverts_form=adverts_form,
-        adverts_form_id="hotspot-adverts-form",
         can_edit=can_edit,
         organization=org,
         hotspot_enabled=hotspot_enabled,
-        use_welcome_page=use_welcome_page,
         hotspot_client_count=hotspot_client_count,
         welcome_page_url=urls["welcome_url"],
         welcome_page_path=urls["welcome_path"],
@@ -13230,33 +13237,28 @@ def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
 
 
 def _click_to_earn_portal_bits(org, request=None, *, portal: str = "") -> dict:
-    """Captive pay/pause pages: optional Click to earn link for this ISP."""
+    """Captive pay/pause pages: optional Refer & earn link for this ISP."""
     from core.hotspot_portal import public_absolute_url
 
     enabled = bool(getattr(org, "adverts_enabled", False))
-    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
     portal = (portal or "").strip().lower()
     if portal not in {"hotspot", "pppoe"}:
         portal = ""
     url = ""
     mode = "off"
-    if enabled:
-        if custom:
-            url = custom
-            mode = "external"
-        elif getattr(org, "join_code", None):
-            path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
-            if portal:
-                path = f"{path}?from={portal}"
-            url = public_absolute_url(path, request) if request is not None else path
-            if not url:
-                url = path
-            mode = "builtin"
+    if enabled and getattr(org, "join_code", None):
+        path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
+        if portal:
+            path = f"{path}?from={portal}"
+        url = public_absolute_url(path, request) if request is not None else path
+        if not url:
+            url = path
+        mode = "builtin"
     return {
         "adverts_enabled": enabled,
         "click_to_earn_url": url,
-        "click_to_earn_label": "Refer & earn" if mode == "builtin" else "Click to earn",
-        "click_to_earn_is_external": mode == "external",
+        "click_to_earn_label": "Refer & earn",
+        "click_to_earn_is_external": False,
         "click_to_earn_mode": mode,
     }
 
@@ -13266,51 +13268,13 @@ def _adverts_context_for_settings(org) -> dict:
     earn_path = ""
     if org.join_code:
         earn_path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
-    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
     return {
         "adverts_enabled": bool(getattr(org, "adverts_enabled", False)),
         "earn_page_path": earn_path,
-        "earn_preview_url": custom or earn_path,
-        "adverts_mode": "external" if custom else "builtin",
-        "adverts_redirect_url": custom,
+        "earn_preview_url": earn_path,
+        "adverts_mode": "builtin",
+        "adverts_redirect_url": "",
     }
-
-
-def _save_org_adverts_settings(request, org) -> tuple[AdvertsSettingsForm, bool]:
-    """
-    Persist Click to earn toggle + redirect URL.
-
-    Returns (form, saved). Caller should redirect after save.
-    """
-    form = AdvertsSettingsForm(request.POST, instance=org)
-    if not form.is_valid():
-        return form, False
-    org = form.save()
-    org.refresh_from_db()
-    if org.adverts_enabled:
-        custom = (org.adverts_redirect_url or "").strip()
-        if custom:
-            messages.success(
-                request,
-                "Click to earn is on (external link). Pay and pause pages will "
-                f"open: {custom}. Push Hotspot again so unpaid phones can reach "
-                "that host via walled garden.",
-            )
-        else:
-            earn_path = reverse(
-                "core:click_to_earn", kwargs={"join_code": org.join_code}
-            )
-            messages.success(
-                request,
-                "Click to earn is on (built-in adverts page). Pay and pause pages "
-                f"will open: {earn_path}",
-            )
-    else:
-        messages.success(
-            request,
-            "Click to earn is off. The card is hidden on pay and pause pages.",
-        )
-    return form, True
 
 
 def _theme_preview_demo_plans(*, service_type: str) -> list:
@@ -13447,7 +13411,6 @@ def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: st
         context["hotspot_selected_plan_id"] = plans[0].pk
         context["selected_plan_id"] = plans[0].pk
         context["hotspot_mac"] = demo_mac
-        context["hotspot_mac_privacy_hint"] = False
         context["customer_name"] = demo_name
         context["account_number"] = demo_account
         context["phone_value"] = demo_phone
@@ -13493,25 +13456,19 @@ def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: st
     context["hotspot_voucher_redeem_url"] = "#"
     context["theme_preview"] = True
     context["theme_preview_mode"] = mode
-    # Always show Click to earn in theme previews so owners can see the live look
+    # Always show Refer & earn in theme previews so owners can see the live look
     # even before they flip the Adverts toggle on.
     join_code = (context.get("join_code") or "").strip()
     if not join_code:
         org_obj = context.get("organization")
         join_code = str(getattr(org_obj, "join_code", "") or "").strip()
-    org_obj = context.get("organization")
-    custom = str(getattr(org_obj, "adverts_redirect_url", "") or "").strip()
-    if custom:
-        context["adverts_enabled"] = True
-        context["click_to_earn_url"] = custom
-        context["click_to_earn_label"] = context.get("click_to_earn_label") or "Click to earn"
-        context["click_to_earn_is_external"] = True
-    elif join_code:
+    if join_code:
         earn_path = reverse("core:click_to_earn", kwargs={"join_code": join_code})
         context["adverts_enabled"] = True
         context["click_to_earn_url"] = earn_path
         context["click_to_earn_label"] = context.get("click_to_earn_label") or "Refer & earn"
         context["click_to_earn_is_external"] = False
+        context["click_to_earn_mode"] = "builtin"
     if paused:
         context["page_title"] = f"{context.get('org_name') or 'ISP'} — Internet paused"
         context["page_message"] = context.get("access_banner_message") or (
@@ -13551,10 +13508,7 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
             mikrotik_login = True
 
     from billing.services import plans_for_router
-    from core.mikrotik_connect import (
-        find_hotspot_router_for_mac,
-        hotspot_mac_looks_randomized,
-    )
+    from core.mikrotik_connect import find_hotspot_router_for_mac
 
     # Customer + bound router first (DB only). Live NAS MAC→router scan is a
     # last resort — it was the main multi-second cost on every pay-page open.
@@ -13651,9 +13605,6 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "link_login": link_login,
         "link_orig": link_orig or urls["welcome_url"],
         "hotspot_mac": hotspot_mac,
-        "hotspot_mac_privacy_hint": bool(
-            hotspot_mac and hotspot_mac_looks_randomized(hotspot_mac)
-        ),
         "payment_start_url": hotspot_start,
         "hotspot_payment_start_url": hotspot_start,
         "voucher_redeem_url": public_absolute_url(
@@ -14141,6 +14092,23 @@ def hotspot_welcome(request, join_code: str):
     # Prefer the org's configured link; otherwise use an HTTP connectivity check
     # so captive browsers can leave the portal and start surfing immediately.
     button_url = (org.hotspot_welcome_button_url or "").strip() or "http://neverssl.com/"
+    quick_links = []
+    link1_url = (org.hotspot_welcome_link1_url or "").strip()
+    if link1_url:
+        quick_links.append(
+            {
+                "label": (org.hotspot_welcome_link1_label or "").strip() or "Website",
+                "url": link1_url,
+            }
+        )
+    link2_url = (org.hotspot_welcome_link2_url or "").strip()
+    if link2_url:
+        quick_links.append(
+            {
+                "label": (org.hotspot_welcome_link2_label or "").strip() or "More",
+                "url": link2_url,
+            }
+        )
     logo_url = ""
     if org.profile_photo:
         from core.hotspot_portal import public_absolute_url
@@ -14171,6 +14139,7 @@ def hotspot_welcome(request, join_code: str):
             "page_message": message,
             "button_label": button_label,
             "button_url": button_url,
+            "quick_links": quick_links,
             "logo_url": logo_url,
             "activation_url": activation_url,
             "paid": bool(stk_id and token),
@@ -14290,10 +14259,9 @@ def _redirect_pay_preserving_query(request, view_name: str, join_code: str):
 
 def click_to_earn(request, join_code: str):
     """
-    ISP Refer & earn page.
+    ISP Refer & earn page (always the built-in referral page when enabled).
 
-    - External mode: redirects to org.adverts_redirect_url
-    - Built-in mode: referral / commission info with ISP phone
+    - On: referral / commission info with ISP phone
     - Off: return to the matching pay portal
     """
     org = get_object_or_404(Organization, join_code=join_code)
@@ -14307,10 +14275,6 @@ def click_to_earn(request, join_code: str):
 
     if not getattr(org, "adverts_enabled", False):
         return _pay_fallback()
-
-    custom = (getattr(org, "adverts_redirect_url", None) or "").strip()
-    if custom:
-        return redirect(custom)
 
     pay_name = "core:pppoe_pay" if from_portal == "pppoe" else "core:hotspot_pay"
     pay_url = reverse(pay_name, kwargs={"join_code": join_code})
@@ -15303,11 +15267,18 @@ def leads(request):
     )
     customers = list(customer_qs[:200])
     pay_phone = (org.phone if org else "") or ""
+    from accounts.models import RoleCommission
+
+    sales_commission = RoleCommission.for_role(Employee.Role.SALES)
     for customer in customers:
         if customer.status != Customer.Status.NEW:
             customer.allocation_amount_display = ""
             continue
-        fee = resolve_lead_allocation_fee(organization=org, customer=customer)
+        fee = resolve_lead_allocation_fee(
+            organization=org,
+            customer=customer,
+            commission=sales_commission,
+        )
         customer.allocation_amount_display = (
             fee.get("amount_display") if fee.get("ok") else ""
         )

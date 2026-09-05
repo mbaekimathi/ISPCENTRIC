@@ -3,30 +3,38 @@
 {% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="account-page-shell">
-  <header class="account-page-intro">
-    <p class="account-page-kicker">{{ page_kicker }}</p>
-    <p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-  </header>
-
+<div class="account-page-shell{% if show_events %} account-page-shell--comms{% endif %}">
   {% if not organization %}
     <section class="panel staff-panel account-card">
       <p class="empty">No organization is linked to this account yet.</p>
     </section>
   {% else %}
     <div class="account-page" id="comms-page">
+      <header class="account-hero account-hero--comms">
+        <div class="account-hero-main">
+          <div class="account-hero-copy">
+            <p class="account-page-kicker">{{ page_kicker }}</p>
+            <h1 class="account-page-title">{{ page_title }}</h1>
+            <p class="account-hero-lead">{{ page_subtitle }}</p>
+          </div>
+        </div>
+        {% if show_events %}
+          <a class="btn btn-ghost btn-sm" href="{% url 'core:settings_communications' %}">Gateway settings</a>
+        {% endif %}
+      </header>
+
       {% if sms_status or email_status or whatsapp_status %}
-        <section class="panel account-card account-status-card">
+        <section class="panel account-card account-status-card" aria-label="Channel status">
           <header class="account-card-head">
             <div class="account-card-head-main">
               <div>
-                <h3>Channel status</h3>
-                <p>{% if show_config %}Turn on a channel, choose a provider, and save the gateway credentials.{% else %}SMS, email, and WhatsApp readiness for this ISP. Change credentials under Communication settings.{% endif %}</p>
+                <h2>Channels</h2>
+                <p>{% if show_config %}Turn on a channel, choose a provider, and save the gateway credentials.{% else %}SMS, email, and WhatsApp readiness for this ISP.{% endif %}</p>
               </div>
             </div>
           </header>
           <div class="account-summary-grid comms-summary-grid">
-            <div class="account-summary-item">
+            <article class="account-summary-item{% if sms_status.ready %} is-ready{% elif sms_status.enabled %} is-warn{% endif %}">
               <span>SMS</span>
               <strong>{{ sms_status.provider_label }}</strong>
               {% if sms_status.ready %}
@@ -36,8 +44,8 @@
               {% else %}
                 <span class="mikrotik-wifi-pill is-off">Off</span>
               {% endif %}
-            </div>
-            <div class="account-summary-item">
+            </article>
+            <article class="account-summary-item{% if email_status.ready %} is-ready{% elif email_status.enabled %} is-warn{% endif %}">
               <span>Email</span>
               <strong>{{ email_status.provider_label }}</strong>
               {% if email_status.ready %}
@@ -47,8 +55,8 @@
               {% else %}
                 <span class="mikrotik-wifi-pill is-off">Off</span>
               {% endif %}
-            </div>
-            <div class="account-summary-item">
+            </article>
+            <article class="account-summary-item{% if whatsapp_status.ready %} is-ready{% elif whatsapp_status.enabled %} is-warn{% endif %}">
               <span>WhatsApp</span>
               <strong>{{ whatsapp_status.provider_label }}</strong>
               {% if whatsapp_status.ready %}
@@ -58,7 +66,7 @@
               {% else %}
                 <span class="mikrotik-wifi-pill is-off">Off</span>
               {% endif %}
-            </div>
+            </article>
           </div>
         </section>
       {% endif %}
@@ -68,16 +76,16 @@
           <header class="account-card-head">
             <div class="account-card-head-main">
               <div>
-                <h3>When messages are sent</h3>
-                <p>Based on live ISPCENTRIC workflows. Configure SMS, email, and WhatsApp under <a href="{% url 'core:settings_communications' %}">Communication settings</a>.</p>
+                <h2>When messages are sent</h2>
+                <p>Based on live ISPCENTRIC workflows. Change SMS, email, and WhatsApp gateways under Communication settings.</p>
               </div>
             </div>
           </header>
           <div class="comms-events-grid">
             {% if client_events %}
               <div class="comms-events-col">
-                <h4>Your clients</h4>
-                <p class="comms-events-lead">Subscribers on PPPoE, Hotspot, or Static — their phone and email on the client record.</p>
+                <h3>Your clients</h3>
+                <p class="comms-events-lead">Subscribers on PPPoE, Hotspot, or Static — phone and email on the client record.</p>
                 <ol class="comms-event-list">
                   {% for event in client_events %}
                     <li class="comms-event">
@@ -96,8 +104,8 @@
             {% endif %}
             {% if isp_events %}
               <div class="comms-events-col">
-                <h4>This ISP account</h4>
-                <p class="comms-events-lead">The organization owner and staff on this workspace — owner email/phone, or the assigned technician.</p>
+                <h3>This ISP account</h3>
+                <p class="comms-events-lead">Organization owner and staff — owner email/phone, or the assigned technician.</p>
                 <ol class="comms-event-list">
                   {% for event in isp_events %}
                     <li class="comms-event">
@@ -125,7 +133,7 @@
         <section class="panel account-card">
           <header class="account-card-head">
             <div>
-              <h3>Communication settings</h3>
+              <h2>Communication settings</h2>
               <p>Read-only. Only the organization owner can change these credentials.</p>
             </div>
           </header>
@@ -141,4 +149,3 @@
 {% include "includes/comms_credentials_script.html" %}
 {% endif %}
 {% endblock %}
-

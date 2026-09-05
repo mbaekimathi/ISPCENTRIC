@@ -291,11 +291,23 @@ def discover_http_and_api(
             return _device(host, source="api")
         return None
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(check, host): host for host in targets}
-        for fut in as_completed(futures):
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(check, host): host for host in targets}
+            for fut in as_completed(futures):
+                try:
+                    item = fut.result()
+                except Exception:
+                    continue
+                if item and item.get("host"):
+                    found[item["host"]] = item
+    except RuntimeError as exc:
+        # Autoreload / interpreter teardown: finish what we can sequentially.
+        if "shutdown" not in str(exc).lower():
+            raise
+        for host in targets:
             try:
-                item = fut.result()
+                item = check(host)
             except Exception:
                 continue
             if item and item.get("host"):
@@ -387,10 +399,15 @@ def discover_mikrotik_devices(timeout: float = 3.0, *, full_scan: bool = False) 
 
     def run_scan():
         nonlocal scan_result
-        scan_result = discover_http_and_api(
-            max_workers=32 if full_scan else 16,
-            quick=not full_scan,
-        )
+        try:
+            scan_result = discover_http_and_api(
+                max_workers=32 if full_scan else 16,
+                quick=not full_scan,
+            )
+        except RuntimeError as exc:
+            if "shutdown" not in str(exc).lower():
+                raise
+            scan_result = []
 
     t1 = threading.Thread(target=run_mndp, daemon=True)
     t2 = threading.Thread(target=run_scan, daemon=True)

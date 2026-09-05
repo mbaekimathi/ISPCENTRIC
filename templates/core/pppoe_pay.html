@@ -1186,21 +1186,15 @@
           <strong>{{ access_banner_title }}</strong>
           {% if access_banner_message %}<p>{{ access_banner_message }}</p>{% endif %}
         </div>
-      {% elif page_message %}
-        <p class="meta">{{ page_message }}</p>
       {% endif %}
 
       {% if adverts_enabled and click_to_earn_url %}
         <div class="click-to-earn-wrap">
           <a class="click-to-earn-card" href="{{ click_to_earn_url }}">
             <p class="click-to-earn-kicker">While you connect</p>
-            <p class="click-to-earn-title">{{ click_to_earn_label|default:"Click to earn" }}</p>
+            <p class="click-to-earn-title">{{ click_to_earn_label|default:"Refer & earn" }}</p>
             <p class="click-to-earn-copy">
-              {% if click_to_earn_is_external %}
-                Tap to open the earn / adverts site set by {{ org_name }}.
-              {% else %}
-                Refer Wi‑Fi clients for commission — open {{ org_name }}’s Refer & earn page.
-              {% endif %}
+              Refer Wi‑Fi clients for commission — open {{ org_name }}’s Refer & earn page.
             </p>
             <span class="click-to-earn">Open →</span>
           </a>
