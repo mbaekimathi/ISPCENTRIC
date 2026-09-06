@@ -2,9 +2,15 @@
 {% if form and can_edit %}
   <section class="panel account-card access-control-card settings-policy-panel{% if adverts_enabled %} is-policy-on{% endif %}" id="org-adverts-panel">
     <header class="access-control-head">
-      <div>
-        <h3>Refer &amp; earn</h3>
-        <p>Shows a referral card on Hotspot and PPPoE pay pages for {{ organization.name }}.</p>
+      <div class="access-control-head-main">
+        {% if access_section_index %}
+          <span class="access-section-index" aria-hidden="true">{{ access_section_index }}</span>
+        {% endif %}
+        <div>
+          <p class="access-section-label">Referrals</p>
+          <h3>Refer &amp; earn</h3>
+          <p>Shows a compact referral link on the post-connection success page for {{ organization.name }}.</p>
+        </div>
       </div>
       <div class="access-preview-actions">
         {% if earn_preview_url %}

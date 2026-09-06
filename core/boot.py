@@ -77,9 +77,9 @@ def _subscription_sweep_startup_delay_sec() -> float:
 
 
 def _usage_sample_enabled() -> bool:
+    # Independent of subscription --no-sweep: usage history must keep building
+    # even when operators pause access sweeps.
     if "--no-usage-sample" in sys.argv:
-        return False
-    if "--no-sweep" in sys.argv:
         return False
     return os.getenv("USAGE_SAMPLE_ENABLED", "true").strip().lower() not in {
         "0",
@@ -102,6 +102,180 @@ def _usage_sample_startup_delay_sec() -> float:
         return max(0.0, float(os.getenv("USAGE_SAMPLE_STARTUP_DELAY_SEC", "35")))
     except (TypeError, ValueError):
         return 35.0
+
+
+_USAGE_SAMPLE_LOCK_KEY = "usage_sample_bg_lock"
+_USAGE_SAMPLE_HEARTBEAT_KEY = "usage_sample_bg_heartbeat"
+
+
+def usage_sampling_heartbeat_age_sec() -> float | None:
+    """Seconds since the last successful org-wide usage sample, or None if never."""
+    from django.core.cache import cache
+
+    stamp = cache.get(_USAGE_SAMPLE_HEARTBEAT_KEY)
+    if stamp is None:
+        return None
+    try:
+        return max(0.0, time.time() - float(stamp))
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_sampling_is_fresh(*, max_age_sec: float | None = None) -> bool:
+    """True when background/cron sampling has written a heartbeat recently."""
+    age = usage_sampling_heartbeat_age_sec()
+    if age is None:
+        return False
+    limit = float(
+        max_age_sec
+        if max_age_sec is not None
+        else max(120.0, _usage_sample_interval_sec() * 2.5)
+    )
+    return age <= limit
+
+
+def _mark_usage_sampling_heartbeat() -> None:
+    from django.core.cache import cache
+
+    # Keep the stamp longer than several missed intervals so pages can detect
+    # a dead sampler without false "fresh" readings.
+    ttl = max(600, int(_usage_sample_interval_sec() * 10))
+    cache.set(_USAGE_SAMPLE_HEARTBEAT_KEY, time.time(), ttl)
+
+
+def run_usage_sample_all_orgs(*, label: str = "interval") -> dict:
+    """
+    Persist live PPPoE/Hotspot counters for every organization.
+
+    Runs without anyone viewing usage pages so client/org trend charts keep
+    history. One worker wins via cache lock when multiple app processes /
+    systemd timers overlap.
+    """
+    from django.core.cache import cache
+
+    interval = int(_usage_sample_interval_sec())
+    # Hold the lock for the whole run so a slow MikroTik fleet cannot overlap
+    # with the next timer tick / gunicorn worker.
+    lock_ttl = max(180, interval * 3)
+    if not cache.add(_USAGE_SAMPLE_LOCK_KEY, 1, timeout=lock_ttl):
+        return {
+            "ok": True,
+            "skipped": True,
+            "sampled": 0,
+            "organizations": 0,
+            "label": label,
+        }
+
+    from accounts.models import Organization
+    from billing.usage_samples import sample_organization_usage
+
+    sampled_total = 0
+    org_count = 0
+    try:
+        for org in Organization.objects.order_by("id").iterator():
+            org_count += 1
+            try:
+                result = sample_organization_usage(org, force=True)
+                sampled_total += int((result or {}).get("sampled") or 0)
+            except Exception:
+                logger.exception(
+                    "usage sample %s failed for org %s",
+                    label,
+                    getattr(org, "pk", "?"),
+                )
+            # Refresh lock while walking a large fleet.
+            cache.set(_USAGE_SAMPLE_LOCK_KEY, 1, timeout=lock_ttl)
+        _mark_usage_sampling_heartbeat()
+        if org_count:
+            logger.info(
+                "usage sample %s: %s org(s), %s new row(s)",
+                label,
+                org_count,
+                sampled_total,
+            )
+        return {
+            "ok": True,
+            "skipped": False,
+            "sampled": sampled_total,
+            "organizations": org_count,
+            "label": label,
+        }
+    finally:
+        cache.delete(_USAGE_SAMPLE_LOCK_KEY)
+
+
+# Back-compat alias for older imports / tests.
+_run_usage_sample_all_orgs = run_usage_sample_all_orgs
+
+
+def ensure_usage_sampling(*, max_age_sec: float | None = None) -> bool:
+    """
+    If org-wide sampling looks stalled, kick one pass in a daemon thread.
+
+    Used as a safety net from the general-usage page so charts recover when
+    the in-process loop or systemd timer has stopped — without blocking the
+    request, and without requiring a per-client usage page visit.
+    """
+    if not _usage_sample_enabled():
+        return False
+    if usage_sampling_is_fresh(max_age_sec=max_age_sec):
+        return False
+    from django.core.cache import cache
+
+    # Collapse stampedes when many operators open General usage together.
+    if not cache.add("usage_sample_ensure_kick", 1, timeout=45):
+        return False
+
+    def _kick() -> None:
+        try:
+            run_usage_sample_all_orgs(label="ensure")
+        except Exception:
+            logger.exception("usage sample ensure kick failed")
+
+    threading.Thread(target=_kick, name="usage-sample-ensure", daemon=True).start()
+    return True
+
+
+def _start_usage_sample_loop() -> None:
+    if not _usage_sample_enabled():
+        logger.info(
+            "Usage sampling disabled (USAGE_SAMPLE_ENABLED=false or --no-usage-sample)."
+        )
+        return
+    interval = _usage_sample_interval_sec()
+
+    def _loop() -> None:
+        delay = _usage_sample_startup_delay_sec()
+        # Spread gunicorn workers so they do not all contend for the lock
+        # at the same second after a VPS restart / deploy.
+        delay += float(os.getpid() % 7)
+        if delay:
+            logger.info(
+                "Usage sampling startup delayed %.0fs so boot traffic stays light.",
+                delay,
+            )
+            time.sleep(delay)
+        try:
+            run_usage_sample_all_orgs(label="startup")
+        except Exception:
+            logger.exception("usage sample startup failed")
+        while True:
+            time.sleep(interval)
+            try:
+                run_usage_sample_all_orgs(label="interval")
+            except Exception:
+                logger.exception("usage sample interval failed")
+
+    threading.Thread(
+        target=_loop,
+        name="usage-sample",
+        daemon=True,
+    ).start()
+    logger.info(
+        "Usage sampling armed (every %.0fs) — collects for General usage without "
+        "anyone opening client usage pages. Disable with USAGE_SAMPLE_ENABLED=false.",
+        interval,
+    )
 
 
 def _expiry_watch_interval_sec() -> float:
@@ -169,7 +343,7 @@ def _run_near_deadline_expiry_sync() -> None:
             logger.info("near-deadline expiry synced %s customer(s)", synced)
 
         repaired = 0
-        routers = (
+        routers = list(
             MikroTikRouter.objects.filter(
                 account_status=MikroTikRouter.AccountStatus.ACTIVE,
             )
@@ -177,21 +351,28 @@ def _run_near_deadline_expiry_sync() -> None:
             .select_related("organization")
             .order_by("id")
         )
-        for router in routers:
-            try:
-                result = repair_paid_pppoe_not_surfing_on_router(router)
-                count = int(result.get("repaired") or 0)
-                if count:
-                    repaired += count
-                    logger.info(
-                        "paid-not-surfing repair: %s",
-                        result.get("message") or count,
-                    )
-            except Exception:
-                logger.exception(
-                    "paid-not-surfing repair failed for router %s",
-                    getattr(router, "pk", None),
-                )
+        if routers:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            workers = min(8, len(routers))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(repair_paid_pppoe_not_surfing_on_router, router)
+                    for router in routers
+                ]
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception:
+                        logger.exception("paid-not-surfing repair failed")
+                        continue
+                    count = int(result.get("repaired") or 0)
+                    if count:
+                        repaired += count
+                        logger.info(
+                            "paid-not-surfing repair: %s",
+                            result.get("message") or count,
+                        )
         if repaired:
             logger.info("paid-not-surfing repaired %s account(s)", repaired)
     finally:
@@ -237,80 +418,6 @@ def _start_subscription_sweep_loop() -> None:
         "Disable with SUBSCRIPTION_SWEEP_ENABLED=false.",
         interval,
         watch_interval,
-    )
-
-
-def _run_usage_sample_all_orgs(*, label: str = "interval") -> None:
-    """
-    Persist live PPPoE/Hotspot counters for every organization.
-
-    Runs without anyone viewing usage pages so client/org trend charts keep
-    history. One worker wins via cache lock when multiple app processes boot.
-    """
-    from django.core.cache import cache
-
-    interval = int(_usage_sample_interval_sec())
-    lock_ttl = max(20, interval - 5)
-    if not cache.add("usage_sample_bg_lock", 1, timeout=lock_ttl):
-        return
-
-    from accounts.models import Organization
-    from billing.usage_samples import sample_organization_usage
-
-    sampled_total = 0
-    org_count = 0
-    for org in Organization.objects.order_by("id").iterator():
-        org_count += 1
-        try:
-            result = sample_organization_usage(org, force=True)
-            sampled_total += int((result or {}).get("sampled") or 0)
-        except Exception:
-            logger.exception(
-                "usage sample %s failed for org %s",
-                label,
-                getattr(org, "pk", "?"),
-            )
-    if org_count:
-        logger.info(
-            "usage sample %s: %s org(s), %s new row(s)",
-            label,
-            org_count,
-            sampled_total,
-        )
-
-
-def _start_usage_sample_loop() -> None:
-    if not _usage_sample_enabled():
-        return
-    interval = _usage_sample_interval_sec()
-
-    def _loop() -> None:
-        delay = _usage_sample_startup_delay_sec()
-        if delay:
-            logger.info(
-                "Usage sampling startup delayed %.0fs so boot traffic stays light.",
-                delay,
-            )
-            time.sleep(delay)
-        try:
-            _run_usage_sample_all_orgs(label="startup")
-        except Exception:
-            logger.exception("usage sample startup failed")
-        while True:
-            time.sleep(interval)
-            try:
-                _run_usage_sample_all_orgs(label="interval")
-            except Exception:
-                logger.exception("usage sample interval failed")
-
-    threading.Thread(
-        target=_loop,
-        name="usage-sample",
-        daemon=True,
-    ).start()
-    logger.info(
-        "Usage sampling armed (every %.0fs). Disable with USAGE_SAMPLE_ENABLED=false.",
-        interval,
     )
 
 

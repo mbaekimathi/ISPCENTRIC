@@ -99,7 +99,88 @@
           <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online time</dt>
           <dd><strong data-sum="online-time">{{ trends.summary.online_time_label|default:"—" }}</strong><span data-sum="online-meta">{% if trends.summary.online_ratio != None %}{{ trends.summary.online_ratio }}% of readings online{% else %}Share of this period{% endif %}</span></dd>
         </div>
+        <div class="client-kv client-usage-stat" data-ico="devices">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Zm3 10h6v2H9Z"/></svg></span>Devices</dt>
+          <dd>
+            <strong data-sum="devices-connected">{{ devices_connected_count|default:0 }}</strong>
+            <span data-sum="devices-meta">
+              {% if devices_linked_count %}{{ devices_linked_count }} linked on this account{% else %}Connected on this account{% endif %}
+            </span>
+          </dd>
+        </div>
       </dl>
+    </section>
+
+    <section
+      class="clients-usage-overview client-usage-devices-section"
+      id="usage-devices"
+      data-cat="live"
+      {% if router_data_url %}data-router-data-url="{{ router_data_url }}"{% endif %}
+    >
+      <header class="clients-usage-section-head">
+        <div>
+          <p class="clients-usage-section-kicker">
+            <span class="clients-usage-section-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Zm3 10h6v2H9Z"/></svg>
+            </span>
+            Devices
+          </p>
+          <h2>Connected devices</h2>
+          <p class="clients-usage-section-meta">
+            {% if customer.service_type == "hotspot" %}
+              Gadgets linked to this Hotspot account{% if devices_connected_count %} · {{ devices_connected_count }} online now{% endif %}.
+            {% elif router_data_url %}
+              Live devices on the client CPE, plus any MACs linked to this account.
+            {% else %}
+              Devices linked to this account.
+            {% endif %}
+          </p>
+        </div>
+      </header>
+
+      <div class="org-table-shell client-usage-devices-shell">
+        <table class="org-table org-table-client-devices client-usage-devices-table">
+          <thead>
+            <tr>
+              <th scope="col">Device</th>
+              <th scope="col">MAC</th>
+              <th scope="col">Status</th>
+              <th scope="col">Last seen</th>
+              {% if router_data_url %}<th scope="col">IP</th><th scope="col">Traffic</th>{% endif %}
+            </tr>
+          </thead>
+          <tbody data-usage-device-list>
+            {% for device in account_devices %}
+              <tr class="{% if device.connected %}is-online{% else %}is-offline{% endif %}" data-mac="{{ device.mac }}">
+                <td data-label="Device">{{ device.label }}</td>
+                <td data-label="MAC"><code class="client-usage-mono">{{ device.mac }}</code></td>
+                <td data-label="Status">
+                  <span class="clients-usage-online{% if device.connected %} is-on{% else %} is-off{% endif %}">
+                    <span class="clients-usage-online-dot" aria-hidden="true"></span>
+                    {% if device.connected %}Online{% else %}Offline{% endif %}
+                  </span>
+                </td>
+                <td data-label="Last seen">{% if device.last_seen_label %}{{ device.last_seen_label }}{% else %}—{% endif %}</td>
+                {% if router_data_url %}<td data-label="IP">—</td><td data-label="Traffic">—</td>{% endif %}
+              </tr>
+            {% empty %}
+              <tr data-usage-devices-empty>
+                <td colspan="{% if router_data_url %}6{% else %}4{% endif %}">
+                  <p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">
+                    {% if customer.service_type == "hotspot" %}
+                      No devices linked to this account yet.
+                    {% elif router_data_url %}
+                      Waiting for live CPE devices…
+                    {% else %}
+                      No devices listed for this account.
+                    {% endif %}
+                  </p>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </section>
 
     {% if can_live_usage %}
@@ -828,6 +909,123 @@
   window.addEventListener("resize", function () {
     resizeCharts();
   });
+})();
+</script>
+<script>
+(function () {
+  var section = document.getElementById("usage-devices");
+  if (!section) return;
+  var list = section.querySelector("[data-usage-device-list]");
+  var connectedEl = document.querySelector('[data-sum="devices-connected"]');
+  var metaEl = document.querySelector('[data-sum="devices-meta"]');
+  var routerUrl = section.getAttribute("data-router-data-url") || "";
+  var hasCpeCols = !!routerUrl;
+  var inFlight = false;
+
+  function esc(text) {
+    return String(text == null ? "" : text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function existingMacs() {
+    var macs = {};
+    if (!list) return macs;
+    list.querySelectorAll("tr[data-mac]").forEach(function (row) {
+      var mac = (row.getAttribute("data-mac") || "").toUpperCase();
+      if (mac) macs[mac] = row;
+    });
+    return macs;
+  }
+
+  function setConnectedCount(n, linked) {
+    if (connectedEl) connectedEl.textContent = String(n);
+    if (metaEl && linked != null) {
+      metaEl.textContent = linked + " linked on this account";
+    }
+  }
+
+  function drawCpeDevices(devices) {
+    if (!list || !hasCpeCols) return;
+    var known = existingMacs();
+    var empty = list.querySelector("[data-usage-devices-empty]");
+    if (empty) empty.remove();
+
+    var online = 0;
+    (devices || []).forEach(function (device, idx) {
+      var mac = String(device.mac || "").toUpperCase();
+      var name = device.name || ("Device " + (idx + 1));
+      var ip = device.ip || "—";
+      var traffic = [device.download, device.upload].filter(Boolean).join(" / ") || "—";
+      var row = mac && known[mac] ? known[mac] : null;
+      if (!row) {
+        row = document.createElement("tr");
+        row.className = "is-online";
+        if (mac) row.setAttribute("data-mac", mac);
+        row.innerHTML =
+          "<td data-label=\"Device\">" + esc(name) + "</td>" +
+          "<td data-label=\"MAC\"><code class=\"client-usage-mono\">" + esc(mac || "—") + "</code></td>" +
+          "<td data-label=\"Status\"><span class=\"clients-usage-online is-on\"><span class=\"clients-usage-online-dot\" aria-hidden=\"true\"></span>Online</span></td>" +
+          "<td data-label=\"Last seen\">Now</td>" +
+          "<td data-label=\"IP\">" + esc(ip) + "</td>" +
+          "<td data-label=\"Traffic\">" + esc(traffic) + "</td>";
+        list.appendChild(row);
+      } else {
+        row.classList.remove("is-offline");
+        row.classList.add("is-online");
+        var status = row.querySelector(".clients-usage-online");
+        if (status) {
+          status.classList.remove("is-off");
+          status.classList.add("is-on");
+          status.innerHTML = '<span class="clients-usage-online-dot" aria-hidden="true"></span>Online';
+        }
+        var cells = row.querySelectorAll("td");
+        if (cells[0] && name) cells[0].textContent = name;
+        if (cells[3]) cells[3].textContent = "Now";
+        if (cells[4]) cells[4].textContent = ip;
+        if (cells[5]) cells[5].textContent = traffic;
+      }
+      online += 1;
+    });
+
+    var linked = list.querySelectorAll("tr[data-mac]").length;
+    if (!linked && !(devices || []).length) {
+      list.innerHTML =
+        '<tr data-usage-devices-empty><td colspan="6">' +
+        '<p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">No live CPE devices right now.</p>' +
+        "</td></tr>";
+      setConnectedCount(0, 0);
+      return;
+    }
+    setConnectedCount(online || list.querySelectorAll("tr.is-online").length, linked);
+  }
+
+  function loadCpeDevices(force) {
+    if (!routerUrl || inFlight || document.hidden) return;
+    inFlight = true;
+    var qs = force ? ((routerUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1&_=" + Date.now()) : "";
+    fetch(routerUrl + qs, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data && data.ok) drawCpeDevices(data.devices || []);
+      })
+      .catch(function () {})
+      .finally(function () { inFlight = false; });
+  }
+
+  if (routerUrl) {
+    loadCpeDevices(false);
+    var refreshBtn = document.querySelector("[data-usage-refresh]");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", function () { loadCpeDevices(true); });
+    }
+  }
 })();
 </script>
 {% endblock %}

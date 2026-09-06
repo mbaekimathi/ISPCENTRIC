@@ -14,7 +14,7 @@
     <div class="mk-page-hero-status" aria-live="polite">
       <span class="mk-status-pill{% if clean_uplink_enabled %} is-on{% else %} is-off{% endif %}">
         <span class="mk-status-dot" aria-hidden="true"></span>
-        {% if clean_uplink_enabled %}On{% else %}Off{% endif %}
+        {% if clean_uplink_enabled %}On · auto soft-sync{% else %}Syncing…{% endif %}
       </span>
       <p class="mk-page-hero-meta">{{ router.name }} · {{ router.host }}</p>
     </div>
@@ -25,7 +25,12 @@
   {% if clean_uplink_enabled %}
     <div class="mk-banner is-success" role="status">
       <strong>Clean uplink is on.</strong>
-      Provider settings pages are blocked so customers only get internet through this MikroTik.
+      Provider modem/ONT admin is blocked. Sync does not unbridge WAN or change LAN/DHCP, so users stay connected.
+    </div>
+  {% else %}
+    <div class="mk-banner is-warn" role="status">
+      <strong>Clean uplink is syncing automatically.</strong>
+      Opening this page refreshes firewall blocks in the background without disconnecting anyone.
     </div>
   {% endif %}
 
@@ -55,10 +60,8 @@
       <article class="mk-stat">
         <p class="mk-stat-label">Provider block</p>
         <p class="mk-stat-value mk-stat-value-sm">
-          {% if clean_uplink_enabled and router.clean_uplink_mode == "behind" %}
-            {{ router.provider_gateway|default:"—" }}
-          {% elif clean_uplink_enabled %}
-            Not needed
+          {% if clean_uplink_enabled %}
+            {{ router.provider_gateway|default:"Auto-detect" }}
           {% else %}
             —
           {% endif %}
@@ -74,6 +77,7 @@
     {% else %}
       <form method="post" class="mk-clean-form" id="mikrotik-clean-uplink-form" novalidate>
         {% csrf_token %}
+        {{ form.separate_wan }}
         {% if form.non_field_errors %}
           <div class="field-error mk-form-banner">{{ form.non_field_errors|striptags }}</div>
         {% endif %}
@@ -94,7 +98,7 @@
                   <span class="mk-mode-card-title">{{ label }}</span>
                   <span class="mk-mode-card-copy">
                     {% if value == "bypass" %}
-                      ISP modem/ONT in bridge or bypass. MikroTik owns WAN (DHCP or PPPoE).
+                      ISP modem/ONT in bridge or bypass. Soft-sync blocks provider admin when detected — no disconnect.
                     {% else %}
                       ISP router stays on. Block its admin page so customers only get internet.
                     {% endif %}
@@ -126,23 +130,19 @@
         </div>
 
         <div class="mk-checks">
-          <label class="mk-check">
-            {{ form.separate_wan }}
+          <div class="mk-check is-locked" aria-disabled="true">
+            <span class="mk-check-locked-mark" aria-hidden="true">✓</span>
             <span>
-              <strong>{{ form.separate_wan.label }}</strong>
-              <small>{{ form.separate_wan.help_text }}</small>
+              <strong>No disconnect soft-sync</strong>
+              <small>{{ form.fields.separate_wan.help_text }}</small>
             </span>
-          </label>
+          </div>
           <label class="mk-check is-required">
             {{ form.confirm }}
             <span>
               <strong>Confirm</strong>
               <small>
-                {% if clean_uplink_enabled %}
-                  I confirm I want to disable clean uplink on this MikroTik.
-                {% else %}
-                  I confirm I want to enable clean uplink (cable the ISP modem/ONT to ether1 / WAN first).
-                {% endif %}
+                Save these settings and soft-sync firewall blocks now (users stay online).
               </small>
             </span>
           </label>
@@ -150,16 +150,12 @@
         </div>
 
         <div class="mk-actions-row">
-          <button type="submit" class="btn {% if clean_uplink_enabled %}btn-danger{% else %}btn-primary{% endif %} mk-action-btn">
-            {% if clean_uplink_enabled %}Disable clean uplink{% else %}Enable clean uplink{% endif %}
+          <button type="submit" class="btn btn-primary mk-action-btn">
+            Save &amp; soft-sync
           </button>
           <p class="mk-help-note">
-            {% if clean_uplink_enabled %}
-              Removes ISPCENTRIC firewall, DNS-force, and provider-block rules from this router.
-            {% else %}
-              Pick Bypass if the ISP modem is bridged, or Behind provider if their router is still routing.
-              Works with DHCP or PPPoE. Keep “Separate WAN from bridge” OFF unless your PC is on a LAN port.
-            {% endif %}
+            This page also auto-syncs when you open it. Soft-sync never removes WAN from the
+            bridge and never rewrites LAN or DHCP — only provider-block firewall helpers.
           </p>
         </div>
       </form>
@@ -169,22 +165,4 @@
 {% endblock %}
 
 {% block client_extra_js %}
-{% if not is_suspended %}
-<script>
-(function () {
-  var form = document.getElementById("mikrotik-clean-uplink-form");
-  if (!form) return;
-  var gatewayField = form.querySelector("[data-clean-gateway-field]");
-  if (!gatewayField) return;
-  function update() {
-    var behind = form.querySelector('input[name="mode"][value="behind"]');
-    gatewayField.hidden = !(behind && behind.checked);
-  }
-  form.querySelectorAll('input[name="mode"]').forEach(function (input) {
-    input.addEventListener("change", update);
-  });
-  update();
-})();
-</script>
-{% endif %}
 {% endblock %}

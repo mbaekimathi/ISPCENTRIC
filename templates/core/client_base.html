@@ -91,7 +91,20 @@
   <div class="staff-workspace">
     <div class="mikrotik-page-loader" id="mikrotik-page-loader" hidden aria-hidden="true" role="status">
       <div class="mikrotik-page-loader-card">
-        <span class="mikrotik-page-spinner" aria-hidden="true"></span>
+        <div class="mikrotik-page-loader-orb" aria-hidden="true">
+          <span class="mikrotik-page-loader-ring"></span>
+          <span class="mikrotik-page-loader-ring is-slow"></span>
+          <span class="mikrotik-page-loader-core">
+            <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="7" width="16" height="10" rx="2.5"></rect>
+              <path d="M8 7V5.5A1.5 1.5 0 0 1 9.5 4h5A1.5 1.5 0 0 1 16 5.5V7"></path>
+              <circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <path d="M7 17v1.5M12 17v2M17 17v1.5"></path>
+            </svg>
+          </span>
+        </div>
         <p class="mikrotik-page-loader-title">Loading…</p>
         <p class="mikrotik-page-loader-sub">Please wait</p>
       </div>

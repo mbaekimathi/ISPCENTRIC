@@ -33,12 +33,68 @@ STK_QUERY_MIN_INTERVAL_SECONDS = 3
 _STK_RAW_PRESERVE_KEYS = (
     "lead_allocation_options",
     "environment",
+    "credential_source",
     "initiate",
     "callback",
     "callback_receipt",
     "awaiting_daraja_confirm",
     "query",
 )
+
+
+def _credential_meta_from_creds(creds: dict | None) -> dict:
+    """Snapshot which gateway initiated an STK (company vs ISP) for later queries."""
+    creds = creds or {}
+    source = (creds.get("source") or "").strip() or "unknown"
+    return {
+        "credential_source": source,
+        "credential_source_label": (creds.get("source_label") or "").strip(),
+    }
+
+
+def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
+    """
+    Credentials for STK Query / confirm — prefer the gateway that started the push.
+
+    Company Payment Gateway and ISP Payment Gateway are never mixed. When the ISP
+    later switches gateways, still query with the keys that issued CheckoutRequestID.
+    """
+    stored = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    source = (stored.get("credential_source") or "").strip()
+    if source == "platform":
+        return _platform_daraja_credentials()
+    if source == "organization" and stk.organization_id:
+        org = stk.organization
+        if org is not None and org.has_own_daraja_credentials():
+            # Force ISP-only fields even if platform is now the org default.
+            payment_type = (org.mpesa_payment_type or "").strip()
+            shortcode = (org.mpesa_number or "").strip()
+            key = (org.daraja_consumer_key or "").strip()
+            secret = (org.daraja_consumer_secret or "").strip()
+            passkey = (org.daraja_passkey or "").strip()
+            ready = bool(key and secret and passkey and payment_type and shortcode)
+            return {
+                "enabled": True,
+                "ready": ready,
+                "source": "organization",
+                "source_label": "ISP Payment Gateway",
+                "environment": org.DarajaEnvironment.PRODUCTION,
+                "payment_type": payment_type,
+                "shortcode": shortcode,
+                "consumer_key": key,
+                "consumer_secret": secret,
+                "passkey": passkey,
+                "callback_url": "",
+                "message": (
+                    f"Using this ISP's Payment Gateway with shortcode {shortcode}."
+                    if ready
+                    else "ISP Payment Gateway credentials are incomplete."
+                ),
+            }
+    org = stk.organization
+    if org is not None:
+        return org.effective_daraja_credentials()
+    return _platform_daraja_credentials()
 
 
 def _merge_stk_raw_callback(existing, incoming) -> dict:
@@ -279,8 +335,7 @@ def _confirm_stk_success_with_daraja(stk: StkPushRequest) -> dict:
             "data": {},
         }
 
-    org = stk.organization
-    creds = org.effective_daraja_credentials() if org is not None else {}
+    creds = resolve_stk_daraja_credentials(stk)
     if not creds.get("ready"):
         return {
             "success": False,
@@ -501,7 +556,11 @@ def start_subscription_stk_payment(
         stk.status = StkPushRequest.Status.FAILED
         stk.result_desc = error[:255]
         stk.completed_at = timezone.now()
-        stk.raw_callback = {"initiate_error": result, "environment": used_env}
+        stk.raw_callback = {
+            "initiate_error": result,
+            "environment": used_env,
+            **_credential_meta_from_creds(creds),
+        }
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
         )
@@ -510,7 +569,11 @@ def start_subscription_stk_payment(
     stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
     stk.checkout_request_id = (result.get("checkout_request_id") or "")[:64]
     stk.result_desc = (result.get("customer_message") or "STK Push sent.")[:255]
-    stk.raw_callback = {"initiate": result.get("data") or {}, "environment": used_env}
+    stk.raw_callback = {
+        "initiate": result.get("data") or {},
+        "environment": used_env,
+        **_credential_meta_from_creds(creds),
+    }
     stk.save(
         update_fields=[
             "merchant_request_id",
@@ -534,6 +597,7 @@ def start_subscription_stk_payment(
         "plan_name": plan.name,
         "environment": used_env,
         "shortcode": creds.get("shortcode") or "",
+        "credential_source": (creds.get("source") or ""),
     }
 
 
@@ -657,7 +721,11 @@ def start_lead_allocation_stk_payment(
         stk.status = StkPushRequest.Status.FAILED
         stk.result_desc = error[:255]
         stk.completed_at = timezone.now()
-        stk.raw_callback = {"initiate_error": result, "environment": used_env}
+        stk.raw_callback = {
+            "initiate_error": result,
+            "environment": used_env,
+            **_credential_meta_from_creds(creds),
+        }
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
         )
@@ -672,6 +740,7 @@ def start_lead_allocation_stk_payment(
         "initiate": result.get("data") or {},
         "environment": used_env,
         "lead_allocation_options": allocation_options,
+        **_credential_meta_from_creds(creds),
     }
     stk.save(
         update_fields=[
@@ -819,6 +888,7 @@ def start_mikrotik_onboarding_stk_payment(
         stk.raw_callback = {
             "initiate_error": result,
             "environment": used_env,
+            **_credential_meta_from_creds(creds),
             "mikrotik_onboarding": {
                 "label": site_label,
                 "user_id": getattr(user, "pk", None),
@@ -838,6 +908,7 @@ def start_mikrotik_onboarding_stk_payment(
         **raw,
         "initiate": result.get("data") or {},
         "environment": used_env,
+        **_credential_meta_from_creds(creds),
     }
     stk.save(
         update_fields=[
@@ -1072,6 +1143,8 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
         stk.invoice = invoice
         stk.payment = payment
 
+    ensure_stk_payment_receipt(stk, receipt=(stk.mpesa_receipt or ""))
+
     stk.status = StkPushRequest.Status.SUCCESS
     stk.subscription_applied = True
     stk.completed_at = timezone.now()
@@ -1296,6 +1369,9 @@ def fulfill_successful_stk(
         )
         stk.invoice = invoice
         stk.payment = payment
+
+    # Always copy a known receipt onto Payment.reference (company or ISP gateway).
+    ensure_stk_payment_receipt(stk, receipt=receipt or (stk.mpesa_receipt or ""))
 
     # Payment is recorded; package + MikroTik activate only after voucher redeem.
     stk.status = StkPushRequest.Status.SUCCESS
@@ -1761,8 +1837,7 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
     if not stk.checkout_request_id:
         return _still_pending(base, stk, result_desc=stk.result_desc)
 
-    org = stk.organization
-    creds = org.effective_daraja_credentials()
+    creds = resolve_stk_daraja_credentials(stk)
     if not creds.get("ready"):
         return _still_pending(base, stk)
 

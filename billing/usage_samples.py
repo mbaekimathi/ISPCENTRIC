@@ -20,10 +20,16 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
+_ORG_PAYLOAD_CACHE_VERSION = "v6"  # bump when payload shape / sampling changes
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
-_CLIENT_TREND_CACHE_VERSION = "v4"  # bump when payload shape changes
+_CLIENT_TREND_CACHE_VERSION = "v5"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
 _CLIENT_SAMPLE_CAP = 8000  # max rows scanned per client trend request
+_ORG_SAMPLE_ROW_SOFT_CAP = 8000  # target rows after fair per-client downsample
+_ORG_SAMPLE_MAX_PER_CUSTOMER = 240  # keep enough points for rate/delta fidelity
+_ORG_SAMPLE_MIN_PER_CUSTOMER = 24
+_LIVE_SAMPLE_STALE_SEC = 90  # re-probe analysis page when history is this old
+_HOTSPOT_SYNTH_TTL = 60 * 60 * 12  # multi-MAC synthetic counters
 # Chart y-values for access presence: surfing / not surfing / disconnected
 _SURF_STATE_SURFING = 2
 _SURF_STATE_NOT_SURFING = 1
@@ -402,6 +408,194 @@ def _offline_usage_payload() -> dict[str, Any]:
     }
 
 
+def _downsample_rows(rows: list[dict[str, Any]], keep: int) -> list[dict[str, Any]]:
+    """Evenly spaced subsample so long histories keep start, middle, and end."""
+    if keep <= 0 or not rows:
+        return []
+    if keep >= len(rows):
+        return list(rows)
+    step = len(rows) / float(keep)
+    return [rows[min(len(rows) - 1, int(i * step))] for i in range(keep)]
+
+
+def _load_org_usage_samples(samples_qs, *, sample_cap: int) -> list[dict[str, Any]]:
+    """
+    Load org samples without truncating later customer_ids.
+
+    A hard ``[:cap]`` ordered by customer_id dropped high-id clients entirely.
+    Group first, then fair-downsample so every client with history stays represented.
+    """
+    sample_cap = max(100, int(sample_cap or _ORG_SAMPLE_ROW_SOFT_CAP))
+    value_fields = (
+        "customer_id",
+        "sampled_at",
+        "session_active",
+        "download_bps",
+        "upload_bps",
+        "bytes_in",
+        "bytes_out",
+    )
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    max_raw = max(sample_cap * 8, _ORG_SAMPLE_MAX_PER_CUSTOMER * 400)
+    raw_count = 0
+    for row in samples_qs.order_by("customer_id", "sampled_at").values(*value_fields).iterator(
+        chunk_size=2500
+    ):
+        cid = int(row["customer_id"])
+        bucket = grouped.setdefault(cid, [])
+        bucket.append(row)
+        raw_count += 1
+        # Bound memory while streaming: compress noisy clients early.
+        if len(bucket) > _ORG_SAMPLE_MAX_PER_CUSTOMER * 3:
+            grouped[cid] = _downsample_rows(bucket, _ORG_SAMPLE_MAX_PER_CUSTOMER)
+        if raw_count >= max_raw:
+            break
+
+    if not grouped:
+        return []
+
+    n_clients = len(grouped)
+    fair_each = max(
+        _ORG_SAMPLE_MIN_PER_CUSTOMER,
+        min(
+            _ORG_SAMPLE_MAX_PER_CUSTOMER,
+            max(sample_cap // max(1, n_clients), _ORG_SAMPLE_MIN_PER_CUSTOMER),
+        ),
+    )
+    samples: list[dict[str, Any]] = []
+    for cid in sorted(grouped.keys()):
+        rows = grouped[cid]
+        keep = min(len(rows), fair_each)
+        samples.extend(_downsample_rows(rows, keep))
+
+    if len(samples) > sample_cap * 2:
+        # Still too dense overall — second pass proportional to each client's share.
+        by_cid: dict[int, list[dict[str, Any]]] = {}
+        for row in samples:
+            by_cid.setdefault(int(row["customer_id"]), []).append(row)
+        total = sum(len(v) for v in by_cid.values()) or 1
+        trimmed: list[dict[str, Any]] = []
+        for cid, rows in by_cid.items():
+            keep = max(
+                _ORG_SAMPLE_MIN_PER_CUSTOMER,
+                int(round(len(rows) * sample_cap / float(total))),
+            )
+            keep = min(keep, len(rows), _ORG_SAMPLE_MAX_PER_CUSTOMER)
+            trimmed.extend(_downsample_rows(rows, keep))
+        samples = trimmed
+
+    samples.sort(key=lambda r: (int(r["customer_id"]), r["sampled_at"]))
+    return samples
+
+
+def merge_hotspot_session_payloads(
+    customer_id: int, payloads: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """
+    Merge concurrent Hotspot MAC sessions into one monotonic sample.
+
+    Absolute per-MAC counters cannot be summed safely (device join/leave spikes).
+    Track each MAC's last counters and advance a synthetic customer total by
+    positive deltas only.
+    """
+    active = [
+        p
+        for p in (payloads or [])
+        if isinstance(p, dict) and p.get("ok") is not False and p.get("session_active")
+    ]
+    if not active:
+        return {**_offline_usage_payload(), "ok": True}
+
+    prev_key = f"usage_hotspot_mac_prev:{int(customer_id)}"
+    synth_key = f"usage_hotspot_synth:{int(customer_id)}"
+    previous = cache.get(prev_key) or {}
+    if not isinstance(previous, dict):
+        previous = {}
+    synth = cache.get(synth_key) or {"bytes_in": 0, "bytes_out": 0}
+    if not isinstance(synth, dict):
+        synth = {"bytes_in": 0, "bytes_out": 0}
+
+    next_prev: dict[str, dict[str, int]] = {}
+    delta_in = 0
+    delta_out = 0
+    peak_down = 0
+    peak_up = 0
+    address = ""
+    uptime_raw = ""
+    best_total = -1
+
+    for payload in active:
+        mac = "".join(
+            ch
+            for ch in str(
+                payload.get("hotspot_mac")
+                or payload.get("mac")
+                or payload.get("address")
+                or ""
+            )
+            if ch.isalnum()
+        ).upper()
+        if len(mac) != 12:
+            mac = f"anon{len(next_prev)}"
+        bi = _as_int(payload.get("bytes_in"))
+        bo = _as_int(payload.get("bytes_out"))
+        peak_down = max(peak_down, _as_int(payload.get("download_bps")))
+        peak_up = max(peak_up, _as_int(payload.get("upload_bps")))
+        total = bi + bo
+        if total >= best_total:
+            best_total = total
+            address = (payload.get("address") or address or "")[:64]
+            uptime_raw = payload.get("uptime_raw") or payload.get("uptime") or uptime_raw
+
+        old = previous.get(mac)
+        if isinstance(old, dict):
+            delta_in += _bytes_delta(old.get("bi"), bi)
+            delta_out += _bytes_delta(old.get("bo"), bo)
+        next_prev[mac] = {"bi": bi, "bo": bo}
+
+    synth_in = _as_int(synth.get("bytes_in")) + delta_in
+    synth_out = _as_int(synth.get("bytes_out")) + delta_out
+    # First observation of every MAC: seed synth from the busiest session so a
+    # brand-new client is not stuck at 0 until the second poll.
+    if not previous and best_total >= 0:
+        busiest = max(active, key=lambda p: _as_int(p.get("bytes_in")) + _as_int(p.get("bytes_out")))
+        synth_in = _as_int(busiest.get("bytes_in"))
+        synth_out = _as_int(busiest.get("bytes_out"))
+
+    cache.set(prev_key, next_prev, _HOTSPOT_SYNTH_TTL)
+    cache.set(
+        synth_key, {"bytes_in": synth_in, "bytes_out": synth_out}, _HOTSPOT_SYNTH_TTL
+    )
+    return {
+        "ok": True,
+        "session_active": True,
+        "bytes_in": synth_in,
+        "bytes_out": synth_out,
+        "download_bps": peak_down or None,
+        "upload_bps": peak_up or None,
+        "address": address,
+        "uptime_raw": uptime_raw,
+    }
+
+
+def client_usage_sample_is_stale(customer: Customer, *, max_age_sec: int | None = None) -> bool:
+    """True when the client has no recent persisted sample (needs a live probe)."""
+    if not customer or not customer.pk:
+        return True
+    age = int(max_age_sec if max_age_sec is not None else _LIVE_SAMPLE_STALE_SEC)
+    latest = (
+        CustomerUsageSample.objects.filter(customer_id=customer.pk)
+        .order_by("-sampled_at")
+        .values_list("sampled_at", flat=True)
+        .first()
+    )
+    if latest is None:
+        return True
+    if timezone.is_naive(latest):
+        latest = timezone.make_aware(latest, timezone.get_current_timezone())
+    return (timezone.now() - latest).total_seconds() > age
+
+
 def sample_organization_usage(organization, *, force: bool = False) -> dict[str, Any]:
     """
     Lightweight org-wide snapshot: one MikroTik call per router (no per-client
@@ -536,7 +730,7 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
 
     sampled = 0
     matched_hotspot: set[int] = set()
-    # Aggregate multi-MAC Hotspot clients (sum counters / max rates).
+    # Aggregate multi-MAC Hotspot clients (synthetic monotonic counters).
     hotspot_agg: dict[int, dict[str, Any]] = {}
     reachable_hotspot_routers: set[int] = set()
     workers = min(_ORG_SAMPLE_WORKERS, len(routers))
@@ -580,45 +774,16 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                     if not customer:
                         continue
                     matched_hotspot.add(customer.pk)
-                    total = int(payload.get("bytes_in") or 0) + int(
-                        payload.get("bytes_out") or 0
-                    )
-                    stats = hotspot_agg.get(customer.pk)
-                    # Keep the busiest gadget session so byte deltas stay stable.
-                    if stats is None or total >= int(stats.get("total") or 0):
-                        hotspot_agg[customer.pk] = {
-                            "customer": customer,
-                            "total": total,
-                            "session_active": True,
-                            "bytes_in": int(payload.get("bytes_in") or 0),
-                            "bytes_out": int(payload.get("bytes_out") or 0),
-                            "download_bps": int(payload.get("download_bps") or 0),
-                            "upload_bps": int(payload.get("upload_bps") or 0),
-                            "address": payload.get("address") or "",
-                            "uptime_raw": payload.get("uptime_raw") or "",
-                        }
-                    else:
-                        stats["download_bps"] = max(
-                            int(stats["download_bps"] or 0),
-                            int(payload.get("download_bps") or 0),
-                        )
-                        stats["upload_bps"] = max(
-                            int(stats["upload_bps"] or 0),
-                            int(payload.get("upload_bps") or 0),
-                        )
+                    entry = dict(payload or {})
+                    entry["ok"] = True
+                    entry["session_active"] = True
+                    entry["hotspot_mac"] = (mac or "").strip().upper()
+                    hotspot_agg.setdefault(customer.pk, {"customer": customer, "payloads": []})
+                    hotspot_agg[customer.pk]["payloads"].append(entry)
 
     for stats in hotspot_agg.values():
         customer = stats["customer"]
-        payload = {
-            "ok": True,
-            "session_active": True,
-            "bytes_in": stats["bytes_in"],
-            "bytes_out": stats["bytes_out"],
-            "download_bps": stats["download_bps"] or None,
-            "upload_bps": stats["upload_bps"] or None,
-            "address": stats["address"],
-            "uptime_raw": stats["uptime_raw"],
-        }
+        payload = merge_hotspot_session_payloads(customer.pk, stats.get("payloads") or [])
         try:
             if record_customer_usage_sample(customer, payload):
                 sampled += 1
@@ -654,6 +819,10 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
         for top_n in (0, 25, 100, 200, 300):
             for service in ("all", "pppoe", "hotspot"):
                 for router_key in router_keys:
+                    cache.delete(
+                        f"org_usage_payload:{_ORG_PAYLOAD_CACHE_VERSION}:{organization.pk}:h{hours}:"
+                        f"{top_n}:{service}:{router_key}"
+                    )
                     cache.delete(
                         f"org_usage_payload:v5:{organization.pk}:h{hours}:"
                         f"{top_n}:{service}:{router_key}"
@@ -1953,7 +2122,11 @@ def _build_org_usage_payload(
     }
     customer_ids = list(customers.keys())
 
-    sample_cap = 8000 if hours <= 168 else (16000 if hours <= 720 else 24000)
+    sample_cap = (
+        _ORG_SAMPLE_ROW_SOFT_CAP
+        if hours <= 168
+        else (16000 if hours <= 720 else 24000)
+    )
     samples_qs = CustomerUsageSample.objects.filter(
         organization=organization,
         sampled_at__gte=since,
@@ -1963,17 +2136,7 @@ def _build_org_usage_payload(
         samples_qs = samples_qs.filter(customer_id__in=customer_ids)
     elif service:
         samples_qs = samples_qs.none()
-    samples = list(
-        samples_qs.order_by("customer_id", "sampled_at").values(
-            "customer_id",
-            "sampled_at",
-            "session_active",
-            "download_bps",
-            "upload_bps",
-            "bytes_in",
-            "bytes_out",
-        )[:sample_cap]
-    )
+    samples = _load_org_usage_samples(samples_qs, sample_cap=sample_cap)
 
     online_by_bucket: dict[int, set[int]] = {k: set() for k in bucket_keys}
     down_by_bucket: dict[int, dict[int, float]] = {k: {} for k in bucket_keys}
@@ -2091,25 +2254,47 @@ def _build_org_usage_payload(
                 stats["lowest_download_bps"] = down
                 stats["lowest_upload_bps"] = up
 
-    # Recently seen Hotspot gadgets (no live MikroTik fan-out).
+    # Linked + recently seen Hotspot gadgets.
+    # Near-live windows use a 15-minute "online now" cut; historical windows use
+    # devices last seen inside the selected range so past charts stay honest.
     gadget_counts: dict[int, int] = {}
+    linked_counts: dict[int, int] = {}
     if customers:
         from django.db.models import Count
 
         from billing.models import CustomerDevice
 
-        # Gadgets "online now" always use wall-clock now, even for past windows.
-        recent_cut = timezone.now() - timedelta(minutes=15)
+        near_live = abs((timezone.now() - until).total_seconds()) <= 30 * 60
+        if near_live:
+            gadget_qs = CustomerDevice.objects.filter(
+                organization=organization,
+                customer_id__in=customers.keys(),
+                last_seen_at__gte=timezone.now() - timedelta(minutes=15),
+            )
+        else:
+            gadget_qs = CustomerDevice.objects.filter(
+                organization=organization,
+                customer_id__in=customers.keys(),
+                last_seen_at__gte=since,
+                last_seen_at__lt=until,
+            )
+        for row in gadget_qs.values("customer_id").annotate(n=Count("id")):
+            gadget_counts[int(row["customer_id"])] = int(row["n"] or 0)
         for row in (
             CustomerDevice.objects.filter(
                 organization=organization,
                 customer_id__in=customers.keys(),
-                last_seen_at__gte=recent_cut,
             )
             .values("customer_id")
             .annotate(n=Count("id"))
         ):
-            gadget_counts[int(row["customer_id"])] = int(row["n"] or 0)
+            linked_counts[int(row["customer_id"])] = int(row["n"] or 0)
+        # Primary hotspot_mac counts as linked when no CustomerDevice rows exist.
+        for cid, customer in customers.items():
+            if linked_counts.get(cid):
+                continue
+            if (getattr(customer, "hotspot_mac", "") or "").strip():
+                linked_counts[cid] = 1
 
     def _empty_stats(customer_id: int) -> dict[str, Any]:
         return {
@@ -2155,8 +2340,13 @@ def _build_org_usage_payload(
             continue
         sample_count = item["sample_count"] or 1
         gadgets = gadget_counts.get(item["customer_id"], 0)
+        linked = linked_counts.get(item["customer_id"], 0)
         if gadgets <= 0 and item["latest_active"]:
             gadgets = 1
+        if linked <= 0 and gadgets > 0:
+            linked = gadgets
+        elif linked <= 0 and item["latest_active"]:
+            linked = 1
         prime_at = item.get("prime_at")
         lowest_at = item.get("lowest_at")
         top_users.append(
@@ -2192,6 +2382,8 @@ def _build_org_usage_payload(
                 "lowest_download_bps": item.get("lowest_download_bps") or 0,
                 "downtime_count": int(item.get("downtime_count") or 0),
                 "gadgets_connected": gadgets,
+                "devices_connected": gadgets,
+                "devices_linked": linked,
             }
         )
 
@@ -3082,7 +3274,7 @@ def org_usage_payload(
     else:
         cache_suffix = f"{since.isoformat()}_{until.isoformat()}"
     cache_key = (
-        f"org_usage_payload:v5:{organization.pk}:{cache_suffix}:"
+        f"org_usage_payload:{_ORG_PAYLOAD_CACHE_VERSION}:{organization.pk}:{cache_suffix}:"
         f"{top_n}:{service or 'all'}:{router_key}"
     )
     if use_cache:

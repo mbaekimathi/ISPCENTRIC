@@ -624,14 +624,21 @@ class AccessAccountLoopTests(TestCase):
     def test_evaluate_pppoe_inactive_sync(self):
         from billing.access_verification import evaluate_nas_policy
 
+        # Inactive accounts keep the secret enabled so the CPE can dial, but
+        # land on the blocked PPP profile (not secret disabled=yes).
         sync = {
             "ok": True,
             "allowed": False,
-            "provision": {"ok": True, "profile": "ispcentric-pppoe", "disabled": True},
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-blocked",
+                "disabled": False,
+            },
             "portal": {"ok": True, "skipped": True},
         }
         result = evaluate_nas_policy(self.pppoe_inactive, sync)
         self.assertTrue(result["policy_match"])
+        self.assertFalse(customer_pppoe_secret_disabled(self.pppoe_inactive))
 
     def test_evaluate_hotspot_unpaid_sync(self):
         from billing.access_verification import evaluate_nas_policy
@@ -688,6 +695,97 @@ class AccessAccountLoopTests(TestCase):
         result = evaluate_nas_policy(self.hotspot_paid, sync)
         self.assertFalse(result["policy_match"])
         self.assertEqual(result["details"].get("surf_gap"), "device_cap_exceeded")
+
+    def test_evaluate_hotspot_pruned_macs_must_be_disabled(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        self.plan.max_devices = 2
+        self.plan.save(update_fields=["max_devices"])
+        self.hotspot_paid.plan = self.plan
+        self.hotspot_paid.save(update_fields=["plan"])
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "ispcentric-hs-5u-10d",
+                "rate_limit": "5M/10M",
+                "max_devices": 2,
+                "allowed_count": 2,
+                "over_cap_count": 0,
+                "pruned_macs": ["AA:BB:CC:DD:EE:FF"],
+                "disabled_over_cap_count": 0,
+            },
+        }
+        result = evaluate_nas_policy(self.hotspot_paid, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "over_cap_not_disabled")
+
+    def test_evaluate_hotspot_empty_profile_fails_speed_check(self):
+        from billing.access_verification import evaluate_nas_policy
+
+        sync = {
+            "ok": True,
+            "allowed": True,
+            "provision": {
+                "ok": True,
+                "profile": "",
+                "rate_limit": "5M/10M",
+                "max_devices": 2,
+                "allowed_count": 1,
+                "over_cap_count": 0,
+            },
+        }
+        result = evaluate_nas_policy(self.hotspot_paid, sync)
+        self.assertFalse(result["policy_match"])
+        self.assertEqual(result["details"].get("surf_gap"), "wrong_speed_profile")
+
+    def test_run_correction_loop_retries_speed_gap(self):
+        from billing.access_verification import run_access_correction_loop
+
+        calls = {"n": 0}
+
+        def fake_sync(customer, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "ok": True,
+                    "allowed": True,
+                    "provision": {
+                        "ok": True,
+                        "profile": "ispcentric-pppoe-1u-2d",
+                        "rate_limit": "1M/2M",
+                        "disabled": False,
+                    },
+                    "portal": {"ok": True},
+                }
+            return {
+                "ok": True,
+                "allowed": True,
+                "provision": {
+                    "ok": True,
+                    "profile": "ispcentric-pppoe-5u-10d",
+                    "rate_limit": "5M/10M",
+                    "disabled": False,
+                },
+                "portal": {"ok": True},
+            }
+
+        with patch(
+            "core.mikrotik_connect.sync_customer_subscription_access",
+            side_effect=fake_sync,
+        ):
+            outcome = run_access_correction_loop(
+                self.pppoe_active,
+                loops=3,
+                settle=0,
+                sleep_fn=lambda _s: None,
+            )
+
+        self.assertTrue(outcome.passed)
+        # First sync wrong speed → inner correction sync → match.
+        self.assertEqual(calls["n"], 2)
 
     def test_run_correction_loop_retries_until_match(self):
         from billing.access_verification import run_access_correction_loop
@@ -2610,9 +2708,58 @@ class BillingDashboardPaymentDisplayTests(TestCase):
         self.assertContains(response, "REALDASH01")
         self.assertContains(response, "REN-DASH-MPESA-1")
         self.assertNotContains(response, "ws_CO_STALE_CHECKOUT")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "REALDASH01")
         pay_row = response.context["payments"][0]
         self.assertEqual(pay_row.display_reference, "REALDASH01")
         self.assertEqual(pay_row.invoice.invoice_number, "REN-DASH-MPESA-1")
+
+    def test_billing_dashboard_heals_receipt_from_raw_callback(self):
+        """Dashboard must persist M-Pesa refs recovered from STK raw (any gateway)."""
+        from datetime import date
+
+        from billing.models import Invoice, Payment, StkPushRequest
+
+        invoice = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="REN-DASH-RAW-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        payment = Payment.objects.create(
+            organization=self.org,
+            invoice=invoice,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="",
+        )
+        StkPushRequest.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            plan=self.plan,
+            amount=self.plan.price,
+            phone=self.customer.phone,
+            account_reference=self.customer.account_number,
+            checkout_request_id="ws_CO_RAW_DASH",
+            mpesa_receipt="",
+            status=StkPushRequest.Status.SUCCESS,
+            payment=payment,
+            invoice=invoice,
+            raw_callback={
+                "credential_source": "platform",
+                "callback_receipt": "RAWDASH99",
+            },
+        )
+
+        self.client.force_login(self.owner)
+        response = self.client.get("/billing/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "RAWDASH99")
+        payment.refresh_from_db()
+        self.assertEqual(payment.reference, "RAWDASH99")
+        self.assertEqual(response.context["payments"][0].display_reference, "RAWDASH99")
 
     def test_payments_filter_defaults_to_all_and_can_narrow(self):
         from datetime import date

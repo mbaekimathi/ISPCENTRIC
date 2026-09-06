@@ -10,6 +10,7 @@ from django.utils import timezone
 from accounts.models import Organization
 from billing.devices import (
     attach_hotspot_device,
+    customer_account_devices,
     customer_devices_unlimited,
     customer_max_devices,
     find_hotspot_customer_for_mac,
@@ -56,6 +57,35 @@ class HotspotDeviceLimitTests(TestCase):
             ["AA:BB:CC:DD:EE:01"],
         )
         self.assertEqual(customer_max_devices(self.customer), 2)
+
+    def test_customer_account_devices_marks_recent_as_connected(self):
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
+        recent = self.customer.devices.get(mac="AA:BB:CC:DD:EE:02")
+        recent.last_seen_at = timezone.now()
+        recent.save(update_fields=["last_seen_at"])
+        stale = self.customer.devices.get(mac="AA:BB:CC:DD:EE:01")
+        stale.last_seen_at = timezone.now() - timedelta(hours=2)
+        stale.save(update_fields=["last_seen_at"])
+
+        rows = customer_account_devices(self.customer)
+        by_mac = {row["mac"]: row for row in rows}
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(by_mac["AA:BB:CC:DD:EE:02"]["connected"])
+        self.assertFalse(by_mac["AA:BB:CC:DD:EE:01"]["connected"])
+        self.assertTrue(by_mac["AA:BB:CC:DD:EE:02"]["last_seen_label"])
+
+    def test_usage_analysis_lists_account_devices(self):
+        attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
+        self.client.force_login(self.owner)
+        url = reverse("core:client_usage_analysis", kwargs={"customer_id": self.customer.pk})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Connected devices")
+        self.assertContains(response, "AA:BB:CC:DD:EE:01")
+        self.assertContains(response, "AA:BB:CC:DD:EE:02")
+        self.assertContains(response, "usage-devices")
+        devices = response.context["account_devices"]
+        self.assertEqual(len(devices), 2)
 
     def test_attach_second_mac_under_cap(self):
         result = attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
@@ -434,10 +464,17 @@ class HotspotNasMultiMacTests(TestCase):
         # Prune removes the third CustomerDevice before NAS write.
         self.assertEqual(applied.get("over_cap_count"), 0)
         self.assertIn("AA:AA:AA:AA:AA:03", applied.get("pruned_macs") or [])
+        # Pruned MAC must still be disabled+kicked on MikroTik or it keeps surfing.
+        self.assertEqual(applied.get("disabled_over_cap_count"), 1)
+        self.assertIn(
+            "AA:AA:AA:AA:AA:03", applied.get("disabled_over_cap_macs") or []
+        )
         enabled = [row for row in users if not row["disabled"]]
         disabled = [row for row in users if row["disabled"]]
         self.assertEqual(len(enabled), 2)
-        self.assertEqual(len(disabled), 0)
+        self.assertEqual(len(disabled), 1)
+        self.assertEqual(disabled[0]["username"], "AA:AA:AA:AA:AA:03")
+        self.assertEqual(disabled[0]["limit_uptime"], "0s")
 
     def test_prune_over_cap_keeps_primary(self):
         from billing.devices import ensure_customer_device, prune_over_cap_hotspot_devices

@@ -2285,7 +2285,7 @@ class PppoeSettingsForm(forms.ModelForm):
         fields = ["pppoe_compulsory", "adverts_enabled"]
         labels = {
             "pppoe_compulsory": "PPPoE enforcement",
-            "adverts_enabled": "Show Refer & earn on pay pages",
+            "adverts_enabled": "Show Refer & earn after connect",
         }
         help_texts = {
             "pppoe_compulsory": (
@@ -2294,8 +2294,8 @@ class PppoeSettingsForm(forms.ModelForm):
                 "LAN can browse freely (open access)."
             ),
             "adverts_enabled": (
-                "When on, Hotspot and PPPoE Wi‑Fi pay / pause popups show a "
-                "Refer & earn card that opens this ISP’s referral page."
+                "When on, the Hotspot success page and PPPoE payment-result page "
+                "show a compact Refer & earn link for this ISP."
             ),
         }
         widgets = {
@@ -2315,12 +2315,12 @@ class AdvertsSettingsForm(forms.ModelForm):
         model = Organization
         fields = ["adverts_enabled"]
         labels = {
-            "adverts_enabled": "Show Refer & earn on pay pages",
+            "adverts_enabled": "Show Refer & earn after connect",
         }
         help_texts = {
             "adverts_enabled": (
-                "When on, Hotspot and PPPoE Wi‑Fi pay / pause popups show a "
-                "Refer & earn card that opens this ISP’s referral page."
+                "When on, the Hotspot success page and PPPoE payment-result page "
+                "show a compact Refer & earn link for this ISP."
             ),
         }
         widgets = {
@@ -2366,8 +2366,10 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_welcome_button_url",
             "hotspot_welcome_link1_label",
             "hotspot_welcome_link1_url",
+            "hotspot_welcome_link1_image",
             "hotspot_welcome_link2_label",
             "hotspot_welcome_link2_url",
+            "hotspot_welcome_link2_image",
             "hotspot_voucher_validity_hours",
             "hotspot_default_download_mbps",
             "hotspot_default_upload_mbps",
@@ -2375,17 +2377,19 @@ class HotspotSettingsForm(forms.ModelForm):
         ]
         labels = {
             "hotspot_enabled": "Enable Hotspot",
-            "adverts_enabled": "Show Refer & earn on pay pages",
+            "adverts_enabled": "Show Refer & earn after connect",
             "hotspot_portal_title": "Portal title",
             "hotspot_login_message": "Login message",
             "hotspot_welcome_title": "Success page title",
             "hotspot_welcome_message": "Success page message",
             "hotspot_welcome_button_label": "Button label",
             "hotspot_welcome_button_url": "External link (optional)",
-            "hotspot_welcome_link1_label": "Website link 1 label",
-            "hotspot_welcome_link1_url": "Website link 1 URL",
-            "hotspot_welcome_link2_label": "Website link 2 label",
-            "hotspot_welcome_link2_url": "Website link 2 URL",
+            "hotspot_welcome_link1_label": "Advert 1 name",
+            "hotspot_welcome_link1_url": "Advert 1 URL",
+            "hotspot_welcome_link1_image": "Advert 1 image",
+            "hotspot_welcome_link2_label": "Advert 2 name",
+            "hotspot_welcome_link2_url": "Advert 2 URL",
+            "hotspot_welcome_link2_image": "Advert 2 image",
             "hotspot_voucher_validity_hours": "Default voucher validity (hours)",
             "hotspot_default_download_mbps": "Default download (Mbps)",
             "hotspot_default_upload_mbps": "Default upload (Mbps)",
@@ -2397,8 +2401,8 @@ class HotspotSettingsForm(forms.ModelForm):
                 "Save & push applies this to the MikroTik."
             ),
             "adverts_enabled": (
-                "When on, Hotspot and PPPoE Wi‑Fi pay / pause popups show a "
-                "Refer & earn card that opens this ISP’s referral page."
+                "When on, the Hotspot success page and PPPoE payment-result page "
+                "show a compact Refer & earn link for this ISP."
             ),
             "hotspot_portal_title": "Shown as the heading on the Hotspot login page.",
             "hotspot_login_message": "Short welcome text clients see before they log in.",
@@ -2409,10 +2413,12 @@ class HotspotSettingsForm(forms.ModelForm):
                 "Where the success-page button opens after connection (e.g. your website). "
                 "Leave blank to use a connectivity check page."
             ),
-            "hotspot_welcome_link1_label": "Defaults to “Website” if left blank.",
-            "hotspot_welcome_link1_url": "First website page under the success button (replaces Google).",
-            "hotspot_welcome_link2_label": "Defaults to “More” if left blank.",
-            "hotspot_welcome_link2_url": "Second website page under the success button (replaces YouTube).",
+            "hotspot_welcome_link1_label": "Company / offer name shown on the advert card.",
+            "hotspot_welcome_link1_url": "Where the advert opens when tapped.",
+            "hotspot_welcome_link1_image": "Background image for advert 1 (JPG/PNG).",
+            "hotspot_welcome_link2_label": "Company / offer name shown on the advert card.",
+            "hotspot_welcome_link2_url": "Where the advert opens when tapped.",
+            "hotspot_welcome_link2_image": "Background image for advert 2 (JPG/PNG).",
             "hotspot_voucher_validity_hours": "Used when creating new Hotspot vouchers.",
             "hotspot_default_download_mbps": "Default download speed for new vouchers.",
             "hotspot_default_upload_mbps": "Default upload speed for new vouchers.",
@@ -2469,29 +2475,41 @@ class HotspotSettingsForm(forms.ModelForm):
             "hotspot_welcome_link1_label": forms.TextInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "Website",
+                    "placeholder": "e.g. Kwetu Deliveries",
                     "autocomplete": "off",
                 }
             ),
             "hotspot_welcome_link1_url": forms.URLInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "https://yourwebsite.com",
+                    "placeholder": "https://partner.example",
                     "autocomplete": "off",
+                }
+            ),
+            "hotspot_welcome_link1_image": forms.ClearableFileInput(
+                attrs={
+                    "class": "form-control",
+                    "accept": "image/*",
                 }
             ),
             "hotspot_welcome_link2_label": forms.TextInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "Offers",
+                    "placeholder": "e.g. Uber",
                     "autocomplete": "off",
                 }
             ),
             "hotspot_welcome_link2_url": forms.URLInput(
                 attrs={
                     "class": "form-control",
-                    "placeholder": "https://yourwebsite.com/offers",
+                    "placeholder": "https://partner.example/offers",
                     "autocomplete": "off",
+                }
+            ),
+            "hotspot_welcome_link2_image": forms.ClearableFileInput(
+                attrs={
+                    "class": "form-control",
+                    "accept": "image/*",
                 }
             ),
             "hotspot_voucher_validity_hours": forms.NumberInput(

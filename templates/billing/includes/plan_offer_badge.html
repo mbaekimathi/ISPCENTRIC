@@ -1,9 +1,22 @@
 {% if plan.offer_enabled and plan.offer_label %}
   <span class="plan-offer-badge">{{ plan.offer_label }}</span>
+  {% if plan.offer_paid_count is not None and plan.offer_threshold %}
+    <span class="plan-offer-track" aria-label="Your progress {{ plan.offer_paid_count }} of {{ plan.offer_threshold }}">
+      <span class="plan-offer-count">{{ plan.offer_paid_count }}/{{ plan.offer_threshold }} paid</span>
+      <span class="plan-offer-slots" aria-hidden="true">
+        {% for slot in plan.offer_slots %}
+          <i class="plan-offer-slot{% if slot.filled %} is-filled{% endif %}"></i>
+        {% endfor %}
+      </span>
+      <span class="plan-offer-bar" aria-hidden="true"><i style="width:{{ plan.offer_percent|default:0 }}%"></i></span>
+    </span>
+  {% endif %}
   {% if plan.offer_payments_remaining is not None %}
-    {% if plan.offer_payments_remaining == 1 %}
+    {% if plan.offer_payments_remaining == 0 %}
+      <span class="plan-offer-progress">Next payment unlocks a free session</span>
+    {% elif plan.offer_payments_remaining == 1 %}
       <span class="plan-offer-progress">1 more payment until a free session</span>
-    {% elif plan.offer_payments_remaining > 1 %}
+    {% else %}
       <span class="plan-offer-progress">{{ plan.offer_payments_remaining }} more payments until a free session</span>
     {% endif %}
   {% endif %}

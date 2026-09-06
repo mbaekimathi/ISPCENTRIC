@@ -342,7 +342,10 @@
                   <span class="clients-usage-user-meta">
                     <span class="clients-usage-user-account">{{ user.account_number }}</span>
                     {% if user.router_name %}<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">{{ user.router_name }}</span>{% endif %}
-                    {% if user.plan_name %}<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-plan">{{ user.plan_name }}</span>{% endif %}
+                    <span class="clients-usage-user-sep" aria-hidden="true">·</span>
+                    <span class="clients-usage-user-devices{% if user.devices_connected %} is-active{% endif %}">
+                      {% with n=user.devices_connected|default:0 %}{{ n }} device{{ n|pluralize }}{% endwith %}
+                    </span>
                   </span>
                 </span>
               </a>
@@ -602,9 +605,11 @@
     if (user.router_name) {
       meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-router">' + esc(user.router_name) + "</span>";
     }
-    if (user.plan_name) {
-      meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span><span class="clients-usage-user-plan">' + esc(user.plan_name) + "</span>";
-    }
+    var deviceCount = Number(user.devices_connected != null ? user.devices_connected : (user.gadgets_connected || 0)) || 0;
+    meta += '<span class="clients-usage-user-sep" aria-hidden="true">·</span>' +
+      '<span class="clients-usage-user-devices' + (deviceCount ? " is-active" : "") + '">' +
+      esc(deviceCount) + " device" + (deviceCount === 1 ? "" : "s") +
+      "</span>";
     return (
       '<tr class="clients-usage-user-row" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
         '<td data-label="#"><span class="clients-usage-rank' + rankClass + '">' + esc(user.rank) + "</span></td>" +

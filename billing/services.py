@@ -1061,6 +1061,9 @@ def heal_payment_mpesa_reference(payment) -> str:
     """
     Resolve the display M-Pesa receipt and persist it onto payment.reference
     when a real receipt is known on a linked STK row.
+
+    Works for payments collected via Company Payment Gateway or an ISP's own
+    Payment Gateway — credential source does not affect receipt persistence.
     """
     display_ref = payment_mpesa_reference(payment)
     if not display_ref:

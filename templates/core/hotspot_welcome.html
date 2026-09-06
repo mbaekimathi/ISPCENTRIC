@@ -4,339 +4,588 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#e8eef3">
+  <meta name="theme-color" content="#e8f2ee">
   <title>{{ page_title }} — {{ org_name }}</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-
-    :root {
-      --ink: #102033;
-      --muted: #5a6b7f;
-      --line: rgba(16, 32, 51, 0.1);
-      --surface: rgba(255, 255, 255, 0.92);
-      --surface-solid: #ffffff;
-      --wash: #f3f6f9;
-      --brand: #0c6e78;
-      --brand-deep: #084e56;
-      --brand-soft: rgba(12, 110, 120, 0.1);
-      --ok: #157a42;
-      --ok-soft: rgba(21, 122, 66, 0.12);
-      --shadow: 0 1px 1px rgba(16, 32, 51, 0.04), 0 18px 48px rgba(16, 32, 51, 0.12);
-      --radius: 1.25rem;
-      --ease: cubic-bezier(0.22, 1, 0.36, 1);
-      --font: "Segoe UI Variable", "Segoe UI", "SF Pro Text", "Avenir Next", "Helvetica Neue", sans-serif;
-      --display: "Segoe UI Variable Display", "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
-    }
-
     html { -webkit-text-size-adjust: 100%; }
-
     body {
       margin: 0;
       min-height: 100vh;
       min-height: 100dvh;
-      display: grid;
-      place-items: center;
+      font-family: "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
+      color: #12231f;
+      background: linear-gradient(180deg, #f4faf7 0%, #e7f1ec 100%);
       padding:
-        calc(1rem + env(safe-area-inset-top, 0px))
+        calc(0.9rem + env(safe-area-inset-top, 0px))
         calc(1rem + env(safe-area-inset-right, 0px))
         calc(1rem + env(safe-area-inset-bottom, 0px))
         calc(1rem + env(safe-area-inset-left, 0px));
-      font-family: var(--font);
-      color: var(--ink);
-      background-color: #e7eef4;
-      background-image:
-        radial-gradient(ellipse 80% 55% at 12% -10%, rgba(21, 122, 66, 0.14), transparent 55%),
-        radial-gradient(ellipse 60% 45% at 100% 0%, rgba(12, 110, 120, 0.12), transparent 50%),
-        linear-gradient(180deg, #eef3f7 0%, #e2eaef 100%);
-      background-attachment: fixed;
-      -webkit-font-smoothing: antialiased;
     }
-
-    .shell {
-      width: min(100%, 26.5rem);
-      animation: rise 0.55s var(--ease) both;
-    }
-
-    @keyframes rise {
-      from { opacity: 0; transform: translateY(1rem); }
-      to { opacity: 1; transform: none; }
-    }
-
-    .stage {
+    .wrap {
+      width: min(100%, 26rem);
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid rgba(18, 35, 31, 0.1);
+      border-radius: 1.35rem;
       overflow: hidden;
-      border-radius: calc(var(--radius) + 0.15rem);
-      background: var(--surface);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(255, 255, 255, 0.7);
-      box-shadow: var(--shadow);
-      text-align: center;
+      box-shadow: 0 18px 40px rgba(18, 45, 38, 0.1);
     }
-
     .hero {
-      padding: clamp(1.35rem, 5vw, 1.75rem) clamp(1.2rem, 5vw, 1.55rem) 1.15rem;
-      background:
-        linear-gradient(165deg, rgba(21, 122, 66, 0.08), transparent 62%),
-        linear-gradient(180deg, #f8fbfc, transparent);
-      border-bottom: 1px solid var(--line);
+      padding: 1.25rem 1.2rem 1.1rem;
+      text-align: center;
+      background: linear-gradient(180deg, #f7fcfa 0%, #fff 100%);
+      border-bottom: 1px solid rgba(18, 35, 31, 0.08);
     }
-
     .brand {
-      margin: 0 0 0.95rem;
       display: inline-flex;
       align-items: center;
-      justify-content: center;
       gap: 0.5rem;
-      font-family: var(--display);
-      font-size: clamp(1.35rem, 5.5vw, 1.7rem);
+      margin: 0 0 0.85rem;
+      color: #0d7c72;
+      font-size: 0.78rem;
       font-weight: 800;
-      line-height: 1.05;
-      letter-spacing: -0.04em;
-      color: var(--ink);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
     }
-
-    .logo {
+    .brand-mark {
       width: 1.7rem;
       height: 1.7rem;
-      flex: none;
       border-radius: 0.45rem;
-      object-fit: cover;
-      background: var(--brand-soft);
+      background: #dff3ee center / cover no-repeat;
+      border: 1px solid rgba(13, 124, 114, 0.2);
+      display: inline-grid;
+      place-items: center;
+      font-size: 0.75rem;
+      font-weight: 800;
+      color: #0d7c72;
     }
-
-    .logo-fallback {
+    .check {
+      width: 3.1rem;
+      height: 3.1rem;
+      margin: 0 auto 0.75rem;
+      border-radius: 999px;
       display: grid;
       place-items: center;
-      width: 1.7rem;
-      height: 1.7rem;
-      border-radius: 0.45rem;
-      background: var(--brand-soft);
-      color: var(--brand-deep);
-      font-size: 0.8rem;
-      font-weight: 800;
-      letter-spacing: 0;
+      background: rgba(20, 138, 74, 0.1);
+      border: 1px solid rgba(20, 138, 74, 0.18);
+      color: #148a4a;
     }
+    .check svg { width: 1.55rem; height: 1.55rem; }
 
-    .badge {
+    .earn-hero {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 0.7rem;
+      width: 100%;
+      margin: 0 0 0.95rem;
+      padding: 0.7rem 0.75rem 0.7rem 0.7rem;
+      border-radius: 1.05rem;
+      text-decoration: none;
+      color: #fff;
+      text-align: left;
+      background:
+        radial-gradient(ellipse 80% 120% at 0% 0%, rgba(244, 184, 96, 0.35), transparent 55%),
+        linear-gradient(135deg, #0a5f57 0%, #0d7c72 48%, #148a4a 100%);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow:
+        0 1px 0 rgba(255, 255, 255, 0.18) inset,
+        0 12px 28px rgba(10, 95, 87, 0.28);
       position: relative;
-      width: clamp(3.4rem, 14vw, 4rem);
-      height: clamp(3.4rem, 14vw, 4rem);
-      margin: 0 auto 0.95rem;
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      color: var(--ok);
-      background: var(--ok-soft);
+      overflow: hidden;
     }
-
-    .badge::after {
+    .earn-hero::before {
       content: "";
       position: absolute;
-      inset: 0;
+      top: -40%;
+      right: -18%;
+      width: 7rem;
+      height: 7rem;
       border-radius: 50%;
-      border: 2px solid currentColor;
-      animation: halo 2.4s ease-out infinite;
+      background: radial-gradient(circle, rgba(244, 184, 96, 0.28), transparent 68%);
+      pointer-events: none;
     }
-
-    @keyframes halo {
-      0% { opacity: 0.35; transform: scale(1); }
-      70%, 100% { opacity: 0; transform: scale(1.35); }
+    .earn-hero-orb {
+      position: relative;
+      z-index: 1;
+      width: 2.85rem;
+      height: 2.85rem;
+      border-radius: 0.85rem;
+      display: grid;
+      place-items: center;
+      color: #0a5f57;
+      background: linear-gradient(160deg, #fff7e6 0%, #f4b860 100%);
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.16);
+      flex: none;
     }
-
-    .badge svg { width: 62%; height: 62%; display: block; }
-    .badge circle, .badge path {
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 3.4;
-      stroke-linecap: round;
-      stroke-linejoin: round;
+    .earn-hero-orb svg {
+      width: 1.35rem;
+      height: 1.35rem;
     }
-    .ring { opacity: 0.25; }
-    .mark {
-      stroke-dasharray: 44;
-      stroke-dashoffset: 44;
-      animation: draw 0.5s 0.15s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    .earn-hero-copy {
+      position: relative;
+      z-index: 1;
+      min-width: 0;
+      display: grid;
+      gap: 0.12rem;
     }
-    @keyframes draw { to { stroke-dashoffset: 0; } }
-
+    .earn-hero-kicker {
+      margin: 0;
+      color: rgba(255, 247, 230, 0.88);
+      font-size: 0.62rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .earn-hero-title {
+      margin: 0;
+      font-size: 0.98rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+    }
+    .earn-hero-hint {
+      margin: 0;
+      color: rgba(255, 255, 255, 0.82);
+      font-size: 0.72rem;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .earn-hero-go {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.42rem 0.65rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .earn-hero-go span {
+      font-size: 0.95rem;
+      line-height: 1;
+    }
+    .earn-hero:active {
+      transform: scale(0.985);
+    }
+    @keyframes earnPulse {
+      0%, 100% { box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 12px 28px rgba(10,95,87,0.28); }
+      50% { box-shadow: 0 1px 0 rgba(255,255,255,0.22) inset, 0 14px 32px rgba(10,95,87,0.38), 0 0 0 4px rgba(244,184,96,0.18); }
+    }
+    .earn-hero {
+      animation: earnPulse 2.4s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .earn-hero { animation: none; }
+    }
     h1 {
       margin: 0;
-      font-size: clamp(1.1rem, 4vw, 1.25rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: var(--brand-deep);
+      font-size: clamp(1.35rem, 5vw, 1.7rem);
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+      font-weight: 800;
     }
-
     .msg {
       margin: 0.45rem auto 0;
       max-width: 34ch;
+      color: #5f746d;
       font-size: 0.92rem;
-      line-height: 1.5;
-      color: var(--muted);
+      line-height: 1.45;
       white-space: pre-wrap;
     }
-
     .status {
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      margin-top: 0.9rem;
+      margin-top: 0.15rem;
       padding: 0.35rem 0.75rem;
       border-radius: 999px;
-      background: var(--ok-soft);
-      color: var(--ok);
-      font-size: 0.72rem;
+      background: rgba(20, 138, 74, 0.1);
+      border: 1px solid rgba(20, 138, 74, 0.16);
+      color: #148a4a;
+      font-size: 0.68rem;
       font-weight: 800;
       letter-spacing: 0.06em;
       text-transform: uppercase;
     }
-
     .status::before {
       content: "";
       width: 0.4rem;
       height: 0.4rem;
       border-radius: 50%;
       background: currentColor;
-      animation: pulse 1.8s ease-in-out infinite;
     }
-
-    @keyframes pulse { 50% { opacity: 0.35; transform: scale(0.75); } }
-
-    .body {
-      padding: clamp(1rem, 4vw, 1.25rem) clamp(1.15rem, 4.5vw, 1.45rem)
-               calc(1.15rem + env(safe-area-inset-bottom, 0px));
+    .hero-cta {
       display: grid;
-      gap: 0.85rem;
-    }
-
-    .ok {
-      display: block;
+      place-items: center;
       width: 100%;
-      padding: 0.95rem 1.1rem;
-      min-height: 3.15rem;
-      border: 0;
-      border-radius: 0.9rem;
-      background: linear-gradient(165deg, #1a9a4a 0%, #15803d 55%, #0f5f2e 100%);
+      margin-top: 0.75rem;
+      min-height: 2.85rem;
+      padding: 0.8rem 1rem;
+      border-radius: 0.95rem;
+      background: linear-gradient(165deg, #1aa85a 0%, #148a4a 55%, #0f6a39 100%);
       color: #fff;
-      font: 800 1rem/1 var(--font);
+      font-size: 0.95rem;
+      font-weight: 800;
       letter-spacing: -0.015em;
       text-decoration: none;
-      box-shadow: 0 10px 24px rgba(21, 122, 66, 0.28);
-      transition: filter 0.15s ease, transform 0.12s ease;
+      box-shadow: 0 10px 22px rgba(20, 138, 74, 0.26);
     }
-
-    .ok:hover { filter: brightness(1.05); }
-    .ok:active { transform: scale(0.985); }
-
-    .quick-links {
+    .hero-cta:active { transform: scale(0.985); }
+    .panel {
+      padding: 0.85rem 0.95rem;
+      border-bottom: 1px solid rgba(18, 35, 31, 0.08);
+    }
+    .panel:last-child { border-bottom: 0; }
+    .panel-title {
+      margin: 0 0 0.55rem;
+      color: #0d7c72;
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .partners {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 0.5rem;
-    }
-
-    .quick-links.is-single {
       grid-template-columns: 1fr;
+      gap: 0.45rem;
     }
-
-    .quick-links a {
-      display: block;
-      padding: 0.75rem 0.7rem;
-      border-radius: 0.85rem;
-      border: 1.5px solid var(--line);
-      background: var(--wash);
-      color: var(--ink);
-      font-size: 0.85rem;
-      font-weight: 750;
+    .partners.is-one { grid-template-columns: 1fr; }
+    .partner {
+      display: grid;
+      grid-template-columns: 2.35rem 1fr auto;
+      align-items: center;
+      gap: 0.55rem;
+      min-height: 2.7rem;
+      padding: 0.45rem 0.55rem 0.45rem 0.4rem;
+      border-radius: 0.8rem;
+      border: 1px solid rgba(18, 35, 31, 0.1);
+      background: #f4faf7;
+      color: #12231f;
       text-decoration: none;
-      transition: border-color 0.15s ease, color 0.15s ease;
     }
-
-    .quick-links a:hover {
-      border-color: var(--brand);
-      color: var(--brand-deep);
+    .partner-thumb {
+      width: 2.35rem;
+      height: 2.35rem;
+      border-radius: 0.55rem;
+      background: #0f766e center / cover no-repeat;
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 0.9rem;
+      font-weight: 800;
     }
-
-    .hint {
-      margin: 0;
+    .partner:nth-child(2) .partner-thumb { background-color: #b45309; }
+    .partner-copy { min-width: 0; }
+    .partner-kicker {
+      display: block;
+      color: #0d7c72;
+      font-size: 0.55rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .partner-name {
+      display: block;
+      font-size: 0.86rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1.25;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      word-break: break-word;
+    }
+    .partner-go {
+      color: #0d7c72;
+      font-size: 0.95rem;
+      font-weight: 800;
+      padding-right: 0.1rem;
+    }
+    .offer-head {
+      margin: 0 0 0.2rem;
+      font-size: 0.95rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .offer-sub {
+      margin: 0 0 0.65rem;
+      color: #5f746d;
       font-size: 0.8rem;
-      line-height: 1.45;
-      color: var(--muted);
-      font-weight: 600;
+      line-height: 1.35;
     }
-
-    .meta {
-      margin: 0.1rem 0 0;
-      padding-top: 0.85rem;
-      border-top: 1px solid var(--line);
+    .offer {
+      display: block;
+      margin: 0 0 0.55rem;
+      padding: 0.75rem;
+      border-radius: 0.9rem;
+      border: 1px solid rgba(13, 124, 114, 0.18);
+      background: linear-gradient(145deg, rgba(13, 124, 114, 0.06), #fff);
+      color: inherit;
+      text-decoration: none;
+    }
+    .offer:last-child { margin-bottom: 0; }
+    .offer.is-near {
+      border-color: rgba(244, 184, 96, 0.65);
+      background: linear-gradient(145deg, rgba(244, 184, 96, 0.14), #fff);
+    }
+    .offer-row {
+      display: grid;
+      grid-template-columns: 2.2rem 1fr;
+      gap: 0.55rem;
+      align-items: center;
+      margin-bottom: 0.55rem;
+    }
+    .offer-thumb {
+      width: 2.2rem;
+      height: 2.2rem;
+      border-radius: 0.55rem;
+      border: 1px solid rgba(18, 35, 31, 0.1);
+      background: #e8f5ef center / cover no-repeat;
+      display: grid;
+      place-items: center;
+      color: #0d7c72;
+      font-size: 0.85rem;
+      font-weight: 800;
+    }
+    .offer-name {
+      margin: 0;
+      font-size: 0.88rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .offer-meta {
+      margin: 0.15rem 0 0;
+      color: #5f746d;
       font-size: 0.72rem;
       font-weight: 650;
-      color: var(--muted);
-      letter-spacing: 0.02em;
     }
-
-    @media (min-width: 40rem) {
-      body { padding: 1.75rem; }
-      .shell { width: min(100%, 28.5rem); }
+    .slots {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.28rem;
+      margin-bottom: 0.45rem;
     }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { animation: none !important; transition: none !important; }
-      .mark { stroke-dashoffset: 0; }
+    .slot,
+    .offer-slot {
+      width: 0.7rem;
+      height: 0.7rem;
+      border-radius: 999px;
+      background: rgba(13, 124, 114, 0.12);
+      border: 1px solid rgba(13, 124, 114, 0.18);
+    }
+    .slot.is-on,
+    .offer-slot.is-filled {
+      background: #0d7c72;
+      border-color: #0d7c72;
+    }
+    .offer.is-near .slot.is-on,
+    .offer.is-near .offer-slot.is-filled {
+      background: #d97706;
+      border-color: #d97706;
+    }
+    .offer-progress-label {
+      margin: 0 0 0.4rem;
+      color: #0d7c72;
+      font-size: 0.78rem;
+      font-weight: 800;
+    }
+    .offer.is-near .offer-progress-label { color: #92400e; }
+    .bar {
+      height: 0.35rem;
+      border-radius: 999px;
+      background: rgba(13, 124, 114, 0.1);
+      overflow: hidden;
+      margin-bottom: 0.45rem;
+    }
+    .bar > i {
+      display: block;
+      height: 100%;
+      background: #0d7c72;
+      border-radius: inherit;
+    }
+    .offer.is-near .bar > i { background: #d97706; }
+    .offer-nudge {
+      margin: 0.35rem 0 0;
+      color: #5f746d;
+      font-size: 0.72rem;
+      line-height: 1.3;
+    }
+    .offer.is-near .offer-nudge { color: #92400e; font-weight: 700; }
+    .actions {
+      padding: 0.95rem;
+      display: grid;
+      gap: 0.65rem;
+    }
+    .cta {
+      display: grid;
+      place-items: center;
+      min-height: 3.1rem;
+      padding: 0.9rem 1rem;
+      border-radius: 1rem;
+      background: linear-gradient(165deg, #1aa85a 0%, #148a4a 55%, #0f6a39 100%);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 800;
+      letter-spacing: -0.015em;
+      text-decoration: none;
+      box-shadow: 0 12px 26px rgba(20, 138, 74, 0.28);
+    }
+    .meta {
+      margin: 0;
+      text-align: center;
+      color: #7a8c86;
+      font-size: 0.72rem;
+    }
+    .pulse {
+      display: flex;
+      justify-content: center;
+      gap: 0.35rem;
+      padding: 0.35rem 0;
+    }
+    .pulse i {
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 50%;
+      background: #148a4a;
+      opacity: 0.35;
+    }
+    .hint {
+      margin: 0;
+      text-align: center;
+      color: #5f746d;
+      font-size: 0.84rem;
+      line-height: 1.4;
+    }
+    @media (max-width: 360px) {
+      .earn-hero {
+        grid-template-columns: auto 1fr;
+        gap: 0.6rem;
+      }
+      .earn-hero-go {
+        grid-column: 2;
+        justify-self: start;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <main class="stage" role="main">
-      <header class="hero">
-        <p class="brand">
-          {% if logo_url %}
-            <img class="logo" src="{{ logo_url }}" alt="" width="28" height="28">
-          {% else %}
-            <span class="logo-fallback" aria-hidden="true">{{ org_initial }}</span>
-          {% endif %}
-          {{ org_name }}
-        </p>
-
-        <div class="badge" aria-hidden="true">
-          <svg viewBox="0 0 52 52" focusable="false">
-            <circle class="ring" cx="26" cy="26" r="23"></circle>
-            <path class="mark" d="M15 27 22.5 34.5 37 19"></path>
+  <main class="wrap" role="main">
+    <header class="hero">
+      <p class="brand">
+        <span
+          class="brand-mark"
+          {% if logo_url %}style="background-image:url('{{ logo_url }}')"{% endif %}
+        >{% if not logo_url %}{{ org_initial }}{% endif %}</span>
+        {{ org_name }}
+      </p>
+      {% if adverts_enabled and click_to_earn_url %}
+        <a class="earn-hero" href="{{ click_to_earn_url }}" aria-label="Tap to refer clients and earn">
+          <span class="earn-hero-orb" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="9" cy="8" r="3"/>
+              <circle cx="16.5" cy="9.5" r="2.4"/>
+              <path d="M3.5 19c.6-3 2.8-4.8 5.5-4.8S14 16 14.6 19"/>
+              <path d="M14.2 14.4c1.5-.5 3.1-.3 4.5.8 1 .8 1.6 1.9 1.8 3.1"/>
+            </svg>
+          </span>
+          <span class="earn-hero-copy">
+            <span class="earn-hero-kicker">Limited offer</span>
+            <span class="earn-hero-title">{{ click_to_earn_label|default:"Refer & earn" }}</span>
+            <span class="earn-hero-hint">Invite Wi‑Fi clients · get paid</span>
+          </span>
+          <span class="earn-hero-go">Tap <span aria-hidden="true">→</span></span>
+        </a>
+      {% else %}
+        <div class="check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 13l4 4L19 7"/>
           </svg>
         </div>
-
-        <h1 data-welcome-title>{{ page_title }}</h1>
-        {% if page_message %}<p class="msg" data-welcome-msg>{{ page_message }}</p>{% endif %}
-        <p class="status" role="status" data-welcome-status>{% if paid and activation_url %}Payment confirmed · Connecting…{% elif paid %}Payment confirmed · Connected{% else %}Connected{% endif %}</p>
-      </header>
-
-      <div class="body" data-welcome-body{% if paid and activation_url %} hidden{% endif %}>
-        <a class="ok" id="continue-browsing" href="{{ button_url }}">{{ button_label }}</a>
-
-        {% if quick_links %}
-        <div class="quick-links{% if quick_links|length == 1 %} is-single{% endif %}" aria-label="Website pages">
-          {% for link in quick_links %}
-            <a href="{{ link.url }}" rel="noopener">{{ link.label }}</a>
-          {% endfor %}
-        </div>
-        {% endif %}
-
-        <p class="hint">
-          Tap <strong>{{ button_label }}</strong> to leave this page and start surfing.
-          If a site does not load yet, wait a moment and try again.
-        </p>
-
-        <p class="meta">Hotspot · {{ org_name }}</p>
-      </div>
-      {% if paid and activation_url %}
-      <div class="body" data-welcome-connecting>
-        <p class="hint" style="margin: 0;">Waiting for MikroTik to allow surfing on this device…</p>
-        <p class="meta">Hotspot · {{ org_name }}</p>
-      </div>
       {% endif %}
-    </main>
-  </div>
+      <p class="status" data-welcome-status>
+        {% if paid and activation_url %}Payment confirmed · Connecting…{% elif paid %}Payment confirmed · Connected{% else %}Connected{% endif %}
+      </p>
+      <a
+        class="hero-cta"
+        id="continue-browsing"
+        href="{{ button_url }}"
+        {% if button_url and button_url != "http://neverssl.com/" %}target="_blank" rel="noopener"{% endif %}
+      >{{ button_label }}</a>
+    </header>
+
+    {% if quick_links %}
+    <section class="panel" aria-label="Click for offers from partners">
+      <p class="panel-title">Click for offers from partners</p>
+      <div class="partners{% if quick_links|length == 1 %} is-one{% endif %}">
+        {% for link in quick_links %}
+          <a class="partner" href="{{ link.url }}" target="_blank" rel="noopener">
+            <span
+              class="partner-thumb"
+              {% if link.image_url %}style="background-image:url('{{ link.image_url }}')"{% endif %}
+            >{% if not link.image_url %}{{ link.label|slice:":1"|upper }}{% endif %}</span>
+            <span class="partner-copy">
+              <span class="partner-kicker">Partner offer</span>
+              <span class="partner-name">{{ link.label }}</span>
+            </span>
+            <span class="partner-go" aria-hidden="true">→</span>
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    {% if offer_progress %}
+    <section class="panel" aria-label="Package offer progress">
+      <p class="panel-title">{% if offer_is_dummy %}Demo offer progress{% else %}Your offer progress{% endif %}</p>
+      <p class="offer-head">{% if offer_is_dummy %}Preview how loyalty offers look after clients buy{% else %}Keep buying to unlock free sessions{% endif %}</p>
+      <p class="offer-sub">{% if offer_is_dummy %}Sample progress for your Hotspot packages — real clients see their own counts here.{% else %}Track how close you are to your next free package.{% endif %}</p>
+      {% for item in offer_progress %}
+        <a class="offer{% if item.nearly_free %} is-near{% endif %}" href="{{ pay_url }}">
+          <div class="offer-row">
+            <span
+              class="offer-thumb"
+              {% if item.image_url %}style="background-image:url('{{ item.image_url }}')"{% endif %}
+            >{% if not item.image_url %}{{ item.plan_name|slice:":1"|upper }}{% endif %}</span>
+            <div>
+              <p class="offer-name">{{ item.plan_name }}</p>
+              <p class="offer-meta">{{ item.offer_label }}</p>
+            </div>
+          </div>
+          <p class="offer-progress-label">Your progress: {{ item.paid_count }}/{{ item.threshold }} paid ({{ item.percent }}%)</p>
+          <div class="slots" aria-label="{{ item.paid_count }} of {{ item.threshold }} payments completed">
+            {% for slot in item.slots %}
+              <span class="offer-slot{% if slot.filled %} is-filled{% endif %}"></span>
+            {% endfor %}
+          </div>
+          <div class="bar" aria-hidden="true"><i style="width:{{ item.percent }}%"></i></div>
+          <p class="offer-nudge">{{ item.nudge }}</p>
+        </a>
+      {% endfor %}
+    </section>
+    {% endif %}
+
+    <section class="actions" data-welcome-body{% if paid and activation_url %} hidden{% endif %}>
+      <p class="meta">Hotspot · {{ org_name }}</p>
+    </section>
+
+    {% if paid and activation_url %}
+    <section class="actions" data-welcome-connecting>
+      <div class="pulse" aria-hidden="true"><i></i><i></i><i></i></div>
+      <p class="hint">Waiting for MikroTik to allow surfing on this device…</p>
+      <p class="meta">Hotspot · {{ org_name }}</p>
+    </section>
+    {% endif %}
+  </main>
 
   {% if activation_url %}
   <script>
@@ -377,12 +626,10 @@
               window.setTimeout(activate, 1500 * attempts);
               return;
             }
-            if (statusEl) {
-              statusEl.textContent = "Payment confirmed · Could not auto-connect";
-            }
+            if (statusEl) statusEl.textContent = "Payment confirmed · Could not auto-connect";
             if (connectingEl) {
               connectingEl.innerHTML =
-                '<p class="hint" style="margin:0;">Payment succeeded, but MikroTik has not allowed surfing yet. Wait a moment, or open the pay page and enter a voucher.</p>' +
+                '<p class="hint">Payment succeeded, but MikroTik has not allowed surfing yet. Wait a moment, or open the pay page and enter a voucher.</p>' +
                 '<p class="meta">Hotspot · {{ org_name|escapejs }}</p>';
             }
           })

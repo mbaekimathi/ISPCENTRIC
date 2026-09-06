@@ -34,6 +34,74 @@ def customer_devices_unlimited(customer) -> bool:
     return plan_devices_unlimited(getattr(customer, "plan", None))
 
 
+def customer_account_devices(
+    customer,
+    *,
+    connected_within_minutes: int = 15,
+) -> list[dict]:
+    """
+    Linked gadgets on a customer account for UI listing.
+
+    Prefers CustomerDevice rows (with last_seen), then falls back to the
+    primary hotspot_mac so single-device accounts still appear.
+    """
+    from datetime import timedelta
+
+    from billing.models import CustomerDevice
+
+    if customer is None or not getattr(customer, "pk", None):
+        return []
+
+    recent_cut = timezone.now() - timedelta(minutes=max(1, int(connected_within_minutes or 15)))
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    try:
+        devices = list(customer.devices.all().order_by("id"))
+    except Exception:
+        devices = list(
+            CustomerDevice.objects.filter(customer_id=customer.pk).order_by("id")
+        )
+
+    for idx, device in enumerate(devices, start=1):
+        mac = normalize_device_mac(getattr(device, "mac", "") or "")
+        if not mac or mac in seen:
+            continue
+        seen.add(mac)
+        last_seen = getattr(device, "last_seen_at", None)
+        connected = bool(last_seen and last_seen >= recent_cut)
+        rows.append(
+            {
+                "mac": mac,
+                "label": f"Device {idx}",
+                "connected": connected,
+                "last_seen_at": last_seen,
+                "last_seen_label": (
+                    timezone.localtime(last_seen).strftime("%d %b %Y · %H:%M")
+                    if last_seen
+                    else ""
+                ),
+                "source": "device",
+            }
+        )
+
+    primary = normalize_device_mac(getattr(customer, "hotspot_mac", "") or "")
+    if primary and primary not in seen:
+        rows.insert(
+            0,
+            {
+                "mac": primary,
+                "label": "Primary device",
+                "connected": False,
+                "last_seen_at": None,
+                "last_seen_label": "",
+                "source": "primary",
+            },
+        )
+
+    return rows
+
+
 def customer_device_cap_snapshot(customer) -> dict:
     """
     Compare linked Hotspot MACs to the package device cap.

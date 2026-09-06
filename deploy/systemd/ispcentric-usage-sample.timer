@@ -1,0 +1,12 @@
+[Unit]
+Description=Sample customer usage every minute for General usage charts
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+# Measured from the end of the last run, so slow runs cannot overlap.
+AccuracySec=10s
+Unit=ispcentric-usage-sample.service
+
+[Install]
+WantedBy=timers.target

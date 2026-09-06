@@ -24,7 +24,12 @@
 
   document.querySelectorAll("[data-open-modal]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      openModal(btn.getAttribute("data-open-modal"));
+      var modalId = btn.getAttribute("data-open-modal");
+      openModal(modalId);
+      // Fresh register: sync max-devices default to the selected service type.
+      if (modalId === "billing-package-modal") {
+        applyRegisterMaxDevicesDefault();
+      }
     });
   });
 
@@ -132,7 +137,7 @@
     var hint = document.getElementById(hintId);
     if (!hint) return function () {};
     var hotspotText =
-      "How many devices can connect. Payment creates one one-time voucher per device. Users without a voucher cannot connect; a used voucher becomes invalid.";
+      "Defaults to 1 device. Leave blank for unlimited. Payment creates one one-time voucher per device. Users without a voucher cannot connect; a used voucher becomes invalid.";
     var pppoeText =
       "Leave blank for unlimited. PPPoE: CPEs that may dial this username (LAN behind one CPE is already unlimited).";
     function update() {
@@ -145,7 +150,28 @@
     update();
     return update;
   }
+
+  // Register form only: Hotspot → 1 device, PPPoE → blank (unlimited).
+  // Applied on service-type change and when opening a fresh register modal.
+  function applyRegisterMaxDevicesDefault() {
+    var input = document.getElementById("id_package_max_devices");
+    if (!input) return;
+    var checked = document.querySelector(
+      '#billing-package-register-form input[name="service_type"]:checked'
+    );
+    if (!checked) return;
+    input.value = checked.value === "hotspot" ? "1" : "";
+  }
+
+  function wireRegisterMaxDevicesDefault() {
+    document
+      .querySelectorAll('#billing-package-register-form input[name="service_type"]')
+      .forEach(function (radio) {
+        radio.addEventListener("change", applyRegisterMaxDevicesDefault);
+      });
+  }
   wireMaxDevicesHint("#billing-package-register-form", "package-max-devices-hint");
+  wireRegisterMaxDevicesDefault();
   var updateEditMaxDevicesHint = wireMaxDevicesHint(
     "#billing-package-edit-form",
     "edit-package-max-devices-hint"

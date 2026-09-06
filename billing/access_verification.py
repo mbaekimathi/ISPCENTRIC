@@ -127,16 +127,33 @@ def evaluate_nas_policy(
             }
         )
         if billing_ok:
-            speed_ok = (not actual_profile) or actual_profile == expected_profile
+            # Paid Hotspot clients must land on the package Mbps profile — an
+            # empty profile string is a mismatch, not a soft pass.
+            speed_ok = bool(actual_profile) and actual_profile == expected_profile
             if not speed_ok:
                 details["surf_gap"] = "wrong_speed_profile"
-            # Cap: NAS must authorize at most N MACs; extras must be reported disabled.
+            # Cap: NAS must authorize at most N MACs; extras / pruned must be
+            # reported as disabled on the router (not left surfing).
             devices_ok = True
             cap = int(cap_snap["cap"] or 0)
+            disabled_over_cap = int(provision.get("disabled_over_cap_count") or 0)
+            pruned_count = len(provision.get("pruned_macs") or [])
+            details["disabled_over_cap_count"] = disabled_over_cap
+            details["pruned_count"] = pruned_count
             if cap > 0:
                 devices_ok = int(allowed_count or 0) <= cap
                 if not devices_ok:
                     details["surf_gap"] = "device_cap_exceeded"
+                # If we pruned DB rows or found extras, the NAS write must have
+                # disabled those MACs — otherwise they keep surfing uncapped.
+                elif (pruned_count > 0 or over_cap_count > 0) and disabled_over_cap < (
+                    pruned_count + over_cap_count
+                ):
+                    # Older provision payloads omit disabled_over_cap_count; only
+                    # fail when the field is present and under-reports.
+                    if "disabled_over_cap_count" in provision:
+                        devices_ok = False
+                        details["surf_gap"] = "over_cap_not_disabled"
             policy_match = (
                 not disabled
                 and bool(limit_uptime)
@@ -331,6 +348,28 @@ def run_access_correction_loop(
                     customer=customer,
                     router=customer.router,
                 )
+                sync_result = sync_customer_subscription_access(
+                    customer,
+                    provision=True,
+                    reauthenticate=True,
+                )
+                customer.refresh_from_db()
+                evaluation = evaluate_nas_policy(customer, sync_result)
+
+            # Speed / device-cap mismatches: force another provision pass with
+            # reauthenticate so profile rate-limits and over-cap MAC disables stick.
+            surf_gap = (evaluation.get("details") or {}).get("surf_gap")
+            if (
+                not evaluation["policy_match"]
+                and billing_ok
+                and surf_gap
+                in {
+                    "wrong_speed_profile",
+                    "device_cap_exceeded",
+                    "over_cap_not_disabled",
+                }
+            ):
+                log(f"  correcting surf_gap={surf_gap}")
                 sync_result = sync_customer_subscription_access(
                     customer,
                     provision=True,

@@ -3,8 +3,13 @@
 {% block title %}Hotspot settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="access-settings-shell account-page-shell">
+<div class="access-settings-shell account-page-shell" data-access-mode="hotspot">
   <header class="access-settings-hero">
+    <div class="access-settings-hero-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12.5a7 7 0 0 1 14 0"/><path d="M8.5 15.5a3.5 3.5 0 0 1 7 0"/><circle cx="12" cy="18.5" r="1.2" fill="currentColor" stroke="none"/>
+      </svg>
+    </div>
     <div class="access-settings-hero-copy">
       <p class="account-page-kicker">Access · {{ router.name }}</p>
       <h2 class="access-settings-title">Hotspot settings</h2>
@@ -19,7 +24,7 @@
 
   {% if organization %}
     {% if form and can_edit %}
-      <form method="post" class="hotspot-settings-form access-settings-stack account-page" id="hotspot-settings-form" novalidate>
+      <form method="post" enctype="multipart/form-data" class="hotspot-settings-form access-settings-stack account-page" id="hotspot-settings-form" novalidate>
         {% csrf_token %}
 
         {% if form.non_field_errors %}
@@ -41,9 +46,13 @@
 
         <section class="panel account-card access-control-card settings-policy-panel{% if hotspot_enabled %} is-policy-on{% endif %}">
           <header class="access-control-head">
-            <div>
-              <h3>Hotspot service</h3>
-              <p>Turns portals and voucher defaults on for this MikroTik.</p>
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">01</span>
+              <div>
+                <p class="access-section-label">Service</p>
+                <h3>Hotspot service</h3>
+                <p>Turns portals and voucher defaults on for this MikroTik.</p>
+              </div>
             </div>
           </header>
 
@@ -80,13 +89,17 @@
           </div>
         </section>
 
-        {% include "core/includes/adverts_settings_panel.html" %}
+        {% include "core/includes/adverts_settings_panel.html" with access_section_index="02" %}
 
         <section class="panel account-card access-form-card">
           <header class="access-control-head">
-            <div>
-              <h3>Portal &amp; login</h3>
-              <p>Shown when a device joins Hotspot Wi‑Fi.</p>
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">03</span>
+              <div>
+                <p class="access-section-label">Portal</p>
+                <h3>Portal &amp; login</h3>
+                <p>Shown when a device joins Hotspot Wi‑Fi.</p>
+              </div>
             </div>
             {% if pay_page_path %}
               <a class="btn btn-ghost access-preview-btn" href="{{ pay_page_path }}" target="_blank" rel="noopener">Preview</a>
@@ -112,9 +125,13 @@
 
         <section class="panel account-card access-form-card">
           <header class="access-control-head">
-            <div>
-              <h3>After login</h3>
-              <p>Success page clients see once Hotspot login works.</p>
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">04</span>
+              <div>
+                <p class="access-section-label">After login</p>
+                <h3>After login</h3>
+                <p>Success page clients see once Hotspot login works.</p>
+              </div>
             </div>
             {% if welcome_page_url %}
               <a class="btn btn-ghost access-preview-btn" href="{{ welcome_page_path }}" target="_blank" rel="noopener">Preview</a>
@@ -159,45 +176,96 @@
           </div>
 
           <div class="access-field-group">
-            <p class="access-field-group-label">Quick links <span>(optional)</span></p>
-            <div class="account-card-grid access-link-grid">
-              <div class="field">
-                <label for="{{ form.hotspot_welcome_link1_label.id_for_label }}">Link 1 label</label>
-                {{ form.hotspot_welcome_link1_label }}
-                {% if form.hotspot_welcome_link1_label.errors %}
-                  <div class="field-error">{{ form.hotspot_welcome_link1_label.errors|striptags }}</div>
+            <p class="access-field-group-label">Quick links / partner adverts <span>(optional)</span></p>
+            <p class="access-field-group-help">Upload a company image for each link — it appears as an advert card on the welcome page.</p>
+            <div class="access-advert-slots">
+              <article class="access-advert-slot">
+                <header class="access-advert-slot-head">
+                  <span class="access-advert-slot-badge">Advert 1</span>
+                </header>
+                {% if organization.hotspot_welcome_link1_image %}
+                  <div class="access-ad-preview">
+                    <img src="{{ organization.hotspot_welcome_link1_image.url }}" alt="" width="120" height="72" loading="lazy">
+                  </div>
+                {% else %}
+                  <div class="access-ad-preview access-ad-preview--empty" aria-hidden="true">
+                    <span>No image</span>
+                  </div>
                 {% endif %}
-              </div>
-              <div class="field">
-                <label for="{{ form.hotspot_welcome_link1_url.id_for_label }}">Link 1 URL</label>
-                {{ form.hotspot_welcome_link1_url }}
-                {% if form.hotspot_welcome_link1_url.errors %}
-                  <div class="field-error">{{ form.hotspot_welcome_link1_url.errors|striptags }}</div>
+                <div class="access-advert-slot-fields">
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link1_label.id_for_label }}">Advert 1 name</label>
+                    {{ form.hotspot_welcome_link1_label }}
+                    {% if form.hotspot_welcome_link1_label.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link1_label.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link1_url.id_for_label }}">Advert 1 URL</label>
+                    {{ form.hotspot_welcome_link1_url }}
+                    {% if form.hotspot_welcome_link1_url.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link1_url.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link1_image.id_for_label }}">Advert 1 image</label>
+                    {{ form.hotspot_welcome_link1_image }}
+                    {% if form.hotspot_welcome_link1_image.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link1_image.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                </div>
+              </article>
+              <article class="access-advert-slot">
+                <header class="access-advert-slot-head">
+                  <span class="access-advert-slot-badge">Advert 2</span>
+                </header>
+                {% if organization.hotspot_welcome_link2_image %}
+                  <div class="access-ad-preview">
+                    <img src="{{ organization.hotspot_welcome_link2_image.url }}" alt="" width="120" height="72" loading="lazy">
+                  </div>
+                {% else %}
+                  <div class="access-ad-preview access-ad-preview--empty" aria-hidden="true">
+                    <span>No image</span>
+                  </div>
                 {% endif %}
-              </div>
-              <div class="field">
-                <label for="{{ form.hotspot_welcome_link2_label.id_for_label }}">Link 2 label</label>
-                {{ form.hotspot_welcome_link2_label }}
-                {% if form.hotspot_welcome_link2_label.errors %}
-                  <div class="field-error">{{ form.hotspot_welcome_link2_label.errors|striptags }}</div>
-                {% endif %}
-              </div>
-              <div class="field">
-                <label for="{{ form.hotspot_welcome_link2_url.id_for_label }}">Link 2 URL</label>
-                {{ form.hotspot_welcome_link2_url }}
-                {% if form.hotspot_welcome_link2_url.errors %}
-                  <div class="field-error">{{ form.hotspot_welcome_link2_url.errors|striptags }}</div>
-                {% endif %}
-              </div>
+                <div class="access-advert-slot-fields">
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link2_label.id_for_label }}">Advert 2 name</label>
+                    {{ form.hotspot_welcome_link2_label }}
+                    {% if form.hotspot_welcome_link2_label.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link2_label.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link2_url.id_for_label }}">Advert 2 URL</label>
+                    {{ form.hotspot_welcome_link2_url }}
+                    {% if form.hotspot_welcome_link2_url.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link2_url.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                  <div class="field">
+                    <label for="{{ form.hotspot_welcome_link2_image.id_for_label }}">Advert 2 image</label>
+                    {{ form.hotspot_welcome_link2_image }}
+                    {% if form.hotspot_welcome_link2_image.errors %}
+                      <div class="field-error">{{ form.hotspot_welcome_link2_image.errors|striptags }}</div>
+                    {% endif %}
+                  </div>
+                </div>
+              </article>
             </div>
           </div>
         </section>
 
         <section class="panel account-card access-form-card">
           <header class="access-control-head">
-            <div>
-              <h3>Voucher defaults</h3>
-              <p>Applied when creating new Hotspot vouchers.</p>
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">05</span>
+              <div>
+                <p class="access-section-label">Vouchers</p>
+                <h3>Voucher defaults</h3>
+                <p>Applied when creating new Hotspot vouchers.</p>
+              </div>
             </div>
           </header>
           <div class="account-card-grid access-voucher-grid">
@@ -269,7 +337,7 @@
   var enabledLabel = document.getElementById("hotspot-enabled-label");
   var pill = document.getElementById("hotspot-status-pill");
   var service = document.getElementById("hotspot-service-label");
-  var panel = document.querySelector("#hotspot-settings-form .settings-policy-panel");
+  var panel = document.querySelector("#hotspot-settings-form .settings-policy-panel:not(#org-adverts-panel)");
 
   function syncEnabled() {
     if (!enabled) return;

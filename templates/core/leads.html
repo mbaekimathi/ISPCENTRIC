@@ -3,181 +3,296 @@
 {% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<p class="page-sub client-page-lead">{{ page_subtitle }}</p>
-
-<section class="panel staff-panel staff-panel-solid stack-gap-lg">
-  <div class="panel-head-row">
-    <div>
-      <h2>Leads{% if customers %} ({{ customers|length }}){% endif %}</h2>
-      <p class="panel-sub">Pay to allocate an open ticket to your ISP, or reverse an allocation to return it to the pool.</p>
+<div class="leads-page">
+  <header class="leads-hero">
+    <div class="leads-hero-top">
+      <div class="leads-hero-copy">
+        <p class="leads-hero-kicker">Sales</p>
+        <h1>Leads</h1>
+        <p class="leads-hero-lead">
+          Hotspot portal interest ranked by engagement, plus open tickets you can allocate to your ISP.
+        </p>
+      </div>
+      <div class="leads-hero-actions">
+        <a class="btn btn-ghost btn-sm" href="{% url 'billing:lead_payments' %}">Leads billing</a>
+      </div>
     </div>
-    <div class="panel-head-actions">
-      <a class="btn btn-ghost" href="{% url 'billing:lead_payments' %}">Leads billing</a>
+    <div class="leads-pulse" aria-label="Leads overview">
+      <div class="leads-pulse-item">
+        <strong>{{ portal_summary.contacts|default:0 }}</strong>
+        <span>Contacts · {{ portal_summary.today|default:0 }} today</span>
+      </div>
+      <div class="leads-pulse-item is-hot">
+        <strong>{{ portal_summary.hot|default:0 }}</strong>
+        <span>Hot · {{ portal_summary.matched|default:0 }} matched</span>
+      </div>
+      <div class="leads-pulse-item">
+        <strong>{{ portal_summary.earn_clicks|default:0 }}</strong>
+        <span>Earn · {{ portal_summary.partner_clicks|default:0 }} partner</span>
+      </div>
+      <div class="leads-pulse-item is-open">
+        <strong>{{ allocation_summary.open|default:0 }}</strong>
+        <span>Open · {{ allocation_summary.mine|default:0 }} yours</span>
+      </div>
     </div>
-  </div>
+  </header>
 
-  {% if customers %}
-    <div class="org-table-shell">
-      <table class="org-table org-table-leads">
-        <thead>
-          <tr>
-            <th>Ticket</th>
-            <th>Name</th>
-            <th>Location</th>
-            <th>ISP</th>
-            <th class="col-optional">Package</th>
-            <th>Status</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for customer in customers %}
-            <tr>
-              <td><span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span></td>
-              <td>
-                <strong>{{ customer.full_name }}</strong>
-                {% if customer.building_name %}
-                  <small class="lead-location-line">{{ customer.building_name }}{% if customer.house_number %} · {{ customer.house_number }}{% endif %}</small>
+  <section class="leads-board" id="portal-leads">
+    <div class="leads-board-head">
+      <div>
+        <h2>Portal interest{% if portal_leads %} <span class="leads-count">{{ portal_leads|length }}</span>{% endif %}</h2>
+        <p>Refer &amp; earn counts more than partner taps. Recent activity rises to the top.</p>
+      </div>
+    </div>
+
+    <form class="leads-toolbar" method="get" action="{% url 'core:leads' %}#portal-leads">
+      {% if alloc_q %}<input type="hidden" name="aq" value="{{ alloc_q }}">{% endif %}
+      {% if alloc_filter and alloc_filter != "all" %}<input type="hidden" name="af" value="{{ alloc_filter }}">{% endif %}
+      <label class="leads-search">
+        <span class="visually-hidden">Search portal contacts</span>
+        <input type="search" name="pq" value="{{ portal_q }}" placeholder="Search name, phone, MAC…" autocomplete="off">
+      </label>
+      <div class="leads-seg" role="group" aria-label="Portal filters">
+        <button type="submit" name="pf" value="all" class="{% if portal_filter == 'all' %}is-active{% endif %}">All</button>
+        <button type="submit" name="pf" value="hot" class="{% if portal_filter == 'hot' %}is-active{% endif %}">Hot</button>
+        <button type="submit" name="pf" value="warm" class="{% if portal_filter == 'warm' %}is-active{% endif %}">Warm+</button>
+        <button type="submit" name="pf" value="earn" class="{% if portal_filter == 'earn' %}is-active{% endif %}">Refer &amp; earn</button>
+        <button type="submit" name="pf" value="partner" class="{% if portal_filter == 'partner' %}is-active{% endif %}">Partners</button>
+        <button type="submit" name="pf" value="matched" class="{% if portal_filter == 'matched' %}is-active{% endif %}">Matched</button>
+        <button type="submit" name="pf" value="today" class="{% if portal_filter == 'today' %}is-active{% endif %}">Today</button>
+      </div>
+    </form>
+
+    {% if portal_leads %}
+      <div class="leads-card-grid">
+        {% for lead in portal_leads %}
+          <article class="leads-contact-card is-{{ lead.interest_tier }}">
+            <div class="leads-card-top">
+              <div class="leads-card-identity">
+                <strong class="leads-card-name">{{ lead.display_name }}</strong>
+                {% if lead.is_matched and lead.customer_id %}
+                  <span class="leads-card-sub">
+                    <a href="{% url 'core:client_detail' lead.customer_id %}">{{ lead.customer_account|default:lead.customer_name }}</a>
+                    {% if lead.customer_status_label %} · {{ lead.customer_status_label }}{% endif %}
+                  </span>
+                {% elif lead.recency_band == "today" %}
+                  <span class="leads-card-sub">Active today</span>
                 {% endif %}
-              </td>
-              <td>
-                {% if customer.location_lat and customer.location_lng %}
-                  {% with maps_label=customer.building_name|default:customer.address %}
-                  <a
-                    class="lead-maps-link"
-                    href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ customer.location_lat }},{{ customer.location_lng }}&amp;z=18"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open {{ maps_label|default:'exact location' }} in Google Maps"
-                  >
-                    <span class="lead-maps-label">
-                      {% if customer.building_name %}{{ customer.building_name }}{% elif customer.address %}{{ customer.address }}{% else %}Open map{% endif %}
-                    </span>
-                    {% if customer.address %}
-                      <small class="lead-location-line">{{ customer.address }}</small>
-                    {% else %}
-                      <small class="lead-location-line">Lat {{ customer.location_lat }}, Lng {{ customer.location_lng }}</small>
-                    {% endif %}
-                  </a>
-                  {% endwith %}
-                {% elif customer.address or customer.building_name %}
-                  <a
-                    class="lead-maps-link"
-                    href="https://www.google.com/maps/search/?api=1&amp;query={% if customer.building_name %}{{ customer.building_name|urlencode }}{% if customer.address %}%2C%20{% endif %}{% endif %}{% if customer.address %}{{ customer.address|urlencode }}{% endif %}"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Search this place in Google Maps"
-                  >
-                    <span class="lead-maps-label">
-                      {% if customer.building_name %}{{ customer.building_name }}{% else %}{{ customer.address }}{% endif %}
-                    </span>
-                    {% if customer.building_name and customer.address %}
-                      <small class="lead-location-line">{{ customer.address }}</small>
-                    {% endif %}
-                  </a>
+              </div>
+              <span class="portal-interest-badge is-{{ lead.interest_tier }}" title="Score {{ lead.interest_score }}">
+                {{ lead.interest_tier|title }} <em>{{ lead.interest_score }}</em>
+              </span>
+            </div>
+
+            <div class="leads-stat-strip">
+              <div class="leads-stat">
+                <strong>{{ lead.earn_clicks }}</strong>
+                <span>Earn</span>
+              </div>
+              {% if show_partner_1 %}
+                <div class="leads-stat">
+                  <strong>{{ lead.partner_1_clicks }}</strong>
+                  <span>{{ partner1_label }}</span>
+                </div>
+              {% endif %}
+              {% if show_partner_2 %}
+                <div class="leads-stat">
+                  <strong>{{ lead.partner_2_clicks }}</strong>
+                  <span>{{ partner2_label }}</span>
+                </div>
+              {% endif %}
+              <div class="leads-stat">
+                <strong>{{ lead.total_clicks }}</strong>
+                <span>Total</span>
+              </div>
+            </div>
+
+            <div class="leads-card-foot">
+              <span>
+                {% if lead.phone %}<a href="tel:{{ lead.phone }}">{{ lead.phone }}</a>{% endif %}
+                {% if lead.phone and lead.hotspot_mac %} · {% endif %}
+                {% if lead.hotspot_mac %}<span class="leads-mac">{{ lead.hotspot_mac }}</span>{% endif %}
+                {% if not lead.phone and not lead.hotspot_mac %}No phone / MAC{% endif %}
+              </span>
+              <span>
+                {% if lead.last_clicked_at %}
+                  {{ lead.last_clicked_at|date:"d M" }} · {{ lead.last_clicked_at|date:"H:i" }}
                 {% else %}
                   —
                 {% endif %}
-              </td>
-              <td>
-                {% if customer.organization %}
-                  {{ customer.organization.name }}
-                {% else %}
-                  — Open —
-                {% endif %}
-              </td>
-              <td class="col-optional">{% if customer.plan %}{{ customer.plan.name }}{% else %}—{% endif %}</td>
-              <td>
-                <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
-              </td>
-              <td>
-                <div class="org-actions lead-ticket-actions">
-                  {% if organization.phone %}
-                    <a
-                      href="tel:{{ organization.phone }}"
-                      class="org-action-call"
-                      title="Call {{ organization.name }} ({{ organization.phone }})"
-                    >Call support</a>
-                  {% else %}
-                    <span class="lead-action-muted">No company phone</span>
-                  {% endif %}
+              </span>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="leads-empty">
+        <strong>{% if portal_q or portal_filter != "all" %}No matching contacts{% else %}No portal clicks yet{% endif %}</strong>
+        <p>
+          {% if portal_q or portal_filter != "all" %}
+            Clear search or switch the filter to All.
+          {% else %}
+            When clients open Refer &amp; earn or partner offers on the welcome page, they show up here.
+          {% endif %}
+        </p>
+      </div>
+    {% endif %}
+  </section>
 
-                  {% if customer.status == "new" %}
-                    <button
-                      type="button"
-                      class="org-action-success"
-                      data-lead-accept
-                      data-pay-url="{% url 'core:lead_allocation_stk_pay' customer.id %}"
-                      data-customer-name="{{ customer.full_name }}"
-                      data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
-                      data-amount="{{ customer.allocation_amount_display|default:'—' }}"
-                      data-phone="{{ allocation_phone }}"
-                      {% if customer.allocation_fee_error %}data-fee-error="{{ customer.allocation_fee_error }}"{% endif %}
-                      title="Pay sales commission to allocate this client to your ISP"
-                    >
-                      Accept
-                    </button>
-                    <form
-                      method="post"
-                      action="{% url 'core:lead_not_interested' customer.id %}"
-                      onsubmit="return confirm('Hide ticket {{ customer.sales_ticket_number|default:customer.account_number }} as not interested?');"
-                    >
-                      {% csrf_token %}
-                      <button type="submit" class="org-action-danger" title="Hide this ticket">
-                        Not interested
-                      </button>
-                    </form>
-                  {% elif customer.status == "allocated" or customer.status == "allocated_open" or customer.status == "allocated_closed" %}
-                    {% if customer.phone %}
-                      <a
-                        href="tel:{{ customer.phone }}"
-                        class="org-action-call"
-                        title="Call client {{ customer.phone }}"
-                      >{{ customer.phone }}</a>
-                    {% else %}
-                      <span class="lead-action-muted">No client phone</span>
-                    {% endif %}
-                    {% if customer.status == "allocated_open" %}
-                      <span class="lead-action-muted" title="Technician request is open">Tech: open</span>
-                    {% elif customer.assigned_technician %}
-                      <span class="lead-action-muted" title="Assigned technician">
-                        Tech:
-                        {% if customer.assigned_technician.user.get_full_name %}
-                          {{ customer.assigned_technician.user.get_full_name }}
-                        {% else %}
-                          {{ customer.assigned_technician.user.username }}
-                        {% endif %}
-                      </span>
-                    {% endif %}
-                    <button
-                      type="button"
-                      class="org-action-danger"
-                      data-lead-reverse
-                      data-reverse-url="{% url 'core:lead_reverse' customer.id %}"
-                      data-customer-name="{{ customer.full_name }}"
-                      data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
-                      data-client-name="{{ customer.full_name }}"
-                      {% if customer.assigned_technician %}
-                        data-technician-name="{% if customer.assigned_technician.user.get_full_name %}{{ customer.assigned_technician.user.get_full_name }}{% else %}{{ customer.assigned_technician.user.username }}{% endif %}"
-                      {% else %}
-                        data-technician-name=""
-                      {% endif %}
-                      title="Reverse allocation payment and reopen ticket"
-                    >
-                      Reverse
-                    </button>
-                  {% endif %}
-                </div>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+  <section class="leads-board" id="allocation-leads">
+    <div class="leads-board-head">
+      <div>
+        <h2>Allocation tickets{% if customers %} <span class="leads-count">{{ customers|length }}</span>{% endif %}</h2>
+        <p>Open pool first — pay to claim a ticket, or reverse to return it.</p>
+      </div>
     </div>
-  {% else %}
-    <p class="empty">No open or allocated clients for your organization yet.</p>
-  {% endif %}
-</section>
+
+    <form class="leads-toolbar" method="get" action="{% url 'core:leads' %}#allocation-leads">
+      {% if portal_q %}<input type="hidden" name="pq" value="{{ portal_q }}">{% endif %}
+      {% if portal_filter and portal_filter != "all" %}<input type="hidden" name="pf" value="{{ portal_filter }}">{% endif %}
+      <label class="leads-search">
+        <span class="visually-hidden">Search allocation tickets</span>
+        <input type="search" name="aq" value="{{ alloc_q }}" placeholder="Search ticket, name, location…" autocomplete="off">
+      </label>
+      <div class="leads-seg" role="group" aria-label="Allocation filters">
+        <button type="submit" name="af" value="all" class="{% if alloc_filter == 'all' %}is-active{% endif %}">
+          All{% if allocation_summary.open or allocation_summary.mine %} ({{ allocation_summary.open|add:allocation_summary.mine }}){% endif %}
+        </button>
+        <button type="submit" name="af" value="open" class="{% if alloc_filter == 'open' %}is-active{% endif %}">
+          Open ({{ allocation_summary.open|default:0 }})
+        </button>
+        <button type="submit" name="af" value="mine" class="{% if alloc_filter == 'mine' %}is-active{% endif %}">
+          Allocated ({{ allocation_summary.mine|default:0 }})
+        </button>
+        <button type="submit" name="af" value="tech_open" class="{% if alloc_filter == 'tech_open' %}is-active{% endif %}">
+          Tech open ({{ allocation_summary.tech_open|default:0 }})
+        </button>
+      </div>
+    </form>
+
+    {% if customers %}
+      <div class="leads-ticket-list">
+        {% for customer in customers %}
+          <article class="leads-ticket-card{% if customer.status == 'new' %} is-new{% endif %}">
+            <div class="leads-ticket-top">
+              <div class="leads-ticket-meta">
+                <span class="org-code">{{ customer.sales_ticket_number|default:"—" }}</span>
+                <span class="org-status org-status-{{ customer.status }}">{{ customer.get_status_display }}</span>
+                {% if customer.organization %}
+                  <span class="lead-action-muted">{{ customer.organization.name }}</span>
+                {% else %}
+                  <span class="leads-open-pool">Open pool</span>
+                {% endif %}
+              </div>
+              {% if customer.plan %}
+                <span class="lead-action-muted">{{ customer.plan.name }}</span>
+              {% endif %}
+            </div>
+
+            <div class="leads-ticket-body">
+              <strong>{{ customer.full_name }}</strong>
+              {% if customer.building_name %}
+                <span class="lead-location-line">{{ customer.building_name }}{% if customer.house_number %} · {{ customer.house_number }}{% endif %}</span>
+              {% endif %}
+              {% if customer.location_lat and customer.location_lng %}
+                {% with maps_label=customer.building_name|default:customer.address %}
+                <a
+                  class="lead-maps-link"
+                  href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ customer.location_lat }},{{ customer.location_lng }}&amp;z=18"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <span class="lead-maps-label">{% if customer.address %}{{ customer.address }}{% else %}Open map{% endif %}</span>
+                </a>
+                {% endwith %}
+              {% elif customer.address %}
+                <a
+                  class="lead-maps-link"
+                  href="https://www.google.com/maps/search/?api=1&amp;query={{ customer.address|urlencode }}"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ customer.address }}</a>
+              {% endif %}
+            </div>
+
+            <div class="org-actions lead-ticket-actions">
+              {% if organization.phone %}
+                <a href="tel:{{ organization.phone }}" class="org-action-call" title="Call {{ organization.name }}">Call support</a>
+              {% endif %}
+
+              {% if customer.status == "new" %}
+                <button
+                  type="button"
+                  class="org-action-success"
+                  data-lead-accept
+                  data-pay-url="{% url 'core:lead_allocation_stk_pay' customer.id %}"
+                  data-customer-name="{{ customer.full_name }}"
+                  data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
+                  data-amount="{{ customer.allocation_amount_display|default:'—' }}"
+                  data-phone="{{ allocation_phone }}"
+                  {% if customer.allocation_fee_error %}data-fee-error="{{ customer.allocation_fee_error }}"{% endif %}
+                >
+                  Accept
+                </button>
+                <form
+                  method="post"
+                  action="{% url 'core:lead_not_interested' customer.id %}"
+                  onsubmit="return confirm('Hide ticket {{ customer.sales_ticket_number|default:customer.account_number }} as not interested?');"
+                >
+                  {% csrf_token %}
+                  <button type="submit" class="org-action-danger">Not interested</button>
+                </form>
+              {% elif customer.status == "allocated" or customer.status == "allocated_open" or customer.status == "allocated_closed" %}
+                {% if customer.phone %}
+                  <a href="tel:{{ customer.phone }}" class="org-action-call">{{ customer.phone }}</a>
+                {% endif %}
+                {% if customer.status == "allocated_open" %}
+                  <span class="lead-action-muted">Tech: open</span>
+                {% elif customer.assigned_technician %}
+                  <span class="lead-action-muted">
+                    Tech:
+                    {% if customer.assigned_technician.user.get_full_name %}
+                      {{ customer.assigned_technician.user.get_full_name }}
+                    {% else %}
+                      {{ customer.assigned_technician.user.username }}
+                    {% endif %}
+                  </span>
+                {% endif %}
+                <button
+                  type="button"
+                  class="org-action-danger"
+                  data-lead-reverse
+                  data-reverse-url="{% url 'core:lead_reverse' customer.id %}"
+                  data-customer-name="{{ customer.full_name }}"
+                  data-ticket="{{ customer.sales_ticket_number|default:customer.account_number }}"
+                  data-client-name="{{ customer.full_name }}"
+                  {% if customer.assigned_technician %}
+                    data-technician-name="{% if customer.assigned_technician.user.get_full_name %}{{ customer.assigned_technician.user.get_full_name }}{% else %}{{ customer.assigned_technician.user.username }}{% endif %}"
+                  {% else %}
+                    data-technician-name=""
+                  {% endif %}
+                >
+                  Reverse
+                </button>
+              {% endif %}
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="leads-empty">
+        <strong>{% if alloc_q or alloc_filter != "all" %}No matching tickets{% else %}No allocation tickets yet{% endif %}</strong>
+        <p>
+          {% if alloc_q or alloc_filter != "all" %}
+            Clear search or switch the filter to All.
+          {% else %}
+            Open pool tickets and your allocated clients appear here.
+          {% endif %}
+        </p>
+      </div>
+    {% endif %}
+  </section>
+</div>
 
 <div class="role-modal client-action-modal lead-stk-modal" id="lead-stk-pay-modal" hidden aria-hidden="true">
   <div class="role-modal-backdrop" data-close-lead-modal></div>

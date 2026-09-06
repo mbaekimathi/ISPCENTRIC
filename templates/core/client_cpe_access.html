@@ -251,8 +251,16 @@
   var newTab = root.querySelector("[data-router-newtab]");
   var csrfInput = root.querySelector("[data-router-password-form] input[name=csrfmiddlewaretoken]");
   var inFlight = false;
-  var fillTimer = null;
   var routerStarted = false;
+  var pendingTab = null;
+  var connectingTitle = root.querySelector(".client-router-connecting-title");
+  var connectingHostLine = root.querySelector("[data-router-host-line]");
+  var DEFAULT_CONNECTING_TITLE = connectingTitle
+    ? connectingTitle.textContent
+    : "Opening router…";
+  var DEFAULT_HOST_LINE = connectingHostLine
+    ? connectingHostLine.textContent
+    : "";
 
   var DEFAULT_PATH = errorPath ? errorPath.textContent : "";
 
@@ -284,12 +292,45 @@
     if (guidanceLabel) guidanceLabel.hidden = !hasItems;
   }
 
+  function closePendingTab() {
+    if (pendingTab && !pendingTab.closed) {
+      try { pendingTab.close(); } catch (err) {}
+    }
+    pendingTab = null;
+  }
+
+  function openRouterTab(url) {
+    try {
+      if (pendingTab && !pendingTab.closed) {
+        try { pendingTab.opener = null; } catch (err) {}
+        pendingTab.location.replace(url);
+        pendingTab = null;
+        return true;
+      }
+    } catch (err) {
+      closePendingTab();
+    }
+    pendingTab = null;
+    try {
+      var opened = window.open(url, "_blank");
+      if (opened) {
+        try { opened.opener = null; } catch (err) {}
+        return true;
+      }
+    } catch (err) {}
+    return false;
+  }
+
   function showConnecting(message) {
     root.classList.remove("is-connected", "is-failed");
     if (stage) stage.classList.remove("is-live", "is-failed");
     if (statusEl) statusEl.textContent = message || "Connecting…";
     if (stampEl) stampEl.textContent = "Connecting";
     if (connecting) connecting.hidden = false;
+    if (connectingTitle) connectingTitle.textContent = DEFAULT_CONNECTING_TITLE;
+    if (connectingHostLine && DEFAULT_HOST_LINE) {
+      connectingHostLine.textContent = DEFAULT_HOST_LINE;
+    }
     if (errorBox) errorBox.hidden = true;
     if (frame) {
       frame.hidden = true;
@@ -298,84 +339,58 @@
     if (newTab) newTab.hidden = true;
   }
 
-  function fillLogin(doc) {
-    if (!doc) return false;
-    var pass = doc.querySelector("input[type='password']");
-    if (!pass) return false;
-    var user = doc.querySelector(
-      "input[name='username'], input[name='user'], input[name='name'], input[name='login'], input[type='text'], input:not([type])"
-    );
-    try {
-      if (user && cpeUser && !user.value) {
-        user.focus();
-        user.value = cpeUser;
-        user.dispatchEvent(new Event("input", { bubbles: true }));
-        user.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-      if (cpePass && !pass.value) {
-        pass.focus();
-        pass.value = cpePass;
-        pass.dispatchEvent(new Event("input", { bubbles: true }));
-        pass.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    } catch (err) {
-      return false;
-    }
-    if (cpePass) {
-      try {
-        var form = pass.form || pass.closest("form");
-        var submitBtn = form && form.querySelector(
-          "button[type='submit'], input[type='submit'], button.login, #loginBtn, .btn-login, button:not([type])"
-        );
-        if (submitBtn) {
-          submitBtn.click();
-        } else if (form && typeof form.requestSubmit === "function") {
-          form.requestSubmit();
-        }
-      } catch (err) {}
-    }
-    return true;
-  }
-
-  function watchFrame() {
-    if (!frame || !cpePass) return;
-    var tries = 0;
-    if (fillTimer) clearInterval(fillTimer);
-    fillTimer = setInterval(function () {
-      tries += 1;
-      try {
-        var doc = frame.contentDocument;
-        if (doc && fillLogin(doc)) {
-          clearInterval(fillTimer);
-          fillTimer = null;
-        }
-      } catch (err) {}
-      if (tries >= 25) {
-        clearInterval(fillTimer);
-        fillTimer = null;
-      }
-    }, 350);
-  }
-
   function showProxy(url, data) {
     root.classList.add("is-connected");
     root.classList.remove("is-failed");
     if (stage) {
-      stage.classList.add("is-live");
-      stage.classList.remove("is-failed");
+      // Keep the stage as a status panel — do not embed the router UI
+      // (many CPE admin pages refuse iframes via X-Frame-Options).
+      stage.classList.remove("is-live", "is-failed");
+    }
+    if (frame) {
+      frame.hidden = true;
+      frame.removeAttribute("src");
+    }
+    var needPass = !data.authenticated && !!data.needs_password;
+    var opened = openRouterTab(url);
+    // Initial page-load connect has no user gesture, so popups are often
+    // blocked — fall through to the current tab instead of leaving a dead iframe.
+    if (!opened && !needPass) {
+      window.location.assign(url);
+      return;
     }
     if (statusEl) {
-      if (data.authenticated) {
-        statusEl.textContent = "Signed in — manage the router below.";
+      if (needPass) {
+        statusEl.textContent = data.login_error
+          || "Sign-in required — use the form above, then Save & connect.";
+      } else if (opened) {
+        statusEl.textContent = data.authenticated
+          ? "Signed in — router opened in a new tab."
+          : "Router opened in a new tab"
+            + (data.cpe_host ? " (" + data.cpe_host + ")" : "")
+            + ".";
       } else if (data.login_error) {
         statusEl.textContent = data.login_error;
       } else {
-        statusEl.textContent = "Router open" + (data.cpe_host ? " at " + data.cpe_host : "") + ".";
+        statusEl.textContent = "Router ready — click Open in a new tab"
+          + (data.cpe_host ? " (" + data.cpe_host + ")" : "")
+          + ".";
       }
     }
     if (stampEl) stampEl.textContent = data.authenticated ? "Signed in" : "Connected";
-    if (connecting) connecting.hidden = true;
-    var needPass = !data.authenticated && !!data.needs_password;
+    if (connecting) {
+      connecting.hidden = needPass;
+      if (connectingTitle) {
+        connectingTitle.textContent = opened
+          ? "Opened in a new tab"
+          : "Router is ready";
+      }
+      if (connectingHostLine) {
+        connectingHostLine.textContent = opened
+          ? "Use the new tab to manage the router. You can reopen it anytime below."
+          : "Your browser blocked the popup — click Open in a new tab.";
+      }
+    }
     if (errorBox) errorBox.hidden = !needPass;
     if (needPass) {
       if (errorTitle) errorTitle.textContent = "Sign-in required";
@@ -404,20 +419,15 @@
     if (newTab) {
       newTab.href = url;
       newTab.hidden = false;
-    }
-    if (frame) {
-      frame.hidden = false;
-      frame.src = url;
-      // Only autofill when server-side sign-in failed — otherwise the matching
-      // password already opened an authenticated session.
-      if (cpePass && !data.authenticated) {
-        frame.addEventListener("load", watchFrame, { once: true });
+      if (!opened) {
+        try { newTab.focus(); } catch (err) {}
       }
     }
   }
 
   function showError(data) {
     data = data || {};
+    closePendingTab();
     root.classList.add("is-failed");
     root.classList.remove("is-connected");
     if (stage) {
@@ -462,9 +472,19 @@
     if (fixNasBtn) fixNasBtn.hidden = fc !== "nas_down";
   }
 
-  function connect(body) {
+  function connect(body, fromUserGesture) {
     if (!startUrl || inFlight) return;
     inFlight = true;
+    closePendingTab();
+    // Open a blank tab during a user click so the later redirect is not
+    // blocked as a popup after the async connect finishes.
+    if (fromUserGesture) {
+      try {
+        pendingTab = window.open("about:blank", "_blank");
+      } catch (err) {
+        pendingTab = null;
+      }
+    }
     showConnecting(
       viaTunnel
         ? "Connecting through the ISP MikroTik over WireGuard…"
@@ -514,7 +534,7 @@
   root.querySelectorAll("[data-router-retry]").forEach(function (btn) {
     btn.addEventListener("click", function () {
       routerStarted = true;
-      connect();
+      connect(null, true);
     });
   });
   if (passwordForm) {
@@ -534,27 +554,7 @@
       root.setAttribute("data-cpe-user", userValue);
       root.setAttribute("data-cpe-pass", passValue);
       routerStarted = true;
-      connect(new FormData(passwordForm));
-    });
-  }
-  if (frame) {
-    frame.addEventListener("load", function () {
-      try {
-        var doc = frame.contentDocument;
-        if (!doc || !doc.body) return;
-        var text = (doc.body.innerText || "").slice(0, 240).toLowerCase();
-        if (text.indexOf("timed out") >= 0 || text.indexOf("could not open") >= 0) {
-          showError({
-            failure_class: "unreachable",
-            detail: doc.body.innerText || "Router session ended.",
-            ping_ok: true,
-            session_active: true,
-            guidance: [
-              "The proxy session dropped. Retry — if it keeps failing, enable Remote Web Management on the client router.",
-            ],
-          });
-        }
-      } catch (err) {}
+      connect(new FormData(passwordForm), true);
     });
   }
 

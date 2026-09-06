@@ -19,7 +19,13 @@ from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
 from .services import customers_needing_renewal_attention, heal_payment_mpesa_reference
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
-_REVENUE_RANGE_CHOICES = ("day", "period", "month", "year")
+_REVENUE_RANGE_CHOICES = ("time", "day", "period", "month", "year")
+_REVENUE_TIME_PRESETS = {
+    "1": (1, "Last 1 hour"),
+    "6": (6, "Last quarter day"),
+    "12": (12, "Last half day"),
+    "18": (18, "Last ¾ day"),
+}
 _ATTENTION_SERVICE_CHOICES = ("pppoe", "hotspot", "all")
 _PAYMENT_SERVICE_CHOICES = ("all", "pppoe", "hotspot")
 logger = logging.getLogger(__name__)
@@ -113,11 +119,16 @@ def _payment_service_q(service: str) -> Q | None:
 
 
 def _parse_revenue_filter(request) -> dict:
-    """Build revenue date-range filter from GET calendar params."""
+    """Build revenue date-range filter from GET calendar params (shared UI modes)."""
     today = dj_tz.localdate()
+    now = dj_tz.now()
     range_mode = (request.GET.get("range") or "").strip().lower()
     if range_mode not in _REVENUE_RANGE_CHOICES:
         range_mode = ""
+
+    time_raw = (request.GET.get("time") or "").strip()
+    if time_raw not in _REVENUE_TIME_PRESETS:
+        time_raw = "6"
 
     day_value = _parse_iso_date(request.GET.get("day")) or today
     start_value = _parse_iso_date(request.GET.get("start")) or today.replace(day=1)
@@ -144,7 +155,11 @@ def _parse_revenue_filter(request) -> dict:
     end_dt = None
     label = "All time"
 
-    if range_mode == "day":
+    if range_mode == "time":
+        hours, label = _REVENUE_TIME_PRESETS[time_raw]
+        start_dt = now - timedelta(hours=hours)
+        end_dt = now
+    elif range_mode == "day":
         start_dt = _aware_day_start(day_value)
         end_dt = start_dt + timedelta(days=1)
         label = day_value.strftime("%d %b %Y")
@@ -169,6 +184,7 @@ def _parse_revenue_filter(request) -> dict:
 
     return {
         "range": range_mode,
+        "time": time_raw,
         "day": day_value.isoformat(),
         "start": start_value.isoformat(),
         "end": end_value.isoformat(),
@@ -659,6 +675,12 @@ def dashboard(request):
         payments_filter["hotspot_count"] = 0
         payments_filter["filtered_count"] = 0
 
+    revenue_filter_hidden = {}
+    if attention_filter["value"] != "pppoe":
+        revenue_filter_hidden["attention"] = attention_filter["value"]
+    if payments_filter["value"] != "all":
+        revenue_filter_hidden["payments"] = payments_filter["value"]
+
     return render(
         request,
         "billing/dashboard.html",
@@ -673,6 +695,7 @@ def dashboard(request):
             attention_filter=attention_filter,
             payments_filter=payments_filter,
             revenue_filter=revenue_filter,
+            revenue_filter_hidden=revenue_filter_hidden,
         ),
     )
 

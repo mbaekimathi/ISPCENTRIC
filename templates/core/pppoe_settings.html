@@ -3,8 +3,13 @@
 {% block title %}PPPoE settings — ISPCENTRIC{% endblock %}
 
 {% block client_content %}
-<div class="access-settings-shell account-page-shell">
+<div class="access-settings-shell account-page-shell" data-access-mode="pppoe">
   <header class="access-settings-hero">
+    <div class="access-settings-hero-mark" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v10"/><path d="M8 7h8"/><rect x="5" y="13" width="14" height="8" rx="2"/>
+      </svg>
+    </div>
     <div class="access-settings-hero-copy">
       <p class="account-page-kicker">Access · {{ router.name }}</p>
       <h2 class="access-settings-title">PPPoE settings</h2>
@@ -24,12 +29,16 @@
 
         <section class="panel account-card access-control-card settings-policy-panel{% if pppoe_compulsory %} is-policy-on{% endif %}">
           <header class="access-control-head">
-            <div>
-              <h3>PPPoE enforcement</h3>
-              <p>
-                On: blocks free LAN browsing — dialed PPPoE clients stay online; other devices use Hotspot.
-                Off: any LAN/DHCP device can reach the internet (open access).
-              </p>
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">01</span>
+              <div>
+                <p class="access-section-label">Policy</p>
+                <h3>PPPoE enforcement</h3>
+                <p>
+                  On: blocks free LAN browsing — dialed PPPoE clients stay online; other devices use Hotspot.
+                  Off: any LAN/DHCP device can reach the internet (open access).
+                </p>
+              </div>
             </div>
           </header>
 
@@ -46,13 +55,13 @@
             {% endif %}
           </div>
 
-          <p class="mikrotik-section-hint is-warning" id="pppoe-open-lan-warn"{% if pppoe_compulsory %} hidden{% endif %}>
+          <p class="access-callout is-warning" id="pppoe-open-lan-warn"{% if pppoe_compulsory %} hidden{% endif %}>
             Enforcement off means unpaid and unregistered devices on this MikroTik’s LAN can surf freely.
             Dialed PPPoE sessions and Hotspot logins are not torn down when you save.
           </p>
 
           {% if hotspot_enabled %}
-            <p class="settings-policy-hint" id="pppoe-hotspot-keep-hint">
+            <p class="access-callout is-info" id="pppoe-hotspot-keep-hint">
               Hotspot is enabled for this organization. Turning enforcement off does not remove Hotspot,
               so existing Hotspot clients keep their sessions.
             </p>
@@ -97,7 +106,41 @@
           {% endif %}
         </section>
 
-        {% include "core/includes/adverts_settings_panel.html" %}
+        <section class="panel account-card access-form-card">
+          <header class="access-control-head">
+            <div class="access-control-head-main">
+              <span class="access-section-index" aria-hidden="true">02</span>
+              <div>
+                <p class="access-section-label">Payment</p>
+                <h3>Payment page</h3>
+                <p>Renew portal PPPoE clients open to pay for packages (account lookup + M-Pesa).</p>
+              </div>
+            </div>
+            {% if pay_preview_path %}
+              <a class="btn btn-ghost access-preview-btn" href="{{ pay_preview_path }}" target="_blank" rel="noopener">Preview</a>
+            {% endif %}
+          </header>
+          {% if pay_page_url or pay_page_path %}
+            <div class="account-card-grid">
+              <div class="field account-card-span">
+                <label for="pppoe-pay-url">Payment page URL</label>
+                <input
+                  class="form-control"
+                  type="text"
+                  readonly
+                  value="{% firstof pay_page_url pay_page_path %}"
+                  id="pppoe-pay-url"
+                >
+              </div>
+            </div>
+          {% elif not organization.join_code %}
+            <p class="settings-policy-hint">
+              This organization needs a join code before the payment page URL is available.
+            </p>
+          {% endif %}
+        </section>
+
+        {% include "core/includes/adverts_settings_panel.html" with access_section_index="03" %}
 
         <div class="form-actions hotspot-settings-actions account-page-actions--sticky access-settings-actions">
           <div class="access-settings-actions-copy">
@@ -136,7 +179,7 @@
   var label = document.getElementById("pppoe-enforcement-label");
   var pill = document.getElementById("pppoe-status-pill");
   var policy = document.getElementById("pppoe-policy-label");
-  var panel = document.querySelector("#pppoe-settings-form .settings-policy-panel");
+  var panel = document.querySelector("#pppoe-settings-form .settings-policy-panel:not(#org-adverts-panel)");
   var openWarn = document.getElementById("pppoe-open-lan-warn");
   var form = document.getElementById("pppoe-settings-form");
   var wasOn = !!(input && input.checked);

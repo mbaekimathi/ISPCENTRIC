@@ -635,7 +635,48 @@ def pick_clean_uplink_lan_plan(
     return CLEAN_UPLINK_LAN_CANDIDATES[0]
 
 
+def _ensure_bridge_use_ip_firewall(sock: socket.socket, bridge_name: str) -> bool:
+    """Route bridged IP through the IP firewall without unbridging WAN.
+
+    When the ISP modem shares the LAN bridge, forward filter drops never see
+    customer traffic unless the bridge uses the IP firewall. Setting this flag
+    does not change L2 topology or DHCP, so sessions stay up.
+    """
+    bridge_name = (bridge_name or "").strip()
+    if not bridge_name:
+        return False
+    for row in _print(
+        sock,
+        "/interface/bridge",
+        props=".id,name,use-ip-firewall",
+    ):
+        if (row.get("name") or "").strip() != bridge_name:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            return False
+        current = (row.get("use-ip-firewall") or "").strip().lower()
+        if current in {"true", "yes"}:
+            return False
+        terminal = _set(sock, "/interface/bridge", item_id, **{"use-ip-firewall": "yes"})
+        return terminal.get("_reply") not in {"!trap", "!fatal"}
+    return False
+
+
 def _ensure_masquerade(sock: socket.socket) -> None:
+    """Add tagged WAN masquerade only when no WAN masquerade already exists."""
+    for row in _print(
+        sock,
+        "/ip/firewall/nat",
+        props=".id,chain,action,out-interface-list,comment",
+    ):
+        if (row.get("chain") or "") != "srcnat":
+            continue
+        if (row.get("action") or "") != "masquerade":
+            continue
+        out_list = (row.get("out-interface-list") or "").strip()
+        if out_list == "WAN" or not out_list:
+            return
     for row in _rows_with_tag(
         sock,
         "/ip/firewall/nat",
@@ -680,6 +721,18 @@ def _ensure_dns_redirect(sock: socket.socket) -> None:
         )
 
 
+def _filter_rule_fingerprint(row: dict[str, str]) -> tuple[str, ...]:
+    return (
+        (row.get("chain") or "").strip(),
+        (row.get("action") or "").strip(),
+        (row.get("connection-state") or "").strip(),
+        (row.get("in-interface-list") or "").strip(),
+        (row.get("out-interface-list") or "").strip(),
+        (row.get("dst-address") or "").strip(),
+        (row.get("comment") or "").strip(),
+    )
+
+
 def _ensure_filter_rules(
     sock: socket.socket,
     *,
@@ -691,9 +744,12 @@ def _ensure_filter_rules(
 
     Intentionally does NOT drop all WAN→router traffic. That locked operators
     out when they managed the MikroTik from the ISP/modem side of the WAN port.
-    Clean uplink focuses on DNS/NAT and blocking provider admin pages instead.
+
+    Provider admin / private ISP LAN drops are always installed when known
+    (bypass and behind). Customers must not reach the uplink modem/ONT.
+    Idempotent: skips remove/re-add when the desired tagged set is already present.
     """
-    _remove_tagged(sock, "/ip/firewall/filter")
+    _ = mode
 
     rules: list[dict[str, str]] = [
         {
@@ -711,38 +767,77 @@ def _ensure_filter_rules(
         },
     ]
 
-    if mode == "behind":
-        insert_at = 1
-        for gateway in provider_gateways or []:
-            rules.insert(
-                insert_at,
-                {
-                    "chain": "forward",
-                    "action": "drop",
-                    "dst-address": gateway,
-                    "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
-                },
-            )
-            insert_at += 1
-        for network in provider_networks or []:
-            # Block the ISP modem LAN (private only) so customers cannot open
-            # other admin hosts on that side (ONTs, fibre CPE, etc.).
-            net = _ip_network_from_cidr(network)
-            if net is None or not net.is_private:
-                continue
-            rules.insert(
-                insert_at,
-                {
-                    "chain": "forward",
-                    "action": "drop",
-                    "dst-address": str(net),
-                    "comment": f"{CLEAN_UPLINK_TAG} block provider lan",
-                },
-            )
-            insert_at += 1
+    insert_at = 1
+    for gateway in provider_gateways or []:
+        rules.insert(
+            insert_at,
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": gateway,
+                "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
+            },
+        )
+        insert_at += 1
+    for network in provider_networks or []:
+        # Block the ISP modem LAN (private only) so customers cannot open
+        # other admin hosts on that side (ONTs, fibre CPE, etc.).
+        net = _ip_network_from_cidr(network)
+        if net is None or not net.is_private:
+            continue
+        rules.insert(
+            insert_at,
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": str(net),
+                "comment": f"{CLEAN_UPLINK_TAG} block provider lan",
+            },
+        )
+        insert_at += 1
 
+    desired = {_filter_rule_fingerprint(rule) for rule in rules}
+    existing_rows = _rows_with_tag(
+        sock,
+        "/ip/firewall/filter",
+        props=(
+            ".id,chain,action,connection-state,in-interface-list,"
+            "out-interface-list,dst-address,comment"
+        ),
+    )
+    existing = {_filter_rule_fingerprint(row) for row in existing_rows}
+    if desired and desired == existing:
+        return
+
+    _remove_tagged(sock, "/ip/firewall/filter")
     for rule in rules:
         _add(sock, "/ip/firewall/filter", **rule)
+
+
+def _guess_provider_admin_ips(provider_networks: list[str]) -> list[str]:
+    """Guess common modem/ONT admin hosts (.1) on private WAN nets."""
+    guessed: list[str] = []
+    for network in provider_networks:
+        net = _ip_network_from_cidr(network)
+        if net is None or not net.is_private or net.num_addresses < 2:
+            continue
+        host = str(net.network_address + 1)
+        if host not in guessed:
+            guessed.append(host)
+    return guessed
+
+
+def _merge_provider_gateways(*groups: list[str] | None) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for ip in group or []:
+            token = (ip or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            merged.append(token)
+    return merged
 
 
 def _wait_for_api(
@@ -1221,20 +1316,18 @@ def set_mikrotik_clean_uplink(
     wan_interface: str = "ether1",
     lan_bridge: str = "bridgeLocal",
     provider_gateway: str = "",
-    separate_wan: bool = True,
+    separate_wan: bool = False,
     restore_wan_to_bridge: bool = False,
     port: int = 8728,
     timeout: float = 20.0,
 ) -> dict[str, Any]:
     """
-    Apply or remove clean-uplink rules on RouterOS for any ISP uplink.
+    Soft-apply or remove clean-uplink provider-block rules on RouterOS.
 
-    Supports DHCP and PPPoE WAN, picks a LAN subnet that does not collide with
-    the provider side, and (in behind mode) blocks one or more provider admin
-    IPs plus the private ISP modem LAN when detected.
-
-    Runs in phases and reconnects after unbridging WAN, because that change
-    often drops the active API TCP session.
+    Non-disruptive by design: never unbridges WAN, never rewrites LAN/DHCP,
+    never forces DNS redirects, and never adds a second WAN masquerade when one
+    already exists. Only refreshes tagged provider-block filter rules and (when
+    WAN is still on the bridge) enables bridge use-ip-firewall.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -1245,6 +1338,10 @@ def set_mikrotik_clean_uplink(
     wan_interface = (wan_interface or "ether1").strip()
     lan_bridge = (lan_bridge or "bridgeLocal").strip()
     provider_gateway_raw = (provider_gateway or "").strip()
+    # Intentionally ignore separate_wan / restore_wan_to_bridge — those topology
+    # changes disconnect the MikroTik API and customer sessions.
+    _ = separate_wan
+    _ = restore_wan_to_bridge
 
     if not host or not username:
         return {"ok": False, "error": "Router credentials are required."}
@@ -1263,43 +1360,22 @@ def set_mikrotik_clean_uplink(
     try:
         if not enabled:
             with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+                # Soft disable: remove only tagged filter/NAT helpers. Do not
+                # touch DHCP, bridge ports, or interface-list members.
                 _remove_tagged(sock, "/ip/firewall/filter")
                 _remove_tagged(sock, "/ip/firewall/nat")
-                _remove_tagged(sock, "/ip/dhcp-client")
-                _remove_tagged(sock, "/interface/list/member")
-                if restore_wan_to_bridge and wan_interface and lan_bridge:
-                    if not _bridge_port_id(sock, wan_interface):
-                        terminal = _add(
-                            sock,
-                            "/interface/bridge/port",
-                            interface=wan_interface,
-                            bridge=lan_bridge,
-                            comment=CLEAN_UPLINK_TAG,
-                        )
-                        if terminal.get("_reply") == "!trap":
-                            return {
-                                "ok": False,
-                                "enabled": False,
-                                "wan_was_bridged": False,
-                                "error": _trap_message(
-                                    terminal,
-                                    "Removed clean uplink rules, but could not restore WAN to the bridge.",
-                                ),
-                            }
             return {
                 "ok": True,
                 "enabled": False,
                 "mode": mode,
                 "wan_was_bridged": False,
-                "message": "Clean uplink disabled. Provider-block rules were removed from the MikroTik.",
+                "message": "Clean uplink provider-block rules were removed (no topology change).",
             }
 
-        wan_was_bridged = False
-        detected_gateways: list[str] = []
-        provider_networks: list[str] = []
         wan_mode = "dhcp"
+        notes: list[str] = []
+        bridge_ip_fw = False
 
-        # Phase 1: validate interfaces and optionally unbridge WAN.
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
             iface_names = {
                 (row.get("name") or "").strip()
@@ -1319,32 +1395,22 @@ def set_mikrotik_clean_uplink(
             pppoe_iface = _find_pppoe_client_for_wan(sock, wan_interface)
             if pppoe_iface:
                 wan_mode = "pppoe"
+                notes.append(f"using PPPoE uplink {pppoe_iface}")
+
             detected_gateways = _detect_dhcp_gateways(sock, wan_interface)
             wan_nets = _collect_interface_networks(
-                sock, wan_interface, *( [pppoe_iface] if pppoe_iface else [])
+                sock,
+                wan_interface,
+                *([pppoe_iface] if pppoe_iface else []),
             )
-            provider_networks = [
-                str(net) for net in wan_nets if net.is_private
-            ]
+            provider_networks = [str(net) for net in wan_nets if net.is_private]
+            provider_gateways = _merge_provider_gateways(
+                provider_gateways,
+                detected_gateways,
+                _guess_provider_admin_ips(provider_networks),
+            )
 
-            if separate_wan:
-                port_id = _bridge_port_id(sock, wan_interface)
-                if port_id:
-                    terminal = _remove(sock, "/interface/bridge/port", port_id)
-                    if terminal.get("_reply") == "!trap":
-                        return {
-                            "ok": False,
-                            "error": _trap_message(
-                                terminal,
-                                f"Could not remove {wan_interface} from the bridge.",
-                            ),
-                        }
-                    wan_was_bridged = True
-
-        if mode == "behind":
-            if not provider_gateways and detected_gateways:
-                provider_gateways = detected_gateways
-            if not provider_gateways:
+            if mode == "behind" and not provider_gateways:
                 return {
                     "ok": False,
                     "error": (
@@ -1353,99 +1419,54 @@ def set_mikrotik_clean_uplink(
                     ),
                 }
 
-        # Unbridging often kills the current API TCP session — wait, then continue.
-        if wan_was_bridged:
-            time.sleep(1.5)
-            _wait_for_api(host, port=port)
+            _ensure_interface_list(sock, "WAN")
+            _ensure_interface_list(sock, "LAN")
+            _ensure_list_member(sock, "WAN", wan_interface)
+            if pppoe_iface and pppoe_iface != wan_interface:
+                _ensure_list_member(sock, "WAN", pppoe_iface)
+            _ensure_list_member(sock, "LAN", lan_bridge)
 
-        # Phase 2: lists, DHCP/PPPoE, DNS, NAT, firewall (fresh session).
-        last_error = ""
-        passthrough_notes: list[str] = []
-        for attempt in range(1, 4):
-            try:
-                with _api_session(
-                    host, username, password, port=port, timeout=timeout
-                ) as sock:
-                    _ensure_interface_list(sock, "WAN")
-                    _ensure_interface_list(sock, "LAN")
-                    passthrough_notes = ensure_mikrotik_lan_passthrough(
-                        sock,
-                        wan_interface=wan_interface,
-                        lan_bridge=lan_bridge,
-                    )
-                    # Refresh private WAN nets after DHCP/PPPoE may have addressed them.
-                    pppoe_iface = _find_pppoe_client_for_wan(sock, wan_interface)
-                    wan_nets = _collect_interface_networks(
-                        sock,
-                        wan_interface,
-                        *([pppoe_iface] if pppoe_iface else []),
-                    )
-                    provider_networks = [
-                        str(net) for net in wan_nets if net.is_private
-                    ]
-                    if mode == "behind" and not provider_gateways:
-                        provider_gateways = _detect_dhcp_gateways(sock, wan_interface)
+            # If WAN is still a bridge slave, enable IP firewall on the bridge
+            # so provider-block drops work without unbridging (no disconnect).
+            if _bridge_port_id(sock, wan_interface):
+                if _ensure_bridge_use_ip_firewall(sock, lan_bridge):
+                    bridge_ip_fw = True
+                    notes.append(f"enabled use-ip-firewall on {lan_bridge}")
+                else:
+                    notes.append("wan_still_bridged")
 
-                    _command(
-                        sock,
-                        [
-                            "/ip/dns/set",
-                            "=allow-remote-requests=yes",
-                            "=servers=1.1.1.1,8.8.8.8",
-                        ],
-                    )
-                    _remove_tagged(sock, "/ip/firewall/nat")
-                    _ensure_masquerade(sock)
-                    _ensure_dns_redirect(sock)
-                    _ensure_filter_rules(
-                        sock,
-                        mode=mode,
-                        provider_gateways=provider_gateways if mode == "behind" else None,
-                        provider_networks=provider_networks if mode == "behind" else None,
-                    )
-                break
-            except (TimeoutError, ConnectionError, OSError) as exc:
-                last_error = str(exc)
-                if attempt >= 3:
-                    return {
-                        "ok": False,
-                        "error": (
-                            last_error
-                            or "Could not finish clean uplink after reconnecting to the router."
-                        ),
-                    }
-                time.sleep(1.5 * attempt)
-                _wait_for_api(host, port=port)
+            # Remove older soft-sync NAT helpers (forced DNS / extra masquerade)
+            # that can change client DNS or duplicate NAT — keep stock masquerade.
+            _remove_tagged(sock, "/ip/firewall/nat")
+            _ensure_filter_rules(
+                sock,
+                mode=mode,
+                provider_gateways=provider_gateways or None,
+                provider_networks=provider_networks or None,
+            )
 
         mode_label = (
             "Modem bypass" if mode == "bypass" else "Behind provider router"
         )
-        detail = ""
-        if passthrough_notes:
-            detail = " " + "; ".join(
-                n for n in passthrough_notes if n.startswith(("wan_mode=", "lan_plan=", "using "))
-            )
         return {
             "ok": True,
             "enabled": True,
             "mode": mode,
             "wan_mode": wan_mode,
             "provider_gateways": provider_gateways,
-            "wan_was_bridged": wan_was_bridged,
-            "notes": passthrough_notes,
+            "provider_networks": provider_networks,
+            "wan_was_bridged": False,
+            "bridge_ip_firewall": bridge_ip_fw,
+            "notes": notes,
             "message": (
-                f"Clean uplink enabled ({mode_label}). "
-                "MikroTik will pass internet and block provider settings pages."
-                f"{detail}"
+                f"Clean uplink synced ({mode_label}) without disconnecting users. "
+                "Provider modem/ONT admin access is blocked."
             ),
         }
     except TimeoutError:
         return {
             "ok": False,
-            "error": (
-                "Timed out while updating clean uplink. "
-                "If WAN was just taken out of the bridge, wait 5 seconds and click Enable again."
-            ),
+            "error": "Timed out while syncing clean uplink.",
             "timeout": True,
         }
     except ConnectionError as exc:
@@ -7603,6 +7624,8 @@ def fetch_customer_pppoe_usage(
         "download_label": "—",
         "upload_label": "—",
         "interface": "",
+        "secret_profile": "",
+        "on_blocked_profile": False,
         "error": "",
     }
     if not host:
@@ -7633,12 +7656,35 @@ def fetch_customer_pppoe_usage(
                     session = row
                     break
 
+            secret_profile = ""
+            secret_disabled = False
+            secret_rows = _print(
+                sock,
+                "/ppp/secret",
+                props="name,profile,disabled",
+                query={"name": pppoe_username},
+            )
+            if not secret_rows:
+                secret_rows = _print(sock, "/ppp/secret", props="name,profile,disabled")
+            for row in secret_rows:
+                name = (row.get("name") or "").strip().lower()
+                if name not in want_alts:
+                    continue
+                secret_profile = (row.get("profile") or "").strip()
+                secret_disabled = _is_disabled(row)
+                break
+            on_blocked_profile = bool(
+                secret_disabled or secret_profile == PPPOE_BLOCKED_PROFILE_NAME
+            )
+
             if not session:
                 return {
                     **empty,
                     "ok": True,
                     "online": True,
                     "session_active": False,
+                    "secret_profile": secret_profile,
+                    "on_blocked_profile": on_blocked_profile,
                     "error": "",
                     "hint": "Subscriber is not online on this router right now.",
                 }
@@ -7985,6 +8031,15 @@ def fetch_router_bulk_pppoe_usage(
                     "upload_bps": None,
                     "interface": iface_name,
                 }
+                # Poll-to-poll rates (same direction rules as Hotspot / live PPPoE).
+                if iface_name and (bytes_in or bytes_out):
+                    rates = _hotspot_rates_from_bytes(
+                        f"pppoe-bulk:{host}:{key}",
+                        bytes_in,
+                        bytes_out,
+                    )
+                    sessions[key]["download_bps"] = rates.get("download_bps")
+                    sessions[key]["upload_bps"] = rates.get("upload_bps")
             return {"ok": True, "sessions": sessions, "error": ""}
     except TimeoutError:
         return {"ok": False, "sessions": {}, "error": "Connection timed out."}
@@ -11842,10 +11897,17 @@ def _ppp_secret_profile_for_customer(customer, *, disabled: bool) -> str:
     return PPPOE_PROFILE_NAME
 
 
-def _current_ppp_secret_profile(sock: socket.socket, username: str) -> str:
+def _current_ppp_secret_profile(
+    sock: socket.socket,
+    username: str,
+    *,
+    live: dict[str, Any] | None = None,
+) -> str:
     username = (username or "").strip()
     if not username:
         return ""
+    if live is not None:
+        return (live.get("secret_profiles") or {}).get(username.lower(), "")
     rows = _print(
         sock,
         "/ppp/secret",
@@ -11902,6 +11964,104 @@ def _customer_pppoe_secret_disabled(customer) -> bool:
         return getattr(customer, "status", "") != "active"
 
 
+def _pppoe_arp_complete_map(sock: socket.socket) -> dict[str, bool]:
+    """Map PPP/ARP peer address → complete flag for ghost detection."""
+    arp_complete: dict[str, bool] = {}
+    try:
+        rows = _print(sock, "/ip/arp", props="address,complete")
+    except Exception:
+        return arp_complete
+    for row in rows:
+        addr = (row.get("address") or "").strip()
+        if not addr:
+            continue
+        complete = (row.get("complete") or "").strip().lower()
+        if complete in {"true", "yes"}:
+            arp_complete[addr] = True
+        elif complete in {"false", "no"}:
+            arp_complete[addr] = False
+    return arp_complete
+
+
+def _pppoe_live_state_maps(sock: socket.socket) -> dict[str, Any]:
+    """
+    Dump PPP secrets, active sessions, blocked list, and ARP once.
+
+    Batch restore / paid-not-surfing repair classify every customer in memory
+    from these maps instead of N round-trips per username.
+    """
+    secret_profiles: dict[str, str] = {}
+    try:
+        for row in _print(sock, "/ppp/secret", props="name,profile"):
+            name = (row.get("name") or "").strip().lower()
+            if name:
+                secret_profiles[name] = (row.get("profile") or "").strip()
+    except Exception:
+        secret_profiles = {}
+
+    active_names: set[str] = set()
+    active_addresses: dict[str, set[str]] = {}
+    try:
+        for row in _print(sock, "/ppp/active", props="name,address"):
+            name = (row.get("name") or "").strip().lower()
+            if not name:
+                continue
+            active_names.add(name)
+            addr = (row.get("address") or "").strip()
+            if addr:
+                active_addresses.setdefault(name, set()).add(addr)
+    except Exception:
+        active_names = set()
+        active_addresses = {}
+
+    blocked_list_addresses: set[str] = set()
+    try:
+        for row in _print(
+            sock, "/ip/firewall/address-list", props="list,address"
+        ):
+            if (row.get("list") or "").strip() != PPPOE_BLOCKED_ADDRESS_LIST:
+                continue
+            addr = (row.get("address") or "").strip()
+            if addr:
+                blocked_list_addresses.add(addr)
+    except Exception:
+        blocked_list_addresses = set()
+
+    return {
+        "secret_profiles": secret_profiles,
+        "active_names": active_names,
+        "active_addresses": active_addresses,
+        "blocked_list_addresses": blocked_list_addresses,
+        "arp_complete": _pppoe_arp_complete_map(sock),
+    }
+
+
+def _pppoe_session_blocked_from_maps(live: dict[str, Any], username: str) -> bool:
+    """True when this user's live PPP address is still on ispcentric-blocked."""
+    name = (username or "").strip().lower()
+    if not name:
+        return False
+    addrs = live.get("active_addresses", {}).get(name) or set()
+    if not addrs:
+        return False
+    blocked = live.get("blocked_list_addresses") or set()
+    return bool(addrs & blocked)
+
+
+def _pppoe_session_looks_ghost_from_maps(
+    live: dict[str, Any], username: str
+) -> bool:
+    """Incomplete-ARP ghost check using a preloaded live map."""
+    name = (username or "").strip().lower()
+    if not name:
+        return False
+    addrs = live.get("active_addresses", {}).get(name) or set()
+    if not addrs:
+        return False
+    arp_complete = live.get("arp_complete") or {}
+    return any(arp_complete.get(addr) is False for addr in addrs)
+
+
 def _disconnect_pppoe_sessions(sock: socket.socket, username: str) -> int:
     """Drop active PPP sessions so a password change takes effect immediately."""
     return _disconnect_pppoe_sessions_many(sock, [username])
@@ -11938,11 +12098,18 @@ def _disconnect_pppoe_sessions_many(
     return removed
 
 
-def _pppoe_has_active_session(sock: socket.socket, username: str) -> bool:
+def _pppoe_has_active_session(
+    sock: socket.socket,
+    username: str,
+    *,
+    live: dict[str, Any] | None = None,
+) -> bool:
     """True when this PPP username currently has a live /ppp/active row."""
     username = (username or "").strip().lower()
     if not username:
         return False
+    if live is not None:
+        return username in (live.get("active_names") or set())
     rows = _print(
         sock,
         "/ppp/active",
@@ -11961,6 +12128,7 @@ def _pppoe_session_looks_ghost(
     username: str,
     *,
     arp_complete: dict[str, bool] | None = None,
+    live: dict[str, Any] | None = None,
 ) -> bool:
     """
     Detect a leftover /ppp/active row that may block only-one=yes redial.
@@ -11973,6 +12141,8 @@ def _pppoe_session_looks_ghost(
     ARP flaps on live sessions. Dead peers are cleared by ``keepalive-timeout``
     on the PPP profile; kicks remain for wrong/blocked profile transitions only.
     """
+    if live is not None:
+        return _pppoe_session_looks_ghost_from_maps(live, username)
     username = (username or "").strip().lower()
     if not username:
         return False
@@ -11987,30 +12157,18 @@ def _pppoe_session_looks_ghost(
     return False
 
 
-def _pppoe_arp_complete_map(sock: socket.socket) -> dict[str, bool]:
-    """Map PPP/ARP peer address → complete flag for ghost detection."""
-    arp_complete: dict[str, bool] = {}
-    try:
-        rows = _print(sock, "/ip/arp", props="address,complete")
-    except Exception:
-        return arp_complete
-    for row in rows:
-        addr = (row.get("address") or "").strip()
-        if not addr:
-            continue
-        complete = (row.get("complete") or "").strip().lower()
-        if complete in {"true", "yes"}:
-            arp_complete[addr] = True
-        elif complete in {"false", "no"}:
-            arp_complete[addr] = False
-    return arp_complete
-
-
-def _active_pppoe_session_addresses(sock: socket.socket, username: str) -> set[str]:
+def _active_pppoe_session_addresses(
+    sock: socket.socket,
+    username: str,
+    *,
+    live: dict[str, Any] | None = None,
+) -> set[str]:
     """Remote IPs for this username's live /ppp/active rows."""
     username = (username or "").strip().lower()
     if not username:
         return set()
+    if live is not None:
+        return set(live.get("active_addresses", {}).get(username) or set())
     return {
         (row.get("address") or "").strip()
         for row in _print(sock, "/ppp/active", props="name,address")
@@ -12019,8 +12177,15 @@ def _active_pppoe_session_addresses(sock: socket.socket, username: str) -> set[s
     }
 
 
-def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool:
+def _active_pppoe_session_is_blocked(
+    sock: socket.socket,
+    username: str,
+    *,
+    live: dict[str, Any] | None = None,
+) -> bool:
     """Whether this user's current session IP still carries the blocked tag."""
+    if live is not None:
+        return _pppoe_session_blocked_from_maps(live, username)
     active_addresses = _active_pppoe_session_addresses(sock, username)
     if not active_addresses:
         return False
@@ -12029,6 +12194,49 @@ def _active_pppoe_session_is_blocked(sock: socket.socket, username: str) -> bool
         and (row.get("address") or "").strip() in active_addresses
         for row in _print(sock, "/ip/firewall/address-list", props="list,address")
     )
+
+
+def _clear_pppoe_blocked_address_list_many(
+    sock: socket.socket,
+    usernames: list[str] | set[str] | tuple[str, ...],
+    *,
+    live: dict[str, Any] | None = None,
+) -> int:
+    """Remove ispcentric-blocked list rows for many live PPP addresses at once."""
+    needles = {
+        (name or "").strip().lower()
+        for name in usernames
+        if (name or "").strip()
+    }
+    if not needles:
+        return 0
+    if live is None:
+        live = _pppoe_live_state_maps(sock)
+    target_addrs: set[str] = set()
+    for name in needles:
+        target_addrs |= set(live.get("active_addresses", {}).get(name) or set())
+    if not target_addrs:
+        return 0
+    removed = 0
+    try:
+        rows = _print(
+            sock, "/ip/firewall/address-list", props=".id,list,address"
+        )
+    except Exception:
+        return 0
+    for row in rows:
+        if (row.get("list") or "").strip() != PPPOE_BLOCKED_ADDRESS_LIST:
+            continue
+        address = (row.get("address") or "").strip()
+        if address not in target_addrs:
+            continue
+        item_id = (row.get(".id") or "").strip()
+        if not item_id:
+            continue
+        terminal = _remove(sock, "/ip/firewall/address-list", item_id)
+        if terminal.get("_reply") != "!trap":
+            removed += 1
+    return removed
 
 
 def _clear_pppoe_blocked_address_list(
@@ -12394,9 +12602,19 @@ def _block_orphan_pppoe_secrets_on_socket(sock: socket.socket, router) -> list[s
 
 
 def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> int:
-    """Write all eligible customer PPP secrets onto an open API session."""
+    """
+    Write all eligible customer PPP secrets onto an open API session.
+
+    Writes every secret first (no kicks), clears stuck blocked address-list
+    rows in one pass, then drops every session that needs a redial together so
+    CPEs reconnect in parallel after MikroTik reconnect / NAS refresh.
+    """
+    customers = list(_pppoe_customers_for_router(router))
+    live = _pppoe_live_state_maps(sock)
+    kick_usernames: list[str] = []
+    clear_usernames: list[str] = []
     synced = 0
-    for customer in _pppoe_customers_for_router(router):
+    for customer in customers:
         username = (customer.pppoe_username or "").strip()
         password = customer.pppoe_password or ""
         if not username or not password:
@@ -12405,7 +12623,7 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
         # Match individual provision: expired/unpaid clients stay on the blocked
         # profile so a policy push never restores free surfing.
         profile = _ppp_secret_profile_for_customer(customer, disabled=disabled)
-        previous_profile = _current_ppp_secret_profile(sock, username)
+        previous_profile = _current_ppp_secret_profile(sock, username, live=live)
         comment = f"{PPP_SECRET_TAG} {customer.account_number}".strip()
         _ensure_ppp_secret(
             sock,
@@ -12425,22 +12643,35 @@ def _sync_organization_pppoe_secrets_on_socket(sock: socket.socket, router) -> i
             and _customer_internet_allowed(customer)
         )
         profile_changed = bool(previous_profile and previous_profile != profile)
+        session_active_before = _pppoe_has_active_session(
+            sock, username, live=live
+        )
         session_blocked = False
         if restoring and (
             profile_changed
             or previous_profile == PPPOE_BLOCKED_PROFILE_NAME
-            or _pppoe_has_active_session(sock, username)
+            or session_active_before
         ):
-            session_blocked = _active_pppoe_session_is_blocked(sock, username)
+            session_blocked = _active_pppoe_session_is_blocked(
+                sock, username, live=live
+            )
         # Restore path: clear leftover ispcentric-blocked address-list rows and
         # kick so the CPE redials onto the paid profile. Without this, a deploy
         # bulk rewrite leaves some clients "PPPoE active, no surf".
         if restoring and (profile_changed or session_blocked):
-            _clear_pppoe_blocked_address_list(sock, username)
-            _disconnect_pppoe_sessions(sock, username)
+            clear_usernames.append(username)
+            kick_usernames.append(username)
         elif profile_changed:
-            _disconnect_pppoe_sessions(sock, username)
+            kick_usernames.append(username)
         synced += 1
+
+    if clear_usernames:
+        _clear_pppoe_blocked_address_list_many(
+            sock, clear_usernames, live=live
+        )
+    if kick_usernames:
+        _disconnect_pppoe_sessions_many(sock, kick_usernames)
+
     orphan_notes = _block_orphan_pppoe_secrets_on_socket(sock, router)
     if orphan_notes:
         synced += len(orphan_notes)
@@ -12590,7 +12821,7 @@ def sync_pppoe_subscription_batch_on_router(
                         )
                         notes.extend(stack_notes[:4])
 
-                arp_complete = _pppoe_arp_complete_map(sock)
+                live = _pppoe_live_state_maps(sock)
                 for customer in customers:
                     username = (customer.pppoe_username or "").strip()
                     password = customer.pppoe_password or ""
@@ -12607,14 +12838,16 @@ def sync_pppoe_subscription_batch_on_router(
                     ).strip()
                     rate_limit = _pppoe_rate_limit_for_customer(customer)
                     try:
-                        previous_profile = _current_ppp_secret_profile(sock, username)
+                        previous_profile = _current_ppp_secret_profile(
+                            sock, username, live=live
+                        )
                         session_active_before = _pppoe_has_active_session(
-                            sock, username
+                            sock, username, live=live
                         )
                         session_was_blocked = False
                         if previous_profile or session_active_before:
                             session_was_blocked = _active_pppoe_session_is_blocked(
-                                sock, username
+                                sock, username, live=live
                             )
                         _ensure_ppp_secret(
                             sock,
@@ -12640,7 +12873,9 @@ def sync_pppoe_subscription_batch_on_router(
                             restoring_surf
                             and session_active_before
                             and _pppoe_session_looks_ghost(
-                                sock, username, arp_complete=arp_complete
+                                sock,
+                                username,
+                                live=live,
                             )
                         ):
                             notes.append(
@@ -12666,13 +12901,14 @@ def sync_pppoe_subscription_batch_on_router(
                             exc,
                         )
 
-                for username in clear_usernames:
+                if clear_usernames:
                     try:
-                        _clear_pppoe_blocked_address_list(sock, username)
+                        _clear_pppoe_blocked_address_list_many(
+                            sock, clear_usernames, live=live
+                        )
                     except Exception:
                         logger.exception(
-                            "Could not clear blocked list for %s on router %s",
-                            username,
+                            "Could not clear blocked list batch on router %s",
                             router_id,
                         )
 
@@ -12860,7 +13096,7 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
     for candidate in _router_api_host_candidates(router, discover=False):
         try:
             with _api_session(candidate, api_user, api_password, timeout=15.0) as sock:
-                arp_complete = _pppoe_arp_complete_map(sock)
+                live = _pppoe_live_state_maps(sock)
                 for customer in paid:
                     username = (customer.pppoe_username or "").strip()
                     if not username:
@@ -12868,10 +13104,15 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
                     expected = _ppp_secret_profile_for_customer(
                         customer, disabled=False
                     )
-                    current = _current_ppp_secret_profile(sock, username)
-                    active = _pppoe_has_active_session(sock, username)
+                    current = _current_ppp_secret_profile(
+                        sock, username, live=live
+                    )
+                    active = _pppoe_has_active_session(sock, username, live=live)
                     blocked_session = bool(
-                        active and _active_pppoe_session_is_blocked(sock, username)
+                        active
+                        and _active_pppoe_session_is_blocked(
+                            sock, username, live=live
+                        )
                     )
                     wrong_profile = bool(
                         current
@@ -12881,11 +13122,8 @@ def repair_paid_pppoe_not_surfing_on_router(router) -> dict[str, Any]:
                             or expected != PPPOE_BLOCKED_PROFILE_NAME
                         )
                     )
-                    if (
-                        active
-                        and _pppoe_session_looks_ghost(
-                            sock, username, arp_complete=arp_complete
-                        )
+                    if active and _pppoe_session_looks_ghost(
+                        sock, username, live=live
                     ):
                         ghost_noted += 1
                     renew_pending = cpe_renew_clear_is_pending(customer)
@@ -15859,14 +16097,21 @@ def sync_customer_subscription_access(
 
     # Same-request or near-immediate status polls often re-enter after fulfill
     # already pushed access. Reuse that result for a few seconds.
-    # Rate-limit is part of the key so a package speed edit is never skipped.
+    # Rate-limit + device cap are part of the key so package speed / max_devices
+    # edits are never skipped by a stale 8s cache hit.
     customer_id = getattr(customer, "pk", None)
     rate_key = _pppoe_rate_limit_for_customer(customer) or _hotspot_rate_limit_for_customer(
         customer
     )
+    try:
+        from billing.devices import customer_max_devices
+
+        device_key = f"d{int(customer_max_devices(customer) or 0)}"
+    except Exception:
+        device_key = "d0"
     provision_cache_key = (
         f"captive:provision:{customer_id}:{int(bool(allowed))}:"
-        f"{int(bool(reauthenticate))}:{rate_key}"
+        f"{int(bool(reauthenticate))}:{rate_key}:{device_key}"
         if customer_id
         else ""
     )
@@ -18030,6 +18275,29 @@ def _apply_hotspot_customer_on_socket(
     if not macs and primary:
         macs = [_normalize_hotspot_mac(primary)]
     if not macs:
+        # Still disable any MACs we just pruned off the account.
+        for mac in pruned:
+            norm = _normalize_hotspot_mac(mac)
+            if not norm:
+                continue
+            _ensure_hotspot_user(
+                sock,
+                username=norm,
+                password="",
+                comment=f"{ISP_HOTSPOT_TAG} over-cap",
+                disabled=True,
+                limit_uptime="0s",
+                profile=ISP_HOTSPOT_USER_PROFILE,
+            )
+            _expire_hotspot_mac_sessions(
+                sock,
+                norm,
+                disabled=True,
+                reauthenticate=True,
+                active_rows=active_rows,
+                host_rows=host_rows,
+            )
+            _purge_hotspot_ok_list_for_mac(sock, norm, active_rows=active_rows)
         return {
             "ok": False,
             "profile": "",
@@ -18039,6 +18307,10 @@ def _apply_hotspot_customer_on_socket(
             "over_cap_count": 0,
             "over_cap_macs": [],
             "pruned_macs": pruned,
+            "disabled_over_cap_count": len(pruned),
+            "disabled_over_cap_macs": [
+                _normalize_hotspot_mac(m) for m in pruned if _normalize_hotspot_mac(m)
+            ],
         }
     cap = customer_max_devices(customer)
     if cap > 0:
@@ -18078,7 +18350,19 @@ def _apply_hotspot_customer_on_socket(
         )
         if disabled:
             _purge_hotspot_ok_list_for_mac(sock, mac, active_rows=active_rows)
-    for mac in extra:
+    # Extra linked MACs (e.g. voucher redeemed beyond cap) stay in billing but
+    # must be disabled on NAS. Pruned CustomerDevice rows are already gone from
+    # the DB — still disable+kick them on the router or they keep surfing.
+    allowed_set = {_normalize_hotspot_mac(m) for m in allowed}
+    disable_macs: list[str] = []
+    seen_disable: set[str] = set()
+    for mac in [*extra, *pruned]:
+        norm = _normalize_hotspot_mac(mac)
+        if not norm or norm in allowed_set or norm in seen_disable:
+            continue
+        seen_disable.add(norm)
+        disable_macs.append(norm)
+    for mac in disable_macs:
         _ensure_hotspot_user(
             sock,
             username=mac,
@@ -18106,6 +18390,8 @@ def _apply_hotspot_customer_on_socket(
         "over_cap_count": len(extra),
         "over_cap_macs": list(extra),
         "pruned_macs": pruned,
+        "disabled_over_cap_count": len(disable_macs),
+        "disabled_over_cap_macs": list(disable_macs),
     }
 
 
@@ -18279,6 +18565,13 @@ def authorize_hotspot_customer(
                 "allowed_count": applied.get("allowed_count"),
                 "over_cap_count": applied.get("over_cap_count") or 0,
                 "over_cap_macs": list(applied.get("over_cap_macs") or []),
+                "pruned_macs": list(applied.get("pruned_macs") or []),
+                "disabled_over_cap_count": int(
+                    applied.get("disabled_over_cap_count") or 0
+                ),
+                "disabled_over_cap_macs": list(
+                    applied.get("disabled_over_cap_macs") or []
+                ),
                 "notes": ["authorized single Hotspot MAC (stack skipped)"],
                 "message": "Paid device authorized automatically.",
             }

@@ -579,7 +579,7 @@ class MikroTikWifiToggleForm(forms.Form):
 
 
 class MikroTikCleanUplinkForm(forms.Form):
-    """Enable/disable clean uplink (bypass or behind provider) on a MikroTik."""
+    """Apply clean uplink (always-on provider block) on a MikroTik."""
 
     mode = forms.ChoiceField(
         choices=[
@@ -631,8 +631,9 @@ class MikroTikCleanUplinkForm(forms.Form):
         ),
         label="Provider gateway IP",
         help_text=(
-            "Behind-provider mode: modem/ONT admin IP. "
-            "Comma-separate several (e.g. 192.168.1.1, 192.168.100.1)."
+            "Modem/ONT admin IP to block for customers. "
+            "Comma-separate several (e.g. 192.168.1.1, 192.168.100.1). "
+            "Required for behind-provider mode."
         ),
     )
     separate_wan = forms.BooleanField(
@@ -640,11 +641,11 @@ class MikroTikCleanUplinkForm(forms.Form):
         initial=False,
         label="Separate WAN from bridge",
         help_text=(
-            "Only enable if your PC is plugged into a LAN port (ether2–ether5). "
-            "If you manage the MikroTik through the ISP modem / ether1, leave this OFF "
-            "or you may lose access."
+            "Not used: clean uplink soft-sync never unbridges WAN, so the MikroTik "
+            "and customers stay connected. Provider blocks are applied via firewall "
+            "(and bridge IP-firewall when WAN is still bridged)."
         ),
-        widget=forms.CheckboxInput(attrs={"id": "id_clean_uplink_separate_wan"}),
+        widget=forms.HiddenInput(attrs={"id": "id_clean_uplink_separate_wan"}),
     )
     confirm = forms.BooleanField(
         required=True,
@@ -669,10 +670,14 @@ class MikroTikCleanUplinkForm(forms.Form):
         except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
 
+    def clean_separate_wan(self):
+        return False
+
     def clean(self):
         cleaned = super().clean()
         mode = cleaned.get("mode") or "bypass"
         gateway = cleaned.get("provider_gateway") or ""
+        cleaned["separate_wan"] = False
         if mode == "behind" and not gateway:
             self.add_error(
                 "provider_gateway",

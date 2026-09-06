@@ -3,91 +3,157 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#062f34">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0a3d38" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#041210" media="(prefers-color-scheme: dark)">
   <title>{{ page_title }}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,500;9..40,600;9..40,700;9..40,800&family=Instrument+Sans:wght@600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
 
     :root {
-      --ink: #07161a;
-      --muted: #4d646b;
-      --paper: #f2f8f6;
-      --sea: #0d8a8f;
-      --sea-deep: #06555a;
-      --sea-ink: #043f43;
-      --flare: #ff6b2c;
-      --flare-deep: #e24f12;
-      --gold: #f5c518;
-      --line: rgba(6, 63, 67, 0.12);
+      color-scheme: light dark;
+      --ink: #12231f;
+      --muted: #5f746d;
+      --line: rgba(18, 35, 31, 0.1);
+      --brand: #0d7c72;
+      --brand-deep: #0a5f57;
+      --brand-bright: #14b8a6;
+      --sun: #f4b860;
+      --ok: #148a4a;
+      --ok-soft: rgba(20, 138, 74, 0.12);
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-line: rgba(255, 255, 255, 0.95);
+      --page-bg: #dfecea;
+      --page-image:
+        radial-gradient(ellipse 90% 55% at 10% -10%, rgba(244, 184, 96, 0.3), transparent 55%),
+        radial-gradient(ellipse 70% 50% at 100% 5%, rgba(13, 124, 114, 0.18), transparent 52%),
+        radial-gradient(ellipse 60% 40% at 50% 110%, rgba(20, 138, 74, 0.12), transparent 55%),
+        linear-gradient(180deg, #f3faf7 0%, #ddeae6 100%);
+      --hero-bg:
+        radial-gradient(ellipse 80% 70% at 100% 0%, rgba(244, 184, 96, 0.28), transparent 55%),
+        radial-gradient(ellipse 70% 60% at 0% 100%, rgba(46, 230, 199, 0.18), transparent 50%),
+        linear-gradient(155deg, #063833 0%, #0a5f57 48%, #0d7c72 100%);
       --ease: cubic-bezier(0.22, 1, 0.36, 1);
-      --font: "Manrope", "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
-      --display: "Bricolage Grotesque", "Segoe UI Variable Display", "Avenir Next", sans-serif;
+      --font: "DM Sans", "Segoe UI", "Avenir Next", sans-serif;
+      --display: "Instrument Sans", "DM Sans", "Segoe UI", sans-serif;
+      --shadow: 0 1px 1px rgba(18, 35, 31, 0.03), 0 18px 44px rgba(18, 45, 38, 0.12);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #e8f3ef;
+        --muted: #9bb0a8;
+        --line: rgba(232, 243, 239, 0.12);
+        --brand: #2ee6c7;
+        --brand-deep: #14b8a6;
+        --brand-bright: #5ff0d4;
+        --ok: #3dd68c;
+        --ok-soft: rgba(61, 214, 140, 0.14);
+        --panel: rgba(14, 26, 22, 0.88);
+        --panel-line: rgba(255, 255, 255, 0.1);
+        --page-bg: #06120f;
+        --page-image:
+          radial-gradient(ellipse 90% 55% at 10% -10%, rgba(244, 184, 96, 0.14), transparent 55%),
+          radial-gradient(ellipse 70% 50% at 100% 5%, rgba(46, 230, 199, 0.14), transparent 52%),
+          linear-gradient(180deg, #0a1814 0%, #06120f 100%);
+        --hero-bg:
+          radial-gradient(ellipse 80% 70% at 100% 0%, rgba(244, 184, 96, 0.2), transparent 55%),
+          radial-gradient(ellipse 70% 60% at 0% 100%, rgba(46, 230, 199, 0.16), transparent 50%),
+          linear-gradient(155deg, #041a16 0%, #0a3d36 48%, #0d5c52 100%);
+        --shadow: 0 1px 1px rgba(0, 0, 0, 0.35), 0 18px 44px rgba(0, 0, 0, 0.45);
+      }
     }
 
     html { -webkit-text-size-adjust: 100%; }
 
     body {
       margin: 0;
+      min-height: 100vh;
       min-height: 100dvh;
       font-family: var(--font);
       color: var(--ink);
-      background-color: #0a3a3e;
-      background-image:
-        radial-gradient(ellipse 90% 60% at 50% -18%, rgba(255, 107, 44, 0.42), transparent 55%),
-        radial-gradient(ellipse 70% 50% at 100% 10%, rgba(13, 138, 143, 0.55), transparent 50%),
-        radial-gradient(ellipse 55% 45% at 0% 80%, rgba(245, 197, 24, 0.18), transparent 55%),
-        linear-gradient(180deg, #062f34 0%, #0a454b 38%, #e8f2f0 38%, #eef5f3 100%);
+      background-color: var(--page-bg);
+      background-image: var(--page-image);
       background-attachment: fixed;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    .atmosphere {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(46px);
+      opacity: 0.7;
+      animation: drift 18s var(--ease) infinite alternate;
+      will-change: transform;
+    }
+
+    .orb-a {
+      width: min(22rem, 70vw);
+      height: min(22rem, 70vw);
+      left: -6rem;
+      top: -4rem;
+      background: radial-gradient(circle, rgba(244, 184, 96, 0.45) 0%, transparent 70%);
+    }
+
+    .orb-b {
+      width: min(18rem, 55vw);
+      height: min(18rem, 55vw);
+      right: -5rem;
+      top: 35%;
+      background: radial-gradient(circle, rgba(13, 124, 114, 0.3) 0%, transparent 70%);
+      animation-duration: 22s;
     }
 
     .shell {
-      width: min(26.75rem, 100%);
+      position: relative;
+      z-index: 1;
+      width: min(26.5rem, 100%);
       margin: 0 auto;
       padding:
-        calc(0.65rem + env(safe-area-inset-top, 0px))
+        calc(0.75rem + env(safe-area-inset-top, 0px))
         calc(1rem + env(safe-area-inset-right, 0px))
-        calc(1.75rem + env(safe-area-inset-bottom, 0px))
+        calc(1.85rem + env(safe-area-inset-bottom, 0px))
         calc(1rem + env(safe-area-inset-left, 0px));
-    }
-
-    .topbar {
-      display: flex;
-      align-items: center;
-      margin-bottom: 0.65rem;
-      animation: rise 0.5s var(--ease) both;
     }
 
     .back {
       display: inline-flex;
       align-items: center;
-      gap: 0.4rem;
-      color: rgba(244, 255, 252, 0.92);
+      gap: 0.3rem;
+      margin-bottom: 0.85rem;
+      color: var(--muted);
       font-weight: 700;
       font-size: 0.86rem;
       text-decoration: none;
-      padding: 0.4rem 0.15rem;
+      animation: rise 0.4s var(--ease) both;
+      transition: color 0.15s ease;
     }
-    .back svg { width: 1.05rem; height: 1.05rem; flex: none; }
-    .back:hover { color: #fff; }
+    .back svg { width: 1rem; height: 1rem; flex: none; }
+    .back:hover { color: var(--ink); }
 
     .hero {
       position: relative;
       overflow: hidden;
-      margin-bottom: 0.9rem;
-      padding: 1.35rem 1.2rem 1.3rem;
+      margin-bottom: 0.95rem;
+      padding: 1.35rem 1.2rem 1.4rem;
       border-radius: 1.45rem;
-      color: #f7fffd;
-      background:
-        linear-gradient(145deg, rgba(255, 255, 255, 0.08), transparent 42%),
-        linear-gradient(160deg, #043f43 0%, #0a6a70 48%, #0d8a8f 100%);
+      color: #f4fffc;
+      background: var(--hero-bg);
       border: 1px solid rgba(255, 255, 255, 0.14);
-      box-shadow: 0 18px 40px rgba(2, 24, 28, 0.35);
-      animation: rise 0.55s var(--ease) 0.05s both;
+      box-shadow: var(--shadow);
+      animation: rise 0.55s var(--ease) 0.04s both;
     }
 
     .hero::before {
@@ -95,11 +161,11 @@
       position: absolute;
       width: 11rem;
       height: 11rem;
-      right: -3.2rem;
+      right: -3.5rem;
       top: -4rem;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(255, 107, 44, 0.55), transparent 68%);
-      animation: drift 7s ease-in-out infinite alternate;
+      background: radial-gradient(circle, rgba(244, 184, 96, 0.45), transparent 68%);
+      animation: drift 8s ease-in-out infinite alternate;
     }
 
     .hero::after {
@@ -107,252 +173,220 @@
       position: absolute;
       width: 8rem;
       height: 8rem;
-      left: -2.5rem;
-      bottom: -3.5rem;
+      left: -2.8rem;
+      bottom: -3.2rem;
       border-radius: 50%;
-      background: radial-gradient(circle, rgba(245, 197, 24, 0.35), transparent 70%);
-      animation: drift 9s ease-in-out infinite alternate-reverse;
+      background: radial-gradient(circle, rgba(46, 230, 199, 0.28), transparent 70%);
+      animation: drift 10s ease-in-out infinite alternate-reverse;
     }
 
-    .announce {
+    .badge {
       position: relative;
       z-index: 1;
       display: inline-flex;
       align-items: center;
       gap: 0.4rem;
-      margin: 0 0 0.85rem;
-      padding: 0.38rem 0.7rem 0.38rem 0.45rem;
-      border-radius: 0.7rem;
-      background: rgba(255, 107, 44, 0.95);
-      color: #fff;
+      margin: 0 0 0.95rem;
+      padding: 0.35rem 0.7rem 0.35rem 0.4rem;
+      border-radius: 999px;
+      background: rgba(244, 184, 96, 0.95);
+      color: #2a1a05;
       font-size: 0.68rem;
       font-weight: 800;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      box-shadow: 0 8px 18px rgba(226, 79, 18, 0.35);
-      animation: pop 0.7s var(--ease) 0.15s both;
+      box-shadow: 0 8px 18px rgba(180, 110, 20, 0.28);
+      animation: pop 0.65s var(--ease) 0.12s both;
     }
 
-    .announce-icon {
-      display: grid;
-      place-items: center;
-      width: 1.45rem;
-      height: 1.45rem;
-      border-radius: 0.45rem;
-      background: rgba(255, 255, 255, 0.22);
-    }
-    .announce-icon svg { width: 0.95rem; height: 0.95rem; }
-    .announce-dot {
-      width: 0.4rem;
-      height: 0.4rem;
+    .badge-dot {
+      width: 0.42rem;
+      height: 0.42rem;
       border-radius: 50%;
-      background: #fff;
+      background: #2a1a05;
       animation: pulse 1.6s ease-in-out infinite;
     }
 
-    .hero-top {
+    .brand {
       position: relative;
       z-index: 1;
-      display: flex;
-      align-items: flex-start;
-      gap: 0.85rem;
-    }
-
-    .hero-badge {
-      flex: none;
-      display: grid;
-      place-items: center;
-      width: 3.35rem;
-      height: 3.35rem;
-      border-radius: 1rem;
-      background: linear-gradient(160deg, var(--flare) 0%, var(--flare-deep) 100%);
-      box-shadow: 0 10px 22px rgba(226, 79, 18, 0.4);
-      animation: float 3.2s ease-in-out infinite;
-    }
-    .hero-badge svg { width: 1.7rem; height: 1.7rem; color: #fff; }
-
-    .kicker {
-      margin: 0 0 0.25rem;
-      font-size: 0.72rem;
-      font-weight: 800;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      opacity: 0.82;
-    }
-
-    .brand {
-      margin: 0;
+      margin: 0 0 0.55rem;
       font-family: var(--display);
-      font-size: clamp(1.75rem, 7.2vw, 2.25rem);
-      font-weight: 800;
-      letter-spacing: -0.045em;
-      line-height: 1.02;
+      font-size: clamp(2.05rem, 9vw, 2.65rem);
+      font-weight: 700;
+      letter-spacing: -0.05em;
+      line-height: 0.98;
+    }
+
+    .pitch {
+      position: relative;
+      z-index: 1;
+      margin: 0 0 0.55rem;
+      font-family: var(--display);
+      font-size: clamp(1.2rem, 4.8vw, 1.45rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      color: #fff;
+    }
+
+    .pitch em {
+      font-style: normal;
+      color: var(--sun);
     }
 
     .lead {
       position: relative;
       z-index: 1;
-      margin: 0.85rem 0 0;
-      font-size: 0.98rem;
-      line-height: 1.45;
+      margin: 0;
+      max-width: 21rem;
+      color: rgba(244, 255, 252, 0.86);
+      font-size: 0.95rem;
       font-weight: 600;
-      opacity: 0.94;
-      max-width: 22rem;
+      line-height: 1.45;
     }
 
-    .lead strong {
-      color: var(--gold);
-      font-weight: 800;
-    }
-
-    .steps {
+    .how {
       display: grid;
-      gap: 0.55rem;
-      margin-bottom: 0.9rem;
-      animation: rise 0.6s var(--ease) 0.12s both;
+      gap: 0.5rem;
+      margin: 0 0 0.95rem;
+      padding: 0;
+      list-style: none;
+      animation: rise 0.55s var(--ease) 0.1s both;
     }
 
-    .step {
+    .how li {
       display: grid;
-      grid-template-columns: auto 1fr;
+      grid-template-columns: 2.35rem 1fr;
       gap: 0.75rem;
       align-items: center;
       padding: 0.85rem 0.9rem;
       border-radius: 1.05rem;
-      background: rgba(255, 255, 255, 0.92);
-      border: 1px solid rgba(255, 255, 255, 0.7);
-      box-shadow: 0 10px 28px rgba(6, 47, 52, 0.08);
+      background: var(--panel);
+      border: 1px solid var(--panel-line);
+      box-shadow: 0 8px 22px rgba(18, 45, 38, 0.06);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
     }
 
-    .step-icon {
+    .how-num {
       display: grid;
       place-items: center;
-      width: 2.55rem;
-      height: 2.55rem;
-      border-radius: 0.85rem;
-      color: var(--sea-deep);
-      background: linear-gradient(160deg, rgba(13, 138, 143, 0.16), rgba(13, 138, 143, 0.06));
-    }
-    .step-icon svg { width: 1.25rem; height: 1.25rem; }
-    .step-icon.is-flare {
-      color: var(--flare-deep);
-      background: linear-gradient(160deg, rgba(255, 107, 44, 0.2), rgba(255, 107, 44, 0.07));
-    }
-    .step-icon.is-gold {
-      color: #9a7400;
-      background: linear-gradient(160deg, rgba(245, 197, 24, 0.28), rgba(245, 197, 24, 0.08));
+      width: 2.35rem;
+      height: 2.35rem;
+      border-radius: 0.75rem;
+      font-family: var(--display);
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(160deg, var(--brand) 0%, var(--brand-deep) 100%);
+      box-shadow: 0 8px 16px rgba(13, 124, 114, 0.22);
     }
 
-    .step h3 {
+    @media (prefers-color-scheme: dark) {
+      .how-num {
+        color: #06241f;
+        background: linear-gradient(160deg, #5ff0d4 0%, #2ee6c7 100%);
+      }
+    }
+
+    .how h2 {
       margin: 0;
       font-family: var(--display);
       font-size: 0.98rem;
       font-weight: 700;
       letter-spacing: -0.02em;
+      line-height: 1.2;
     }
-    .step p {
-      margin: 0.15rem 0 0;
+
+    .how p {
+      margin: 0.12rem 0 0;
       color: var(--muted);
       font-size: 0.82rem;
-      line-height: 1.35;
       font-weight: 600;
+      line-height: 1.35;
     }
 
     .claim {
       padding: 1.15rem 1.05rem 1.2rem;
-      border-radius: 1.25rem;
-      background: #fff;
-      border: 1px solid var(--line);
-      box-shadow: 0 16px 36px rgba(6, 47, 52, 0.1);
-      animation: rise 0.65s var(--ease) 0.18s both;
+      border-radius: 1.35rem;
+      background: var(--panel);
+      border: 1px solid var(--panel-line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      animation: rise 0.6s var(--ease) 0.16s both;
     }
-
-    .claim-head {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-      margin-bottom: 0.7rem;
-    }
-
-    .claim-mark {
-      flex: none;
-      display: grid;
-      place-items: center;
-      width: 2.7rem;
-      height: 2.7rem;
-      border-radius: 0.9rem;
-      color: #fff;
-      background: linear-gradient(145deg, var(--sea) 0%, var(--sea-deep) 100%);
-    }
-    .claim-mark svg { width: 1.35rem; height: 1.35rem; }
 
     .claim h2 {
-      margin: 0;
+      margin: 0 0 0.3rem;
       font-family: var(--display);
-      font-size: 1.2rem;
-      font-weight: 800;
+      font-size: 1.15rem;
+      font-weight: 700;
       letter-spacing: -0.03em;
-      line-height: 1.15;
+      line-height: 1.2;
     }
+
     .claim-copy {
       margin: 0;
       color: var(--muted);
       font-size: 0.9rem;
-      line-height: 1.5;
       font-weight: 600;
+      line-height: 1.45;
     }
 
-    .phone-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      margin-top: 0.85rem;
-      padding: 0.55rem 0.8rem;
-      border-radius: 0.85rem;
-      background: rgba(13, 138, 143, 0.1);
-      color: var(--sea-ink);
-      font-weight: 800;
-      font-size: 0.9rem;
-    }
-    .phone-chip svg { width: 1.05rem; height: 1.05rem; flex: none; }
-
-    .refer-actions {
+    .actions {
       display: grid;
       gap: 0.55rem;
-      margin-top: 0.95rem;
+      margin-top: 1rem;
     }
 
-    .refer-actions a {
+    .actions a {
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 0.5rem;
-      min-height: 3.05rem;
-      padding: 0.7rem 1rem;
+      min-height: 3.15rem;
+      padding: 0.75rem 1rem;
       border-radius: 0.95rem;
       font-weight: 800;
       font-size: 0.95rem;
       text-decoration: none;
-      transition: transform 0.12s ease, filter 0.15s ease;
+      transition: transform 0.12s ease, filter 0.15s ease, box-shadow 0.2s ease;
     }
-    .refer-actions a svg { width: 1.2rem; height: 1.2rem; flex: none; }
-    .refer-actions a:active { transform: scale(0.985); }
+    .actions a svg { width: 1.15rem; height: 1.15rem; flex: none; }
+    .actions a:active { transform: scale(0.985); }
 
     .btn-call {
       color: #fff;
-      background: linear-gradient(145deg, var(--flare) 0%, var(--flare-deep) 100%);
-      box-shadow: 0 12px 26px rgba(226, 79, 18, 0.32);
+      background: linear-gradient(160deg, var(--brand) 0%, var(--brand-deep) 100%);
+      box-shadow: 0 12px 26px rgba(13, 124, 114, 0.3);
     }
-    .btn-call:hover { filter: brightness(1.05); }
+    .btn-call:hover {
+      filter: brightness(1.05);
+      box-shadow: 0 14px 28px rgba(13, 124, 114, 0.36);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      .btn-call {
+        color: #06241f;
+        background: linear-gradient(160deg, #5ff0d4 0%, #2ee6c7 100%);
+        box-shadow: 0 12px 26px rgba(46, 230, 199, 0.22);
+      }
+    }
 
     .btn-wa {
-      color: #065f46;
-      background: linear-gradient(145deg, #ecfdf5 0%, #d1fae5 100%);
-      border: 1.5px solid rgba(16, 185, 129, 0.35);
+      color: var(--ok);
+      background: var(--ok-soft);
+      border: 1.5px solid rgba(20, 138, 74, 0.24);
     }
-    .btn-wa:hover { filter: brightness(0.98); }
+    .btn-wa:hover { filter: brightness(0.97); }
 
-    .foot-note {
+    @media (prefers-color-scheme: dark) {
+      .btn-wa { border-color: rgba(61, 214, 140, 0.3); }
+    }
+
+    .note {
       margin: 0.85rem 0 0;
       text-align: center;
       color: var(--muted);
@@ -362,24 +396,31 @@
     }
 
     @keyframes rise {
-      from { opacity: 0; transform: translateY(0.9rem); }
+      from { opacity: 0; transform: translateY(0.7rem); }
       to { opacity: 1; transform: none; }
     }
+
     @keyframes pop {
-      from { opacity: 0; transform: scale(0.86) translateY(0.4rem); }
+      from { opacity: 0; transform: scale(0.88) translateY(0.35rem); }
       to { opacity: 1; transform: none; }
     }
+
     @keyframes drift {
-      from { transform: translate(0, 0); }
-      to { transform: translate(-8%, 10%); }
+      from { transform: translate(0, 0) scale(1); }
+      to { transform: translate(5%, 8%) scale(1.05); }
     }
-    @keyframes float {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-0.28rem); }
-    }
+
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.45; transform: scale(0.75); }
+      50% { opacity: 0.4; transform: scale(0.75); }
+    }
+
+    @media (min-width: 480px) {
+      .shell {
+        padding-top: calc(1.35rem + env(safe-area-inset-top, 0px));
+        padding-bottom: calc(2.25rem + env(safe-area-inset-bottom, 0px));
+      }
+      .actions.has-both { grid-template-columns: 1fr 1fr; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -391,124 +432,60 @@
   </style>
 </head>
 <body>
+  <div class="atmosphere" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+  </div>
+
   <div class="shell">
-    <div class="topbar">
-      <a class="back" href="{{ pay_url }}">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M15 18l-6-6 6-6"/>
-        </svg>
-        Back to pay
-      </a>
-    </div>
+    <a class="back" href="{{ back_url|default:pay_url }}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M15 18l-6-6 6-6"/>
+      </svg>
+      {{ back_label|default:"Back to pay" }}
+    </a>
 
     <header class="hero">
-      <p class="announce" role="status">
-        <span class="announce-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 11v2a1 1 0 0 0 1 1h1l5 4V6L5 10H4a1 1 0 0 0-1 1z"/>
-            <path d="M16.5 8.5a5 5 0 0 1 0 7"/>
-            <path d="M19 6a8.5 8.5 0 0 1 0 12"/>
-          </svg>
-        </span>
-        Now open · Refer &amp; earn
-        <span class="announce-dot" aria-hidden="true"></span>
+      <p class="badge" role="status">
+        <span class="badge-dot" aria-hidden="true"></span>
+        Refer &amp; earn · Open now
       </p>
-
-      <div class="hero-top">
-        <div class="hero-badge" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/>
-            <path d="M12 2v10"/>
-            <path d="M8 6h8"/>
-            <path d="M2 12h20"/>
-            <path d="M12 12c0-2.5 1.5-4 4-4"/>
-            <path d="M12 12c0-2.5-1.5-4-4-4"/>
-          </svg>
-        </div>
-        <div>
-          <p class="kicker">Refer · Earn</p>
-          <h1 class="brand">{{ org_name }}</h1>
-        </div>
-      </div>
-
+      <h1 class="brand">{{ org_name }}</h1>
+      <p class="pitch">Bring people online. <em>Get paid.</em></p>
       <p class="lead">
-        Earn commission when you refer new Wi‑Fi clients to {{ org_name }}.
-        <strong>Bring people online — get paid.</strong>
+        Refer new Wi‑Fi clients to {{ org_name }}. When they become paying customers, you earn commission.
       </p>
     </header>
 
-    <section class="steps" aria-label="How it works">
-      <article class="step">
-        <div class="step-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-          </svg>
-        </div>
+    <ol class="how" aria-label="How it works">
+      <li>
+        <span class="how-num" aria-hidden="true">1</span>
         <div>
-          <h3>1 · Refer a friend</h3>
-          <p>Invite a neighbour or friend onto {{ org_name }} Wi‑Fi.</p>
+          <h2>Refer someone</h2>
+          <p>Invite a friend or neighbour onto {{ org_name }} Wi‑Fi.</p>
         </div>
-      </article>
-      <article class="step">
-        <div class="step-icon is-flare" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
-            <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
-            <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
-            <circle cx="12" cy="20" r="1.2"/>
-          </svg>
-        </div>
+      </li>
+      <li>
+        <span class="how-num" aria-hidden="true">2</span>
         <div>
-          <h3>2 · They get online</h3>
-          <p>When they become a paying Wi‑Fi client, your referral counts.</p>
+          <h2>They get online</h2>
+          <p>When they pay for a package, your referral counts.</p>
         </div>
-      </article>
-      <article class="step">
-        <div class="step-icon is-gold" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="8"/>
-            <path d="M12 8v8"/>
-            <path d="M9.5 10.5c.5-1 1.5-1.5 2.5-1.5s2 .6 2.2 1.6c.2 1.1-.5 1.7-1.7 2.1L12 13"/>
-          </svg>
-        </div>
+      </li>
+      <li>
+        <span class="how-num" aria-hidden="true">3</span>
         <div>
-          <h3>3 · Claim commission</h3>
-          <p>Contact {{ org_name }} to register and collect your earnings.</p>
+          <h2>Claim your commission</h2>
+          <p>Contact {{ org_name }} to register and collect earnings.</p>
         </div>
-      </article>
-    </section>
+      </li>
+    </ol>
 
-    <section class="claim" aria-labelledby="refer-title">
-      <div class="claim-head">
-        <div class="claim-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2l2.4 4.9L20 8l-4 3.9.9 5.4L12 14.8 7.1 17.3 8 11.9 4 8l5.6-1.1L12 2z"/>
-          </svg>
-        </div>
-        <div>
-          <h2 id="refer-title">Refer a Wi‑Fi client · get commission</h2>
-        </div>
-      </div>
-      <p class="claim-copy">
-        Bring a friend or neighbour onto {{ org_name }} Wi‑Fi.
-        When they become a paying client, you earn commission.
-        {% if isp_phone %}
-          Call or WhatsApp the ISP below to claim your referral.
-        {% else %}
-          Ask the provider how to register your referral.
-        {% endif %}
-      </p>
+    <section class="claim" aria-labelledby="claim-title">
       {% if isp_phone %}
-        <div class="phone-chip" aria-label="ISP phone">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
-          </svg>
-          ISP · {{ isp_phone }}
-        </div>
-        <div class="refer-actions">
+        <h2 id="claim-title">Ready to claim?</h2>
+        <p class="claim-copy">Call or WhatsApp now and say you referred a new Wi‑Fi client.</p>
+        <div class="actions{% if isp_whatsapp %} has-both{% endif %}">
           <a class="btn-call" href="tel:{{ isp_phone }}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>
@@ -520,12 +497,15 @@
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <path d="M19.05 4.91A9.82 9.82 0 0 0 12.04 2C6.59 2 2.16 6.41 2.16 11.84c0 1.94.53 3.76 1.44 5.33L2 22l4.98-1.55a9.9 9.9 0 0 0 4.06.85h.01c5.45 0 9.88-4.41 9.88-9.84a9.75 9.75 0 0 0-2.88-6.55zm-7 15.12h-.01a8.2 8.2 0 0 1-4.18-1.15l-.3-.18-3.04.95.98-2.92-.2-.31a8.15 8.15 0 0 1-1.27-4.36c0-4.51 3.69-8.18 8.23-8.18a8.15 8.15 0 0 1 5.8 2.4 8.1 8.1 0 0 1 2.4 5.79c0 4.51-3.69 8.18-8.21 8.18zm4.5-6.13c-.25-.12-1.46-.72-1.69-.8-.23-.08-.39-.12-.56.12-.16.25-.64.8-.79.96-.14.17-.29.19-.54.06-.25-.12-1.05-.39-2-1.23-.74-.66-1.24-1.47-1.39-1.72-.14-.25-.02-.38.11-.51.11-.11.25-.29.37-.43.12-.14.16-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.34-.76-1.84-.2-.48-.4-.42-.56-.42h-.48c-.17 0-.43.06-.66.31-.23.25-.87.85-.87 2.07s.89 2.4 1.01 2.56c.12.17 1.75 2.67 4.23 3.74 1.78.77 2.23.72 2.63.66.4-.06 1.46-.6 1.67-1.17.21-.58.21-1.07.14-1.17-.06-.11-.23-.17-.48-.29z"/>
               </svg>
-              WhatsApp ISP
+              WhatsApp
             </a>
           {% endif %}
         </div>
+        <p class="note">Tell them you referred a new Wi‑Fi client.</p>
+      {% else %}
+        <h2 id="claim-title">Ready to claim?</h2>
+        <p class="claim-copy">Ask {{ org_name }} how to register your referral and collect commission.</p>
       {% endif %}
-      <p class="foot-note">Tap Call or WhatsApp to announce your referral and claim commission.</p>
     </section>
   </div>
 </body>

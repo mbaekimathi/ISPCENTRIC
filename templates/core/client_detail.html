@@ -1889,11 +1889,28 @@
           stampNow();
           return;
         }
-        if (data.session_active) {
+        // PPPoE — same Surfing / Not surfing / Disconnected labels as /app/clients/
+        var pppoeSurfing = !!(data.surfing);
+        var pppoeState = (data.session_state || "").trim();
+        var pppoeLabel = (data.session_label || "").trim();
+        if (!pppoeState) {
+          if (pppoeSurfing) pppoeState = "surfing";
+          else if (data.session_active) pppoeState = "not_surfing";
+          else if (data.session_state === "expired") pppoeState = "expired";
+          else pppoeState = "disconnected";
+        }
+        if (!pppoeLabel) {
+          if (pppoeState === "surfing") pppoeLabel = "Surfing";
+          else if (pppoeState === "not_surfing") pppoeLabel = "Not surfing";
+          else if (pppoeState === "expired") pppoeLabel = "Expired";
+          else pppoeLabel = "Disconnected";
+        }
+        if (pppoeState === "surfing" && data.session_active) {
           root.classList.add("is-online");
           root.classList.remove("is-offline");
-          setText("session", "Online");
+          setText("session", pppoeLabel);
           var pppoeHint =
+            data.hint ||
             (data.service || "PPPoE") +
             (data.interface ? " · " + data.interface : "") +
             (data.speed_source === "cpe" ? " · CPE live" : "");
@@ -1927,7 +1944,7 @@
           setMeter("upload", data.upload_bps, planUpBps);
           heroChip(
             "session",
-            "Online",
+            pppoeLabel,
             (data.service || "PPPoE") + (data.uptime ? " · up " + data.uptime : ""),
             "is-good"
           );
@@ -1946,11 +1963,40 @@
                 (data.devices_connected != null ? " · " + data.devices_connected + " devices" : "");
             } else {
               subEl.textContent =
-                "PPPoE online on " +
+                "PPPoE surfing on " +
                 (data.router_name || "NAS") +
                 (data.pppoe_username ? " · " + data.pppoe_username : "") +
                 (data.address ? " · " + data.address : "");
             }
+          }
+        } else if (pppoeState === "not_surfing" || (data.session_active && !pppoeSurfing)) {
+          root.classList.remove("is-online");
+          root.classList.add("is-offline");
+          clearTrafficMeters();
+          setText("session", pppoeLabel || "Not surfing");
+          setText(
+            "session-hint",
+            data.hint || "Dialed in, but not surfing"
+          );
+          heroChip(
+            "session",
+            pppoeLabel || "Not surfing",
+            data.hint || "Connected, no internet",
+            "is-idle"
+          );
+          if (subEl) {
+            subEl.textContent =
+              data.hint ||
+              ("PPPoE dialed on " +
+                (data.router_name || "NAS") +
+                " — not surfing");
+          }
+        } else if (pppoeState === "expired") {
+          applyOffline(data.hint || "Subscription ended — no internet.", data);
+          setText("session", "Expired");
+          heroChip("session", "Expired", data.hint || "No internet", "is-bad");
+          if (subEl) {
+            subEl.textContent = data.hint || "Subscription ended — no internet.";
           }
         } else {
           applyOffline(data.hint || "Subscriber is not online right now.", data);

@@ -221,6 +221,11 @@ urlpatterns = [
         name="click_to_earn",
     ),
     path(
+        "hotspot/<str:join_code>/track/",
+        views.hotspot_portal_track,
+        name="hotspot_portal_track",
+    ),
+    path(
         "pppoe/<str:join_code>/earn/",
         views.click_to_earn,
         name="pppoe_click_to_earn",

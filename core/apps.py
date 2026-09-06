@@ -11,6 +11,7 @@ class CoreConfig(AppConfig):
         from core import checks  # noqa: F401
 
         # Skip during migrate/makemigrations to avoid recursion
+        import logging
         import sys
 
         if any(cmd in sys.argv for cmd in ("migrate", "makemigrations", "check")):
@@ -29,4 +30,6 @@ class CoreConfig(AppConfig):
 
             start_runtime_tasks()
         except Exception:
-            pass
+            logging.getLogger(__name__).exception(
+                "Failed to start runtime background tasks (usage sampling, sweeps)."
+            )

@@ -81,7 +81,10 @@ class MikroTikRouter(models.Model):
     clean_uplink_enabled = models.BooleanField(
         "Clean uplink enabled",
         default=False,
-        help_text="When on, ISPCENTRIC pushes firewall/DNS/NAT rules that pass clean internet and block provider settings.",
+        help_text=(
+            "When on, ISPCENTRIC soft-syncs firewall rules that block uplink "
+            "modem/ONT admin pages without unbridging WAN or rewriting LAN/DHCP."
+        ),
     )
     clean_uplink_mode = models.CharField(
         "Clean uplink mode",
@@ -106,12 +109,19 @@ class MikroTikRouter(models.Model):
         max_length=255,
         default="192.168.1.1",
         blank=True,
-        help_text="ISP modem/ONT admin IP(s) to block in behind-provider mode. Comma-separated allowed (e.g. 192.168.1.1, 192.168.100.1).",
+        help_text=(
+            "ISP modem/ONT admin IP(s) to block. Comma-separated allowed "
+            "(e.g. 192.168.1.1, 192.168.100.1). Required for behind-provider mode; "
+            "also used in bypass when the uplink still has a private admin IP."
+        ),
     )
     clean_uplink_separate_wan = models.BooleanField(
         "Separate WAN from bridge",
         default=False,
-        help_text="Remove the WAN port from the LAN bridge so MikroTik routes instead of switching.",
+        help_text=(
+            "Legacy flag. Soft clean uplink never unbridges WAN (avoids disconnects). "
+            "Provider blocks use IP firewall / bridge use-ip-firewall instead."
+        ),
     )
     clean_uplink_wan_was_bridged = models.BooleanField(
         default=False,

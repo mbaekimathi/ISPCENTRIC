@@ -536,6 +536,8 @@ class UsageTrendPayloadTests(TestCase):
         self.assertTrue(written)
         self.assertEqual(CustomerUsageSample.objects.filter(customer=self.customer).count(), 1)
 
+
+class NetworkPerformanceTrendTests(TestCase):
     def setUp(self):
         owner = User.objects.create_user("net-trend-owner", password="x")
         self.org = Organization.objects.create(name="Net Trend Org", owner=owner, join_code="NET001")
@@ -866,3 +868,252 @@ class SampleOrganizationUsageTests(TestCase):
         light_bytes = next(u["data_used_bytes"] for u in users if u["customer_id"] == light.pk)
         self.assertGreater(heavy_bytes, light_bytes)
         self.assertEqual(payload["summary"]["top_user_name"], heavy.full_name)
+
+
+class FairOrgSampleLoadTests(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user("fair-sample-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Fair Sample Org", owner=owner, join_code="FAIR01"
+        )
+
+    def test_high_customer_ids_are_not_truncated(self):
+        """Previously [:cap] ordered by customer_id dropped later clients."""
+        from billing.usage_samples import _build_org_usage_payload
+
+        now = timezone.now()
+        early = Customer.objects.create(
+            organization=self.org,
+            full_name="Early ID",
+            phone="0700001001",
+            account_number="PPP-EARLY-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="early1",
+        )
+        late = Customer.objects.create(
+            organization=self.org,
+            full_name="Late ID",
+            phone="0700001002",
+            account_number="PPP-LATE-1",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="late1",
+        )
+        # Flood samples for the low customer_id so a naive [:N] cut would
+        # never reach the higher customer_id.
+        for i in range(120):
+            CustomerUsageSample.objects.create(
+                customer=early,
+                organization=self.org,
+                sampled_at=now - timezone.timedelta(minutes=120 - i),
+                session_active=True,
+                bytes_in=1000 + i * 10,
+                bytes_out=500 + i * 5,
+                download_bps=1000,
+                upload_bps=200,
+            )
+        CustomerUsageSample.objects.create(
+            customer=late,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=2),
+            session_active=True,
+            bytes_in=1000,
+            bytes_out=2000,
+            download_bps=5000,
+            upload_bps=1000,
+        )
+        CustomerUsageSample.objects.create(
+            customer=late,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=1),
+            session_active=True,
+            bytes_in=4000,
+            bytes_out=8000,
+            download_bps=7000,
+            upload_bps=1500,
+        )
+
+        with patch("billing.usage_samples._ORG_SAMPLE_ROW_SOFT_CAP", 80), patch(
+            "billing.usage_samples._ORG_SAMPLE_MIN_PER_CUSTOMER", 8
+        ), patch("billing.usage_samples._ORG_SAMPLE_MAX_PER_CUSTOMER", 40):
+            payload = _build_org_usage_payload(
+                self.org, hours=6, service="pppoe", top_n=0
+            )
+
+        ids = {u["customer_id"] for u in payload["top_users"]}
+        self.assertIn(early.pk, ids)
+        self.assertIn(late.pk, ids)
+        late_row = next(u for u in payload["top_users"] if u["customer_id"] == late.pk)
+        self.assertEqual(late_row["data_used_bytes"], 9000)
+        self.assertTrue(late_row["latest_active"])
+
+
+class HotspotMergeTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        owner = User.objects.create_user("hs-merge-owner", password="x")
+        self.org = Organization.objects.create(
+            name="HS Merge Org", owner=owner, join_code="HSMG01"
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Multi Gadget",
+            phone="0700002001",
+            account_number="HS-MULTI-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:01",
+        )
+
+    def test_merge_counts_deltas_from_all_macs(self):
+        from billing.usage_samples import merge_hotspot_session_payloads
+
+        first = merge_hotspot_session_payloads(
+            self.customer.pk,
+            [
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE01",
+                    "bytes_in": 1000,
+                    "bytes_out": 5000,
+                    "download_bps": 1000,
+                    "upload_bps": 200,
+                },
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE02",
+                    "bytes_in": 400,
+                    "bytes_out": 800,
+                    "download_bps": 3000,
+                    "upload_bps": 100,
+                },
+            ],
+        )
+        # First sighting seeds from the busiest MAC only.
+        self.assertEqual(first["bytes_in"], 1000)
+        self.assertEqual(first["bytes_out"], 5000)
+        self.assertEqual(first["download_bps"], 3000)
+
+        second = merge_hotspot_session_payloads(
+            self.customer.pk,
+            [
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE01",
+                    "bytes_in": 1500,
+                    "bytes_out": 7000,
+                    "download_bps": 1200,
+                    "upload_bps": 250,
+                },
+                {
+                    "ok": True,
+                    "session_active": True,
+                    "hotspot_mac": "AABBCCDDEE02",
+                    "bytes_in": 900,
+                    "bytes_out": 1800,
+                    "download_bps": 4000,
+                    "upload_bps": 150,
+                },
+            ],
+        )
+        # +500/+2000 from MAC1 and +500/+1000 from MAC2
+        self.assertEqual(second["bytes_in"], 2000)
+        self.assertEqual(second["bytes_out"], 8000)
+        self.assertEqual(second["download_bps"], 4000)
+
+    def test_stale_sample_detection(self):
+        from billing.usage_samples import client_usage_sample_is_stale
+
+        self.assertTrue(client_usage_sample_is_stale(self.customer, max_age_sec=60))
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=timezone.now() - timezone.timedelta(seconds=20),
+            session_active=True,
+            bytes_in=10,
+            bytes_out=20,
+        )
+        self.assertFalse(client_usage_sample_is_stale(self.customer, max_age_sec=60))
+        CustomerUsageSample.objects.filter(customer=self.customer).update(
+            sampled_at=timezone.now() - timezone.timedelta(minutes=5)
+        )
+        self.assertTrue(client_usage_sample_is_stale(self.customer, max_age_sec=60))
+
+
+class OrgUsageDevicesConnectedTests(TestCase):
+    def setUp(self):
+        from decimal import Decimal
+
+        from django.core.cache import cache
+
+        from billing.devices import attach_hotspot_device
+        from billing.models import BillingPlan, CustomerDevice
+
+        cache.clear()
+        owner = User.objects.create_user("usage-dev-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Usage Devices Org", owner=owner, join_code="USGD01"
+        )
+        self.plan = BillingPlan.objects.create(
+            organization=self.org,
+            name="15 MBPS",
+            price=Decimal("500.00"),
+            download_speed_mbps=15,
+            upload_speed_mbps=5,
+            duration=BillingPlan.Duration.MONTHLY,
+            service_type=BillingPlan.ServiceType.HOTSPOT,
+            max_devices=3,
+        )
+        self.customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Shelterlink",
+            phone="0700003001",
+            account_number="HS-SHELTER-1",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="11:22:33:44:55:01",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        result = attach_hotspot_device(self.customer, "11:22:33:44:55:02")
+        assert result.get("ok"), result
+        CustomerDevice.objects.filter(customer=self.customer).update(
+            last_seen_at=timezone.now()
+        )
+
+    def test_org_payload_exposes_devices_connected_not_plan_only(self):
+        payload = org_usage_payload(
+            self.org,
+            hours=6,
+            service="hotspot",
+            top_n=0,
+            use_cache=False,
+            auto_widen=False,
+        )
+        self.assertTrue(payload["ok"])
+        row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.customer.pk
+        )
+        self.assertEqual(row["devices_connected"], 2)
+        self.assertEqual(row["gadgets_connected"], 2)
+        self.assertGreaterEqual(row["devices_linked"], 2)
+        self.assertIn("plan_name", row)  # still in payload, not shown in CLIENT column
+
+    def test_general_usage_client_column_shows_devices_not_plan(self):
+        from django.contrib.auth import get_user_model
+        from django.urls import reverse
+
+        owner = get_user_model().objects.get(username="usage-dev-owner")
+        self.client.force_login(owner)
+        response = self.client.get(
+            reverse("core:clients_general_usage") + "?tab=hotspot"
+        )
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode("utf-8")
+        self.assertIn("clients-usage-user-devices", html)
+        self.assertRegex(html, r"\b2 devices?\b")
+        # Plan bandwidth must not appear in the CLIENT meta column markup.
+        self.assertNotIn("clients-usage-user-plan", html)
+        self.assertNotIn(">15 MBPS<", html)

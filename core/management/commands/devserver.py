@@ -26,6 +26,11 @@ class Command(RunserverCommand):
             help="Do not start the background subscription access sweep.",
         )
         parser.add_argument(
+            "--no-usage-sample",
+            action="store_true",
+            help="Do not start background PPPoE/Hotspot usage sampling.",
+        )
+        parser.add_argument(
             "--no-tunnel-sync",
             action="store_true",
             help="Do not sync WireGuard peers on startup.",
@@ -36,5 +41,6 @@ class Command(RunserverCommand):
             options["skip_checks"] = True
         # Flags stay on sys.argv so core.boot.should_start_runtime_tasks sees them.
         options.pop("no_sweep", False)
+        options.pop("no_usage_sample", False)
         options.pop("no_tunnel_sync", False)
         super().handle(*args, **options)

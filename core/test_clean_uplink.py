@@ -131,6 +131,10 @@ class EnsureFilterRulesTests(SimpleTestCase):
         with (
             patch("core.mikrotik_connect._remove_tagged"),
             patch(
+                "core.mikrotik_connect._rows_with_tag",
+                return_value=[],
+            ),
+            patch(
                 "core.mikrotik_connect._add",
                 side_effect=lambda sock, path, **props: added.append(props) or {"_reply": "!done"},
             ),
@@ -150,10 +154,14 @@ class EnsureFilterRulesTests(SimpleTestCase):
         # Public provider_networks must not be blocked.
         self.assertFalse(any(r.get("dst-address") == "8.8.8.0/24" for r in drops))
 
-    def test_bypass_does_not_add_provider_drops(self):
+    def test_bypass_also_blocks_provider_when_known(self):
         added: list[dict] = []
         with (
             patch("core.mikrotik_connect._remove_tagged"),
+            patch(
+                "core.mikrotik_connect._rows_with_tag",
+                return_value=[],
+            ),
             patch(
                 "core.mikrotik_connect._add",
                 side_effect=lambda sock, path, **props: added.append(props) or {"_reply": "!done"},
@@ -165,8 +173,64 @@ class EnsureFilterRulesTests(SimpleTestCase):
                 provider_gateways=["192.168.1.1"],
                 provider_networks=["192.168.1.0/24"],
             )
+        drops = [r for r in added if r.get("action") == "drop"]
+        self.assertEqual(
+            {r["dst-address"] for r in drops},
+            {"192.168.1.1", "192.168.1.0/24"},
+        )
+        self.assertTrue(any(CLEAN_UPLINK_TAG in (r.get("comment") or "") for r in added))
+
+    def test_no_drops_when_no_provider_targets(self):
+        added: list[dict] = []
+        with (
+            patch("core.mikrotik_connect._remove_tagged"),
+            patch(
+                "core.mikrotik_connect._rows_with_tag",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._add",
+                side_effect=lambda sock, path, **props: added.append(props) or {"_reply": "!done"},
+            ),
+        ):
+            _ensure_filter_rules(object(), mode="bypass")
         self.assertFalse(any(r.get("action") == "drop" for r in added))
         self.assertTrue(any(CLEAN_UPLINK_TAG in (r.get("comment") or "") for r in added))
+
+    def test_filter_rules_are_idempotent(self):
+        existing = [
+            {
+                "chain": "forward",
+                "action": "accept",
+                "connection-state": "established,related,untracked",
+                "comment": f"{CLEAN_UPLINK_TAG} forward OK",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": "192.168.100.1",
+                "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
+            },
+            {
+                "chain": "forward",
+                "action": "accept",
+                "in-interface-list": "LAN",
+                "out-interface-list": "WAN",
+                "comment": f"{CLEAN_UPLINK_TAG} LAN to internet",
+            },
+        ]
+        with (
+            patch("core.mikrotik_connect._rows_with_tag", return_value=existing),
+            patch("core.mikrotik_connect._remove_tagged") as remove,
+            patch("core.mikrotik_connect._add") as add,
+        ):
+            _ensure_filter_rules(
+                object(),
+                mode="bypass",
+                provider_gateways=["192.168.100.1"],
+            )
+        remove.assert_not_called()
+        add.assert_not_called()
 
 
 class FakeRouterState:
@@ -352,7 +416,8 @@ class SetCleanUplinkTests(SimpleTestCase):
         self.assertEqual(result["mode"], "bypass")
         self.assertEqual(result.get("wan_mode"), "dhcp")
         self.assertEqual(filter_calls[-1]["mode"], "bypass")
-        self.assertEqual(filter_calls[-1]["gateways"], [])
+        # Private WAN side is always blocked so clients cannot open ISP CPE admin.
+        self.assertIn("10.0.0.0/24", filter_calls[-1]["networks"])
 
     def test_enable_behind_fibre_ont_blocks_gateways(self):
         state = FakeRouterState()
@@ -458,7 +523,6 @@ class SetCleanUplinkTests(SimpleTestCase):
                 "core.mikrotik_connect._remove_tagged",
                 side_effect=fake_remove_tagged,
             ),
-            patch("core.mikrotik_connect._bridge_port_id", return_value=""),
         ):
             result = set_mikrotik_clean_uplink(
                 "192.168.88.1",
@@ -468,14 +532,128 @@ class SetCleanUplinkTests(SimpleTestCase):
                 mode="bypass",
                 wan_interface="ether1",
                 lan_bridge="bridgeLocal",
-                restore_wan_to_bridge=False,
+                restore_wan_to_bridge=True,
             )
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["enabled"])
         self.assertIn("/ip/firewall/filter", removed_paths)
         self.assertIn("/ip/firewall/nat", removed_paths)
+        # Soft disable never restores bridge membership (would disrupt sessions).
+        self.assertFalse(result.get("wan_was_bridged"))
 
+    def test_soft_enable_never_unbridges_even_if_requested(self):
+        state = FakeRouterState()
+        state.tables["/interface/bridge/port"] = [
+            {".id": "*b1", "interface": "ether1", "bridge": "bridgeLocal"},
+        ]
+        state.tables["/interface/bridge"] = [
+            {".id": "*br", "name": "bridgeLocal", "use-ip-firewall": "false"},
+        ]
+        removed: list[tuple[str, str]] = []
+
+        def capture_remove(sock, path, item_id):
+            removed.append((path, item_id))
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._api_session", self._session()),
+            patch("core.mikrotik_connect._print", side_effect=state.print),
+            patch("core.mikrotik_connect._add", side_effect=state.add),
+            patch("core.mikrotik_connect._set", side_effect=state.set),
+            patch("core.mikrotik_connect._remove", side_effect=capture_remove),
+            patch("core.mikrotik_connect._ensure_filter_rules"),
+            patch("core.mikrotik_connect._ensure_dns_redirect"),
+            patch("core.mikrotik_connect._ensure_masquerade"),
+            patch("core.mikrotik_connect.ensure_mikrotik_lan_passthrough") as passthrough,
+        ):
+            result = set_mikrotik_clean_uplink(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                enabled=True,
+                mode="bypass",
+                wan_interface="ether1",
+                lan_bridge="bridgeLocal",
+                separate_wan=True,
+                provider_gateway="192.168.1.1",
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result.get("wan_was_bridged"))
+        self.assertFalse(any(path == "/interface/bridge/port" for path, _ in removed))
+        passthrough.assert_not_called()
+        # Bridge IP firewall may be enabled so drops work without unbridging.
+        bridge = state.tables["/interface/bridge"][0]
+        self.assertIn(
+            (bridge.get("use-ip-firewall") or "").lower(),
+            {"true", "yes"},
+        )
+
+    def test_soft_enable_merges_dhcp_gateway_and_skips_nat_helpers(self):
+        state = FakeRouterState()
+        state.tables["/ip/address"].append(
+            {".id": "*w", "address": "192.168.100.48/24", "interface": "ether1"}
+        )
+        state.tables["/ip/dhcp-client"] = [
+            {
+                ".id": "*d",
+                "interface": "ether1",
+                "gateway": "192.168.100.1",
+                "status": "bound",
+                "disabled": "false",
+            }
+        ]
+        filter_calls: list[dict] = []
+        dns_calls = []
+        masq_calls = []
+
+        def capture_filters(sock, *, mode, provider_gateways=None, provider_networks=None):
+            filter_calls.append(
+                {
+                    "mode": mode,
+                    "gateways": list(provider_gateways or []),
+                    "networks": list(provider_networks or []),
+                }
+            )
+
+        with (
+            patch("core.mikrotik_connect._api_session", self._session()),
+            patch("core.mikrotik_connect._print", side_effect=state.print),
+            patch("core.mikrotik_connect._add", side_effect=state.add),
+            patch("core.mikrotik_connect._set", side_effect=state.set),
+            patch("core.mikrotik_connect._remove", side_effect=state.remove),
+            patch(
+                "core.mikrotik_connect._ensure_filter_rules",
+                side_effect=capture_filters,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_dns_redirect",
+                side_effect=lambda *a, **k: dns_calls.append(1),
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_masquerade",
+                side_effect=lambda *a, **k: masq_calls.append(1),
+            ),
+            patch("core.mikrotik_connect._remove_tagged"),
+        ):
+            result = set_mikrotik_clean_uplink(
+                "192.168.88.1",
+                "admin",
+                "secret",
+                enabled=True,
+                mode="bypass",
+                wan_interface="ether1",
+                lan_bridge="bridgeLocal",
+                provider_gateway="192.168.1.1",
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(dns_calls, [])
+        self.assertEqual(masq_calls, [])
+        self.assertIn("192.168.1.1", filter_calls[-1]["gateways"])
+        self.assertIn("192.168.100.1", filter_calls[-1]["gateways"])
+        self.assertIn("192.168.100.0/24", filter_calls[-1]["networks"])
     def test_behind_without_gateway_fails_clearly(self):
         state = FakeRouterState()
         with (

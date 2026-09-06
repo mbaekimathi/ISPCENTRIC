@@ -129,6 +129,13 @@ class Organization(models.Model):
         default="",
         help_text="First website page shown under the success-page button.",
     )
+    hotspot_welcome_link1_image = models.ImageField(
+        "Quick link 1 image",
+        upload_to="hotspot_ads/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Optional advert image for quick link 1 on the welcome page.",
+    )
     hotspot_welcome_link2_label = models.CharField(
         "Quick link 2 label",
         max_length=40,
@@ -142,6 +149,13 @@ class Organization(models.Model):
         blank=True,
         default="",
         help_text="Second website page shown under the success-page button.",
+    )
+    hotspot_welcome_link2_image = models.ImageField(
+        "Quick link 2 image",
+        upload_to="hotspot_ads/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Optional advert image for quick link 2 on the welcome page.",
     )
     hotspot_voucher_validity_hours = models.PositiveIntegerField(
         "Default voucher validity (hours)",
@@ -396,6 +410,12 @@ class Organization(models.Model):
         if self.referred_by_id and not self.referral_status:
             self.referral_status = self.ReferralStatus.PENDING
         self.profile_photo = maybe_optimize_image_field(self.profile_photo)
+        self.hotspot_welcome_link1_image = maybe_optimize_image_field(
+            self.hotspot_welcome_link1_image
+        )
+        self.hotspot_welcome_link2_image = maybe_optimize_image_field(
+            self.hotspot_welcome_link2_image
+        )
         super().save(*args, **kwargs)
         from accounts.routing import invalidate_switchable_clients_cache
 
@@ -1228,6 +1248,59 @@ class SubscriberAdvertisement(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.organization_id})"
+
+
+class HotspotPortalClick(models.Model):
+    """Per-contact click counts for Refer & earn and partner advert links."""
+
+    class Kind(models.TextChoices):
+        EARN = "earn", "Refer & earn"
+        PARTNER_1 = "partner_1", "Partner link 1"
+        PARTNER_2 = "partner_2", "Partner link 2"
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="hotspot_portal_clicks",
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices, db_index=True)
+    contact_key = models.CharField(
+        max_length=80,
+        db_index=True,
+        help_text="Stable contact id (MAC, phone, or anonymous session).",
+    )
+    hotspot_mac = models.CharField(max_length=32, blank=True, default="")
+    phone = models.CharField(max_length=30, blank=True, default="")
+    display_name = models.CharField(max_length=150, blank=True, default="")
+    customer = models.ForeignKey(
+        "billing.Customer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hotspot_portal_clicks",
+    )
+    click_count = models.PositiveIntegerField(default=0)
+    first_clicked_at = models.DateTimeField(auto_now_add=True)
+    last_clicked_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_hotspot_portal_click"
+        ordering = ["-last_clicked_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "kind", "contact_key"],
+                name="hs_portal_click_uniq",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "contact_key"],
+                name="hs_portal_click_org_ck",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.organization_id}:{self.kind}:{self.contact_key}×{self.click_count}"
 
 
 class ClientSettings(models.Model):

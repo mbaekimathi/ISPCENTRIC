@@ -930,6 +930,42 @@ class WireGuardKeyTests(SimpleTestCase):
         self.assertGreaterEqual(_usage_sample_interval_sec(), 30)
         self.assertGreaterEqual(_usage_sample_startup_delay_sec(), 0)
 
+    def test_usage_sample_not_tied_to_subscription_no_sweep(self):
+        """General usage must keep collecting when only --no-sweep is set."""
+        from core.boot import _usage_sample_enabled
+
+        with patch("core.boot.sys.argv", ["manage.py", "devserver", "--no-sweep"]):
+            self.assertTrue(_usage_sample_enabled())
+        with patch(
+            "core.boot.sys.argv", ["manage.py", "devserver", "--no-usage-sample"]
+        ):
+            self.assertFalse(_usage_sample_enabled())
+
+    def test_usage_sampling_heartbeat_and_ensure(self):
+        from django.core.cache import cache
+        from core.boot import (
+            _USAGE_SAMPLE_HEARTBEAT_KEY,
+            ensure_usage_sampling,
+            usage_sampling_is_fresh,
+        )
+
+        cache.delete(_USAGE_SAMPLE_HEARTBEAT_KEY)
+        cache.delete("usage_sample_ensure_kick")
+        self.assertFalse(usage_sampling_is_fresh(max_age_sec=60))
+        with patch("core.boot.run_usage_sample_all_orgs") as mock_run:
+            kicked = ensure_usage_sampling(max_age_sec=60)
+            self.assertTrue(kicked)
+            # Second call collapses while the kick gate is held.
+            self.assertFalse(ensure_usage_sampling(max_age_sec=60))
+            # Allow the daemon thread a moment to start.
+            import time as _time
+
+            _time.sleep(0.05)
+            mock_run.assert_called()
+        cache.set(_USAGE_SAMPLE_HEARTBEAT_KEY, __import__("time").time(), 600)
+        self.assertTrue(usage_sampling_is_fresh(max_age_sec=60))
+        self.assertFalse(ensure_usage_sampling(max_age_sec=60))
+
     def test_nas_access_ready_ignores_pending_cpe(self):
         from core.subscription_sync import nas_access_ready
 
@@ -1558,6 +1594,16 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
             captured.append(kwargs)
             return "updated"
 
+        empty_live = {
+            "secret_profiles": {
+                "paid": PPPOE_PROFILE_NAME,
+                "unpaid": PPPOE_PROFILE_NAME,
+            },
+            "active_names": set(),
+            "active_addresses": {},
+            "blocked_list_addresses": set(),
+            "arp_complete": {},
+        }
         router = type("Router", (), {"pk": 1})()
         with (
             patch(
@@ -1569,18 +1615,16 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
                 side_effect=fake_ensure,
             ),
             patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value=PPPOE_PROFILE_NAME,
-            ),
-            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
-            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=False),
-            patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=False,
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=empty_live,
             ),
             patch(
-                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
-                return_value=[],
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list_many",
+                return_value=0,
             ),
             patch(
                 "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
@@ -1619,8 +1663,15 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
             },
         )()
 
-        clear = MagicMock(return_value=["10.10.0.50"])
+        clear = MagicMock(return_value=1)
         kick = MagicMock(return_value=1)
+        live = {
+            "secret_profiles": {"paid": PPPOE_PROFILE_NAME},
+            "active_names": {"paid"},
+            "active_addresses": {"paid": {"10.10.0.50"}},
+            "blocked_list_addresses": {"10.10.0.50"},
+            "arp_complete": {},
+        }
         router = type("Router", (), {"pk": 1})()
         with (
             patch(
@@ -1629,8 +1680,8 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
             ),
             patch("core.mikrotik_connect._ensure_ppp_secret", return_value="updated"),
             patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value=PPPOE_PROFILE_NAME,
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
             ),
             patch(
                 "core.mikrotik_connect._customer_internet_allowed",
@@ -1640,16 +1691,14 @@ class PppoeSecretProfileSyncTests(SimpleTestCase):
                 "core.mikrotik_connect._customer_pppoe_secret_disabled",
                 return_value=False,
             ),
-            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=True),
             patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=True,
-            ),
-            patch(
-                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list_many",
                 clear,
             ),
-            patch("core.mikrotik_connect._disconnect_pppoe_sessions", kick),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                kick,
+            ),
             patch(
                 "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
                 return_value=[],
@@ -1825,7 +1874,7 @@ class ClickToEarnPortalTests(TestCase):
         )
         response = self.client.get(f"/hotspot/{self.org.join_code}/earn/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Refer a Wi‑Fi client")
+        self.assertContains(response, "Refer clients. Earn commission.")
         self.assertContains(response, "0712345678")
 
     def test_earn_builtin_shows_referral_page(self):
@@ -1839,10 +1888,30 @@ class ClickToEarnPortalTests(TestCase):
             f"/hotspot/{self.org.join_code}/earn/?from=hotspot"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Refer a Wi‑Fi client")
+        self.assertContains(response, "Refer clients. Earn commission.")
         self.assertContains(response, "0712345678")
+        self.assertContains(response, "Back to pay")
         self.assertNotContains(response, "Live adverts")
         self.assertNotContains(response, "Post an advert")
+
+    def test_earn_surfing_shows_continue_browsing(self):
+        self.org.adverts_enabled = True
+        self.org.hotspot_welcome_button_label = "Continue browsing"
+        self.org.hotspot_welcome_button_url = "http://neverssl.com/"
+        self.org.save(
+            update_fields=[
+                "adverts_enabled",
+                "hotspot_welcome_button_label",
+                "hotspot_welcome_button_url",
+            ]
+        )
+        response = self.client.get(
+            f"/hotspot/{self.org.join_code}/earn/?from=hotspot&surfing=1"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Continue browsing")
+        self.assertContains(response, "http://neverssl.com/")
+        self.assertNotContains(response, "Back to pay")
 
     def test_portal_bits_always_use_referral_page(self):
         from core.views import _click_to_earn_portal_bits
@@ -1853,9 +1922,20 @@ class ClickToEarnPortalTests(TestCase):
         self.assertTrue(bits["adverts_enabled"])
         self.assertIn("/earn/", bits["click_to_earn_url"])
         self.assertIn("from=hotspot", bits["click_to_earn_url"])
+        self.assertNotIn("surfing=", bits["click_to_earn_url"])
         self.assertFalse(bits["click_to_earn_is_external"])
         self.assertEqual(bits["click_to_earn_mode"], "builtin")
         self.assertEqual(bits["click_to_earn_label"], "Refer & earn")
+
+    def test_portal_bits_surfing_marks_connected_clients(self):
+        from core.views import _click_to_earn_portal_bits
+
+        self.org.adverts_enabled = True
+        bits = _click_to_earn_portal_bits(
+            self.org, portal="hotspot", surfing=True
+        )
+        self.assertIn("from=hotspot", bits["click_to_earn_url"])
+        self.assertIn("surfing=1", bits["click_to_earn_url"])
 
     def test_portal_bits_builtin_includes_from_query(self):
         from core.views import _click_to_earn_portal_bits
@@ -2715,6 +2795,59 @@ class HotspotPortalContextTests(SimpleTestCase):
         self.assertEqual(ctx["portal_mode"], "hotspot")
         self.assertFalse(ctx["show_payment_form"])
         self.assertIn("show_renew_payment", ctx)
+
+    def test_payment_form_shows_plans_without_mpesa_for_preview(self):
+        """Staff preview must show real packages even before M-Pesa is configured."""
+        from django.test import RequestFactory
+
+        from core.views import _hotspot_portal_context
+
+        plan = type(
+            "Plan",
+            (),
+            {
+                "pk": 9,
+                "name": "Day Pass",
+                "price": 100,
+                "duration": "daily",
+                "image": None,
+                "get_duration_display": lambda self: "Daily",
+            },
+        )()
+        org = type(
+            "Org",
+            (),
+            {
+                "name": "Jump Off",
+                "join_code": "969183",
+                "hotspot_portal_title": "",
+                "hotspot_login_message": "",
+                "mpesa_payment_type": "",
+                "mpesa_number": "",
+                "mpesa_account": "",
+                "pppoe_compulsory": False,
+                "hotspot_enabled": True,
+                "effective_daraja_credentials": lambda self: {"ready": False},
+                "pk": 3,
+            },
+        )()
+        request = RequestFactory().get("/hotspot/969183/pay/")
+        with (
+            patch("billing.services.plans_for_router", return_value=[plan]),
+            patch("core.views._find_hotspot_customer_for_mac", return_value=None),
+            patch(
+                "core.mikrotik_connect.find_hotspot_router_for_mac",
+                return_value=None,
+            ),
+            patch("core.views._plans_with_customer_default", side_effect=lambda o, plans, c: (plans, plans[0].pk if plans else None)),
+            patch("core.views._attach_plan_portal_images", side_effect=lambda plans, req=None: plans),
+            patch("core.views._attach_plan_offer_progress", side_effect=lambda plans, c=None: plans),
+        ):
+            ctx = _hotspot_portal_context(org, mikrotik_login=False, request=request)
+        self.assertTrue(ctx["has_payable_plans"])
+        self.assertTrue(ctx["show_payment_form"])
+        self.assertFalse(ctx["stk_ready"])
+        self.assertEqual(len(ctx["hotspot_plans"]), 1)
 
 
 class PppoePortalContextTests(SimpleTestCase):
@@ -4903,6 +5036,87 @@ class ClientsSurfingStatusTests(TestCase):
             timeout=4.0,
         )
 
+    @patch("core.views.fetch_customer_pppoe_usage")
+    def test_client_usage_pppoe_blocked_profile_is_not_surfing(self, fetch_usage):
+        """Detail page must match list: dialed + blocked secret = Not surfing."""
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        fetch_usage.return_value = {
+            "ok": True,
+            "online": True,
+            "session_active": True,
+            "pppoe_username": "liveuser",
+            "address": "10.10.0.20",
+            "caller_id": "",
+            "service": "pppoe",
+            "uptime": "1m",
+            "uptime_raw": "1m",
+            "bytes_in": 0,
+            "bytes_out": 0,
+            "bytes_in_label": "—",
+            "bytes_out_label": "—",
+            "download_bps": 0,
+            "upload_bps": 0,
+            "download_label": "—",
+            "upload_label": "—",
+            "interface": "<pppoe-liveuser>",
+            "secret_profile": "ispcentric-blocked",
+            "on_blocked_profile": True,
+            "error": "",
+        }
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/usage/",
+            {"refresh": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["session_active"])
+        self.assertFalse(data["surfing"])
+        self.assertEqual(data["session_state"], "not_surfing")
+        self.assertEqual(data["session_label"], "Not surfing")
+        self.assertIn("blocked on the router", data["hint"])
+
+    @patch("core.views.fetch_customer_pppoe_usage")
+    def test_client_usage_pppoe_paid_session_is_surfing(self, fetch_usage):
+        self.customer.router = self.router
+        self.customer.save(update_fields=["router"])
+        fetch_usage.return_value = {
+            "ok": True,
+            "online": True,
+            "session_active": True,
+            "pppoe_username": "liveuser",
+            "address": "10.10.0.21",
+            "caller_id": "",
+            "service": "pppoe",
+            "uptime": "2m",
+            "uptime_raw": "2m",
+            "bytes_in": 100,
+            "bytes_out": 200,
+            "bytes_in_label": "100 B",
+            "bytes_out_label": "200 B",
+            "download_bps": 1000,
+            "upload_bps": 500,
+            "download_label": "1 Kbps",
+            "upload_label": "500 bps",
+            "interface": "<pppoe-liveuser>",
+            "secret_profile": "ispcentric-pppoe",
+            "on_blocked_profile": False,
+            "error": "",
+        }
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/usage/",
+            {"refresh": "1"},
+        )
+
+        data = response.json()
+        self.assertTrue(data["surfing"])
+        self.assertEqual(data["session_state"], "surfing")
+        self.assertEqual(data["session_label"], "Surfing")
+
     def test_pppoe_portal_is_pppoe_only(self):
         from django.test import RequestFactory
 
@@ -5862,6 +6076,7 @@ class PackageSpeedLimitTests(SimpleTestCase):
             return {"_reply": "!done", "ret": "*1"}
 
         with (
+            patch("core.mikrotik_connect._ensure_pppoe_pool"),
             patch("core.mikrotik_connect._print", return_value=[]),
             patch("core.mikrotik_connect._add", side_effect=fake_add),
             patch("core.mikrotik_connect._set", return_value={"_reply": "!trap"}),
@@ -5891,6 +6106,7 @@ class PackageSpeedLimitTests(SimpleTestCase):
             return {"_reply": "!done", "ret": "*9"}
 
         with (
+            patch("core.mikrotik_connect._ensure_pppoe_pool"),
             patch("core.mikrotik_connect._print", side_effect=fake_print),
             patch("core.mikrotik_connect._add", side_effect=fake_add),
             patch("core.mikrotik_connect._set", return_value={"_reply": "!trap"}),
@@ -5955,6 +6171,7 @@ class PackageSpeedLimitTests(SimpleTestCase):
             return {"_reply": "!done"}
 
         with (
+            patch("core.mikrotik_connect._ensure_pppoe_pool"),
             patch(
                 "core.mikrotik_connect._print",
                 side_effect=lambda sock, path, **kw: list(state.get(path, [])),
@@ -6019,6 +6236,40 @@ class PackageSpeedLimitTests(SimpleTestCase):
 
         self.assertEqual(profile, _hotspot_speed_profile_name(3, 12))
         self.assertEqual(adds[0]["rate-limit"], "3M/12M")
+        self.assertEqual(adds[0]["shared-users"], "1")
+
+    def test_hotspot_profile_repairs_shared_users_to_one(self):
+        from core.mikrotik_connect import (
+            _ensure_hotspot_profile_shared_users,
+            _hotspot_speed_profile_name,
+        )
+
+        name = _hotspot_speed_profile_name(5, 10)
+        state = {
+            "/ip/hotspot/user/profile": [
+                {".id": "*9", "name": name, "shared-users": "5", "rate-limit": "5M/10M"},
+            ]
+        }
+        sets: list[dict] = []
+
+        def fake_set(sock, path, item_id, **props):
+            sets.append(props)
+            for row in state[path]:
+                if row.get(".id") == item_id:
+                    row.update(props)
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._print",
+                side_effect=lambda sock, path, **kw: list(state.get(path, [])),
+            ),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+        ):
+            _ensure_hotspot_profile_shared_users(object(), profile_name=name)
+
+        self.assertEqual(sets[0]["shared-users"], "1")
+        self.assertEqual(state["/ip/hotspot/user/profile"][0]["shared-users"], "1")
 
     def test_bulk_sync_assigns_speed_profile_for_paid_plan(self):
         from core.mikrotik_connect import (
@@ -6065,6 +6316,13 @@ class PackageSpeedLimitTests(SimpleTestCase):
             captured.append(kwargs)
             return "updated"
 
+        empty_live = {
+            "secret_profiles": {},
+            "active_names": set(),
+            "active_addresses": {},
+            "blocked_list_addresses": set(),
+            "arp_complete": {},
+        }
         router = type("Router", (), {"pk": 1})()
         with (
             patch(
@@ -6076,10 +6334,17 @@ class PackageSpeedLimitTests(SimpleTestCase):
                 side_effect=fake_ensure,
             ),
             patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value="",
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=empty_live,
             ),
-            patch("core.mikrotik_connect._disconnect_pppoe_sessions", return_value=0),
+            patch(
+                "core.mikrotik_connect._disconnect_pppoe_sessions_many",
+                return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._clear_pppoe_blocked_address_list_many",
+                return_value=0,
+            ),
             patch(
                 "core.mikrotik_connect._customer_internet_allowed",
                 side_effect=lambda c: c.pppoe_username == "paid",
@@ -6087,15 +6352,6 @@ class PackageSpeedLimitTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._customer_pppoe_secret_disabled",
                 return_value=False,
-            ),
-            patch("core.mikrotik_connect._pppoe_has_active_session", return_value=False),
-            patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=False,
-            ),
-            patch(
-                "core.mikrotik_connect._clear_pppoe_blocked_address_list",
-                return_value=[],
             ),
             patch(
                 "core.mikrotik_connect._block_orphan_pppoe_secrets_on_socket",
@@ -7406,6 +7662,19 @@ class AccessFlowCorrectionLoopTests(TestCase):
             repair_paid_pppoe_not_surfing_on_router,
         )
 
+        live = {
+            "secret_profiles": {
+                (self.pppoe.pppoe_username or "").strip().lower(): (
+                    PPPOE_BLOCKED_PROFILE_NAME
+                )
+            },
+            "active_names": {(self.pppoe.pppoe_username or "").strip().lower()},
+            "active_addresses": {
+                (self.pppoe.pppoe_username or "").strip().lower(): {"10.10.0.8"}
+            },
+            "blocked_list_addresses": {"10.10.0.8"},
+            "arp_complete": {},
+        }
         with (
             patch(
                 "core.mikrotik_connect._pppoe_customers_for_router",
@@ -7425,24 +7694,8 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._api_session") as session,
             patch(
-                "core.mikrotik_connect._pppoe_arp_complete_map",
-                return_value={},
-            ),
-            patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value=PPPOE_BLOCKED_PROFILE_NAME,
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_has_active_session",
-                return_value=True,
-            ),
-            patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=True,
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_session_looks_ghost",
-                return_value=False,
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
             ),
             patch(
                 "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
@@ -7478,6 +7731,14 @@ class AccessFlowCorrectionLoopTests(TestCase):
 
         self.pppoe.package_end = timezone.now() + timedelta(days=2)
         self.pppoe.save(update_fields=["package_end"])
+        username = (self.pppoe.pppoe_username or "").strip().lower()
+        live = {
+            "secret_profiles": {username: "ispcentric-pppoe-5u-10d"},
+            "active_names": {username},
+            "active_addresses": {username: {"10.10.0.9"}},
+            "blocked_list_addresses": set(),
+            "arp_complete": {"10.10.0.9": False},
+        }
 
         with (
             patch(
@@ -7498,28 +7759,12 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._api_session") as session,
             patch(
-                "core.mikrotik_connect._pppoe_arp_complete_map",
-                return_value={},
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
             ),
             patch(
                 "core.mikrotik_connect._ppp_secret_profile_for_customer",
                 return_value="ispcentric-pppoe-5u-10d",
-            ),
-            patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value="ispcentric-pppoe-5u-10d",
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_has_active_session",
-                return_value=True,
-            ),
-            patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=False,
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_session_looks_ghost",
-                return_value=True,
             ),
             patch(
                 "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",
@@ -7553,6 +7798,14 @@ class AccessFlowCorrectionLoopTests(TestCase):
         self.pppoe.package_end = timezone.now() + timedelta(days=2)
         self.pppoe.save(update_fields=["package_end"])
         mark_cpe_renew_clear_pending(self.pppoe)
+        username = (self.pppoe.pppoe_username or "").strip().lower()
+        live = {
+            "secret_profiles": {username: "ispcentric-pppoe"},
+            "active_names": set(),
+            "active_addresses": {},
+            "blocked_list_addresses": set(),
+            "arp_complete": {},
+        }
 
         with (
             patch(
@@ -7573,28 +7826,12 @@ class AccessFlowCorrectionLoopTests(TestCase):
             ),
             patch("core.mikrotik_connect._api_session") as session,
             patch(
-                "core.mikrotik_connect._pppoe_arp_complete_map",
-                return_value={},
+                "core.mikrotik_connect._pppoe_live_state_maps",
+                return_value=live,
             ),
             patch(
                 "core.mikrotik_connect._ppp_secret_profile_for_customer",
                 return_value="ispcentric-pppoe",
-            ),
-            patch(
-                "core.mikrotik_connect._current_ppp_secret_profile",
-                return_value="ispcentric-pppoe",
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_has_active_session",
-                return_value=False,
-            ),
-            patch(
-                "core.mikrotik_connect._active_pppoe_session_is_blocked",
-                return_value=False,
-            ),
-            patch(
-                "core.mikrotik_connect._pppoe_session_looks_ghost",
-                return_value=False,
             ),
             patch(
                 "core.mikrotik_connect.sync_pppoe_subscription_batch_on_router",

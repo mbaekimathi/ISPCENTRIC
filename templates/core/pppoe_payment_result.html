@@ -204,6 +204,26 @@
     }
     @keyframes pulse { 50% { opacity: 0.25; transform: scale(0.7); } }
 
+    .earn-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      padding: 0.32rem 0.65rem;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+      background: color-mix(in srgb, var(--accent) 10%, transparent);
+      color: var(--accent);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-decoration: none;
+    }
+
+    .earn-chip:hover {
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before { animation: none !important; transition: none !important; }
       .mark { stroke-dashoffset: 0; }
@@ -230,6 +250,11 @@
         {% if result.mpesa_receipt %}<div class="fact"><dt>M-Pesa receipt</dt><dd class="code">{{ result.mpesa_receipt }}</dd></div>{% endif %}
       </dl>
       <a class="action" id="continue-browsing" href="{{ continue_url }}">{{ continue_label|default:"Continue browsing" }}</a>
+      {% if adverts_enabled and click_to_earn_url %}
+        <p style="margin:0.75rem 0 0;">
+          <a class="earn-chip" href="{{ click_to_earn_url }}">{{ click_to_earn_label|default:"Refer & earn" }} →</a>
+        </p>
+      {% endif %}
       <p class="hint" style="margin-top:0.85rem;">Tap continue to leave this page and start surfing.</p>
     {% elif waiting %}
       <div class="badge">

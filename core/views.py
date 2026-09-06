@@ -6923,7 +6923,7 @@ def mikrotik_ports(request, router_id: int):
 @client_workspace_required
 @require_http_methods(["GET", "POST"])
 def mikrotik_clean_uplink(request, router_id: int):
-    """Enable/disable clean uplink (bypass or behind provider) for one router."""
+    """Soft-sync clean uplink (non-disruptive provider block); auto-updates on view."""
     org = resolve_organization(request.user, request)
     if not org:
         messages.error(request, "No organization is linked to this workspace.")
@@ -6931,16 +6931,96 @@ def mikrotik_clean_uplink(request, router_id: int):
 
     router = get_object_or_404(MikroTikRouter, pk=router_id, organization=org)
     is_suspended = router.account_status == MikroTikRouter.AccountStatus.SUSPENDED
-    clean_uplink_enabled = bool(router.clean_uplink_enabled)
     form = MikroTikCleanUplinkForm(
         initial={
             "mode": router.clean_uplink_mode or MikroTikRouter.CleanUplinkMode.BYPASS,
             "wan_interface": router.wan_interface or "ether1",
             "lan_bridge": router.lan_bridge or "bridgeLocal",
             "provider_gateway": router.provider_gateway or "192.168.1.1",
-            "separate_wan": router.clean_uplink_separate_wan,
+            "separate_wan": False,
         }
     )
+
+    def _persist_ok(cleaned: dict, result: dict) -> None:
+        live = MikroTikRouter.objects.get(pk=router.pk)
+        live.clean_uplink_enabled = True
+        live.clean_uplink_mode = (
+            cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS
+        )
+        live.wan_interface = cleaned.get("wan_interface") or "ether1"
+        live.lan_bridge = cleaned.get("lan_bridge") or "bridgeLocal"
+        gateways = result.get("provider_gateways") or []
+        if isinstance(gateways, list) and gateways:
+            live.provider_gateway = ", ".join(str(g) for g in gateways if str(g).strip())
+        else:
+            live.provider_gateway = cleaned.get("provider_gateway") or ""
+        live.clean_uplink_separate_wan = False
+        live.clean_uplink_wan_was_bridged = False
+        live.save(
+            update_fields=[
+                "clean_uplink_enabled",
+                "clean_uplink_mode",
+                "wan_interface",
+                "lan_bridge",
+                "provider_gateway",
+                "clean_uplink_separate_wan",
+                "clean_uplink_wan_was_bridged",
+                "updated_at",
+            ]
+        )
+        cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
+        if not result.get("message"):
+            result["message"] = (
+                "Clean uplink synced without disconnecting users. "
+                "Provider modem/ONT admin access is blocked."
+            )
+
+    def _apply_clean_uplink(cleaned: dict) -> dict:
+        api_host = _resolve_working_nas_host(router, timeout=2.0)
+        result = set_mikrotik_clean_uplink(
+            api_host,
+            router.username,
+            router.password or "",
+            enabled=True,
+            mode=cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS,
+            wan_interface=cleaned.get("wan_interface") or "ether1",
+            lan_bridge=cleaned.get("lan_bridge") or "bridgeLocal",
+            provider_gateway=cleaned.get("provider_gateway") or "",
+            separate_wan=False,
+            restore_wan_to_bridge=False,
+        )
+        if result.get("ok"):
+            _persist_ok(cleaned, result)
+        return result
+
+    def _schedule_autosync(*, force: bool = False) -> bool:
+        """Background soft sync; throttled so page refreshes do not hammer the API."""
+        if is_suspended:
+            return False
+        from core.mikrotik_jobs import is_job_stale
+
+        throttle_key = f"mikrotik_clean_uplink_autosync:{router.pk}"
+        if not force and cache.get(throttle_key):
+            return False
+        job = get_job(router.pk, "clean_uplink")
+        if job and (job.get("status") or "").lower() in {"pending", "running"}:
+            if not is_job_stale(job):
+                return False
+        cleaned = {
+            "mode": router.clean_uplink_mode or MikroTikRouter.CleanUplinkMode.BYPASS,
+            "wan_interface": router.wan_interface or "ether1",
+            "lan_bridge": router.lan_bridge or "bridgeLocal",
+            "provider_gateway": router.provider_gateway or "192.168.1.1",
+        }
+        cache.set(throttle_key, 1, 90)
+        set_job(router.pk, "clean_uplink", "pending")
+        schedule_mikrotik_job(
+            lambda: _apply_clean_uplink(cleaned),
+            name=f"clean-uplink-auto-{router.pk}",
+            router_id=router.pk,
+            job_type="clean_uplink",
+        )
+        return True
 
     if request.method == "POST":
         if is_suspended:
@@ -6953,95 +7033,29 @@ def mikrotik_clean_uplink(request, router_id: int):
         form = MikroTikCleanUplinkForm(request.POST)
         if form.is_valid():
             cleaned = form.cleaned_data
-            turn_on = not clean_uplink_enabled
-            api_host = _router_api_host(router)
-            was_bridged = bool(router.clean_uplink_wan_was_bridged)
-
-            def _apply_clean_uplink():
-                result = set_mikrotik_clean_uplink(
-                    api_host,
-                    router.username,
-                    router.password or "",
-                    enabled=turn_on,
-                    mode=cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS,
-                    wan_interface=cleaned.get("wan_interface") or "ether1",
-                    lan_bridge=cleaned.get("lan_bridge") or "bridgeLocal",
-                    provider_gateway=cleaned.get("provider_gateway") or "",
-                    separate_wan=bool(cleaned.get("separate_wan")),
-                    restore_wan_to_bridge=was_bridged,
-                )
-                if result.get("ok"):
-                    live = MikroTikRouter.objects.get(pk=router.pk)
-                    live.clean_uplink_enabled = bool(result.get("enabled"))
-                    live.clean_uplink_mode = (
-                        cleaned.get("mode") or MikroTikRouter.CleanUplinkMode.BYPASS
-                    )
-                    live.wan_interface = cleaned.get("wan_interface") or "ether1"
-                    live.lan_bridge = cleaned.get("lan_bridge") or "bridgeLocal"
-                    live.provider_gateway = cleaned.get("provider_gateway") or ""
-                    live.clean_uplink_separate_wan = bool(cleaned.get("separate_wan"))
-                    if turn_on:
-                        live.clean_uplink_wan_was_bridged = bool(
-                            result.get("wan_was_bridged")
-                        )
-                    else:
-                        live.clean_uplink_wan_was_bridged = False
-                    live.save(
-                        update_fields=[
-                            "clean_uplink_enabled",
-                            "clean_uplink_mode",
-                            "wan_interface",
-                            "lan_bridge",
-                            "provider_gateway",
-                            "clean_uplink_separate_wan",
-                            "clean_uplink_wan_was_bridged",
-                            "updated_at",
-                        ]
-                    )
-                    cache.delete(f"mikrotik_live:{org.pk}:{router.pk}")
-                    if not result.get("message"):
-                        result["message"] = (
-                            "Clean uplink enabled on the MikroTik."
-                            if turn_on
-                            else "Clean uplink disabled on the MikroTik."
-                        )
-                return result
-
-            if _background_mikrotik_ops():
-                set_job(router.pk, "clean_uplink", "pending")
-                schedule_mikrotik_job(
-                    _apply_clean_uplink,
-                    name=f"clean-uplink-{router.pk}",
-                    router_id=router.pk,
-                    job_type="clean_uplink",
-                )
-                messages.success(
-                    request,
-                    "Applying clean uplink on the MikroTik in the background. "
-                    "This page will show progress shortly.",
-                )
-                return _redirect_with_mikrotik_job(
-                    request, "core:mikrotik_clean_uplink", router.pk, "clean_uplink"
-                )
-
-            result = _apply_clean_uplink()
-            if not result.get("ok"):
-                form.add_error(
-                    None,
-                    result.get("error")
-                    or "Could not update clean uplink on the MikroTik.",
-                )
-            else:
-                messages.success(
-                    request,
-                    result.get("message")
-                    or (
-                        "Clean uplink enabled on the MikroTik."
-                        if turn_on
-                        else "Clean uplink disabled on the MikroTik."
-                    ),
-                )
-                return redirect("core:mikrotik_clean_uplink", router_id=router.pk)
+            set_job(router.pk, "clean_uplink", "pending")
+            schedule_mikrotik_job(
+                lambda: _apply_clean_uplink(cleaned),
+                name=f"clean-uplink-{router.pk}",
+                router_id=router.pk,
+                job_type="clean_uplink",
+            )
+            cache.set(f"mikrotik_clean_uplink_autosync:{router.pk}", 1, 90)
+            messages.success(
+                request,
+                "Syncing clean uplink in the background (no disconnect). "
+                "This page will show progress shortly.",
+            )
+            return _redirect_with_mikrotik_job(
+                request, "core:mikrotik_clean_uplink", router.pk, "clean_uplink"
+            )
+    elif not is_suspended:
+        if _schedule_autosync():
+            messages.info(
+                request,
+                "Clean uplink is updating automatically in the background — "
+                "users stay connected.",
+            )
 
     detail_nav = build_mikrotik_detail_nav(
         router,
@@ -7057,7 +7071,8 @@ def mikrotik_clean_uplink(request, router_id: int):
         page_title=f"{router.name} — Clean uplink",
         page_kicker="Uplink",
         page_subtitle=(
-            f"Pass only internet through {router.name} and block provider settings."
+            f"Auto soft-sync on {router.name}: block uplink modem/ONT admin "
+            "without disconnecting the MikroTik or customers."
         ),
         form=form,
         is_suspended=is_suspended,
@@ -7776,6 +7791,8 @@ def mikrotik_reconnect(request, router_id: int):
             _wifi_fields_cache_key(org.pk, router.pk),
             f"mikrotik_discover:{org.pk}:quick",
             f"mikrotik_discover:{org.pk}:full",
+            f"clients_surfing:{org.pk}:pppoe:v4",
+            f"clients_surfing:{org.pk}:hotspot:v4",
         ]
     )
 
@@ -11353,7 +11370,7 @@ def client_usage(request, customer_id: int):
             }
         )
 
-    cache_key = f"client_usage:v2:{org.pk}:{customer.pk}"
+    cache_key = f"client_usage:v3:{org.pk}:{customer.pk}"
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
     if not force:
         cached = cache.get(cache_key)
@@ -11537,11 +11554,62 @@ def client_usage(request, customer_id: int):
         payload["internet_allowed"] = internet_allowed
         pending_renew = cpe_renew_clear_is_pending(customer)
         payload["cpe_renew_clear_pending"] = pending_renew
+        on_blocked_profile = bool(payload.get("on_blocked_profile"))
+        session_online = bool(payload.get("session_active"))
+        subscription_expired = False
+        try:
+            subscription_expired = customer_subscription_expired(customer)
+        except Exception:
+            subscription_expired = False
+
+        # Match /app/clients/surfing/: Surfing = dialed + paid + not blocked.
+        surfing = bool(session_online and internet_allowed and not on_blocked_profile)
+        if surfing:
+            session_state = "surfing"
+            session_label = "Surfing"
+            session_hint = "Online — internet OK"
+        elif subscription_expired:
+            session_state = "expired"
+            session_label = "Expired"
+            session_hint = (
+                payload.get("hint")
+                or "Subscription ended — no internet"
+            )
+        elif not session_online:
+            session_state = "disconnected"
+            session_label = "Disconnected"
+            session_hint = (
+                payload.get("hint")
+                or "Router not dialed — no active PPPoE session"
+            )
+        else:
+            session_state = "not_surfing"
+            session_label = "Not surfing"
+            if on_blocked_profile:
+                session_hint = (
+                    "Dialed in, but blocked on the router — access not synced"
+                )
+            elif not internet_allowed:
+                session_hint = (
+                    "Dialed in, but outside package period — no internet"
+                )
+            else:
+                session_hint = payload.get("hint") or "Dialed in — not surfing"
+
         if pending_renew and internet_allowed:
-            payload["hint"] = (
+            session_hint = (
                 "Package active — CPE renew Hotspot still clearing. "
                 "Phones may see the pay page until the CPE redials."
             )
+
+        payload["surfing"] = surfing
+        payload["session_state"] = session_state
+        payload["session_label"] = session_label
+        payload["hint"] = session_hint
+        payload["on_blocked_profile"] = on_blocked_profile
+        # Presence charts / offline styling track real surfing, not dial-only.
+        if payload.get("ok") and session_online and not surfing:
+            payload["connected"] = True
 
     try:
         from billing.usage_samples import record_customer_usage_sample
@@ -11613,8 +11681,16 @@ def clients_general_usage(request):
     )
 
     # First paint stays snappy: ranked preview from DB/cache only.
-    # Live MikroTik sampling continues in the background via trends JSON.
+    # Live MikroTik sampling continues in the background (boot loop / systemd)
+    # so clients appear here without anyone opening per-client usage pages.
     _USAGE_PAGE_PREVIEW = 30
+
+    try:
+        from core.boot import ensure_usage_sampling
+
+        ensure_usage_sampling()
+    except Exception:
+        pass
 
     usage_filter = parse_usage_filter(request, default_time="6")
     hours = usage_filter["hours"]
@@ -11793,6 +11869,7 @@ def client_usage_analysis(request, customer_id: int):
     can_access_wifi = customer_can_access_router(customer, org)
     from billing.usage_samples import (
         build_client_access_timeline,
+        client_usage_sample_is_stale,
         parse_usage_filter,
         usage_filter_querystring,
         usage_trend_payload,
@@ -11804,9 +11881,8 @@ def client_usage_analysis(request, customer_id: int):
     live_error = ""
 
     if can_live:
-        # Seed a live reading when history is empty so the first visit is not
-        # stuck on “Collecting…”. When history already exists, stay fast and
-        # let JS / the background sampler continue the trend.
+        # Seed a live reading when history is empty or stale so the first visit
+        # and returning visits stay current (background sampler may be paused).
         trends = usage_trend_payload(
             customer,
             hours=hours,
@@ -11816,7 +11892,10 @@ def client_usage_analysis(request, customer_id: int):
             relative=usage_filter["relative"],
             use_cache=False,
         )
-        if int(trends.get("sample_count") or 0) <= 0:
+        needs_seed = int(trends.get("sample_count") or 0) <= 0 or client_usage_sample_is_stale(
+            customer
+        )
+        if needs_seed:
             try:
                 sample_result = _record_live_usage_sample(customer, org, force=True)
                 if isinstance(sample_result, dict) and sample_result.get("error"):
@@ -11883,6 +11962,16 @@ def client_usage_analysis(request, customer_id: int):
             "error": error,
         }
 
+    from billing.devices import customer_account_devices
+
+    account_devices = customer_account_devices(customer)
+    devices_connected_count = sum(1 for d in account_devices if d.get("connected"))
+    router_data_url = ""
+    if can_access_wifi and customer.service_type == Customer.ServiceType.PPPOE:
+        router_data_url = reverse(
+            "core:client_cpe_router_data", kwargs={"customer_id": customer.pk}
+        )
+
     ctx = client_page_context(
         request,
         active_nav="client_detail",
@@ -11902,6 +11991,10 @@ def client_usage_analysis(request, customer_id: int):
         trends_url=reverse(
             "core:client_usage_trends", kwargs={"customer_id": customer.pk}
         ),
+        account_devices=account_devices,
+        devices_connected_count=devices_connected_count,
+        devices_linked_count=len(account_devices),
+        router_data_url=router_data_url,
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
@@ -12062,7 +12155,7 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
             "error": "No active MikroTik router is available for this client.",
         }
 
-    cache_key = f"client_usage:v2:{org.pk}:{customer.pk}"
+    cache_key = f"client_usage:v3:{org.pk}:{customer.pk}"
     if not force:
         cached = cache.get(cache_key)
         if isinstance(cached, dict) and cached.get("ok"):
@@ -12080,11 +12173,9 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
                 "written": False,
                 "error": "This client has no Hotspot device MAC.",
             }
-        best = None
-        best_total = -1
-        peak_down = 0
-        peak_up = 0
-        active_count = 0
+        from billing.usage_samples import merge_hotspot_session_payloads
+
+        probes: list[dict] = []
         for mac in macs:
             candidate = fetch_customer_hotspot_usage(
                 router.host,
@@ -12099,32 +12190,41 @@ def _record_live_usage_sample(customer, org, *, force: bool = False) -> dict:
                     or "Could not reach the MikroTik for Hotspot usage."
                 )
                 continue
-            if candidate.get("session_active"):
-                active_count += 1
-                bi = int(candidate.get("bytes_in") or 0)
-                bo = int(candidate.get("bytes_out") or 0)
-                peak_down = max(peak_down, int(candidate.get("download_bps") or 0))
-                peak_up = max(peak_up, int(candidate.get("upload_bps") or 0))
-                if bi + bo > best_total:
-                    best_total = bi + bo
-                    best = candidate
-            elif best is None and candidate.get("connected"):
-                best = candidate
-            elif best is None:
-                best = candidate
-        if not best or not best.get("ok"):
+            candidate = {**candidate, "hotspot_mac": mac}
+            probes.append(candidate)
+        if not probes:
             return {
                 "ok": False,
                 "written": False,
                 "error": last_error
                 or "Could not read Hotspot usage from the MikroTik.",
             }
-        payload = best
-        if active_count > 1 and payload.get("session_active"):
-            if peak_down:
-                payload = {**payload, "download_bps": peak_down}
-            if peak_up:
-                payload = {**payload, "upload_bps": peak_up}
+        active_probes = [p for p in probes if p.get("session_active")]
+        if active_probes:
+            payload = merge_hotspot_session_payloads(customer.pk, active_probes)
+            # Preserve live UI fields from the busiest active probe.
+            richest = max(
+                active_probes,
+                key=lambda p: int(p.get("bytes_in") or 0) + int(p.get("bytes_out") or 0),
+            )
+            for key in (
+                "online",
+                "connected",
+                "hotspot_mac",
+                "bytes_in_label",
+                "bytes_out_label",
+                "download_label",
+                "upload_label",
+                "uptime",
+                "interface",
+                "hint",
+            ):
+                if key in richest and key not in payload:
+                    payload[key] = richest[key]
+            payload["online"] = True
+            payload["ok"] = True
+        else:
+            payload = probes[0]
         try:
             from billing.services import customer_can_surf_via_hotspot
 
@@ -12820,12 +12920,17 @@ def mikrotik_pppoe_settings(request, router_id: int):
 
     bits = _adverts_context_for_settings(org)
     bits["adverts_enabled"] = adverts_enabled
+    pay_page_path = ""
+    pay_page_url = ""
     pay_preview_path = ""
     if org.join_code:
-        pay_preview_path = (
-            reverse("core:pppoe_pay", kwargs={"join_code": org.join_code})
-            + "?preview=demo"
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        pay_page_path = reverse(
+            "core:pppoe_pay", kwargs={"join_code": org.join_code}
         )
+        pay_preview_path = f"{pay_page_path}?preview=demo"
+        pay_page_url = (_pppoe_pay_portal_url(org) or "").strip()
 
     pppoe_eligible_count = Customer.objects.filter(
         organization=org,
@@ -12860,6 +12965,8 @@ def mikrotik_pppoe_settings(request, router_id: int):
         page_kicker="Access",
         page_subtitle=f"PPPoE enforcement and client logins for {router.name}.",
         form=form,
+        pay_page_path=pay_page_path,
+        pay_page_url=pay_page_url,
         pay_preview_path=pay_preview_path,
         can_edit=can_edit,
         organization=org,
@@ -12929,7 +13036,7 @@ def mikrotik_hotspot_settings(request, router_id: int):
 
     form = None
     if request.method == "POST" and can_edit:
-        form = HotspotSettingsForm(request.POST, instance=org)
+        form = HotspotSettingsForm(request.POST, request.FILES, instance=org)
         if form.is_valid():
             org = form.save(commit=False)
             urls = _portal_urls_for(org)
@@ -13236,7 +13343,9 @@ def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
     return None
 
 
-def _click_to_earn_portal_bits(org, request=None, *, portal: str = "") -> dict:
+def _click_to_earn_portal_bits(
+    org, request=None, *, portal: str = "", surfing: bool = False
+) -> dict:
     """Captive pay/pause pages: optional Refer & earn link for this ISP."""
     from core.hotspot_portal import public_absolute_url
 
@@ -13248,8 +13357,13 @@ def _click_to_earn_portal_bits(org, request=None, *, portal: str = "") -> dict:
     mode = "off"
     if enabled and getattr(org, "join_code", None):
         path = reverse("core:click_to_earn", kwargs={"join_code": org.join_code})
+        qs = {}
         if portal:
-            path = f"{path}?from={portal}"
+            qs["from"] = portal
+        if surfing:
+            qs["surfing"] = "1"
+        if qs:
+            path = f"{path}?{urlencode(qs)}"
         url = public_absolute_url(path, request) if request is not None else path
         if not url:
             url = path
@@ -13404,12 +13518,21 @@ def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: st
     demo_end = timezone.localtime() - timedelta(hours=3)
 
     if portal == "hotspot":
-        # Always use sample packages in theme preview so the popup is fully filled.
-        plans = _theme_preview_demo_plans(service_type=BillingPlan.ServiceType.HOTSPOT)
+        # Prefer the ISP's real packages (images included). Fall back to samples
+        # only when the org has nothing to sell yet.
+        existing = list(context.get("hotspot_plans") or context.get("plans") or [])
+        plans = existing or _theme_preview_demo_plans(
+            service_type=BillingPlan.ServiceType.HOTSPOT
+        )
         context["hotspot_plans"] = plans
         context["plans"] = plans
-        context["hotspot_selected_plan_id"] = plans[0].pk
-        context["selected_plan_id"] = plans[0].pk
+        selected = context.get("hotspot_selected_plan_id") or context.get(
+            "selected_plan_id"
+        )
+        if not selected and plans:
+            selected = plans[0].pk
+        context["hotspot_selected_plan_id"] = selected
+        context["selected_plan_id"] = selected
         context["hotspot_mac"] = demo_mac
         context["customer_name"] = demo_name
         context["account_number"] = demo_account
@@ -13417,11 +13540,19 @@ def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: st
         context["hotspot_phone_value"] = demo_phone
         context["package_end"] = demo_end
     else:
-        plans = _theme_preview_demo_plans(service_type=BillingPlan.ServiceType.PPPOE)
+        existing = list(context.get("pppoe_plans") or context.get("plans") or [])
+        plans = existing or _theme_preview_demo_plans(
+            service_type=BillingPlan.ServiceType.PPPOE
+        )
         context["pppoe_plans"] = plans
         context["plans"] = plans
-        context["pppoe_selected_plan_id"] = plans[0].pk
-        context["selected_plan_id"] = plans[0].pk
+        selected = context.get("pppoe_selected_plan_id") or context.get(
+            "selected_plan_id"
+        )
+        if not selected and plans:
+            selected = plans[0].pk
+        context["pppoe_selected_plan_id"] = selected
+        context["selected_plan_id"] = selected
         context["customer_name"] = demo_name
         context["account_number"] = demo_account
         context["pppoe_customer_name"] = demo_name
@@ -13456,14 +13587,17 @@ def _enrich_portal_theme_preview(context: dict, *, portal: str, preview_mode: st
     context["hotspot_voucher_redeem_url"] = "#"
     context["theme_preview"] = True
     context["theme_preview_mode"] = mode
-    # Always show Refer & earn in theme previews so owners can see the live look
-    # even before they flip the Adverts toggle on.
+    # Keep earn URL bits available for previews that still surface the link.
     join_code = (context.get("join_code") or "").strip()
     if not join_code:
         org_obj = context.get("organization")
         join_code = str(getattr(org_obj, "join_code", "") or "").strip()
     if join_code:
-        earn_path = reverse("core:click_to_earn", kwargs={"join_code": join_code})
+        portal_from = "pppoe" if portal == "pppoe" else "hotspot"
+        earn_path = (
+            reverse("core:click_to_earn", kwargs={"join_code": join_code})
+            + f"?from={portal_from}"
+        )
         context["adverts_enabled"] = True
         context["click_to_earn_url"] = earn_path
         context["click_to_earn_label"] = context.get("click_to_earn_label") or "Refer & earn"
@@ -13597,8 +13731,10 @@ def _hotspot_portal_context(org, *, mikrotik_login: bool = False, request=None):
         "has_payable_plans": has_payable_plans,
         "portal_mode": portal_mode,
         "portal_setup_hint": setup_hint,
+        # Show real packages for staff/client preview even when Daraja/M-Pesa
+        # is not configured yet. Pay stays disabled until stk_ready (template).
         "show_payment_form": (
-            (bool(hotspot_mac) or (stk_ready and bool(hotspot_plans)))
+            (bool(hotspot_mac) or bool(hotspot_plans))
             and access_ctx["show_renew_payment"]
         ),
         "mikrotik_login": mikrotik_login,
@@ -14083,6 +14219,9 @@ def hotspot_payment_status(request, join_code: str, stk_id: int):
 
 def hotspot_welcome(request, join_code: str):
     """Public post-login landing page shown after Hotspot authentication."""
+    import base64
+    import mimetypes
+
     org = get_object_or_404(Organization, join_code=join_code)
     title = (org.hotspot_welcome_title or "").strip() or "You're online"
     message = (org.hotspot_welcome_message or "").strip() or (
@@ -14092,28 +14231,79 @@ def hotspot_welcome(request, join_code: str):
     # Prefer the org's configured link; otherwise use an HTTP connectivity check
     # so captive browsers can leave the portal and start surfing immediately.
     button_url = (org.hotspot_welcome_button_url or "").strip() or "http://neverssl.com/"
+
+    def _welcome_media_url(file_field) -> str:
+        """Relative media path fallback when an image is too large to inline."""
+        if not file_field:
+            return ""
+        try:
+            return file_field.url or ""
+        except Exception:
+            return ""
+
+    def _welcome_inline_image(file_field, *, max_bytes: int = 90_000) -> str:
+        """
+        Embed small images as data URLs so captive browsers never fetch media
+        (extra image requests previously reloaded / wiped this page).
+        """
+        if not file_field:
+            return ""
+        try:
+            with file_field.open("rb") as handle:
+                raw = handle.read(max_bytes + 1)
+        except Exception:
+            return _welcome_media_url(file_field)
+        if not raw or len(raw) > max_bytes:
+            return _welcome_media_url(file_field)
+        mime = mimetypes.guess_type(getattr(file_field, "name", "") or "")[0] or "image/jpeg"
+        if mime not in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
+            mime = "image/jpeg"
+        return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
     quick_links = []
     link1_url = (org.hotspot_welcome_link1_url or "").strip()
+    link2_url = (org.hotspot_welcome_link2_url or "").strip()
+
+    customer = None
+    # Welcome page must stay instant — never block on live NAS MAC discovery.
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+    if hotspot_mac:
+        customer = _find_hotspot_customer_for_mac(org, hotspot_mac)
+
+    def _tracked_partner_url(kind: str, destination: str) -> str:
+        params = {"kind": kind, "next": destination}
+        if hotspot_mac:
+            params["mac"] = hotspot_mac
+        return (
+            reverse("core:hotspot_portal_track", kwargs={"join_code": join_code})
+            + "?"
+            + urlencode(params)
+        )
+
     if link1_url:
         quick_links.append(
             {
                 "label": (org.hotspot_welcome_link1_label or "").strip() or "Website",
-                "url": link1_url,
+                "url": _tracked_partner_url("partner_1", link1_url),
+                "image_url": _welcome_inline_image(org.hotspot_welcome_link1_image),
             }
         )
-    link2_url = (org.hotspot_welcome_link2_url or "").strip()
     if link2_url:
         quick_links.append(
             {
                 "label": (org.hotspot_welcome_link2_label or "").strip() or "More",
-                "url": link2_url,
+                "url": _tracked_partner_url("partner_2", link2_url),
+                "image_url": _welcome_inline_image(org.hotspot_welcome_link2_image),
             }
         )
-    logo_url = ""
-    if org.profile_photo:
-        from core.hotspot_portal import public_absolute_url
-
-        logo_url = public_absolute_url(org.profile_photo.url, request)
+    logo_url = _welcome_inline_image(org.profile_photo) if org.profile_photo else ""
 
     activation_url = ""
     stk_id = (request.GET.get("stk") or "").strip()
@@ -14128,7 +14318,58 @@ def hotspot_welcome(request, join_code: str):
             + urlencode({"token": token})
         )
 
-    return render(
+    if customer is None and stk_id.isdigit() and token:
+        try:
+            from billing.models import StkPushRequest
+
+            payload = signing.loads(
+                token,
+                salt="hotspot-payment-status",
+                max_age=60 * 60 * 24,
+            )
+            if payload.get("stk") == int(stk_id) and payload.get("org") == org.pk:
+                stk = (
+                    StkPushRequest.objects.select_related("customer", "customer__plan")
+                    .filter(pk=int(stk_id), organization=org)
+                    .first()
+                )
+                if stk is not None:
+                    customer = stk.customer
+        except signing.BadSignature:
+            pass
+
+    from billing.models import BillingPlan
+    from billing.package_offers import (
+        dummy_offer_progress_for_org,
+        started_offer_progress_for_customer,
+    )
+
+    offer_progress = started_offer_progress_for_customer(customer, request=None)
+    offer_is_dummy = False
+    if not offer_progress:
+        offer_progress = dummy_offer_progress_for_org(org, request=None)
+        offer_is_dummy = bool(offer_progress)
+    plan_ids = [row.get("plan_id") for row in offer_progress if row.get("plan_id")]
+    plan_images = {
+        plan.pk: plan.image
+        for plan in BillingPlan.objects.filter(pk__in=plan_ids).only("id", "image")
+    }
+    for row in offer_progress:
+        row["image_url"] = _welcome_inline_image(plan_images.get(row.get("plan_id")))
+
+    pay_url = reverse("core:hotspot_pay", kwargs={"join_code": join_code})
+    if hotspot_mac:
+        pay_url = f"{pay_url}?{urlencode({'mac': hotspot_mac})}"
+
+    earn_bits = _click_to_earn_portal_bits(
+        org, request, portal="hotspot", surfing=True
+    )
+    earn_url = (earn_bits.get("click_to_earn_url") or "").strip()
+    if earn_url and hotspot_mac:
+        sep = "&" if "?" in earn_url else "?"
+        earn_bits["click_to_earn_url"] = f"{earn_url}{sep}{urlencode({'mac': hotspot_mac})}"
+
+    response = render(
         request,
         "core/hotspot_welcome.html",
         {
@@ -14143,8 +14384,18 @@ def hotspot_welcome(request, join_code: str):
             "logo_url": logo_url,
             "activation_url": activation_url,
             "paid": bool(stk_id and token),
+            "offer_progress": offer_progress,
+            "offer_is_dummy": offer_is_dummy,
+            "pay_url": pay_url,
+            **earn_bits,
         },
     )
+    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response["Pragma"] = "no-cache"
+    response["Expires"] = "0"
+    if hotspot_mac:
+        _set_hotspot_mac_cookie(response, hotspot_mac)
+    return response
 
 
 @csrf_exempt
@@ -14263,6 +14514,7 @@ def click_to_earn(request, join_code: str):
 
     - On: referral / commission info with ISP phone
     - Off: return to the matching pay portal
+    - Surfing clients see Continue browsing; others see Back to pay
     """
     org = get_object_or_404(Organization, join_code=join_code)
     from_portal = (request.GET.get("from") or "").strip().lower()
@@ -14278,12 +14530,52 @@ def click_to_earn(request, join_code: str):
 
     pay_name = "core:pppoe_pay" if from_portal == "pppoe" else "core:hotspot_pay"
     pay_url = reverse(pay_name, kwargs={"join_code": join_code})
+    is_surfing = (request.GET.get("surfing") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if is_surfing:
+        back_url = (
+            (org.hotspot_welcome_button_url or "").strip() or "http://neverssl.com/"
+        )
+        back_label = (
+            (org.hotspot_welcome_button_label or "").strip() or "Continue browsing"
+        )
+    else:
+        back_url = pay_url
+        back_label = "Back to pay"
     isp_phone = (getattr(org, "phone", None) or "").strip()
     wa_digits = re.sub(r"\D", "", isp_phone)
     if wa_digits.startswith("0") and len(wa_digits) >= 9:
         wa_digits = "254" + wa_digits[1:]
     elif wa_digits.startswith("7") and len(wa_digits) == 9:
         wa_digits = "254" + wa_digits
+
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+    customer = _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
+    try:
+        from accounts.portal_clicks import record_portal_click
+
+        record_portal_click(
+            org,
+            "earn",
+            request=request,
+            mac=hotspot_mac,
+            customer=customer,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to record Refer & earn click for org=%s", org.pk
+        )
+
     return render(
         request,
         "core/click_to_earn.html",
@@ -14293,9 +14585,48 @@ def click_to_earn(request, join_code: str):
             "isp_phone": isp_phone,
             "isp_whatsapp": wa_digits,
             "pay_url": pay_url,
+            "back_url": back_url,
+            "back_label": back_label,
+            "is_surfing": is_surfing,
             "page_title": f"{org.name} — Refer & earn",
         },
     )
+
+
+def hotspot_portal_track(request, join_code: str):
+    """Record a partner-link click, then redirect to the destination URL."""
+    org = get_object_or_404(Organization, join_code=join_code)
+    kind = (request.GET.get("kind") or "").strip().lower()
+    next_url = (request.GET.get("next") or "").strip()
+    if kind not in {"partner_1", "partner_2"}:
+        return redirect("core:hotspot_welcome", join_code=join_code)
+    if not next_url.startswith(("http://", "https://")):
+        return redirect("core:hotspot_welcome", join_code=join_code)
+
+    hotspot_mac = ""
+    for raw in (
+        request.GET.get("mac") or "",
+        request.COOKIES.get("hs_mac") or "",
+    ):
+        hotspot_mac = _normalize_hotspot_mac(raw)
+        if hotspot_mac:
+            break
+    customer = _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
+    try:
+        from accounts.portal_clicks import record_portal_click
+
+        record_portal_click(
+            org,
+            kind,
+            request=request,
+            mac=hotspot_mac,
+            customer=customer,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to record partner click kind=%s org=%s", kind, org.pk
+        )
+    return redirect(next_url)
 
 
 def hotspot_pay(request, join_code: str):
@@ -14468,6 +14799,7 @@ def _pppoe_portal_context(org, request, customer=None, identify_error: str = "")
     context = {
         "organization": org,
         "org_name": org.name,
+        "join_code": org.join_code,
         "page_title": page_title,
         "page_message": page_message,
         "has_mpesa": has_mpesa,
@@ -14909,6 +15241,12 @@ def pppoe_payment_status(request, join_code: str, stk_id: int):
                     (org.hotspot_welcome_button_label or "").strip()
                     or "Continue browsing"
                 ),
+                **_click_to_earn_portal_bits(
+                    org,
+                    request,
+                    portal="pppoe",
+                    surfing=bool(result.get("success") and result.get("authorized")),
+                ),
             },
         )
     return JsonResponse(result)
@@ -15229,7 +15567,7 @@ def my_account_payments(request):
             sidebar_active="account_payments",
             page_title="Packages",
             page_kicker="My account",
-            page_subtitle="Manage internet packages for this organization.",
+            page_subtitle="Manage internet packages and payment readiness for this organization.",
             packages=package_list,
             pppoe_packages=pppoe_packages,
             hotspot_packages=hotspot_packages,
@@ -15247,6 +15585,37 @@ def my_account_payments(request):
 @client_workspace_required
 def leads(request):
     org = resolve_organization(request.user, request)
+    from accounts.portal_clicks import portal_leads_for_organization
+
+    portal_q = (request.GET.get("pq") or "").strip()
+    portal_filter = (request.GET.get("pf") or "all").strip().lower()
+    if portal_filter not in {
+        "all",
+        "hot",
+        "warm",
+        "earn",
+        "partner",
+        "matched",
+        "today",
+    }:
+        portal_filter = "all"
+    alloc_q = (request.GET.get("aq") or "").strip()
+    alloc_filter = (request.GET.get("af") or "all").strip().lower()
+    if alloc_filter not in {"all", "open", "mine", "tech_open"}:
+        alloc_filter = "all"
+
+    portal_leads, portal_summary = (
+        portal_leads_for_organization(
+            org,
+            query=portal_q,
+            filter_key=portal_filter,
+        )
+        if org
+        else ([], {})
+    )
+    partner1_label = portal_summary.get("partner_1_label") or "Partner 1"
+    partner2_label = portal_summary.get("partner_2_label") or "Partner 2"
+
     # Open = NEW with no ISP yet (visible to every company).
     # Allocated open/closed = assigned to THIS company only after successful payment.
     customer_qs = (
@@ -15261,18 +15630,27 @@ def leads(request):
             Q(status=Customer.Status.NEW, organization__isnull=True)
             | Q(status__in=Customer.ALLOCATED_STATUSES, organization=org)
         )
-        .order_by("-created_at")
         if org
         else Customer.objects.none()
     )
-    customers = list(customer_qs[:200])
+    customers = list(customer_qs[:400])
     pay_phone = (org.phone if org else "") or ""
     from accounts.models import RoleCommission
 
     sales_commission = RoleCommission.for_role(Employee.Role.SALES)
+    open_count = 0
+    mine_count = 0
+    tech_open_count = 0
     for customer in customers:
+        if customer.status == Customer.Status.NEW:
+            open_count += 1
+        elif customer.organization_id == getattr(org, "pk", None):
+            mine_count += 1
+            if customer.status == Customer.Status.ALLOCATED_OPEN:
+                tech_open_count += 1
         if customer.status != Customer.Status.NEW:
             customer.allocation_amount_display = ""
+            customer.allocation_fee_error = ""
             continue
         fee = resolve_lead_allocation_fee(
             organization=org,
@@ -15283,6 +15661,53 @@ def leads(request):
             fee.get("amount_display") if fee.get("ok") else ""
         )
         customer.allocation_fee_error = "" if fee.get("ok") else (fee.get("error") or "")
+
+    status_rank = {
+        Customer.Status.NEW: 0,
+        Customer.Status.ALLOCATED_OPEN: 1,
+        Customer.Status.ALLOCATED: 2,
+        Customer.Status.ALLOCATED_CLOSED: 3,
+    }
+
+    def _alloc_sort_key(customer):
+        created = getattr(customer, "created_at", None)
+        created_ts = created.timestamp() if created else 0.0
+        return (status_rank.get(customer.status, 9), -created_ts)
+
+    customers.sort(key=_alloc_sort_key)
+
+    alloc_q_l = alloc_q.lower()
+    filtered_customers = []
+    for customer in customers:
+        if alloc_filter == "open" and customer.status != Customer.Status.NEW:
+            continue
+        if alloc_filter == "mine" and customer.status == Customer.Status.NEW:
+            continue
+        if alloc_filter == "tech_open" and customer.status != Customer.Status.ALLOCATED_OPEN:
+            continue
+        if alloc_q_l:
+            hay = " ".join(
+                [
+                    customer.full_name or "",
+                    customer.phone or "",
+                    customer.address or "",
+                    customer.building_name or "",
+                    customer.sales_ticket_number or "",
+                    customer.account_number or "",
+                    getattr(customer.plan, "name", "") if customer.plan_id else "",
+                ]
+            ).lower()
+            if alloc_q_l not in hay:
+                continue
+        filtered_customers.append(customer)
+    customers = filtered_customers[:200]
+
+    allocation_summary = {
+        "open": open_count,
+        "mine": mine_count,
+        "tech_open": tech_open_count,
+        "shown": len(customers),
+    }
 
     technicians = []
     if org:
@@ -15318,8 +15743,21 @@ def leads(request):
             active_nav="leads",
             page_title="Leads",
             page_kicker="Sales",
-            page_subtitle="Open clients and clients allocated to your ISP.",
+            page_subtitle=(
+                "Ranked Hotspot portal interest plus sales ticket allocation."
+            ),
+            portal_leads=portal_leads,
+            portal_summary=portal_summary,
+            portal_q=portal_q,
+            portal_filter=portal_filter,
+            partner1_label=partner1_label,
+            partner2_label=partner2_label,
+            show_partner_1=bool(portal_summary.get("show_partner_1")),
+            show_partner_2=bool(portal_summary.get("show_partner_2")),
             customers=customers,
+            allocation_summary=allocation_summary,
+            alloc_q=alloc_q,
+            alloc_filter=alloc_filter,
             allocation_phone=pay_phone,
             technicians=technicians,
         ),

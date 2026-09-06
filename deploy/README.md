@@ -65,18 +65,22 @@ sudo -u www-data bash scripts/vps_deploy.sh
 sudo cp deploy/systemd/ispcentric.service /etc/systemd/system/
 sudo cp deploy/systemd/ispcentric-sweep.service /etc/systemd/system/
 sudo cp deploy/systemd/ispcentric-sweep.timer /etc/systemd/system/
+sudo cp deploy/systemd/ispcentric-usage-sample.service /etc/systemd/system/
+sudo cp deploy/systemd/ispcentric-usage-sample.timer /etc/systemd/system/
 sudo chmod +x scripts/*.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now ispcentric
 sudo systemctl enable --now ispcentric-sweep.timer
+sudo systemctl enable --now ispcentric-usage-sample.timer
 ```
 
 Check them:
 
 ```bash
 systemctl status ispcentric --no-pager
-systemctl list-timers ispcentric-sweep --no-pager
+systemctl list-timers ispcentric-sweep ispcentric-usage-sample --no-pager
 tail -f /opt/ispcentric/logs/subscription_sweep.log
+tail -f /opt/ispcentric/logs/usage_sample.log
 ```
 
 ## 6. nginx

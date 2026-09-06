@@ -89,7 +89,7 @@
             {% if revenue_filter.active %}
               Collections for {{ revenue_filter.label }}.
             {% else %}
-              All-time collections. Filter by day, period, month, or year.
+              All-time collections. Filter by time, day, period, month, or year.
             {% endif %}
           </p>
         </div>
@@ -103,86 +103,10 @@
         {% endif %}
       </div>
 
-      <form class="billing-revenue-filter" method="get" action="{% url 'billing:dashboard' %}" id="billing-revenue-filter">
-        {% if attention_filter.value != "pppoe" %}
-          <input type="hidden" name="attention" value="{{ attention_filter.value }}">
-        {% endif %}
-        {% if payments_filter.value != "all" %}
-          <input type="hidden" name="payments" value="{{ payments_filter.value }}">
-        {% endif %}
-        <div class="billing-revenue-modes" role="group" aria-label="Revenue period">
-          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'day' %} is-active{% endif %}">
-            <input type="radio" name="range" value="day"{% if revenue_filter.ui_range == 'day' %} checked{% endif %}>
-            <span>Day</span>
-          </label>
-          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'period' %} is-active{% endif %}">
-            <input type="radio" name="range" value="period"{% if revenue_filter.ui_range == 'period' %} checked{% endif %}>
-            <span>Period</span>
-          </label>
-          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'month' %} is-active{% endif %}">
-            <input type="radio" name="range" value="month"{% if revenue_filter.ui_range == 'month' %} checked{% endif %}>
-            <span>Month</span>
-          </label>
-          <label class="billing-revenue-mode{% if revenue_filter.ui_range == 'year' %} is-active{% endif %}">
-            <input type="radio" name="range" value="year"{% if revenue_filter.ui_range == 'year' %} checked{% endif %}>
-            <span>Year</span>
-          </label>
-        </div>
-
-        <div class="billing-revenue-picker">
-          <div
-            class="billing-revenue-panel"
-            data-range-panel="day"
-            {% if revenue_filter.ui_range != 'day' %}hidden{% endif %}
-          >
-            <div class="billing-revenue-field">
-              <label for="billing-revenue-day">Select day</label>
-              <input id="billing-revenue-day" type="date" name="day" value="{{ revenue_filter.day }}">
-            </div>
-          </div>
-
-          <div
-            class="billing-revenue-panel"
-            data-range-panel="period"
-            {% if revenue_filter.ui_range != 'period' %}hidden{% endif %}
-          >
-            <div class="billing-revenue-field">
-              <label for="billing-revenue-start">From</label>
-              <input id="billing-revenue-start" type="date" name="start" value="{{ revenue_filter.start }}">
-            </div>
-            <div class="billing-revenue-field">
-              <label for="billing-revenue-end">To</label>
-              <input id="billing-revenue-end" type="date" name="end" value="{{ revenue_filter.end }}">
-            </div>
-          </div>
-
-          <div
-            class="billing-revenue-panel"
-            data-range-panel="month"
-            {% if revenue_filter.ui_range != 'month' %}hidden{% endif %}
-          >
-            <div class="billing-revenue-field">
-              <label for="billing-revenue-month">Select month</label>
-              <input id="billing-revenue-month" type="month" name="month" value="{{ revenue_filter.month }}">
-            </div>
-          </div>
-
-          <div
-            class="billing-revenue-panel"
-            data-range-panel="year"
-            {% if revenue_filter.ui_range != 'year' %}hidden{% endif %}
-          >
-            <div class="billing-revenue-field">
-              <label for="billing-revenue-year">Select year</label>
-              <input id="billing-revenue-year" type="number" name="year" min="2000" max="2100" step="1" placeholder="YYYY" value="{{ revenue_filter.year }}">
-            </div>
-          </div>
-
-          <div class="billing-revenue-actions">
-            <button type="submit" class="btn btn-primary btn-sm">Apply</button>
-          </div>
-        </div>
-      </form>
+      <div class="billing-dash-range-filter">
+        {% url 'billing:dashboard' as billing_dashboard_url %}
+        {% include "core/includes/usage_range_filter.html" with usage_filter=revenue_filter usage_filter_id="billing-revenue-filter" usage_filter_action=billing_dashboard_url usage_filter_hidden=revenue_filter_hidden %}
+      </div>
 
       <div class="billing-revenue-cards">
         <article class="billing-revenue-card is-total">
@@ -223,7 +147,9 @@
           >
             {% if revenue_filter.active %}
               <input type="hidden" name="range" value="{{ revenue_filter.range }}">
-              {% if revenue_filter.range == "day" %}
+              {% if revenue_filter.range == "time" %}
+                <input type="hidden" name="time" value="{{ revenue_filter.time }}">
+              {% elif revenue_filter.range == "day" %}
                 <input type="hidden" name="day" value="{{ revenue_filter.day }}">
               {% elif revenue_filter.range == "period" %}
                 <input type="hidden" name="start" value="{{ revenue_filter.start }}">
@@ -404,7 +330,9 @@
           >
             {% if revenue_filter.active %}
               <input type="hidden" name="range" value="{{ revenue_filter.range }}">
-              {% if revenue_filter.range == "day" %}
+              {% if revenue_filter.range == "time" %}
+                <input type="hidden" name="time" value="{{ revenue_filter.time }}">
+              {% elif revenue_filter.range == "day" %}
                 <input type="hidden" name="day" value="{{ revenue_filter.day }}">
               {% elif revenue_filter.range == "period" %}
                 <input type="hidden" name="start" value="{{ revenue_filter.start }}">
@@ -634,40 +562,6 @@
 
 {% block client_extra_js %}
 <script>
-(function () {
-  var form = document.getElementById("billing-revenue-filter");
-  if (!form) return;
-
-  var modes = form.querySelectorAll('input[name="range"]');
-  var panels = form.querySelectorAll("[data-range-panel]");
-  var modeLabels = form.querySelectorAll(".billing-revenue-mode");
-
-  function selectedRange() {
-    var checked = form.querySelector('input[name="range"]:checked');
-    return checked ? checked.value : "month";
-  }
-
-  function syncPanels() {
-    var range = selectedRange();
-    modeLabels.forEach(function (label) {
-      var input = label.querySelector('input[name="range"]');
-      label.classList.toggle("is-active", !!(input && input.checked));
-    });
-    panels.forEach(function (panel) {
-      var match = panel.getAttribute("data-range-panel") === range;
-      panel.hidden = !match;
-      panel.querySelectorAll("input").forEach(function (input) {
-        input.disabled = !match;
-      });
-    });
-  }
-
-  modes.forEach(function (input) {
-    input.addEventListener("change", syncPanels);
-  });
-  syncPanels();
-})();
-
 (function () {
   var modal = document.getElementById("billing-stk-pay-modal");
   var form = document.getElementById("billing-stk-pay-form");

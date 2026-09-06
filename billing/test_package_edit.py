@@ -40,7 +40,8 @@ class PackageEditTests(TestCase):
         self.assertIn("billing-package-delete-modal", html)
         self.assertIn(f'data-package-id="{self.plan.id}"', html)
         self.assertIn("Max devices", html)
-        self.assertIn("Unlimited devices", html)
+        self.assertIn("1 CPE", html)
+        self.assertIn("unlimited LAN", html)
         self.assertIn('data-package-max-devices="0"', html)
 
     def test_edit_package_can_change_service_type(self):
@@ -171,7 +172,7 @@ class PackageEditTests(TestCase):
         self.assertEqual(res.status_code, 302)
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.max_devices, 0)
-        self.assertEqual(self.plan.max_devices_label, "Unlimited devices")
+        self.assertEqual(self.plan.max_devices_label, "1 CPE · unlimited LAN")
 
     def test_edit_package_reprovisions_when_max_devices_changes(self):
         with patch(

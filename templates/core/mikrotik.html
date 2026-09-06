@@ -468,7 +468,7 @@
       <button type="button" class="role-modal-close" data-close-mikrotik-onboard aria-label="Close">×</button>
     </header>
 
-    <form method="post" action="{% url 'core:mikrotik' %}" class="mikrotik-onboard-form" id="mikrotik-onboard-form" novalidate>
+    <form method="post" action="{% url 'core:mikrotik' %}" class="mikrotik-onboard-form" id="mikrotik-onboard-form" data-no-page-loader="1" novalidate>
       {% csrf_token %}
       {{ onboard_form.location_lat }}
       {{ onboard_form.location_lng }}
@@ -854,9 +854,30 @@
       </div>
       <div class="role-modal-actions mikrotik-onboard-actions" id="mikrotik-actions-onboard" hidden>
         <button type="button" class="btn btn-ghost" id="mikrotik-back-btn">Back</button>
-        <button type="submit" class="btn btn-primary" id="mikrotik-save-btn">Onboard router</button>
+        <button type="submit" class="btn btn-primary" id="mikrotik-save-btn" data-loading-label="Onboard router">Onboard router</button>
       </div>
     </form>
+
+    <div class="mikrotik-onboard-loading" id="mikrotik-onboard-loading" hidden aria-hidden="true" role="status" aria-live="polite">
+      <div class="mikrotik-onboard-loading-card">
+        <div class="mikrotik-onboard-loading-orb" aria-hidden="true">
+          <span class="mikrotik-onboard-loading-ring"></span>
+          <span class="mikrotik-onboard-loading-ring is-slow"></span>
+          <span class="mikrotik-onboard-loading-core">
+            <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="4" y="7" width="16" height="10" rx="2.5"></rect>
+              <path d="M8 7V5.5A1.5 1.5 0 0 1 9.5 4h5A1.5 1.5 0 0 1 16 5.5V7"></path>
+              <circle cx="9" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <circle cx="15" cy="12" r="1" fill="currentColor" stroke="none"></circle>
+              <path d="M7 17v1.5M12 17v2M17 17v1.5"></path>
+            </svg>
+          </span>
+        </div>
+        <p class="mikrotik-onboard-loading-title" id="mikrotik-onboard-loading-title">Connecting…</p>
+        <p class="mikrotik-onboard-loading-sub" id="mikrotik-onboard-loading-sub">Please wait</p>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -881,6 +902,10 @@
   var connectStatus = document.getElementById("mikrotik-connect-status");
   var connectedTitle = document.getElementById("mikrotik-connected-title");
   var connectedMeta = document.getElementById("mikrotik-connected-meta");
+  var onboardLoading = document.getElementById("mikrotik-onboard-loading");
+  var onboardLoadingTitle = document.getElementById("mikrotik-onboard-loading-title");
+  var onboardLoadingSub = document.getElementById("mikrotik-onboard-loading-sub");
+  var saveBtn = document.getElementById("mikrotik-save-btn");
 
   var locationInput = document.getElementById("id_mikrotik_location");
   var latInput = document.getElementById("id_mikrotik_location_lat");
@@ -1114,13 +1139,29 @@
     if (!text) {
       connectStatus.hidden = true;
       connectStatus.textContent = "";
-      connectStatus.classList.remove("is-error", "is-ok");
+      connectStatus.classList.remove("is-error", "is-ok", "is-busy");
       return;
     }
     connectStatus.hidden = false;
     connectStatus.textContent = text;
     connectStatus.classList.toggle("is-error", !!isError);
     connectStatus.classList.toggle("is-ok", !isError);
+    connectStatus.classList.toggle("is-busy", !isError && /…|\.\.\.|Connecting|Checking|Waiting/i.test(text));
+  }
+
+  function setOnboardLoading(active, title, sub) {
+    if (!onboardLoading) return;
+    if (active) {
+      if (onboardLoadingTitle) onboardLoadingTitle.textContent = title || "Working…";
+      if (onboardLoadingSub) onboardLoadingSub.textContent = sub || "Please wait";
+      onboardLoading.hidden = false;
+      onboardLoading.setAttribute("aria-hidden", "false");
+      modal.classList.add("is-loading");
+    } else {
+      onboardLoading.hidden = true;
+      onboardLoading.setAttribute("aria-hidden", "true");
+      modal.classList.remove("is-loading");
+    }
   }
 
   var CHECK_SHORT_LABELS = {
@@ -2762,6 +2803,7 @@
     closeModelPicker();
     closeHostPicker();
     showConnectStatus("");
+    setOnboardLoading(false);
   }
 
   function connectRouter() {
@@ -2794,6 +2836,11 @@
 
     connectBtn.disabled = true;
     showConnectStatus("Connecting to " + host + "…");
+    setOnboardLoading(
+      true,
+      "Connecting to " + host,
+      "Signing in to the MikroTik — this can take a moment"
+    );
 
     var body = new FormData();
     body.append("host", host);
@@ -2815,11 +2862,13 @@
       .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
       .then(function (result) {
         if (!result.ok || !result.data || !result.data.ok) {
+          setOnboardLoading(false);
           showConnectStatus((result.data && result.data.error) || "Could not connect.", true);
           return;
         }
         var data = result.data;
         if (data.already_onboarded) {
+          setOnboardLoading(false);
           showConnectStatus(
             data.error ||
               ("This MikroTik is already onboarded as “" +
@@ -2861,10 +2910,12 @@
           connectedMeta.textContent = bits.join(" · ");
         }
         showConnectStatus("");
+        setOnboardLoading(false);
         setStep("onboard");
         if (nameInput) nameInput.focus();
       })
       .catch(function () {
+        setOnboardLoading(false);
         showConnectStatus("Connection request failed. Try again.", true);
       })
       .finally(function () {
@@ -3217,10 +3268,22 @@
       var hasCoords = latInput && lngInput && latInput.value && lngInput.value;
       if (!locationValue || hasCoords) {
         clearOnboardDraft();
+        setOnboardLoading(
+          true,
+          "Onboard router",
+          "Talking to the MikroTik — this can take a moment"
+        );
+        if (saveBtn) saveBtn.disabled = true;
         return;
       }
 
       e.preventDefault();
+      setOnboardLoading(
+        true,
+        "Onboard router",
+        "Resolving location, then talking to the MikroTik…"
+      );
+      if (saveBtn) saveBtn.disabled = true;
       var url = placeDetailsUrl + "?q=" + encodeURIComponent(locationValue);
       if (placeIdInput && placeIdInput.value) {
         url += "&place_id=" + encodeURIComponent(placeIdInput.value);
@@ -3235,13 +3298,22 @@
             if (data.label) locationInput.value = data.label;
             setCoords(data.lat, data.lng, data.place_id || (placeIdInput && placeIdInput.value) || "");
             clearOnboardDraft();
+            setOnboardLoading(
+              true,
+              "Onboard router",
+              "Talking to the MikroTik — this can take a moment"
+            );
             form.submit();
             return;
           }
+          setOnboardLoading(false);
+          if (saveBtn) saveBtn.disabled = false;
           alert("Choose a suggested location so latitude and longitude can be saved.");
           if (locationInput) locationInput.focus();
         })
         .catch(function () {
+          setOnboardLoading(false);
+          if (saveBtn) saveBtn.disabled = false;
           alert("Could not resolve location coordinates. Try choosing a suggestion.");
         });
     });
