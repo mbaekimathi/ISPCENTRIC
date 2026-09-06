@@ -1874,7 +1874,8 @@ class ClickToEarnPortalTests(TestCase):
         )
         response = self.client.get(f"/hotspot/{self.org.join_code}/earn/")
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Refer clients. Earn commission.")
+        self.assertContains(response, "Bring people online.")
+        self.assertContains(response, "Get paid.")
         self.assertContains(response, "0712345678")
 
     def test_earn_builtin_shows_referral_page(self):
@@ -1888,7 +1889,8 @@ class ClickToEarnPortalTests(TestCase):
             f"/hotspot/{self.org.join_code}/earn/?from=hotspot"
         )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Refer clients. Earn commission.")
+        self.assertContains(response, "Bring people online.")
+        self.assertContains(response, "Get paid.")
         self.assertContains(response, "0712345678")
         self.assertContains(response, "Back to pay")
         self.assertNotContains(response, "Live adverts")
@@ -1914,12 +1916,19 @@ class ClickToEarnPortalTests(TestCase):
         self.assertNotContains(response, "Back to pay")
 
     def test_portal_bits_always_use_referral_page(self):
+        from django.test import RequestFactory
+
         from core.views import _click_to_earn_portal_bits
 
         self.org.adverts_enabled = True
         self.org.adverts_redirect_url = "https://partner.example/ads"
-        bits = _click_to_earn_portal_bits(self.org, portal="hotspot")
+        request = RequestFactory().get(
+            "/hotspot/707070/welcome/", HTTP_HOST="localhost:8000"
+        )
+        bits = _click_to_earn_portal_bits(self.org, request, portal="hotspot")
         self.assertTrue(bits["adverts_enabled"])
+        self.assertTrue(bits["click_to_earn_url"].startswith("/"))
+        self.assertNotIn("://", bits["click_to_earn_url"])
         self.assertIn("/earn/", bits["click_to_earn_url"])
         self.assertIn("from=hotspot", bits["click_to_earn_url"])
         self.assertNotIn("surfing=", bits["click_to_earn_url"])
@@ -1934,6 +1943,7 @@ class ClickToEarnPortalTests(TestCase):
         bits = _click_to_earn_portal_bits(
             self.org, portal="hotspot", surfing=True
         )
+        self.assertTrue(bits["click_to_earn_url"].startswith("/"))
         self.assertIn("from=hotspot", bits["click_to_earn_url"])
         self.assertIn("surfing=1", bits["click_to_earn_url"])
 
@@ -1943,6 +1953,7 @@ class ClickToEarnPortalTests(TestCase):
         self.org.adverts_enabled = True
         self.org.adverts_redirect_url = ""
         bits = _click_to_earn_portal_bits(self.org, portal="pppoe")
+        self.assertTrue(bits["click_to_earn_url"].startswith("/"))
         self.assertIn("/earn/", bits["click_to_earn_url"])
         self.assertIn("from=pppoe", bits["click_to_earn_url"])
         self.assertEqual(bits["click_to_earn_mode"], "builtin")

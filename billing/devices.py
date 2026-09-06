@@ -445,17 +445,20 @@ def attach_hotspot_device(customer, mac: str, *, enforce_cap: bool = True) -> di
     return _attach()
 
 
-def maybe_set_customer_phone(customer, phone: str) -> None:
-    """Store phone on a Hotspot customer when empty and unique."""
+def maybe_set_customer_phone(customer, phone: str) -> bool:
+    """Store phone on a customer when empty and unique. Returns True if saved."""
     from billing.models import Customer
-    from billing.services import normalize_customer_phone_key
+    from billing.services import (
+        format_customer_phone_display,
+        normalize_customer_phone_key,
+    )
 
     phone = (phone or "").strip()
     key = normalize_customer_phone_key(phone)
     if not key or customer is None:
-        return
+        return False
     if normalize_customer_phone_key(customer.phone):
-        return
+        return False
     clash = (
         Customer.objects.filter(
             organization_id=customer.organization_id,
@@ -465,9 +468,10 @@ def maybe_set_customer_phone(customer, phone: str) -> None:
         .exists()
     )
     if clash:
-        return
-    customer.phone = phone
+        return False
+    customer.phone = format_customer_phone_display(phone)
     customer.save(update_fields=["phone", "phone_normalized"])
+    return True
 
 
 def _locked_hotspot_customer_for_mac(org, mac: str):
@@ -542,6 +546,45 @@ def resolve_or_create_hotspot_customer(
                     ),
                     "status": 403,
                 }
+            # Unpaid MAC-only row + known family phone → fold into the phone account
+            # so the M-Pesa number is kept instead of leaving "No phone".
+            by_phone = find_hotspot_customer_by_phone(org, phone) if phone else None
+            if (
+                by_phone is not None
+                and by_phone.pk != existing.pk
+                and not normalize_customer_phone_key(existing.phone)
+                and not customer_can_surf_via_hotspot(existing)
+            ):
+                if by_phone.status != Customer.Status.ACTIVE:
+                    return {
+                        "ok": False,
+                        "error": (
+                            "This account is suspended. Contact your internet "
+                            "provider before making a payment."
+                        ),
+                        "status": 403,
+                    }
+                moved = reassign_unpaid_hotspot_mac(by_phone, mac)
+                if not moved.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": moved.get("error") or "Could not add this device.",
+                        "status": 400,
+                        "at_cap": bool(moved.get("at_cap")),
+                    }
+                if plan is not None and by_phone.plan_id is None:
+                    by_phone.plan = plan
+                    by_phone.save(update_fields=["plan"])
+                if router is not None and by_phone.router_id != router_id:
+                    by_phone.router = router
+                    by_phone.save(update_fields=["router"])
+                return {
+                    "ok": True,
+                    "customer": by_phone,
+                    "created": False,
+                    "attached": True,
+                    "already_paid": customer_can_surf_via_hotspot(by_phone),
+                }
             maybe_set_customer_phone(existing, phone)
             if router is not None and existing.router_id != router_id:
                 existing.router = router
@@ -611,11 +654,17 @@ def resolve_or_create_hotspot_customer(
             }
 
         account_number = f"HOT-{org.pk}-{mac.replace(':', '')}"[:40]
-        phone_to_store = phone
+        from billing.services import format_customer_phone_display
+
+        phone_to_store = format_customer_phone_display(phone) if phone else ""
         key = normalize_customer_phone_key(phone) if phone else ""
         if key and Customer.objects.filter(
             organization=org, phone_normalized=key
         ).exists():
+            # Phone already belongs to another account (often PPPoE). Do not
+            # create a blank-phone Hotspot twin when a Hotspot owner exists —
+            # that path is handled above. Otherwise leave phone empty so STK
+            # can still proceed, then backfill if the clash clears.
             phone_to_store = ""
         try:
             customer = Customer.objects.create(

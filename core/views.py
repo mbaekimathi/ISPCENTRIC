@@ -9515,6 +9515,11 @@ def client_detail(request, customer_id: int):
     recharge_form = CustomerCashRechargeForm(organization=org, customer=customer)
     details_form = CustomerDetailsEditForm(instance=customer, organization=org)
     open_client_modal = ""
+    if request.method == "GET" and (request.GET.get("open") or "").strip().lower() in {
+        "recharge",
+        "client-recharge-modal",
+    }:
+        open_client_modal = "client-recharge-modal"
 
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
@@ -12080,6 +12085,10 @@ def client_billing(request, customer_id: int):
             voucher_rows[0]["share"]["pay_url"] if voucher_rows else ""
         ),
         back_url=reverse("core:client_detail", kwargs={"customer_id": customer.pk}),
+        recharge_url=(
+            f"{reverse('core:client_detail', kwargs={'customer_id': customer.pk})}"
+            "?open=recharge"
+        ),
     )
     ctx["client_nav_main"] = [
         *CLIENT_COMMON_NAV_START,
@@ -13182,13 +13191,9 @@ def mikrotik_hotspot_settings(request, router_id: int):
 
 def _payment_phone_autofill(phone: str) -> str:
     """Format a stored phone for the M-Pesa input (prefer 07xxxxxxxx)."""
-    from billing.services import normalize_kenya_msisdn
+    from billing.services import format_customer_phone_display
 
-    raw = (phone or "").strip()
-    msisdn = normalize_kenya_msisdn(raw)
-    if msisdn.startswith("254") and len(msisdn) == 12:
-        return f"0{msisdn[3:]}"
-    return raw
+    return format_customer_phone_display(phone)
 
 
 def _find_hotspot_customer_for_mac(org, mac: str):
@@ -13346,9 +13351,13 @@ def _resolve_payable_plan(org, *, plan_id, service_type: str, customer=None):
 def _click_to_earn_portal_bits(
     org, request=None, *, portal: str = "", surfing: bool = False
 ) -> dict:
-    """Captive pay/pause pages: optional Refer & earn link for this ISP."""
-    from core.hotspot_portal import public_absolute_url
+    """Captive pay/pause pages: optional Refer & earn link for this ISP.
 
+    Always uses a same-origin relative path to the built-in /earn/ page so the
+    browser stays on whatever host served the portal (localhost, LAN IP, or
+    public domain). Rewriting to PUBLIC_BASE_URL / auto LAN IP broke taps when
+    that host differed from the page the client was already on.
+    """
     enabled = bool(getattr(org, "adverts_enabled", False))
     portal = (portal or "").strip().lower()
     if portal not in {"hotspot", "pppoe"}:
@@ -13364,9 +13373,7 @@ def _click_to_earn_portal_bits(
             qs["surfing"] = "1"
         if qs:
             path = f"{path}?{urlencode(qs)}"
-        url = public_absolute_url(path, request) if request is not None else path
-        if not url:
-            url = path
+        url = path
         mode = "builtin"
     return {
         "adverts_enabled": enabled,
@@ -14037,6 +14044,18 @@ def hotspot_payment_start(request, join_code: str):
 
     existing_hotspot = _find_hotspot_customer_for_mac(org, mac)
     phone = (request.POST.get("phone") or "").strip()
+    if phone:
+        from billing.services import normalize_kenya_msisdn
+
+        msisdn = normalize_kenya_msisdn(phone)
+        if not (msisdn.startswith("254") and len(msisdn) == 12):
+            return JsonResponse(
+                {
+                    "ok": False,
+                    "error": "Enter a valid Kenyan mobile number (e.g. 07xxxxxxxx).",
+                },
+                status=400,
+            )
     if existing_hotspot is None and phone:
         from billing.devices import find_hotspot_customer_by_phone
 

@@ -9,6 +9,9 @@
   <nav class="client-cat-nav" aria-label="Billing sections">
     <a class="client-cat-nav-item is-billing is-active" href="#client-vouchers">Vouchers</a>
     <a class="client-cat-nav-item is-billing" href="#client-billing">Payments</a>
+    {% if recharge_url %}
+      <a class="client-cat-nav-item is-billing client-billing-nav-recharge" href="{{ recharge_url }}">Recharge</a>
+    {% endif %}
     {% if back_url %}
       <a class="client-cat-nav-item client-billing-nav-back" href="{{ back_url }}">← Client profile</a>
     {% endif %}
@@ -42,6 +45,12 @@
         <span class="client-billing-chip is-live">{{ valid_voucher_count }} valid voucher{{ valid_voucher_count|pluralize }}</span>
         <span class="client-billing-chip is-money">KES {{ amount_paid }} collected</span>
         <span class="client-billing-chip">{{ customer.get_status_display }}</span>
+        {% if recharge_url %}
+          <a class="client-billing-recharge-btn" href="{{ recharge_url }}">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v4.59l2.3 2.3-1.42 1.42L10 12V7Z"/></svg>
+            Recharge client
+          </a>
+        {% endif %}
       </div>
     </div>
 
@@ -231,6 +240,11 @@
       <div class="client-billing-empty">
         <strong>No payments yet</strong>
         <p class="empty client-simple-note">No successful payments recorded for this client yet.</p>
+        {% if recharge_url %}
+          <p class="client-simple-hint">
+            <a href="{{ recharge_url }}">Recharge this client</a> to record a cash payment and extend their package.
+          </p>
+        {% endif %}
       </div>
     {% endif %}
   </section>

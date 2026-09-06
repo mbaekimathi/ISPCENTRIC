@@ -200,6 +200,73 @@ class HotspotDeviceLimitTests(TestCase):
         self.assertFalse(resolved["ok"])
         self.assertTrue(resolved.get("at_cap"))
 
+    def test_new_hotspot_customer_stores_display_phone(self):
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="AA:BB:CC:DD:EE:55",
+            phone="254711223344",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        self.assertTrue(resolved["created"])
+        customer = resolved["customer"]
+        self.assertEqual(customer.phone, "0711223344")
+        self.assertEqual(customer.phone_normalized, "254711223344")
+
+    def test_empty_phone_mac_picks_up_pay_phone(self):
+        orphan = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device EE:66",
+            phone="",
+            account_number="HOT-ORPHAN-66",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:66",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="AA:BB:CC:DD:EE:66",
+            phone="0722334455",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        orphan.refresh_from_db()
+        self.assertEqual(resolved["customer"].pk, orphan.pk)
+        self.assertEqual(orphan.phone, "0722334455")
+
+    def test_unpaid_orphan_merges_into_phone_account(self):
+        apply_subscription_renewal(self.customer, plan=self.plan)
+        orphan = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device EE:77",
+            phone="",
+            account_number="HOT-ORPHAN-77",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:77",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        resolved = resolve_or_create_hotspot_customer(
+            self.org,
+            mac="AA:BB:CC:DD:EE:77",
+            phone="0700000100",
+            plan=self.plan,
+        )
+        self.assertTrue(resolved["ok"])
+        self.assertEqual(resolved["customer"].pk, self.customer.pk)
+        self.assertTrue(resolved["attached"])
+        self.assertTrue(resolved["already_paid"])
+        self.assertIn(
+            "AA:BB:CC:DD:EE:77",
+            hotspot_macs_for_customer(self.customer),
+        )
+        orphan.refresh_from_db()
+        self.assertNotEqual(
+            (orphan.hotspot_mac or "").upper(),
+            "AA:BB:CC:DD:EE:77",
+        )
+
 
 class HotspotPaymentStartDeviceTests(TestCase):
     def setUp(self):

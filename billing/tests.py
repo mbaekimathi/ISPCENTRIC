@@ -361,6 +361,33 @@ class DynamicAccessPolicyTests(TestCase):
         self.assertFalse(customer_can_surf_via_hotspot(customer))
         self.assertFalse(customer_receives_internet(customer))
 
+    def test_fulfill_stk_backfills_empty_customer_phone(self):
+        from billing.models import StkPushRequest
+        from billing.stk import fulfill_successful_stk
+
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device EE:99",
+            phone="",
+            account_number="DYN-HS-PHONE",
+            service_type=Customer.ServiceType.HOTSPOT,
+            hotspot_mac="AA:BB:CC:DD:EE:99",
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        stk = StkPushRequest.objects.create(
+            organization=self.org,
+            customer=customer,
+            plan=self.plan,
+            phone="254742536659",
+            amount=self.plan.price,
+            purpose=StkPushRequest.Purpose.SUBSCRIPTION,
+        )
+        fulfill_successful_stk(stk, mpesa_receipt="PHONE99")
+        customer.refresh_from_db()
+        self.assertEqual(customer.phone, "0742536659")
+        self.assertEqual(customer.phone_normalized, "254742536659")
+
     def test_hotspot_allowed_only_after_voucher_redeem(self):
         from billing.models import StkPushRequest
         from billing.stk import fulfill_successful_stk
@@ -1865,6 +1892,10 @@ class AccessVoucherLifecycleTests(TestCase):
         response = self.client.get(f"/app/clients/{self.customer.pk}/billing/")
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Access vouchers")
+        self.assertContains(response, "Recharge client")
+        self.assertContains(
+            response, f"/app/clients/{self.customer.pk}/?open=recharge"
+        )
         self.assertContains(response, result["voucher_code"])
         self.assertContains(response, "WhatsApp")
         self.assertContains(response, "Copy")

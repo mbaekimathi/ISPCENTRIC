@@ -728,6 +728,15 @@ def normalize_kenya_msisdn(phone: str) -> str:
     return digits
 
 
+def format_customer_phone_display(phone: str) -> str:
+    """Prefer 07xxxxxxxx / 01xxxxxxxx for stored and displayed customer phones."""
+    raw = (phone or "").strip()
+    msisdn = normalize_kenya_msisdn(raw)
+    if msisdn.startswith("254") and len(msisdn) == 12:
+        return f"0{msisdn[3:]}"
+    return raw
+
+
 def normalize_customer_phone_key(phone: str) -> str:
     """Canonical phone key for duplicate detection within an organization."""
     raw = (phone or "").strip()

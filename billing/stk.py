@@ -490,6 +490,11 @@ def start_subscription_stk_payment(
             "error": "Enter a valid Kenyan mobile number (e.g. 07xxxxxxxx).",
         }
 
+    # Persist the M-Pesa number on the client as soon as STK is valid and unique.
+    from billing.devices import maybe_set_customer_phone
+
+    maybe_set_customer_phone(customer, phone or msisdn)
+
     account_ref = PaymentGateway.account_reference_for_client(customer) or customer.account_number
     environment = (
         creds.get("environment") or PaymentGateway.Environment.SANDBOX
@@ -1323,6 +1328,11 @@ def fulfill_successful_stk(
             ]
         )
         return {"ok": False, "error": stk.result_desc, "stk_id": stk.pk}
+
+    # Paid MSISDN wins for empty Hotspot/PPPoE phone fields (unique within org).
+    from billing.devices import maybe_set_customer_phone
+
+    maybe_set_customer_phone(customer, stk.phone)
 
     from billing.vouchers import create_vouchers_for_stk, voucher_payload
 
