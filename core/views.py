@@ -1761,9 +1761,7 @@ def _build_router_client_analysis(
         port_name = (port_name or "").strip()
         if not port_name:
             return "Unknown"
-        if len(member_ports) > 1:
-            return f"ISP {index + 1} · {port_name}"
-        return port_name
+        return f"ISP {index + 1} · {port_name}"
 
     isps: list[dict] = []
     for index, port_name in enumerate(member_ports):
@@ -1841,10 +1839,28 @@ def _build_router_client_analysis(
                 }
             )
     isp_by_port = {row["port"]: row for row in isps}
+    wan_port_names = {
+        str(p).strip().lower()
+        for p in (
+            list(isp_by_port.keys())
+            + list(member_ports)
+            + list(primary_wan_ports)
+            + list(backup_wan_ports)
+            + [getattr(router, "wan_interface", None) or ""]
+            + [getattr(router, "bond_interface", None) or ""]
+        )
+        if str(p).strip()
+    }
 
     ip_usage = usage.get("ip_usage") if isinstance(usage.get("ip_usage"), dict) else {}
     sessions = usage.get("sessions") if isinstance(usage.get("sessions"), dict) else {}
     default_isp = (usage.get("default_isp_port") or "").strip()
+    if not default_isp:
+        default_isp = (
+            (primary_wan_ports[0] if primary_wan_ports else "")
+            or (router.wan_interface or "")
+            or (isps[0]["port"] if isps else "")
+        ).strip()
 
     customers = list(
         Customer.objects.filter(router=router).only(
@@ -1894,7 +1910,7 @@ def _build_router_client_analysis(
         port_name = (port_name or "").strip()
         if not port_name:
             return None
-        if port_name in isp_by_port:
+        if port_name.lower() in wan_port_names or port_name in isp_by_port:
             return None
         row = lan_ports_map.get(port_name)
         if row:
@@ -1938,14 +1954,13 @@ def _build_router_client_analysis(
         usage_row = usage_row or {}
         session_meta = sessions.get(ip) or {}
         isp_port = (usage_row.get("isp_port") or default_isp or "").strip()
-        isp_row = isp_by_port.get(isp_port) or {}
-        isp_label = isp_row.get("label") or isp_port or "—"
-        online = bool(ip)
-        connections = int(usage_row.get("connections") or 0)
-        source = (usage_row.get("source") or "").strip()
+        if not isp_port and ip and isps:
+            isp_port = (isps[0].get("port") or "").strip()
         lan_port = (
             (usage_row.get("lan_port") or session_meta.get("lan_port") or "")
         ).strip()
+        if lan_port.lower() in wan_port_names or lan_port.lower().startswith("<pppoe"):
+            lan_port = ""
         download_bps = usage_row.get("download_bps")
         if download_bps is None:
             download_bps = session_meta.get("download_bps")
@@ -1966,6 +1981,13 @@ def _build_router_client_analysis(
             or (_usage_bps_label(upload_bps) if upload_bps is not None else "—")
         )
         uptime = (usage_row.get("uptime") or session_meta.get("uptime") or "").strip()
+        online = bool(ip)
+        connections = int(usage_row.get("connections") or 0)
+        source = (usage_row.get("source") or "").strip()
+        isp_row = isp_by_port.get(isp_port) or {}
+        isp_label = isp_row.get("label") or (
+            f"ISP 1 · {isp_port}" if isp_port else "—"
+        )
         if isp_port and isp_port in isp_by_port and online:
             isp_by_port[isp_port]["client_count"] = (
                 int(isp_by_port[isp_port].get("client_count") or 0) + 1
@@ -12043,21 +12065,51 @@ def client_cpe_router_data(request, customer_id: int):
             status=400,
         )
 
-    cache_key = f"client_cpe_router_data:{org.pk}:{customer.pk}"
+    fields = (request.GET.get("fields") or "").strip().lower()
+    devices_only = fields in {"devices", "device"}
+    full_cache_key = f"client_cpe_router_data:{org.pk}:{customer.pk}"
+    cache_key = (
+        f"client_cpe_router_data:devices:{org.pk}:{customer.pk}"
+        if devices_only
+        else full_cache_key
+    )
     force = (request.GET.get("refresh") or "").strip().lower() in {"1", "true", "yes"}
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
             return JsonResponse(cached)
+        # Devices-only can reuse a warm full snapshot without another CPE round-trip.
+        if devices_only:
+            full = cache.get(full_cache_key)
+            if isinstance(full, dict) and full.get("ok"):
+                slim = {
+                    "ok": True,
+                    "authenticated": bool(full.get("authenticated")),
+                    "vendor": full.get("vendor") or "",
+                    "model": full.get("model") or "",
+                    "cpe_host": full.get("cpe_host") or "",
+                    "port": full.get("port"),
+                    "status": full.get("status") or {},
+                    "wifi": {},
+                    "wan": {},
+                    "system": {},
+                    "devices": full.get("devices") or [],
+                    "error": "",
+                    "needs_password": False,
+                    "from_cache": "full",
+                }
+                cache.set(cache_key, slim, 15)
+                return JsonResponse(slim)
 
     nas = customer.router
     nas_host = _resolve_working_nas_host(nas)
+    probe_timeout = 5.0 if devices_only else 8.0
     probe = probe_customer_cpe_web(
         nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
-        timeout=8.0,
+        timeout=probe_timeout,
     )
     if not probe.get("reachable") or not probe.get("port"):
         payload = {
@@ -12069,21 +12121,27 @@ def client_cpe_router_data(request, customer_id: int):
         cache.set(cache_key, payload, 5)
         return JsonResponse(payload)
 
+    cpe_host = (probe.get("cpe_host") or "").strip()
+    fetch_timeout = 6.0 if devices_only else 10.0
     payload = fetch_customer_cpe_web_data(
         nas_host,
         nas.username,
         nas.password or "",
         customer=customer,
+        cpe_scope=customer_cpe_proxy_scope(customer),
+        cpe_address=cpe_host,
+        gateway_ip=(probe.get("gateway") or "").strip(),
         cpe_password=customer.cpe_password or "",
         session_cookies=cache.get(f"cpe-web-customer:{org.pk}:{customer.pk}") or {},
         cpe_port=int(probe["port"]),
-        timeout=10.0,
+        timeout=fetch_timeout,
+        groups=("devices",) if devices_only else None,
     )
     payload["port"] = int(probe["port"])
     payload["needs_password"] = not payload.get("ok") and (
         "password" in (payload.get("error") or "").lower()
     )
-    if payload.get("ok"):
+    if payload.get("ok") and not devices_only:
         wifi = payload.get("wifi") or {}
         ssid = (wifi.get("ssid") or "").strip()
         password = wifi.get("password") or ""
@@ -12097,6 +12155,9 @@ def client_cpe_router_data(request, customer_id: int):
         if update_fields:
             customer.save(update_fields=update_fields)
     cache.set(cache_key, payload, 15 if payload.get("ok") else 5)
+    # Keep the full key warm when we already paid for a complete snapshot.
+    if payload.get("ok") and not devices_only:
+        cache.set(full_cache_key, payload, 15)
     return JsonResponse(payload)
 
 

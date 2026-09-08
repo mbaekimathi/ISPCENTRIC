@@ -24777,12 +24777,72 @@ a.packages-stat:focus-visible {
   margin-top: 1.25rem;
 }
 
+.client-usage-devices-section .clients-usage-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+}
+
+.client-usage-devices-tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem 0.75rem;
+}
+
+.client-usage-devices-section.is-fetching [data-usage-devices-stamp] {
+  opacity: 0.72;
+}
+
+.client-usage-devices-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  margin: 0 0 0.85rem;
+  padding: 0.75rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, #e74c3c 36%, var(--border-strong));
+  background: color-mix(in srgb, #e74c3c 10%, transparent);
+  color: var(--text);
+}
+
+.client-usage-devices-alert[hidden] {
+  display: none !important;
+}
+
+.client-usage-devices-alert p {
+  margin: 0;
+  flex: 1 1 14rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.client-usage-devices-alert-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.client-usage-devices-alert.is-password {
+  border-color: color-mix(in srgb, #e8a317 40%, var(--border-strong));
+  background: color-mix(in srgb, #e8a317 12%, transparent);
+}
+
 .client-usage-devices-shell {
   margin-top: 0.75rem;
 }
 
 .client-usage-devices-table tr.is-online td:first-child {
   font-weight: 650;
+}
+
+.client-usage-devices-table tr.is-offline td {
+  opacity: 0.78;
 }
 
 .client-usage-access-head {

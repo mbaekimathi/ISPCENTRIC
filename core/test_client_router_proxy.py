@@ -485,6 +485,7 @@ class ClientRouterProxyTests(TestCase):
             "reachable": True,
             "port": 80,
             "cpe_host": "10.20.0.55",
+            "gateway": "10.20.0.1",
         }
         fetch.return_value = {
             "ok": True,
@@ -508,6 +509,92 @@ class ClientRouterProxyTests(TestCase):
         self.assertEqual(response.json()["wifi"]["ssid"], "Client WiFi")
         fetch.assert_called_once()
         self.assertEqual(fetch.call_args.kwargs["cpe_port"], 80)
+        self.assertEqual(fetch.call_args.kwargs["cpe_address"], "10.20.0.55")
+        self.assertEqual(fetch.call_args.kwargs["gateway_ip"], "10.20.0.1")
+        self.assertIsNone(fetch.call_args.kwargs.get("groups"))
+
+    @patch("core.views.fetch_customer_cpe_web_data")
+    @patch("core.views.probe_customer_cpe_web")
+    def test_router_data_devices_only_skips_extra_modules(self, probe, fetch):
+        probe.return_value = {
+            "reachable": True,
+            "port": 80,
+            "cpe_host": "10.20.0.55",
+            "gateway": "10.20.0.1",
+        }
+        fetch.return_value = {
+            "ok": True,
+            "vendor": "Tenda",
+            "model": "Tenda_0C8890",
+            "cpe_host": "10.20.0.55",
+            "status": {"connected": True, "online_devices": 1},
+            "wifi": {},
+            "wan": {},
+            "system": {},
+            "devices": [
+                {
+                    "name": "Phone",
+                    "ip": "192.168.0.10",
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "download": "120KB/s",
+                    "upload": "10KB/s",
+                }
+            ],
+            "error": "",
+        }
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/router-data/"
+            f"?fields=devices&refresh=1"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(len(payload["devices"]), 1)
+        self.assertEqual(payload["devices"][0]["mac"], "AA:BB:CC:DD:EE:FF")
+        fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.kwargs["groups"], ("devices",))
+        self.assertEqual(fetch.call_args.kwargs["cpe_address"], "10.20.0.55")
+        self.assertLessEqual(fetch.call_args.kwargs["timeout"], 6.0)
+
+    @patch("core.views.fetch_customer_cpe_web_data")
+    @patch("core.views.probe_customer_cpe_web")
+    def test_router_data_devices_reuses_full_cache(self, probe, fetch):
+        from django.core.cache import cache
+
+        cache_key = f"client_cpe_router_data:{self.org.pk}:{self.customer.pk}"
+        cache.set(
+            cache_key,
+            {
+                "ok": True,
+                "authenticated": True,
+                "vendor": "Tenda",
+                "model": "Tenda",
+                "cpe_host": "10.20.0.55",
+                "port": 80,
+                "status": {"online_devices": 1},
+                "wifi": {"ssid": "Home"},
+                "wan": {},
+                "system": {},
+                "devices": [
+                    {"name": "Laptop", "mac": "11:22:33:44:55:66", "ip": "192.168.0.2"}
+                ],
+                "error": "",
+            },
+            30,
+        )
+
+        response = self.client.get(
+            f"/app/clients/{self.customer.pk}/router-data/?fields=devices"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["devices"][0]["mac"], "11:22:33:44:55:66")
+        probe.assert_not_called()
+        fetch.assert_not_called()
 
     def test_web_ports_include_webfig_8081(self):
         self.assertEqual(mikrotik_connect.CPE_WEB_PORTS[0], 80)

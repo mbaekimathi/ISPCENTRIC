@@ -1768,6 +1768,93 @@ class RouterClientAnalysisTests(SimpleTestCase):
         self.assertEqual(lan["clients"][0]["name"], "Port Client")
         self.assertEqual(lan["clients"][0]["lan_port"], "ether3")
         self.assertEqual(analysis["clients"][0]["data_label"], "9.8 KB")
+        self.assertEqual(analysis["clients"][0]["isp_label"], "ISP 1 · ether1")
+
+    def test_single_wan_fills_isp_and_strips_wan_as_cable(self):
+        """Single internet: ISP column filled; WAN must not appear as cable port."""
+        router = MikroTikRouter(
+            name="edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+            uplink_ports=[],
+            wan_interface="ether1",
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether3": MikroTikRouter.PortRole.LAN,
+            },
+        )
+        customer = MagicMock()
+        customer.pk = 11
+        customer.full_name = "Single WAN Client"
+        customer.account_number = "ACC-11"
+        customer.pppoe_username = "tint"
+        customer.hotspot_mac = None
+        customer.cpe_ip = ""
+        customer.cpe_mac = ""
+        customer.service_type = "pppoe"
+        customer.status = "active"
+
+        usage = {
+            "ok": True,
+            "uses_connection_marks": False,
+            "default_isp_port": "",
+            "ip_usage": {},
+            "sessions": {
+                "10.20.0.228": {
+                    "pppoe_username": "tint",
+                    "source": "pppoe",
+                    "lan_port": "ether1",
+                    "bytes_in": 1000,
+                    "bytes_out": 5000,
+                    "download_bps": 800_000,
+                    "upload_bps": 100_000,
+                    "download_label": "800.0 Kbps",
+                    "upload_label": "100.0 Kbps",
+                    "uptime": "2h3m",
+                },
+            },
+        }
+        with patch("billing.models.Customer.objects") as customer_qs:
+            customer_qs.filter.return_value.only.return_value = [customer]
+            analysis = _build_router_client_analysis(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+                uplink_live={},
+                wan_share={"ok": True, "shares": []},
+                smart_balance_status={},
+                primary_wan_ports=["ether1"],
+                backup_wan_ports=[],
+                usage=usage,
+            )
+
+        client = analysis["clients"][0]
+        self.assertTrue(client["online"])
+        self.assertEqual(client["isp_port"], "ether1")
+        self.assertEqual(client["isp_label"], "ISP 1 · ether1")
+        self.assertEqual(client["lan_port"], "")
+        self.assertEqual(client["download_label"], "800.0 Kbps")
+        self.assertEqual(client["upload_label"], "100.0 Kbps")
+        self.assertEqual(client["uptime"], "2h3m")
+        self.assertEqual(analysis["isps"][0]["online_clients"], 1)
+        self.assertFalse(any(p["port"] == "ether1" for p in analysis["lan_ports"]))
+
+    def test_sanitize_lan_cable_port_drops_wan_and_pppoe(self):
+        from core.mikrotik_connect import (
+            _pppoe_dynamic_iface_name,
+            _sanitize_lan_cable_port,
+        )
+
+        exclude = {"ether1"}
+        self.assertEqual(_sanitize_lan_cable_port("ether3", exclude_ports=exclude), "ether3")
+        self.assertEqual(_sanitize_lan_cable_port("ether1", exclude_ports=exclude), "")
+        self.assertEqual(_sanitize_lan_cable_port("<pppoe-tint>", exclude_ports=set()), "")
+        by_iface = {"<pppoe-+2547>": {"name": "<pppoe-+2547>"}}
+        self.assertEqual(
+            _pppoe_dynamic_iface_name("2547", by_iface, list(by_iface.values())),
+            "<pppoe-+2547>",
+        )
 
 
 class AutomaticPortLabelTests(SimpleTestCase):

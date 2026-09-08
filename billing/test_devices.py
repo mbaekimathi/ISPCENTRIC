@@ -87,6 +87,32 @@ class HotspotDeviceLimitTests(TestCase):
         devices = response.context["account_devices"]
         self.assertEqual(len(devices), 2)
 
+    def test_usage_analysis_pppoe_devices_section_has_retry_ui(self):
+        """P0: PPPoE CPE devices section must not stick on Waiting without Retry."""
+        router = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="Edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+        )
+        self.customer.service_type = Customer.ServiceType.PPPOE
+        self.customer.pppoe_username = "user30"
+        self.customer.hotspot_mac = ""
+        self.customer.router = router
+        self.customer.save()
+        CustomerDevice.objects.filter(customer=self.customer).delete()
+        self.client.force_login(self.owner)
+        url = reverse("core:client_usage_analysis", kwargs={"customer_id": self.customer.pk})
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context.get("router_data_url"))
+        self.assertContains(response, "data-usage-devices-retry")
+        self.assertContains(response, "Loading live CPE devices")
+        self.assertNotContains(response, "Waiting for live CPE devices")
+        self.assertContains(response, "data-usage-devices-error")
+        self.assertContains(response, "Open Profile · router password")
+
     def test_attach_second_mac_under_cap(self):
         result = attach_hotspot_device(self.customer, "AA:BB:CC:DD:EE:02")
         self.assertTrue(result["ok"])

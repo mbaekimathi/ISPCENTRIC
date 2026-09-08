@@ -3849,8 +3849,14 @@ def fetch_customer_cpe_web_data(
     session_cookies: dict[str, str] | None = None,
     cpe_port: int = 80,
     timeout: float = 10.0,
+    groups: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Fetch normalized status, WAN, Wi-Fi, system and device data from a CPE web API."""
+    """Fetch normalized status, WAN, Wi-Fi, system and device data from a CPE web API.
+
+    ``groups`` selects extra module fetches after status/login. Default is all
+    of wifi/devices/wan/system. Pass ``("devices",)`` for a faster devices-only
+    snapshot (usage analysis).
+    """
     result: dict[str, Any] = {
         "ok": False,
         "authenticated": False,
@@ -3997,7 +4003,15 @@ def fetch_customer_cpe_web_data(
                 _CPE_WEB_LOGIN_BLOCKS.pop(session_key, None)
 
             modules: dict[str, dict[str, Any]] = {"status": status_payload}
-            for group in ("wifi", "devices", "wan", "system"):
+            wanted_groups = groups if groups is not None else (
+                "wifi",
+                "devices",
+                "wan",
+                "system",
+            )
+            for group in wanted_groups:
+                if group == "status" or group not in _CPE_WEB_DATA_PATHS:
+                    continue
                 _, payload, fresh, _unused = _cpe_web_json_request(
                     proxy,
                     _CPE_WEB_DATA_PATHS[group],
@@ -4006,7 +4020,7 @@ def fetch_customer_cpe_web_data(
                     timeout=timeout,
                 )
                 cookies.update(fresh)
-                modules[group] = payload
+                modules[group] = payload if isinstance(payload, dict) else {}
             with _CPE_WEB_DATA_SESSION_LOCK:
                 _CPE_WEB_DATA_SESSIONS[session_key] = {
                     "cookies": cookies,
@@ -4017,9 +4031,9 @@ def fetch_customer_cpe_web_data(
         return result
 
     status = modules["status"]
-    wifi_modules = modules["wifi"]
-    wan_modules = modules["wan"]
-    system_modules = modules["system"]
+    wifi_modules = modules.get("wifi") or {}
+    wan_modules = modules.get("wan") or {}
+    system_modules = modules.get("system") or {}
     statistics = status.get("deviceStastics") or status.get("deviceStatistics") or {}
     system_info = status.get("systemInfo") or system_modules.get("systemInfo") or {}
     wifi = wifi_modules.get("wifiBasicCfg") or {}
@@ -4027,17 +4041,22 @@ def fetch_customer_cpe_web_data(
     wan_advanced = status.get("wanAdvCfg") or wan_modules.get("wanAdvCfg") or {}
     internet = status.get("internetStatus") or wan_modules.get("internetStatus") or {}
     lan = wan_modules.get("lanCfg") or system_modules.get("lanCfg") or {}
-    raw_devices = modules["devices"].get("onlineList") or []
+    raw_devices = (modules.get("devices") or {}).get("onlineList") or []
     if isinstance(raw_devices, dict):
         raw_devices = list(raw_devices.values())
     devices = []
     for item in raw_devices if isinstance(raw_devices, list) else []:
         if not isinstance(item, dict):
             continue
+        raw_mac = item.get("qosListMac") or item.get("qosListMAC") or ""
+        mac = str(raw_mac or "").strip().upper().replace("-", ":")
+        compact = mac.replace(":", "")
+        if len(compact) == 12 and all(ch in "0123456789ABCDEF" for ch in compact):
+            mac = ":".join(compact[i : i + 2] for i in range(0, 12, 2))
         devices.append({
             "name": item.get("qosListRemark") or item.get("qosListHostname") or "Unknown device",
             "ip": item.get("qosListIP") or "",
-            "mac": item.get("qosListMac") or item.get("qosListMAC") or "",
+            "mac": mac,
             "type": item.get("qosListConnectType") or "",
             "download": item.get("qosListDownSpeed") or "",
             "upload": item.get("qosListUpSpeed") or "",
@@ -24240,10 +24259,55 @@ def _read_arp_ip_to_mac(sock: socket.socket) -> dict[str, str]:
     return ip_to_mac
 
 
+def _pppoe_dynamic_iface_name(
+    pppoe_name: str,
+    by_iface: dict[str, dict[str, Any]],
+    interfaces: list[dict[str, Any]],
+) -> str:
+    """Resolve the dynamic ``<pppoe-…>`` interface for an active PPP session."""
+    pppoe_name = (pppoe_name or "").strip()
+    if not pppoe_name:
+        return ""
+    key = pppoe_name.lower()
+    candidates = [
+        f"<pppoe-{pppoe_name}>",
+        f"<pppoe-{key}>",
+        pppoe_name,
+        key,
+    ]
+    if pppoe_name.startswith("+"):
+        candidates.append(f"<pppoe-{pppoe_name[1:]}>")
+    elif pppoe_name:
+        candidates.append(f"<pppoe-+{pppoe_name}>")
+    for candidate in candidates:
+        if candidate in by_iface:
+            return candidate
+    for iface_row in interfaces:
+        name = (iface_row.get("name") or "").strip()
+        lower = name.lower()
+        if key in lower and "pppoe" in lower:
+            return name
+    return ""
+
+
+def _sanitize_lan_cable_port(port_name: str, *, exclude_ports: set[str]) -> str:
+    """Drop WAN/ISP/dynamic PPP interfaces from the customer cable column."""
+    port_name = (port_name or "").strip()
+    if not port_name:
+        return ""
+    lower = port_name.lower()
+    if lower in exclude_ports:
+        return ""
+    if lower.startswith("<pppoe") or lower.startswith("pppoe-"):
+        return ""
+    return port_name
+
+
 def _read_live_session_addresses(
     sock: socket.socket,
     *,
     sample_host: str = "",
+    exclude_lan_ports: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """
     Map client IP to session metadata plus live usage analytics.
@@ -24253,6 +24317,11 @@ def _read_live_session_addresses(
     """
     sessions: dict[str, dict[str, Any]] = {}
     sample_host = (sample_host or "").strip() or "router"
+    exclude_ports = {
+        str(p).strip().lower()
+        for p in (exclude_lan_ports or [])
+        if str(p).strip()
+    }
     mac_to_port = _read_bridge_mac_to_port(sock)
     ip_to_mac = _read_arp_ip_to_mac(sock)
 
@@ -24284,9 +24353,17 @@ def _read_live_session_addresses(
             return
         existing = sessions.get(ip) or {}
         mac = _mac_compact(mac) or _mac_compact(existing.get("mac") or "") or ip_to_mac.get(ip, "")
-        lan_port = mac_to_port.get(mac, "") if mac else ""
+        lan_port = ""
+        if mac:
+            lan_port = _sanitize_lan_cable_port(
+                mac_to_port.get(mac, ""),
+                exclude_ports=exclude_ports,
+            )
         if not lan_port:
-            lan_port = (existing.get("lan_port") or "").strip()
+            lan_port = _sanitize_lan_cable_port(
+                (existing.get("lan_port") or "").strip(),
+                exclude_ports=exclude_ports,
+            )
 
         download_bps = existing.get("download_bps")
         upload_bps = existing.get("upload_bps")
@@ -24332,23 +24409,7 @@ def _read_live_session_addresses(
             pppoe_name = (row.get("name") or "").strip()
             if not pppoe_name:
                 continue
-            key = pppoe_name.lower()
-            iface_name = ""
-            for candidate in (
-                f"<pppoe-{pppoe_name}>",
-                f"<pppoe-{key}>",
-                pppoe_name,
-            ):
-                if candidate in by_iface:
-                    iface_name = candidate
-                    break
-            if not iface_name:
-                for iface_row in interfaces:
-                    name = (iface_row.get("name") or "").strip()
-                    lower = name.lower()
-                    if key in lower and "pppoe" in lower:
-                        iface_name = name
-                        break
+            iface_name = _pppoe_dynamic_iface_name(pppoe_name, by_iface, interfaces)
             bytes_in = 0
             bytes_out = 0
             if iface_name and iface_name in by_iface:
@@ -24415,7 +24476,10 @@ def _read_live_session_addresses(
         mac = _mac_compact(meta.get("mac") or "") or ip_to_mac.get(ip, "")
         if mac:
             meta["mac"] = mac
-            meta["lan_port"] = mac_to_port.get(mac, "")
+            meta["lan_port"] = _sanitize_lan_cable_port(
+                mac_to_port.get(mac, ""),
+                exclude_ports=exclude_ports,
+            )
 
     return sessions
 
@@ -24463,7 +24527,44 @@ def read_client_wan_usage(
                 for index, name in enumerate(members):
                     mark_to_port[index] = name
 
-            sessions = _read_live_session_addresses(sock, sample_host=host)
+            primary_wan = (primary_wan or "").strip()
+            failover_active_port = (failover_active_port or "").strip()
+            bond_interface = (bond_interface or "").strip()
+            if mode == "bond":
+                default_port = bond_interface or (
+                    members[0] if members else primary_wan
+                )
+            elif mode == "failover":
+                default_port = (
+                    failover_active_port
+                    or primary_wan
+                    or (members[0] if members else "")
+                )
+            elif mode in {"balance", "smart_balance"}:
+                default_port = (members[0] if members else primary_wan)
+            else:
+                # Single WAN — never drop primary_wan when uplink_ports is empty
+                # (Python's `a or b if c else d` binds as `(a or b) if c else d`).
+                default_port = primary_wan or (members[0] if members else "")
+            default_port = (default_port or "").strip()
+
+            exclude_lan = [
+                p
+                for p in [
+                    *members,
+                    primary_wan,
+                    failover_active_port,
+                    bond_interface,
+                    default_port,
+                    *mark_to_port.values(),
+                ]
+                if (p or "").strip()
+            ]
+            sessions = _read_live_session_addresses(
+                sock,
+                sample_host=host,
+                exclude_lan_ports=exclude_lan,
+            )
             ip_mark_counts: dict[str, dict[int, int]] = {}
             total_marked = 0
 
@@ -24502,24 +24603,17 @@ def read_client_wan_usage(
                 total_marked += 1
 
             uses_marks = total_marked > 0 and bool(mark_to_port)
-            default_port = ""
-            if mode == "bond":
-                default_port = (bond_interface or "").strip() or (
-                    members[0] if members else ""
-                )
-            elif mode == "failover":
-                default_port = (failover_active_port or primary_wan or "").strip()
-            elif mode in {"balance", "smart_balance"}:
-                default_port = (members[0] if members else primary_wan or "").strip()
-            else:
-                default_port = (primary_wan or members[0] if members else "").strip()
 
             def _session_analytics(ip: str) -> dict[str, Any]:
                 meta = sessions.get(ip) or {}
                 bytes_in = max(0, int(meta.get("bytes_in") or 0))
                 bytes_out = max(0, int(meta.get("bytes_out") or 0))
+                lan_port = _sanitize_lan_cable_port(
+                    (meta.get("lan_port") or "").strip(),
+                    exclude_ports={p.strip().lower() for p in exclude_lan if p},
+                )
                 return {
-                    "lan_port": (meta.get("lan_port") or "").strip(),
+                    "lan_port": lan_port,
                     "mac": (meta.get("mac") or "").strip(),
                     "bytes_in": bytes_in,
                     "bytes_out": bytes_out,
@@ -24548,16 +24642,20 @@ def read_client_wan_usage(
             for ip in sessions:
                 if ip in ip_usage:
                     # Keep mark-based ISP, refresh live analytics.
+                    kept_isp = (ip_usage[ip].get("isp_port") or "").strip()
                     ip_usage[ip].update(_session_analytics(ip))
+                    if kept_isp:
+                        ip_usage[ip]["isp_port"] = kept_isp
+                    elif default_port:
+                        ip_usage[ip]["isp_port"] = default_port
                     continue
-                if default_port:
-                    ip_usage[ip] = {
-                        "isp_port": default_port,
-                        "connections": 0,
-                        "mark_index": None,
-                        "source": "default_wan",
-                        **_session_analytics(ip),
-                    }
+                ip_usage[ip] = {
+                    "isp_port": default_port,
+                    "connections": 0,
+                    "mark_index": None,
+                    "source": "default_wan" if default_port else "session",
+                    **_session_analytics(ip),
+                }
 
             mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}
             return {

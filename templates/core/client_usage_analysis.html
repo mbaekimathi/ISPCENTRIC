@@ -116,6 +116,7 @@
       id="usage-devices"
       data-cat="live"
       {% if router_data_url %}data-router-data-url="{{ router_data_url }}"{% endif %}
+      {% if back_url %}data-profile-url="{{ back_url }}"{% endif %}
     >
       <header class="clients-usage-section-head">
         <div>
@@ -126,7 +127,7 @@
             Devices
           </p>
           <h2>Connected devices</h2>
-          <p class="clients-usage-section-meta">
+          <p class="clients-usage-section-meta" data-usage-devices-meta>
             {% if customer.service_type == "hotspot" %}
               Gadgets linked to this Hotspot account{% if devices_connected_count %} · {{ devices_connected_count }} online now{% endif %}.
             {% elif router_data_url %}
@@ -136,7 +137,27 @@
             {% endif %}
           </p>
         </div>
+        {% if router_data_url %}
+        <div class="client-usage-devices-tools">
+          <p class="clients-usage-stamp" data-usage-devices-stamp role="status">Loading…</p>
+          <button type="button" class="btn btn-ghost btn-sm" data-usage-devices-retry>
+            Retry
+          </button>
+        </div>
+        {% endif %}
       </header>
+
+      <div class="client-usage-devices-alert" data-usage-devices-error hidden role="alert">
+        <p data-usage-devices-error-text></p>
+        <div class="client-usage-devices-alert-actions">
+          <button type="button" class="btn btn-sm btn-primary" data-usage-devices-retry>Retry</button>
+          {% if back_url %}
+          <a class="btn btn-sm btn-ghost" data-usage-devices-profile href="{{ back_url }}#client-router-data" hidden>
+            Open Profile · router password
+          </a>
+          {% endif %}
+        </div>
+      </div>
 
       <div class="org-table-shell client-usage-devices-shell">
         <table class="org-table org-table-client-devices client-usage-devices-table">
@@ -151,7 +172,12 @@
           </thead>
           <tbody data-usage-device-list>
             {% for device in account_devices %}
-              <tr class="{% if device.connected %}is-online{% else %}is-offline{% endif %}" data-mac="{{ device.mac }}">
+              <tr
+                class="{% if device.connected %}is-online{% else %}is-offline{% endif %}"
+                data-mac="{{ device.mac }}"
+                data-account="1"
+                data-label="{{ device.label }}"
+              >
                 <td data-label="Device">{{ device.label }}</td>
                 <td data-label="MAC"><code class="client-usage-mono">{{ device.mac }}</code></td>
                 <td data-label="Status">
@@ -164,13 +190,13 @@
                 {% if router_data_url %}<td data-label="IP">—</td><td data-label="Traffic">—</td>{% endif %}
               </tr>
             {% empty %}
-              <tr data-usage-devices-empty>
+              <tr data-usage-devices-empty data-usage-devices-state="loading">
                 <td colspan="{% if router_data_url %}6{% else %}4{% endif %}">
                   <p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">
                     {% if customer.service_type == "hotspot" %}
                       No devices linked to this account yet.
                     {% elif router_data_url %}
-                      Waiting for live CPE devices…
+                      Loading live CPE devices…
                     {% else %}
                       No devices listed for this account.
                     {% endif %}
@@ -918,9 +944,54 @@
   var list = section.querySelector("[data-usage-device-list]");
   var connectedEl = document.querySelector('[data-sum="devices-connected"]');
   var metaEl = document.querySelector('[data-sum="devices-meta"]');
+  var sectionMeta = section.querySelector("[data-usage-devices-meta]");
+  var stampEl = section.querySelector("[data-usage-devices-stamp]");
+  var errorBox = section.querySelector("[data-usage-devices-error]");
+  var errorText = section.querySelector("[data-usage-devices-error-text]");
+  var profileLink = section.querySelector("[data-usage-devices-profile]");
   var routerUrl = section.getAttribute("data-router-data-url") || "";
   var hasCpeCols = !!routerUrl;
   var inFlight = false;
+  var pendingForce = null;
+  var pollTimer = null;
+  var lastOk = false;
+  // CPE devices seen this page session — kept as Offline when they drop off live list.
+  var sessionDevices = {};
+
+  function normMac(mac) {
+    var s = String(mac == null ? "" : mac).toUpperCase().replace(/-/g, ":").trim();
+    var compact = s.replace(/:/g, "");
+    if (compact.length === 12 && /^[0-9A-F]+$/.test(compact)) {
+      return compact.replace(/(.{2})(?=.)/g, "$1:");
+    }
+    return s;
+  }
+
+  function nowLabel() {
+    return new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+  }
+
+  var accountDevices = {};
+  if (list) {
+    list.querySelectorAll("tr[data-mac][data-account]").forEach(function (row) {
+      var mac = normMac(row.getAttribute("data-mac"));
+      if (!mac) return;
+      var cells = row.querySelectorAll("td");
+      var label =
+        row.getAttribute("data-label") ||
+        (cells[0] && cells[0].textContent) ||
+        "Device";
+      accountDevices[mac] = {
+        mac: mac,
+        label: String(label).trim() || "Device",
+        lastSeen: (cells[3] && cells[3].textContent) || "—"
+      };
+    });
+  }
 
   function esc(text) {
     return String(text == null ? "" : text)
@@ -930,102 +1001,298 @@
       .replace(/"/g, "&quot;");
   }
 
-  function existingMacs() {
-    var macs = {};
-    if (!list) return macs;
-    list.querySelectorAll("tr[data-mac]").forEach(function (row) {
-      var mac = (row.getAttribute("data-mac") || "").toUpperCase();
-      if (mac) macs[mac] = row;
-    });
-    return macs;
+  function setStamp(text) {
+    if (stampEl) stampEl.textContent = text;
   }
 
-  function setConnectedCount(n, linked) {
-    if (connectedEl) connectedEl.textContent = String(n);
-    if (metaEl && linked != null) {
-      metaEl.textContent = linked + " linked on this account";
+  function setError(message, opts) {
+    opts = opts || {};
+    if (!errorBox) return;
+    var msg = (message || "").trim();
+    if (errorText) errorText.textContent = msg;
+    errorBox.hidden = !msg;
+    errorBox.classList.toggle("is-password", !!opts.needsPassword);
+    if (profileLink) {
+      profileLink.hidden = !(msg && opts.needsPassword);
     }
   }
 
-  function drawCpeDevices(devices) {
-    if (!list || !hasCpeCols) return;
-    var known = existingMacs();
-    var empty = list.querySelector("[data-usage-devices-empty]");
-    if (empty) empty.remove();
+  function setConnectedCount(online, totalSeen) {
+    if (connectedEl) connectedEl.textContent = String(online);
+    if (metaEl) {
+      metaEl.textContent =
+        online === 1 ? "Online on CPE now" : online + " online on CPE now";
+    }
+    if (sectionMeta && totalSeen != null) {
+      var offline = Math.max(0, totalSeen - online);
+      sectionMeta.textContent =
+        online +
+        " online on the client CPE" +
+        (offline ? " · " + offline + " offline" : "") +
+        ".";
+    }
+  }
 
-    var online = 0;
+  function statusHtml(online) {
+    return (
+      '<span class="clients-usage-online ' +
+      (online ? "is-on" : "is-off") +
+      '"><span class="clients-usage-online-dot" aria-hidden="true"></span>' +
+      (online ? "Online" : "Offline") +
+      "</span>"
+    );
+  }
+
+  function rowHtml(device, online) {
+    var mac = device.mac || "—";
+    var name = device.name || device.label || "Device";
+    var lastSeen = online ? "Now" : device.lastSeen || "—";
+    var ip = hasCpeCols ? esc(online ? device.ip || "—" : "—") : "";
+    var traffic = hasCpeCols ? esc(online ? device.traffic || "—" : "—") : "";
+    var accountAttr = device.account ? ' data-account="1"' : "";
+    var labelAttr = ' data-label="' + esc(name) + '"';
+    return (
+      '<tr class="' +
+      (online ? "is-online" : "is-offline") +
+      '" data-mac="' +
+      esc(mac) +
+      '"' +
+      accountAttr +
+      labelAttr +
+      ">" +
+      '<td data-label="Device">' +
+      esc(name) +
+      "</td>" +
+      '<td data-label="MAC"><code class="client-usage-mono">' +
+      esc(mac) +
+      "</code></td>" +
+      '<td data-label="Status">' +
+      statusHtml(online) +
+      "</td>" +
+      '<td data-label="Last seen">' +
+      esc(lastSeen) +
+      "</td>" +
+      (hasCpeCols
+        ? '<td data-label="IP">' + ip + '</td><td data-label="Traffic">' + traffic + "</td>"
+        : "") +
+      "</tr>"
+    );
+  }
+
+  function emptyRow(message, state) {
+    return (
+      '<tr data-usage-devices-empty data-usage-devices-state="' +
+      esc(state || "empty") +
+      '"><td colspan="6">' +
+      '<p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">' +
+      esc(message) +
+      "</p></td></tr>"
+    );
+  }
+
+  function drawCpeDevices(devices, meta) {
+    if (!list || !hasCpeCols) return;
+    meta = meta || {};
+    var liveByMac = {};
+    var ordered = [];
+    var seen = {};
+
     (devices || []).forEach(function (device, idx) {
-      var mac = String(device.mac || "").toUpperCase();
-      var name = device.name || ("Device " + (idx + 1));
-      var ip = device.ip || "—";
+      var mac = normMac(device.mac);
+      var name = (device.name || "").trim() || ("Device " + (idx + 1));
       var traffic = [device.download, device.upload].filter(Boolean).join(" / ") || "—";
-      var row = mac && known[mac] ? known[mac] : null;
-      if (!row) {
-        row = document.createElement("tr");
-        row.className = "is-online";
-        if (mac) row.setAttribute("data-mac", mac);
-        row.innerHTML =
-          "<td data-label=\"Device\">" + esc(name) + "</td>" +
-          "<td data-label=\"MAC\"><code class=\"client-usage-mono\">" + esc(mac || "—") + "</code></td>" +
-          "<td data-label=\"Status\"><span class=\"clients-usage-online is-on\"><span class=\"clients-usage-online-dot\" aria-hidden=\"true\"></span>Online</span></td>" +
-          "<td data-label=\"Last seen\">Now</td>" +
-          "<td data-label=\"IP\">" + esc(ip) + "</td>" +
-          "<td data-label=\"Traffic\">" + esc(traffic) + "</td>";
-        list.appendChild(row);
-      } else {
-        row.classList.remove("is-offline");
-        row.classList.add("is-online");
-        var status = row.querySelector(".clients-usage-online");
-        if (status) {
-          status.classList.remove("is-off");
-          status.classList.add("is-on");
-          status.innerHTML = '<span class="clients-usage-online-dot" aria-hidden="true"></span>Online';
+      var entry = {
+        mac: mac || "",
+        name: name,
+        ip: device.ip || "—",
+        traffic: traffic,
+        account: !!(mac && accountDevices[mac]),
+        lastSeen: "Now"
+      };
+      if (mac) {
+        liveByMac[mac] = entry;
+        seen[mac] = true;
+        sessionDevices[mac] = {
+          mac: mac,
+          name: name,
+          ip: entry.ip,
+          traffic: entry.traffic,
+          account: entry.account,
+          lastSeen: nowLabel()
+        };
+        if (accountDevices[mac]) {
+          accountDevices[mac].label = name;
+          accountDevices[mac].lastSeen = sessionDevices[mac].lastSeen;
         }
-        var cells = row.querySelectorAll("td");
-        if (cells[0] && name) cells[0].textContent = name;
-        if (cells[3]) cells[3].textContent = "Now";
-        if (cells[4]) cells[4].textContent = ip;
-        if (cells[5]) cells[5].textContent = traffic;
       }
-      online += 1;
+      ordered.push(entry);
     });
 
-    var linked = list.querySelectorAll("tr[data-mac]").length;
-    if (!linked && !(devices || []).length) {
-      list.innerHTML =
-        '<tr data-usage-devices-empty><td colspan="6">' +
-        '<p class="clients-usage-users-empty-copy" style="margin:0.75rem 0">No live CPE devices right now.</p>' +
-        "</td></tr>";
+    // Account MACs missing from live list → Offline (keep last seen).
+    Object.keys(accountDevices).forEach(function (mac) {
+      if (seen[mac]) return;
+      seen[mac] = true;
+      ordered.push({
+        mac: mac,
+        name: accountDevices[mac].label || "Device",
+        ip: "—",
+        traffic: "—",
+        account: true,
+        lastSeen: accountDevices[mac].lastSeen || "—",
+        offline: true
+      });
+    });
+
+    // CPE-only devices seen earlier this session → Offline (do not stay Online).
+    Object.keys(sessionDevices).forEach(function (mac) {
+      if (seen[mac]) return;
+      seen[mac] = true;
+      var prev = sessionDevices[mac];
+      ordered.push({
+        mac: mac,
+        name: prev.name || "Device",
+        ip: "—",
+        traffic: "—",
+        account: !!accountDevices[mac],
+        lastSeen: prev.lastSeen || "—",
+        offline: true
+      });
+    });
+
+    if (!ordered.length) {
+      list.innerHTML = emptyRow("No live CPE devices right now.", "empty");
       setConnectedCount(0, 0);
       return;
     }
-    setConnectedCount(online || list.querySelectorAll("tr.is-online").length, linked);
+
+    ordered.sort(function (a, b) {
+      var ao = a.offline ? 1 : 0;
+      var bo = b.offline ? 1 : 0;
+      if (ao !== bo) return ao - bo;
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+    list.innerHTML = ordered
+      .map(function (device) {
+        return rowHtml(device, !device.offline);
+      })
+      .join("");
+
+    var onlineCount = ordered.filter(function (d) {
+      return !d.offline;
+    }).length;
+    var reported = Number(meta.online_devices);
+    if (isFinite(reported) && reported > onlineCount) {
+      onlineCount = reported;
+    }
+    setConnectedCount(onlineCount, ordered.length);
+  }
+
+  function applyFailure(message, opts) {
+    opts = opts || {};
+    var msg =
+      message ||
+      (opts.needsPassword
+        ? "Save the client router admin password on the Profile page, then retry."
+        : "Could not load live CPE devices.");
+    setError(msg, opts);
+    setStamp("Fetch failed");
+    lastOk = false;
+    // Never leave a stuck "Loading…" row — show error empty state if nothing listed.
+    if (list && !list.querySelector("tr[data-mac]")) {
+      list.innerHTML = emptyRow(msg, "error");
+    }
   }
 
   function loadCpeDevices(force) {
-    if (!routerUrl || inFlight || document.hidden) return;
+    if (!routerUrl || document.hidden) return Promise.resolve();
+    if (inFlight) {
+      pendingForce = pendingForce === true ? true : !!force;
+      return Promise.resolve();
+    }
     inFlight = true;
-    var qs = force ? ((routerUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1&_=" + Date.now()) : "";
-    fetch(routerUrl + qs, {
-      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+    section.classList.add("is-fetching");
+    if (!lastOk) setStamp(force ? "Refreshing…" : "Loading…");
+
+    var parts = ["fields=devices"];
+    if (force) {
+      parts.push("refresh=1");
+      parts.push("_=" + Date.now());
+    }
+    var qs = (routerUrl.indexOf("?") >= 0 ? "&" : "?") + parts.join("&");
+
+    return fetch(routerUrl + qs, {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
       credentials: "same-origin",
       cache: "no-store"
     })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (data && data.ok) drawCpeDevices(data.devices || []);
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { okHttp: res.ok, data: data };
+        });
       })
-      .catch(function () {})
-      .finally(function () { inFlight = false; });
+      .then(function (result) {
+        var data = result.data || {};
+        if (data && data.ok) {
+          setError("");
+          lastOk = true;
+          drawCpeDevices(data.devices || [], data.status || {});
+          setStamp("Updated " + nowLabel());
+          return;
+        }
+        var needsPassword = !!(
+          data &&
+          (data.needs_password ||
+            /password/i.test(String((data && data.error) || "")))
+        );
+        applyFailure((data && data.error) || "", { needsPassword: needsPassword });
+      })
+      .catch(function () {
+        applyFailure("Could not load live CPE devices.");
+      })
+      .finally(function () {
+        inFlight = false;
+        section.classList.remove("is-fetching");
+        if (pendingForce != null) {
+          var next = pendingForce;
+          pendingForce = null;
+          loadCpeDevices(next);
+        }
+      });
   }
 
-  if (routerUrl) {
-    loadCpeDevices(false);
-    var refreshBtn = document.querySelector("[data-usage-refresh]");
-    if (refreshBtn) {
-      refreshBtn.addEventListener("click", function () { loadCpeDevices(true); });
-    }
+  if (!routerUrl) return;
+
+  section.querySelectorAll("[data-usage-devices-retry]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setError("");
+      if (list && !list.querySelector("tr[data-mac]")) {
+        list.innerHTML = emptyRow("Loading live CPE devices…", "loading");
+      }
+      loadCpeDevices(true);
+    });
+  });
+
+  // Cache-first for instant paint, then force-refresh for correct live data.
+  loadCpeDevices(false).then(function () {
+    loadCpeDevices(true);
+  });
+  pollTimer = setInterval(function () {
+    if (!document.hidden) loadCpeDevices(true);
+  }, 15000);
+
+  var refreshBtn = document.querySelector("[data-usage-refresh]");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      loadCpeDevices(true);
+    });
   }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) loadCpeDevices(true);
+  });
+  window.addEventListener("beforeunload", function () {
+    if (pollTimer) clearInterval(pollTimer);
+  });
 })();
 </script>
 {% endblock %}

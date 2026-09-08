@@ -187,7 +187,7 @@
       "</span>" +
       "</div>" +
       '<strong class="mk-router-isp-name">' +
-      esc(port.label || port.port || "—") +
+      esc(port.port || port.label || "—") +
       "</strong>" +
       '<div class="mk-assigned-port-rates">' +
       "<span><em>Down</em> " +
