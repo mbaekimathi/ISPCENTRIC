@@ -290,6 +290,7 @@ def _remove(sock: socket.socket, path: str, item_id: str) -> dict[str, str]:
 
 CLEAN_UPLINK_TAG = "ispcentric-clean-uplink"
 UPLINK_TAG = "ispcentric-uplink"
+NO_BACKFLOW_TAG = "ispcentric-no-backflow"
 CPE_PROXY_TAG = "ispcentric-cpe-proxy"
 CPE_API_AUTO_TAG = "ispcentric-cpe-api"
 CPE_WWW_AUTO_TAG = "ispcentric-cpe-www"
@@ -747,6 +748,9 @@ def _ensure_filter_rules(
 
     Provider admin / private ISP LAN drops are always installed when known
     (bypass and behind). Customers must not reach the uplink modem/ONT.
+
+    Also drops WAN→WAN forwarding so this MikroTik cannot become a transit path
+    between ISP routers (or leak one ISP into another).
     Idempotent: skips remove/re-add when the desired tagged set is already present.
     """
     _ = mode
@@ -757,6 +761,19 @@ def _ensure_filter_rules(
             "action": "accept",
             "connection-state": "established,related,untracked",
             "comment": f"{CLEAN_UPLINK_TAG} forward OK",
+        },
+        {
+            "chain": "forward",
+            "action": "drop",
+            "connection-state": "invalid",
+            "comment": f"{CLEAN_UPLINK_TAG} drop invalid",
+        },
+        {
+            "chain": "forward",
+            "action": "drop",
+            "in-interface-list": "WAN",
+            "out-interface-list": "WAN",
+            "comment": f"{CLEAN_UPLINK_TAG} block wan backflow",
         },
         {
             "chain": "forward",
@@ -812,6 +829,181 @@ def _ensure_filter_rules(
     _remove_tagged(sock, "/ip/firewall/filter")
     for rule in rules:
         _add(sock, "/ip/firewall/filter", **rule)
+
+
+def _discover_provider_backflow_targets(
+    sock: socket.socket,
+    wan_interfaces: list[str],
+) -> tuple[list[str], list[str]]:
+    """Private ISP nets + modem/gateway IPs learned from live WAN interfaces."""
+    ifaces: list[str] = []
+    for name in wan_interfaces or []:
+        name = (name or "").strip()
+        if not name or name in ifaces:
+            continue
+        ifaces.append(name)
+        pppoe = _find_pppoe_client_for_wan(sock, name)
+        if pppoe and pppoe not in ifaces:
+            ifaces.append(pppoe)
+
+    provider_networks: list[str] = []
+    for net in _collect_interface_networks(sock, *ifaces):
+        if net.is_private:
+            cidr = str(net)
+            if cidr not in provider_networks:
+                provider_networks.append(cidr)
+
+    gateways: list[str] = []
+    for iface in ifaces:
+        gateways = _merge_provider_gateways(gateways, _detect_dhcp_gateways(sock, iface))
+        # Connected-route next hops from live defaults tied to this WAN.
+        gw = _default_route_gateway_for_interface(sock, iface)
+        if gw and "%" not in gw and not gw.lower().startswith("pppoe"):
+            try:
+                gateways = _merge_provider_gateways(
+                    gateways, [str(ipaddress.IPv4Address(gw))]
+                )
+            except ValueError:
+                pass
+    gateways = _merge_provider_gateways(
+        gateways, _guess_provider_admin_ips(provider_networks)
+    )
+    return gateways, provider_networks
+
+
+def _harden_ip_settings_against_backflow(sock: socket.socket) -> list[str]:
+    """
+    Soften ISP-driven redirects / source routing that can bounce traffic
+    toward the wrong ISP router. Uses loose rp-filter so multi-WAN PCC
+    reply paths keep working.
+    """
+    notes: list[str] = []
+    try:
+        _, terminal = _command(
+            sock,
+            [
+                "/ip/settings/set",
+                "=accept-redirects=no",
+                "=secure-redirects=yes",
+                "=send-redirects=no",
+                "=accept-source-route=no",
+                "=rp-filter=loose",
+            ],
+        )
+        if terminal.get("_reply") not in {"!trap", "!fatal"}:
+            notes.append("hardened ip settings (no redirects, loose rp-filter)")
+    except Exception:
+        pass
+    return notes
+
+
+def _ensure_uplink_no_backflow(
+    sock: socket.socket,
+    wan_interfaces: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Stop this MikroTik from feeding traffic back into ISP routers / other WANs.
+
+    - WAN→WAN forward drop (no transit between ISP links)
+    - Drop toward private provider modem/ONT networks
+    - Ensure WAN masquerade so ISP links never see raw customer LAN IPs
+    - Harden redirect / source-route settings
+
+    Safe for other MikroTiks on LAN: LAN↔LAN and LAN→WAN are not blocked.
+    WireGuard management stays untouched when it is not on the WAN list.
+    """
+    ifaces = [
+        str(name).strip()
+        for name in (wan_interfaces or [])
+        if str(name).strip()
+    ]
+    ifaces = list(dict.fromkeys(ifaces))
+
+    _ensure_interface_list(sock, "WAN")
+    for iface in ifaces:
+        _ensure_uplink_list_member(sock, iface)
+        pppoe = _find_pppoe_client_for_wan(sock, iface)
+        if pppoe and pppoe != iface:
+            _ensure_uplink_list_member(sock, pppoe)
+
+    gateways, provider_networks = _discover_provider_backflow_targets(sock, ifaces)
+    notes = _harden_ip_settings_against_backflow(sock)
+    _ensure_masquerade(sock)
+
+    rules: list[dict[str, str]] = [
+        {
+            "chain": "forward",
+            "action": "drop",
+            "connection-state": "invalid",
+            "comment": f"{NO_BACKFLOW_TAG} drop invalid",
+        },
+        {
+            "chain": "forward",
+            "action": "drop",
+            "in-interface-list": "WAN",
+            "out-interface-list": "WAN",
+            "comment": f"{NO_BACKFLOW_TAG} block wan backflow",
+        },
+    ]
+    for gateway in gateways:
+        rules.append(
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": gateway,
+                "comment": f"{NO_BACKFLOW_TAG} block provider admin",
+            }
+        )
+    for network in provider_networks:
+        net = _ip_network_from_cidr(network)
+        if net is None or not net.is_private:
+            continue
+        rules.append(
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": str(net),
+                "comment": f"{NO_BACKFLOW_TAG} block provider lan",
+            }
+        )
+
+    desired = {_filter_rule_fingerprint(rule) for rule in rules}
+    existing_rows = _rows_with_comment_tag(
+        sock,
+        "/ip/firewall/filter",
+        NO_BACKFLOW_TAG,
+        props=(
+            ".id,chain,action,connection-state,in-interface-list,"
+            "out-interface-list,dst-address,comment"
+        ),
+    )
+    existing = {_filter_rule_fingerprint(row) for row in existing_rows}
+    if desired and desired == existing:
+        return {
+            "ok": True,
+            "changed": False,
+            "provider_gateways": gateways,
+            "provider_networks": provider_networks,
+            "notes": notes,
+        }
+
+    _remove_comment_tagged(sock, "/ip/firewall/filter", NO_BACKFLOW_TAG)
+    place_before = _first_forward_drop_id(sock)
+    # Insert in reverse so the first rule ends up highest when place-before is fixed.
+    for rule in reversed(rules):
+        _add_filter_rule(sock, rule, place_before=place_before)
+
+    notes.append(
+        "blocked WAN→WAN backflow and private ISP modem/ONT networks"
+    )
+    return {
+        "ok": True,
+        "changed": True,
+        "provider_gateways": gateways,
+        "provider_networks": provider_networks,
+        "rules": len(rules),
+        "notes": notes,
+    }
 
 
 def _guess_provider_admin_ips(provider_networks: list[str]) -> list[str]:
@@ -1054,7 +1246,12 @@ def _phase1_prepare_uplink_ports(
     port: int = 8728,
     timeout: float = 12.0,
 ) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
-    """Clear uplink leftovers and unbridge ports (may drop LAN-management API)."""
+    """
+    Hot-prepare uplink ports: clear tagged policy/bond leftovers, then unbridge.
+
+    Keeps DHCP/PPPoE clients so customers stay online across re-apply. Unbridging
+    may still drop LAN-management API — callers must reconnect via tunnel/alt host.
+    """
     ordered = [p.strip() for p in ports if (p or "").strip()]
     with _api_session_on_any(
         dial_hosts, username, password, port=port, timeout=timeout
@@ -1066,7 +1263,7 @@ def _phase1_prepare_uplink_ports(
                 "ok": False,
                 "error": f"Port(s) not found on router: {', '.join(missing)}.",
             }
-        _clear_tagged_uplink(sock)
+        _clear_tagged_uplink_hot(sock)
         return _unbridge_interfaces(sock, ordered), None
 
 
@@ -1444,6 +1641,8 @@ def set_mikrotik_clean_uplink(
                 provider_gateways=provider_gateways or None,
                 provider_networks=provider_networks or None,
             )
+            notes.extend(_harden_ip_settings_against_backflow(sock))
+            _ensure_masquerade(sock)
 
         mode_label = (
             "Modem bypass" if mode == "bypass" else "Behind provider router"
@@ -7764,6 +7963,8 @@ def fetch_customer_pppoe_usage(
                 "download_label": download_label,
                 "upload_label": upload_label,
                 "interface": iface_name,
+                "secret_profile": secret_profile,
+                "on_blocked_profile": on_blocked_profile,
                 "error": "",
             }
     except TimeoutError:
@@ -15462,6 +15663,108 @@ def _hotspot_router_sees_mac(sock: socket.socket, compact_mac: str) -> bool:
     return False
 
 
+def find_pppoe_router_for_username(organization, pppoe_username: str):
+    """
+    Return the org MikroTik that owns this PPPoE username (active session or secret).
+
+    Used when a client has no assigned router so usage pages still probe the
+    correct NAS. Prefers a live session; falls back to a matching /ppp/secret.
+    Single-router orgs skip probing.
+    """
+    from core.models import MikroTikRouter
+
+    want = (pppoe_username or "").strip().lower()
+    if not want:
+        return None
+    want_alts = {want}
+    if want.startswith("+"):
+        want_alts.add(want[1:])
+    elif want.isdigit():
+        want_alts.add(f"+{want}")
+
+    org_id = getattr(organization, "pk", None)
+    cache_key = f"usage:pppoe-router:{org_id}:{want}"
+    cached_id = _captive_cache_get(cache_key)
+    if cached_id:
+        cached = (
+            MikroTikRouter.objects.filter(
+                pk=cached_id,
+                organization=organization,
+                account_status=MikroTikRouter.AccountStatus.ACTIVE,
+            )
+            .first()
+        )
+        if cached is not None:
+            return cached
+
+    routers = list(
+        MikroTikRouter.objects.filter(
+            organization=organization,
+            account_status=MikroTikRouter.AccountStatus.ACTIVE,
+        ).order_by("id")
+    )
+    if not routers:
+        return None
+    if len(routers) == 1:
+        return routers[0]
+
+    secret_hit = None
+    for router in routers:
+        host = getattr(router, "api_host", None) or (router.host or "").strip()
+        username = (router.username or "").strip()
+        if not host or not username:
+            continue
+        try:
+            result = fetch_active_pppoe_usernames(
+                host,
+                username,
+                router.password or "",
+                timeout=min(4.0, _CAPTIVE_API_TIMEOUT),
+            )
+        except Exception:
+            continue
+        if not result.get("ok"):
+            continue
+        active = {n.lower() for n in (result.get("usernames") or [])}
+        if want_alts & active:
+            _captive_cache_set(cache_key, router.pk, _CAPTIVE_SESSION_CACHE_TTL)
+            return router
+        blocked = {n.lower() for n in (result.get("blocked") or [])}
+        # blocked list is only secrets currently on the blocked profile, but
+        # fetch_active also proves the NAS is reachable — keep probing secrets
+        # via a dedicated check below when no session matches.
+        if secret_hit is None and (want_alts & blocked):
+            secret_hit = router
+
+    if secret_hit is not None:
+        _captive_cache_set(cache_key, secret_hit.pk, _CAPTIVE_SESSION_CACHE_TTL)
+        return secret_hit
+
+    # Deeper secret scan when the username is online-nowhere but still provisioned.
+    for router in routers:
+        host = getattr(router, "api_host", None) or (router.host or "").strip()
+        username = (router.username or "").strip()
+        if not host or not username:
+            continue
+        try:
+            with _api_session(
+                host, username, router.password or "", timeout=_CAPTIVE_API_TIMEOUT
+            ) as sock:
+                secret_rows = _print(
+                    sock, "/ppp/secret", props="name,profile,disabled"
+                )
+                for row in secret_rows:
+                    name = (row.get("name") or "").strip().lower()
+                    if name in want_alts:
+                        _captive_cache_set(
+                            cache_key, router.pk, _CAPTIVE_SESSION_CACHE_TTL
+                        )
+                        return router
+        except Exception:
+            continue
+    return None
+
+
 def find_hotspot_router_for_mac(organization, mac_address: str):
     """
     Return the organization's active MikroTik currently seeing this client MAC.
@@ -21369,8 +21672,8 @@ def _restore_bridged_interfaces(
     return restored
 
 
-def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
-    """Remove ispcentric-uplink bond / DHCP / route / mangle / list leftovers."""
+def _clear_tagged_routing_tables(sock: socket.socket) -> int:
+    """Remove ispcentric routing tables (balance/failover policy leftovers)."""
     routing_tables = 0
     try:
         for row in _print(sock, "/routing/table", props=".id,name,comment"):
@@ -21388,15 +21691,109 @@ def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
                 routing_tables += 1
     except Exception:
         pass
+    return routing_tables
+
+
+def _clear_tagged_routing_policy(sock: socket.socket) -> dict[str, int]:
+    """
+    Remove tagged routes / mangle / tables / monitors without touching DHCP/PPPoE.
+
+    Used for hot multi-ISP re-apply so live WAN clients keep working while
+    failover + balance policy is rebuilt.
+    """
+    return {
+        "routes": _remove_comment_tagged(sock, "/ip/route", UPLINK_TAG),
+        "mangle": _remove_comment_tagged(sock, "/ip/firewall/mangle", UPLINK_TAG),
+        "routing_tables": _clear_tagged_routing_tables(sock),
+        "scripts": _remove_comment_tagged(sock, "/system/script", UPLINK_TAG),
+        "schedulers": _remove_comment_tagged(sock, "/system/scheduler", UPLINK_TAG),
+    }
+
+
+def _clear_tagged_uplink_hot(sock: socket.socket) -> dict[str, int]:
+    """
+    Clear tagged bond / policy / WAN-list leftovers while keeping DHCP clients.
+
+    Re-applying bond or multi-ISP must not tear down live ISP DHCP — that drops
+    customers and can strand management until reconnect.
+    """
+    policy = _clear_tagged_routing_policy(sock)
+    return {
+        "bonding": _remove_comment_tagged(sock, "/interface/bonding", UPLINK_TAG),
+        "dhcp_client": 0,
+        "routes": policy.get("routes", 0),
+        "list_members": _remove_comment_tagged(sock, "/interface/list/member", UPLINK_TAG),
+        "mangle": policy.get("mangle", 0),
+        "routing_tables": policy.get("routing_tables", 0),
+        "scripts": policy.get("scripts", 0),
+        "schedulers": policy.get("schedulers", 0),
+    }
+
+
+def _clear_tagged_uplink(sock: socket.socket) -> dict[str, int]:
+    """Remove ispcentric-uplink bond / DHCP / route / mangle / list leftovers."""
+    policy = _clear_tagged_routing_policy(sock)
     return {
         "bonding": _remove_comment_tagged(sock, "/interface/bonding", UPLINK_TAG),
         "dhcp_client": _remove_comment_tagged(sock, "/ip/dhcp-client", UPLINK_TAG),
-        "routes": _remove_comment_tagged(sock, "/ip/route", UPLINK_TAG),
+        "routes": policy.get("routes", 0),
         "list_members": _remove_comment_tagged(sock, "/interface/list/member", UPLINK_TAG),
-        "mangle": _remove_comment_tagged(sock, "/ip/firewall/mangle", UPLINK_TAG),
-        "routing_tables": routing_tables,
-        "scripts": _remove_comment_tagged(sock, "/system/script", UPLINK_TAG),
-        "schedulers": _remove_comment_tagged(sock, "/system/scheduler", UPLINK_TAG),
+        "mangle": policy.get("mangle", 0),
+        "routing_tables": policy.get("routing_tables", 0),
+        "scripts": policy.get("scripts", 0),
+        "schedulers": policy.get("schedulers", 0),
+        "no_backflow_filters": _remove_comment_tagged(
+            sock, "/ip/firewall/filter", NO_BACKFLOW_TAG
+        ),
+    }
+
+
+def _port_row_is_behind_provider(row: dict | None) -> bool:
+    """True when ISP DHCP lives on/through the LAN bridge (must not unbridge)."""
+    row = row or {}
+    if not row.get("is_bridged"):
+        return False
+    uplink_iface = str(row.get("uplink_iface") or "").strip().lower()
+    via_bridge = bool(uplink_iface) and (
+        uplink_iface.startswith("bridge") or bool(row.get("uplink_active"))
+    )
+    return bool(
+        via_bridge
+        or ((row.get("uplink_kind") or "").strip().lower() == "dhcp" and row.get("uplink_active"))
+    )
+
+
+def _reject_behind_provider_unbridge(
+    ports: list[str],
+    live_ports: list[dict] | None,
+    *,
+    mode_label: str,
+) -> dict[str, Any] | None:
+    """Block bond/multi apply that would unbridge behind-provider ISP members."""
+    if not live_ports:
+        return None
+    by_name = {
+        (p.get("name") or "").strip(): p
+        for p in live_ports
+        if (p.get("name") or "").strip()
+    }
+    blocked = [
+        name
+        for name in ports
+        if _port_row_is_behind_provider(by_name.get((name or "").strip()))
+    ]
+    if not blocked:
+        return None
+    return {
+        "ok": False,
+        "skipped": True,
+        "error": (
+            f"Cannot apply {mode_label} on behind-provider port(s) "
+            f"{', '.join(blocked)} — unbridging would drop customers and "
+            "MikroTik management. Use One internet link, or move the ISP "
+            "modem off the LAN bridge first."
+        ),
+        "behind_provider_ports": blocked,
     }
 
 
@@ -21942,6 +22339,7 @@ def apply_mikrotik_uplink_bond(
     port: int = 8728,
     timeout: float = 12.0,
     api_hosts: list[str] | None = None,
+    live_ports: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     Bond two or more ports for the same provider.
@@ -21951,7 +22349,8 @@ def apply_mikrotik_uplink_bond(
     bond to the WAN interface list.
 
     Runs in phases and reconnects over alternate API hosts (WireGuard first) when
-    unbridging drops the LAN-management session.
+    unbridging drops the LAN-management session. Keeps existing ISP DHCP clients
+    during hot re-apply so customers stay online.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -21975,6 +22374,12 @@ def apply_mikrotik_uplink_bond(
         return {"ok": False, "error": "Select at least two ports to bond (same provider)."}
     if bond_name in members:
         return {"ok": False, "error": "Bond interface name cannot match a member port."}
+    blocked = _reject_behind_provider_unbridge(
+        members, live_ports, mode_label="bonding"
+    )
+    if blocked:
+        blocked["recovery_script"] = recovery_script
+        return blocked
 
     try:
         unbridged: list[dict[str, str]] = []
@@ -21989,7 +22394,8 @@ def apply_mikrotik_uplink_bond(
                     "error": f"Port(s) not found on router: {', '.join(missing)}.",
                 }
 
-            _clear_tagged_uplink(sock)
+            # Hot clear: keep DHCP clients alive while rebuilding the bond.
+            _clear_tagged_uplink_hot(sock)
             for row in _print(sock, "/interface/bonding", props=".id,name,comment"):
                 if (row.get("name") or "").strip() != bond_name:
                     continue
@@ -22051,6 +22457,19 @@ def apply_mikrotik_uplink_bond(
                     if not moved_pppoe:
                         dhcp = _ensure_bond_dhcp_client(sock, bond_name)
                         if dhcp.get("_reply") in {"!trap", "!fatal"}:
+                            # Roll back so customers / management are not left unbridged
+                            # without a working WAN.
+                            for row in _print(
+                                sock, "/interface/bonding", props=".id,name,comment"
+                            ):
+                                if (row.get("name") or "").strip() != bond_name:
+                                    continue
+                                item_id = (row.get(".id") or "").strip()
+                                if item_id and UPLINK_TAG in (row.get("comment") or ""):
+                                    _remove(sock, "/interface/bonding", item_id)
+                                break
+                            if unbridged:
+                                _restore_bridged_interfaces(sock, unbridged)
                             return {
                                 "ok": False,
                                 "error": _trap_message(
@@ -22059,7 +22478,7 @@ def apply_mikrotik_uplink_bond(
                                 ),
                                 "bond_name": bond_name,
                                 "members": members,
-                                "unbridged": unbridged,
+                                "unbridged": [],
                                 "recovery_script": recovery_script,
                             }
 
@@ -22067,6 +22486,10 @@ def apply_mikrotik_uplink_bond(
                     for pppoe_name in moved_pppoe:
                         if pppoe_name and pppoe_name != bond_name:
                             _ensure_uplink_list_member(sock, pppoe_name)
+
+                    backflow = _ensure_uplink_no_backflow(
+                        sock, [bond_name, *members]
+                    )
 
                     return {
                         "ok": True,
@@ -22079,6 +22502,7 @@ def apply_mikrotik_uplink_bond(
                         "disabled_member_dhcp": disabled_dhcp,
                         "moved_pppoe": moved_pppoe,
                         "uplink_kind": uplink_kind,
+                        "no_backflow": backflow,
                         "session_host": session_host,
                         "recovery_script": recovery_script,
                         "message": (
@@ -22089,6 +22513,7 @@ def apply_mikrotik_uplink_bond(
                                 if moved_pppoe
                                 else "."
                             )
+                            + " ISP backflow blocked."
                         ),
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
@@ -22696,6 +23121,7 @@ def apply_mikrotik_uplink_balance(
     port: int = 8728,
     timeout: float = 14.0,
     api_hosts: list[str] | None = None,
+    live_ports: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     PCC load-balance across different ISP uplinks.
@@ -22708,6 +23134,7 @@ def apply_mikrotik_uplink_balance(
     temporarily disables PCC slots for links that are slow or lossy.
 
     Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
+    DHCP/PPPoE clients are preserved across re-apply (hot policy rebuild).
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -22726,6 +23153,14 @@ def apply_mikrotik_uplink_balance(
             "ok": False,
             "error": "Select at least two ports (Internet + Backup internet) to balance.",
         }
+    blocked = _reject_behind_provider_unbridge(
+        members,
+        live_ports,
+        mode_label="multi-ISP share",
+    )
+    if blocked:
+        blocked["recovery_script"] = recovery_script
+        return blocked
 
     def _weight_for(name: str) -> int:
         raw = weights_in.get(name, weights_in.get(name.lower(), 100))
@@ -22826,6 +23261,8 @@ def apply_mikrotik_uplink_balance(
                         )
 
                     if len(balance_members) < 2:
+                        if unbridged:
+                            _restore_bridged_interfaces(sock, unbridged)
                         return {
                             "ok": False,
                             "error": (
@@ -22837,9 +23274,13 @@ def apply_mikrotik_uplink_balance(
                                     else ""
                                 )
                             ),
-                            "unbridged": unbridged,
+                            "unbridged": [],
                             "recovery_script": recovery_script,
                         }
+
+                    # Hot re-apply: drop old PCC/failover policy only — keep DHCP/PPPoE
+                    # clients up so customers stay online while new routes install.
+                    _clear_tagged_routing_policy(sock)
 
                     pcc = _install_balance_pcc(sock, balance_members)
                     if not pcc.get("ok"):
@@ -22905,6 +23346,12 @@ def apply_mikrotik_uplink_balance(
                             f"(>{SMART_BALANCE_SLOW_RTT_MS}ms or >{SMART_BALANCE_SLOW_LOSS_PCT}% loss)"
                         )
 
+                    backflow = _ensure_uplink_no_backflow(
+                        sock,
+                        [m["interface"] for m in balance_members]
+                        + [m.get("wan_iface") or "" for m in balance_members],
+                    )
+
                     return {
                         "ok": True,
                         "mode": "smart_balance" if smart_balance else "balance",
@@ -22920,6 +23367,7 @@ def apply_mikrotik_uplink_balance(
                         "slot_counts": slots,
                         "preferred": preferred,
                         "mangle_rules": pcc.get("mangle_rules") or 0,
+                        "no_backflow": backflow,
                         "session_host": session_host,
                         "recovery_script": recovery_script,
                         "message": (
@@ -22934,6 +23382,7 @@ def apply_mikrotik_uplink_balance(
                                 if missing_gw
                                 else ""
                             )
+                            + " ISP backflow blocked."
                         ),
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
@@ -22983,6 +23432,7 @@ def apply_mikrotik_uplink_failover(
     port: int = 8728,
     timeout: float = 12.0,
     api_hosts: list[str] | None = None,
+    live_ports: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     Configure primary + backup WAN ports for different providers.
@@ -22992,6 +23442,7 @@ def apply_mikrotik_uplink_failover(
     failover also triggers if the ISP path dies while the cable stays up.
 
     Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
+    DHCP clients are preserved; only tagged failover routes get check-gateway.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -23014,6 +23465,12 @@ def apply_mikrotik_uplink_failover(
         members=ordered,
         primary_port=primary_port,
     )
+    blocked = _reject_behind_provider_unbridge(
+        ordered, live_ports, mode_label="failover"
+    )
+    if blocked:
+        blocked["recovery_script"] = recovery_script
+        return blocked
 
     try:
         unbridged, phase_error = _phase1_prepare_uplink_ports(
@@ -23047,6 +23504,8 @@ def apply_mikrotik_uplink_failover(
                 with _api_session_on_any(
                     dial_hosts, username, password, port=port, timeout=timeout
                 ) as (sock, session_host):
+                    # Keep WAN clients; rebuild only tagged failover policy.
+                    _clear_tagged_routing_policy(sock)
                     uplink_results: list[dict[str, str]] = []
                     for index, iface in enumerate(ordered):
                         distance = 1 + (index * 10)
@@ -23075,6 +23534,8 @@ def apply_mikrotik_uplink_failover(
 
                     checked_routes = _install_failover_gateway_checks(sock, uplink_results)
 
+                    # Only touch tagged ispcentric defaults — never operator/static
+                    # routes that could blackhole the whole network.
                     for row in _print(
                         sock,
                         "/ip/route",
@@ -23086,6 +23547,8 @@ def apply_mikrotik_uplink_failover(
                         item_id = (row.get(".id") or "").strip()
                         if not item_id or _flag_yes(row.get("dynamic")):
                             continue
+                        if UPLINK_TAG not in (row.get("comment") or ""):
+                            continue
                         _set(sock, "/ip/route", item_id, **{"check-gateway": "ping"})
 
                     checked_label = ""
@@ -23094,6 +23557,8 @@ def apply_mikrotik_uplink_failover(
                             f" Ping-check enabled on {len(checked_routes)} "
                             f"gateway{'s' if len(checked_routes) != 1 else ''}."
                         )
+
+                    backflow = _ensure_uplink_no_backflow(sock, ordered)
 
                     return {
                         "ok": True,
@@ -23104,12 +23569,14 @@ def apply_mikrotik_uplink_failover(
                         "wan_interface": primary_port,
                         "unbridged": unbridged,
                         "checked_routes": checked_routes,
+                        "no_backflow": backflow,
                         "session_host": session_host,
                         "recovery_script": recovery_script,
                         "message": (
                             f"Failover ready: primary {primary_port}, "
                             f"backup {', '.join(backups)}."
                             f"{checked_label}"
+                            " ISP backflow blocked."
                         ),
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
@@ -23737,35 +24204,191 @@ def _read_balance_mark_to_port(sock: socket.socket) -> dict[int, str]:
     return mapping
 
 
-def _read_live_session_addresses(sock: socket.socket) -> dict[str, dict[str, str]]:
-    """Map client IP to session metadata (PPPoE username, MAC, source)."""
-    sessions: dict[str, dict[str, str]] = {}
+def _read_bridge_mac_to_port(sock: socket.socket) -> dict[str, str]:
+    """Map compact MAC → physical bridge port (on-interface)."""
+    mac_to_port: dict[str, str] = {}
+    try:
+        hosts = _print(
+            sock,
+            "/interface/bridge/host",
+            props="mac-address,on-interface,local",
+        )
+    except Exception:
+        return mac_to_port
+    for row in hosts:
+        if _is_ros_true(row.get("local")):
+            continue
+        mac = _mac_compact(row.get("mac-address") or "")
+        on_iface = (row.get("on-interface") or "").strip()
+        if mac and on_iface:
+            mac_to_port[mac] = on_iface
+    return mac_to_port
 
-    def _remember(ip: str, *, source: str, username: str = "", mac: str = "") -> None:
+
+def _read_arp_ip_to_mac(sock: socket.socket) -> dict[str, str]:
+    """Map IP → compact MAC from ARP."""
+    ip_to_mac: dict[str, str] = {}
+    try:
+        rows = _print(sock, "/ip/arp", props="address,mac-address")
+    except Exception:
+        return ip_to_mac
+    for row in rows:
+        ip = _parse_connection_address(row.get("address") or "")
+        mac = _mac_compact(row.get("mac-address") or "")
+        if ip and mac:
+            ip_to_mac[ip] = mac
+    return ip_to_mac
+
+
+def _read_live_session_addresses(
+    sock: socket.socket,
+    *,
+    sample_host: str = "",
+) -> dict[str, dict[str, Any]]:
+    """
+    Map client IP to session metadata plus live usage analytics.
+
+    Includes PPPoE/Hotspot byte counters, poll-to-poll rates, uptime, and the
+    LAN cable port from the bridge host table when known.
+    """
+    sessions: dict[str, dict[str, Any]] = {}
+    sample_host = (sample_host or "").strip() or "router"
+    mac_to_port = _read_bridge_mac_to_port(sock)
+    ip_to_mac = _read_arp_ip_to_mac(sock)
+
+    try:
+        interfaces = _print(
+            sock,
+            "/interface",
+            props="name,type,rx-byte,tx-byte,running",
+        )
+    except Exception:
+        interfaces = []
+    by_iface = {(row.get("name") or "").strip(): row for row in interfaces}
+
+    def _remember(
+        ip: str,
+        *,
+        source: str,
+        username: str = "",
+        mac: str = "",
+        bytes_in: int = 0,
+        bytes_out: int = 0,
+        uptime: str = "",
+        uptime_raw: str = "",
+        interface: str = "",
+        prefer: bool = False,
+    ) -> None:
         ip = _parse_connection_address(ip)
         if not ip:
             return
         existing = sessions.get(ip) or {}
+        mac = _mac_compact(mac) or _mac_compact(existing.get("mac") or "") or ip_to_mac.get(ip, "")
+        lan_port = mac_to_port.get(mac, "") if mac else ""
+        if not lan_port:
+            lan_port = (existing.get("lan_port") or "").strip()
+
+        download_bps = existing.get("download_bps")
+        upload_bps = existing.get("upload_bps")
+        download_label = existing.get("download_label") or "—"
+        upload_label = existing.get("upload_label") or "—"
+        bi = max(0, int(bytes_in or 0))
+        bo = max(0, int(bytes_out or 0))
+        if prefer or (bi or bo) or not existing:
+            if bi or bo:
+                rate_key = f"assigned:{sample_host}:{source}:{ip}"
+                rates = _hotspot_rates_from_bytes(rate_key, bi, bo)
+                download_bps = rates.get("download_bps")
+                upload_bps = rates.get("upload_bps")
+                download_label = rates.get("download_label") or "—"
+                upload_label = rates.get("upload_label") or "—"
+            elif existing and not prefer:
+                bi = int(existing.get("bytes_in") or 0)
+                bo = int(existing.get("bytes_out") or 0)
+
         sessions[ip] = {
             "source": source or existing.get("source") or "",
             "pppoe_username": username or existing.get("pppoe_username") or "",
             "mac": mac or existing.get("mac") or "",
+            "lan_port": lan_port,
+            "bytes_in": bi if (prefer or bi or bo or not existing) else int(existing.get("bytes_in") or 0),
+            "bytes_out": bo if (prefer or bi or bo or not existing) else int(existing.get("bytes_out") or 0),
+            "download_bps": download_bps,
+            "upload_bps": upload_bps,
+            "download_label": download_label,
+            "upload_label": upload_label,
+            "uptime": uptime or existing.get("uptime") or "",
+            "uptime_raw": uptime_raw or existing.get("uptime_raw") or "",
+            "interface": interface or existing.get("interface") or "",
         }
 
+    # PPPoE first — counters from dynamic <pppoe-…> interfaces.
     try:
-        for row in _print(sock, "/ppp/active", props="name,address"):
+        for row in _print(
+            sock,
+            "/ppp/active",
+            props="name,address,caller-id,uptime",
+        ):
+            pppoe_name = (row.get("name") or "").strip()
+            if not pppoe_name:
+                continue
+            key = pppoe_name.lower()
+            iface_name = ""
+            for candidate in (
+                f"<pppoe-{pppoe_name}>",
+                f"<pppoe-{key}>",
+                pppoe_name,
+            ):
+                if candidate in by_iface:
+                    iface_name = candidate
+                    break
+            if not iface_name:
+                for iface_row in interfaces:
+                    name = (iface_row.get("name") or "").strip()
+                    lower = name.lower()
+                    if key in lower and "pppoe" in lower:
+                        iface_name = name
+                        break
+            bytes_in = 0
+            bytes_out = 0
+            if iface_name and iface_name in by_iface:
+                iface = by_iface[iface_name]
+                bytes_in = _parse_int(iface.get("rx-byte"))
+                bytes_out = _parse_int(iface.get("tx-byte"))
+            uptime_raw = (row.get("uptime") or "").strip()
             _remember(
                 row.get("address") or "",
                 source="pppoe",
-                username=(row.get("name") or "").strip(),
+                username=pppoe_name,
+                mac=(row.get("caller-id") or "").strip(),
+                bytes_in=bytes_in,
+                bytes_out=bytes_out,
+                uptime=_human_uptime(uptime_raw),
+                uptime_raw=uptime_raw,
+                interface=iface_name,
+                prefer=True,
             )
     except Exception:
         pass
 
     try:
-        for row in _print(sock, "/ip/hotspot/active", props="address,mac-address,user"):
+        for row in _print(
+            sock,
+            "/ip/hotspot/active",
+            props="address,mac-address,user,uptime,bytes-in,bytes-out",
+        ):
             mac = _mac_compact(row.get("mac-address") or row.get("user") or "")
-            _remember(row.get("address") or "", source="hotspot", mac=mac)
+            uptime_raw = (row.get("uptime") or "").strip()
+            _remember(
+                row.get("address") or "",
+                source="hotspot",
+                mac=mac,
+                bytes_in=_parse_int(row.get("bytes-in")),
+                bytes_out=_parse_int(row.get("bytes-out")),
+                uptime=_human_uptime(uptime_raw),
+                uptime_raw=uptime_raw,
+                prefer=True,
+            )
     except Exception:
         pass
 
@@ -23784,6 +24407,15 @@ def _read_live_session_addresses(sock: socket.socket) -> dict[str, dict[str, str
             _remember(row.get("address") or "", source="dhcp", mac=mac)
     except Exception:
         pass
+
+    # Fill LAN port from ARP→bridge when session had no MAC.
+    for ip, meta in sessions.items():
+        if (meta.get("lan_port") or "").strip():
+            continue
+        mac = _mac_compact(meta.get("mac") or "") or ip_to_mac.get(ip, "")
+        if mac:
+            meta["mac"] = mac
+            meta["lan_port"] = mac_to_port.get(mac, "")
 
     return sessions
 
@@ -23831,7 +24463,7 @@ def read_client_wan_usage(
                 for index, name in enumerate(members):
                     mark_to_port[index] = name
 
-            sessions = _read_live_session_addresses(sock)
+            sessions = _read_live_session_addresses(sock, sample_host=host)
             ip_mark_counts: dict[str, dict[int, int]] = {}
             total_marked = 0
 
@@ -23882,6 +24514,25 @@ def read_client_wan_usage(
             else:
                 default_port = (primary_wan or members[0] if members else "").strip()
 
+            def _session_analytics(ip: str) -> dict[str, Any]:
+                meta = sessions.get(ip) or {}
+                bytes_in = max(0, int(meta.get("bytes_in") or 0))
+                bytes_out = max(0, int(meta.get("bytes_out") or 0))
+                return {
+                    "lan_port": (meta.get("lan_port") or "").strip(),
+                    "mac": (meta.get("mac") or "").strip(),
+                    "bytes_in": bytes_in,
+                    "bytes_out": bytes_out,
+                    "bytes_total": bytes_in + bytes_out,
+                    "download_bps": meta.get("download_bps"),
+                    "upload_bps": meta.get("upload_bps"),
+                    "download_label": meta.get("download_label") or "—",
+                    "upload_label": meta.get("upload_label") or "—",
+                    "uptime": meta.get("uptime") or "",
+                    "session_source": meta.get("source") or "",
+                    "pppoe_username": meta.get("pppoe_username") or "",
+                }
+
             ip_usage: dict[str, dict[str, Any]] = {}
             for ip, counts in ip_mark_counts.items():
                 best_index = max(counts, key=lambda idx: counts[idx])
@@ -23891,10 +24542,13 @@ def read_client_wan_usage(
                     "connections": sum(counts.values()),
                     "mark_index": best_index,
                     "source": "connection_mark",
+                    **_session_analytics(ip),
                 }
 
             for ip in sessions:
                 if ip in ip_usage:
+                    # Keep mark-based ISP, refresh live analytics.
+                    ip_usage[ip].update(_session_analytics(ip))
                     continue
                 if default_port:
                     ip_usage[ip] = {
@@ -23902,6 +24556,7 @@ def read_client_wan_usage(
                         "connections": 0,
                         "mark_index": None,
                         "source": "default_wan",
+                        **_session_analytics(ip),
                     }
 
             mark_to_port_out = {str(k): v for k, v in sorted(mark_to_port.items())}

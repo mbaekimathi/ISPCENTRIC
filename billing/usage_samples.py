@@ -653,9 +653,11 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     )
     pppoe_by_router: dict[int, dict[str, Customer]] = {}
     hotspot_by_router: dict[int, dict[str, Customer]] = {}
-    # Global MAC → customer so Hotspot gadgets are matched even when the
-    # client has no assigned router, or is surfing on a different NAS.
+    # Global maps so unassigned / roaming clients still match live NAS sessions.
+    pppoe_by_username: dict[str, Customer] = {}
     hotspot_by_mac: dict[str, Customer] = {}
+    # Single-NAS orgs can treat unassigned PPPoE clients as belonging to that box.
+    single_router_id = routers[0].pk if len(routers) == 1 else None
 
     def _hotspot_macs(customer: Customer) -> list[str]:
         macs: list[str] = []
@@ -675,20 +677,25 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
             pass
         return macs
 
+    def _register_pppoe_keys(bucket: dict[str, Customer], key: str, customer: Customer) -> None:
+        bucket[key] = customer
+        # Match NAS sessions stored with/without a leading +.
+        if key.startswith("+"):
+            bucket.setdefault(key[1:], customer)
+        elif key.isdigit():
+            bucket.setdefault(f"+{key}", customer)
+
     for customer in customers:
         router_id = customer.router_id
         if customer.service_type == Customer.ServiceType.PPPOE:
-            if not router_id:
-                continue
             key = (customer.pppoe_username or "").strip().lower()
-            if key:
-                bucket = pppoe_by_router.setdefault(router_id, {})
-                bucket[key] = customer
-                # Match NAS sessions stored with/without a leading +.
-                if key.startswith("+"):
-                    bucket.setdefault(key[1:], customer)
-                elif key.isdigit():
-                    bucket.setdefault(f"+{key}", customer)
+            if not key:
+                continue
+            _register_pppoe_keys(pppoe_by_username, key, customer)
+            effective_router = router_id or single_router_id
+            if effective_router:
+                bucket = pppoe_by_router.setdefault(int(effective_router), {})
+                _register_pppoe_keys(bucket, key, customer)
         elif customer.service_type == Customer.ServiceType.HOTSPOT:
             macs = _hotspot_macs(customer)
             if not macs:
@@ -707,8 +714,9 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
         hotspot_sessions: dict[str, dict[str, Any]] = {}
         pppoe_ok = False
         hotspot_ok = False
-        pppoe_map = pppoe_by_router.get(router.pk) or {}
-        if pppoe_map:
+        # Probe PPPoE whenever this org has any PPPoE usernames — sessions on
+        # an unexpected NAS must still attribute to the billing client.
+        if pppoe_by_username:
             result = fetch_router_bulk_pppoe_usage(
                 router.host,
                 router.username,
@@ -752,7 +760,8 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                 pppoe_map = pppoe_by_router.get(router_id) or {}
                 matched: set[int] = set()
                 for username, payload in pppoe_sessions.items():
-                    customer = pppoe_map.get((username or "").strip().lower())
+                    key = (username or "").strip().lower()
+                    customer = pppoe_map.get(key) or pppoe_by_username.get(key)
                     if not customer:
                         continue
                     try:

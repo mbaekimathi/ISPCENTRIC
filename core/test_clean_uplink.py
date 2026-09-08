@@ -147,12 +147,20 @@ class EnsureFilterRulesTests(SimpleTestCase):
             )
 
         drops = [r for r in added if r.get("action") == "drop"]
+        dst_drops = {r["dst-address"] for r in drops if r.get("dst-address")}
         self.assertEqual(
-            {r["dst-address"] for r in drops},
+            dst_drops,
             {"192.168.1.1", "192.168.100.1", "192.168.1.0/24"},
         )
         # Public provider_networks must not be blocked.
         self.assertFalse(any(r.get("dst-address") == "8.8.8.0/24" for r in drops))
+        self.assertTrue(
+            any(
+                r.get("in-interface-list") == "WAN"
+                and r.get("out-interface-list") == "WAN"
+                for r in drops
+            )
+        )
 
     def test_bypass_also_blocks_provider_when_known(self):
         added: list[dict] = []
@@ -174,13 +182,14 @@ class EnsureFilterRulesTests(SimpleTestCase):
                 provider_networks=["192.168.1.0/24"],
             )
         drops = [r for r in added if r.get("action") == "drop"]
+        dst_drops = {r["dst-address"] for r in drops if r.get("dst-address")}
         self.assertEqual(
-            {r["dst-address"] for r in drops},
+            dst_drops,
             {"192.168.1.1", "192.168.1.0/24"},
         )
         self.assertTrue(any(CLEAN_UPLINK_TAG in (r.get("comment") or "") for r in added))
 
-    def test_no_drops_when_no_provider_targets(self):
+    def test_no_provider_targets_still_blocks_wan_backflow(self):
         added: list[dict] = []
         with (
             patch("core.mikrotik_connect._remove_tagged"),
@@ -194,7 +203,12 @@ class EnsureFilterRulesTests(SimpleTestCase):
             ),
         ):
             _ensure_filter_rules(object(), mode="bypass")
-        self.assertFalse(any(r.get("action") == "drop" for r in added))
+        drops = [r for r in added if r.get("action") == "drop"]
+        self.assertTrue(drops)
+        self.assertFalse(any(r.get("dst-address") for r in drops))
+        self.assertTrue(
+            any("block wan backflow" in (r.get("comment") or "") for r in drops)
+        )
         self.assertTrue(any(CLEAN_UPLINK_TAG in (r.get("comment") or "") for r in added))
 
     def test_filter_rules_are_idempotent(self):
@@ -210,6 +224,19 @@ class EnsureFilterRulesTests(SimpleTestCase):
                 "action": "drop",
                 "dst-address": "192.168.100.1",
                 "comment": f"{CLEAN_UPLINK_TAG} block provider admin",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "connection-state": "invalid",
+                "comment": f"{CLEAN_UPLINK_TAG} drop invalid",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "in-interface-list": "WAN",
+                "out-interface-list": "WAN",
+                "comment": f"{CLEAN_UPLINK_TAG} block wan backflow",
             },
             {
                 "chain": "forward",
@@ -229,6 +256,131 @@ class EnsureFilterRulesTests(SimpleTestCase):
                 mode="bypass",
                 provider_gateways=["192.168.100.1"],
             )
+        remove.assert_not_called()
+        add.assert_not_called()
+
+    def test_filter_rules_include_wan_backflow_drop(self):
+        with (
+            patch("core.mikrotik_connect._rows_with_tag", return_value=[]),
+            patch("core.mikrotik_connect._remove_tagged") as remove,
+            patch("core.mikrotik_connect._add") as add,
+        ):
+            _ensure_filter_rules(object(), mode="bypass", provider_gateways=[])
+        remove.assert_called_once()
+        added_comments = [
+            str(c.kwargs.get("comment") or "") for c in add.call_args_list
+        ]
+        self.assertTrue(
+            any("block wan backflow" in comment for comment in added_comments)
+        )
+        self.assertTrue(
+            any("drop invalid" in comment for comment in added_comments)
+        )
+
+
+class NoBackflowUplinkTests(SimpleTestCase):
+    def test_ensure_uplink_no_backflow_installs_wan_to_wan_drop(self):
+        from core.mikrotik_connect import NO_BACKFLOW_TAG, _ensure_uplink_no_backflow
+
+        added: list[dict] = []
+
+        def fake_add_filter(sock, rule, *, place_before=""):
+            added.append({**rule, "_place_before": place_before})
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._ensure_interface_list"),
+            patch("core.mikrotik_connect._ensure_uplink_list_member"),
+            patch("core.mikrotik_connect._find_pppoe_client_for_wan", return_value=""),
+            patch(
+                "core.mikrotik_connect._discover_provider_backflow_targets",
+                return_value=(["192.168.1.1"], ["192.168.1.0/24"]),
+            ),
+            patch(
+                "core.mikrotik_connect._harden_ip_settings_against_backflow",
+                return_value=["hardened"],
+            ),
+            patch("core.mikrotik_connect._ensure_masquerade"),
+            patch(
+                "core.mikrotik_connect._rows_with_comment_tag",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._remove_comment_tagged") as remove,
+            patch(
+                "core.mikrotik_connect._first_forward_drop_id",
+                return_value="*1",
+            ),
+            patch(
+                "core.mikrotik_connect._add_filter_rule",
+                side_effect=fake_add_filter,
+            ),
+        ):
+            result = _ensure_uplink_no_backflow(object(), ["ether1", "ether2"])
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["changed"])
+        remove.assert_called_once()
+        comments = [row.get("comment") or "" for row in added]
+        self.assertTrue(any("block wan backflow" in c for c in comments))
+        self.assertTrue(any("block provider admin" in c for c in comments))
+        self.assertTrue(any("block provider lan" in c for c in comments))
+        self.assertTrue(all(NO_BACKFLOW_TAG in c for c in comments))
+        self.assertTrue(all(row.get("_place_before") == "*1" for row in added))
+
+    def test_ensure_uplink_no_backflow_is_idempotent(self):
+        from core.mikrotik_connect import NO_BACKFLOW_TAG, _ensure_uplink_no_backflow
+
+        existing = [
+            {
+                "chain": "forward",
+                "action": "drop",
+                "connection-state": "invalid",
+                "comment": f"{NO_BACKFLOW_TAG} drop invalid",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "in-interface-list": "WAN",
+                "out-interface-list": "WAN",
+                "comment": f"{NO_BACKFLOW_TAG} block wan backflow",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": "192.168.1.1",
+                "comment": f"{NO_BACKFLOW_TAG} block provider admin",
+            },
+            {
+                "chain": "forward",
+                "action": "drop",
+                "dst-address": "192.168.1.0/24",
+                "comment": f"{NO_BACKFLOW_TAG} block provider lan",
+            },
+        ]
+        with (
+            patch("core.mikrotik_connect._ensure_interface_list"),
+            patch("core.mikrotik_connect._ensure_uplink_list_member"),
+            patch("core.mikrotik_connect._find_pppoe_client_for_wan", return_value=""),
+            patch(
+                "core.mikrotik_connect._discover_provider_backflow_targets",
+                return_value=(["192.168.1.1"], ["192.168.1.0/24"]),
+            ),
+            patch(
+                "core.mikrotik_connect._harden_ip_settings_against_backflow",
+                return_value=[],
+            ),
+            patch("core.mikrotik_connect._ensure_masquerade"),
+            patch(
+                "core.mikrotik_connect._rows_with_comment_tag",
+                return_value=existing,
+            ),
+            patch("core.mikrotik_connect._remove_comment_tagged") as remove,
+            patch("core.mikrotik_connect._add_filter_rule") as add,
+        ):
+            result = _ensure_uplink_no_backflow(object(), ["ether1"])
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["changed"])
         remove.assert_not_called()
         add.assert_not_called()
 

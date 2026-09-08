@@ -547,6 +547,10 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
                 "core.mikrotik_connect._remove_comment_tagged",
                 return_value=0,
             ),
+            patch(
+                "core.mikrotik_connect._ensure_uplink_no_backflow",
+                return_value={"ok": True, "changed": True},
+            ),
         ):
             result = apply_mikrotik_uplink_failover(
                 "10.9.0.3",
@@ -619,6 +623,10 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
                 "core.mikrotik_connect._remove_comment_tagged",
                 return_value=0,
             ),
+            patch(
+                "core.mikrotik_connect._ensure_uplink_no_backflow",
+                return_value={"ok": True, "changed": True},
+            ),
         ):
             result = apply_mikrotik_uplink_bond(
                 "10.9.0.3",
@@ -680,6 +688,10 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._remove_comment_tagged",
                 return_value=0,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_uplink_no_backflow",
+                return_value={"ok": True, "changed": True},
             ),
         ):
             result = apply_mikrotik_uplink_bond(
@@ -1667,3 +1679,958 @@ class RouterClientAnalysisTests(SimpleTestCase):
         self.assertEqual(client["name"], "Jane Doe")
         self.assertEqual(client["isp_port"], "ether2")
         self.assertEqual(client["connection_count"], 4)
+        self.assertIn("download_label", client)
+        self.assertIn("usage_url", client)
+        self.assertTrue(any(p["kind"] == "isp" for p in analysis["port_analytics"]))
+
+    def test_build_router_client_analysis_groups_lan_port_usage(self):
+        router = MikroTikRouter(
+            name="edge",
+            host="10.0.0.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+            uplink_ports=["ether1"],
+            wan_interface="ether1",
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether3": MikroTikRouter.PortRole.LAN,
+            },
+        )
+        customer = MagicMock()
+        customer.pk = 9
+        customer.full_name = "Port Client"
+        customer.account_number = "ACC-9"
+        customer.pppoe_username = "portuser"
+        customer.hotspot_mac = None
+        customer.cpe_ip = ""
+        customer.cpe_mac = ""
+        customer.service_type = "pppoe"
+        customer.status = "active"
+
+        usage = {
+            "ok": True,
+            "uses_connection_marks": False,
+            "default_isp_port": "ether1",
+            "ip_usage": {
+                "10.10.0.9": {
+                    "isp_port": "ether1",
+                    "connections": 2,
+                    "source": "default_wan",
+                    "lan_port": "ether3",
+                    "download_bps": 2_000_000,
+                    "upload_bps": 500_000,
+                    "download_label": "2.00 Mbps",
+                    "upload_label": "500.0 Kbps",
+                    "bytes_in": 1000,
+                    "bytes_out": 9000,
+                    "uptime": "1h",
+                }
+            },
+            "sessions": {
+                "10.10.0.9": {
+                    "pppoe_username": "portuser",
+                    "source": "pppoe",
+                    "lan_port": "ether3",
+                },
+            },
+        }
+        with patch("billing.models.Customer.objects") as customer_qs:
+            customer_qs.filter.return_value.only.return_value = [customer]
+            analysis = _build_router_client_analysis(
+                router,
+                uplink_mode=MikroTikRouter.UplinkMode.SINGLE,
+                uplink_live={},
+                wan_share={
+                    "ok": True,
+                    "shares": [
+                        {
+                            "name": "ether1",
+                            "pct": 100,
+                            "rate_label": "12 Mbps",
+                            "download_bps": 12_000_000,
+                            "upload_bps": 1_000_000,
+                            "download_label": "12 Mbps",
+                            "upload_label": "1 Mbps",
+                        }
+                    ],
+                },
+                smart_balance_status={},
+                primary_wan_ports=["ether1"],
+                backup_wan_ports=[],
+                usage=usage,
+            )
+
+        self.assertEqual(analysis["summary"]["online_clients"], 1)
+        self.assertEqual(analysis["summary"]["download_label"], "2.00 Mbps")
+        lan = next(p for p in analysis["lan_ports"] if p["port"] == "ether3")
+        self.assertEqual(lan["online_clients"], 1)
+        self.assertEqual(lan["clients"][0]["name"], "Port Client")
+        self.assertEqual(lan["clients"][0]["lan_port"], "ether3")
+        self.assertEqual(analysis["clients"][0]["data_label"], "9.8 KB")
+
+
+class AutomaticPortLabelTests(SimpleTestCase):
+    def _router(self, **kwargs):
+        router = MagicMock(spec=MikroTikRouter)
+        router.pk = 6
+        router.port_roles = kwargs.pop(
+            "port_roles",
+            {
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether2": MikroTikRouter.PortRole.LAN,
+            },
+        )
+        router.wan_interface = kwargs.pop("wan_interface", "ether1")
+        router.uplink_mode = kwargs.pop(
+            "uplink_mode", MikroTikRouter.UplinkMode.SINGLE
+        )
+        router.uplink_ports = kwargs.pop("uplink_ports", ["ether1"])
+        router.uplink_weights = {}
+        router.save = MagicMock()
+        return router
+
+    def test_single_wan_resyncs_when_isp_moves(self):
+        from core.views import _auto_assign_single_wan_roles
+        from django.core.cache import cache
+
+        cache.clear()
+        router = self._router()
+        ports = [
+            _port("ether1", running=False, uplink_kind="dhcp", uplink_active=False),
+            _port(
+                "ether4",
+                bridged=True,
+                running=True,
+                uplink_kind="dhcp",
+                uplink_active=True,
+            ),
+            _port("ether2", bridged=True, running=True),
+            _port("wlan1", bridged=True, wireless=True, running=False, iface_type="wlan"),
+        ]
+        with patch("core.views._apply_single_wan_on_router") as apply_wan:
+            apply_wan.return_value = {"ok": True, "skipped": True}
+            # First three polls only debounce — no RouterOS push yet.
+            for _ in range(3):
+                result = _auto_assign_single_wan_roles(
+                    router,
+                    ports,
+                    suggested_wan="ether4",
+                    api_host="10.9.0.2",
+                    apply_on_router=True,
+                )
+            self.assertFalse(apply_wan.called)
+            self.assertEqual(result["wan"], "ether4")
+            # Fourth stable poll applies once.
+            result = _auto_assign_single_wan_roles(
+                router,
+                ports,
+                suggested_wan="ether4",
+                api_host="10.9.0.2",
+                apply_on_router=True,
+            )
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["wan"], "ether4")
+        self.assertEqual(router.port_roles["ether4"], MikroTikRouter.PortRole.WAN)
+        self.assertEqual(router.port_roles["ether2"], MikroTikRouter.PortRole.LAN)
+        self.assertEqual(router.port_roles["wlan1"], MikroTikRouter.PortRole.LAN)
+        apply_wan.assert_called_once()
+
+    def test_sticky_wan_ignores_flapping_suggested_port(self):
+        from core.views import _auto_assign_single_wan_roles
+        from django.core.cache import cache
+
+        cache.clear()
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port(
+                "ether4",
+                bridged=True,
+                running=True,
+                uplink_kind="dhcp",
+                uplink_active=True,
+            ),
+            _port("ether2", bridged=True, running=True),
+        ]
+        router = self._router(
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether2": MikroTikRouter.PortRole.LAN,
+                "ether4": MikroTikRouter.PortRole.LAN,
+            },
+            wan_interface="ether1",
+        )
+        with patch("core.views._apply_single_wan_on_router") as apply_wan:
+            result = _auto_assign_single_wan_roles(
+                router,
+                ports,
+                suggested_wan="ether4",
+                api_host="10.9.0.2",
+                apply_on_router=True,
+            )
+        self.assertEqual(result["wan"], "ether1")
+        self.assertTrue(result.get("sticky") or result["wan"] == "ether1")
+        apply_wan.assert_not_called()
+        self.assertEqual(router.port_roles["ether1"], MikroTikRouter.PortRole.WAN)
+
+    def test_single_wan_no_change_when_already_synced(self):
+        from core.views import _auto_assign_single_wan_roles
+
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", bridged=True, running=True),
+        ]
+        router = self._router(
+            port_roles=suggest_port_roles(ports, suggested_wan="ether1"),
+            wan_interface="ether1",
+        )
+        result = _auto_assign_single_wan_roles(
+            router, ports, suggested_wan="ether1", apply_on_router=False
+        )
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["wan"], "ether1")
+
+    def test_fill_non_uplink_customer_roles(self):
+        from core.views import _fill_non_uplink_customer_roles
+
+        roles = {
+            "ether1": MikroTikRouter.PortRole.WAN,
+            "ether2": MikroTikRouter.PortRole.NONE,
+        }
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", bridged=True, running=True),
+            _port("ether3", bridged=True, running=False),
+        ]
+        filled = _fill_non_uplink_customer_roles(
+            roles, ports, uplink_names=["ether1"]
+        )
+        self.assertEqual(filled["ether2"], MikroTikRouter.PortRole.LAN)
+        self.assertEqual(filled["ether3"], MikroTikRouter.PortRole.LAN)
+
+
+class AntiFlapUplinkTests(SimpleTestCase):
+    def test_smart_balance_skips_reapply_when_pcc_present(self):
+        from core.views import _try_auto_apply_smart_balance
+        from django.core.cache import cache
+
+        cache.clear()
+        router = MagicMock(spec=MikroTikRouter)
+        router.pk = 9
+        router.uplink_mode = MikroTikRouter.UplinkMode.SMART_BALANCE
+        router.username = "admin"
+        router.password = "x"
+        router.uplink_weights = {}
+        with patch("core.views.apply_mikrotik_uplink_balance") as apply_balance:
+            with patch("core.views._router_tunnel_verified", return_value=True):
+                result = _try_auto_apply_smart_balance(
+                    router,
+                    "10.9.0.2",
+                    member_ports=["ether1", "ether2"],
+                    member_weights={},
+                    uplink_live={
+                        "ok": True,
+                        "mode": "balance",
+                        "balance_pcc_rules": 4,
+                        "smart_balance_enabled": False,
+                    },
+                    live_ports=[
+                        _port("ether1", uplink_kind="dhcp"),
+                        _port("ether2", uplink_kind="dhcp"),
+                    ],
+                )
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "pcc_already_present")
+        apply_balance.assert_not_called()
+
+    def test_smart_balance_success_sets_long_cooldown(self):
+        from core.views import (
+            _smart_balance_auto_cache_key,
+            _try_auto_apply_smart_balance,
+        )
+        from django.core.cache import cache
+
+        cache.clear()
+        router = MagicMock(spec=MikroTikRouter)
+        router.pk = 11
+        router.uplink_mode = MikroTikRouter.UplinkMode.SMART_BALANCE
+        router.username = "admin"
+        router.password = "x"
+        router.uplink_weights = {}
+        router.save = MagicMock()
+        with (
+            patch("core.views._router_tunnel_verified", return_value=True),
+            patch(
+                "core.views._guard_touch_ports_internet",
+                return_value=(True, ""),
+            ),
+            patch(
+                "core.views._reject_behind_provider_unbridge",
+                return_value=None,
+            ),
+            patch(
+                "core.views.apply_mikrotik_uplink_balance",
+                return_value={
+                    "ok": True,
+                    "ports": ["ether1", "ether2"],
+                    "weights": {"ether1": 100, "ether2": 100},
+                    "wan_interface": "ether1",
+                    "unbridged": [],
+                    "message": "ok",
+                },
+            ),
+            patch(
+                "core.views._finalize_uplink_apply_result",
+                side_effect=lambda router, result: result,
+            ),
+            patch(
+                "core.views._sync_roles_for_uplink",
+                return_value={},
+            ),
+        ):
+            first = _try_auto_apply_smart_balance(
+                router,
+                "10.9.0.2",
+                member_ports=["ether1", "ether2"],
+                member_weights={},
+                uplink_live={
+                    "ok": True,
+                    "mode": "",
+                    "balance_pcc_rules": 0,
+                    "smart_balance_enabled": False,
+                },
+                live_ports=[
+                    _port("ether1", uplink_kind="dhcp"),
+                    _port("ether2", uplink_kind="dhcp"),
+                ],
+            )
+            second = _try_auto_apply_smart_balance(
+                router,
+                "10.9.0.2",
+                member_ports=["ether1", "ether2"],
+                member_weights={},
+                uplink_live={
+                    "ok": True,
+                    "mode": "",
+                    "balance_pcc_rules": 0,
+                    "smart_balance_enabled": False,
+                },
+                live_ports=[
+                    _port("ether1", uplink_kind="dhcp"),
+                    _port("ether2", uplink_kind="dhcp"),
+                ],
+            )
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("skipped"))
+        self.assertEqual(cache.get(_smart_balance_auto_cache_key(11)), "applied")
+
+
+class SimplifiedUplinkGoalTests(SimpleTestCase):
+    def test_multi_goal_maps_to_smart_balance(self):
+        from core.views import (
+            UPLINK_UI_GOAL_MULTI,
+            _normalize_uplink_goal,
+            _ui_uplink_goal,
+            _ui_uplink_goal_label,
+        )
+
+        self.assertEqual(
+            _normalize_uplink_goal(UPLINK_UI_GOAL_MULTI),
+            MikroTikRouter.UplinkMode.SMART_BALANCE,
+        )
+        self.assertEqual(
+            _ui_uplink_goal(MikroTikRouter.UplinkMode.FAILOVER),
+            UPLINK_UI_GOAL_MULTI,
+        )
+        self.assertEqual(
+            _ui_uplink_goal(MikroTikRouter.UplinkMode.BALANCE),
+            UPLINK_UI_GOAL_MULTI,
+        )
+        self.assertEqual(
+            _ui_uplink_goal(MikroTikRouter.UplinkMode.SMART_BALANCE),
+            UPLINK_UI_GOAL_MULTI,
+        )
+        self.assertEqual(_ui_uplink_goal(MikroTikRouter.UplinkMode.SINGLE), "single")
+        self.assertEqual(_ui_uplink_goal(MikroTikRouter.UplinkMode.BOND), "bond")
+        self.assertIn("failover", _ui_uplink_goal_label(MikroTikRouter.UplinkMode.SMART_BALANCE).lower())
+
+    def test_setup_status_warns_when_multi_link_incomplete(self):
+        from core.views import _build_uplink_setup_status
+
+        status = _build_uplink_setup_status(
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=[],
+            bond_member_ports=[],
+            physical_ports=[_port("ether1", uplink_kind="dhcp")],
+            dual_wan_ready=False,
+            bond_ready=False,
+            balance_ready=False,
+            balance_router_applied=False,
+            smart_balance_applied=False,
+            uplink_live={},
+            health_alerts=[],
+        )
+        self.assertTrue(status["applies"])
+        self.assertFalse(status["can_proceed"])
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["level"], "warn")
+        self.assertTrue(status["problems"])
+
+    def test_setup_status_ok_when_multi_applied_and_healthy(self):
+        from core.views import _build_uplink_setup_status
+
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp"),
+        ]
+        status = _build_uplink_setup_status(
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            physical_ports=ports,
+            dual_wan_ready=True,
+            bond_ready=False,
+            balance_ready=True,
+            balance_router_applied=True,
+            smart_balance_applied=True,
+            uplink_live={"ok": True, "mode": "smart_balance"},
+            health_alerts=[],
+        )
+        self.assertTrue(status["ok"])
+        self.assertTrue(status["can_proceed"])
+        self.assertTrue(status["applied"])
+        self.assertIn("proceed", status["message"].lower())
+
+    def test_failover_alert_applies_to_smart_balance(self):
+        alerts = _build_uplink_health_alerts(
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            uplink_live={
+                "ok": True,
+                "mode": "smart_balance",
+                "balance_pcc_rules": 4,
+            },
+            wan_share={},
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            physical_ports=[
+                _port("ether1", running=False, uplink_kind="dhcp"),
+                _port("ether2", running=True, uplink_kind="dhcp"),
+            ],
+            uplink_weights={},
+            balance_router_applied=True,
+            smart_balance_applied=True,
+        )
+        codes = [a["code"] for a in alerts]
+        self.assertIn("failover_on_backup", codes)
+        self.assertTrue(
+            any("every" in (a.get("message") or "").lower() for a in alerts if a["code"] == "failover_on_backup")
+        )
+
+
+class HotMultiUplinkApplySimulationTests(SimpleTestCase):
+    """Dummy RouterOS simulation: rebuild policy without tearing down DHCP clients."""
+
+    def test_clear_routing_policy_keeps_dhcp_clients(self):
+        from core.mikrotik_connect import _clear_tagged_routing_policy
+
+        removed: list[tuple[str, str]] = []
+
+        def fake_print(sock, path, props=""):
+            if path == "/ip/route":
+                return [{".id": "*r1", "comment": UPLINK_TAG, "dst-address": "0.0.0.0/0"}]
+            if path == "/ip/firewall/mangle":
+                return [{".id": "*m1", "comment": UPLINK_TAG}]
+            if path == "/routing/table":
+                return [{".id": "*t1", "name": "ispcentric-w0", "comment": UPLINK_TAG}]
+            if path == "/system/script":
+                return [{".id": "*s1", "comment": UPLINK_TAG}]
+            if path == "/system/scheduler":
+                return [{".id": "*h1", "comment": UPLINK_TAG}]
+            if path == "/ip/dhcp-client":
+                return [{".id": "*d1", "comment": UPLINK_TAG, "interface": "ether1"}]
+            return []
+
+        def fake_remove(sock, path, item_id):
+            removed.append((path, item_id))
+            return {"_reply": "!done"}
+
+        with (
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._remove", side_effect=fake_remove),
+        ):
+            result = _clear_tagged_routing_policy(object())
+
+        self.assertGreaterEqual(result.get("routes", 0), 1)
+        self.assertGreaterEqual(result.get("mangle", 0), 1)
+        self.assertFalse(any(path == "/ip/dhcp-client" for path, _ in removed))
+
+    def test_balance_apply_clears_policy_before_pcc(self):
+        from core.mikrotik_connect import apply_mikrotik_uplink_balance
+
+        calls: list[str] = []
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            calls.append("session")
+            yield (object(), "10.9.0.2")
+
+        def fake_phase1(*args, **kwargs):
+            return [], None
+
+        def fake_ensure(sock, iface, distance=1, add_default_route=False):
+            return {
+                "_reply": "!done",
+                "_interface": iface,
+                "_kind": "dhcp",
+                "_pppoe": "",
+            }
+
+        def fake_gateway(sock, *, interface, kind, pppoe_name):
+            return interface, f"1.1.1.{interface[-1]}"
+
+        def fake_clear(sock):
+            calls.append("clear_policy")
+            return {"routes": 1, "mangle": 1, "routing_tables": 1, "scripts": 0, "schedulers": 0}
+
+        def fake_pcc(sock, members):
+            calls.append("install_pcc")
+            self.assertEqual(len(members), 2)
+            return {
+                "ok": True,
+                "members": [m["interface"] for m in members],
+                "slot_counts": [1, 1],
+                "preferred": members[0]["interface"],
+                "mangle_rules": 4,
+            }
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_hosts_for_uplink_apply",
+                return_value=["10.9.0.2"],
+            ),
+            patch(
+                "core.mikrotik_connect._phase1_prepare_uplink_ports",
+                side_effect=fake_phase1,
+            ),
+            patch(
+                "core.mikrotik_connect._api_session_on_any",
+                side_effect=fake_session,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_failover_uplink",
+                side_effect=fake_ensure,
+            ),
+            patch("core.mikrotik_connect._ensure_uplink_list_member"),
+            patch(
+                "core.mikrotik_connect._find_pppoe_client_for_wan",
+                return_value="",
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+            patch(
+                "core.mikrotik_connect._resolve_balance_member_gateway",
+                side_effect=fake_gateway,
+            ),
+            patch("core.mikrotik_connect._disable_client_default_route"),
+            patch(
+                "core.mikrotik_connect._clear_tagged_routing_policy",
+                side_effect=fake_clear,
+            ),
+            patch(
+                "core.mikrotik_connect._install_balance_pcc",
+                side_effect=fake_pcc,
+            ),
+            patch(
+                "core.mikrotik_connect._install_smart_balance_monitor",
+                return_value={"ok": True},
+            ),
+            patch(
+                "core.mikrotik_connect.read_smart_balance_status",
+                return_value={"ok": True, "slow_ports": [], "members": {}},
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_uplink_no_backflow",
+                return_value={"ok": True, "changed": True},
+            ),
+        ):
+            result = apply_mikrotik_uplink_balance(
+                "10.9.0.2",
+                "admin",
+                "x",
+                member_ports=["ether1", "ether2"],
+                member_weights={"ether1": 100, "ether2": 50},
+                smart_balance=True,
+            )
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("mode"), "smart_balance")
+        self.assertIn("clear_policy", calls)
+        self.assertIn("install_pcc", calls)
+        self.assertLess(calls.index("clear_policy"), calls.index("install_pcc"))
+
+
+class NoDropUplinkSimulationTests(SimpleTestCase):
+    """Dummy simulations: bond + multi-ISP must not drop clients / management."""
+
+    def test_phase1_preserves_dhcp_clients(self):
+        from core.mikrotik_connect import _phase1_prepare_uplink_ports
+
+        removed: list[tuple[str, str]] = []
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            yield (object(), "10.9.0.2")
+
+        def fake_print(sock, path, props=""):
+            if path == "/interface":
+                return [
+                    {"name": "ether1"},
+                    {"name": "ether2"},
+                    {"name": "bridgeLocal"},
+                ]
+            if path == "/ip/dhcp-client":
+                return [
+                    {
+                        ".id": "*d1",
+                        "interface": "ether1",
+                        "comment": UPLINK_TAG,
+                    }
+                ]
+            if path == "/interface/bridge/port":
+                return [
+                    {".id": "*b1", "interface": "ether1", "bridge": "bridgeLocal"},
+                    {".id": "*b2", "interface": "ether2", "bridge": "bridgeLocal"},
+                ]
+            if path in {
+                "/ip/route",
+                "/ip/firewall/mangle",
+                "/routing/table",
+                "/system/script",
+                "/system/scheduler",
+                "/interface/bonding",
+                "/interface/list/member",
+            }:
+                return [{".id": "*x1", "comment": UPLINK_TAG, "name": "ispcentric-w0"}]
+            return []
+
+        def fake_remove(sock, path, item_id):
+            removed.append((path, item_id))
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_session_on_any",
+                side_effect=fake_session,
+            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._remove", side_effect=fake_remove),
+            patch(
+                "core.mikrotik_connect._iface_names",
+                return_value={"ether1", "ether2", "bridgeLocal"},
+            ),
+        ):
+            unbridged, err = _phase1_prepare_uplink_ports(
+                ["10.9.0.2"], "admin", "x", ports=["ether1", "ether2"]
+            )
+
+        self.assertIsNone(err)
+        self.assertEqual(len(unbridged), 2)
+        self.assertFalse(any(path == "/ip/dhcp-client" for path, _ in removed))
+        self.assertTrue(any(path == "/ip/route" for path, _ in removed))
+
+    def test_failover_check_gateway_only_on_tagged_routes(self):
+        from core.mikrotik_connect import apply_mikrotik_uplink_failover
+
+        set_calls: list[dict] = []
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            yield (object(), "10.9.0.2")
+
+        def fake_set(sock, path, item_id, **props):
+            set_calls.append({"path": path, "id": item_id, **props})
+            return {"_reply": "!done"}
+
+        def fake_print(sock, path, props=""):
+            if path == "/ip/route":
+                return [
+                    {
+                        ".id": "*op",
+                        "dst-address": "0.0.0.0/0",
+                        "gateway": "9.9.9.9",
+                        "dynamic": "false",
+                        "comment": "operator-static",
+                    },
+                    {
+                        ".id": "*tag",
+                        "dst-address": "0.0.0.0/0",
+                        "gateway": "1.1.1.1",
+                        "dynamic": "false",
+                        "comment": UPLINK_TAG,
+                    },
+                ]
+            return []
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_hosts_for_uplink_apply",
+                return_value=["10.9.0.2"],
+            ),
+            patch(
+                "core.mikrotik_connect._phase1_prepare_uplink_ports",
+                return_value=([], None),
+            ),
+            patch(
+                "core.mikrotik_connect._api_session_on_any",
+                side_effect=fake_session,
+            ),
+            patch("core.mikrotik_connect._clear_tagged_routing_policy"),
+            patch(
+                "core.mikrotik_connect._ensure_failover_uplink",
+                side_effect=lambda sock, iface, distance=1, add_default_route=True: {
+                    "_reply": "!done",
+                    "_interface": iface,
+                    "_kind": "dhcp",
+                    "_pppoe": "",
+                    "_distance": str(distance),
+                },
+            ),
+            patch("core.mikrotik_connect._ensure_uplink_list_member"),
+            patch(
+                "core.mikrotik_connect._find_pppoe_client_for_wan",
+                return_value="",
+            ),
+            patch(
+                "core.mikrotik_connect._install_failover_gateway_checks",
+                return_value=[{"gateway": "1.1.1.1"}],
+            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._set", side_effect=fake_set),
+            patch("core.mikrotik_connect.time.sleep"),
+            patch(
+                "core.mikrotik_connect._ensure_uplink_no_backflow",
+                return_value={"ok": True, "changed": True},
+            ),
+        ):
+            result = apply_mikrotik_uplink_failover(
+                "10.9.0.2",
+                "admin",
+                "x",
+                primary_port="ether1",
+                backup_ports=["ether2"],
+            )
+
+        self.assertTrue(result.get("ok"), result)
+        tagged = [c for c in set_calls if c.get("id") == "*tag"]
+        operator = [c for c in set_calls if c.get("id") == "*op"]
+        self.assertTrue(tagged)
+        self.assertFalse(operator)
+
+    def test_behind_provider_blocks_bond_and_multi(self):
+        from core.mikrotik_connect import (
+            apply_mikrotik_uplink_balance,
+            apply_mikrotik_uplink_bond,
+            apply_mikrotik_uplink_failover,
+        )
+
+        live = [
+            _port(
+                "ether1",
+                bridged=True,
+                running=True,
+                uplink_kind="dhcp",
+                uplink_active=True,
+                uplink_iface="bridgeLocal",
+            ),
+            _port(
+                "ether2",
+                bridged=True,
+                running=True,
+                uplink_kind="dhcp",
+                uplink_active=True,
+                uplink_iface="bridgeLocal",
+            ),
+        ]
+        bond = apply_mikrotik_uplink_bond(
+            "10.9.0.2",
+            "admin",
+            "x",
+            member_ports=["ether1", "ether2"],
+            live_ports=live,
+        )
+        multi = apply_mikrotik_uplink_balance(
+            "10.9.0.2",
+            "admin",
+            "x",
+            member_ports=["ether1", "ether2"],
+            smart_balance=True,
+            live_ports=live,
+        )
+        failover = apply_mikrotik_uplink_failover(
+            "10.9.0.2",
+            "admin",
+            "x",
+            primary_port="ether1",
+            backup_ports=["ether2"],
+            live_ports=live,
+        )
+        for result, label in (
+            (bond, "bond"),
+            (multi, "multi"),
+            (failover, "failover"),
+        ):
+            self.assertFalse(result.get("ok"), label)
+            self.assertTrue(result.get("skipped"), label)
+            self.assertIn("behind-provider", (result.get("error") or "").lower())
+
+    def test_balance_missing_gateway_restores_bridge(self):
+        from core.mikrotik_connect import apply_mikrotik_uplink_balance
+
+        restored: list = []
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            yield (object(), "10.9.0.2")
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_hosts_for_uplink_apply",
+                return_value=["10.9.0.2"],
+            ),
+            patch(
+                "core.mikrotik_connect._phase1_prepare_uplink_ports",
+                return_value=(
+                    [
+                        {"interface": "ether1", "bridge": "bridgeLocal"},
+                        {"interface": "ether2", "bridge": "bridgeLocal"},
+                    ],
+                    None,
+                ),
+            ),
+            patch(
+                "core.mikrotik_connect._api_session_on_any",
+                side_effect=fake_session,
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_failover_uplink",
+                side_effect=lambda sock, iface, distance=1, add_default_route=False: {
+                    "_reply": "!done",
+                    "_interface": iface,
+                    "_kind": "dhcp",
+                    "_pppoe": "",
+                },
+            ),
+            patch("core.mikrotik_connect._ensure_uplink_list_member"),
+            patch(
+                "core.mikrotik_connect._find_pppoe_client_for_wan",
+                return_value="",
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+            patch(
+                "core.mikrotik_connect._resolve_balance_member_gateway",
+                return_value=("", ""),
+            ),
+            patch(
+                "core.mikrotik_connect._restore_bridged_interfaces",
+                side_effect=lambda sock, entries, **kwargs: restored.extend(entries) or len(entries),
+            ),
+        ):
+            result = apply_mikrotik_uplink_balance(
+                "10.9.0.2",
+                "admin",
+                "x",
+                member_ports=["ether1", "ether2"],
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(len(restored), 2)
+        self.assertEqual(result.get("unbridged"), [])
+
+    def test_bond_dhcp_failure_rolls_back(self):
+        from core.mikrotik_connect import apply_mikrotik_uplink_bond
+
+        restored: list = []
+        removed_bonds: list[str] = []
+
+        @contextmanager
+        def fake_session(*args, **kwargs):
+            yield (object(), "10.9.0.2")
+
+        def fake_print(sock, path, props=""):
+            if path == "/interface/bonding":
+                return [
+                    {
+                        ".id": "*bond1",
+                        "name": "bond-wan",
+                        "comment": UPLINK_TAG,
+                    }
+                ]
+            return []
+
+        def fake_remove(sock, path, item_id):
+            if path == "/interface/bonding":
+                removed_bonds.append(item_id)
+            return {"_reply": "!done"}
+
+        with (
+            patch(
+                "core.mikrotik_connect._api_hosts_for_uplink_apply",
+                return_value=["10.9.0.2"],
+            ),
+            patch(
+                "core.mikrotik_connect._api_session_on_any",
+                side_effect=fake_session,
+            ),
+            patch(
+                "core.mikrotik_connect._iface_names",
+                return_value={"ether1", "ether2"},
+            ),
+            patch("core.mikrotik_connect._clear_tagged_uplink_hot"),
+            patch(
+                "core.mikrotik_connect._unbridge_interfaces",
+                return_value=[
+                    {"interface": "ether1", "bridge": "bridgeLocal"},
+                    {"interface": "ether2", "bridge": "bridgeLocal"},
+                ],
+            ),
+            patch("core.mikrotik_connect.time.sleep"),
+            patch(
+                "core.mikrotik_connect._wait_for_api_any",
+            ),
+            patch(
+                "core.mikrotik_connect._create_bonding_interface",
+                return_value=({"_reply": "!done"}, "balance-xor"),
+            ),
+            patch(
+                "core.mikrotik_connect._disable_member_dhcp_clients",
+                return_value=["ether1", "ether2"],
+            ),
+            patch(
+                "core.mikrotik_connect._move_member_pppoe_to_bond",
+                return_value=[],
+            ),
+            patch(
+                "core.mikrotik_connect._ensure_bond_dhcp_client",
+                return_value={"_reply": "!trap", "message": "dhcp failed"},
+            ),
+            patch("core.mikrotik_connect._print", side_effect=fake_print),
+            patch("core.mikrotik_connect._remove", side_effect=fake_remove),
+            patch(
+                "core.mikrotik_connect._restore_bridged_interfaces",
+                side_effect=lambda sock, entries, **kwargs: restored.extend(entries) or len(entries),
+            ),
+        ):
+            result = apply_mikrotik_uplink_bond(
+                "10.9.0.2",
+                "admin",
+                "x",
+                member_ports=["ether1", "ether2"],
+            )
+
+        self.assertFalse(result.get("ok"))
+        self.assertIn("*bond1", removed_bonds)
+        self.assertEqual(len(restored), 2)
+        self.assertEqual(result.get("unbridged"), [])

@@ -32,7 +32,7 @@
         <form method="post" class="mk-inline-form" data-ports-auto-form {% if is_suspended or ports_loading %}hidden{% endif %}>
           {% csrf_token %}
           <input type="hidden" name="action" value="auto_assign_ports">
-          <button type="submit" class="btn btn-primary">Auto-assign</button>
+          <button type="submit" class="btn btn-primary">Re-detect labels</button>
         </form>
         <a class="btn btn-ghost" href="{% url 'core:mikrotik_assigned_ports' router.id %}">Assigned ports</a>
         <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back</a>
@@ -40,6 +40,30 @@
     </header>
 
     {% include "core/includes/mikrotik_detail_quicknav.html" %}
+
+    <nav class="mk-ports-steps" aria-label="Setup steps">
+      <a class="mk-ports-step" href="#ports-step-map">
+        <span class="mk-ports-step-num">1</span>
+        <span class="mk-ports-step-copy">
+          <strong>Live map</strong>
+          <em>See links</em>
+        </span>
+      </a>
+      <a class="mk-ports-step" href="#ports-step-setup">
+        <span class="mk-ports-step-num">2</span>
+        <span class="mk-ports-step-copy">
+          <strong>Internet setup</strong>
+          <em>How it works</em>
+        </span>
+      </a>
+      <a class="mk-ports-step" href="#ports-step-cables">
+        <span class="mk-ports-step-num">3</span>
+        <span class="mk-ports-step-copy">
+          <strong>Cable labels</strong>
+          <em>Assign ports</em>
+        </span>
+      </a>
+    </nav>
 
     <div class="mk-banner is-warn mk-ports-health" data-ports-health hidden role="status"></div>
 
@@ -194,7 +218,7 @@
       marks other live ports as Customers, and marks quiet ports Unused.
     </p>
 
-    <section class="mk-ports-map" data-ports-map hidden aria-label="How cables connect on this MikroTik">
+    <section class="mk-ports-map" id="ports-step-map" data-ports-map hidden aria-label="How cables connect on this MikroTik">
       <div class="mk-ports-map-head">
         <div class="mk-ports-map-head-copy">
           <p class="mk-section-step">Step 1</p>
@@ -208,12 +232,12 @@
             <span class="mk-uplink-strip-meta" data-uplink-mode-meta>
               {% if uplink_mode == "bond" and router.uplink_ports %}
                 {{ router.bond_interface }} · {{ router.bond_mode }} · {{ router.uplink_ports|join:", " }}
-              {% elif uplink_mode == "balance" and router.uplink_ports %}
-                Sharing {{ router.uplink_ports|join:" + " }}
-              {% elif uplink_mode == "smart_balance" and router.uplink_ports %}
-                Smart sharing {{ router.uplink_ports|join:" + " }}
-              {% elif uplink_mode == "failover" and router.uplink_ports %}
-                Primary {{ router.uplink_ports.0 }}{% if failover_backup_label %} · Backup {{ failover_backup_label }}{% endif %}
+              {% elif uplink_mode == "smart_balance" or uplink_mode == "balance" or uplink_mode == "failover" %}
+                {% if router.uplink_ports %}
+                  Failover + share · {{ router.uplink_ports|join:" + " }}
+                {% else %}
+                  Multiple ISPs — assign links below
+                {% endif %}
               {% elif router.wan_interface %}
                 WAN {{ router.wan_interface }}
               {% endif %}
@@ -287,24 +311,27 @@
       {% endif %}
     </div>
 
-    <section class="mk-ports-section mk-uplink-config" data-uplink-config hidden>
+    <section class="mk-ports-section mk-uplink-config" id="ports-step-setup" data-uplink-config hidden>
       <header class="mk-uplink-config-head">
         <p class="mk-section-step">Step 2</p>
         <h2 class="mk-uplink-config-title">How should internet work?</h2>
-        <p class="mk-help-note">Choose a setup from the list. Only that form appears below.</p>
+        <p class="mk-help-note">Pick one setup. Only the matching form opens below.</p>
       </header>
 
       <label class="mk-field mk-goal-select-field">
         <span>Internet setup</span>
         <select data-uplink-goal-select aria-label="How should internet work?">
-          <option value="single">One internet link — single ISP cable</option>
-          <option value="bond">Combine two cables — same ISP (bonding)</option>
-          <option value="failover">Backup if primary fails — two or more ISPs</option>
-          <option value="balance">Share by link speed — two or more ISPs (weighted)</option>
-          <option value="smart_balance">Smart balance — auto-avoid slow ISPs</option>
+          <option value="single">One internet link</option>
+          <option value="bond">Same ISP — combine cables</option>
+          <option value="multi">Multiple ISPs — failover + share</option>
         </select>
       </label>
       <p class="mk-help-note mk-goal-select-hint" data-goal-select-hint></p>
+      <div class="mk-banner mk-uplink-setup-status" data-uplink-setup-status hidden role="status">
+        <strong data-uplink-setup-status-title></strong>
+        <p data-uplink-setup-status-message></p>
+        <ul data-uplink-setup-status-problems></ul>
+      </div>
 
       <form method="post" class="mk-inline-form" data-uplink-goal-form hidden>
         {% csrf_token %}
@@ -319,7 +346,7 @@
             <li>Set customer-facing ports to <strong>Customers</strong>.</li>
             <li>Leave spare ports as <strong>Unused</strong>.</li>
           </ol>
-          <p class="mk-help-note">One cable, one Internet port — switching applies immediately on the MikroTik.</p>
+          <p class="mk-help-note">One cable, one Internet port — switching applies immediately on the MikroTik without dropping customers.</p>
         </div>
       </div>
 
@@ -379,91 +406,19 @@
         <p class="mk-help-note">Find linked ports, assign bond roles, and push bonding to the MikroTik in one step.</p>
       </form>
 
-      <form method="post" class="mk-goal-panel" data-goal-panel="failover" data-uplink-risk-apply="failover" hidden>
-        {% csrf_token %}
-        <input type="hidden" name="action" value="apply_failover">
-        <input type="hidden" name="confirm_risk" value="">
-        <div class="mk-goal-panel-body">
-          <ol class="mk-goal-steps">
-            <li>Set the main ISP to <strong>Internet</strong> (only one).</li>
-            <li>Plug standby ISP(s) into other ports and set each to <strong>Backup internet</strong>.</li>
-            <li>All links must show <strong>Link up</strong>, then apply failover.</li>
-          </ol>
-
-          <div class="mk-goal-role-grid">
-            <div class="mk-role-block">
-              <span class="mk-stat-label">Primary</span>
-              <ul class="mk-chip-list" data-primary-list></ul>
-              <p class="mk-help-note" data-primary-empty>No primary Internet yet.</p>
-              <p class="mk-help-note is-warn" data-primary-warn hidden>Keep only one Internet primary.</p>
-            </div>
-            <div class="mk-role-block">
-              <span class="mk-stat-label">Standby</span>
-              <ul class="mk-chip-list" data-backup-list></ul>
-              <p class="mk-help-note" data-backup-empty>No backup Internet yet.</p>
-            </div>
-          </div>
-
-          <div class="mk-goal-actions">
-            <button type="submit" class="btn btn-primary" data-apply-failover disabled>Apply failover</button>
-            <p class="mk-help-note" data-failover-hint>Need 1 Internet + at least 1 Backup internet, all link up.</p>
-          </div>
-        </div>
-      </form>
-
-      <form method="post" class="mk-goal-panel" data-goal-panel="balance" data-uplink-risk-apply="balance" hidden>
-        {% csrf_token %}
-        <input type="hidden" name="action" value="apply_balance">
-        <input type="hidden" name="confirm_risk" value="">
-        <div class="mk-goal-panel-body">
-          <ol class="mk-goal-steps">
-            <li>Set one ISP to <strong>Internet</strong> and the others to <strong>Shared ISP</strong>.</li>
-            <li>All links must show <strong>Link up</strong>. Enter each link’s relative weight in Mbps.</li>
-            <li>Apply load balance when all ports are listed below.</li>
-          </ol>
-
-          <div class="mk-role-block">
-            <span class="mk-stat-label">Sharing members</span>
-            <ul class="mk-chip-list" data-balance-list></ul>
-            <p class="mk-help-note" data-balance-empty>Assign Internet + Shared ISP on the cards below.</p>
-          </div>
-
-          <div class="mk-role-block" data-balance-weights-wrap hidden>
-            <span class="mk-stat-label">Link weight (Mbps)</span>
-            <p class="mk-help-note">
-              Enter each ISP’s real speed. Values set the ratio for <em>new connections</em>
-              (e.g. 100 + 20 ≈ 83% / 17%). The strongest link is preferred if another dies.
-            </p>
-            <div class="mk-balance-presets" data-balance-presets>
-              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="equal">Equal</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="prefer3">Prefer strong 3:1</button>
-              <button type="button" class="btn btn-ghost btn-sm" data-balance-preset="prefer5">Prefer strong 5:1</button>
-            </div>
-            <div class="mk-balance-weights" data-balance-weights></div>
-            <p class="mk-help-note" data-balance-weight-preview></p>
-            <p class="mk-help-note is-ok" data-balance-preferred hidden></p>
-          </div>
-
-          <div class="mk-goal-actions">
-            <button type="submit" class="btn btn-primary" data-apply-balance disabled>Apply load balance</button>
-            <p class="mk-help-note" data-balance-hint>Need 1 Internet + at least 1 Shared ISP, all link up.</p>
-          </div>
-        </div>
-      </form>
-
-      <form method="post" class="mk-goal-panel" data-goal-panel="smart_balance" data-uplink-risk-apply="smart_balance" hidden>
+      <form method="post" class="mk-goal-panel" data-goal-panel="multi" data-uplink-risk-apply="smart_balance" hidden>
         {% csrf_token %}
         <input type="hidden" name="action" value="apply_smart_balance">
         <input type="hidden" name="confirm_risk" value="">
         <div class="mk-goal-panel-body">
           <ol class="mk-goal-steps">
-            <li>Plug in two or more ISP cables — ports are auto-detected as <strong>Internet</strong> and <strong>Shared ISP</strong>.</li>
-            <li>All links must show <strong>Link up</strong>. Weights default to equal Mbps unless you change them.</li>
-            <li>Smart balance auto-applies on the MikroTik (PCC + ping monitor every minute).</li>
+            <li>Plug in <strong>two or more ISP cables</strong> — ports auto-fill as <strong>Internet</strong> and <strong>Shared ISP</strong>.</li>
+            <li>All links must show <strong>ISP online</strong>. Optional: set each link’s speed in Mbps.</li>
+            <li>Apply once — traffic is shared, and <strong>failover covers every link</strong> if one dies or goes slow.</li>
           </ol>
 
           <div class="mk-role-block">
-            <span class="mk-stat-label">Sharing members</span>
+            <span class="mk-stat-label">ISP links</span>
             <ul class="mk-chip-list" data-smart-balance-list></ul>
             <p class="mk-help-note" data-smart-balance-empty>Assign Internet + Shared ISP on the cards below.</p>
           </div>
@@ -471,9 +426,8 @@
           <div class="mk-role-block" data-smart-balance-weights-wrap hidden>
             <span class="mk-stat-label">Link weight (Mbps)</span>
             <p class="mk-help-note">
-              Same as weighted balance, plus a monitor on the router: if an ISP is
-              <strong>&gt;250&nbsp;ms</strong> or <strong>&gt;25% packet loss</strong>,
-              new connections skip it until it recovers.
+              Enter each ISP’s real speed. Stronger links get more new connections.
+              Dead or slow links are skipped automatically (failover on all links).
             </p>
             <div class="mk-balance-presets" data-smart-balance-presets>
               <button type="button" class="btn btn-ghost btn-sm" data-smart-balance-preset="equal">Equal</button>
@@ -486,26 +440,26 @@
           </div>
 
           <div class="mk-goal-actions">
-            <button type="submit" class="btn btn-primary" data-apply-smart-balance disabled>Apply smart balance</button>
+            <button type="submit" class="btn btn-primary" data-apply-smart-balance disabled>Apply multi-ISP setup</button>
             <p class="mk-help-note" data-smart-balance-hint>Need 1 Internet + at least 1 Shared ISP with ISP online.</p>
           </div>
         </div>
       </form>
 
-      <form method="post" class="mk-inline-form mk-smart-balance-auto-form mk-goal-panel" data-goal-panel="smart_balance" data-smart-balance-auto-form hidden>
+      <form method="post" class="mk-inline-form mk-smart-balance-auto-form mk-goal-panel" data-goal-panel="multi" data-smart-balance-auto-form hidden>
         {% csrf_token %}
         <input type="hidden" name="action" value="auto_setup_smart_balance">
-        <button type="submit" class="btn btn-primary btn-sm">Auto-setup smart balance</button>
-        <p class="mk-help-note">Detect live ISP ports, assign roles, and apply PCC + monitor in one step.</p>
+        <button type="submit" class="btn btn-primary btn-sm">Detect &amp; apply multi-ISP</button>
+        <p class="mk-help-note">Detect live ISP ports, assign roles, and apply share + failover in one step.</p>
       </form>
     </section>
 
-    <section class="mk-ports-assign" data-ports-assign hidden>
+    <section class="mk-ports-assign" id="ports-step-cables" data-ports-assign hidden>
       <header class="mk-ports-assign-head">
         <p class="mk-section-step">Step 3</p>
-        <h2 class="mk-ports-assign-title" data-ports-assign-title>Label each cable</h2>
+        <h2 class="mk-ports-assign-title" data-ports-assign-title>Cables labeled automatically</h2>
         <p class="mk-help-note" data-ports-assign-hint>
-          Tap a role on each port. What you need depends on the setup you picked above.
+          Labels follow live ISP and link status. Override a card only if a cable is wrong.
         </p>
       </header>
       <div class="mk-ports-grid" data-ports-grid hidden></div>

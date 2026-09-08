@@ -19575,7 +19575,9 @@ a.packages-stat:focus-visible {
 
 .mk-assigned-ports-page .mk-assigned-ports-surface {
   margin-top: 1rem;
-  padding: 1.1rem 1.15rem;
+  padding: 1.15rem 1.2rem 1.35rem;
+  display: grid;
+  gap: 1rem;
 }
 
 .mk-assigned-ports-page .mk-router-analysis {
@@ -19583,6 +19585,7 @@ a.packages-stat:focus-visible {
   padding: 0;
   border: none;
   background: transparent;
+  gap: 1.15rem;
 }
 
 .mk-ports-page {
@@ -19592,6 +19595,204 @@ a.packages-stat:focus-visible {
 .mk-ports-surface {
   display: grid;
   gap: 1rem;
+}
+
+.mk-ports-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  position: sticky;
+  top: 0.65rem;
+  z-index: 5;
+  padding: 0.35rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.mk-ports-step {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  border-radius: 11px;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.mk-ports-step:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.mk-ports-step-num {
+  flex: 0 0 auto;
+  width: 1.55rem;
+  height: 1.55rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--sea);
+  background: var(--sea-soft);
+}
+
+.mk-ports-step-copy {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.mk-ports-step-copy strong {
+  font-size: 0.86rem;
+  font-weight: 750;
+  color: var(--ink);
+  line-height: 1.2;
+}
+
+.mk-ports-step-copy em {
+  font-style: normal;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mk-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--success) 28%, var(--border));
+}
+
+.mk-live-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent);
+  animation: mk-live-pulse 1.6s ease-out infinite;
+}
+
+@keyframes mk-live-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 45%, transparent); }
+  70% { box-shadow: 0 0 0 0.45rem transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.mk-assigned-section {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 1.05rem;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface-1, var(--surface));
+}
+
+.mk-assigned-client-cards {
+  display: none;
+  gap: 0.75rem;
+}
+
+.mk-assigned-client-cards.is-group {
+  display: grid;
+}
+
+.mk-assigned-client-card {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.9rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.mk-assigned-client-card.is-offline {
+  opacity: 0.82;
+}
+
+.mk-assigned-client-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.mk-assigned-client-card-name {
+  font-size: 0.98rem;
+}
+
+.mk-assigned-status-chip {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.mk-assigned-client-card.is-offline .mk-assigned-status-chip {
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.mk-assigned-client-meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+
+.mk-assigned-client-meta > div {
+  min-width: 0;
+}
+
+.mk-assigned-client-meta dt {
+  margin: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mk-assigned-client-meta dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.mk-assigned-group-table {
+  display: none;
+}
+
+@media (min-width: 901px) {
+  .mk-assigned-client-cards.is-group {
+    display: none;
+  }
+
+  .mk-assigned-group-table {
+    display: block;
+  }
 }
 
 .mk-ports-hero {
@@ -19793,12 +19994,127 @@ a.packages-stat:focus-visible {
   color: var(--ink-soft);
 }
 
-.mk-router-analysis-table tr.is-slow-isp td:nth-child(5) {
+.mk-router-analysis-table tr.is-slow-isp td:nth-child(6) {
   color: var(--warn);
 }
 
 .mk-muted {
   color: var(--ink-soft);
+}
+
+.mk-assigned-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.65rem;
+}
+
+.mk-assigned-kpi {
+  padding: 0.85rem 0.95rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--sea-soft) 55%, transparent), transparent 70%),
+    var(--surface-2);
+  display: grid;
+  gap: 0.25rem;
+}
+
+.mk-assigned-kpi-label {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.mk-assigned-kpi-value {
+  margin: 0;
+  font-size: clamp(1rem, 2.4vw, 1.2rem);
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.mk-assigned-port-rates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.mk-assigned-port-rates em {
+  font-style: normal;
+  color: var(--ink-soft);
+  margin-right: 0.25rem;
+}
+
+.mk-assigned-usage-bar {
+  height: 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 80%, transparent);
+  overflow: hidden;
+}
+
+.mk-assigned-usage-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--sea), color-mix(in srgb, var(--sea) 65%, #34d399));
+}
+
+.mk-assigned-port-card.is-lan {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+}
+
+.mk-assigned-lan-grid,
+.mk-router-isp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.5rem), 1fr));
+  gap: 0.75rem;
+}
+
+.mk-assigned-port-groups {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.mk-assigned-port-group {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.mk-assigned-port-group-head h4 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.mk-assigned-client-link {
+  color: var(--sea);
+  text-decoration: none;
+  font-weight: 650;
+}
+
+.mk-assigned-client-link:hover {
+  text-decoration: underline;
+}
+
+.mk-assigned-num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mk-goal-select-field select {
+  min-height: 2.75rem;
+  font-size: 1rem;
+  font-weight: 650;
 }
 
 .mk-ports-flow {
@@ -20493,6 +20809,25 @@ a.packages-stat:focus-visible {
   border-radius: 999px;
 }
 
+.mk-port-auto {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--chip-ok-fg, #0d5c2e);
+  background: var(--chip-ok-bg, #d8f5e4);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+}
+
+.mk-port-card.is-auto-managed .mk-role-picks.is-auto {
+  opacity: 0.88;
+}
+
+.mk-port-auto-note {
+  margin: 0 0 0.35rem;
+}
+
 .mk-port-inet {
   font-size: 0.78rem;
   font-weight: 700;
@@ -20697,6 +21032,33 @@ a.packages-stat:focus-visible {
 
 .mk-goal-select-hint {
   margin: -0.35rem 0 0;
+}
+
+.mk-uplink-setup-status {
+  margin: 0.75rem 0 0;
+}
+
+.mk-uplink-setup-status strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.mk-uplink-setup-status p {
+  margin: 0;
+}
+
+.mk-uplink-setup-status ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.15rem;
+}
+
+.mk-uplink-setup-status ul[hidden] {
+  display: none;
+}
+
+.mk-banner.mk-uplink-setup-status.is-ok {
+  border-color: color-mix(in srgb, #1f9d63 35%, transparent);
+  background: color-mix(in srgb, #1f9d63 12%, transparent);
 }
 
 .mk-goal-picks {
@@ -21052,6 +21414,68 @@ a.packages-stat:focus-visible {
     margin-left: 0;
     width: 100%;
   }
+
+  .mk-ports-steps {
+    top: 0.4rem;
+  }
+}
+
+@media (max-width: 900px) {
+  .mk-assigned-client-cards:not([hidden]) {
+    display: grid;
+  }
+
+  .mk-assigned-all-table-wrap,
+  .mk-assigned-group-table {
+    display: none !important;
+  }
+
+  .mk-assigned-clients-table thead {
+    display: none;
+  }
+
+  .mk-assigned-clients-table,
+  .mk-assigned-clients-table tbody,
+  .mk-assigned-clients-table tr,
+  .mk-assigned-clients-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .mk-assigned-clients-table tr {
+    margin-bottom: 0.75rem;
+    padding: 0.85rem 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface-2);
+  }
+
+  .mk-assigned-clients-table td {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.35rem 0;
+    border-bottom: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  }
+
+  .mk-assigned-clients-table td:last-child {
+    border-bottom: none;
+  }
+
+  .mk-assigned-clients-table td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    font-weight: 750;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+
+  .mk-assigned-clients-table td .mk-assigned-num {
+    white-space: normal;
+    text-align: right;
+  }
 }
 
 @media (max-width: 720px) {
@@ -21083,6 +21507,15 @@ a.packages-stat:focus-visible {
     grid-template-columns: 1fr 1fr;
   }
 
+  .mk-ports-steps {
+    grid-template-columns: 1fr;
+    position: static;
+  }
+
+  .mk-ports-step-copy em {
+    white-space: normal;
+  }
+
   .mk-mode-grid,
   .mk-form-grid,
   .mk-stat-grid-3 {
@@ -21105,6 +21538,32 @@ a.packages-stat:focus-visible {
   .mk-action-btn {
     width: 100%;
   }
+
+  .mk-assigned-client-meta {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mk-balance-weight-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .mk-ports-map,
+  .mk-uplink-config,
+  .mk-ports-assign,
+  .mk-assigned-section {
+    padding-left: 0.85rem;
+    padding-right: 0.85rem;
+  }
+
+  .mk-goal-actions {
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .mk-goal-actions .btn {
+    width: 100%;
+  }
 }
 
 @media (max-width: 420px) {
@@ -21119,6 +21578,14 @@ a.packages-stat:focus-visible {
   .mk-role-pick {
     flex: 1 1 calc(50% - 0.4rem);
     text-align: center;
+  }
+
+  .mk-assigned-kpi-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .mk-assigned-client-meta {
+    grid-template-columns: 1fr;
   }
 }
 

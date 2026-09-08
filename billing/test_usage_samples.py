@@ -726,9 +726,46 @@ class SampleOrganizationUsageTests(TestCase):
         self.assertEqual(online_sample.bytes_in, 5000)
         self.assertIsNotNone(offline_sample)
         self.assertFalse(offline_sample.session_active)
-        self.assertFalse(
-            CustomerUsageSample.objects.filter(customer=self.unassigned).exists()
+        # Single-router org: unassigned PPPoE still gets an offline marker.
+        unassigned_sample = (
+            CustomerUsageSample.objects.filter(customer=self.unassigned)
+            .order_by("-sampled_at")
+            .first()
         )
+        self.assertIsNotNone(unassigned_sample)
+        self.assertFalse(unassigned_sample.session_active)
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_records_unassigned_pppoe_live_session(self, mock_pppoe, mock_hotspot):
+        """Unassigned PPPoE clients must still map to the NAS that has their session."""
+        mock_pppoe.return_value = {
+            "ok": True,
+            "sessions": {
+                "none1": {
+                    "session_active": True,
+                    "bytes_in": 12_000,
+                    "bytes_out": 3_000,
+                    "uptime_raw": "5m",
+                    "address": "10.10.0.77",
+                }
+            },
+            "error": "",
+        }
+        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
+
+        result = sample_organization_usage(self.org, force=True)
+        self.assertTrue(result["ok"])
+        sample = (
+            CustomerUsageSample.objects.filter(customer=self.unassigned)
+            .order_by("-sampled_at")
+            .first()
+        )
+        self.assertIsNotNone(sample)
+        self.assertTrue(sample.session_active)
+        self.assertEqual(sample.bytes_in, 12_000)
+        self.assertEqual(sample.bytes_out, 3_000)
+        self.assertEqual(sample.address, "10.10.0.77")
 
     @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
     @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
@@ -1126,3 +1163,237 @@ class OrgUsageDevicesConnectedTests(TestCase):
         # Plan bandwidth must not appear in the CLIENT meta column markup.
         self.assertNotIn("clients-usage-user-plan", html)
         self.assertNotIn(">15 MBPS<", html)
+
+
+class UsageRouterResolutionAndSimulationTests(TestCase):
+    """
+    Simulate MikroTik payloads end-to-end: resolve the right NAS per client,
+    persist samples, and verify trend bytes match the simulated counters.
+    """
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        owner = User.objects.create_user("usage-sim-owner", password="x")
+        self.org = Organization.objects.create(
+            name="Usage Sim Org", owner=owner, join_code="USIM01"
+        )
+        self.router_a = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="NAS-A",
+            host="10.0.0.10",
+            username="admin",
+            password="secret",
+        )
+        self.router_b = MikroTikRouter.objects.create(
+            organization=self.org,
+            name="NAS-B",
+            host="10.0.0.20",
+            username="admin",
+            password="secret",
+        )
+        self.assigned = Customer.objects.create(
+            organization=self.org,
+            router=self.router_a,
+            full_name="Assigned Client",
+            phone="0700004001",
+            account_number="PPP-SIM-A",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="assigned1",
+        )
+        self.unassigned = Customer.objects.create(
+            organization=self.org,
+            full_name="Unassigned Client",
+            phone="0700004002",
+            account_number="PPP-SIM-U",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="roamer1",
+        )
+
+    def test_supports_live_usage_without_assigned_router(self):
+        from core.views import customer_supports_live_usage
+
+        self.assertTrue(customer_supports_live_usage(self.unassigned))
+        self.unassigned.pppoe_username = ""
+        self.assertFalse(customer_supports_live_usage(self.unassigned))
+
+    def test_single_router_fallback_for_unassigned_pppoe(self):
+        from core.views import resolve_client_usage_router
+
+        self.router_b.account_status = MikroTikRouter.AccountStatus.SUSPENDED
+        self.router_b.save(update_fields=["account_status"])
+        resolved = resolve_client_usage_router(self.unassigned, self.org)
+        self.assertEqual(resolved.pk, self.router_a.pk)
+
+    @patch("core.mikrotik_connect.fetch_active_pppoe_usernames")
+    def test_discovers_pppoe_router_by_live_session(self, mock_active):
+        from core.mikrotik_connect import find_pppoe_router_for_username
+        from core.views import resolve_client_usage_router
+
+        def _side_effect(host, *_args, **_kwargs):
+            if host == self.router_b.host:
+                return {
+                    "ok": True,
+                    "usernames": ["roamer1"],
+                    "blocked": [],
+                    "error": "",
+                }
+            return {"ok": True, "usernames": [], "blocked": [], "error": ""}
+
+        mock_active.side_effect = _side_effect
+        found = find_pppoe_router_for_username(self.org, "roamer1")
+        self.assertEqual(found.pk, self.router_b.pk)
+        resolved = resolve_client_usage_router(self.unassigned, self.org)
+        self.assertEqual(resolved.pk, self.router_b.pk)
+
+    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
+    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    def test_multi_router_simulation_attributes_sessions_accurately(
+        self, mock_pppoe, mock_hotspot
+    ):
+        """Each client's traffic must land on the correct CustomerUsageSample."""
+
+        def _pppoe_for_host(host, *_args, **_kwargs):
+            if host == self.router_a.host:
+                return {
+                    "ok": True,
+                    "sessions": {
+                        "assigned1": {
+                            "session_active": True,
+                            "bytes_in": 1000,
+                            "bytes_out": 5000,
+                            "uptime_raw": "10m",
+                            "address": "10.10.0.1",
+                        }
+                    },
+                    "error": "",
+                }
+            if host == self.router_b.host:
+                return {
+                    "ok": True,
+                    "sessions": {
+                        "roamer1": {
+                            "session_active": True,
+                            "bytes_in": 2000,
+                            "bytes_out": 8000,
+                            "uptime_raw": "3m",
+                            "address": "10.20.0.2",
+                        }
+                    },
+                    "error": "",
+                }
+            return {"ok": False, "sessions": {}, "error": "unknown host"}
+
+        mock_pppoe.side_effect = _pppoe_for_host
+        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
+
+        result = sample_organization_usage(self.org, force=True)
+        self.assertTrue(result["ok"])
+
+        a = (
+            CustomerUsageSample.objects.filter(customer=self.assigned)
+            .order_by("-sampled_at")
+            .first()
+        )
+        u = (
+            CustomerUsageSample.objects.filter(customer=self.unassigned)
+            .order_by("-sampled_at")
+            .first()
+        )
+        self.assertIsNotNone(a)
+        self.assertIsNotNone(u)
+        self.assertEqual(a.bytes_in, 1000)
+        self.assertEqual(a.bytes_out, 5000)
+        self.assertEqual(a.address, "10.10.0.1")
+        self.assertEqual(u.bytes_in, 2000)
+        self.assertEqual(u.bytes_out, 8000)
+        self.assertEqual(u.address, "10.20.0.2")
+
+        # Second sweep advances counters — trend data_used must equal deltas.
+        # Clear write throttles so the second probe can persist immediately.
+        from django.core.cache import cache
+
+        cache.clear()
+
+        def _pppoe_for_host_t2(host, *_args, **_kwargs):
+            if host == self.router_a.host:
+                return {
+                    "ok": True,
+                    "sessions": {
+                        "assigned1": {
+                            "session_active": True,
+                            "bytes_in": 1500,
+                            "bytes_out": 7000,
+                            "uptime_raw": "12m",
+                            "address": "10.10.0.1",
+                        }
+                    },
+                    "error": "",
+                }
+            if host == self.router_b.host:
+                return {
+                    "ok": True,
+                    "sessions": {
+                        "roamer1": {
+                            "session_active": True,
+                            "bytes_in": 2500,
+                            "bytes_out": 9000,
+                            "uptime_raw": "5m",
+                            "address": "10.20.0.2",
+                        }
+                    },
+                    "error": "",
+                }
+            return {"ok": False, "sessions": {}, "error": "unknown host"}
+
+        mock_pppoe.side_effect = _pppoe_for_host_t2
+        sample_organization_usage(self.org, force=True)
+
+        trends_a = usage_trend_payload(self.assigned, hours=6, use_cache=False)
+        trends_u = usage_trend_payload(self.unassigned, hours=6, use_cache=False)
+        self.assertEqual(trends_a["summary"]["data_used_bytes"], 2500)  # +500+2000
+        self.assertEqual(trends_u["summary"]["data_used_bytes"], 1500)  # +500+1000
+
+    @patch("core.views.fetch_customer_pppoe_usage")
+    def test_live_usage_json_uses_resolved_router_for_unassigned(self, mock_fetch):
+        self.router_b.account_status = MikroTikRouter.AccountStatus.SUSPENDED
+        self.router_b.save(update_fields=["account_status"])
+        mock_fetch.return_value = {
+            "ok": True,
+            "online": True,
+            "session_active": True,
+            "pppoe_username": "roamer1",
+            "address": "10.10.0.9",
+            "caller_id": "",
+            "service": "pppoe",
+            "uptime": "1m",
+            "uptime_raw": "1m",
+            "bytes_in": 100,
+            "bytes_out": 200,
+            "bytes_in_label": "100 B",
+            "bytes_out_label": "200 B",
+            "download_bps": 1000,
+            "upload_bps": 200,
+            "download_label": "1 kbps",
+            "upload_label": "0.2 kbps",
+            "interface": "<pppoe-roamer1>",
+            "secret_profile": "default",
+            "on_blocked_profile": False,
+            "error": "",
+        }
+        owner = User.objects.get(username="usage-sim-owner")
+        self.client.force_login(owner)
+        response = self.client.get(
+            f"/app/clients/{self.unassigned.pk}/usage/", {"refresh": "1"}
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["router_id"], self.router_a.pk)
+        mock_fetch.assert_called_once()
+        self.assertEqual(mock_fetch.call_args.args[0], self.router_a.host)
+        sample = CustomerUsageSample.objects.filter(customer=self.unassigned).first()
+        self.assertIsNotNone(sample)
+        self.assertEqual(sample.bytes_in, 100)
+        self.assertEqual(sample.bytes_out, 200)

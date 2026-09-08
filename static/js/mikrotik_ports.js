@@ -240,18 +240,20 @@
   if (!loading || !liveUrl) return;
 
   var goalHints = {
-    single: "One ISP cable — mark it Internet. Backup and bonding roles are hidden.",
-    bond: "Two cables from the same ISP — use Detect & apply, or mark Bonded internet on each port.",
-    failover: "Two or more ISPs — one Internet, one or more Backup internet, all link up, then apply.",
-    balance: "Two or more ISPs sharing traffic — one Internet, rest Shared ISP, enter Mbps, then apply.",
-    smart_balance: "Two or more ISPs — weighted sharing plus auto-avoid when one is slow."
+    single: "Labels follow the live ISP automatically — bridged ports stay Customers.",
+    bond: "Bonded internet and customer ports label themselves from live links.",
+    multi: "ISP and customer ports label themselves — failover covers every link.",
+    failover: "ISP and customer ports label themselves — failover covers every link.",
+    balance: "ISP and customer ports label themselves — failover covers every link.",
+    smart_balance: "ISP and customer ports label themselves — failover covers every link."
   };
   var goalSelectHints = {
     single: "Move one cable between ports anytime — tap Internet on the new port.",
     bond: "Same provider: plug two cables, then Detect & apply bonding.",
-    failover: "Different providers: standby ISP(s) take over when the primary fails.",
-    balance: "Different providers: all carry traffic, weighted by the Mbps you enter.",
-    smart_balance: "Like weighted balance, but the router sidelines slow ISPs from new connections."
+    multi: "Different providers: traffic is shared; if any link dies or slows, failover covers the rest.",
+    failover: "Different providers: traffic is shared; failover covers every link.",
+    balance: "Different providers: traffic is shared; failover covers every link.",
+    smart_balance: "Different providers: traffic is shared; failover covers every link."
   };
 
   var ROLE_LABELS = {
@@ -263,9 +265,17 @@
     none: "Unassigned"
   };
 
+  function uiGoalFromMode(mode) {
+    if (mode === "bond") return "bond";
+    if (mode === "multi" || mode === "failover" || mode === "balance" || mode === "smart_balance") {
+      return "multi";
+    }
+    return "single";
+  }
+
   function roleLabelsForGoal(goal) {
     var labels = Object.assign({}, ROLE_LABELS);
-    if (goal === "balance" || goal === "smart_balance") {
+    if (goal === "multi" || goal === "balance" || goal === "smart_balance" || goal === "failover") {
       labels.wan_backup = "Shared ISP";
     }
     return labels;
@@ -292,7 +302,12 @@
         more: pick(["none"])
       };
     }
-    if (goal === "failover" || goal === "balance" || goal === "smart_balance") {
+    if (
+      goal === "multi" ||
+      goal === "failover" ||
+      goal === "balance" ||
+      goal === "smart_balance"
+    ) {
       return {
         main: pick(["wan", "wan_backup", "lan", "unused"]),
         more: pick(["none"])
@@ -306,8 +321,8 @@
 
   function setSelectedGoal(goal, options) {
     var opts = options || {};
-    var next = goal || "single";
-    if (["single", "bond", "failover", "balance", "smart_balance"].indexOf(next) < 0) next = "single";
+    var next = uiGoalFromMode(goal || "single");
+    if (["single", "bond", "multi"].indexOf(next) < 0) next = "single";
     selectedGoal = next;
 
     var select = root.querySelector("[data-uplink-goal-select]");
@@ -1036,7 +1051,7 @@
   }
 
   function updatePortsAssignSection(data) {
-    var mode = data.uplink_mode || "single";
+    var mode = data.ui_uplink_goal || uiGoalFromMode(data.uplink_mode || "single");
     var hint = root.querySelector("[data-ports-assign-hint]");
     if (hint) {
       hint.textContent =
@@ -1045,11 +1060,9 @@
     var title = root.querySelector("[data-ports-assign-title]");
     if (title) {
       var titles = {
-        single: "Label each cable",
-        bond: "Bond members (auto-updated)",
-        failover: "ISP ports (auto-updated)",
-        balance: "ISP ports (auto-updated)",
-        smart_balance: "ISP ports (auto-updated)"
+        single: "Cables labeled automatically",
+        bond: "Cables labeled automatically",
+        multi: "Cables labeled automatically"
       };
       title.textContent = titles[mode] || titles.single;
     }
@@ -1083,6 +1096,7 @@
     var mode = uplinkMode || selectedGoal || "single";
     var role = port.role || "none";
     var pendingClass = port.role_matches_setup === false ? " is-pending-setup" : "";
+    var autoClass = port.auto_managed ? " is-auto-managed" : "";
     var stateClass = port.disabled ? " is-disabled" : port.running ? " is-up" : " is-down";
     var bondClass = port.is_bond_iface ? " is-bond" : "";
     var statusHtml = port.disabled
@@ -1098,35 +1112,42 @@
       var moreValues = roles.more.map(function (pair) { return pair[0]; });
       var advOpen = moreValues.indexOf(role) >= 0 ? " open" : "";
       var bridgeWarn = "";
-      if (port.is_bridged) {
+      // Only warn when this port would leave the bridge (Internet / bond / shared ISP).
+      if (port.show_bridge_warn) {
         bridgeWarn =
           '<p class="mk-help-note is-warn">On bridge ' +
           esc(port.bridge || "LAN") +
-          " — assigning " +
-          esc(bridgeRoleHint(mode)) +
-          " will unbridge this port when you apply.</p>";
+          " — kept bridged for customers until Internet is confirmed on this port.</p>";
+      }
+      var autoHtml = "";
+      if (port.auto_managed) {
+        autoHtml =
+          '<p class="mk-help-note is-ok mk-port-auto-note">Automatic from live link · ' +
+          esc(port.role_label || role) +
+          "</p>";
       }
       var suggestedHtml = "";
       if (port.suggested_role && port.suggested_role !== role && port.suggested_role_label) {
         suggestedHtml =
-          '<p class="mk-help-note is-suggest">Pending: will become <strong>' +
+          '<p class="mk-help-note is-suggest">Updating automatically to <strong>' +
           esc(port.suggested_role_label) +
-          "</strong> when this link has ISP internet.</p>";
+          "</strong> when ISP is confirmed…</p>";
       }
       body =
+        autoHtml +
         bridgeWarn +
         suggestedHtml +
-        '<div class="mk-role-picks" role="group" aria-label="Role for ' + esc(port.name) + '">' +
+        '<div class="mk-role-picks' + (port.auto_managed ? " is-auto" : "") + '" role="group" aria-label="Role for ' + esc(port.name) + '">' +
         rolePickForms(port.name, role, roles.main) +
         "</div>" +
         '<details class="mk-port-more"' + advOpen + ">" +
-        "<summary>More roles</summary>" +
+        "<summary>Override role</summary>" +
         '<div class="mk-role-picks is-advanced">' +
         rolePickForms(port.name, role, roles.more) +
         "</div></details>";
     }
     return (
-      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + pendingClass + '"' +
+      '<article class="mk-port-card role-' + esc(role) + stateClass + bondClass + pendingClass + autoClass + '"' +
       ' data-port-name="' + esc(port.name) + '" id="port-card-' + esc(port.name).replace(/[^a-zA-Z0-9_-]/g, "-") + '">' +
       '<header class="mk-port-card-head"><div>' +
       '<strong class="mk-port-name">' + esc(port.name) + "</strong>" +
@@ -1140,6 +1161,7 @@
           : "") +
       (port.comment ? '<span class="mk-port-comment">' + esc(port.comment) + "</span>" : "") +
       portInternetBadge(port) +
+      (port.auto_managed ? '<span class="mk-port-auto">Auto</span>' : "") +
       "</div></div>" + statusHtml + "</header>" +
       body +
       '<footer class="mk-port-card-foot">' +
@@ -1158,14 +1180,14 @@
   function renderPortCards(data) {
     var allPorts = data.ports || [];
     var allowedRoles = data.allowed_roles || [];
-    var mode = data.uplink_mode || "single";
+    var mode = data.ui_uplink_goal || uiGoalFromMode(data.uplink_mode || "single");
     var grid = root.querySelector("[data-ports-grid]");
     var assign = root.querySelector("[data-ports-assign]");
     if (!grid) return;
     if (allPorts.length) {
       var sorted = allPorts.slice().sort(function (a, b) {
-        var ka = portSortKey(a, mode);
-        var kb = portSortKey(b, mode);
+        var ka = portSortKey(a, data.uplink_mode || mode);
+        var kb = portSortKey(b, data.uplink_mode || mode);
         if (ka[0] !== kb[0]) return ka[0] - kb[0];
         return ka[1].localeCompare(kb[1]);
       });
@@ -1603,7 +1625,8 @@
     var healthEl = root.querySelector("[data-uplink-health]");
     if (healthEl) {
       var live = data.uplink_live || {};
-      if (mode === "balance" || mode === "smart_balance") {
+      var setup = data.uplink_setup_status || {};
+      if (mode === "balance" || mode === "smart_balance" || mode === "failover") {
         var shareLine = ((data.wan_share && data.wan_share.shares) || [])
           .map(function (s) {
             return (s.name || "?") + " " + (s.pct != null ? s.pct + "%" : "—");
@@ -1611,25 +1634,33 @@
           .join(" · ");
         var memberCount = (data.primary_wan_ports || []).length + (data.backup_wan_ports || []).length;
         var slowPorts = ((data.smart_balance_status && data.smart_balance_status.slow_ports) || []);
-        if (!data.balance_router_applied) {
-          healthEl.textContent = data.balance_apply_hint || (
-            mode === "smart_balance"
-              ? "Click Apply smart balance to push PCC + monitor to the MikroTik."
-              : "Click Apply load balance to push PCC rules to the MikroTik."
-          );
+        if (setup.message && (setup.level === "warn" || !setup.ok)) {
+          healthEl.textContent = setup.message;
           healthEl.className = "mk-uplink-health is-warn";
-        } else if (slowPorts.length && mode === "smart_balance") {
-          healthEl.textContent = "Slow ISP sidelined from new connections: " + slowPorts.join(", ");
+        } else if (!data.balance_router_applied && mode !== "failover") {
+          healthEl.textContent =
+            data.balance_apply_hint ||
+            "Multi-ISP ready to apply — failover covers every link.";
+          healthEl.className = "mk-uplink-health is-warn";
+        } else if (slowPorts.length) {
+          healthEl.textContent = "Slow ISP sidelined (failover still active): " + slowPorts.join(", ");
           healthEl.className = "mk-uplink-health is-warn";
         } else if (shareLine) {
-          healthEl.textContent = "Live share · " + shareLine;
+          healthEl.textContent = "Failover + share · " + shareLine;
           healthEl.className = "mk-uplink-health is-ok";
         } else {
-          healthEl.textContent =
-            (mode === "smart_balance" ? "Smart PCC across " : "PCC load balance across ") +
-            (data.uplink_ports || []).join(" + ") +
-            (memberCount >= 2 ? " (" + memberCount + " ISPs)" : "");
-          healthEl.className = "mk-uplink-health is-ok";
+          var checked = live.checked_routes || [];
+          var clients = live.failover_clients || [];
+          if (checked.length || clients.length >= 2 || data.balance_router_applied) {
+            healthEl.textContent =
+              "Failover active on " +
+              (data.uplink_ports || []).join(" + ") +
+              (memberCount >= 2 ? " (" + memberCount + " ISPs)" : "");
+            healthEl.className = "mk-uplink-health is-ok";
+          } else {
+            healthEl.textContent = "Waiting for multi-ISP apply on the MikroTik";
+            healthEl.className = "mk-uplink-health is-warn";
+          }
         }
         setHidden(healthEl, false);
       } else if (mode === "single" || !live.ok) {
@@ -1641,31 +1672,11 @@
         if (bondLive && bondLive.running) {
           healthEl.textContent = "Bond up · " + (bondLive.slaves || []).join(", ");
           healthEl.className = "mk-uplink-health is-ok";
+        } else if (setup.message) {
+          healthEl.textContent = setup.message;
+          healthEl.className = "mk-uplink-health " + (setup.ok ? "is-ok" : "is-warn");
         } else {
           healthEl.textContent = "Bond not running on router yet";
-          healthEl.className = "mk-uplink-health is-warn";
-        }
-        setHidden(healthEl, false);
-      } else if (mode === "failover") {
-        var checked = live.checked_routes || [];
-        var clients = live.failover_clients || [];
-        if (checked.length) {
-          var active = checked.filter(function (r) { return r.active; })[0];
-          healthEl.textContent = active
-            ? "Active via " + (active.gateway || "gateway") + " (ping-checked)"
-            : "Failover routes installed · waiting for gateway";
-          healthEl.className = "mk-uplink-health " + (active ? "is-ok" : "is-warn");
-        } else if (clients.length >= 2) {
-          healthEl.textContent =
-            "Distance failover on " +
-            clients
-              .map(function (c) {
-                return (c.interface || "?") + "@" + (c.distance || "?");
-              })
-              .join(", ");
-          healthEl.className = "mk-uplink-health is-ok";
-        } else {
-          healthEl.textContent = "Apply failover to push routes to the MikroTik";
           healthEl.className = "mk-uplink-health is-warn";
         }
         setHidden(healthEl, false);
@@ -1678,10 +1689,48 @@
     renderFace(data);
 
     // Always follow server uplink mode (no sessionStorage goal drift).
-    setSelectedGoal(data.uplink_mode || "single", { skipRerender: true });
+    setSelectedGoal(data.ui_uplink_goal || data.uplink_mode || "single", { skipRerender: true });
 
     updatePortsAssignSection(data);
     renderPortCards(data);
+
+    var setupStatusEl = root.querySelector("[data-uplink-setup-status]");
+    if (setupStatusEl) {
+      var status = data.uplink_setup_status || {};
+      var problems = status.problems || [];
+      var showStatus = !!status.applies || (status.message && status.level);
+      if (showStatus && status.message) {
+        var titleEl = setupStatusEl.querySelector("[data-uplink-setup-status-title]");
+        var msgEl = setupStatusEl.querySelector("[data-uplink-setup-status-message]");
+        var listEl = setupStatusEl.querySelector("[data-uplink-setup-status-problems]");
+        if (titleEl) {
+          titleEl.textContent = status.ok
+            ? "All OK — you can proceed"
+            : status.ready
+              ? "Ready to apply"
+              : "Needs attention";
+        }
+        if (msgEl) msgEl.textContent = status.message || "";
+        if (listEl) {
+          listEl.innerHTML = problems
+            .map(function (p) {
+              return "<li>" + esc(p) + "</li>";
+            })
+            .join("");
+          setHidden(listEl, !problems.length);
+        }
+        setupStatusEl.className =
+          "mk-banner mk-uplink-setup-status " +
+          (status.level === "ok"
+            ? "is-ok"
+            : status.level === "warn"
+              ? "is-warn"
+              : "is-info");
+        setHidden(setupStatusEl, false);
+      } else {
+        setHidden(setupStatusEl, true);
+      }
+    }
 
     var healthBanner = root.querySelector("[data-ports-health]");
     if (healthBanner) {
@@ -1723,50 +1772,26 @@
         setHidden(autoBondForm, !data.can_auto_setup_bond);
       }
 
-      chipList(root.querySelector("[data-primary-list]"), primary.length === 1 ? primary : [], "is-primary", data.ports);
-      setHidden(root.querySelector("[data-primary-list]"), primary.length !== 1);
-      setHidden(root.querySelector("[data-primary-empty]"), primary.length !== 0);
-      setHidden(root.querySelector("[data-primary-warn]"), primary.length <= 1);
-      var backups = data.backup_wan_ports || [];
-      chipList(root.querySelector("[data-backup-list]"), backups, "is-backup", data.ports);
-      setHidden(root.querySelector("[data-backup-list]"), !backups.length);
-      setHidden(root.querySelector("[data-backup-empty]"), !!backups.length);
-      var canFail = !!data.can_apply_failover;
-      var failBtn = root.querySelector("[data-apply-failover]");
-      if (failBtn) failBtn.disabled = !canFail;
-      setHidden(root.querySelector("[data-failover-hint]"), canFail);
-
-      var balanceMembers = primary.concat(data.backup_wan_ports || []);
-      chipList(root.querySelector("[data-balance-list]"), balanceMembers, "is-balance", data.ports);
-      setHidden(root.querySelector("[data-balance-list]"), balanceMembers.length < 2);
-      setHidden(root.querySelector("[data-balance-empty]"), balanceMembers.length >= 2);
-      renderBalanceWeights(balanceMembers, data.uplink_weights || {});
-      var canBalance = !!data.can_apply_balance;
-      var balanceBtn = root.querySelector("[data-apply-balance]");
-      if (balanceBtn) balanceBtn.disabled = !canBalance;
-      var balanceHint = root.querySelector("[data-balance-hint]");
-      if (balanceHint) {
-        balanceHint.textContent = data.balance_apply_hint || "Need 1 Internet + at least 1 Shared ISP, all link up.";
-        setHidden(balanceHint, false);
-      }
-
       var smartMembers = primary.concat(data.backup_wan_ports || []);
       chipList(root.querySelector("[data-smart-balance-list]"), smartMembers, "is-balance", data.ports);
       setHidden(root.querySelector("[data-smart-balance-list]"), smartMembers.length < 2);
       setHidden(root.querySelector("[data-smart-balance-empty]"), smartMembers.length >= 2);
       renderBalanceWeights(smartMembers, data.uplink_weights || {}, "smart-balance");
-      var canSmart = !!data.can_apply_smart_balance;
+      var canSmart = !!(data.can_apply_smart_balance || data.can_apply_multi);
       var smartBtn = root.querySelector("[data-apply-smart-balance]");
       if (smartBtn) smartBtn.disabled = !canSmart;
       var smartHint = root.querySelector("[data-smart-balance-hint]");
       if (smartHint) {
-        smartHint.textContent = data.balance_apply_hint || "Need 1 Internet + at least 1 Shared ISP, all link up.";
+        smartHint.textContent =
+          data.balance_apply_hint ||
+          "Need 1 Internet + at least 1 Shared ISP with ISP online. Failover covers every link.";
         setHidden(smartHint, false);
       }
       var autoSmartForm = root.querySelector("[data-smart-balance-auto-form]");
       if (autoSmartForm) {
+        var uiGoal = data.ui_uplink_goal || uiGoalFromMode(data.uplink_mode || "");
         var showAuto =
-          (data.uplink_mode || "") === "smart_balance" &&
+          uiGoal === "multi" &&
           !!data.can_auto_setup_smart_balance &&
           !data.smart_balance_applied;
         setHidden(autoSmartForm, !showAuto);

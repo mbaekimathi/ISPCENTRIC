@@ -156,9 +156,9 @@ class MikroTikRouter(models.Model):
         choices=UplinkMode.choices,
         default=UplinkMode.SINGLE,
         help_text=(
-            "Single WAN, bond multiple ports to one provider, failover across "
-            "providers, PCC load-balance (equal or weighted by Mbps), or smart "
-            "balance that temporarily avoids slow ISP links."
+            "UI offers three setups: one link, same-ISP bond, or multiple ISPs. "
+            "Multi-ISP stores as smart_balance (share + failover on every link). "
+            "Legacy failover/balance values still work and map to the multi-ISP UI."
         ),
     )
     bond_interface = models.CharField(

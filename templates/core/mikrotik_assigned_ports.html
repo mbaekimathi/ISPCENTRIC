@@ -5,18 +5,22 @@
 
 {% block client_content %}
 <div class="mk-page mk-assigned-ports-page">
-  <header class="mk-page-hero">
+  <header class="mk-page-hero mk-ports-hero">
     <div class="mk-page-hero-copy">
       <p class="mk-page-kicker">Live analysis</p>
       <h1 class="mk-page-title">Assigned ports</h1>
       <p class="mk-page-lead">
-        ISP health and which internet link each customer on
+        See which cable and ISP each customer uses on
         <strong>{{ router.name }}</strong>
         <span class="mk-host-chip">{{ router.host }}</span>
-        is using right now.
+        — with live speed and session data.
       </p>
     </div>
     <div class="mk-ports-hero-actions">
+      <span class="mk-live-pill" data-assigned-live-pill hidden>
+        <span class="mk-live-dot" aria-hidden="true"></span>
+        Live
+      </span>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik_ports' router.id %}">Port setup</a>
       <a class="btn btn-ghost" href="{% url 'core:mikrotik_detail' router.id %}">Back</a>
     </div>
@@ -35,8 +39,8 @@
     <div class="mk-loading" data-assigned-loading {% if not ports_loading %}hidden{% endif %}>
       <div class="mk-loading-pulse" aria-hidden="true"></div>
       <div>
-        <p class="mk-loading-title">Reading live ISP data…</p>
-        <p class="mk-help-note">Connecting to {{ router.name }} for client WAN mapping.</p>
+        <p class="mk-loading-title">Reading live port analytics…</p>
+        <p class="mk-help-note">Connecting to {{ router.name }} for clients, ports, and usage.</p>
       </div>
     </div>
 
@@ -45,33 +49,57 @@
       <button type="button" class="btn btn-ghost" data-assigned-retry hidden>Retry</button>
     </div>
 
-    <section class="mk-router-analysis" data-router-analysis hidden aria-label="Router analysis and client ISP mapping">
+    <section class="mk-router-analysis" data-router-analysis hidden aria-label="Port and client analytics">
       <header class="mk-router-analysis-head">
         <div>
-          <p class="mk-section-step">Router analysis</p>
-          <h2 class="mk-router-analysis-title">ISP links &amp; live share</h2>
+          <p class="mk-section-step">Overview</p>
+          <h2 class="mk-router-analysis-title">Ports &amp; client usage</h2>
           <p class="mk-help-note" data-router-analysis-note></p>
         </div>
         <div class="mk-router-analysis-summary" data-router-analysis-summary hidden></div>
       </header>
 
-      <div class="mk-router-analysis-isps" data-router-analysis-isps hidden></div>
+      <div class="mk-assigned-kpi-row" data-assigned-kpis hidden></div>
 
-      <div class="mk-router-analysis-clients-wrap" data-router-analysis-clients-wrap hidden>
+      <div class="mk-assigned-section" data-router-analysis-isps hidden>
         <div class="mk-router-analysis-clients-head">
-          <h3 class="mk-router-analysis-subtitle">Clients by ISP</h3>
-          <p class="mk-help-note">Which internet link each assigned customer is using right now.</p>
+          <h3 class="mk-router-analysis-subtitle">ISP / WAN ports</h3>
+          <p class="mk-help-note">Live share and usage on each internet uplink.</p>
         </div>
-        <div class="mk-router-analysis-table-wrap">
-          <table class="mk-router-analysis-table">
+        <div class="mk-router-isp-grid" data-assigned-isp-grid></div>
+      </div>
+
+      <div class="mk-assigned-section mk-assigned-lan-wrap" data-assigned-lan-wrap hidden>
+        <div class="mk-router-analysis-clients-head">
+          <h3 class="mk-router-analysis-subtitle">Customer ports</h3>
+          <p class="mk-help-note">LAN / Wi‑Fi cables with live client usage on each port.</p>
+        </div>
+        <div class="mk-assigned-lan-grid" data-assigned-lan-grid></div>
+      </div>
+
+      <div class="mk-assigned-section mk-router-analysis-clients-wrap" data-router-analysis-clients-wrap hidden>
+        <div class="mk-router-analysis-clients-head">
+          <h3 class="mk-router-analysis-subtitle">Clients</h3>
+          <p class="mk-help-note" data-assigned-clients-caption>
+            Live download / upload, session data, ISP link, and cable port for each assigned customer.
+          </p>
+        </div>
+        <div class="mk-assigned-port-groups" data-assigned-port-groups></div>
+        <div class="mk-assigned-client-cards" data-assigned-client-cards hidden></div>
+        <div class="mk-router-analysis-table-wrap" data-assigned-all-table-wrap>
+          <table class="mk-router-analysis-table mk-assigned-clients-table">
             <thead>
               <tr>
                 <th scope="col">Client</th>
                 <th scope="col">Account</th>
                 <th scope="col">Service</th>
                 <th scope="col">IP</th>
-                <th scope="col">ISP / port</th>
-                <th scope="col">Sessions</th>
+                <th scope="col">Cable port</th>
+                <th scope="col">ISP / WAN</th>
+                <th scope="col">Download</th>
+                <th scope="col">Upload</th>
+                <th scope="col">Session data</th>
+                <th scope="col">Uptime</th>
               </tr>
             </thead>
             <tbody data-router-analysis-clients></tbody>
