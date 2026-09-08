@@ -15977,35 +15977,69 @@ def find_pppoe_customer_for_ip(organization, session_ip: str):
     return None
 
 
-def _pppoe_pay_portal_url(organization, portal_url: str = "", customer=None) -> str:
-    """Absolute PPPoE renew/pay URL to install on the CPE Hotspot login page.
+def _pppoe_captive_page_for_customer(customer) -> str:
+    """``pause`` when the package is frozen; otherwise ``pay`` (expired / unpaid)."""
+    if customer is not None and _customer_package_is_paused(customer):
+        return "pause"
+    return "pay"
 
-    When ``customer`` is provided, append a signed token so the renew page can
+
+def _pppoe_pay_portal_url(
+    organization, portal_url: str = "", customer=None, *, page: str = ""
+) -> str:
+    """Absolute PPPoE captive URL to install on the CPE Hotspot login page.
+
+    Paused packages get ``/pppoe/…/pause/``; expired / unpaid get ``/pppoe/…/pay/``.
+    When ``customer`` is provided, append a signed token so the page can
     auto-fill that account even when the phone is on CPE Wi‑Fi (not 10.20.0.x).
 
     Returns an absolute http(s) URL, or "" when no public/LAN base is known —
     never a path-only Location (those trap phones on ``http://192.168.…/pppoe/…``).
     """
-    from urllib.parse import urlencode, urlparse, urlunparse
+    from urllib.parse import urlparse, urlunparse
 
     from django.core import signing
     from django.urls import reverse
 
+    page = (page or "").strip().lower()
+    if page not in {"pay", "pause"}:
+        page = _pppoe_captive_page_for_customer(customer)
+    view_name = "core:pppoe_pause" if page == "pause" else "core:pppoe_pay"
+
     join_code = (getattr(organization, "join_code", None) or "").strip()
     if not join_code:
         return _billing_portal_base_url(portal_url)
-    path = reverse("core:pppoe_pay", kwargs={"join_code": join_code})
+    path = reverse(view_name, kwargs={"join_code": join_code})
     explicit = (portal_url or "").strip()
     parsed_explicit = urlparse(explicit)
     explicit_path = (parsed_explicit.path or "").rstrip("/")
-    # Caller may already pass the full pay URL (with or without ?t=).
+    # Caller may already pass the full pay/pause URL (with or without ?t=).
     if (
         explicit
         and "/pppoe/" in explicit_path
-        and explicit_path.endswith("/pay")
+        and (
+            explicit_path.endswith("/pay")
+            or explicit_path.endswith("/pause")
+        )
         and parsed_explicit.scheme
     ):
         url = explicit
+        # Rewrite path when an explicit URL disagrees with the needed page.
+        want_suffix = "/pause" if page == "pause" else "/pay"
+        if not explicit_path.endswith(want_suffix):
+            other = "/pay" if want_suffix == "/pause" else "/pause"
+            if explicit_path.endswith(other):
+                new_path = explicit_path[: -len(other)] + want_suffix
+                url = urlunparse(
+                    (
+                        parsed_explicit.scheme,
+                        parsed_explicit.netloc,
+                        new_path,
+                        parsed_explicit.params,
+                        parsed_explicit.query,
+                        parsed_explicit.fragment,
+                    )
+                )
     else:
         base = _billing_portal_base_url(explicit if parsed_explicit.scheme else "")
         if not base:
@@ -16062,9 +16096,10 @@ def sync_customer_subscription_access(
     ``quick=True`` (cash recharge / voucher redeem request thread): one CPE
     attempt then NAS restore. Extra CPE retries run in the background.
 
-    Outside the subscription period (account still active):
-      1. Enable the CPE Wi‑Fi renew Hotspot (pay popup) while the CPE is still
-         online so phones get the captive portal without a manual reconnect
+    Outside the subscription period or while paused (account still active):
+      1. Enable the CPE Wi‑Fi captive Hotspot while the CPE is still online so
+         phones get the popup without a manual reconnect — ``/pause/`` when
+         paused, ``/pay/`` when expired / unpaid
       2. Move /ppp/secret to the blocked profile + kick the session so surfing
          stops at the ISP MikroTik
       Calendar packages (daily/weekly/monthly/…) only enter this path at local

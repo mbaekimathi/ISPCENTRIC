@@ -205,14 +205,15 @@ class PrefetchEmployeeMiddleware:
 
 class HotspotCaptiveProbeMiddleware:
     """
-    Turn OS captive-portal probes into the Hotspot or PPPoE payment page.
+    Turn OS captive-portal probes into the Hotspot or PPPoE payment / pause page.
 
     MikroTik DNS points probe hostnames at the gateway; a dst-nat rule forwards
     gateway:80 to Django. Windows opens ``/redirect`` on msftconnecttest.com —
-    without this handler that request 404s instead of showing the pay page.
+    without this handler that request 404s instead of showing the captive page.
 
     Expired PPPoE sessions are dst-nat'd the same way; their REMOTE_ADDR sits in
-    the PPPoE pool, so they land on the PPPoE renew page instead of Hotspot.
+    the PPPoE pool, so they land on ``/pppoe/…/pay/``. Paused PPPoE sessions land
+    on ``/pppoe/…/pause/``.
 
     CaptiveHostRewriteMiddleware may have already replaced the Host header —
     always also check ``request.captive_original_host``.
@@ -294,19 +295,6 @@ class HotspotCaptiveProbeMiddleware:
         from django.urls import reverse
 
         query = request.META.get("QUERY_STRING") or ""
-        # Include pool mode in the key so a brief mis-route cannot stick the
-        # opposite UI (Hotspot vs PPPoE) for the redirect TTL.
-        mode_hint = (
-            "pppoe"
-            if renew_or_pppoe_pool
-            else ("hotspot" if hotspot_client else "probe")
-        )
-        # Cache the final pay URL per client IP so probe bursts stay cheap.
-        # Generation bumps on successful renew so clients are not stuck on /pay.
-        cache_key = captive_redirect_cache_key(remote, f"{mode_hint}|{query}")
-        cached_target = cache.get(cache_key)
-        if cached_target:
-            return redirect(cached_target)
 
         # Prefer the NAS/org that currently owns this client IP so multi-tenant
         # deployments do not send users to the wrong payment join_code.
@@ -319,17 +307,74 @@ class HotspotCaptiveProbeMiddleware:
             pppoe_customer = find_pppoe_customer_for_ip(org, remote)
         except Exception:
             pppoe_customer = None
-        # Registered PPPoE sessions always renew on /pppoe/…/pay/ (token locked),
-        # even when the phone IP is not in the classic 10.20.0.0/24 pool.
+        # Registered PPPoE sessions always use /pppoe/… (token locked), even when
+        # the phone IP is not in the classic 10.20.0.0/24 pool.
+        # Paused → /pause/; expired / unpaid → /pay/.
         prefer_pppoe = bool(renew_or_pppoe_pool or pppoe_customer is not None)
+        pppoe_page = "pay"
+        if prefer_pppoe and pppoe_customer is not None:
+            try:
+                from billing.services import customer_package_is_paused
+
+                if customer_package_is_paused(pppoe_customer):
+                    pppoe_page = "pause"
+            except Exception:
+                pppoe_page = "pay"
+
+        hotspot_page = "pay"
+        if not prefer_pppoe:
+            try:
+                from billing.devices import find_hotspot_customer_for_mac
+                from billing.services import customer_package_is_paused
+                from core.mikrotik_connect import find_hotspot_mac_for_ip
+
+                mac = find_hotspot_mac_for_ip(org, remote) or ""
+                if mac:
+                    hotspot_customer = find_hotspot_customer_for_mac(
+                        org, mac, active_only=True
+                    )
+                    if hotspot_customer is not None and customer_package_is_paused(
+                        hotspot_customer
+                    ):
+                        hotspot_page = "pause"
+            except Exception:
+                hotspot_page = "pay"
+
+        # Include pool + pay/pause in the key so a brief mis-route cannot stick
+        # the opposite UI for the redirect TTL.
+        mode_hint = (
+            f"pppoe-{pppoe_page}"
+            if prefer_pppoe
+            else (
+                f"hotspot-{hotspot_page}"
+                if hotspot_client
+                else f"probe-{hotspot_page}"
+            )
+        )
+        # Cache the final captive URL per client IP so probe bursts stay cheap.
+        # Generation bumps on successful renew so clients are not stuck on /pay.
+        cache_key = captive_redirect_cache_key(remote, f"{mode_hint}|{query}")
+        cached_target = cache.get(cache_key)
+        if cached_target:
+            return redirect(cached_target)
 
         if prefer_pppoe:
             pay_path = reverse(
-                "core:pppoe_pay", kwargs={"join_code": org.join_code}
+                (
+                    "core:pppoe_pause"
+                    if pppoe_page == "pause"
+                    else "core:pppoe_pay"
+                ),
+                kwargs={"join_code": org.join_code},
             )
         else:
             pay_path = reverse(
-                "core:hotspot_pay", kwargs={"join_code": org.join_code}
+                (
+                    "core:hotspot_pause"
+                    if hotspot_page == "pause"
+                    else "core:hotspot_pay"
+                ),
+                kwargs={"join_code": org.join_code},
             )
         try:
             from core.hotspot_portal import public_base_url

@@ -1934,6 +1934,7 @@ class NetworkEquipmentSerial(models.Model):
     class Status(models.TextChoices):
         IN_STOCK = "in_stock", "In stock"
         ISSUED = "issued", "Issued"
+        SOLD = "sold", "Sold"
 
     equipment = models.ForeignKey(
         NetworkEquipment,
@@ -2019,6 +2020,132 @@ class NetworkEquipmentAllocation(models.Model):
     @property
     def is_active(self) -> bool:
         return self.returned_at is None
+
+
+class NetworkEquipmentStockMovement(models.Model):
+    """Ledger of warehouse and allocation stock movements for network equipment."""
+
+    class MovementType(models.TextChoices):
+        STOCK_IN = "stock_in", "Stock in"
+        STOCK_OUT = "stock_out", "Stock out"
+        ALLOCATE = "allocate", "Allocated"
+        RETURN = "return", "Returned"
+        SOLD = "sold", "Sold"
+
+    equipment = models.ForeignKey(
+        NetworkEquipment,
+        on_delete=models.CASCADE,
+        related_name="stock_movements",
+    )
+    movement_type = models.CharField(
+        max_length=20,
+        choices=MovementType.choices,
+        db_index=True,
+    )
+    quantity = models.PositiveIntegerField(default=1)
+    serial_number = models.CharField(max_length=120, blank=True, default="", db_index=True)
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        related_name="equipment_stock_movements",
+        null=True,
+        blank=True,
+    )
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="equipment_stock_movements_made",
+        null=True,
+        blank=True,
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "accounts_network_equipment_stock_movement"
+        ordering = ["-created_at", "-id"]
+        verbose_name = "Equipment stock movement"
+        verbose_name_plural = "Equipment stock movements"
+
+    def __str__(self):
+        serial = f" {self.serial_number}" if self.serial_number else ""
+        return f"{self.get_movement_type_display()}{serial} ×{self.quantity} ({self.equipment.name})"
+
+
+class FaultTicket(models.Model):
+    """Support-raised repair / outage ticket for field technicians."""
+
+    class Issue(models.TextChoices):
+        NO_CONNECTIVITY = "no_connectivity", "No connectivity"
+        SLOW_SPEED = "slow_speed", "Slow speed"
+        INTERMITTENT = "intermittent", "Intermittent connection"
+        EQUIPMENT_FAULT = "equipment_fault", "Equipment fault"
+        CABLE_DAMAGE = "cable_damage", "Cable / fibre damage"
+        POWER_ISSUE = "power_issue", "Power / UPS issue"
+        WIFI_ISSUE = "wifi_issue", "Wi‑Fi issue"
+        OTHER = "other", "Other"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        ASSIGNED = "assigned", "Assigned"
+        IN_PROGRESS = "in_progress", "In progress"
+        RESOLVED = "resolved", "Resolved"
+        CLOSED = "closed", "Closed"
+
+    ticket_number = models.CharField(max_length=32, unique=True, db_index=True)
+    customer = models.ForeignKey(
+        "billing.Customer",
+        on_delete=models.CASCADE,
+        related_name="fault_tickets",
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.SET_NULL,
+        related_name="fault_tickets",
+        null=True,
+        blank=True,
+    )
+    issue = models.CharField(max_length=32, choices=Issue.choices, db_index=True)
+    notes = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.OPEN,
+        db_index=True,
+    )
+    assigned_technician = models.ForeignKey(
+        "accounts.Employee",
+        on_delete=models.SET_NULL,
+        related_name="fault_tickets",
+        null=True,
+        blank=True,
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        related_name="raised_fault_tickets",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "accounts_fault_ticket"
+        ordering = ["-created_at", "-id"]
+        verbose_name = "Fault ticket"
+        verbose_name_plural = "Fault tickets"
+
+    def __str__(self):
+        return f"{self.ticket_number} — {self.get_issue_display()}"
+
+    @classmethod
+    def generate_ticket_number(cls) -> str:
+        for _ in range(40):
+            candidate = f"FLT-{secrets.token_hex(3).upper()}"
+            if not cls.objects.filter(ticket_number=candidate).exists():
+                return candidate
+        raise RuntimeError("Could not generate a unique fault ticket number.")
 
 
 class SecurityAuditLog(models.Model):

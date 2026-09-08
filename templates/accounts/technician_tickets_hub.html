@@ -1,0 +1,172 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="tech-install-page tech-tickets-page tech-tickets-hub-page">
+  <header class="tech-install-head">
+    <div class="tech-install-head-copy">
+      <p class="tech-install-kicker">{{ page_kicker }}</p>
+      <h2 class="tech-install-title">{{ page_title }}</h2>
+      <p class="tech-install-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="tech-install-head-actions">
+      <button
+        type="button"
+        class="btn btn-primary tech-install-register"
+        data-open-modal="pppoe-register-modal"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+        Register PPPoE client
+      </button>
+    </div>
+  </header>
+
+  <nav class="tech-tickets-tabs" aria-label="Ticket views">
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets_pending_connections' %}">
+      Queued for install
+      <span class="tech-tickets-tab-count">{{ pending_connections_count|default:0 }}</span>
+    </a>
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets' %}">
+      Installed
+      <span class="tech-tickets-tab-count">{{ pending_count|default:0 }}</span>
+    </a>
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets_connected' %}">
+      Activated
+      <span class="tech-tickets-tab-count">{{ connected_count|default:0 }}</span>
+    </a>
+    <a
+      class="tech-tickets-tab{% if fault_count %} is-alert{% endif %}"
+      href="{% url 'roles:technician_fault_tickets' %}"
+    >
+      Fault Tickets
+      <span class="tech-tickets-tab-count{% if fault_count %} is-alert{% endif %}">
+        {{ fault_count|default:0 }}
+      </span>
+    </a>
+  </nav>
+
+  <div class="tech-install-stats" aria-label="Registration summary">
+    <div class="tech-install-stat">
+      <strong>{{ registered_count|default:0 }}</strong>
+      <span>Registered</span>
+    </div>
+    <div class="tech-install-stat is-open">
+      <strong>{{ installed_count|default:0 }}</strong>
+      <span>Installed</span>
+    </div>
+    <div class="tech-install-stat is-assigned">
+      <strong>{{ active_count|default:0 }}</strong>
+      <span>Active</span>
+    </div>
+  </div>
+
+  <section class="cs-role-panel tech-install-panel" aria-labelledby="tech-hub-clients-heading">
+    <header class="cs-role-panel-head">
+      <div>
+        <h3 id="tech-hub-clients-heading">My registered clients</h3>
+        <p>All PPPoE clients you have registered.</p>
+      </div>
+      {% if my_clients %}
+        <span class="tech-install-panel-count">{{ my_clients|length }}</span>
+      {% endif %}
+    </header>
+
+    {% if my_clients %}
+      <div class="tech-install-list">
+        {% for client in my_clients %}
+          <article class="tech-install-card is-registered">
+            <header class="tech-install-card-head">
+              <div class="tech-install-card-id">
+                <span class="tech-install-avatar" aria-hidden="true">{{ client.full_name|slice:":1"|upper }}</span>
+                <div class="tech-install-card-titles">
+                  <span class="tech-install-ticket">{{ client.account_number }}</span>
+                  <strong class="tech-install-client">{{ client.full_name }}</strong>
+                </div>
+              </div>
+              <div class="tech-install-card-badges">
+                <span class="org-status org-status-{{ client.status }}">{{ client.get_status_display }}</span>
+              </div>
+            </header>
+
+            <div class="tech-install-card-body">
+              <div class="tech-install-meta">
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Phone</span>
+                  {% if client.phone %}
+                    <a class="tech-install-phone" href="tel:{{ client.phone }}">{{ client.phone }}</a>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">ISP</span>
+                  {% if client.organization %}
+                    <span class="tech-install-meta-value">{{ client.organization.name }}</span>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">MikroTik</span>
+                  {% if client.router %}
+                    <span class="tech-install-meta-value">{{ client.router.name }}</span>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+                {% if client.plan %}
+                  <div class="tech-install-meta-item">
+                    <span class="tech-install-meta-label">Plan</span>
+                    <span class="tech-install-meta-value">{{ client.plan.name }}</span>
+                  </div>
+                {% endif %}
+                {% if client.pppoe_username %}
+                  <div class="tech-install-meta-item">
+                    <span class="tech-install-meta-label">PPPoE</span>
+                    <span class="tech-install-meta-value">{{ client.pppoe_username }}</span>
+                  </div>
+                {% endif %}
+                {% if client.address or client.building_name or client.house_number %}
+                  <div class="tech-install-meta-item">
+                    <span class="tech-install-meta-label">Location</span>
+                    <span class="tech-install-meta-value">
+                      {% if client.building_name %}{{ client.building_name }}{% if client.house_number %} · {{ client.house_number }}{% endif %}{% if client.address %} · {% endif %}{% endif %}{{ client.address }}
+                    </span>
+                  </div>
+                {% endif %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Registered</span>
+                  <span class="tech-install-meta-value">{{ client.created_at|date:"M j, Y g:i A" }}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="tech-install-empty tech-tickets-hub-empty">
+        <strong>No registered clients yet</strong>
+        <p>{{ empty_text }}</p>
+        <button
+          type="button"
+          class="btn btn-primary"
+          data-open-modal="pppoe-register-modal"
+        >
+          Register PPPoE client
+        </button>
+      </div>
+    {% endif %}
+  </section>
+</section>
+
+{% if pppoe_form %}
+  {% include "core/includes/pppoe_register_modal.html" %}
+  {% include "core/includes/pppoe_register_scripts.html" %}
+{% endif %}
+{% endblock %}

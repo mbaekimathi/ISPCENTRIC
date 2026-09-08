@@ -210,7 +210,7 @@ class RegisterForm(UserCreationForm):
     referral_code = forms.CharField(
         required=False,
         label="Referral code",
-        help_text="Auto-filled from your invite link. This is the referrer's phone number.",
+        help_text="From your ISP invite link. Registers you as an ISP client under that referrer.",
         widget=forms.TextInput(
             attrs={
                 "placeholder": "Referrer phone number",
@@ -3077,6 +3077,7 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
         fields = [
             "name",
             "equipment_type",
+            "track_serials",
             "selling_price",
             "discount_enabled",
             "discount_price",
@@ -3093,6 +3094,9 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
             ),
             "equipment_type": forms.Select(
                 attrs={"class": "form-control", "id": "id_equipment_type"}
+            ),
+            "track_serials": forms.CheckboxInput(
+                attrs={"id": "id_equipment_track_serials"}
             ),
             "selling_price": forms.NumberInput(
                 attrs={
@@ -3130,6 +3134,7 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
         labels = {
             "name": "Equipment name",
             "equipment_type": "Type",
+            "track_serials": "Track serial number",
             "selling_price": "Selling price (KES)",
             "discount_enabled": "Enable discount",
             "discount_price": "Discount price to sell (KES)",
@@ -3142,9 +3147,18 @@ class NetworkEquipmentRegisterForm(forms.ModelForm):
         self.fields["selling_price"].required = True
         self.fields["discount_enabled"].required = False
         self.fields["discount_price"].required = False
+        if "track_serials" in self.fields:
+            self.fields["track_serials"].required = False
+            self.fields["track_serials"].help_text = (
+                "When enabled, stock in and stock out require a serial number for each unit."
+            )
         if self.prefix == "edit" or (self.instance and self.instance.pk):
             self.fields["name"].widget.attrs["id"] = "id_equipment_edit_name"
             self.fields["equipment_type"].widget.attrs["id"] = "id_equipment_edit_type"
+            if "track_serials" in self.fields:
+                self.fields["track_serials"].widget.attrs["id"] = (
+                    "id_equipment_edit_track_serials"
+                )
             self.fields["selling_price"].widget.attrs["id"] = (
                 "id_equipment_edit_selling_price"
             )

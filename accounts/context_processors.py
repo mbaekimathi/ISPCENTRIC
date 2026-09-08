@@ -41,8 +41,8 @@ def staff_workspace(request):
         role_slug = ROLE_SLUGS.get(viewed, "")
         organization = employee.organization
     current_page = page_key_from_path(getattr(request, "path", ""))
-    if current_page == "network_equipment" and request.GET.get("register"):
-        current_page = "register_equipment"
+    if current_page == "stock_audit" and request.GET.get("register"):
+        current_page = "stock_audit"
     nav = {} if viewing_client else nav_items_for_role(viewed, current_page)
 
     try:

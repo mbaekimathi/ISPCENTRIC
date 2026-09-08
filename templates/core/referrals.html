@@ -8,7 +8,7 @@
   data-referral-page
   data-referral-url="{{ referral_url }}"
   data-referral-code="{{ referral_code }}"
-  data-share-title="Join ISPCENTRIC with my referral"
+  data-share-title="Onboard your ISP on ISPCENTRIC"
   data-share-text="{{ share_text }}"
 >
   <header class="referral-hero">
@@ -17,8 +17,8 @@
         <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
       </span>
       <div class="referral-hero-copy">
-        <p class="referral-kicker">Grow your network</p>
-        <h2 class="referral-title">{% if organization %}{{ organization.name }}{% else %}Your{% endif %} referral link</h2>
+        <p class="referral-kicker">ISP client onboarding</p>
+        <h2 class="referral-title">Invite ISP clients</h2>
         <p class="referral-lead">{{ page_subtitle }}</p>
       </div>
     </div>
@@ -26,17 +26,17 @@
       <article class="referral-stat">
         <p class="referral-stat-label">Total</p>
         <p class="referral-stat-value">{{ referral_count }}</p>
-        <p class="referral-stat-meta">ISPs joined through you</p>
+        <p class="referral-stat-meta">ISP clients referred</p>
       </article>
       <article class="referral-stat">
         <p class="referral-stat-label">Pending</p>
         <p class="referral-stat-value">{{ referral_pending_count }}</p>
-        <p class="referral-stat-meta">Awaiting first MikroTik</p>
+        <p class="referral-stat-meta">Registered · awaiting MikroTik</p>
       </article>
       <article class="referral-stat">
         <p class="referral-stat-label">Active</p>
         <p class="referral-stat-value">{{ referral_active_count }}</p>
-        <p class="referral-stat-meta">Onboarded MikroTik</p>
+        <p class="referral-stat-meta">Onboarded into the system</p>
       </article>
       <article class="referral-stat">
         <p class="referral-stat-label">Referred as</p>
@@ -50,8 +50,10 @@
     <div class="referral-share-head">
       <div>
         <p class="referral-kicker">Share</p>
-        <h3 id="referral-share-heading">Copy &amp; share your link</h3>
-        <p class="referral-share-sub">Anyone who registers with this link becomes your referral.</p>
+        <h3 id="referral-share-heading">ISP registration link</h3>
+        <p class="referral-share-sub">
+          Share this with ISP businesses so they can register as ISP clients and get onboarded into ISPCENTRIC.
+        </p>
       </div>
       <span class="referral-live-pill" aria-hidden="true">
         <span class="referral-live-dot"></span>
@@ -142,10 +144,10 @@
     <div class="referral-list-head">
       <div>
         <p class="referral-kicker">Track</p>
-        <h3 id="referral-list-heading">Referred ISPs</h3>
-        <p class="referral-share-sub">Companies that registered with your link.</p>
+        <h3 id="referral-list-heading">Referred ISP clients</h3>
+        <p class="referral-share-sub">ISP businesses that registered with your link and are being onboarded into the system.</p>
       </div>
-      <span class="referral-count-chip">{{ referral_count }} total · {{ referral_active_count }} active · {{ referral_pending_count }} pending</span>
+      <span class="referral-count-chip">{{ referral_count }} total · {{ referral_active_count }} onboarded · {{ referral_pending_count }} pending</span>
     </div>
 
     {% if referred_organizations %}
@@ -153,10 +155,10 @@
         <table class="org-table referral-table">
           <thead>
             <tr>
-              <th>Company</th>
+              <th>ISP client</th>
               <th>Owner</th>
               <th>Phone</th>
-              <th>Status</th>
+              <th>Onboarding</th>
               <th>Joined</th>
             </tr>
           </thead>
@@ -173,9 +175,9 @@
                 <td>{{ row.phone|default:"—" }}</td>
                 <td>
                   {% if row.referral_status == "active" %}
-                    <span class="referral-status-pill is-active">Active</span>
+                    <span class="referral-status-pill is-active">Onboarded</span>
                   {% else %}
-                    <span class="referral-status-pill is-pending">Pending</span>
+                    <span class="referral-status-pill is-pending">Pending onboard</span>
                   {% endif %}
                 </td>
                 <td>{{ row.created_at|date:"d M Y" }}</td>
@@ -189,8 +191,10 @@
         <span class="referral-empty-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M16 11c1.7 0 3-1.3 3-3s-1.3-3-3-3-3 1.3-3 3 1.3 3 3 3zm-8 0c1.7 0 3-1.3 3-3S9.7 5 8 5 5 6.3 5 8s1.3 3 3 3zm0 2c-2.3 0-7 1.2-7 3.5V19h14v-2.5C15 14.2 10.3 13 8 13zm8 0c-.3 0-.6 0-1 .1 1.2.9 2 2 2 3.4V19h7v-2.5c0-2.3-4.7-3.5-8-3.5z"/></svg>
         </span>
-        <p class="referral-empty-title">No referrals yet</p>
-        <p class="referral-empty-copy">Copy your link or share it on WhatsApp, SMS, or email. New referrals stay pending until they register their first MikroTik.</p>
+        <p class="referral-empty-title">No ISP clients referred yet</p>
+        <p class="referral-empty-copy">
+          Share your link with ISP businesses. They register as ISP clients, stay pending until they add their first MikroTik, then count as onboarded.
+        </p>
       </div>
     {% endif %}
   </section>

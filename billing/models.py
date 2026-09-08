@@ -175,21 +175,27 @@ class BillingPlan(models.Model):
 
 class Customer(models.Model):
     class Status(models.TextChoices):
-        NEW = "new", "Pending connection"
-        IN_PROGRESS = "in_progress", "In progress"
-        ALLOCATED = "allocated", "Allocated"
-        ALLOCATED_OPEN = "allocated_open", "Allocated — open"
-        ALLOCATED_CLOSED = "allocated_closed", "Allocated — closed"
-        ACCEPTED = "accepted", "Accepted"
-        NOT_INTERESTED = "not_interested", "Not interested"
+        # Linear PPPoE / field-install lifecycle:
+        # lead → queued → assigned → installed → active
+        LEAD = "lead", "Lead"
+        QUEUED = "queued", "Queued for install"
+        ASSIGNED = "assigned", "Assigned"
+        INSTALLED = "installed", "Installed"
         ACTIVE = "active", "Active"
         SUSPENDED = "suspended", "Suspended"
-        INACTIVE = "inactive", "Pending activation"
+        NOT_INTERESTED = "not_interested", "Not interested"
 
-    ALLOCATED_STATUSES = (
-        Status.ALLOCATED,
-        Status.ALLOCATED_OPEN,
-        Status.ALLOCATED_CLOSED,
+    # ISP has claimed the ticket for install (open pool or named tech).
+    QUEUED_STATUSES = (Status.QUEUED, Status.ASSIGNED)
+    # Alias kept for lead-allocation / reverse helpers.
+    ALLOCATED_STATUSES = QUEUED_STATUSES
+
+    # Pre-active install pipeline (not yet surfing).
+    INSTALL_PIPELINE_STATUSES = (
+        Status.LEAD,
+        Status.QUEUED,
+        Status.ASSIGNED,
+        Status.INSTALLED,
     )
 
     class ServiceType(models.TextChoices):

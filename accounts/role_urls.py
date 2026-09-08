@@ -8,6 +8,12 @@ app_name = "roles"
 
 urlpatterns = [
     path("super-admin/dashboard/", role_dashboards.super_admin_dashboard, name="super_admin"),
+    path("super-admin/my-stock/", role_dashboards.my_stock, name="super_admin_my_stock"),
+    path(
+        "super-admin/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="super_admin_my_stock_item",
+    ),
     path("super-admin/clients/", role_dashboards.super_admin_clients, name="super_admin_clients"),
     path(
         "super-admin/clients/<int:pk>/edit/",
@@ -55,6 +61,12 @@ urlpatterns = [
         name="super_admin_hr_delete",
     ),
     path("administrator/dashboard/", role_dashboards.administrator_dashboard, name="administrator"),
+    path("administrator/my-stock/", role_dashboards.my_stock, name="administrator_my_stock"),
+    path(
+        "administrator/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="administrator_my_stock_item",
+    ),
     path("administrator/clients/", role_dashboards.administrator_clients, name="administrator_clients"),
     path(
         "administrator/human-resources/",
@@ -62,6 +74,16 @@ urlpatterns = [
         name="administrator_hr",
     ),
     path("customer-support/dashboard/", role_dashboards.manager_dashboard, name="customer_support"),
+    path(
+        "customer-support/my-stock/",
+        role_dashboards.my_stock,
+        name="customer_support_my_stock",
+    ),
+    path(
+        "customer-support/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="customer_support_my_stock_item",
+    ),
     path(
         "customer-support/isp-clients/",
         role_dashboards.manager_isp_clients,
@@ -71,6 +93,16 @@ urlpatterns = [
         "customer-support/isp-clients/<int:pk>/open-portal/",
         role_dashboards.manager_open_client_portal,
         name="customer_support_open_client_portal",
+    ),
+    path(
+        "customer-support/clients/<int:customer_id>/view/",
+        role_dashboards.manager_view_customer,
+        name="customer_support_view_customer",
+    ),
+    path(
+        "customer-support/clients/<int:customer_id>/activate-recharge/",
+        role_dashboards.manager_installed_activate_recharge,
+        name="customer_support_activate_recharge",
     ),
     path(
         "customer-support/exit-client-portal/",
@@ -103,6 +135,11 @@ urlpatterns = [
         name="customer_support_technician",
     ),
     path(
+        "customer-support/technician/clients/search/",
+        role_dashboards.manager_technician_client_search,
+        name="customer_support_technician_client_search",
+    ),
+    path(
         "customer-support/allocated/",
         role_dashboards.manager_allocated,
         name="customer_support_allocated",
@@ -111,6 +148,16 @@ urlpatterns = [
         "customer-support/network-equipment/",
         role_dashboards.manager_network_equipment,
         name="customer_support_network_equipment",
+    ),
+    path(
+        "customer-support/network-equipment/<int:pk>/",
+        role_dashboards.manager_network_equipment_detail,
+        name="customer_support_network_equipment_detail",
+    ),
+    path(
+        "customer-support/network-equipment/<int:pk>/employee/<int:employee_id>/",
+        role_dashboards.manager_network_equipment_employee,
+        name="customer_support_network_equipment_employee",
     ),
     path(
         "customer-support/allocate/",
@@ -124,6 +171,12 @@ urlpatterns = [
     ),
     # Legacy manager paths redirect via same views (compat aliases).
     path("manager/dashboard/", role_dashboards.manager_dashboard, name="manager"),
+    path("manager/my-stock/", role_dashboards.my_stock, name="manager_my_stock"),
+    path(
+        "manager/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="manager_my_stock_item",
+    ),
     path(
         "manager/isp-clients/",
         role_dashboards.manager_isp_clients,
@@ -155,6 +208,16 @@ urlpatterns = [
         name="manager_network_equipment",
     ),
     path(
+        "manager/network-equipment/<int:pk>/",
+        role_dashboards.manager_network_equipment_detail,
+        name="manager_network_equipment_detail",
+    ),
+    path(
+        "manager/network-equipment/<int:pk>/employee/<int:employee_id>/",
+        role_dashboards.manager_network_equipment_employee,
+        name="manager_network_equipment_employee",
+    ),
+    path(
         "manager/allocate/",
         role_dashboards.manager_allocate,
         name="manager_allocate",
@@ -165,6 +228,12 @@ urlpatterns = [
         name="manager_allocate_employee",
     ),
     path("it-support/dashboard/", role_dashboards.it_support_dashboard, name="it_support"),
+    path("it-support/my-stock/", role_dashboards.my_stock, name="it_support_my_stock"),
+    path(
+        "it-support/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="it_support_my_stock_item",
+    ),
     path(
         "it-support/company-clients/",
         role_dashboards.it_support_company_clients,
@@ -307,6 +376,12 @@ urlpatterns = [
     ),
     path("it-support/switch-role/", role_dashboards.switch_role_view, name="switch_role"),
     path("sales/dashboard/", role_dashboards.sales_dashboard, name="sales"),
+    path("sales/my-stock/", role_dashboards.my_stock, name="sales_my_stock"),
+    path(
+        "sales/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="sales_my_stock_item",
+    ),
     path(
         "sales/lead-management/",
         role_dashboards.sales_lead_management,
@@ -348,6 +423,12 @@ urlpatterns = [
         name="sales_reports",
     ),
     path("technician/dashboard/", role_dashboards.technician_dashboard, name="technician"),
+    path("technician/my-stock/", role_dashboards.my_stock, name="technician_my_stock"),
+    path(
+        "technician/my-stock/<int:pk>/",
+        role_dashboards.my_stock_item,
+        name="technician_my_stock_item",
+    ),
     path(
         "technician/installations/",
         role_dashboards.technician_installations,
@@ -370,6 +451,11 @@ urlpatterns = [
     ),
     path(
         "technician/tickets/",
+        role_dashboards.technician_tickets_hub,
+        name="technician_tickets_hub",
+    ),
+    path(
+        "technician/tickets/installed/",
         role_dashboards.technician_tickets,
         name="technician_tickets",
     ),
@@ -377,6 +463,21 @@ urlpatterns = [
         "technician/tickets/pending-connections/",
         role_dashboards.technician_tickets_pending_connections,
         name="technician_tickets_pending_connections",
+    ),
+    path(
+        "technician/tickets/places/",
+        role_dashboards.technician_places,
+        name="technician_places",
+    ),
+    path(
+        "technician/tickets/places/details/",
+        role_dashboards.technician_place_details,
+        name="technician_place_details",
+    ),
+    path(
+        "technician/tickets/places/reverse/",
+        role_dashboards.technician_place_reverse,
+        name="technician_place_reverse",
     ),
     path(
         "technician/tickets/pending-connections/<int:customer_id>/receive/",

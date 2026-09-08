@@ -8,105 +8,216 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="cs-list-page">
+<section class="cs-list-page cs-tech-alloc-page">
   <header class="cs-list-head">
     <div class="cs-list-head-copy">
       <p class="cs-list-kicker">{{ page_kicker }}</p>
       <h2 class="cs-list-title">{{ page_title }}</h2>
       <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="cs-list-count">
-      <strong>{% if tickets %}{{ tickets|length }}{% else %}0{% endif %}</strong>
-      <span>{% if tickets|length == 1 %}ticket{% else %}tickets{% endif %}</span>
+    <div class="cs-list-count-group" aria-label="Allocation summary">
+      <div class="cs-list-count">
+        <strong>{{ open_count|default:0 }}</strong>
+        <span>open</span>
+      </div>
+      <div class="cs-list-count">
+        <strong>{{ allocated_count|default:0 }}</strong>
+        <span>allocated</span>
+      </div>
     </div>
   </header>
 
-  {% if tickets %}
-  <div class="cs-list-shell">
-    <table class="cs-list-table">
-      <thead>
-        <tr>
-          <th>Ticket</th>
-          <th>Client</th>
-          <th>Technician</th>
-          <th>Sales by</th>
-          <th>Location</th>
-          <th>Phone</th>
-          <th>ISP</th>
-          <th class="col-optional">Package</th>
-          <th>Status</th>
-          <th>Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for ticket in tickets %}
-          <tr>
-            <td class="is-primary-cell" data-label="Ticket">
-              <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
-            </td>
-            <td data-label="Client">
-              <div class="cs-list-primary">
-                <strong>{{ ticket.full_name }}</strong>
-                {% if ticket.building_name %}
-                  <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
-                {% endif %}
-              </div>
-            </td>
-            <td data-label="Technician">
-              {% if ticket.assigned_technician %}
-                {% if ticket.assigned_technician.user.get_full_name %}
-                  {{ ticket.assigned_technician.user.get_full_name }}
-                {% else %}
-                  {{ ticket.assigned_technician.user.username }}
-                {% endif %}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Sales by">
-              {% if ticket.registered_by %}
-                {{ ticket.registered_by.get_full_name|default:ticket.registered_by.username }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Location">
-              {% if ticket.location_lat and ticket.location_lng %}
-                {% with maps_label=ticket.building_name|default:ticket.address %}
-                <a
-                  class="lead-maps-link"
-                  href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
-                </a>
-                {% endwith %}
-              {% elif ticket.address or ticket.building_name %}
-                {{ ticket.building_name|default:ticket.address }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Phone">
-              {% if ticket.phone %}<a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a>{% else %}—{% endif %}
-            </td>
-            <td data-label="ISP">{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</td>
-            <td class="col-optional" data-label="Package">{% if ticket.plan %}{{ ticket.plan.name }}{% else %}—{% endif %}</td>
-            <td data-label="Status">
-              <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
-            </td>
-            <td data-label="Created">{{ ticket.created_at|date:"d M Y" }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="cs-list-empty">
-    <strong>No closed allocations</strong>
-    <p>{{ empty_text }}</p>
-  </div>
-  {% endif %}
+  <section class="cs-list-section cs-tech-alloc-form-panel" aria-labelledby="allocate-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="allocate-heading">Allocate ticket</h3>
+        <p>Choose an open install ticket and the technician who should take it.</p>
+      </div>
+    </header>
+
+    {% if technicians and open_tickets %}
+      <form method="post" class="cs-tech-alloc-form" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="action" value="allocate_technician">
+
+        <div class="cs-tech-alloc-grid">
+          <div class="cs-tech-alloc-field">
+            <label for="id_alloc_ticket">Ticket</label>
+            <select class="form-control" name="ticket_id" id="id_alloc_ticket" required>
+              <option value="">Select open ticket…</option>
+              {% for ticket in open_tickets %}
+                <option value="{{ ticket.id }}">
+                  {{ ticket.sales_ticket_number|default:ticket.account_number }}
+                  — {{ ticket.full_name }}
+                  {% if ticket.organization %} · {{ ticket.organization.name }}{% endif %}
+                  {% if ticket.building_name %} · {{ ticket.building_name }}{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="cs-tech-alloc-field">
+            <label for="id_alloc_technician">Technician</label>
+            <select class="form-control" name="technician_id" id="id_alloc_technician" required>
+              <option value="">Select technician…</option>
+              {% for tech in technicians %}
+                <option value="{{ tech.id }}">
+                  {{ tech.user.get_full_name|default:tech.user.username }}
+                  {% if tech.organization %} · {{ tech.organization.name }}{% elif tech.phone %} · {{ tech.phone }}{% endif %}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="cs-tech-alloc-actions">
+            <button type="submit" class="btn btn-primary">Allocate to technician</button>
+          </div>
+        </div>
+      </form>
+    {% elif not technicians %}
+      <div class="cs-list-empty cs-list-empty--inset">
+        <strong>No active technicians</strong>
+        <p>Register or activate a technician employee before allocating tickets.</p>
+      </div>
+    {% else %}
+      <div class="cs-list-empty cs-list-empty--inset">
+        <strong>No open tickets</strong>
+        <p>When sales or support queues a PPPoE install, it will appear here for allocation.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="cs-list-section" aria-labelledby="allocated-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="allocated-heading">Allocated tickets</h3>
+        <p>All install tickets currently assigned to a technician.</p>
+      </div>
+    </header>
+
+    {% if tickets %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>Technician</th>
+              <th>Sales by</th>
+              <th>Location</th>
+              <th>Phone</th>
+              <th>ISP</th>
+              <th class="col-optional">Package</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ticket in tickets %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ ticket.full_name }}</strong>
+                    {% if ticket.building_name %}
+                      <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="Technician">
+                  {% if ticket.assigned_technician %}
+                    {% if ticket.assigned_technician.user.get_full_name %}
+                      {{ ticket.assigned_technician.user.get_full_name }}
+                    {% else %}
+                      {{ ticket.assigned_technician.user.username }}
+                    {% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Sales by">
+                  {% if ticket.registered_by %}
+                    {{ ticket.registered_by.get_full_name|default:ticket.registered_by.username }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Location">
+                  {% if ticket.location_lat and ticket.location_lng %}
+                    {% with maps_label=ticket.building_name|default:ticket.address %}
+                    <a
+                      class="lead-maps-link"
+                      href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                    </a>
+                    {% endwith %}
+                  {% elif ticket.address or ticket.building_name %}
+                    {{ ticket.building_name|default:ticket.address }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Phone">
+                  {% if ticket.phone %}<a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a>{% else %}—{% endif %}
+                </td>
+                <td data-label="ISP">{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</td>
+                <td class="col-optional" data-label="Package">{% if ticket.plan %}{{ ticket.plan.name }}{% else %}—{% endif %}</td>
+                <td data-label="Status">
+                  <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+                </td>
+                <td data-label="Created">{{ ticket.created_at|date:"d M Y" }}</td>
+                <td data-label="Actions">
+                  <div class="cs-tech-alloc-row-actions">
+                    {% if technicians %}
+                      <form method="post" class="cs-tech-alloc-reassign">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="allocate_technician">
+                        <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                        <label class="visually-hidden" for="reassign-{{ ticket.id }}">Reassign technician</label>
+                        <select
+                          class="form-control"
+                          name="technician_id"
+                          id="reassign-{{ ticket.id }}"
+                          required
+                          onchange="this.form.requestSubmit()"
+                        >
+                          <option value="">Reassign…</option>
+                          {% for tech in technicians %}
+                            <option
+                              value="{{ tech.id }}"
+                              {% if ticket.assigned_technician_id == tech.id %}selected disabled{% endif %}
+                            >
+                              {{ tech.user.get_full_name|default:tech.user.username }}
+                            </option>
+                          {% endfor %}
+                        </select>
+                      </form>
+                    {% endif %}
+                    <form method="post">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="release_ticket">
+                      <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                      <button type="submit" class="btn btn-ghost btn-sm">Release</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No allocated tickets</strong>
+        <p>{{ empty_text }}</p>
+      </div>
+    {% endif %}
+  </section>
 </section>
 {% endblock %}

@@ -247,7 +247,7 @@ CLIENT_SIDEBARS = {
             },
             {
                 "key": "pending_activation",
-                "label": "Pending activation",
+                "label": "Installed (activate)",
                 "url_name": "core:my_clients",
                 "query": "tab=pppoe&view=pending",
             },
@@ -9166,7 +9166,12 @@ def my_clients(request):
     org = resolve_organization(request.user, request)
 
     open_modal = ""
-    pppoe_form = PppoeClientRegisterForm(organization=org, default_activate=True)
+    pppoe_form = PppoeClientRegisterForm(
+        organization=org,
+        default_activate=False,
+        allow_activate=False,
+        require_serials=False,
+    )
     clients_view = (request.GET.get("view") or "").strip().lower()
 
     def _pppoe_pending_redirect():
@@ -9189,7 +9194,7 @@ def my_clients(request):
                     pk=int(raw_id),
                     organization_id=org.pk,
                     service_type=Customer.ServiceType.PPPOE,
-                    status=Customer.Status.INACTIVE,
+                    status=Customer.Status.INSTALLED,
                 )
                 .first()
             )
@@ -9250,7 +9255,7 @@ def my_clients(request):
             remaining = Customer.objects.filter(
                 organization_id=org.pk,
                 service_type=Customer.ServiceType.PPPOE,
-                status=Customer.Status.INACTIVE,
+                status=Customer.Status.INSTALLED,
             ).exists()
             if remaining:
                 return _pppoe_pending_redirect()
@@ -9260,49 +9265,24 @@ def my_clients(request):
                 messages.error(request, "No organization is linked to this workspace.")
                 return redirect("core:my_clients")
             pppoe_form = PppoeClientRegisterForm(
-                request.POST, organization=org, default_activate=True
+                request.POST,
+                organization=org,
+                default_activate=False,
+                allow_activate=False,
+                require_serials=False,
             )
             if pppoe_form.is_valid():
                 customer = pppoe_form.save()
-                customer_pk = customer.pk
                 account_number = customer.account_number
                 full_name = customer.full_name
-                activated = bool(pppoe_form.cleaned_data.get("activate_account"))
-
-                def _bg_provision(pk: int = customer_pk) -> None:
-                    from django.db import connection
-
-                    try:
-                        cust = Customer.objects.select_related(
-                            "plan", "router", "organization"
-                        ).get(pk=pk)
-                        # Secret-only push: stack already lives on the onboarded router.
-                        provision_customer_pppoe(cust, ensure_stack=False)
-                    except Exception:
-                        pass
-                    finally:
-                        connection.close()
-
-                threading.Thread(target=_bg_provision, daemon=True).start()
-                if activated:
-                    messages.success(
-                        request,
-                        (
-                            f"PPPoE client “{full_name}” registered "
-                            f"({account_number}). "
-                            "Installing the login on MikroTik in the background — "
-                            "the CPE can dial once the push finishes."
-                        ),
-                    )
-                else:
-                    messages.success(
-                        request,
-                        (
-                            f"PPPoE client “{full_name}” registered "
-                            f"({account_number}) as inactive. "
-                            "The CPE can dial in, but surfing stays blocked until activation."
-                        ),
-                    )
+                messages.success(
+                    request,
+                    (
+                        f"PPPoE client “{full_name}” registered "
+                        f"({account_number}) — queued for technician install. "
+                        "After install, activate the account so surfing can start."
+                    ),
+                )
                 return redirect(f"{reverse('core:my_clients')}?tab=pppoe")
             open_modal = "pppoe-register-modal"
             tab = "pppoe"
@@ -9326,7 +9306,7 @@ def my_clients(request):
     )
     pending_activation_qs = base_qs.filter(
         service_type=Customer.ServiceType.PPPOE,
-        status=Customer.Status.INACTIVE,
+        status=Customer.Status.INSTALLED,
     )
     pending_activation_count = pending_activation_qs.count() if org else 0
 
@@ -9334,7 +9314,7 @@ def my_clients(request):
     # ?tab=pppoe&view=pending for this ISP.
     pppoe_count = (
         base_qs.filter(service_type=Customer.ServiceType.PPPOE)
-        .exclude(status=Customer.Status.INACTIVE)
+        .exclude(status=Customer.Status.INSTALLED)
         .count()
         if org
         else 0
@@ -9402,7 +9382,7 @@ def my_clients(request):
             .order_by("-created_at")
         )
         if tab == "pppoe":
-            tab_qs = tab_qs.exclude(status=Customer.Status.INACTIVE)
+            tab_qs = tab_qs.exclude(status=Customer.Status.INSTALLED)
     if clients_router_param == "none":
         tab_qs = tab_qs.filter(router__isnull=True)
     elif clients_router_id:
@@ -9432,7 +9412,11 @@ def my_clients(request):
         elif len(client_routers) == 1:
             pppoe_initial["router"] = client_routers[0].pk
         pppoe_form = PppoeClientRegisterForm(
-            organization=org, initial=pppoe_initial, default_activate=True
+            organization=org,
+            initial=pppoe_initial,
+            default_activate=False,
+            allow_activate=False,
+            require_serials=False,
         )
 
     ctx = client_page_context(
@@ -11880,7 +11864,7 @@ def client_usage_analysis(request, customer_id: int):
         usage_trend_payload,
     )
 
-    usage_filter = parse_usage_filter(request, default_time="1")
+    usage_filter = parse_usage_filter(request, default_time="1", default_range="day")
     hours = usage_filter["hours"]
     filter_qs = usage_filter_querystring(usage_filter)
     live_error = ""
@@ -12123,7 +12107,7 @@ def client_usage_trends(request, customer_id: int):
         )
     from billing.usage_samples import parse_usage_filter, usage_trend_payload
 
-    usage_filter = parse_usage_filter(request, default_time="1")
+    usage_filter = parse_usage_filter(request, default_time="1", default_range="day")
     hours = usage_filter["hours"]
     sample = (request.GET.get("sample") or "").strip() in {"1", "true", "yes"}
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
@@ -14484,9 +14468,12 @@ def hotspot_payment_activate(request, join_code: str, stk_id: int):
 
 
 def _pppoe_pay_url_for_customer(customer, request=None) -> str:
-    """Canonical PPPoE pay URL with signed account token."""
+    """Canonical PPPoE captive URL (pay or pause) with signed account token."""
     from core.hotspot_portal import public_absolute_url
-    from core.mikrotik_connect import _pppoe_pay_portal_url
+    from core.mikrotik_connect import (
+        _pppoe_captive_page_for_customer,
+        _pppoe_pay_portal_url,
+    )
 
     org = getattr(customer, "organization", None)
     if org is None or not getattr(org, "join_code", None):
@@ -14495,7 +14482,9 @@ def _pppoe_pay_url_for_customer(customer, request=None) -> str:
     url = _pppoe_pay_portal_url(org, customer=customer)
     if url and url.startswith("http"):
         return url
-    path = reverse("core:pppoe_pay", kwargs={"join_code": org.join_code})
+    page = _pppoe_captive_page_for_customer(customer)
+    view_name = "core:pppoe_pause" if page == "pause" else "core:pppoe_pay"
+    path = reverse(view_name, kwargs={"join_code": org.join_code})
     token = _make_pppoe_customer_token(org, customer)
     if token:
         from urllib.parse import urlencode
@@ -14506,25 +14495,99 @@ def _pppoe_pay_url_for_customer(customer, request=None) -> str:
     return path
 
 
-def _hotspot_pay_url_for_org(org, request=None) -> str:
-    """Canonical Hotspot pay URL for an organization."""
+def _hotspot_pay_url_for_org(org, request=None, *, customer=None) -> str:
+    """Canonical Hotspot captive URL (pay or pause) for an organization."""
     from core.hotspot_portal import public_absolute_url
+    from core.mikrotik_connect import _customer_package_is_paused
 
     if org is None or not getattr(org, "join_code", None):
         return ""
-    path = reverse("core:hotspot_pay", kwargs={"join_code": org.join_code})
+    page = "pause" if customer is not None and _customer_package_is_paused(customer) else "pay"
+    view_name = "core:hotspot_pause" if page == "pause" else "core:hotspot_pay"
+    path = reverse(view_name, kwargs={"join_code": org.join_code})
     if request is not None:
         return public_absolute_url(path, request)
     return path
 
 
 def _redirect_pay_preserving_query(request, view_name: str, join_code: str):
-    """302 to the other pay UI while keeping query (mac, t, account, …)."""
+    """302 to the other captive UI while keeping query (mac, t, account, …)."""
     path = reverse(view_name, kwargs={"join_code": join_code})
     qs = (request.META.get("QUERY_STRING") or "").strip()
     if qs:
         path = f"{path}?{qs}"
     return redirect(path)
+
+
+def _portal_preview_mode(request) -> str:
+    if request is None:
+        return ""
+    return (request.GET.get("preview") or "").strip().lower()
+
+
+def _resolve_pppoe_pay_customer(org, request):
+    """Match a PPPoE customer for the captive pay/pause pages."""
+    remote = (request.META.get("REMOTE_ADDR") or "").strip()
+    customer = find_pppoe_customer_for_ip(org, remote)
+    identify_error = ""
+    if customer is None:
+        # CPE Wi‑Fi renew popup installs a signed token so the account for the
+        # connected router is filled without needing a 10.20.0.x pool IP.
+        customer = _find_pppoe_customer_from_token(org, request.GET.get("t") or "")
+    if customer is None:
+        # Same browser returning to renew — reuse the last matched account.
+        customer = _find_pppoe_customer_from_token(
+            org, request.COOKIES.get("pppoe_pay") or ""
+        )
+    if customer is None:
+        # Soft account hint cookie (set on a previous successful match).
+        customer = _find_pppoe_customer_for_pay(
+            org,
+            account_number=request.COOKIES.get("pppoe_acct") or "",
+        )
+    if customer is None:
+        # Staff / shared renew links can pass account or phone in the query.
+        customer = _find_pppoe_customer_for_pay(
+            org,
+            account_number=request.GET.get("account") or "",
+            phone=request.GET.get("phone") or "",
+        )
+    if customer is None:
+        identify_error = (
+            "Could not auto-match this connection. Enter your account number "
+            "or phone number to pay and restore internet."
+        )
+    return customer, identify_error, remote
+
+
+def _pppoe_captive_cross_redirect(request, join_code: str, *, expected_page: str, customer):
+    """Send paused clients to /pause/ and others to /pay/ (skip theme previews)."""
+    preview = _portal_preview_mode(request)
+    if preview in {"paused", "renew", "demo"}:
+        return None
+    from billing.services import customer_package_is_paused
+
+    is_paused = bool(customer and customer_package_is_paused(customer))
+    if expected_page == "pay" and is_paused:
+        return _redirect_pay_preserving_query(request, "core:pppoe_pause", join_code)
+    if expected_page == "pause" and customer is not None and not is_paused:
+        return _redirect_pay_preserving_query(request, "core:pppoe_pay", join_code)
+    return None
+
+
+def _hotspot_captive_cross_redirect(request, join_code: str, *, expected_page: str, customer):
+    """Send paused Hotspot clients to /pause/ and others to /pay/."""
+    preview = _portal_preview_mode(request)
+    if preview in {"paused", "renew", "demo"}:
+        return None
+    from billing.services import customer_package_is_paused
+
+    is_paused = bool(customer and customer_package_is_paused(customer))
+    if expected_page == "pay" and is_paused:
+        return _redirect_pay_preserving_query(request, "core:hotspot_pause", join_code)
+    if expected_page == "pause" and customer is not None and not is_paused:
+        return _redirect_pay_preserving_query(request, "core:hotspot_pay", join_code)
+    return None
 
 
 def click_to_earn(request, join_code: str):
@@ -14650,24 +14713,83 @@ def hotspot_portal_track(request, join_code: str):
 
 def hotspot_pay(request, join_code: str):
     """Public Hotspot payment page (captive redirect target + preview)."""
+    return _hotspot_captive_page(request, join_code, expected_page="pay")
+
+
+def hotspot_pause(request, join_code: str):
+    """Public Hotspot pause page when staff froze the subscription."""
+    return _hotspot_captive_page(request, join_code, expected_page="pause")
+
+
+def _hotspot_captive_page(request, join_code: str, *, expected_page: str):
     org = get_object_or_404(Organization, join_code=join_code)
     remote = (request.META.get("REMOTE_ADDR") or "").strip()
     # Pool mismatch guard: PPPoE / CPE-renew clients must not stick on Hotspot UI.
     try:
-        from core.mikrotik_connect import is_cpe_renew_pool_ip, is_pppoe_pool_ip
+        from core.mikrotik_connect import (
+            _pppoe_captive_page_for_customer,
+            find_pppoe_customer_for_ip,
+            is_cpe_renew_pool_ip,
+            is_pppoe_pool_ip,
+        )
 
         if is_pppoe_pool_ip(remote) or is_cpe_renew_pool_ip(remote):
+            pppoe_customer = None
+            try:
+                pppoe_customer = find_pppoe_customer_for_ip(org, remote)
+            except Exception:
+                pppoe_customer = None
+            page = _pppoe_captive_page_for_customer(pppoe_customer)
             return _redirect_pay_preserving_query(
-                request, "core:pppoe_pay", join_code
+                request,
+                "core:pppoe_pause" if page == "pause" else "core:pppoe_pay",
+                join_code,
             )
     except Exception:
         pass
+
+    # Resolve MAC/customer first so paused ↔ pay cross-redirects happen before
+    # any theme-preview defaults are applied.
+    pre_mac = ""
+    if request is not None:
+        for raw in (
+            request.GET.get("mac") or "",
+            request.COOKIES.get("hs_mac") or "",
+        ):
+            pre_mac = _normalize_hotspot_mac(raw)
+            if pre_mac:
+                break
+        if not pre_mac:
+            try:
+                pre_mac = _resolve_request_hotspot_mac(org, request) or ""
+            except Exception:
+                pre_mac = ""
+    pre_customer = (
+        _find_hotspot_customer_for_mac(org, pre_mac) if pre_mac else None
+    )
+    cross = _hotspot_captive_cross_redirect(
+        request,
+        join_code,
+        expected_page=expected_page,
+        customer=pre_customer,
+    )
+    if cross is not None:
+        return cross
+
+    # Theme preview on /pause/ without a live paused customer still shows pause copy.
+    if expected_page == "pause" and not _portal_preview_mode(request):
+        from billing.services import customer_package_is_paused
+
+        if pre_customer is None or not customer_package_is_paused(pre_customer):
+            request.GET = request.GET.copy()
+            request.GET["preview"] = "paused"
+
     context = _hotspot_portal_context(org, mikrotik_login=False, request=request)
-    hotspot_mac = (context.get("hotspot_mac") or "").strip().upper()
+    hotspot_mac = (context.get("hotspot_mac") or "").strip().upper() or pre_mac
     hotspot_customer = (
         _find_hotspot_customer_for_mac(org, hotspot_mac) if hotspot_mac else None
-    )
-    if hotspot_mac:
+    ) or pre_customer
+    if hotspot_mac and expected_page == "pay":
         from billing.services import customer_can_surf_via_hotspot
 
         if not (
@@ -14961,6 +15083,15 @@ def _find_pppoe_customer_for_pay(org, *, account_number: str = "", phone: str = 
 
 def pppoe_pay(request, join_code: str):
     """Public renew page for expired PPPoE sessions (dst-nat captive target)."""
+    return _pppoe_captive_page(request, join_code, expected_page="pay")
+
+
+def pppoe_pause(request, join_code: str):
+    """Public pause page when staff froze the PPPoE subscription."""
+    return _pppoe_captive_page(request, join_code, expected_page="pause")
+
+
+def _pppoe_captive_page(request, join_code: str, *, expected_page: str):
     org = get_object_or_404(Organization, join_code=join_code)
     remote = (request.META.get("REMOTE_ADDR") or "").strip()
     # Pool mismatch guard: dedicated Hotspot clients must not stick on PPPoE UI.
@@ -14973,35 +15104,29 @@ def pppoe_pay(request, join_code: str):
             )
     except Exception:
         pass
-    customer = find_pppoe_customer_for_ip(org, remote)
-    identify_error = ""
-    if customer is None:
-        # CPE Wi‑Fi renew popup installs a signed token so the account for the
-        # connected router is filled without needing a 10.20.0.x pool IP.
-        customer = _find_pppoe_customer_from_token(org, request.GET.get("t") or "")
-    if customer is None:
-        # Same browser returning to renew — reuse the last matched account.
-        customer = _find_pppoe_customer_from_token(
-            org, request.COOKIES.get("pppoe_pay") or ""
-        )
-    if customer is None:
-        # Soft account hint cookie (set on a previous successful match).
-        customer = _find_pppoe_customer_for_pay(
-            org,
-            account_number=request.COOKIES.get("pppoe_acct") or "",
-        )
-    if customer is None:
-        # Staff / shared renew links can pass account or phone in the query.
-        customer = _find_pppoe_customer_for_pay(
-            org,
-            account_number=request.GET.get("account") or "",
-            phone=request.GET.get("phone") or "",
-        )
-    if customer is None:
-        identify_error = (
-            "Could not auto-match this connection. Enter your account number "
-            "or phone number to pay and restore internet."
-        )
+
+    customer, identify_error, remote = _resolve_pppoe_pay_customer(org, request)
+    cross = _pppoe_captive_cross_redirect(
+        request,
+        join_code,
+        expected_page=expected_page,
+        customer=customer,
+    )
+    if cross is not None:
+        return cross
+
+    # Theme preview on /pause/ without a live paused customer still shows pause copy.
+    if expected_page == "pause" and not _portal_preview_mode(request):
+        from billing.services import customer_package_is_paused
+
+        if customer is None or not customer_package_is_paused(customer):
+            request.GET = request.GET.copy()
+            request.GET["preview"] = "paused"
+
+    # Pause page never prompts for account lookup / payment.
+    if expected_page == "pause":
+        identify_error = ""
+
     context = _pppoe_portal_context(
         org, request, customer=customer, identify_error=identify_error
     )
@@ -15646,7 +15771,7 @@ def leads(request):
             "assigned_technician__user",
         )
         .filter(
-            Q(status=Customer.Status.NEW, organization__isnull=True)
+            Q(status=Customer.Status.LEAD, organization__isnull=True)
             | Q(status__in=Customer.ALLOCATED_STATUSES, organization=org)
         )
         if org
@@ -15661,13 +15786,13 @@ def leads(request):
     mine_count = 0
     tech_open_count = 0
     for customer in customers:
-        if customer.status == Customer.Status.NEW:
+        if customer.status == Customer.Status.LEAD:
             open_count += 1
         elif customer.organization_id == getattr(org, "pk", None):
             mine_count += 1
-            if customer.status == Customer.Status.ALLOCATED_OPEN:
+            if customer.status == Customer.Status.QUEUED:
                 tech_open_count += 1
-        if customer.status != Customer.Status.NEW:
+        if customer.status != Customer.Status.LEAD:
             customer.allocation_amount_display = ""
             customer.allocation_fee_error = ""
             continue
@@ -15682,10 +15807,9 @@ def leads(request):
         customer.allocation_fee_error = "" if fee.get("ok") else (fee.get("error") or "")
 
     status_rank = {
-        Customer.Status.NEW: 0,
-        Customer.Status.ALLOCATED_OPEN: 1,
-        Customer.Status.ALLOCATED: 2,
-        Customer.Status.ALLOCATED_CLOSED: 3,
+        Customer.Status.LEAD: 0,
+        Customer.Status.QUEUED: 1,
+        Customer.Status.ASSIGNED: 2,
     }
 
     def _alloc_sort_key(customer):
@@ -15698,11 +15822,11 @@ def leads(request):
     alloc_q_l = alloc_q.lower()
     filtered_customers = []
     for customer in customers:
-        if alloc_filter == "open" and customer.status != Customer.Status.NEW:
+        if alloc_filter == "open" and customer.status != Customer.Status.LEAD:
             continue
-        if alloc_filter == "mine" and customer.status == Customer.Status.NEW:
+        if alloc_filter == "mine" and customer.status == Customer.Status.LEAD:
             continue
-        if alloc_filter == "tech_open" and customer.status != Customer.Status.ALLOCATED_OPEN:
+        if alloc_filter == "tech_open" and customer.status != Customer.Status.QUEUED:
             continue
         if alloc_q_l:
             hay = " ".join(
@@ -15791,7 +15915,7 @@ def _lead_action_customer(request, customer_id):
     customer = (
         Customer.objects.filter(pk=customer_id)
         .filter(
-            Q(status=Customer.Status.NEW, organization__isnull=True)
+            Q(status=Customer.Status.LEAD, organization__isnull=True)
             | Q(status__in=Customer.ALLOCATED_STATUSES, organization=org)
         )
         .select_related("organization", "plan", "assigned_technician")
@@ -15807,7 +15931,7 @@ def lead_allocation_stk_pay(request, customer_id):
     org, customer = _lead_action_customer(request, customer_id)
     if org is None:
         return JsonResponse({"ok": False, "error": "No organization linked."}, status=400)
-    if customer is None or customer.status != Customer.Status.NEW:
+    if customer is None or customer.status != Customer.Status.LEAD:
         return JsonResponse(
             {"ok": False, "error": "That lead is no longer available."},
             status=400,
@@ -15906,7 +16030,7 @@ def lead_reverse(request, customer_id):
         messages.success(
             request,
             result.get("message")
-            or f"Reversed allocation for {customer.full_name} ({ticket}). Ticket is New again.",
+            or f"Reversed allocation for {customer.full_name} ({ticket}). Ticket is a lead again.",
         )
     else:
         messages.error(request, result.get("error") or "Could not reverse this allocation.")
@@ -15920,8 +16044,8 @@ def lead_not_interested(request, customer_id):
     if customer is None:
         messages.error(request, "That lead is no longer available.")
         return redirect("core:leads")
-    if customer.status != Customer.Status.NEW:
-        messages.error(request, "Only open tickets can be marked not interested.")
+    if customer.status != Customer.Status.LEAD:
+        messages.error(request, "Only lead tickets can be marked not interested.")
         return redirect("core:leads")
 
     # Leave open-pool ownership empty but mark disposition so it leaves every leads queue.
@@ -16064,8 +16188,9 @@ def referrals(request):
     referral_url = request.build_absolute_uri(f"{referral_path}?ref={referral_code}")
     org_label = org.name or "an ISPCENTRIC partner"
     share_text = (
-        f"Join ISPCENTRIC — referred by {org_label}. "
-        f"Open this link to register (referral code is their phone {referral_code}):"
+        f"Onboard your ISP on ISPCENTRIC — referred by {org_label}. "
+        f"Use this link to register as an ISP client "
+        f"(referral code {referral_code}):"
     )
     from urllib.parse import quote
 
@@ -16075,7 +16200,7 @@ def referrals(request):
     sms_share_url = "sms:?body=" + quote(f"{share_text} {referral_url}")
     email_share_url = (
         "mailto:?subject="
-        + quote(f"Join ISPCENTRIC — referral from {org_label}")
+        + quote(f"Onboard your ISP on ISPCENTRIC — referral from {org_label}")
         + "&body="
         + quote(f"{share_text}\n\n{referral_url}")
     )
@@ -16097,10 +16222,11 @@ def referrals(request):
             request,
             active_nav="referral",
             page_title="Referrals",
-            page_kicker="Grow",
+            page_kicker="Onboard ISPs",
             page_subtitle=(
-                f"Share {org_label}'s referral link. New signups stay pending "
-                "until they onboard their first MikroTik."
+                f"Invite other ISP businesses with {org_label}'s link. "
+                "They register as ISP clients, then become active after "
+                "onboarding their first MikroTik."
             ),
             referral_code=referral_code,
             referral_company_name=org_label,

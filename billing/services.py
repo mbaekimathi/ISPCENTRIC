@@ -400,6 +400,12 @@ def pause_customer_package(customer, *, now: datetime | None = None):
         raise ValueError("Cannot pause a package that has not started yet.")
     customer.package_paused_at = now
     customer.save(update_fields=["package_paused_at"])
+    try:
+        from core.mikrotik_connect import invalidate_captive_redirect_cache_for_customer
+
+        invalidate_captive_redirect_cache_for_customer(customer)
+    except Exception:
+        pass
     return customer
 
 
@@ -428,6 +434,12 @@ def resume_customer_package(customer, *, now: datetime | None = None):
         update_fields.append("package_end")
     customer.package_paused_at = None
     customer.save(update_fields=update_fields)
+    try:
+        from core.mikrotik_connect import invalidate_captive_redirect_cache_for_customer
+
+        invalidate_captive_redirect_cache_for_customer(customer)
+    except Exception:
+        pass
     return customer
 
 
@@ -1283,8 +1295,8 @@ def resolve_lead_allocation_technician_options(
     """
     Validate Accept-lead technician options.
 
-    - No specific technician selected → allocated_open (open for any tech)
-    - Specific technician selected → allocated_closed + assignee
+    - No specific technician selected → queued (open for any tech)
+    - Specific technician selected → assigned + assignee
     """
     from accounts.models import Employee
 
@@ -1296,7 +1308,7 @@ def resolve_lead_allocation_technician_options(
             "request_technician": bool(request_technician),
             "mode": "open",
             "technician": None,
-            "status": Customer.Status.ALLOCATED_OPEN,
+            "status": Customer.Status.QUEUED,
         }
 
     if mode != "assigned":
@@ -1341,7 +1353,7 @@ def resolve_lead_allocation_technician_options(
         "request_technician": True,
         "mode": "assigned",
         "technician": technician,
-        "status": Customer.Status.ALLOCATED_CLOSED,
+        "status": Customer.Status.ASSIGNED,
     }
 
 

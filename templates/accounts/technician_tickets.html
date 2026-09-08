@@ -22,22 +22,31 @@
       class="tech-tickets-tab{% if ticket_view == 'pending_connections' %} is-active{% endif %}"
       href="{% url 'roles:technician_tickets_pending_connections' %}"
     >
-      Pending connections
+      Queued for install
       <span class="tech-tickets-tab-count">{{ pending_connections_count|default:0 }}</span>
     </a>
     <a
       class="tech-tickets-tab{% if ticket_view == 'pending' %} is-active{% endif %}"
       href="{% url 'roles:technician_tickets' %}"
     >
-      Pending activation
+      Installed
       <span class="tech-tickets-tab-count">{{ pending_count|default:0 }}</span>
     </a>
     <a
       class="tech-tickets-tab{% if ticket_view == 'connected' %} is-active{% endif %}"
       href="{% url 'roles:technician_tickets_connected' %}"
     >
-      My connected tickets
+      Activated
       <span class="tech-tickets-tab-count">{{ connected_count|default:0 }}</span>
+    </a>
+    <a
+      class="tech-tickets-tab{% if ticket_view == 'fault' %} is-active{% endif %}{% if fault_count %} is-alert{% endif %}"
+      href="{% url 'roles:technician_fault_tickets' %}"
+    >
+      Fault Tickets
+      <span class="tech-tickets-tab-count{% if fault_count %} is-alert{% endif %}">
+        {{ fault_count|default:0 }}
+      </span>
     </a>
   </nav>
 
@@ -49,45 +58,51 @@
       </div>
       <div class="tech-install-stat is-assigned">
         <strong>{{ in_progress_count|default:0 }}</strong>
-        <span>In progress</span>
+        <span>Assigned to you</span>
       </div>
       <div class="tech-install-stat">
         <strong>{{ pending_count|default:0 }}</strong>
-        <span>Pending activation</span>
+        <span>Installed (awaiting activation)</span>
       </div>
     {% elif ticket_view == "connected" %}
-      <div class="tech-install-stat">
-        <strong>{{ connected_count|default:0 }}</strong>
-        <span>Connected</span>
+      <div class="tech-install-stat is-assigned">
+        <strong>{{ active_count|default:0 }}</strong>
+        <span>Activated</span>
       </div>
       <div class="tech-install-stat is-open">
         <strong>{{ pending_count|default:0 }}</strong>
-        <span>Pending activation</span>
+        <span>Installed (awaiting activation)</span>
       </div>
-      <div class="tech-install-stat is-assigned">
-        <strong>{{ active_count|default:0 }}</strong>
-        <span>Active</span>
+      <div class="tech-install-stat">
+        <strong>{{ pending_connections_count|default:0 }}</strong>
+        <span>Queued for install</span>
       </div>
     {% else %}
       <div class="tech-install-stat is-open">
         <strong>{{ pending_count|default:0 }}</strong>
-        <span>Pending activation</span>
+        <span>Installed</span>
       </div>
       <div class="tech-install-stat">
         <strong>{{ pending_connections_count|default:0 }}</strong>
-        <span>Pending connections</span>
+        <span>Queued for install</span>
       </div>
       <div class="tech-install-stat">
         <strong>{{ connected_count|default:0 }}</strong>
-        <span>All connected</span>
+        <span>Activated</span>
       </div>
     {% endif %}
   </div>
 
+  {% if ticket_view == "connected" and tickets_filter %}
+    <div class="tech-tickets-filter-bar">
+      {% include "accounts/includes/tickets_date_filter.html" with tickets_filter=tickets_filter tickets_filter_id="tech-tickets-date-filter" %}
+    </div>
+  {% endif %}
+
   {% if tickets %}
     <div class="tech-install-list">
       {% for ticket in tickets %}
-        <article class="tech-install-card{% if ticket.status == 'new' %} is-open{% elif ticket.status == 'in_progress' %} is-mine{% elif ticket.status == 'inactive' %} is-open{% elif ticket.status == 'active' %} is-mine{% else %} is-registered{% endif %}">
+        <article class="tech-install-card{% if ticket.status == 'lead' or ticket.status == 'queued' %} is-open{% elif ticket.status == 'assigned' %} is-mine{% elif ticket.status == 'installed' %} is-open{% elif ticket.status == 'active' %} is-mine{% else %} is-registered{% endif %}">
           <header class="tech-install-card-head">
             <div class="tech-install-card-id">
               <span class="tech-install-ticket">
@@ -101,12 +116,12 @@
               <span class="org-status org-status-{{ ticket.status }}">
                 {{ ticket.get_status_display }}
               </span>
-              {% if ticket.status == "new" %}
+              {% if ticket.status == "lead" or ticket.status == "queued" %}
                 <span class="tech-install-chip is-pool">Open</span>
-              {% elif ticket.status == "in_progress" %}
+              {% elif ticket.status == "assigned" %}
                 <span class="tech-install-chip is-yours">Yours</span>
-              {% elif ticket.status == "inactive" %}
-                <span class="tech-install-chip is-pool">Pending activation</span>
+              {% elif ticket.status == "installed" %}
+                <span class="tech-install-chip is-pool">Awaiting activation</span>
               {% elif ticket.status == "active" %}
                 <span class="tech-install-chip is-yours">Active</span>
               {% endif %}
@@ -165,6 +180,26 @@
                   <span class="tech-install-meta-value">{{ ticket.plan.name }}</span>
                 </div>
               {% endif %}
+              {% if ticket.pppoe_username or ticket.pppoe_password %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">PPPoE username</span>
+                  <span class="tech-install-meta-value tech-install-pppoe-user">
+                    {{ ticket.pppoe_username|default:"—" }}
+                  </span>
+                </div>
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">PPPoE password</span>
+                  {% if ticket.pppoe_password %}
+                    <span class="mikrotik-secret tech-install-pppoe-secret">
+                      <span class="mikrotik-secret-mask" data-secret-mask>•</span>
+                      <span class="mikrotik-secret-value" data-secret-value hidden>{{ ticket.pppoe_password }}</span>
+                      <button type="button" class="mikrotik-secret-toggle" data-toggle-secret aria-label="Show password">Show</button>
+                    </span>
+                  {% else %}
+                    <span class="tech-install-meta-muted">—</span>
+                  {% endif %}
+                </div>
+              {% endif %}
               <div class="tech-install-meta-item">
                 <span class="tech-install-meta-label">
                   {% if ticket_view == "pending_connections" %}Created{% else %}Connected{% endif %}
@@ -176,15 +211,94 @@
 
           {% if ticket_view == "pending_connections" %}
             <footer class="tech-install-card-actions">
-              {% if ticket.status == "new" %}
+              {% if ticket.status == "lead" or ticket.status == "queued" %}
                 <form method="post" action="{% url 'roles:technician_ticket_receive' ticket.id %}">
                   {% csrf_token %}
-                  <button type="submit" class="btn btn-primary">Receive ticket</button>
+                  <button type="submit" class="btn btn-primary">Accept ticket</button>
                 </form>
-              {% elif ticket.status == "in_progress" and ticket.assigned_technician_id == employee_profile.pk %}
-                <form method="post" action="{% url 'roles:technician_ticket_mark_done' ticket.id %}">
+              {% elif ticket.status == "assigned" and ticket.assigned_technician_id == employee_profile.pk %}
+                <form
+                  method="post"
+                  action="{% url 'roles:technician_ticket_mark_done' ticket.id %}"
+                  class="tech-complete-install-form"
+                  data-tech-stock-form
+                >
                   {% csrf_token %}
-                  <button type="submit" class="btn btn-primary">Mark done</button>
+                  <input type="hidden" name="stock_used" value="[]" data-stock-used>
+                  <input type="hidden" name="location_lat" value="{{ ticket.location_lat|default:'' }}" data-location-lat>
+                  <input type="hidden" name="location_lng" value="{{ ticket.location_lng|default:'' }}" data-location-lng>
+                  <input type="hidden" name="address" value="{{ ticket.address|default:'' }}" data-location-address>
+
+                  <div
+                    class="tech-install-location"
+                    data-tech-location
+                    data-places-url="{% url 'roles:technician_places' %}"
+                    data-place-details-url="{% url 'roles:technician_place_details' %}"
+                    data-place-reverse-url="{% url 'roles:technician_place_reverse' %}"
+                  >
+                    <div class="tech-install-location-head">
+                      <span class="tech-complete-serial-label">Building / location <span class="tech-optional">(optional)</span></span>
+                      <button type="button" class="btn btn-ghost btn-sm" data-use-current-location>
+                        Use current location
+                      </button>
+                    </div>
+                    <div class="mikrotik-location-field tech-install-location-field">
+                      <label class="visually-hidden" for="tech-building-{{ ticket.id }}">Building name</label>
+                      <div class="mikrotik-location-combo">
+                        <input
+                          type="text"
+                          class="form-control"
+                          name="building_name"
+                          id="tech-building-{{ ticket.id }}"
+                          value="{{ ticket.building_name }}"
+                          placeholder="Type a building or place name…"
+                          autocomplete="off"
+                          data-building-search
+                        >
+                        <div class="mikrotik-location-suggest" data-location-suggest hidden role="listbox" aria-label="Place suggestions"></div>
+                      </div>
+                      <p class="mikrotik-location-hint" data-location-hint hidden></p>
+                      <p class="mikrotik-coords" data-location-coords {% if not ticket.location_lat or not ticket.location_lng %}hidden{% endif %}>
+                        {% if ticket.location_lat and ticket.location_lng %}
+                          Lat {{ ticket.location_lat }}, Lng {{ ticket.location_lng }}
+                        {% endif %}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="tech-stock-used">
+                    <div class="tech-stock-used-head">
+                      <span class="tech-complete-serial-label">Stock used</span>
+                      {% if technician_stock %}
+                        <button type="button" class="btn btn-ghost btn-sm" data-add-stock-row>
+                          Add item
+                        </button>
+                      {% endif %}
+                    </div>
+
+                    {% if technician_stock %}
+                      <div class="tech-stock-rows" data-stock-rows></div>
+                      <p class="tech-stock-hint">
+                        Choose items from your stock. Serial-tracked items require a live serial search.
+                        Used units are marked sold and leave your stock.
+                      </p>
+                    {% else %}
+                      <p class="tech-stock-empty">
+                        No stock allocated to you.
+                        <a href="{% url 'roles:technician_my_stock' %}">Check My Stock</a>
+                        before completing this install.
+                      </p>
+                    {% endif %}
+                  </div>
+
+                  <button
+                    type="submit"
+                    class="btn btn-primary"
+                    data-complete-install
+                    {% if not technician_stock %}disabled{% endif %}
+                  >
+                    Complete install
+                  </button>
                 </form>
               {% endif %}
             </footer>
@@ -201,24 +315,658 @@
       </span>
       <strong>
         {% if ticket_view == "pending_connections" %}
-          No pending connection tickets
+          No queued install tickets
         {% elif ticket_view == "connected" %}
-          No connected tickets
+          No activated clients
         {% else %}
-          No pending activation clients
+          No installed clients awaiting activation
         {% endif %}
       </strong>
       <p>{{ empty_text }}</p>
       {% if ticket_view == "pending_connections" %}
         <a class="btn btn-ghost" href="{% url 'roles:technician_tickets' %}">
-          View pending activation
+          View installed
+        </a>
+      {% elif ticket_view == "connected" %}
+        <a class="btn btn-ghost" href="{% url 'roles:technician_tickets' %}">
+          View installed
         </a>
       {% else %}
         <a class="btn btn-ghost" href="{% url 'roles:technician_tickets_pending_connections' %}">
-          View pending connections
+          View queued installs
         </a>
       {% endif %}
     </div>
   {% endif %}
 </section>
+{% if technician_stock %}
+  {{ technician_stock|json_script:"technician-stock-data" }}
+{% else %}
+  <script id="technician-stock-data" type="application/json">[]</script>
+{% endif %}
+<template id="tech-stock-row-template">
+  <div class="tech-stock-row" data-stock-row>
+    <div class="tech-stock-row-main">
+      <label class="tech-stock-field">
+        <span>Item</span>
+        <select class="form-control" data-stock-equipment required>
+          <option value="">Select stock item…</option>
+        </select>
+      </label>
+      <label class="tech-stock-field tech-stock-qty-field" data-qty-wrap>
+        <span>Qty</span>
+        <input type="number" class="form-control" min="1" value="1" data-stock-qty>
+      </label>
+      <button type="button" class="btn btn-ghost btn-sm tech-stock-remove" data-remove-stock-row aria-label="Remove item">
+        Remove
+      </button>
+    </div>
+    <div class="tech-stock-serial-block" data-serial-wrap hidden>
+      <label class="tech-stock-field">
+        <span>Serial</span>
+        <input
+          type="text"
+          class="form-control text-upper"
+          placeholder="Search serial…"
+          autocomplete="off"
+          autocapitalize="characters"
+          data-serial-search
+        >
+      </label>
+      <div class="tech-stock-serial-results" data-serial-results hidden></div>
+      <ul class="tech-stock-serial-selected" data-serial-selected></ul>
+    </div>
+  </div>
+</template>
+<script>
+(function () {
+  document.querySelectorAll(".tech-install-pppoe-secret").forEach(function (wrap) {
+    var mask = wrap.querySelector("[data-secret-mask]");
+    var value = wrap.querySelector("[data-secret-value]");
+    var btn = wrap.querySelector("[data-toggle-secret]");
+    if (!mask || !value || !btn) return;
+    var len = (value.textContent || "").length;
+    mask.textContent = len ? "•".repeat(Math.min(len, 18)) : "—";
+    btn.addEventListener("click", function () {
+      var showing = !value.hidden;
+      value.hidden = showing;
+      mask.hidden = !showing;
+      btn.textContent = showing ? "Show" : "Hide";
+      btn.setAttribute("aria-label", showing ? "Show password" : "Hide password");
+    });
+  });
+
+  var stockDataEl = document.getElementById("technician-stock-data");
+  var stockCatalog = [];
+  try {
+    stockCatalog = JSON.parse((stockDataEl && stockDataEl.textContent) || "[]") || [];
+  } catch (err) {
+    stockCatalog = [];
+  }
+  var rowTemplate = document.getElementById("tech-stock-row-template");
+
+  function catalogById(id) {
+    id = String(id || "");
+    for (var i = 0; i < stockCatalog.length; i += 1) {
+      if (String(stockCatalog[i].id) === id) return stockCatalog[i];
+    }
+    return null;
+  }
+
+  function selectedEquipmentIds(form, exceptRow) {
+    var ids = {};
+    form.querySelectorAll("[data-stock-row]").forEach(function (row) {
+      if (row === exceptRow) return;
+      var select = row.querySelector("[data-stock-equipment]");
+      if (select && select.value) ids[select.value] = true;
+    });
+    return ids;
+  }
+
+  function fillEquipmentOptions(select, form, row) {
+    var taken = selectedEquipmentIds(form, row);
+    var current = select.value;
+    select.innerHTML = "";
+    var placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Select stock item…";
+    select.appendChild(placeholder);
+    stockCatalog.forEach(function (item) {
+      var id = String(item.id);
+      if (taken[id] && id !== current) return;
+      var opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent =
+        item.name +
+        " · " +
+        item.quantity +
+        " avail" +
+        (item.track_serials ? " · serial" : "");
+      opt.setAttribute("data-track-serials", item.track_serials ? "1" : "0");
+      opt.setAttribute("data-qty", String(item.quantity || 0));
+      select.appendChild(opt);
+    });
+    if (current) select.value = current;
+  }
+
+  function syncRowMode(row) {
+    var select = row.querySelector("[data-stock-equipment]");
+    var qtyWrap = row.querySelector("[data-qty-wrap]");
+    var qtyInput = row.querySelector("[data-stock-qty]");
+    var serialWrap = row.querySelector("[data-serial-wrap]");
+    var search = row.querySelector("[data-serial-search]");
+    var item = catalogById(select && select.value);
+    var track = !!(item && item.track_serials);
+    var maxQty = item ? Math.max(0, parseInt(item.quantity, 10) || 0) : 0;
+    if (qtyWrap) {
+      qtyWrap.hidden = !item || track;
+      qtyWrap.setAttribute("aria-hidden", qtyWrap.hidden ? "true" : "false");
+    }
+    if (serialWrap) {
+      serialWrap.hidden = !item || !track;
+      serialWrap.setAttribute("aria-hidden", serialWrap.hidden ? "true" : "false");
+    }
+    if (qtyInput) {
+      qtyInput.disabled = !item || track;
+      qtyInput.required = !!(item && !track);
+      qtyInput.max = String(Math.max(1, maxQty));
+      if (!item) qtyInput.value = "1";
+      else if ((parseInt(qtyInput.value, 10) || 1) > maxQty) {
+        qtyInput.value = String(Math.max(1, maxQty));
+      }
+    }
+    if (search) {
+      search.disabled = !track;
+      search.value = track ? search.value : "";
+    }
+    if (!track) {
+      row._selectedSerials = [];
+      renderSelectedSerials(row);
+      renderSerialResults(row, "");
+    }
+  }
+
+  function renderSelectedSerials(row) {
+    var list = row.querySelector("[data-serial-selected]");
+    if (!list) return;
+    var selected = row._selectedSerials || [];
+    list.innerHTML = "";
+    selected.forEach(function (serial) {
+      var li = document.createElement("li");
+      li.className = "tech-stock-serial-chip";
+      li.innerHTML =
+        "<strong></strong><button type='button' data-remove-serial aria-label='Remove serial'>×</button>";
+      li.querySelector("strong").textContent = serial;
+      li.querySelector("[data-remove-serial]").addEventListener("click", function () {
+        row._selectedSerials = (row._selectedSerials || []).filter(function (s) {
+          return s !== serial;
+        });
+        renderSelectedSerials(row);
+        var search = row.querySelector("[data-serial-search]");
+        renderSerialResults(row, (search && search.value) || "");
+        syncForm(row.closest("form"));
+      });
+      list.appendChild(li);
+    });
+  }
+
+  function renderSerialResults(row, query) {
+    var box = row.querySelector("[data-serial-results]");
+    if (!box) return;
+    var select = row.querySelector("[data-stock-equipment]");
+    var item = catalogById(select && select.value);
+    box.innerHTML = "";
+    if (!item || !item.track_serials) {
+      box.hidden = true;
+      return;
+    }
+    var q = String(query || "").trim().toUpperCase();
+    var selected = {};
+    (row._selectedSerials || []).forEach(function (s) {
+      selected[s] = true;
+    });
+    var matches = (item.serials || []).filter(function (serial) {
+      if (selected[serial]) return false;
+      if (!q) return true;
+      return String(serial).toUpperCase().indexOf(q) !== -1;
+    }).slice(0, 8);
+    if (!matches.length) {
+      box.hidden = !q;
+      if (q) {
+        var empty = document.createElement("p");
+        empty.className = "tech-stock-serial-empty";
+        empty.textContent = "No matching serial in your stock.";
+        box.appendChild(empty);
+      }
+      return;
+    }
+    box.hidden = false;
+    matches.forEach(function (serial) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tech-stock-serial-result";
+      btn.textContent = serial;
+      btn.addEventListener("click", function () {
+        addSerial(row, serial);
+      });
+      box.appendChild(btn);
+    });
+  }
+
+  function addSerial(row, serial) {
+    serial = String(serial || "").trim().toUpperCase();
+    if (!serial) return;
+    var select = row.querySelector("[data-stock-equipment]");
+    var item = catalogById(select && select.value);
+    if (!item) return;
+    var selected = row._selectedSerials || [];
+    if (selected.indexOf(serial) !== -1) return;
+    if ((item.serials || []).indexOf(serial) === -1) return;
+    if (selected.length >= (item.quantity || 0)) return;
+    selected.push(serial);
+    row._selectedSerials = selected;
+    var search = row.querySelector("[data-serial-search]");
+    if (search) search.value = "";
+    renderSelectedSerials(row);
+    renderSerialResults(row, "");
+    syncForm(row.closest("form"));
+  }
+
+  function collectStockUsed(form) {
+    var lines = [];
+    form.querySelectorAll("[data-stock-row]").forEach(function (row) {
+      var select = row.querySelector("[data-stock-equipment]");
+      if (!select || !select.value) return;
+      var item = catalogById(select.value);
+      if (!item) return;
+      if (item.track_serials) {
+        var serials = row._selectedSerials || [];
+        if (!serials.length) return;
+        lines.push({
+          equipment_id: item.id,
+          quantity: serials.length,
+          serials: serials.slice(),
+        });
+      } else {
+        var qty = parseInt((row.querySelector("[data-stock-qty]") || {}).value, 10) || 0;
+        if (qty < 1) return;
+        lines.push({
+          equipment_id: item.id,
+          quantity: qty,
+          serials: [],
+        });
+      }
+    });
+    return lines;
+  }
+
+  function syncForm(form) {
+    if (!form) return;
+    var hidden = form.querySelector("[data-stock-used]");
+    var submit = form.querySelector("[data-complete-install]");
+    var lines = collectStockUsed(form);
+    if (hidden) hidden.value = JSON.stringify(lines);
+    if (submit) submit.disabled = !stockCatalog.length || lines.length < 1;
+
+    form.querySelectorAll("[data-stock-row]").forEach(function (row) {
+      var select = row.querySelector("[data-stock-equipment]");
+      if (select) fillEquipmentOptions(select, form, row);
+    });
+  }
+
+  function addStockRow(form) {
+    if (!rowTemplate || !stockCatalog.length) return;
+    var host = form.querySelector("[data-stock-rows]");
+    if (!host) return;
+    var node = rowTemplate.content.firstElementChild.cloneNode(true);
+    node._selectedSerials = [];
+    var select = node.querySelector("[data-stock-equipment]");
+    fillEquipmentOptions(select, form, node);
+    select.addEventListener("change", function () {
+      node._selectedSerials = [];
+      renderSelectedSerials(node);
+      syncRowMode(node);
+      syncForm(form);
+    });
+    var qtyInput = node.querySelector("[data-stock-qty]");
+    if (qtyInput) {
+      qtyInput.addEventListener("input", function () {
+        syncForm(form);
+      });
+    }
+    var search = node.querySelector("[data-serial-search]");
+    if (search) {
+      search.addEventListener("input", function () {
+        renderSerialResults(node, search.value);
+      });
+      search.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          var first = node.querySelector("[data-serial-results] .tech-stock-serial-result");
+          if (first) first.click();
+        }
+      });
+    }
+    node.querySelector("[data-remove-stock-row]").addEventListener("click", function () {
+      node.remove();
+      if (!host.querySelector("[data-stock-row]")) addStockRow(form);
+      syncForm(form);
+    });
+    host.appendChild(node);
+    syncRowMode(node);
+    syncForm(form);
+  }
+
+  document.querySelectorAll("[data-tech-stock-form]").forEach(function (form) {
+    var addBtn = form.querySelector("[data-add-stock-row]");
+    if (addBtn) {
+      addBtn.addEventListener("click", function () {
+        addStockRow(form);
+      });
+    }
+    form.addEventListener("submit", function (event) {
+      var lines = collectStockUsed(form);
+      var hidden = form.querySelector("[data-stock-used]");
+      if (hidden) hidden.value = JSON.stringify(lines);
+      if (!lines.length) {
+        event.preventDefault();
+        window.alert("Select at least one stock item used on this install.");
+        return;
+      }
+      for (var i = 0; i < form.querySelectorAll("[data-stock-row]").length; i += 1) {
+        var row = form.querySelectorAll("[data-stock-row]")[i];
+        var select = row.querySelector("[data-stock-equipment]");
+        var item = catalogById(select && select.value);
+        if (!item) continue;
+        if (item.track_serials && !(row._selectedSerials || []).length) {
+          event.preventDefault();
+          window.alert("Search and select serials for “" + item.name + "”.");
+          return;
+        }
+      }
+    });
+    if (stockCatalog.length) addStockRow(form);
+  });
+
+  function initTechLocation(root) {
+    if (!root) return;
+    var placesUrl = root.getAttribute("data-places-url") || "";
+    var placeDetailsUrl = root.getAttribute("data-place-details-url") || "";
+    var placeReverseUrl = root.getAttribute("data-place-reverse-url") || "";
+    var form = root.closest("form");
+    var buildingInput = root.querySelector("[data-building-search]");
+    var suggest = root.querySelector("[data-location-suggest]");
+    var hintEl = root.querySelector("[data-location-hint]");
+    var coordsEl = root.querySelector("[data-location-coords]");
+    var latInput = form ? form.querySelector("[data-location-lat]") : null;
+    var lngInput = form ? form.querySelector("[data-location-lng]") : null;
+    var addressInput = form ? form.querySelector("[data-location-address]") : null;
+    var geoBtn = root.querySelector("[data-use-current-location]");
+    var searchTimer = null;
+    var searchAbort = null;
+    var searchSeq = 0;
+    var latestSuggestions = [];
+    var activeIndex = -1;
+
+    function setHint(text) {
+      if (!hintEl) return;
+      if (text) {
+        hintEl.hidden = false;
+        hintEl.textContent = text;
+      } else {
+        hintEl.hidden = true;
+        hintEl.textContent = "";
+      }
+    }
+
+    function hideSuggest() {
+      if (!suggest) return;
+      suggest.hidden = true;
+      suggest.classList.remove("is-open");
+      suggest.innerHTML = "";
+      activeIndex = -1;
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function setCoords(lat, lng) {
+      var latValue = lat == null || lat === "" ? "" : String(lat);
+      var lngValue = lng == null || lng === "" ? "" : String(lng);
+      if (latInput) latInput.value = latValue;
+      if (lngInput) lngInput.value = lngValue;
+      if (coordsEl) {
+        if (latValue && lngValue) {
+          coordsEl.hidden = false;
+          coordsEl.textContent = "Lat " + latValue + ", Lng " + lngValue;
+        } else {
+          coordsEl.hidden = true;
+          coordsEl.textContent = "";
+        }
+      }
+    }
+
+    function chooseSuggestion(item) {
+      if (!item || !buildingInput) return;
+      buildingInput.value = String(item.label || "").toUpperCase();
+      if (addressInput) addressInput.value = String(item.label || "").toUpperCase();
+      if (item.lat != null && item.lng != null && item.lat !== "" && item.lng !== "") {
+        setCoords(item.lat, item.lng);
+        hideSuggest();
+        setHint("");
+        return;
+      }
+      if (item.place_id && placeDetailsUrl) {
+        setHint("Resolving coordinates…");
+        fetch(
+          placeDetailsUrl +
+            "?place_id=" +
+            encodeURIComponent(item.place_id) +
+            "&q=" +
+            encodeURIComponent(item.label || ""),
+          {
+            headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+            credentials: "same-origin",
+          }
+        )
+          .then(function (res) {
+            return res.json();
+          })
+          .then(function (data) {
+            if (data && data.ok && data.lat != null && data.lng != null) {
+              if (data.label) {
+                buildingInput.value = String(data.label).toUpperCase();
+                if (addressInput) addressInput.value = String(data.label).toUpperCase();
+              }
+              setCoords(data.lat, data.lng);
+              hideSuggest();
+              setHint("");
+              return;
+            }
+            setHint("Could not resolve that place. Try another suggestion.");
+          })
+          .catch(function () {
+            setHint("Could not resolve that place. Try another suggestion.");
+          });
+        return;
+      }
+      hideSuggest();
+    }
+
+    function renderSuggest(items) {
+      if (!suggest) return;
+      latestSuggestions = items || [];
+      activeIndex = -1;
+      if (!latestSuggestions.length) {
+        hideSuggest();
+        setHint("No matching places. Keep typing or use current location.");
+        return;
+      }
+      setHint("");
+      suggest.innerHTML = latestSuggestions
+        .map(function (item, idx) {
+          return (
+            '<button type="button" class="mikrotik-location-option" role="option" data-idx="' +
+            idx +
+            '">' +
+            escapeHtml(item.label) +
+            "</button>"
+          );
+        })
+        .join("");
+      suggest.hidden = false;
+      suggest.classList.add("is-open");
+      Array.prototype.forEach.call(
+        suggest.querySelectorAll(".mikrotik-location-option"),
+        function (btn) {
+          btn.addEventListener("click", function () {
+            var idx = parseInt(btn.getAttribute("data-idx"), 10);
+            chooseSuggestion(latestSuggestions[idx]);
+          });
+        }
+      );
+    }
+
+    function runSearch(query) {
+      if (!placesUrl || query.length < 2) {
+        hideSuggest();
+        setHint(query ? "Keep typing to search places…" : "");
+        return;
+      }
+      var seq = ++searchSeq;
+      if (searchAbort) searchAbort.abort();
+      searchAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+      setHint("Searching places…");
+      fetch(placesUrl + "?q=" + encodeURIComponent(query), {
+        headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+        credentials: "same-origin",
+        signal: searchAbort ? searchAbort.signal : undefined,
+      })
+        .then(function (res) {
+          return res.json();
+        })
+        .then(function (data) {
+          if (seq !== searchSeq) return;
+          renderSuggest((data && data.suggestions) || []);
+        })
+        .catch(function (err) {
+          if (err && err.name === "AbortError") return;
+          if (seq !== searchSeq) return;
+          hideSuggest();
+          setHint("Could not search places. Check your connection and try again.");
+        });
+    }
+
+    if (buildingInput) {
+      buildingInput.addEventListener("input", function () {
+        var q = buildingInput.value.trim();
+        if (!q) {
+          setCoords("", "");
+          if (addressInput) addressInput.value = "";
+        }
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(function () {
+          runSearch(q);
+        }, 220);
+      });
+      buildingInput.addEventListener("keydown", function (event) {
+        if (!suggest || suggest.hidden) return;
+        var options = suggest.querySelectorAll(".mikrotik-location-option");
+        if (!options.length) return;
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          activeIndex = Math.min(activeIndex + 1, options.length - 1);
+          options[activeIndex].classList.add("is-active");
+          Array.prototype.forEach.call(options, function (btn, idx) {
+            btn.classList.toggle("is-active", idx === activeIndex);
+          });
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          activeIndex = Math.max(activeIndex - 1, 0);
+          Array.prototype.forEach.call(options, function (btn, idx) {
+            btn.classList.toggle("is-active", idx === activeIndex);
+          });
+        } else if (event.key === "Enter" && activeIndex >= 0) {
+          event.preventDefault();
+          chooseSuggestion(latestSuggestions[activeIndex]);
+        } else if (event.key === "Escape") {
+          hideSuggest();
+        }
+      });
+    }
+
+    document.addEventListener("click", function (event) {
+      if (!root.contains(event.target)) hideSuggest();
+    });
+
+    if (geoBtn) {
+      geoBtn.addEventListener("click", function () {
+        if (!navigator.geolocation) {
+          setHint("This device does not support current location.");
+          return;
+        }
+        setHint("Getting current location…");
+        geoBtn.disabled = true;
+        navigator.geolocation.getCurrentPosition(
+          function (pos) {
+            var lat = pos.coords.latitude.toFixed(6);
+            var lng = pos.coords.longitude.toFixed(6);
+            setCoords(lat, lng);
+            hideSuggest();
+            if (!placeReverseUrl) {
+              setHint("Location saved. Building name is optional.");
+              geoBtn.disabled = false;
+              return;
+            }
+            fetch(
+              placeReverseUrl +
+                "?lat=" +
+                encodeURIComponent(lat) +
+                "&lng=" +
+                encodeURIComponent(lng),
+              {
+                headers: {
+                  Accept: "application/json",
+                  "X-Requested-With": "XMLHttpRequest",
+                },
+                credentials: "same-origin",
+              }
+            )
+              .then(function (res) {
+                return res.json();
+              })
+              .then(function (data) {
+                if (data && data.ok && data.label && buildingInput) {
+                  buildingInput.value = String(data.label).toUpperCase();
+                  if (addressInput) addressInput.value = String(data.label).toUpperCase();
+                  setHint("Current location set from GPS.");
+                } else {
+                  setHint("Coordinates saved. You can still type a building name.");
+                }
+              })
+              .catch(function () {
+                setHint("Coordinates saved. You can still type a building name.");
+              })
+              .finally(function () {
+                geoBtn.disabled = false;
+              });
+          },
+          function () {
+            setHint("Could not get current location. Allow location access or type a place.");
+            geoBtn.disabled = false;
+          },
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        );
+      });
+    }
+  }
+
+  document.querySelectorAll("[data-tech-location]").forEach(initTechLocation);
+})();
+</script>
 {% endblock %}

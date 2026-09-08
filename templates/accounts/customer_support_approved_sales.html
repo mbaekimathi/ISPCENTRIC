@@ -8,109 +8,616 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="cs-list-page">
+<section class="cs-list-page cs-installed-page">
   <header class="cs-list-head">
     <div class="cs-list-head-copy">
       <p class="cs-list-kicker">{{ page_kicker }}</p>
       <h2 class="cs-list-title">{{ page_title }}</h2>
       <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="cs-list-count">
-      <strong>{% if sales %}{{ sales|length }}{% else %}0{% endif %}</strong>
-      <span>{% if sales|length == 1 %}ticket{% else %}tickets{% endif %}</span>
+    <div class="cs-list-count-group" aria-label="Install summary">
+      <div class="cs-list-count is-emphasis">
+        <strong>{{ installed_count|default:0 }}</strong>
+        <span>awaiting activation</span>
+      </div>
+      <div class="cs-list-count">
+        <strong>{{ activated_count|default:0 }}</strong>
+        <span>active</span>
+      </div>
     </div>
   </header>
 
-  {% if sales %}
-  <div class="cs-list-shell">
-    <table class="cs-list-table">
-      <thead>
-        <tr>
-          <th>Ticket</th>
-          <th>Client</th>
-          <th>Sales by</th>
-          <th>Technician</th>
-          <th>Location</th>
-          <th>Phone</th>
-          <th>ISP</th>
-          <th>Service</th>
-          <th class="col-optional">Package</th>
-          <th>Status</th>
-          <th>Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for sale in sales %}
-          <tr>
-            <td class="is-primary-cell" data-label="Ticket">
-              <span class="org-code">{{ sale.sales_ticket_number|default:sale.account_number }}</span>
-            </td>
-            <td data-label="Client">
-              <div class="cs-list-primary">
-                <strong>{{ sale.full_name }}</strong>
-                {% if sale.building_name %}
-                  <small>{{ sale.building_name }}{% if sale.house_number %} · {{ sale.house_number }}{% endif %}</small>
-                {% endif %}
-              </div>
-            </td>
-            <td data-label="Sales by">
-              {% if sale.registered_by %}
-                {{ sale.registered_by.get_full_name|default:sale.registered_by.username }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Technician">
-              {% if sale.assigned_technician %}
-                {% if sale.assigned_technician.user.get_full_name %}
-                  {{ sale.assigned_technician.user.get_full_name }}
-                {% else %}
-                  {{ sale.assigned_technician.user.username }}
-                {% endif %}
-              {% elif sale.status == "allocated_open" %}
-                <span class="cs-list-muted">Open pool</span>
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Location">
-              {% if sale.location_lat and sale.location_lng %}
-                {% with maps_label=sale.building_name|default:sale.address %}
-                <a
-                  class="lead-maps-link"
-                  href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ sale.location_lat }},{{ sale.location_lng }}&amp;z=18"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {% if sale.building_name %}{{ sale.building_name }}{% elif sale.address %}{{ sale.address }}{% else %}Open map{% endif %}
-                </a>
-                {% endwith %}
-              {% elif sale.address or sale.building_name %}
-                {{ sale.building_name|default:sale.address }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Phone">
-              {% if sale.phone %}<a href="tel:{{ sale.phone }}">{{ sale.phone }}</a>{% else %}—{% endif %}
-            </td>
-            <td data-label="ISP">{% if sale.organization %}{{ sale.organization.name }}{% else %}—{% endif %}</td>
-            <td data-label="Service">{{ sale.get_service_type_display }}</td>
-            <td class="col-optional" data-label="Package">{% if sale.plan %}{{ sale.plan.name }}{% else %}—{% endif %}</td>
-            <td data-label="Status">
-              <span class="org-status org-status-{{ sale.status }}">{{ sale.get_status_display }}</span>
-            </td>
-            <td data-label="Created">{{ sale.created_at|date:"d M Y" }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="cs-list-empty">
-    <strong>No approved sales</strong>
-    <p>{{ empty_text }}</p>
-  </div>
-  {% endif %}
+  <section class="cs-list-section" aria-labelledby="installed-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="installed-heading">Awaiting activation</h3>
+        <p>Technician finished the install — use Recharge once to collect payment and activate surfing.</p>
+      </div>
+    </header>
+
+    {% if installed_tickets %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>ISP / Package</th>
+              <th>Technician</th>
+              <th>Location</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ticket in installed_tickets %}
+              <tr data-installed-row="{{ ticket.id }}">
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ ticket.full_name }}</strong>
+                    {% if ticket.phone %}
+                      <small><a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a></small>
+                    {% endif %}
+                    {% if ticket.building_name %}
+                      <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="ISP / Package">
+                  <div class="cs-list-primary">
+                    <strong>{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</strong>
+                    <small>
+                      {% if ticket.plan %}{{ ticket.plan.name }}{% else %}No package{% endif %}
+                      {% if ticket.router %}
+                        · {{ ticket.router.name|default:ticket.router.host }}
+                      {% endif %}
+                    </small>
+                  </div>
+                </td>
+                <td data-label="Technician">
+                  {% if ticket.assigned_technician %}
+                    {% if ticket.assigned_technician.user.get_full_name %}
+                      {{ ticket.assigned_technician.user.get_full_name }}
+                    {% else %}
+                      {{ ticket.assigned_technician.user.username }}
+                    {% endif %}
+                  {% else %}
+                    <span class="cs-list-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Location">
+                  {% if ticket.location_lat and ticket.location_lng %}
+                    {% with maps_label=ticket.building_name|default:ticket.address %}
+                    <a
+                      class="lead-maps-link"
+                      href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                    </a>
+                    {% endwith %}
+                  {% elif ticket.address or ticket.building_name %}
+                    {{ ticket.building_name|default:ticket.address }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Status">
+                  <div class="cs-list-primary">
+                    <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+                    <small>{{ ticket.created_at|date:"d M Y" }}</small>
+                  </div>
+                </td>
+                <td class="is-actions-cell" data-label="">
+                  {% if ticket.organization_id %}
+                    <div class="cs-list-actions">
+                      <button
+                        type="button"
+                        class="cs-list-btn is-primary"
+                        data-open-cs-activate-recharge="{{ ticket.id }}"
+                        title="Collect first payment and activate surfing"
+                      >Recharge</button>
+                      <a
+                        class="cs-list-btn"
+                        href="{% url 'roles:customer_support_view_customer' ticket.id %}"
+                      >View</a>
+                    </div>
+                  {% else %}
+                    <span class="cs-list-muted">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No installed tickets</strong>
+        <p>{{ empty_text }}</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="cs-list-section" aria-labelledby="activated-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="activated-heading">Recently activated</h3>
+        <p>Active PPPoE clients already approved for surfing.</p>
+      </div>
+    </header>
+
+    {% if activated_tickets %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>ISP / Package</th>
+              <th>Technician</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ticket in activated_tickets %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ ticket.full_name }}</strong>
+                    {% if ticket.phone %}
+                      <small><a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a></small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="ISP / Package">
+                  <div class="cs-list-primary">
+                    <strong>{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</strong>
+                    <small>{% if ticket.plan %}{{ ticket.plan.name }}{% else %}No package{% endif %}</small>
+                  </div>
+                </td>
+                <td data-label="Technician">
+                  {% if ticket.assigned_technician %}
+                    {% if ticket.assigned_technician.user.get_full_name %}
+                      {{ ticket.assigned_technician.user.get_full_name }}
+                    {% else %}
+                      {{ ticket.assigned_technician.user.username }}
+                    {% endif %}
+                  {% else %}
+                    <span class="cs-list-muted">—</span>
+                  {% endif %}
+                </td>
+                <td data-label="Status">
+                  <div class="cs-list-primary">
+                    <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+                    <small>{{ ticket.created_at|date:"d M Y" }}</small>
+                  </div>
+                </td>
+                <td class="is-actions-cell" data-label="">
+                  {% if ticket.organization_id %}
+                    <div class="cs-list-actions">
+                      <a
+                        class="cs-list-btn"
+                        href="{% url 'roles:customer_support_view_customer' ticket.id %}"
+                      >View</a>
+                    </div>
+                  {% else %}
+                    <span class="cs-list-muted">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No active clients yet</strong>
+        <p>Once an ISP activates an installed ticket, it will show here.</p>
+      </div>
+    {% endif %}
+  </section>
 </section>
+
+<div
+  class="role-modal client-action-modal pppoe-modal"
+  id="cs-activate-recharge-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-cs-activate-recharge></div>
+  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="cs-activate-recharge-title">
+    <header class="role-modal-head pppoe-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Activation</p>
+        <h2 id="cs-activate-recharge-title">Activate with recharge</h2>
+        <p class="role-modal-sub pppoe-sub">
+          One-time activation: set the start date and cash received — this turns the installed ticket active and opens surfing for the package period.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-cs-activate-recharge aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <form method="post" class="pppoe-form" id="cs-activate-recharge-form" novalidate>
+      {% csrf_token %}
+      <div class="pppoe-body">
+        <dl class="lead-stk-summary">
+          <div class="lead-stk-summary-item">
+            <dt>Client</dt>
+            <dd id="cs-activate-recharge-name">—</dd>
+          </div>
+          <div class="lead-stk-summary-item">
+            <dt>Ticket</dt>
+            <dd id="cs-activate-recharge-account">—</dd>
+          </div>
+        </dl>
+        <div class="field-error pppoe-banner" id="cs-activate-recharge-error" hidden></div>
+        <section class="pppoe-section">
+          <div class="pppoe-grid">
+            <div class="field field-span-2">
+              <label for="cs-activate-recharge-plan">Package / plan</label>
+              <div class="pppoe-select">
+                <select class="form-control" id="cs-activate-recharge-plan" name="plan" required>
+                  <option value="">Select a plan</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="cs-activate-recharge-from">Start date</label>
+              <input
+                type="date"
+                class="form-control"
+                id="cs-activate-recharge-from"
+                name="period_from"
+                value="{{ today_iso }}"
+                required
+              >
+            </div>
+            <div class="field">
+              <label for="cs-activate-recharge-amount">Amount (KES)</label>
+              <input
+                type="number"
+                class="form-control"
+                id="cs-activate-recharge-amount"
+                name="amount"
+                step="0.01"
+                min="0.01"
+                inputmode="decimal"
+                required
+              >
+            </div>
+            <div class="field">
+              <label for="cs-activate-recharge-to">End date</label>
+              <input
+                type="date"
+                class="form-control"
+                id="cs-activate-recharge-to"
+                name="period_to"
+                readonly
+              >
+              <p class="field-hint" id="cs-activate-recharge-days" hidden></p>
+            </div>
+            <div class="field">
+              <label for="cs-activate-recharge-reference">Reference</label>
+              <input
+                type="text"
+                class="form-control"
+                id="cs-activate-recharge-reference"
+                name="reference"
+                placeholder="Optional receipt / note"
+                autocomplete="off"
+                maxlength="100"
+              >
+            </div>
+          </div>
+        </section>
+      </div>
+      <footer class="pppoe-foot">
+        <button type="button" class="btn btn-ghost" data-close-cs-activate-recharge>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="cs-activate-recharge-submit" data-save-label="Activate account">Activate account</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var payload = {{ activation_payload_json|safe }};
+  var todayIso = "{{ today_iso }}";
+  var rechargeUrlTemplate = "{% url 'roles:customer_support_activate_recharge' 0 %}".replace("/0/", "/__ID__/");
+  var modal = document.getElementById("cs-activate-recharge-modal");
+  var form = document.getElementById("cs-activate-recharge-form");
+  if (!modal || !form) return;
+
+  var nameEl = document.getElementById("cs-activate-recharge-name");
+  var accountEl = document.getElementById("cs-activate-recharge-account");
+  var planSelect = document.getElementById("cs-activate-recharge-plan");
+  var fromInput = document.getElementById("cs-activate-recharge-from");
+  var toInput = document.getElementById("cs-activate-recharge-to");
+  var amountInput = document.getElementById("cs-activate-recharge-amount");
+  var daysSummary = document.getElementById("cs-activate-recharge-days");
+  var errorBox = document.getElementById("cs-activate-recharge-error");
+  var submitBtn = document.getElementById("cs-activate-recharge-submit");
+  var activeCustomerId = null;
+  var planMetaById = {};
+  var amountTouched = false;
+
+  function openModal() {
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    if (!document.querySelector(".role-modal:not([hidden])")) {
+      document.body.classList.remove("role-modal-open");
+    }
+    activeCustomerId = null;
+    hideError();
+  }
+
+  function hideError() {
+    if (!errorBox) return;
+    errorBox.hidden = true;
+    errorBox.textContent = "";
+  }
+
+  function showError(message) {
+    if (!errorBox) return;
+    errorBox.hidden = false;
+    errorBox.textContent = message || "Could not activate this ticket.";
+  }
+
+  function formatAmount(value) {
+    var n = Number(value);
+    if (isNaN(n) || n <= 0) return "";
+    return n.toFixed(2);
+  }
+
+  function formatDate(dateObj) {
+    var y = dateObj.getFullYear();
+    var m = String(dateObj.getMonth() + 1).padStart(2, "0");
+    var d = String(dateObj.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + d;
+  }
+
+  function parseDateInput(value) {
+    if (!value) return null;
+    var parts = String(value).split("-");
+    if (parts.length !== 3) return null;
+    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function daysInMonth(year, month) {
+    return new Date(year, month, 0).getDate();
+  }
+
+  function billingUnitSeconds(durationKey, refDate) {
+    if (durationKey === "hourly") return 3600;
+    if (durationKey === "six_hours") return 6 * 3600;
+    if (durationKey === "daily") return 86400;
+    if (durationKey === "weekly") return 7 * 86400;
+    var y = refDate.getFullYear();
+    var m = refDate.getMonth() + 1;
+    if (durationKey === "monthly") return daysInMonth(y, m) * 86400;
+    if (durationKey === "quarterly") {
+      var total = 0;
+      var cursor = new Date(y, m - 1, 1);
+      for (var i = 0; i < 3; i += 1) {
+        total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
+      return total * 86400;
+    }
+    if (durationKey === "semi_annual") {
+      var totalSemi = 0;
+      var cursorSemi = new Date(y, m - 1, 1);
+      for (var j = 0; j < 6; j += 1) {
+        totalSemi += daysInMonth(cursorSemi.getFullYear(), cursorSemi.getMonth() + 1);
+        cursorSemi.setMonth(cursorSemi.getMonth() + 1);
+      }
+      return totalSemi * 86400;
+    }
+    if (durationKey === "yearly") {
+      var totalYear = 0;
+      var cursorYear = new Date(y, m - 1, 1);
+      for (var k = 0; k < 12; k += 1) {
+        totalYear += daysInMonth(cursorYear.getFullYear(), cursorYear.getMonth() + 1);
+        cursorYear.setMonth(cursorYear.getMonth() + 1);
+      }
+      return totalYear * 86400;
+    }
+    return 0;
+  }
+
+  function roundHalfUp(value) {
+    return Math.floor(Number(value) + 0.5);
+  }
+
+  function syncEndDateFromAmount() {
+    var meta = planMetaById[String(planSelect.value)] || {};
+    var fromDate = parseDateInput(fromInput.value);
+    var amount = Number(amountInput.value);
+    var price = Number(meta.price);
+    var duration = String(meta.duration || "").toLowerCase();
+    if (!planSelect.value || !fromDate || isNaN(price) || price <= 0) {
+      if (daysSummary) daysSummary.hidden = true;
+      return;
+    }
+    if (isNaN(amount) || amount <= 0) {
+      toInput.value = "";
+      if (daysSummary) {
+        daysSummary.hidden = false;
+        daysSummary.textContent = "Enter amount paid to calculate end date.";
+      }
+      return;
+    }
+    var unit = billingUnitSeconds(duration, fromDate);
+    if (!unit) {
+      if (daysSummary) daysSummary.hidden = true;
+      return;
+    }
+    var daysExact = (amount / price) * (unit / 86400);
+    var inclusiveDays = roundHalfUp(daysExact);
+    if (inclusiveDays < 1) inclusiveDays = 1;
+    var toDate = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate());
+    toDate.setDate(toDate.getDate() + inclusiveDays - 1);
+    toInput.value = formatDate(toDate);
+    if (daysSummary) {
+      daysSummary.hidden = false;
+      daysSummary.textContent =
+        inclusiveDays + (inclusiveDays === 1 ? " day" : " days") +
+        " · ends " + toInput.value;
+    }
+  }
+
+  function syncAmountFromPlan() {
+    var meta = planMetaById[String(planSelect.value)] || {};
+    if (!planSelect.value || meta.price == null) return;
+    if (!amountTouched || !amountInput.value) {
+      amountInput.value = formatAmount(meta.price);
+    }
+    syncEndDateFromAmount();
+  }
+
+  function fillPlans(ticket) {
+    planMetaById = {};
+    planSelect.innerHTML = '<option value="">Select a plan</option>';
+    (ticket.plans || []).forEach(function (plan) {
+      planMetaById[String(plan.id)] = plan;
+      var opt = document.createElement("option");
+      opt.value = String(plan.id);
+      opt.textContent = plan.name + " · KES " + formatAmount(plan.price);
+      planSelect.appendChild(opt);
+    });
+    if (ticket.plan_id && planMetaById[String(ticket.plan_id)]) {
+      planSelect.value = String(ticket.plan_id);
+    } else if (ticket.plans && ticket.plans.length) {
+      planSelect.value = String(ticket.plans[0].id);
+    }
+  }
+
+  function openForTicket(customerId) {
+    var ticket = payload[String(customerId)];
+    activeCustomerId = customerId;
+    amountTouched = false;
+    hideError();
+    if (nameEl) nameEl.textContent = (ticket && ticket.name) || "—";
+    if (accountEl) accountEl.textContent = (ticket && ticket.account) || "—";
+    fromInput.value = todayIso;
+    toInput.value = "";
+    amountInput.value = "";
+    form.querySelector('[name="reference"]').value = "";
+    fillPlans(ticket || { plans: [] });
+    openModal();
+    if (!ticket) {
+      showError("Could not load this ticket for activation.");
+      return;
+    }
+    if (!ticket.plans || !ticket.plans.length) {
+      showError("No billing package is available for this ISP. Add a PPPoE package first.");
+      return;
+    }
+    syncAmountFromPlan();
+    planSelect.focus();
+  }
+
+  document.querySelectorAll("[data-open-cs-activate-recharge]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openForTicket(btn.getAttribute("data-open-cs-activate-recharge"));
+    });
+  });
+  modal.querySelectorAll("[data-close-cs-activate-recharge]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !modal.hidden) closeModal();
+  });
+
+  form.addEventListener("input", function (e) {
+    var target = e.target;
+    if (!target) return;
+    if (target.id === "cs-activate-recharge-amount") {
+      amountTouched = true;
+      syncEndDateFromAmount();
+    } else if (target.id === "cs-activate-recharge-from") {
+      syncEndDateFromAmount();
+    }
+  });
+  form.addEventListener("change", function (e) {
+    var target = e.target;
+    if (!target) return;
+    if (target.id === "cs-activate-recharge-plan") {
+      amountTouched = false;
+      syncAmountFromPlan();
+    } else if (target.id === "cs-activate-recharge-from" || target.id === "cs-activate-recharge-amount") {
+      if (target.id === "cs-activate-recharge-amount") amountTouched = true;
+      syncEndDateFromAmount();
+    }
+  });
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    if (!activeCustomerId) return;
+    hideError();
+    var saveLabel = (submitBtn && submitBtn.getAttribute("data-save-label")) || "Activate account";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Activating…";
+    }
+    var body = new FormData(form);
+    fetch(rechargeUrlTemplate.replace("__ID__", String(activeCustomerId)), {
+      method: "POST",
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      body: body,
+    })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          data._status = res.status;
+          return data;
+        }).catch(function () {
+          throw new Error("Invalid server response (" + res.status + ")");
+        });
+      })
+      .then(function (data) {
+        if (!data.ok) {
+          var msg = "";
+          if (data.errors) {
+            Object.keys(data.errors).forEach(function (key) {
+              (data.errors[key] || []).forEach(function (err) {
+                msg += (err.message || err) + " ";
+              });
+            });
+          }
+          showError(msg.trim() || data.error || "Validation failed.");
+          return;
+        }
+        closeModal();
+        window.location.reload();
+      })
+      .catch(function (err) {
+        showError((err && err.message) || "Network error — please try again.");
+      })
+      .finally(function () {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = saveLabel;
+        }
+      });
+  });
+})();
+</script>
 {% endblock %}

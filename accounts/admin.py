@@ -10,6 +10,7 @@ from .models import (
     NetworkEquipment,
     NetworkEquipmentAllocation,
     NetworkEquipmentSerial,
+    NetworkEquipmentStockMovement,
     Organization,
     PaymentGateway,
     PlatformCommunicationSettings,
@@ -275,6 +276,28 @@ class NetworkEquipmentAllocationAdmin(admin.ModelAdmin):
     )
     raw_id_fields = ("equipment", "employee", "serial", "allocated_by")
     readonly_fields = ("allocated_at",)
+
+
+@admin.register(NetworkEquipmentStockMovement)
+class NetworkEquipmentStockMovementAdmin(admin.ModelAdmin):
+    list_display = (
+        "created_at",
+        "equipment",
+        "movement_type",
+        "quantity",
+        "serial_number",
+        "employee",
+        "actor",
+    )
+    list_filter = ("movement_type", "equipment")
+    search_fields = (
+        "equipment__name",
+        "serial_number",
+        "employee__user__username",
+        "notes",
+    )
+    raw_id_fields = ("equipment", "employee", "actor")
+    readonly_fields = ("created_at",)
 
 
 @admin.register(SecurityAuditLog)

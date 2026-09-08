@@ -27,13 +27,15 @@
           · {{ member.get_status_display }}
         </p>
         <p class="cs-role-lead">
-          <a href="{% url allocate_list_url_name %}">← Back to employees</a>
+          <a href="{% url allocate_list_url_name %}">← Back to allocate equipment</a>
         </p>
       </div>
     </div>
     <div class="cs-role-meta">
       <span class="cs-role-chip is-live">{% if active_allocations %}{{ active_allocations|length }}{% else %}0{% endif %} issued</span>
-      <span class="cs-role-chip is-soft">{{ page_subtitle }}</span>
+      <button type="button" class="btn btn-primary btn-sm" id="allocate-open-picker">
+        Allocate equipment
+      </button>
     </div>
   </header>
 
@@ -156,10 +158,15 @@
   </section>
 </section>
 
-<div class="role-modal" id="allocate-modal" hidden aria-hidden="true">
+<div
+  class="role-modal client-action-modal pppoe-modal equipment-stock-modal"
+  id="allocate-modal"
+  hidden
+  aria-hidden="true"
+>
   <div class="role-modal-backdrop" data-close-allocate-modal></div>
-  <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="allocate-modal-title">
-    <header class="role-modal-head pppoe-head">
+  <div class="role-modal-panel pppoe-panel equipment-stock-panel" role="dialog" aria-modal="true" aria-labelledby="allocate-modal-title">
+    <header class="role-modal-head pppoe-head equipment-stock-head">
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Allocate</p>
         <h2 id="allocate-modal-title">Allocate equipment</h2>
@@ -177,19 +184,41 @@
       <input type="hidden" name="action" value="allocate">
       <input type="hidden" name="equipment_id" id="allocate-equipment-id" value="">
 
-      <div class="pppoe-body">
-        <div class="equipment-stock-summary">
-          <div class="equipment-stock-summary-item">
-            <span class="equipment-stock-summary-label">Equipment</span>
-            <strong id="allocate-equipment-name">—</strong>
-          </div>
-          <div class="equipment-stock-summary-item equipment-stock-summary-qty">
-            <span class="equipment-stock-summary-label">Available</span>
-            <strong id="allocate-equipment-stock">0</strong>
+      <div class="pppoe-body equipment-stock-body">
+        <div class="field">
+          <label for="allocate-equipment-select">Equipment *</label>
+          <div class="pppoe-select">
+            <select id="allocate-equipment-select" class="form-control" required>
+              <option value="">Select equipment…</option>
+              {% for item in equipment_list %}
+                <option
+                  value="{{ item.pk }}"
+                  data-name="{{ item.name }}"
+                  data-stock="{{ item.quantity }}"
+                  data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
+                  {% if item.quantity < 1 %}disabled{% endif %}
+                >
+                  {{ item.name }}
+                  — {{ item.quantity }} on hand
+                  {% if item.track_serials %} · serial{% endif %}
+                  {% if item.quantity < 1 %} (out of stock){% endif %}
+                </option>
+              {% empty %}
+                <option value="" disabled>No equipment registered</option>
+              {% endfor %}
+            </select>
           </div>
         </div>
 
-        <div class="equipment-stock-qty-field" id="allocate-qty-wrap">
+        <div class="equipment-stock-summary" id="allocate-summary" hidden>
+          <strong id="allocate-equipment-name" class="equipment-stock-summary-name">—</strong>
+          <span class="equipment-stock-summary-qty-wrap">
+            <span class="equipment-stock-summary-label">Available</span>
+            <strong id="allocate-equipment-stock">0</strong>
+          </span>
+        </div>
+
+        <div class="equipment-stock-qty-field" id="allocate-qty-wrap" hidden>
           <label for="allocate-amount">Quantity</label>
           <div class="equipment-stock-stepper">
             <button type="button" class="equipment-stock-step" id="allocate-amount-dec" aria-label="Decrease">−</button>
@@ -205,34 +234,43 @@
             >
             <button type="button" class="equipment-stock-step" id="allocate-amount-inc" aria-label="Increase">+</button>
           </div>
-          <p class="equipment-stock-hint">How many units to issue to this employee.</p>
         </div>
 
         <div class="equipment-stock-serials" id="allocate-serials-wrap" hidden>
-          <div class="equipment-stock-serials-head">
-            <span>Serial numbers</span>
-            <small>Select in-stock serials to allocate, or type/scan them.</small>
+          <div class="equipment-stock-scan-loop">
+            <div class="equipment-stock-serial-scan">
+              <div class="equipment-stock-serial-scan-field">
+                <input
+                  type="text"
+                  class="form-control equipment-stock-serial-input"
+                  id="allocate-serial-input"
+                  autocomplete="off"
+                  spellcheck="false"
+                  enterkeyhint="done"
+                  placeholder="Add serial…"
+                  aria-label="Serial number"
+                >
+              </div>
+              <button type="button" class="btn btn-primary" id="allocate-serial-add">Add</button>
+            </div>
+            <p class="equipment-stock-hint">Serial tracking is on — add serials instead of quantity.</p>
           </div>
           <div class="allocate-serial-picks" id="allocate-serial-picks"></div>
-          <label class="visually-hidden" for="allocate-serial-input">Add serial</label>
-          <div class="equipment-stock-serial-scan">
-            <input
-              type="text"
-              class="form-control equipment-stock-serial-input"
-              id="allocate-serial-input"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="Type or scan serial, then Enter"
-            >
-            <button type="button" class="btn btn-primary" id="allocate-serial-add">Add</button>
+          <div class="equipment-stock-scanned-panel">
+            <div class="equipment-stock-scanned-head">
+              <span>Serials to allocate</span>
+              <strong id="allocate-serial-count">0</strong>
+            </div>
+            <ul class="equipment-stock-serial-scanned" id="allocate-serial-list">
+              <li class="equipment-stock-serial-empty">Add serials above</li>
+            </ul>
           </div>
-          <ul class="equipment-stock-serial-scanned" id="allocate-serial-list" hidden></ul>
         </div>
       </div>
 
-      <footer class="pppoe-foot">
+      <footer class="pppoe-foot equipment-stock-foot">
         <button type="button" class="btn btn-ghost" data-close-allocate-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary" id="allocate-submit-btn">Allocate</button>
+        <button type="submit" class="btn btn-primary" id="allocate-submit-btn" disabled>Allocate</button>
       </footer>
     </form>
   </div>
@@ -241,7 +279,9 @@
 <script>
 (function () {
   var modal = document.getElementById("allocate-modal");
+  var equipmentSelect = document.getElementById("allocate-equipment-select");
   var equipmentId = document.getElementById("allocate-equipment-id");
+  var summary = document.getElementById("allocate-summary");
   var equipmentName = document.getElementById("allocate-equipment-name");
   var equipmentStock = document.getElementById("allocate-equipment-stock");
   var qtyWrap = document.getElementById("allocate-qty-wrap");
@@ -253,33 +293,28 @@
   var serialInput = document.getElementById("allocate-serial-input");
   var serialAdd = document.getElementById("allocate-serial-add");
   var serialList = document.getElementById("allocate-serial-list");
+  var serialCount = document.getElementById("allocate-serial-count");
+  var submitBtn = document.getElementById("allocate-submit-btn");
+  var openPicker = document.getElementById("allocate-open-picker");
   var serialOptions = {{ serial_options_json|default:"{}"|safe }};
   var selectedSerials = [];
   var maxStock = 1;
   var trackSerials = false;
 
-  function openModal(id, name, stock, track) {
+  function openModal(preselectId) {
     if (!modal) return;
-    trackSerials = track === true || track === "1" || track === 1;
-    maxStock = Math.max(1, parseInt(stock, 10) || 1);
     selectedSerials = [];
-    if (equipmentId) equipmentId.value = id || "";
-    if (equipmentName) equipmentName.textContent = name || "—";
-    if (equipmentStock) equipmentStock.textContent = String(stock || "0");
-    if (amountInput) {
-      amountInput.value = "1";
-      amountInput.max = String(maxStock);
+    if (equipmentSelect) {
+      equipmentSelect.value = preselectId ? String(preselectId) : "";
     }
-    if (qtyWrap) qtyWrap.hidden = !!trackSerials;
-    if (serialsWrap) serialsWrap.hidden = !trackSerials;
     if (serialInput) serialInput.value = "";
-    renderSerialPicks(id);
-    renderSelectedSerials();
+    if (amountInput) amountInput.value = "1";
+    syncEquipmentMode();
     modal.hidden = false;
     modal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
-    if (trackSerials && serialInput) serialInput.focus();
-    else if (amountInput) amountInput.focus();
+    if (preselectId && trackSerials && serialInput) serialInput.focus();
+    else if (equipmentSelect) equipmentSelect.focus();
   }
 
   function closeModal() {
@@ -289,12 +324,59 @@
     document.body.classList.remove("role-modal-open");
   }
 
+  function selectedOption() {
+    if (!equipmentSelect) return null;
+    return equipmentSelect.options[equipmentSelect.selectedIndex] || null;
+  }
+
+  function syncEquipmentMode() {
+    var opt = selectedOption();
+    var id = opt && opt.value ? opt.value : "";
+    var name = opt ? (opt.getAttribute("data-name") || "—") : "—";
+    var stock = opt ? parseInt(opt.getAttribute("data-stock") || "0", 10) : 0;
+    trackSerials = !!(opt && opt.getAttribute("data-track-serials") === "1");
+    maxStock = Math.max(0, stock);
+    if (equipmentId) equipmentId.value = id;
+    if (equipmentName) equipmentName.textContent = id ? name : "—";
+    if (equipmentStock) equipmentStock.textContent = String(stock || 0);
+    if (summary) summary.hidden = !id;
+    if (qtyWrap) qtyWrap.hidden = !id || trackSerials || maxStock < 1;
+    if (serialsWrap) serialsWrap.hidden = !id || !trackSerials || maxStock < 1;
+    if (amountInput) {
+      amountInput.max = String(Math.max(1, maxStock));
+      if ((parseInt(amountInput.value, 10) || 1) > maxStock) {
+        amountInput.value = String(Math.max(1, maxStock));
+      }
+    }
+    selectedSerials = [];
+    renderSerialPicks(id);
+    renderSelectedSerials();
+    syncSubmit();
+  }
+
+  function syncSubmit() {
+    if (!submitBtn) return;
+    var id = equipmentId && equipmentId.value;
+    var ready = false;
+    if (id && maxStock > 0) {
+      if (trackSerials) ready = selectedSerials.length > 0;
+      else ready = (parseInt(amountInput && amountInput.value, 10) || 0) >= 1;
+    }
+    submitBtn.disabled = !ready;
+    if (trackSerials && selectedSerials.length) {
+      submitBtn.textContent = "Allocate (" + selectedSerials.length + ")";
+    } else {
+      submitBtn.textContent = "Allocate";
+    }
+  }
+
   function renderSerialPicks(id) {
     if (!serialPicks) return;
     serialPicks.innerHTML = "";
+    if (!id || !trackSerials) return;
     var options = serialOptions[String(id)] || [];
     if (!options.length) {
-      serialPicks.innerHTML = "<p class='equipment-stock-hint'>No in-stock serials found. Stock in serials first, or type them below if already recorded.</p>";
+      serialPicks.innerHTML = "<p class='equipment-stock-hint'>No in-stock serials. Stock them in first, or type a known serial below.</p>";
       return;
     }
     options.forEach(function (serial) {
@@ -313,38 +395,44 @@
     if (!serialList) return;
     serialList.innerHTML = "";
     if (!selectedSerials.length) {
-      serialList.hidden = true;
-      return;
-    }
-    serialList.hidden = false;
-    selectedSerials.forEach(function (serial, index) {
-      var li = document.createElement("li");
-      li.className = "equipment-stock-serial-item";
-      var num = document.createElement("span");
-      num.className = "equipment-stock-serial-num";
-      num.textContent = String(index + 1);
-      var code = document.createElement("span");
-      code.className = "equipment-stock-serial-code";
-      code.textContent = serial;
-      var remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "btn btn-ghost btn-sm";
-      remove.textContent = "Remove";
-      remove.addEventListener("click", function () {
-        selectedSerials = selectedSerials.filter(function (s) { return s !== serial; });
-        renderSelectedSerials();
+      var empty = document.createElement("li");
+      empty.className = "equipment-stock-serial-empty";
+      empty.textContent = "Add serials above";
+      serialList.appendChild(empty);
+    } else {
+      selectedSerials.forEach(function (serial, index) {
+        var li = document.createElement("li");
+        li.className = "equipment-stock-serial-item";
+        var num = document.createElement("span");
+        num.className = "equipment-stock-serial-num";
+        num.textContent = String(index + 1);
+        var code = document.createElement("span");
+        code.className = "equipment-stock-serial-code";
+        code.textContent = serial;
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "equipment-stock-serial-remove";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", function () {
+          selectedSerials = selectedSerials.filter(function (s) { return s !== serial; });
+          renderSelectedSerials();
+        });
+        var hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "serial_number";
+        hidden.value = serial;
+        li.appendChild(num);
+        li.appendChild(code);
+        li.appendChild(remove);
+        li.appendChild(hidden);
+        serialList.appendChild(li);
       });
-      var hidden = document.createElement("input");
-      hidden.type = "hidden";
-      hidden.name = "serial_number";
-      hidden.value = serial;
-      li.appendChild(num);
-      li.appendChild(code);
-      li.appendChild(remove);
-      li.appendChild(hidden);
-      serialList.appendChild(li);
-    });
-    if (amountInput) amountInput.value = String(selectedSerials.length || 1);
+    }
+    if (serialCount) serialCount.textContent = String(selectedSerials.length);
+    if (amountInput && trackSerials) {
+      amountInput.value = String(Math.max(1, selectedSerials.length || 1));
+    }
+    syncSubmit();
   }
 
   function addSerial(raw) {
@@ -360,33 +448,37 @@
     }
   }
 
+  if (openPicker) {
+    openPicker.addEventListener("click", function () {
+      openModal("");
+    });
+  }
   document.querySelectorAll("[data-open-allocate]").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      openModal(
-        btn.getAttribute("data-equipment-id"),
-        btn.getAttribute("data-equipment-name"),
-        btn.getAttribute("data-equipment-stock"),
-        btn.getAttribute("data-track-serials")
-      );
+      openModal(btn.getAttribute("data-equipment-id"));
     });
   });
   document.querySelectorAll("[data-close-allocate-modal]").forEach(function (el) {
     el.addEventListener("click", closeModal);
   });
+  if (equipmentSelect) {
+    equipmentSelect.addEventListener("change", syncEquipmentMode);
+  }
   if (decBtn) {
     decBtn.addEventListener("click", function () {
       if (!amountInput || trackSerials) return;
-      var value = Math.max(1, (parseInt(amountInput.value, 10) || 1) - 1);
-      amountInput.value = String(value);
+      amountInput.value = String(Math.max(1, (parseInt(amountInput.value, 10) || 1) - 1));
+      syncSubmit();
     });
   }
   if (incBtn) {
     incBtn.addEventListener("click", function () {
       if (!amountInput || trackSerials) return;
-      var value = Math.min(maxStock, (parseInt(amountInput.value, 10) || 1) + 1);
-      amountInput.value = String(value);
+      amountInput.value = String(Math.min(maxStock, (parseInt(amountInput.value, 10) || 1) + 1));
+      syncSubmit();
     });
   }
+  if (amountInput) amountInput.addEventListener("input", syncSubmit);
   if (serialAdd) {
     serialAdd.addEventListener("click", function () {
       addSerial(serialInput && serialInput.value);

@@ -1,0 +1,339 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="cs-role-page my-stock-item-page equipment-movement-page">
+  <section class="cs-role-panel equipment-detail-summary">
+    <div class="equipment-detail-layout">
+      <div class="equipment-detail-intro">
+        <p class="cs-role-kicker">{{ page_kicker }}</p>
+        <h2 class="cs-role-title">{{ equipment.name }}</h2>
+        <p class="cs-role-lead">Full stock audit with every movement recorded for this item.</p>
+        {% if list_url_name %}
+          <p class="cs-role-lead">
+            <a href="{% url list_url_name %}">← Back to Stock Audit</a>
+          </p>
+        {% endif %}
+        <div class="cs-role-meta equipment-detail-intro-meta">
+          <span class="cs-role-chip is-live">On hand {{ equipment.quantity }}</span>
+          <span class="cs-role-chip is-soft">{{ equipment.get_equipment_type_display }}</span>
+          <span class="cs-role-chip is-soft">{{ equipment.get_status_display }}</span>
+          {% if equipment.track_serials %}
+            <span class="cs-role-chip is-soft">Serial tracked</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <aside
+        class="equipment-profile-card is-collapsed"
+        data-equipment-profile
+        data-equipment-profile-key="equipment-profile-{{ equipment.pk }}"
+        aria-label="Equipment profile"
+      >
+        <button
+          type="button"
+          class="equipment-profile-toggle"
+          data-equipment-profile-toggle
+          aria-expanded="false"
+          aria-controls="equipment-profile-body-{{ equipment.pk }}"
+        >
+          <span class="equipment-profile-toggle-media" aria-hidden="true">
+            {% if equipment.image %}
+              <img src="{{ equipment.image.url }}" alt="" width="36" height="36" loading="lazy" decoding="async">
+            {% else %}
+              <span class="equipment-profile-toggle-fallback">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <rect x="4" y="6" width="16" height="12" rx="2"/>
+                  <path d="M8 10h8M8 13h5" stroke-linecap="round"/>
+                </svg>
+              </span>
+            {% endif %}
+          </span>
+          <span class="equipment-profile-toggle-copy">
+            <span class="equipment-profile-toggle-label" data-equipment-profile-label>Show details</span>
+            <strong>{{ equipment.name }}</strong>
+          </span>
+          <span class="equipment-profile-toggle-chevron" aria-hidden="true"></span>
+        </button>
+
+        <div
+          class="equipment-profile-card-body"
+          id="equipment-profile-body-{{ equipment.pk }}"
+          data-equipment-profile-body
+          hidden
+        >
+          <div class="equipment-profile-card-media">
+            {% if equipment.image %}
+              <img src="{{ equipment.image.url }}" alt="" width="88" height="88" loading="lazy" decoding="async">
+            {% else %}
+              <span class="equipment-profile-card-fallback" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.7">
+                  <rect x="4" y="6" width="16" height="12" rx="2"/>
+                  <path d="M8 10h8M8 13h5" stroke-linecap="round"/>
+                </svg>
+              </span>
+            {% endif %}
+          </div>
+          <div class="equipment-profile-card-identity">
+            <p class="equipment-profile-card-kicker">{{ equipment.get_equipment_type_display }}</p>
+            <h3 class="equipment-profile-card-name">{{ equipment.name }}</h3>
+            <span class="cs-role-chip {% if equipment.status == 'active' %}is-live{% else %}is-soft{% endif %}">
+              {{ equipment.get_status_display }}
+            </span>
+          </div>
+          <dl class="equipment-profile-card-facts">
+            <div>
+              <dt>Name</dt>
+              <dd>{{ equipment.name }}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>{{ equipment.get_equipment_type_display }}</dd>
+            </div>
+            <div>
+              <dt>On hand</dt>
+              <dd>{{ equipment.quantity }}</dd>
+            </div>
+            <div>
+              <dt>Serial tracking</dt>
+              <dd>{% if equipment.track_serials %}Enabled{% else %}Off{% endif %}</dd>
+            </div>
+            <div>
+              <dt>Status</dt>
+              <dd>{{ equipment.get_status_display }}</dd>
+            </div>
+            {% if equipment.selling_price is not None %}
+              <div>
+                <dt>Selling price</dt>
+                <dd>KES {{ equipment.selling_price }}</dd>
+              </div>
+            {% endif %}
+            {% if equipment.created_by %}
+              <div class="is-wide">
+                <dt>Registered by</dt>
+                <dd>{{ equipment.created_by.get_full_name|default:equipment.created_by.username }}</dd>
+              </div>
+            {% endif %}
+          </dl>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div class="equipment-page-stack">
+    {% if allocated_employees %}
+      <section class="cs-role-panel">
+        <header class="cs-role-panel-head">
+          <div>
+            <h3>Currently allocated ({{ allocated_employees|length }})</h3>
+            <p>Employees holding this item, with total quantity.</p>
+          </div>
+        </header>
+        <div class="cs-list-shell">
+          <table class="cs-list-table equipment-allocated-table">
+            <colgroup>
+              <col class="col-employee">
+              <col class="col-qty">
+              <col class="col-action">
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th>Qty</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in allocated_employees %}
+                <tr>
+                  <td data-label="Employee">
+                    <strong>{{ row.employee.user.get_full_name|default:row.employee.user.username }}</strong>
+                  </td>
+                  <td data-label="Qty">{{ row.quantity }}</td>
+                  <td class="is-actions-cell" data-label="Action">
+                    <a
+                      class="btn btn-secondary btn-sm"
+                      href="{% url employee_report_url_name equipment.pk row.employee.pk %}"
+                    >
+                      View
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endif %}
+
+    <section class="cs-role-panel">
+      <header class="cs-role-panel-head">
+        <div>
+          <h3>Movement log{% if movement_log_count %} ({{ movement_log_count }}){% endif %}</h3>
+          <p>Every stock event for this item{% if show_serial_column %}, including serial numbers{% endif %}.</p>
+        </div>
+      </header>
+
+      {% if movement_log %}
+        <div class="cs-list-shell equipment-stock-report-shell">
+          <table class="cs-list-table cs-list-table--compact equipment-audit-log-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>Qty</th>
+                {% if show_serial_column %}
+                  <th>Serial</th>
+                {% endif %}
+                <th>Employee</th>
+                <th>By</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for event in movement_log %}
+                <tr class="is-{{ event.kind }}">
+                  <td data-label="Date">
+                    <strong>{{ event.when|date:"d M Y, H:i" }}</strong>
+                  </td>
+                  <td data-label="Type">
+                    <span class="equipment-audit-type is-{{ event.kind }}">{{ event.label }}</span>
+                  </td>
+                  <td data-label="Qty">{{ event.quantity }}</td>
+                  {% if show_serial_column %}
+                    <td data-label="Serial">
+                      {% if event.serial %}
+                        <code>{{ event.serial }}</code>
+                      {% else %}
+                        —
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                  <td data-label="Employee">
+                    {% if event.employee %}{{ event.employee }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="By">
+                    {% if event.actor %}
+                      {{ event.actor.get_full_name|default:event.actor.username }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                  <td data-label="Notes">
+                    {% if event.notes %}{{ event.notes }}{% else %}—{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="cs-role-empty">
+          <p class="cs-role-empty-title">No movements yet</p>
+          <p>Stock in, stock out, allocate, and return events will appear here.</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="cs-role-panel">
+      <header class="cs-role-panel-head">
+        <div>
+          <h3>Daily summary{% if movement_count %} ({{ movement_count }} day{{ movement_count|pluralize }}){% endif %}</h3>
+          <p>Day totals: OPN, IN, OUT, TRF-IN, TRF-OUT, SALE, BAL.</p>
+        </div>
+      </header>
+
+      {% if stock_report %}
+        <div class="cs-list-shell equipment-stock-report-shell">
+          <table class="cs-list-table cs-list-table--compact equipment-stock-report-table">
+            <colgroup>
+              <col class="col-date">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+              <col class="col-num">
+            </colgroup>
+            <thead>
+              <tr>
+                <th title="Date">Date</th>
+                <th title="Opening stock">OPN</th>
+                <th title="Stock in">IN</th>
+                <th title="Stock out">OUT</th>
+                <th title="Transferred in">TRF-IN</th>
+                <th title="Transferred out">TRF-OUT</th>
+                <th title="Sale">SALE</th>
+                <th title="Current stock / balance">BAL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in stock_report %}
+                <tr>
+                  <td data-label="Date"><strong>{{ row.date|date:"d M Y" }}</strong></td>
+                  <td data-label="OPN">{{ row.opening_stock }}</td>
+                  <td data-label="IN"{% if row.stock_in %} class="is-qty-in"{% endif %}>
+                    {% if row.stock_in %}{{ row.stock_in }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="OUT"{% if row.stock_out %} class="is-qty-out"{% endif %}>
+                    {% if row.stock_out %}{{ row.stock_out }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="TRF-IN"{% if row.transferred_in %} class="is-qty-in"{% endif %}>
+                    {% if row.transferred_in %}{{ row.transferred_in }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="TRF-OUT"{% if row.transferred_out %} class="is-qty-out"{% endif %}>
+                    {% if row.transferred_out %}{{ row.transferred_out }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="SALE"{% if row.sale %} class="is-qty-out"{% endif %}>
+                    {% if row.sale %}{{ row.sale }}{% else %}—{% endif %}
+                  </td>
+                  <td data-label="BAL"><strong>{{ row.current_stock }}</strong></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <div class="cs-role-empty">
+          <p class="cs-role-empty-title">No daily summary yet</p>
+          <p>Daily stock totals will appear once movements are recorded.</p>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+<script>
+(function () {
+  var card = document.querySelector("[data-equipment-profile]");
+  if (!card) return;
+  var toggle = card.querySelector("[data-equipment-profile-toggle]");
+  var body = card.querySelector("[data-equipment-profile-body]");
+  var label = card.querySelector("[data-equipment-profile-label]");
+  var key = card.getAttribute("data-equipment-profile-key") || "equipment-profile";
+  if (!toggle || !body) return;
+
+  function setOpen(open) {
+    card.classList.toggle("is-collapsed", !open);
+    body.hidden = !open;
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    if (label) label.textContent = open ? "Hide details" : "Show details";
+    try { localStorage.setItem(key, open ? "1" : "0"); } catch (err) {}
+  }
+
+  var saved = null;
+  try { saved = localStorage.getItem(key); } catch (err) {}
+  setOpen(saved === "1");
+
+  toggle.addEventListener("click", function () {
+    setOpen(card.classList.contains("is-collapsed"));
+  });
+})();
+</script>
+{% endblock %}

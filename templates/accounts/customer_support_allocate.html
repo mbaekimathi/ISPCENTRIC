@@ -80,8 +80,18 @@
             </td>
             <td class="is-actions-cell" data-label="">
               <div class="cs-list-actions">
-                <a class="cs-list-btn is-primary" href="{% url 'roles:customer_support_allocate_employee' member.pk %}">
-                  Allocate
+                <button
+                  type="button"
+                  class="cs-list-btn is-primary"
+                  data-open-allocate-modal
+                  data-employee-id="{{ member.pk }}"
+                  data-employee-name="{{ member.user.get_full_name|default:member.user.username }}"
+                  data-allocate-url="{% url 'roles:customer_support_allocate_employee' member.pk %}"
+                >
+                  Allocate equipment
+                </button>
+                <a class="cs-list-btn" href="{% url 'roles:customer_support_allocate_employee' member.pk %}">
+                  View issued
                 </a>
               </div>
             </td>
@@ -98,18 +108,379 @@
   {% endif %}
 </section>
 
+<div
+  class="role-modal client-action-modal pppoe-modal equipment-stock-modal"
+  id="allocate-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-allocate-modal></div>
+  <div class="role-modal-panel pppoe-panel equipment-stock-panel" role="dialog" aria-modal="true" aria-labelledby="allocate-modal-title">
+    <header class="role-modal-head pppoe-head equipment-stock-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker">Allocate</p>
+        <h2 id="allocate-modal-title">Allocate equipment</h2>
+        <p class="role-modal-sub pppoe-sub">
+          To <strong id="allocate-employee-name">—</strong>
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-allocate-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form method="post" class="pppoe-form" id="allocate-form" action="">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="allocate">
+      <input type="hidden" name="next" value="{% url 'roles:customer_support_allocate' %}">
+      <input type="hidden" name="equipment_id" id="allocate-equipment-id" value="">
+
+      <div class="pppoe-body equipment-stock-body">
+        <div class="field">
+          <label for="allocate-equipment-select">Equipment *</label>
+          <div class="pppoe-select">
+            <select id="allocate-equipment-select" class="form-control" required>
+              <option value="">Select equipment…</option>
+              {% for item in equipment_list %}
+                <option
+                  value="{{ item.pk }}"
+                  data-name="{{ item.name }}"
+                  data-stock="{{ item.quantity }}"
+                  data-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
+                  {% if item.quantity < 1 %}disabled{% endif %}
+                >
+                  {{ item.name }}
+                  — {{ item.quantity }} on hand
+                  {% if item.track_serials %} · serial{% endif %}
+                  {% if item.quantity < 1 %} (out of stock){% endif %}
+                </option>
+              {% empty %}
+                <option value="" disabled>No equipment registered</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="equipment-stock-summary" id="allocate-summary" hidden>
+          <strong id="allocate-equipment-name" class="equipment-stock-summary-name">—</strong>
+          <span class="equipment-stock-summary-qty-wrap">
+            <span class="equipment-stock-summary-label">Available</span>
+            <strong id="allocate-equipment-stock">0</strong>
+          </span>
+        </div>
+
+        <div class="equipment-stock-qty-field" id="allocate-qty-wrap" hidden>
+          <label for="allocate-amount">Quantity</label>
+          <div class="equipment-stock-stepper">
+            <button type="button" class="equipment-stock-step" id="allocate-amount-dec" aria-label="Decrease">−</button>
+            <input
+              type="number"
+              class="form-control equipment-stock-amount"
+              name="amount"
+              id="allocate-amount"
+              min="1"
+              step="1"
+              value="1"
+              inputmode="numeric"
+            >
+            <button type="button" class="equipment-stock-step" id="allocate-amount-inc" aria-label="Increase">+</button>
+          </div>
+        </div>
+
+        <div class="equipment-stock-serials" id="allocate-serials-wrap" hidden>
+          <div class="equipment-stock-scan-loop">
+            <div class="equipment-stock-serial-scan">
+              <div class="equipment-stock-serial-scan-field">
+                <input
+                  type="text"
+                  class="form-control equipment-stock-serial-input"
+                  id="allocate-serial-input"
+                  autocomplete="off"
+                  spellcheck="false"
+                  enterkeyhint="done"
+                  placeholder="Add serial…"
+                  aria-label="Serial number"
+                >
+              </div>
+              <button type="button" class="btn btn-primary" id="allocate-serial-add">Add</button>
+            </div>
+            <p class="equipment-stock-hint" id="allocate-serial-hint">Serial tracking is on — add serials instead of quantity.</p>
+          </div>
+          <div class="allocate-serial-picks" id="allocate-serial-picks"></div>
+          <div class="equipment-stock-scanned-panel">
+            <div class="equipment-stock-scanned-head">
+              <span>Serials to allocate</span>
+              <strong id="allocate-serial-count">0</strong>
+            </div>
+            <ul class="equipment-stock-serial-scanned" id="allocate-serial-list">
+              <li class="equipment-stock-serial-empty">Add serials above</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <footer class="pppoe-foot equipment-stock-foot">
+        <button type="button" class="btn btn-ghost" data-close-allocate-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="allocate-submit-btn" disabled>Allocate</button>
+      </footer>
+    </form>
+  </div>
+</div>
+
 <script>
 (function () {
-  var input = document.getElementById("allocate-search");
+  var searchInput = document.getElementById("allocate-search");
   var table = document.getElementById("allocate-table");
-  if (!input || !table) return;
-  var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
-  input.addEventListener("input", function () {
-    var q = (input.value || "").trim().toLowerCase();
-    rows.forEach(function (row) {
-      var hay = (row.getAttribute("data-search") || "").toLowerCase();
-      row.hidden = q && hay.indexOf(q) === -1;
+  if (searchInput && table) {
+    var rows = Array.prototype.slice.call(table.querySelectorAll("tbody tr"));
+    searchInput.addEventListener("input", function () {
+      var q = (searchInput.value || "").trim().toLowerCase();
+      rows.forEach(function (row) {
+        var hay = (row.getAttribute("data-search") || "").toLowerCase();
+        row.hidden = q && hay.indexOf(q) === -1;
+      });
     });
+  }
+
+  var modal = document.getElementById("allocate-modal");
+  var form = document.getElementById("allocate-form");
+  var employeeNameEl = document.getElementById("allocate-employee-name");
+  var equipmentSelect = document.getElementById("allocate-equipment-select");
+  var equipmentId = document.getElementById("allocate-equipment-id");
+  var summary = document.getElementById("allocate-summary");
+  var equipmentName = document.getElementById("allocate-equipment-name");
+  var equipmentStock = document.getElementById("allocate-equipment-stock");
+  var qtyWrap = document.getElementById("allocate-qty-wrap");
+  var amountInput = document.getElementById("allocate-amount");
+  var decBtn = document.getElementById("allocate-amount-dec");
+  var incBtn = document.getElementById("allocate-amount-inc");
+  var serialsWrap = document.getElementById("allocate-serials-wrap");
+  var serialPicks = document.getElementById("allocate-serial-picks");
+  var serialInput = document.getElementById("allocate-serial-input");
+  var serialAdd = document.getElementById("allocate-serial-add");
+  var serialList = document.getElementById("allocate-serial-list");
+  var serialCount = document.getElementById("allocate-serial-count");
+  var submitBtn = document.getElementById("allocate-submit-btn");
+  var serialOptions = {{ serial_options_json|default:"{}"|safe }};
+  var selectedSerials = [];
+  var maxStock = 1;
+  var trackSerials = false;
+
+  function openModal(employeeName, allocateUrl) {
+    if (!modal || !form) return;
+    form.action = allocateUrl || "";
+    if (employeeNameEl) employeeNameEl.textContent = employeeName || "—";
+    if (equipmentSelect) equipmentSelect.value = "";
+    selectedSerials = [];
+    trackSerials = false;
+    maxStock = 1;
+    if (equipmentId) equipmentId.value = "";
+    if (amountInput) amountInput.value = "1";
+    if (serialInput) serialInput.value = "";
+    syncEquipmentMode();
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (equipmentSelect) equipmentSelect.focus();
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+  }
+
+  function selectedOption() {
+    if (!equipmentSelect) return null;
+    return equipmentSelect.options[equipmentSelect.selectedIndex] || null;
+  }
+
+  function syncEquipmentMode() {
+    var opt = selectedOption();
+    var id = opt && opt.value ? opt.value : "";
+    var name = opt ? (opt.getAttribute("data-name") || opt.textContent || "—") : "—";
+    var stock = opt ? parseInt(opt.getAttribute("data-stock") || "0", 10) : 0;
+    trackSerials = !!(opt && opt.getAttribute("data-track-serials") === "1");
+    maxStock = Math.max(0, stock);
+    if (equipmentId) equipmentId.value = id;
+    if (equipmentName) equipmentName.textContent = id ? name : "—";
+    if (equipmentStock) equipmentStock.textContent = String(stock || 0);
+    if (summary) summary.hidden = !id;
+    if (qtyWrap) qtyWrap.hidden = !id || trackSerials || maxStock < 1;
+    if (serialsWrap) serialsWrap.hidden = !id || !trackSerials || maxStock < 1;
+    if (amountInput) {
+      amountInput.max = String(Math.max(1, maxStock));
+      if ((parseInt(amountInput.value, 10) || 1) > maxStock) {
+        amountInput.value = String(Math.max(1, maxStock));
+      }
+    }
+    selectedSerials = [];
+    renderSerialPicks(id);
+    renderSelectedSerials();
+    syncSubmit();
+  }
+
+  function syncSubmit() {
+    if (!submitBtn) return;
+    var id = equipmentId && equipmentId.value;
+    var ready = false;
+    if (id && maxStock > 0) {
+      if (trackSerials) ready = selectedSerials.length > 0;
+      else ready = (parseInt(amountInput && amountInput.value, 10) || 0) >= 1;
+    }
+    submitBtn.disabled = !ready;
+    if (trackSerials && selectedSerials.length) {
+      submitBtn.textContent = "Allocate (" + selectedSerials.length + ")";
+    } else {
+      submitBtn.textContent = "Allocate";
+    }
+  }
+
+  function renderSerialPicks(id) {
+    if (!serialPicks) return;
+    serialPicks.innerHTML = "";
+    if (!id || !trackSerials) return;
+    var options = serialOptions[String(id)] || [];
+    if (!options.length) {
+      serialPicks.innerHTML = "<p class='equipment-stock-hint'>No in-stock serials. Stock them in first, or type a known serial below.</p>";
+      return;
+    }
+    options.forEach(function (serial) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "allocate-serial-chip";
+      btn.textContent = serial;
+      btn.addEventListener("click", function () {
+        addSerial(serial);
+      });
+      serialPicks.appendChild(btn);
+    });
+  }
+
+  function renderSelectedSerials() {
+    if (!serialList) return;
+    serialList.innerHTML = "";
+    if (!selectedSerials.length) {
+      var empty = document.createElement("li");
+      empty.className = "equipment-stock-serial-empty";
+      empty.textContent = "Add serials above";
+      serialList.appendChild(empty);
+    } else {
+      selectedSerials.forEach(function (serial, index) {
+        var li = document.createElement("li");
+        li.className = "equipment-stock-serial-item";
+        var num = document.createElement("span");
+        num.className = "equipment-stock-serial-num";
+        num.textContent = String(index + 1);
+        var code = document.createElement("span");
+        code.className = "equipment-stock-serial-code";
+        code.textContent = serial;
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "equipment-stock-serial-remove";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", function () {
+          selectedSerials = selectedSerials.filter(function (s) { return s !== serial; });
+          renderSelectedSerials();
+        });
+        var hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "serial_number";
+        hidden.value = serial;
+        li.appendChild(num);
+        li.appendChild(code);
+        li.appendChild(remove);
+        li.appendChild(hidden);
+        serialList.appendChild(li);
+      });
+    }
+    if (serialCount) serialCount.textContent = String(selectedSerials.length);
+    if (amountInput && trackSerials) {
+      amountInput.value = String(Math.max(1, selectedSerials.length || 1));
+    }
+    syncSubmit();
+  }
+
+  function addSerial(raw) {
+    var serial = (raw || "").trim().toUpperCase();
+    if (!serial) return;
+    if (selectedSerials.indexOf(serial) !== -1) return;
+    if (selectedSerials.length >= maxStock) return;
+    selectedSerials.push(serial);
+    renderSelectedSerials();
+    if (serialInput) {
+      serialInput.value = "";
+      serialInput.focus();
+    }
+  }
+
+  document.querySelectorAll("[data-open-allocate-modal]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openModal(
+        btn.getAttribute("data-employee-name"),
+        btn.getAttribute("data-allocate-url")
+      );
+    });
+  });
+  document.querySelectorAll("[data-close-allocate-modal]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+  if (equipmentSelect) {
+    equipmentSelect.addEventListener("change", syncEquipmentMode);
+  }
+  if (decBtn) {
+    decBtn.addEventListener("click", function () {
+      if (!amountInput || trackSerials) return;
+      var value = Math.max(1, (parseInt(amountInput.value, 10) || 1) - 1);
+      amountInput.value = String(value);
+      syncSubmit();
+    });
+  }
+  if (incBtn) {
+    incBtn.addEventListener("click", function () {
+      if (!amountInput || trackSerials) return;
+      var value = Math.min(maxStock, (parseInt(amountInput.value, 10) || 1) + 1);
+      amountInput.value = String(value);
+      syncSubmit();
+    });
+  }
+  if (amountInput) {
+    amountInput.addEventListener("input", syncSubmit);
+  }
+  if (serialAdd) {
+    serialAdd.addEventListener("click", function () {
+      addSerial(serialInput && serialInput.value);
+    });
+  }
+  if (serialInput) {
+    serialInput.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addSerial(serialInput.value);
+    });
+  }
+  if (form) {
+    form.addEventListener("submit", function (event) {
+      if (!equipmentId || !equipmentId.value) {
+        event.preventDefault();
+        return;
+      }
+      if (trackSerials && !selectedSerials.length) {
+        event.preventDefault();
+        if (serialInput) serialInput.focus();
+        return;
+      }
+      if (!trackSerials) {
+        var amount = parseInt(amountInput && amountInput.value, 10) || 0;
+        if (amount < 1 || amount > maxStock) {
+          event.preventDefault();
+        }
+      }
+    });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal && !modal.hidden) closeModal();
   });
 })();
 </script>

@@ -26,7 +26,7 @@
               class="btn btn-ghost btn-sm clients-hero-btn{% if pending_activation_count %} is-pending-link{% endif %}"
               href="{% url 'core:my_clients' %}?tab=pppoe&amp;view=pending"
             >
-              Pending activation{% if pending_activation_count %} ({{ pending_activation_count }}){% endif %}
+              Installed{% if pending_activation_count %} ({{ pending_activation_count }}){% endif %}
             </a>
             <button type="button" class="btn btn-primary btn-sm clients-hero-btn" data-open-modal="pppoe-register-modal">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
@@ -61,7 +61,7 @@
         <span class="clients-seg-ico" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 5v6l4 2.2-.8 1.4L11 14V7Z"/></svg>
         </span>
-        <span class="clients-seg-label">Pending activation</span>
+        <span class="clients-seg-label">Installed</span>
         <span class="clients-seg-count">{{ pending_activation_count }}</span>
       </a>
       <a
@@ -163,7 +163,7 @@
 
     <div id="clients-list-host" class="clients-list-host" data-clients-list-host>
       {% if pending_view %}
-        {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No pending PPPoE activations" empty_text="Technician-registered clients awaiting activation will appear here." empty_search_title="No pending clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 pending_activation=1 clients_query=clients_query %}
+        {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No installed PPPoE clients awaiting activation" empty_text="Technician-installed clients awaiting activation will appear here." empty_search_title="No installed clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 pending_activation=1 clients_query=clients_query %}
       {% elif active_tab == 'pppoe' %}
         {% include "core/includes/client_type_table.html" with customers=pppoe_customers empty_title="No PPPoE clients yet" empty_text="Register a PPPoE client to add them here." empty_search_title="No PPPoE clients match your search" empty_search_text="Try another name or phone number." service_label="PPPoE" show_pppoe=1 show_router=1 clients_query=clients_query %}
       {% elif active_tab == 'static' %}
@@ -198,7 +198,7 @@
     <header class="role-modal-head pppoe-head">
       <div class="pppoe-head-text">
         <div class="pppoe-head-badges">
-          <p class="role-modal-kicker pppoe-kicker">Pending activation</p>
+          <p class="role-modal-kicker pppoe-kicker">Installed — activate</p>
           <span class="pppoe-service-chip">PPPoE</span>
         </div>
         <h2 id="pppoe-activate-title">Activate PPPoE account</h2>

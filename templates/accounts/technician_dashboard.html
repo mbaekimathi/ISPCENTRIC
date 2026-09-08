@@ -26,9 +26,51 @@
     </div>
     <div class="cs-role-meta">
       <span class="cs-role-chip is-live">{{ module_links|length }} modules</span>
-      <span class="cs-role-chip is-soft">On-site workspace</span>
+      {% if fault_count %}
+        <span class="cs-role-chip is-signal">
+          <strong>{{ fault_count }}</strong>
+          fault{{ fault_count|pluralize }} open
+        </span>
+      {% elif ticket_count %}
+        <span class="cs-role-chip is-signal">
+          <strong>{{ ticket_count }}</strong>
+          ticket{{ ticket_count|pluralize }} waiting
+        </span>
+      {% else %}
+        <span class="cs-role-chip is-soft">On-site workspace</span>
+      {% endif %}
     </div>
   </header>
+
+  {% if fault_notice %}
+    <a
+      class="cs-role-notice"
+      href="{% url 'roles:technician_fault_tickets' %}"
+      role="status"
+    >
+      <span class="cs-role-notice-mark" aria-hidden="true">!</span>
+      <span class="cs-role-notice-copy">
+        <strong>Fault tickets need attention</strong>
+        <span>{{ fault_notice }}</span>
+      </span>
+      <span class="cs-role-notice-cta">Open faults →</span>
+    </a>
+  {% endif %}
+
+  {% if ticket_notice %}
+    <a
+      class="cs-role-notice"
+      href="{% url 'roles:technician_tickets_hub' %}"
+      role="status"
+    >
+      <span class="cs-role-notice-mark" aria-hidden="true">!</span>
+      <span class="cs-role-notice-copy">
+        <strong>Tickets need attention</strong>
+        <span>{{ ticket_notice }}</span>
+      </span>
+      <span class="cs-role-notice-cta">Open tickets →</span>
+    </a>
+  {% endif %}
 
   <section class="cs-role-panel">
     <header class="cs-role-panel-head">
@@ -39,7 +81,10 @@
     </header>
     <div class="cs-role-grid">
       {% for link in module_links %}
-        <a class="cs-role-card" href="{% url link.url_name %}">
+        <a class="cs-role-card{% if link.badge %} has-badge{% endif %}" href="{% url link.url_name %}">
+          {% if link.badge %}
+            <span class="cs-role-card-badge" aria-label="{{ link.badge }} waiting">{{ link.badge }}</span>
+          {% endif %}
           <span class="cs-role-card-index">{{ link.index }}</span>
           <span class="cs-role-card-label">{{ link.label }}</span>
           {% if link.hint %}

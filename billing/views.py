@@ -884,14 +884,14 @@ def _renew_page_context(customer):
 
 
 def _canonical_pay_url_for_renew(customer, request) -> str:
-    """Route renew tokens to Hotspot or PPPoE pay by customer service_type."""
+    """Route renew tokens to Hotspot or PPPoE captive page by service_type."""
     from core.views import _hotspot_pay_url_for_org, _pppoe_pay_url_for_customer
 
     org = getattr(customer, "organization", None)
     if org is None:
         return ""
     if getattr(customer, "service_type", "") == Customer.ServiceType.HOTSPOT:
-        return _hotspot_pay_url_for_org(org, request)
+        return _hotspot_pay_url_for_org(org, request, customer=customer)
     return _pppoe_pay_url_for_customer(customer, request)
 
 

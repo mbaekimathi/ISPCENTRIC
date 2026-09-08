@@ -618,7 +618,7 @@ def start_lead_allocation_stk_payment(
     technician_id=None,
 ) -> dict:
     """Initiate STK Push so an ISP can pay to allocate an open sales lead."""
-    if customer.status != Customer.Status.NEW or customer.organization_id is not None:
+    if customer.status != Customer.Status.LEAD or customer.organization_id is not None:
         return {"ok": False, "error": "This lead is no longer available to accept."}
 
     tech_opts = resolve_lead_allocation_technician_options(
@@ -1070,7 +1070,7 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
         and customer.organization_id == stk.organization_id
     ):
         pass
-    elif customer.status != Customer.Status.NEW or customer.organization_id is not None:
+    elif customer.status != Customer.Status.LEAD or customer.organization_id is not None:
         stk.status = StkPushRequest.Status.FAILED
         stk.result_desc = "Lead was taken by another ISP before payment completed."[:255]
         stk.completed_at = timezone.now()
@@ -1092,17 +1092,16 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
 
     raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
     options = raw.get("lead_allocation_options") or {}
-    target_status = options.get("status") or Customer.Status.ALLOCATED_OPEN
+    target_status = options.get("status") or Customer.Status.QUEUED
     if target_status not in {
-        Customer.Status.ALLOCATED_OPEN,
-        Customer.Status.ALLOCATED_CLOSED,
-        Customer.Status.ALLOCATED,
+        Customer.Status.QUEUED,
+        Customer.Status.ASSIGNED,
     }:
-        target_status = Customer.Status.ALLOCATED_OPEN
+        target_status = Customer.Status.QUEUED
 
     technician = None
     tech_id = options.get("technician_id")
-    if tech_id and target_status == Customer.Status.ALLOCATED_CLOSED:
+    if tech_id and target_status == Customer.Status.ASSIGNED:
         technician = (
             Employee.objects.filter(
                 pk=tech_id,
@@ -1119,9 +1118,9 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
                 status=Employee.Status.ACTIVE,
             ).first()
 
-    # Closed assignment requires a concrete technician; otherwise keep open pool.
-    if target_status == Customer.Status.ALLOCATED_CLOSED and technician is None:
-        target_status = Customer.Status.ALLOCATED_OPEN
+    # Named assignment requires a concrete technician; otherwise keep queued pool.
+    if target_status == Customer.Status.ASSIGNED and technician is None:
+        target_status = Customer.Status.QUEUED
 
     paid_plan = stk.plan or customer.plan
     update_fields = ["organization", "status", "assigned_technician"]
@@ -1191,7 +1190,7 @@ def reverse_lead_allocation(
 ) -> dict:
     """
     Reverse an allocated lead payment record and return the ticket to the open pool.
-    Status flips to NEW immediately; M-Pesa refund must be handled out-of-band.
+    Status flips to LEAD immediately; M-Pesa refund must be handled out-of-band.
     """
     reason = (reason or "").strip()
     if not reason:
@@ -1256,7 +1255,7 @@ def reverse_lead_allocation(
         stk.save(update_fields=["raw_callback", "result_desc"])
 
     customer.organization = None
-    customer.status = Customer.Status.NEW
+    customer.status = Customer.Status.LEAD
     customer.assigned_technician = None
     customer.save(update_fields=["organization", "status", "assigned_technician"])
     return {

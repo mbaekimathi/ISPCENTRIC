@@ -138,7 +138,7 @@ class PrepaidAccessPolicyTests(TestCase):
 
     def test_inactive_pppoe_can_dial_but_cannot_surf(self):
         """Pending-activation clients stay connected on the blocked profile."""
-        customer = self._pppoe(status=Customer.Status.INACTIVE)
+        customer = self._pppoe(status=Customer.Status.INSTALLED)
         self.assertFalse(customer_receives_internet(customer))
         self.assertFalse(customer_can_surf_via_pppoe(customer))
         self.assertFalse(customer_pppoe_secret_disabled(customer))
@@ -546,7 +546,7 @@ class AccessAccountLoopTests(TestCase):
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="inactive1",
             pppoe_password="secret",
-            status=Customer.Status.ALLOCATED_OPEN,
+            status=Customer.Status.QUEUED,
             plan=self.plan,
         )
         self.hotspot_unpaid = Customer.objects.create(
@@ -2984,7 +2984,7 @@ class PartialRechargeTests(TestCase):
             service_type=Customer.ServiceType.PPPOE,
             pppoe_username="partial1",
             pppoe_password="secret",
-            status=Customer.Status.ALLOCATED_OPEN,
+            status=Customer.Status.QUEUED,
             plan=self.hourly_plan,
         )
 

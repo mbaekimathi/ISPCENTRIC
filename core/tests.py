@@ -2127,6 +2127,56 @@ class CaptiveProbeMiddlewareTests(TestCase):
         self.assertNotIn("/hotspot/", response.url)
 
     @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
+    def test_paused_pppoe_customer_probe_redirects_to_pause_page(self):
+        from django.core.cache import cache
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+        from django.utils import timezone
+        from unittest.mock import patch
+        from datetime import timedelta
+
+        from billing.models import Customer
+        from billing.services import pause_customer_package
+        from ispcentric.middleware import HotspotCaptiveProbeMiddleware
+
+        cache.clear()
+        now = timezone.localtime()
+        customer = Customer.objects.create(
+            organization=self.org,
+            full_name="Paused PPPoE",
+            phone="254700000066",
+            account_number="PPP-066",
+            service_type=Customer.ServiceType.PPPOE,
+            pppoe_username="user066",
+            status=Customer.Status.ACTIVE,
+            package_start=now - timedelta(hours=1),
+            package_end=now + timedelta(hours=5),
+        )
+        pause_customer_package(customer, now=now)
+
+        def get_response(_request):
+            return HttpResponse("ok")
+
+        middleware = HotspotCaptiveProbeMiddleware(get_response)
+        request = RequestFactory().get(
+            "/generate_204",
+            HTTP_HOST="connectivitycheck.gstatic.com",
+            REMOTE_ADDR="10.20.0.66",
+        )
+        with patch(
+            "core.mikrotik_connect.resolve_captive_organization",
+            return_value=self.org,
+        ), patch(
+            "core.mikrotik_connect.find_pppoe_customer_for_ip",
+            return_value=customer,
+        ):
+            response = middleware(request)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pause/", response.url)
+        self.assertNotIn("/pay/", response.url)
+        self.assertIn("t=", response.url)
+
+    @override_settings(PUBLIC_BASE_URL="http://billing.example:8000")
     def test_pppoe_pool_probe_attaches_account_token_when_customer_known(self):
         from django.core import signing
         from django.core.cache import cache
@@ -3112,8 +3162,8 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertEqual(customer.pppoe_username, "0711223344")
         self.assertEqual(customer.router_id, self.router.pk)
         self.assertEqual(customer.service_type, Customer.ServiceType.PPPOE)
-        self.assertEqual(customer.status, Customer.Status.ACTIVE)
-        self.assertIsNotNone(customer.package_start)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
+        self.assertIsNone(customer.package_start)
 
     def test_inactive_registration_skips_package_window(self):
         from billing.forms import PppoeClientRegisterForm
@@ -3140,7 +3190,7 @@ class PppoeClientRegisterFormTests(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         customer = form.save()
-        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertIsNone(customer.package_start)
         self.assertIsNone(customer.package_end)
 
@@ -3252,7 +3302,7 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertFalse(form.cleaned_data["activate_account"])
         customer = form.save()
-        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertIsNone(customer.package_start)
         self.assertIsNone(customer.package_end)
 
@@ -3293,7 +3343,7 @@ class PppoeClientRegisterFormTests(TestCase):
         self.assertEqual(customer.cpe_username, "cpeadmin")
         self.assertEqual(customer.cpe_password, "mikrotik-default-pass")
         self.assertNotEqual(customer.cpe_password, customer.pppoe_password)
-        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
 
     def test_organizations_mode_requires_isp_and_scopes_router(self):
         from django.contrib.auth.models import User
@@ -3389,7 +3439,7 @@ class PppoeClientRegisterFormTests(TestCase):
         customer = form.save()
         self.assertEqual(customer.organization_id, self.org.pk)
         self.assertEqual(customer.router_id, self.router.pk)
-        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertIn("organization", form.fields)
 
 
@@ -3415,62 +3465,38 @@ class MyClientsRegisterViewTests(TestCase):
         )
         self.client.force_login(self.owner)
 
-    def test_register_saves_immediately_and_provisions_in_background(self):
+    def test_register_queues_for_technician_install(self):
         from billing.models import Customer
 
-        started = []
+        response = self.client.post(
+            "/app/clients/",
+            {
+                "action": "register_pppoe",
+                "full_name": "john smith",
+                "phone": "0722334455",
+                "email": "",
+                "router": str(self.router.pk),
+                "address": "westlands",
+                "house_number": "12b",
+                "plan": "",
+                "activate_account": "1",
+                "activation_date": "2026-09-04",
+                "pppoe_username": "",
+                "pppoe_password": "pass1234",
+                "cpe_username": "admin",
+                "cpe_password": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("tab=pppoe", response["Location"])
 
-        class FakeThread:
-            def __init__(self, target=None, daemon=None):
-                self.target = target
-                self.daemon = daemon
-
-            def start(self):
-                started.append(self)
-
-        with (
-            patch("core.views.threading.Thread", FakeThread),
-            patch(
-                "core.views.provision_customer_pppoe",
-                return_value={"ok": True, "message": "pushed"},
-            ) as provision,
-        ):
-            response = self.client.post(
-                "/app/clients/",
-                {
-                    "action": "register_pppoe",
-                    "full_name": "john smith",
-                    "phone": "0722334455",
-                    "email": "",
-                    "router": str(self.router.pk),
-                    "address": "westlands",
-                    "house_number": "12b",
-                    "plan": "",
-                    "activate_account": "1",
-                    "activation_date": "2026-09-04",
-                    "pppoe_username": "",
-                    "pppoe_password": "pass1234",
-                    "cpe_username": "admin",
-                    "cpe_password": "",
-                },
-            )
-            self.assertEqual(response.status_code, 302)
-            self.assertIn("tab=pppoe", response["Location"])
-            self.assertEqual(len(started), 1)
-            self.assertTrue(started[0].daemon)
-
-            customer = Customer.objects.get(phone="0722334455")
-            self.assertEqual(customer.full_name, "JOHN SMITH")
-            self.assertEqual(customer.house_number, "12B")
-            self.assertEqual(customer.pppoe_username, "0722334455")
-
-            # Run the deferred worker while the provision mock is still active.
-            with patch("django.db.connection.close"):
-                started[0].target()
-
-            provision.assert_called_once()
-            self.assertFalse(provision.call_args.kwargs.get("ensure_stack", True))
-            self.assertEqual(provision.call_args.args[0].pk, customer.pk)
+        customer = Customer.objects.get(phone="0722334455")
+        self.assertEqual(customer.full_name, "JOHN SMITH")
+        self.assertEqual(customer.house_number, "12B")
+        self.assertEqual(customer.pppoe_username, "0722334455")
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
+        self.assertIsNone(customer.package_start)
+        self.assertIsNone(customer.package_end)
 
     def test_pending_activations_only_visible_to_linked_isp(self):
         from django.contrib.auth.models import User
@@ -3491,7 +3517,7 @@ class MyClientsRegisterViewTests(TestCase):
             account_number="PEND-MINE-1",
             router=self.router,
             service_type=Customer.ServiceType.PPPOE,
-            status=Customer.Status.INACTIVE,
+            status=Customer.Status.INSTALLED,
         )
         theirs = Customer.objects.create(
             organization=other_org,
@@ -3499,7 +3525,7 @@ class MyClientsRegisterViewTests(TestCase):
             phone="0711000002",
             account_number="PEND-THEIRS-1",
             service_type=Customer.ServiceType.PPPOE,
-            status=Customer.Status.INACTIVE,
+            status=Customer.Status.INSTALLED,
         )
         active = Customer.objects.create(
             organization=self.org,
@@ -5594,8 +5620,66 @@ class ClientsSurfingStatusTests(TestCase):
 
         with self.settings(PUBLIC_BASE_URL="http://billing.example:8000"):
             url = _pppoe_pay_portal_url(self.org, customer=self.customer)
+        self.assertIn("/pay/", url)
         self.assertIn("t=", url)
         self.assertIn(f"account={self.customer.account_number}", url)
+
+    def test_pppoe_portal_url_uses_pause_path_when_package_paused(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from billing.services import pause_customer_package
+        from core.mikrotik_connect import _pppoe_pay_portal_url
+
+        now = timezone.localtime()
+        self.customer.package_start = now - timedelta(hours=1)
+        self.customer.package_end = now + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        pause_customer_package(self.customer, now=now)
+        with self.settings(PUBLIC_BASE_URL="http://billing.example:8000"):
+            url = _pppoe_pay_portal_url(self.org, customer=self.customer)
+        self.assertIn("/pause/", url)
+        self.assertNotIn("/pay/", url)
+        self.assertIn("t=", url)
+
+    def test_pppoe_pay_page_redirects_paused_customer_to_pause(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from billing.services import pause_customer_package
+
+        now = timezone.localtime()
+        self.customer.package_start = now - timedelta(hours=1)
+        self.customer.package_end = now + timedelta(hours=5)
+        self.customer.save(update_fields=["package_start", "package_end"])
+        pause_customer_package(self.customer, now=now)
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pay/",
+            {"account": self.customer.account_number},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pause/", response.url)
+
+    def test_pppoe_pause_page_redirects_active_customer_to_pay(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        now = timezone.localtime()
+        self.customer.package_start = now - timedelta(days=2)
+        self.customer.package_end = now - timedelta(hours=1)
+        self.customer.package_paused_at = None
+        self.customer.save(
+            update_fields=["package_start", "package_end", "package_paused_at"]
+        )
+        response = self.client.get(
+            f"/pppoe/{self.org.join_code}/pause/",
+            {"account": self.customer.account_number},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(f"/pppoe/{self.org.join_code}/pay/", response.url)
 
     def test_remembered_hotspot_ip_mac_autofills_pay_page(self):
         from django.core.cache import cache

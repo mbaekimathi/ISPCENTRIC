@@ -8,105 +8,694 @@
 {% endblock %}
 
 {% block staff_content %}
-<section class="cs-list-page">
+<section class="cs-list-page cs-tech-alloc-page">
   <header class="cs-list-head">
     <div class="cs-list-head-copy">
       <p class="cs-list-kicker">{{ page_kicker }}</p>
       <h2 class="cs-list-title">{{ page_title }}</h2>
       <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
-    <div class="cs-list-count">
-      <strong>{% if tickets %}{{ tickets|length }}{% else %}0{% endif %}</strong>
-      <span>{% if tickets|length == 1 %}ticket{% else %}tickets{% endif %}</span>
+    <div class="cs-list-head-side">
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-open-modal="fault-ticket-modal"
+        data-open-fault-modal
+        {% if open_fault_modal %}data-auto-open-fault-modal{% endif %}
+      >
+        Fault tickets
+      </button>
+      <div class="cs-list-count-group" aria-label="Installation summary">
+        <div class="cs-list-count">
+          <strong>{{ open_count|default:0 }}</strong>
+          <span>pending</span>
+        </div>
+        <div class="cs-list-count">
+          <strong>{{ allocated_count|default:0 }}</strong>
+          <span>allocated</span>
+        </div>
+        <div class="cs-list-count">
+          <strong>{{ fault_count|default:0 }}</strong>
+          <span>faults</span>
+        </div>
+      </div>
     </div>
   </header>
 
-  {% if tickets %}
-  <div class="cs-list-shell">
-    <table class="cs-list-table">
-      <thead>
-        <tr>
-          <th>Ticket</th>
-          <th>Client</th>
-          <th>Technician</th>
-          <th>Sales by</th>
-          <th>Location</th>
-          <th>Phone</th>
-          <th>ISP</th>
-          <th class="col-optional">Package</th>
-          <th>Status</th>
-          <th>Created</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for ticket in tickets %}
-          <tr>
-            <td class="is-primary-cell" data-label="Ticket">
-              <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
-            </td>
-            <td data-label="Client">
-              <div class="cs-list-primary">
-                <strong>{{ ticket.full_name }}</strong>
-                {% if ticket.building_name %}
-                  <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
-                {% endif %}
-              </div>
-            </td>
-            <td data-label="Technician">
-              {% if ticket.assigned_technician %}
-                {% if ticket.assigned_technician.user.get_full_name %}
-                  {{ ticket.assigned_technician.user.get_full_name }}
-                {% else %}
-                  {{ ticket.assigned_technician.user.username }}
-                {% endif %}
-              {% else %}
-                <span class="cs-list-muted">Open pool</span>
-              {% endif %}
-            </td>
-            <td data-label="Sales by">
-              {% if ticket.registered_by %}
-                {{ ticket.registered_by.get_full_name|default:ticket.registered_by.username }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Location">
-              {% if ticket.location_lat and ticket.location_lng %}
-                {% with maps_label=ticket.building_name|default:ticket.address %}
-                <a
-                  class="lead-maps-link"
-                  href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
-                </a>
-                {% endwith %}
-              {% elif ticket.address or ticket.building_name %}
-                {{ ticket.building_name|default:ticket.address }}
-              {% else %}
-                —
-              {% endif %}
-            </td>
-            <td data-label="Phone">
-              {% if ticket.phone %}<a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a>{% else %}—{% endif %}
-            </td>
-            <td data-label="ISP">{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</td>
-            <td class="col-optional" data-label="Package">{% if ticket.plan %}{{ ticket.plan.name }}{% else %}—{% endif %}</td>
-            <td data-label="Status">
-              <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
-            </td>
-            <td data-label="Created">{{ ticket.created_at|date:"d M Y" }}</td>
-          </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="cs-list-empty">
-    <strong>No open allocations</strong>
-    <p>{{ empty_text }}</p>
-  </div>
+  <section class="cs-list-section" aria-labelledby="pending-install-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="pending-install-heading">Pending installation</h3>
+        <p>Open tickets waiting for a technician. Allocate each one below.</p>
+      </div>
+    </header>
+
+    {% if open_tickets %}
+      {% if not technicians %}
+        <div class="cs-list-empty cs-list-empty--inset">
+          <strong>No active technicians available</strong>
+          <p>
+            Approve an employee and set their role to Technician in Human Resources
+            before you can allocate these install tickets.
+          </p>
+        </div>
+      {% endif %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>Location</th>
+              <th>ISP / Package</th>
+              <th>Status</th>
+              <th>Allocate to</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ticket in open_tickets %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ ticket.full_name }}</strong>
+                    {% if ticket.phone %}
+                      <small><a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a></small>
+                    {% endif %}
+                    {% if ticket.building_name %}
+                      <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="Location">
+                  {% if ticket.location_lat and ticket.location_lng %}
+                    {% with maps_label=ticket.building_name|default:ticket.address %}
+                    <a
+                      class="lead-maps-link"
+                      href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                    </a>
+                    {% endwith %}
+                  {% elif ticket.address or ticket.building_name %}
+                    {{ ticket.building_name|default:ticket.address }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="ISP / Package">
+                  <div class="cs-list-primary">
+                    <strong>{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</strong>
+                    <small>{% if ticket.plan %}{{ ticket.plan.name }}{% else %}No package{% endif %}</small>
+                  </div>
+                </td>
+                <td data-label="Status">
+                  <div class="cs-list-primary">
+                    <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+                    <small>{{ ticket.created_at|date:"d M Y" }}</small>
+                  </div>
+                </td>
+                <td data-label="Allocate to">
+                  {% if technicians %}
+                    <form method="post" class="cs-tech-alloc-row-form" action="{% url 'roles:customer_support_technician' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="allocate_technician">
+                      <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                      <label class="visually-hidden" for="alloc-tech-{{ ticket.id }}">Technician</label>
+                      <select
+                        class="form-control"
+                        name="technician_id"
+                        id="alloc-tech-{{ ticket.id }}"
+                        required
+                      >
+                        <option value="" disabled selected>Select technician…</option>
+                        {% for tech in technicians %}
+                          <option value="{{ tech.id }}">
+                            {{ tech.user.get_full_name|default:tech.user.username }}
+                          </option>
+                        {% endfor %}
+                      </select>
+                      <button type="submit" class="btn btn-primary btn-sm">Allocate</button>
+                    </form>
+                  {% else %}
+                    <span class="cs-list-muted">Approve a technician first</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No pending installation tickets</strong>
+        <p>When sales or support queues a PPPoE install, it will appear here.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="cs-list-section" aria-labelledby="allocated-heading">
+    <header class="cs-list-section-head">
+      <div>
+        <h3 id="allocated-heading">Allocated tickets</h3>
+        <p>All install tickets currently assigned, with their technician.</p>
+      </div>
+    </header>
+
+    {% if tickets %}
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>Technician</th>
+              <th>Sales by</th>
+              <th>Location</th>
+              <th>ISP / Package</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for ticket in tickets %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ ticket.sales_ticket_number|default:ticket.account_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ ticket.full_name }}</strong>
+                    {% if ticket.phone %}
+                      <small><a href="tel:{{ ticket.phone }}">{{ ticket.phone }}</a></small>
+                    {% endif %}
+                    {% if ticket.building_name %}
+                      <small>{{ ticket.building_name }}{% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}</small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="Technician">
+                  {% if ticket.assigned_technician %}
+                    {% if ticket.assigned_technician.user.get_full_name %}
+                      {{ ticket.assigned_technician.user.get_full_name }}
+                    {% else %}
+                      {{ ticket.assigned_technician.user.username }}
+                    {% endif %}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Sales by">
+                  {% if ticket.registered_by %}
+                    {{ ticket.registered_by.get_full_name|default:ticket.registered_by.username }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="Location">
+                  {% if ticket.location_lat and ticket.location_lng %}
+                    {% with maps_label=ticket.building_name|default:ticket.address %}
+                    <a
+                      class="lead-maps-link"
+                      href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                    </a>
+                    {% endwith %}
+                  {% elif ticket.address or ticket.building_name %}
+                    {{ ticket.building_name|default:ticket.address }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td data-label="ISP / Package">
+                  <div class="cs-list-primary">
+                    <strong>{% if ticket.organization %}{{ ticket.organization.name }}{% else %}—{% endif %}</strong>
+                    <small>{% if ticket.plan %}{{ ticket.plan.name }}{% else %}No package{% endif %}</small>
+                  </div>
+                </td>
+                <td data-label="Status">
+                  <div class="cs-list-primary">
+                    <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
+                    <small>{{ ticket.created_at|date:"d M Y" }}</small>
+                  </div>
+                </td>
+                <td data-label="Actions">
+                  <div class="cs-tech-alloc-row-actions">
+                    {% if technicians %}
+                      <form method="post" class="cs-tech-alloc-reassign">
+                        {% csrf_token %}
+                        <input type="hidden" name="action" value="allocate_technician">
+                        <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                        <label class="visually-hidden" for="reassign-{{ ticket.id }}">Reassign technician</label>
+                        <select
+                          class="form-control"
+                          name="technician_id"
+                          id="reassign-{{ ticket.id }}"
+                          required
+                          onchange="this.form.requestSubmit()"
+                        >
+                          <option value="">Reassign…</option>
+                          {% for tech in technicians %}
+                            <option
+                              value="{{ tech.id }}"
+                              {% if ticket.assigned_technician_id == tech.id %}selected disabled{% endif %}
+                            >
+                              {{ tech.user.get_full_name|default:tech.user.username }}
+                            </option>
+                          {% endfor %}
+                        </select>
+                      </form>
+                    {% endif %}
+                    <form method="post">
+                      {% csrf_token %}
+                      <input type="hidden" name="action" value="release_ticket">
+                      <input type="hidden" name="ticket_id" value="{{ ticket.id }}">
+                      <button type="submit" class="btn btn-ghost btn-sm">Release</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="cs-list-empty">
+        <strong>No allocated tickets</strong>
+        <p>{{ empty_text }}</p>
+      </div>
+    {% endif %}
+  </section>
+
+  {% if fault_tickets %}
+    <section class="cs-list-section" aria-labelledby="open-faults-heading">
+      <header class="cs-list-section-head">
+        <div>
+          <h3 id="open-faults-heading">Open fault tickets</h3>
+          <p>Recently raised repair / outage tickets still awaiting resolution.</p>
+        </div>
+      </header>
+      <div class="cs-list-shell">
+        <table class="cs-list-table">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Client</th>
+              <th>Issue</th>
+              <th>Technician</th>
+              <th>Status</th>
+              <th>Raised</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for fault in fault_tickets %}
+              <tr>
+                <td class="is-primary-cell" data-label="Ticket">
+                  <span class="org-code">{{ fault.ticket_number }}</span>
+                </td>
+                <td data-label="Client">
+                  <div class="cs-list-primary">
+                    <strong>{{ fault.customer.full_name }}</strong>
+                    {% if fault.customer.phone %}
+                      <small><a href="tel:{{ fault.customer.phone }}">{{ fault.customer.phone }}</a></small>
+                    {% endif %}
+                  </div>
+                </td>
+                <td data-label="Issue">
+                  <div class="cs-list-primary">
+                    <strong>{{ fault.get_issue_display }}</strong>
+                    {% if fault.notes %}<small>{{ fault.notes|truncatechars:80 }}</small>{% endif %}
+                  </div>
+                </td>
+                <td data-label="Technician">
+                  {% if fault.assigned_technician %}
+                    {{ fault.assigned_technician.user.get_full_name|default:fault.assigned_technician.user.username }}
+                  {% else %}
+                    <span class="cs-list-muted">Unassigned</span>
+                  {% endif %}
+                </td>
+                <td data-label="Status">
+                  <span class="org-status">{{ fault.get_status_display }}</span>
+                </td>
+                <td data-label="Raised">
+                  <div class="cs-list-primary">
+                    <small>{{ fault.created_at|date:"d M Y H:i" }}</small>
+                    {% if fault.created_by %}
+                      <small>{{ fault.created_by.get_full_name|default:fault.created_by.username }}</small>
+                    {% endif %}
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
   {% endif %}
 </section>
+
+<div
+  class="role-modal client-action-modal pppoe-modal fault-ticket-modal"
+  id="fault-ticket-modal"
+  hidden
+  aria-hidden="true"
+>
+  <div class="role-modal-backdrop" data-close-fault-modal></div>
+  <div
+    class="role-modal-panel pppoe-panel fault-ticket-panel"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="fault-ticket-modal-title"
+  >
+    <header class="role-modal-head pppoe-head fault-ticket-head">
+      <div class="pppoe-head-text">
+        <p class="role-modal-kicker pppoe-kicker fault-ticket-kicker">Field support</p>
+        <h2 id="fault-ticket-modal-title">Raise fault ticket</h2>
+        <p class="role-modal-sub pppoe-sub">
+          Find the client, pick the issue, allocate an active technician, and leave a short note.
+        </p>
+      </div>
+      <button type="button" class="role-modal-close pppoe-close" data-close-fault-modal aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+
+    <form
+      method="post"
+      action="{% url 'roles:customer_support_technician' %}"
+      class="pppoe-form fault-ticket-form"
+      id="fault-ticket-form"
+    >
+      {% csrf_token %}
+      <input type="hidden" name="action" value="raise_fault_ticket">
+      <input type="hidden" name="customer_id" id="fault-customer-id" value="">
+
+      <div class="pppoe-body fault-ticket-body">
+        <section class="fault-ticket-step" aria-labelledby="fault-step-client">
+          <div class="fault-ticket-step-label">
+            <span class="fault-ticket-step-num" aria-hidden="true">1</span>
+            <div>
+              <h3 id="fault-step-client">Client</h3>
+              <p>Search by name, phone, account, or PPPoE username.</p>
+            </div>
+          </div>
+
+          <div class="fault-ticket-search-wrap" id="fault-client-search-wrap">
+            <label class="visually-hidden" for="fault-client-search">Search client</label>
+            <span class="fault-ticket-search-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                <circle cx="11" cy="11" r="6.5"/>
+                <path d="m16.2 16.2 3.3 3.3" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <input
+              type="search"
+              id="fault-client-search"
+              class="form-control fault-ticket-search-input"
+              placeholder="Start typing to find a client…"
+              autocomplete="off"
+              data-fault-search-url="{% url 'roles:customer_support_technician_client_search' %}"
+            >
+          </div>
+
+          <div class="fault-client-results" id="fault-client-results" hidden></div>
+
+          <div class="fault-client-selected" id="fault-client-selected" hidden>
+            <div class="fault-client-selected-avatar" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7">
+                <circle cx="12" cy="8.2" r="3.2"/>
+                <path d="M5.5 19.2c1.3-3.1 3.6-4.6 6.5-4.6s5.2 1.5 6.5 4.6" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="fault-client-selected-copy">
+              <strong id="fault-client-selected-name"></strong>
+              <small id="fault-client-selected-meta"></small>
+              <span class="fault-client-selected-status" id="fault-client-selected-status" hidden></span>
+            </div>
+            <button type="button" class="btn btn-ghost btn-sm fault-client-clear" id="fault-client-clear">
+              Change
+            </button>
+          </div>
+        </section>
+
+        <section class="fault-ticket-step" aria-labelledby="fault-step-issue">
+          <div class="fault-ticket-step-label">
+            <span class="fault-ticket-step-num" aria-hidden="true">2</span>
+            <div>
+              <h3 id="fault-step-issue">Issue &amp; note</h3>
+              <p>Tell the technician what is wrong and any useful context.</p>
+            </div>
+          </div>
+
+          <div class="field fault-ticket-field">
+            <label for="fault-issue">Issue type</label>
+            <div class="pppoe-select">
+              <select class="form-control" name="issue" id="fault-issue" required>
+                <option value="" disabled selected>Select issue…</option>
+                {% for value, label in fault_issue_choices %}
+                  <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+
+          <div class="field fault-ticket-field">
+            <label for="fault-notes">Note <span class="fault-ticket-optional">(optional)</span></label>
+            <textarea
+              class="form-control fault-ticket-notes"
+              name="notes"
+              id="fault-notes"
+              rows="4"
+              placeholder="e.g. No internet since 8am, CPE lights red, neighbour still online…"
+            ></textarea>
+          </div>
+        </section>
+
+        <section class="fault-ticket-step" aria-labelledby="fault-step-tech">
+          <div class="fault-ticket-step-label">
+            <span class="fault-ticket-step-num" aria-hidden="true">3</span>
+            <div>
+              <h3 id="fault-step-tech">Technician</h3>
+              <p>Allocate this fault to a specific active technician, or leave it open.</p>
+            </div>
+          </div>
+
+          <div class="field fault-ticket-field">
+            <label for="fault-technician">Assign to</label>
+            {% if technicians %}
+              <div class="pppoe-select">
+                <select class="form-control" name="technician_id" id="fault-technician">
+                  <option value="" selected>Leave unassigned (open pool)</option>
+                  {% for tech in technicians %}
+                    <option value="{{ tech.id }}">
+                      {{ tech.user.get_full_name|default:tech.user.username }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+            {% else %}
+              <p class="fault-ticket-tech-empty">
+                No active technicians available. Approve a Technician in Human Resources
+                to allocate this ticket, or raise it unassigned.
+              </p>
+              <input type="hidden" name="technician_id" value="">
+            {% endif %}
+          </div>
+        </section>
+      </div>
+
+      <footer class="pppoe-foot fault-ticket-foot">
+        <button type="button" class="btn btn-ghost" data-close-fault-modal>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="fault-ticket-submit" disabled>
+          Raise ticket
+        </button>
+      </footer>
+    </form>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.getElementById("fault-ticket-modal");
+  var form = document.getElementById("fault-ticket-form");
+  var searchInput = document.getElementById("fault-client-search");
+  var resultsEl = document.getElementById("fault-client-results");
+  var selectedEl = document.getElementById("fault-client-selected");
+  var selectedName = document.getElementById("fault-client-selected-name");
+  var selectedMeta = document.getElementById("fault-client-selected-meta");
+  var customerIdInput = document.getElementById("fault-customer-id");
+  var submitBtn = document.getElementById("fault-ticket-submit");
+  var clearBtn = document.getElementById("fault-client-clear");
+  var searchWrap = document.getElementById("fault-client-search-wrap");
+  var selectedStatus = document.getElementById("fault-client-selected-status");
+  var searchUrl = searchInput ? searchInput.getAttribute("data-fault-search-url") : "";
+  var debounceTimer = null;
+  var lastQuery = "";
+
+  function openModal() {
+    if (!modal) return;
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+    if (searchInput && !customerIdInput.value) {
+      setTimeout(function () { searchInput.focus(); }, 30);
+    }
+  }
+
+  function closeModal() {
+    if (!modal) return;
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+  }
+
+  function setSelected(client) {
+    if (!client) {
+      customerIdInput.value = "";
+      selectedEl.hidden = true;
+      if (searchWrap) searchWrap.hidden = false;
+      searchInput.hidden = false;
+      resultsEl.hidden = true;
+      resultsEl.innerHTML = "";
+      if (selectedStatus) {
+        selectedStatus.hidden = true;
+        selectedStatus.textContent = "";
+      }
+      submitBtn.disabled = true;
+      return;
+    }
+    customerIdInput.value = String(client.id);
+    selectedName.textContent = client.name || "Client";
+    var bits = [client.account, client.phone, client.pppoe, client.location]
+      .filter(Boolean);
+    selectedMeta.textContent = bits.join(" · ");
+    if (selectedStatus) {
+      if (client.status) {
+        selectedStatus.textContent = client.status;
+        selectedStatus.hidden = false;
+      } else {
+        selectedStatus.hidden = true;
+        selectedStatus.textContent = "";
+      }
+    }
+    selectedEl.hidden = false;
+    if (searchWrap) searchWrap.hidden = true;
+    searchInput.hidden = true;
+    resultsEl.hidden = true;
+    resultsEl.innerHTML = "";
+    submitBtn.disabled = false;
+  }
+
+  function renderResults(items) {
+    if (!items || !items.length) {
+      resultsEl.innerHTML = '<p class="fault-client-empty">No matching clients.</p>';
+      resultsEl.hidden = false;
+      return;
+    }
+    resultsEl.innerHTML = items.map(function (item) {
+      var meta = [item.account, item.phone, item.pppoe, item.isp]
+        .filter(Boolean)
+        .join(" · ");
+      var loc = item.location
+        ? '<span class="fault-client-loc">' + escapeHtml(item.location) + "</span>"
+        : "";
+      var status = item.status
+        ? '<span class="fault-client-status">' + escapeHtml(item.status) + "</span>"
+        : "";
+      return (
+        '<button type="button" class="fault-client-result" data-client-id="' + item.id + '">' +
+          '<span class="fault-client-result-main">' +
+            "<strong>" + escapeHtml(item.name) + "</strong>" +
+            (meta ? "<small>" + escapeHtml(meta) + "</small>" : "") +
+            loc +
+          "</span>" +
+          status +
+        "</button>"
+      );
+    }).join("");
+    resultsEl.hidden = false;
+    resultsEl.querySelectorAll(".fault-client-result").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = parseInt(btn.getAttribute("data-client-id"), 10);
+        var match = items.find(function (row) { return row.id === id; });
+        if (match) setSelected(match);
+      });
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function runSearch(query) {
+    if (!searchUrl || query.length < 2) {
+      resultsEl.hidden = true;
+      resultsEl.innerHTML = "";
+      return;
+    }
+    if (query === lastQuery) return;
+    lastQuery = query;
+    resultsEl.innerHTML = '<p class="fault-client-empty">Searching…</p>';
+    resultsEl.hidden = false;
+    fetch(searchUrl + "?q=" + encodeURIComponent(query), {
+      headers: { "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (searchInput.value.trim() !== query) return;
+        renderResults((data && data.results) || []);
+      })
+      .catch(function () {
+        resultsEl.innerHTML = '<p class="fault-client-empty">Search failed. Try again.</p>';
+        resultsEl.hidden = false;
+      });
+  }
+
+  document.querySelectorAll("[data-open-fault-modal]").forEach(function (btn) {
+    btn.addEventListener("click", openModal);
+  });
+  document.querySelectorAll("[data-close-fault-modal]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+  if (clearBtn) {
+    clearBtn.addEventListener("click", function () {
+      setSelected(null);
+      searchInput.value = "";
+      lastQuery = "";
+      searchInput.focus();
+    });
+  }
+  if (searchInput) {
+    searchInput.addEventListener("input", function () {
+      var q = searchInput.value.trim();
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function () { runSearch(q); }, 220);
+    });
+  }
+  if (form) {
+    form.addEventListener("submit", function (e) {
+      if (!customerIdInput.value) {
+        e.preventDefault();
+        searchInput.focus();
+      }
+    });
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && modal && !modal.hidden) closeModal();
+  });
+  if (document.querySelector("[data-auto-open-fault-modal]")) openModal();
+})();
+</script>
 {% endblock %}

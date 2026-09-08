@@ -62,7 +62,7 @@
       </span>
       <div class="tech-install-stat-copy">
         <strong>{{ inactive_count|default:0 }}</strong>
-        <span>Inactive / pending</span>
+        <span>Installed</span>
       </div>
     </div>
     <div class="tech-install-stat is-assigned">
@@ -189,10 +189,10 @@
 
     <div class="tech-install-list">
       {% for ticket in tickets %}
-        <article class="tech-install-card{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'allocated_open' or not ticket.assigned_technician_id %} is-open{% endif %}">
-          <header class="tech-install-card-head">
-            <div class="tech-install-card-id">
-              <span class="tech-install-avatar{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'allocated_open' or not ticket.assigned_technician_id %} is-open{% endif %}" aria-hidden="true">
+        <article class="tech-install-card{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'queued' or not ticket.assigned_technician_id %} is-open{% endif %}">
+            <header class="tech-install-card-head">
+              <div class="tech-install-card-id">
+              <span class="tech-install-avatar{% if ticket.assigned_technician_id == employee_profile.id %} is-mine{% elif ticket.status == 'queued' or not ticket.assigned_technician_id %} is-open{% endif %}" aria-hidden="true">
                 {% if ticket.full_name %}{{ ticket.full_name|slice:":1"|upper }}{% else %}#{% endif %}
               </span>
               <div class="tech-install-card-titles">
@@ -206,7 +206,7 @@
               <span class="org-status org-status-{{ ticket.status }}">{{ ticket.get_status_display }}</span>
               {% if ticket.assigned_technician_id == employee_profile.id %}
                 <span class="tech-install-chip is-yours">Assigned to you</span>
-              {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+              {% elif ticket.status == "queued" or not ticket.assigned_technician_id %}
                 <span class="tech-install-chip is-pool">Open pool</span>
               {% elif ticket.assigned_technician %}
                 <span class="tech-install-chip">
@@ -309,7 +309,7 @@
               >
                 Not interested
               </button>
-            {% elif ticket.status == "allocated_open" or not ticket.assigned_technician_id %}
+            {% elif ticket.status == "queued" or not ticket.assigned_technician_id %}
               <form method="post" action="{% url 'roles:technician_installation_accept' ticket.id %}">
                 {% csrf_token %}
                 <button type="submit" class="tech-install-btn is-success" title="Accept this installation ticket">

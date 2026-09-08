@@ -3,8 +3,10 @@ from unittest.mock import patch
 from django import forms
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db.models import Sum
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from accounts.forms import (
     EmployeeLoginForm,
@@ -19,7 +21,12 @@ from accounts.security import validate_employee_password
 from accounts.models import (
     CommunicationSettings,
     Employee,
+    FaultTicket,
     Lead,
+    NetworkEquipment,
+    NetworkEquipmentAllocation,
+    NetworkEquipmentSerial,
+    NetworkEquipmentStockMovement,
     Organization,
     PaymentGateway,
 )
@@ -676,7 +683,7 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertEqual(customer.building_name, "ABC TOWERS")
         self.assertEqual(customer.house_number, "12B")
         self.assertEqual(customer.registered_by_id, self.sales_user.pk)
-        self.assertEqual(customer.status, Customer.Status.ALLOCATED)
+        self.assertEqual(customer.status, Customer.Status.QUEUED)
         self.assertTrue(customer.sales_ticket_number)
         self.assertTrue(customer.sales_ticket_number.startswith("PPP-"))
         self.assertFalse(customer.pppoe_username)
@@ -704,7 +711,7 @@ class SalesCustomerRegistrationTests(TestCase):
         customer = Customer.objects.get(full_name="OPEN CLIENT")
         self.assertIsNone(customer.organization_id)
         self.assertEqual(customer.registered_by_id, self.sales_user.pk)
-        self.assertEqual(customer.status, Customer.Status.NEW)
+        self.assertEqual(customer.status, Customer.Status.LEAD)
         self.assertEqual(customer.phone, "+254798765432")
         self.assertEqual(customer.building_name, "SUNRISE COURT")
         self.assertEqual(customer.house_number, "")
@@ -787,6 +794,95 @@ class SalesCustomerRegistrationTests(TestCase):
         response = self.client.get(reverse("roles:technician"))
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "Your account is not linked to an organization.")
+        self.assertNotContains(response, "Tickets need attention")
+
+    def test_technician_dashboard_notifies_when_tickets_waiting(self):
+        tech_user = User.objects.create_user("tech-notify", password="pass123")
+        Employee.objects.create(
+            user=tech_user,
+            organization=None,
+            login_code="556701",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        owner = User.objects.create_user("isp-notify-owner", password="pass123")
+        org = Organization.objects.create(
+            name="Notify ISP",
+            owner=owner,
+            join_code="998877",
+        )
+        Customer.objects.create(
+            organization=org,
+            full_name="Queued Client",
+            phone="0712000099",
+            account_number="ACC-NOTIFY-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.QUEUED,
+            sales_ticket_number="PPP-NOTIFY-1",
+        )
+        self.client.force_login(tech_user)
+        response = self.client.get(reverse("roles:technician"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Tickets need attention")
+        self.assertContains(response, "queued install ticket")
+        messages_list = list(response.context["messages"])
+        self.assertTrue(
+            any("queued install ticket" in str(m) for m in messages_list),
+            messages_list,
+        )
+
+    def test_technician_fault_page_notifies_when_faults_exist(self):
+        tech_user = User.objects.create_user("tech-fault-notify", password="pass123")
+        Employee.objects.create(
+            user=tech_user,
+            organization=None,
+            login_code="556702",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        customer = Customer.objects.create(
+            organization=None,
+            full_name="FAULT NOTIFY CLIENT",
+            phone="0712000088",
+            account_number="ACC-FAULT-N1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            building_name="RIVERVIEW TOWERS",
+            address="WESTLANDS",
+            location_lat="-1.267000",
+            location_lng="36.811000",
+        )
+        ticket = FaultTicket.objects.create(
+            ticket_number="FLT-NOTIFY1",
+            customer=customer,
+            issue=FaultTicket.Issue.NO_CONNECTIVITY,
+            notes="CPE offline",
+            status=FaultTicket.Status.OPEN,
+            created_by=tech_user,
+        )
+        self.client.force_login(tech_user)
+        response = self.client.get(reverse("roles:technician_fault_tickets"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Fault tickets need attention")
+        self.assertContains(response, "open fault ticket")
+        self.assertContains(response, ticket.ticket_number)
+        self.assertContains(response, "RIVERVIEW TOWERS")
+        self.assertContains(response, "lead-maps-link")
+        self.assertContains(response, "google.com/maps")
+        self.assertContains(response, "-1.267000")
+        self.assertContains(response, "36.811000")
+        self.assertContains(response, 'tech-tickets-tab-count is-alert')
+        messages_list = list(response.context["messages"])
+        self.assertTrue(
+            any("fault ticket" in str(m).lower() for m in messages_list),
+            messages_list,
+        )
+
+        dash = self.client.get(reverse("roles:technician"))
+        self.assertEqual(dash.status_code, 200)
+        self.assertContains(dash, "Fault tickets need attention")
+        self.assertContains(dash, reverse("roles:technician_tickets_hub"))
+        self.assertContains(dash, reverse("roles:technician_fault_tickets"))
 
     def test_technician_installations_register_selects_isp_then_mikrotik(self):
         from unittest.mock import patch
@@ -883,7 +979,7 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertEqual(customer.router_id, router_a.pk)
         self.assertEqual(customer.assigned_technician_id, tech.pk)
         self.assertEqual(customer.registered_by_id, tech_user.pk)
-        self.assertEqual(customer.status, Customer.Status.INACTIVE)
+        self.assertEqual(customer.status, Customer.Status.INSTALLED)
         self.assertEqual(customer.equipment_serials, ["SN-ONU-1001", "SN-CPE-2002"])
         self.assertEqual(len(started), 1)
 
@@ -892,7 +988,7 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(listed, "My registered clients")
         self.assertContains(listed, "FIELD CLIENT")
         self.assertContains(listed, customer.account_number)
-        self.assertContains(listed, "Pending activation")
+        self.assertContains(listed, "Installed")
         self.assertContains(listed, "Alpha ISP")
         self.assertContains(listed, "Alpha NAS")
 
@@ -928,7 +1024,7 @@ class SalesCustomerRegistrationTests(TestCase):
             account_number="TECH-PEND-1",
             router=router,
             service_type=Customer.ServiceType.PPPOE,
-            status=Customer.Status.INACTIVE,
+            status=Customer.Status.INSTALLED,
             registered_by=tech_user,
             assigned_technician=tech,
         )
@@ -940,6 +1036,7 @@ class SalesCustomerRegistrationTests(TestCase):
             router=router,
             service_type=Customer.ServiceType.PPPOE,
             status=Customer.Status.ACTIVE,
+            package_start=timezone.now(),
             registered_by=tech_user,
             assigned_technician=tech,
         )
@@ -949,13 +1046,36 @@ class SalesCustomerRegistrationTests(TestCase):
         dash = self.client.get(reverse("roles:technician"))
         self.assertEqual(dash.status_code, 200)
         self.assertContains(dash, "Tickets")
+        self.assertContains(dash, reverse("roles:technician_tickets_hub"))
+
+        hub_page = self.client.get(reverse("roles:technician_tickets_hub"))
+        self.assertEqual(hub_page.status_code, 200)
+        self.assertContains(hub_page, "Queued for install")
+        self.assertContains(hub_page, "Installed")
+        self.assertContains(hub_page, "Activated")
+        self.assertContains(hub_page, "Fault Tickets")
+        self.assertContains(hub_page, "Register PPPoE client")
+        self.assertContains(hub_page, 'data-open-modal="pppoe-register-modal"')
+        self.assertContains(hub_page, 'id="pppoe-register-modal"')
+        self.assertContains(hub_page, "staff-sidebar-modal-trigger")
+        self.assertContains(hub_page, "Register PPPoE")
+        self.assertContains(hub_page, "My registered clients")
+        self.assertContains(hub_page, "Pending Client")
+        self.assertContains(hub_page, "Active Client")
+        self.assertContains(hub_page, pending.account_number)
+        self.assertContains(hub_page, active.account_number)
+        self.assertNotContains(hub_page, "No registered clients yet")
         self.assertContains(
-            dash, reverse("roles:technician_tickets_pending_connections")
+            hub_page, reverse("roles:technician_tickets_pending_connections")
         )
+        self.assertContains(hub_page, reverse("roles:technician_tickets"))
+        self.assertContains(hub_page, reverse("roles:technician_tickets_connected"))
+        self.assertContains(hub_page, reverse("roles:technician_fault_tickets"))
 
         pending_page = self.client.get(reverse("roles:technician_tickets"))
         self.assertEqual(pending_page.status_code, 200)
-        self.assertContains(pending_page, "Pending activation")
+        self.assertIn("/technician/tickets/installed/", pending_page.request["PATH_INFO"])
+        self.assertContains(pending_page, "Installed")
         self.assertContains(pending_page, "Pending Client")
         self.assertContains(pending_page, pending.account_number)
         self.assertNotContains(pending_page, "Active Client")
@@ -963,15 +1083,35 @@ class SalesCustomerRegistrationTests(TestCase):
         self.assertContains(
             pending_page, reverse("roles:technician_tickets_pending_connections")
         )
-
         connected_page = self.client.get(reverse("roles:technician_tickets_connected"))
         self.assertEqual(connected_page.status_code, 200)
-        self.assertContains(connected_page, "My connected tickets")
-        self.assertContains(connected_page, "Pending Client")
+        self.assertContains(connected_page, "Activated clients")
+        self.assertContains(connected_page, "Day")
+        self.assertContains(connected_page, "Period")
+        self.assertContains(connected_page, "Month")
+        self.assertContains(connected_page, "Year")
+        self.assertNotContains(connected_page, "Pending Client")
         self.assertContains(connected_page, "Active Client")
         self.assertContains(connected_page, active.account_number)
         self.assertContains(connected_page, "Active")
-        self.assertContains(connected_page, "Pending activation")
+        self.assertNotContains(connected_page, pending.account_number)
+
+        # Day filter should hide activated clients outside that day.
+        other_day = self.client.get(
+            reverse("roles:technician_tickets_connected"),
+            {"range": "day", "day": "2020-01-15"},
+        )
+        self.assertEqual(other_day.status_code, 200)
+        self.assertNotContains(other_day, "Active Client")
+        self.assertContains(other_day, "No activated clients in")
+
+        same_day = timezone.localdate(active.package_start).isoformat()
+        day_page = self.client.get(
+            reverse("roles:technician_tickets_connected"),
+            {"range": "day", "day": same_day},
+        )
+        self.assertContains(day_page, "Active Client")
+        self.assertContains(day_page, active.account_number)
 
     def test_technician_pending_connections_receive_and_done(self):
         tech_user = User.objects.create_user("tech-recv", password="pass123")
@@ -989,44 +1129,154 @@ class SalesCustomerRegistrationTests(TestCase):
             account_number="TECH-CONN-1",
             sales_ticket_number="PPP-CONN-1",
             service_type=Customer.ServiceType.PPPOE,
-            status=Customer.Status.NEW,
+            status=Customer.Status.LEAD,
             address="WESTLANDS",
             building_name="TOWER A",
+            pppoe_username="0712333444",
+            pppoe_password="installPass1",
+        )
+        router_eq = NetworkEquipment.objects.create(
+            name="CPE ROUTER A",
+            equipment_type=NetworkEquipment.EquipmentType.ROUTER,
+            quantity=0,
+            track_serials=True,
+            created_by=tech_user,
+        )
+        cable_eq = NetworkEquipment.objects.create(
+            name="DROP CABLE",
+            equipment_type=NetworkEquipment.EquipmentType.OTHER,
+            quantity=0,
+            track_serials=False,
+            created_by=tech_user,
+        )
+        serial_unit = NetworkEquipmentSerial.objects.create(
+            equipment=router_eq,
+            serial_number="SN-CPE-9001",
+            status=NetworkEquipmentSerial.Status.ISSUED,
+            created_by=tech_user,
+            issued_at=timezone.now(),
+        )
+        NetworkEquipmentAllocation.objects.create(
+            equipment=router_eq,
+            employee=tech,
+            quantity=1,
+            serial=serial_unit,
+            allocated_by=tech_user,
+        )
+        NetworkEquipmentAllocation.objects.create(
+            equipment=cable_eq,
+            employee=tech,
+            quantity=5,
+            allocated_by=tech_user,
         )
 
         self.client.force_login(tech_user)
         page = self.client.get(reverse("roles:technician_tickets_pending_connections"))
         self.assertEqual(page.status_code, 200)
-        self.assertContains(page, "Pending connections")
+        self.assertContains(page, "Queued for install")
         self.assertContains(page, "SITE VISIT CLIENT")
-        self.assertContains(page, "Receive ticket")
+        self.assertContains(page, "Accept ticket")
+        self.assertContains(page, "PPPoE username")
+        self.assertContains(page, "0712333444")
+        self.assertContains(page, "PPPoE password")
+        self.assertContains(page, "installPass1")
 
         receive = self.client.post(
             reverse("roles:technician_ticket_receive", args=[ticket.pk])
         )
         self.assertEqual(receive.status_code, 302)
         ticket.refresh_from_db()
-        self.assertEqual(ticket.status, Customer.Status.IN_PROGRESS)
+        self.assertEqual(ticket.status, Customer.Status.ASSIGNED)
         self.assertEqual(ticket.assigned_technician_id, tech.pk)
 
         in_progress_page = self.client.get(
             reverse("roles:technician_tickets_pending_connections")
         )
-        self.assertContains(in_progress_page, "In progress")
-        self.assertContains(in_progress_page, "Mark done")
+        self.assertContains(in_progress_page, "Assigned")
+        self.assertContains(in_progress_page, "Complete install")
+        self.assertContains(in_progress_page, "0712333444")
+        self.assertContains(in_progress_page, "installPass1")
+        self.assertContains(in_progress_page, "Stock used")
+        self.assertContains(in_progress_page, "Building / location")
+        self.assertContains(in_progress_page, "Use current location")
+        self.assertContains(in_progress_page, 'data-building-search')
+        self.assertContains(in_progress_page, reverse("roles:technician_places"))
+        self.assertContains(in_progress_page, "CPE ROUTER A")
+        self.assertContains(in_progress_page, "DROP CABLE")
+
+        import json
 
         done = self.client.post(
-            reverse("roles:technician_ticket_mark_done", args=[ticket.pk])
+            reverse("roles:technician_ticket_mark_done", args=[ticket.pk]),
+            {
+                "stock_used": json.dumps(
+                    [
+                        {
+                            "equipment_id": router_eq.pk,
+                            "quantity": 1,
+                            "serials": ["SN-CPE-9001"],
+                        },
+                        {
+                            "equipment_id": cable_eq.pk,
+                            "quantity": 2,
+                            "serials": [],
+                        },
+                    ]
+                ),
+                "building_name": "Valley Court Block B",
+                "address": "Valley Court, Westlands",
+                "location_lat": "-1.267123",
+                "location_lng": "36.811456",
+            },
         )
         self.assertEqual(done.status_code, 302)
         ticket.refresh_from_db()
-        self.assertEqual(ticket.status, Customer.Status.INACTIVE)
-        self.assertEqual(ticket.get_status_display(), "Pending activation")
+        self.assertEqual(ticket.status, Customer.Status.INSTALLED)
+        self.assertEqual(ticket.equipment_serials, ["SN-CPE-9001"])
+        self.assertEqual(ticket.get_status_display(), "Installed")
+        self.assertEqual(ticket.building_name, "VALLEY COURT BLOCK B")
+        self.assertEqual(ticket.address, "VALLEY COURT, WESTLANDS")
+        self.assertEqual(str(ticket.location_lat), "-1.267123")
+        self.assertEqual(str(ticket.location_lng), "36.811456")
+
+        serial_unit.refresh_from_db()
+        self.assertEqual(serial_unit.status, NetworkEquipmentSerial.Status.SOLD)
+        self.assertFalse(
+            NetworkEquipmentAllocation.objects.filter(
+                employee=tech,
+                equipment=router_eq,
+                returned_at__isnull=True,
+            ).exists()
+        )
+        cable_held = (
+            NetworkEquipmentAllocation.objects.filter(
+                employee=tech,
+                equipment=cable_eq,
+                returned_at__isnull=True,
+            ).aggregate(total=Sum("quantity"))["total"]
+            or 0
+        )
+        self.assertEqual(int(cable_held), 3)
+        self.assertTrue(
+            NetworkEquipmentStockMovement.objects.filter(
+                equipment=router_eq,
+                movement_type=NetworkEquipmentStockMovement.MovementType.SOLD,
+                serial_number="SN-CPE-9001",
+                employee=tech,
+            ).exists()
+        )
+        self.assertTrue(
+            NetworkEquipmentStockMovement.objects.filter(
+                equipment=cable_eq,
+                movement_type=NetworkEquipmentStockMovement.MovementType.SOLD,
+                quantity=2,
+                employee=tech,
+            ).exists()
+        )
 
         activation_page = self.client.get(reverse("roles:technician_tickets"))
         self.assertContains(activation_page, "SITE VISIT CLIENT")
-        self.assertContains(activation_page, "Pending activation")
-
+        self.assertContains(activation_page, "Installed")
 
 class CustomerSupportSalesRegistrationTests(TestCase):
     def setUp(self):
@@ -1064,7 +1314,7 @@ class CustomerSupportSalesRegistrationTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Register potential client")
         self.assertContains(response, 'id="lead-register-modal"')
-        self.assertContains(response, "potential clients as leads")
+        self.assertContains(response, "capture a lead")
 
     def test_register_potential_client_lead(self):
         self.client.force_login(self.manager_user)
@@ -1149,6 +1399,207 @@ class CustomerSupportSalesRegistrationTests(TestCase):
         self.assertContains(response, "OWN LEAD")
         self.assertNotContains(response, "OTHER LEAD")
 
+
+class CustomerSupportTechnicianAllocationTests(TestCase):
+    def setUp(self):
+        self.manager_user = User.objects.create_user("cs-alloc-mgr", password="pass123")
+        Employee.objects.create(
+            user=self.manager_user,
+            organization=None,
+            login_code="991200",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.MANAGER,
+        )
+        self.tech_user = User.objects.create_user(
+            "cs-alloc-tech", password="pass123", first_name="Field", last_name="Tech"
+        )
+        self.tech = Employee.objects.create(
+            user=self.tech_user,
+            organization=None,
+            login_code="991201",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.TECHNICIAN,
+        )
+        self.ticket = Customer.objects.create(
+            organization=None,
+            full_name="ALLOC CLIENT",
+            phone="0712555001",
+            account_number="ALLOC-1",
+            sales_ticket_number="PPP-ALLOC-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.QUEUED,
+            address="WESTLANDS",
+            building_name="TOWER B",
+        )
+        self.client = Client()
+        self.url = reverse("roles:customer_support_technician")
+
+    def test_page_shows_pending_and_allocate_controls(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Pending installation")
+        self.assertContains(response, "PPP-ALLOC-1")
+        self.assertContains(response, "Field Tech")
+        self.assertContains(response, "Allocated tickets")
+        self.assertContains(response, "Allocate")
+
+    def test_allocate_ticket_to_technician(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.post(
+            self.url,
+            {
+                "action": "allocate_technician",
+                "ticket_id": str(self.ticket.pk),
+                "technician_id": str(self.tech.pk),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/customer-support/technician/", response["Location"])
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Customer.Status.ASSIGNED)
+        self.assertEqual(self.ticket.assigned_technician_id, self.tech.pk)
+
+        listed = self.client.get(self.url)
+        self.assertContains(listed, "Allocated tickets")
+        self.assertContains(listed, "ALLOC CLIENT")
+        self.assertContains(listed, "Field Tech")
+
+    def test_release_allocated_ticket(self):
+        self.ticket.status = Customer.Status.ASSIGNED
+        self.ticket.assigned_technician = self.tech
+        self.ticket.save(update_fields=["status", "assigned_technician"])
+
+        self.client.force_login(self.manager_user)
+        response = self.client.post(
+            self.url,
+            {"action": "release_ticket", "ticket_id": str(self.ticket.pk)},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.ticket.refresh_from_db()
+        self.assertEqual(self.ticket.status, Customer.Status.QUEUED)
+        self.assertIsNone(self.ticket.assigned_technician_id)
+
+    def test_allocated_url_redirects_to_technician(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.get(reverse("roles:customer_support_allocated"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/customer-support/technician/", response["Location"])
+
+    def test_page_has_fault_ticket_modal(self):
+        self.client.force_login(self.manager_user)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Fault tickets")
+        self.assertContains(response, "Raise fault ticket")
+        self.assertContains(response, 'id="fault-ticket-modal"')
+        self.assertContains(response, "No connectivity")
+        self.assertContains(response, 'id="fault-technician"')
+        self.assertContains(response, "Leave unassigned (open pool)")
+        self.assertContains(response, "Field Tech")
+        self.assertContains(
+            response,
+            'data-open-modal="fault-ticket-modal"',
+        )
+        # Sidebar trigger (desktop) plus page button.
+        self.assertContains(response, "staff-sidebar-modal-trigger")
+
+    def test_client_search_returns_active_clients(self):
+        active = Customer.objects.create(
+            organization=None,
+            full_name="ACTIVE FAULT CLIENT",
+            phone="0712999001",
+            account_number="FAULT-ACT-1",
+            sales_ticket_number="PPP-FAULT-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+            address="KILELESHWA",
+            building_name="VALLEY COURT",
+            pppoe_username="faultuser1",
+        )
+        Customer.objects.create(
+            organization=None,
+            full_name="QUEUED SHOULD HIDE",
+            phone="0712999002",
+            account_number="FAULT-Q-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.QUEUED,
+        )
+        self.client.force_login(self.manager_user)
+        search_url = reverse("roles:customer_support_technician_client_search")
+        response = self.client.get(search_url, {"q": "ACTIVE FAULT"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        ids = [row["id"] for row in payload["results"]]
+        self.assertIn(active.pk, ids)
+        self.assertTrue(all(row["name"] != "QUEUED SHOULD HIDE" for row in payload["results"]))
+
+    def test_raise_fault_ticket(self):
+        active = Customer.objects.create(
+            organization=None,
+            full_name="RAISE FAULT CLIENT",
+            phone="0712888001",
+            account_number="FAULT-RAISE-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+        )
+        self.client.force_login(self.manager_user)
+        response = self.client.post(
+            self.url,
+            {
+                "action": "raise_fault_ticket",
+                "customer_id": str(active.pk),
+                "issue": FaultTicket.Issue.NO_CONNECTIVITY,
+                "notes": "Router offline since morning",
+                "technician_id": str(self.tech.pk),
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        ticket = FaultTicket.objects.get(customer=active)
+        self.assertEqual(ticket.issue, FaultTicket.Issue.NO_CONNECTIVITY)
+        self.assertEqual(ticket.notes, "Router offline since morning")
+        self.assertEqual(ticket.status, FaultTicket.Status.ASSIGNED)
+        self.assertEqual(ticket.assigned_technician_id, self.tech.pk)
+        self.assertEqual(ticket.created_by_id, self.manager_user.pk)
+        self.assertTrue(ticket.ticket_number.startswith("FLT-"))
+
+        listed = self.client.get(self.url)
+        self.assertContains(listed, ticket.ticket_number)
+        self.assertContains(listed, "RAISE FAULT CLIENT")
+        self.assertContains(listed, "Field Tech")
+
+        tech_client = Client()
+        tech_client.force_login(self.tech_user)
+        tech_page = tech_client.get(reverse("roles:technician_fault_tickets"))
+        self.assertEqual(tech_page.status_code, 200)
+        self.assertContains(tech_page, ticket.ticket_number)
+        self.assertContains(tech_page, "No connectivity")
+        self.assertContains(tech_page, "Router offline since morning")
+
+    def test_raise_fault_ticket_unassigned(self):
+        active = Customer.objects.create(
+            organization=None,
+            full_name="OPEN FAULT CLIENT",
+            phone="0712888002",
+            account_number="FAULT-OPEN-1",
+            service_type=Customer.ServiceType.PPPOE,
+            status=Customer.Status.ACTIVE,
+        )
+        self.client.force_login(self.manager_user)
+        response = self.client.post(
+            self.url,
+            {
+                "action": "raise_fault_ticket",
+                "customer_id": str(active.pk),
+                "issue": FaultTicket.Issue.SLOW_SPEED,
+                "notes": "",
+                "technician_id": "",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        ticket = FaultTicket.objects.get(customer=active)
+        self.assertEqual(ticket.status, FaultTicket.Status.OPEN)
+        self.assertIsNone(ticket.assigned_technician_id)
 
 class EmployeeAdminOrgOptionalTests(TestCase):
     def setUp(self):

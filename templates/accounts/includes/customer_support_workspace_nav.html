@@ -5,27 +5,15 @@
     href="{% url 'roles:customer_support' %}"
   >Dashboard</a>
   <a
-    class="cs-workspace-nav-link{% if current_page == 'sales' %} is-active{% endif %}"
+    class="cs-workspace-nav-link{% if current_page == 'sales' or current_page == 'approved_sales' %} is-active{% endif %}"
     href="{% url 'roles:customer_support_sales' %}"
   >Sales</a>
   <a
-    class="cs-workspace-nav-link{% if current_page == 'approved_sales' %} is-active{% endif %}"
-    href="{% url 'roles:customer_support_approved_sales' %}"
-  >Approved sales</a>
-  <a
-    class="cs-workspace-nav-link{% if current_page == 'technician' %} is-active{% endif %}"
+    class="cs-workspace-nav-link{% if current_page == 'technician' or current_page == 'allocated' %} is-active{% endif %}"
     href="{% url 'roles:customer_support_technician' %}"
   >Technician</a>
   <a
-    class="cs-workspace-nav-link{% if current_page == 'allocated' %} is-active{% endif %}"
-    href="{% url 'roles:customer_support_allocated' %}"
-  >Allocated</a>
-  <a
-    class="cs-workspace-nav-link{% if current_page == 'network_equipment' or current_page == 'register_equipment' %} is-active{% endif %}"
+    class="cs-workspace-nav-link{% if current_page == 'stock_audit' or current_page == 'network_equipment' or current_page == 'register_equipment' or current_page == 'allocate' %} is-active{% endif %}"
     href="{% url 'roles:customer_support_network_equipment' %}"
-  >Network equipment</a>
-  <a
-    class="cs-workspace-nav-link{% if current_page == 'allocate' %} is-active{% endif %}"
-    href="{% url 'roles:customer_support_allocate' %}"
-  >Allocate</a>
+  >Stock Audit</a>
 </nav>

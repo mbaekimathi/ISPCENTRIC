@@ -177,12 +177,15 @@ class PppoeClientRegisterForm(forms.ModelForm):
     ):
         self.organization = organization
         self.organizations = organizations
-        self.allow_activate = bool(allow_activate)
-        # Technicians must record installed gear serials; other roles may skip.
+        # Technicians must record installed gear serials; desk/CS queue for install.
         self.require_serials = bool(require_serials)
-        # Technicians (and other non-activators) must register pending only.
-        if not self.allow_activate:
+        # Desk/CS/ISP registration cannot activate — tech installs, then ISP approves.
+        if not self.require_serials:
+            allow_activate = False
             default_activate = False
+        if not allow_activate:
+            default_activate = False
+        self.allow_activate = bool(allow_activate)
         self.default_activate = bool(default_activate)
         super().__init__(*args, **kwargs)
         self.fields["email"].required = False
@@ -210,9 +213,15 @@ class PppoeClientRegisterForm(forms.ModelForm):
         self.fields["activate_account"].initial = activate_initial
         if not self.allow_activate:
             self.fields["activate_account"].widget = forms.HiddenInput()
-            self.fields["activate_account"].help_text = (
-                "Technician registrations stay pending. An ISP client must activate the account."
-            )
+            if self.require_serials:
+                self.fields["activate_account"].help_text = (
+                    "Technician registrations stay installed (pending ISP activation). "
+                    "An ISP client must activate the account before surfing."
+                )
+            else:
+                self.fields["activate_account"].help_text = (
+                    "New accounts stay queued for technician install, then ISP activation."
+                )
             self.fields["activation_date"].required = False
             self.fields["activation_date"].widget = forms.HiddenInput()
 
@@ -552,7 +561,12 @@ class PppoeClientRegisterForm(forms.ModelForm):
         customer.service_type = Customer.ServiceType.PPPOE
         activate = bool(self.cleaned_data.get("activate_account"))
         activation_date = self.cleaned_data.get("activation_date")
-        if activate:
+        if self.require_serials:
+            # Technician completed the install at registration (serials required).
+            customer.status = Customer.Status.INSTALLED
+            customer.package_start = None
+            customer.package_end = None
+        elif activate and self.allow_activate:
             customer.status = Customer.Status.ACTIVE
             start = self._activation_datetime(activation_date or timezone.localdate())
             customer.package_start = start
@@ -561,7 +575,8 @@ class PppoeClientRegisterForm(forms.ModelForm):
             else:
                 customer.package_end = None
         else:
-            customer.status = Customer.Status.INACTIVE
+            # Desk / CS / ISP create → queued for technician install.
+            customer.status = Customer.Status.QUEUED
             customer.package_start = None
             customer.package_end = None
         customer.equipment_serials = list(
@@ -1046,10 +1061,11 @@ class SalesClientRegisterForm(forms.ModelForm):
         customer.organization = self.cleaned_data.get("organization")
         self.organization = customer.organization
         customer.service_type = Customer.ServiceType.PPPOE
+        # Sales/CS interest register: with ISP → queued for install; else open lead.
         customer.status = (
-            Customer.Status.ALLOCATED
+            Customer.Status.QUEUED
             if customer.organization_id
-            else Customer.Status.NEW
+            else Customer.Status.LEAD
         )
         if registered_by is not None:
             customer.registered_by = registered_by

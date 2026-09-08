@@ -30,6 +30,15 @@ class ParseUsageFilterTests(SimpleTestCase):
         def __init__(self, params):
             self.GET = params
 
+    def test_defaults_to_current_month(self):
+        filt = parse_usage_filter(self._Req({}))
+        self.assertEqual(filt["range"], "month")
+        self.assertEqual(filt["ui_range"], "month")
+        self.assertFalse(filt["relative"])
+        today = timezone.localdate()
+        self.assertEqual(filt["month"], today.strftime("%Y-%m"))
+        self.assertEqual(filt["label"], today.strftime("%B %Y"))
+
     def test_time_presets(self):
         filt = parse_usage_filter(self._Req({"range": "time", "time": "12"}), default_time="6")
         self.assertEqual(filt["range"], "time")

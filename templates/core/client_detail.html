@@ -855,11 +855,15 @@
   <div class="role-modal-panel pppoe-panel" role="dialog" aria-modal="true" aria-labelledby="client-recharge-title">
     <header class="role-modal-head pppoe-head">
       <div class="pppoe-head-text">
-        <p class="role-modal-kicker pppoe-kicker">Recharge</p>
-        <h2 id="client-recharge-title">Recharge account</h2>
+        <p class="role-modal-kicker pppoe-kicker">{% if customer.status == "installed" %}Activation{% else %}Recharge{% endif %}</p>
+        <h2 id="client-recharge-title">{% if customer.status == "installed" %}Activate with recharge{% else %}Recharge account{% endif %}</h2>
         <p class="role-modal-sub pppoe-sub">
-          Set the start date and cash received — end date is calculated from the plan rate.
-          If the client still has paid time left, that remaining time is kept and the new days are added on top.
+          {% if customer.status == "installed" %}
+            One-time activation: set the start date and cash received — this turns the installed ticket active and opens surfing for the package period.
+          {% else %}
+            Set the start date and cash received — end date is calculated from the plan rate.
+            If the client still has paid time left, that remaining time is kept and the new days are added on top.
+          {% endif %}
         </p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-client-modal aria-label="Close">
@@ -906,7 +910,7 @@
       </div>
       <footer class="pppoe-foot">
         <button type="button" class="btn btn-ghost" data-close-client-modal>Cancel</button>
-        <button type="submit" class="btn btn-primary" data-save-label="Recharge account">Recharge account</button>
+        <button type="submit" class="btn btn-primary" data-save-label="{% if customer.status == 'installed' %}Activate account{% else %}Recharge account{% endif %}">{% if customer.status == "installed" %}Activate account{% else %}Recharge account{% endif %}</button>
       </footer>
     </form>
   </div>

@@ -11,11 +11,14 @@
 <section class="cs-list-page">
   <header class="cs-list-head">
     <div class="cs-list-head-copy">
-      <p class="cs-list-kicker">{{ page_kicker }}</p>
-      <h2 class="cs-list-title">{{ page_title }}</h2>
+      <p class="cs-list-kicker">Stock Audit</p>
+      <h2 class="cs-list-title">Stock Audit</h2>
       <p class="cs-list-lead">{{ page_subtitle }}</p>
     </div>
     <div class="cs-list-toolbar">
+      <a class="btn btn-secondary" href="{% url 'roles:customer_support_allocate' %}">
+        Allocate
+      </a>
       <a class="btn btn-primary" href="{% url 'roles:customer_support_network_equipment' %}?register=1">
         Register equipment
       </a>
@@ -95,6 +98,14 @@
             </td>
             <td class="is-actions-cell" data-label="">
               <div class="org-actions org-actions-icons">
+                <a
+                  class="org-action-icon"
+                  href="{% url detail_url_name item.pk %}"
+                  title="View stock movement"
+                  aria-label="View stock movement for {{ item.name }}"
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 5-5 5 5 0 0 1-5 5zm0-8a3 3 0 1 0 3 3 3 3 0 0 0-3-3z"/></svg>
+                </a>
                 <button
                   type="button"
                   class="org-action-icon"
@@ -105,6 +116,7 @@
                   data-equipment-price="{{ item.selling_price }}"
                   data-equipment-discount-enabled="{% if item.discount_enabled %}1{% else %}0{% endif %}"
                   data-equipment-discount-price="{{ item.discount_price }}"
+                  data-equipment-track-serials="{% if item.track_serials %}1{% else %}0{% endif %}"
                   data-equipment-image="{% if item.image %}{{ item.image.url }}{% endif %}"
                   title="Edit"
                   aria-label="Edit {{ item.name }}"
@@ -209,6 +221,16 @@
               <div class="pppoe-select">{{ form.equipment_type }}</div>
               {% if form.equipment_type.errors %}<div class="field-error">{{ form.equipment_type.errors|striptags }}</div>{% endif %}
             </div>
+            <div class="field field-span-2">
+              <label class="equipment-discount-toggle" for="{{ form.track_serials.id_for_label }}">
+                {{ form.track_serials }}
+                <span>
+                  <strong>{{ form.track_serials.label }}</strong>
+                  <small>If enabled, stocking in and stocking out require a serial number for each unit</small>
+                </span>
+              </label>
+              {% if form.track_serials.errors %}<div class="field-error">{{ form.track_serials.errors|striptags }}</div>{% endif %}
+            </div>
             <div class="field">
               <label for="{{ form.selling_price.id_for_label }}">{{ form.selling_price.label }} *</label>
               {{ form.selling_price }}
@@ -300,6 +322,16 @@
               <div class="pppoe-select">{{ edit_form.equipment_type }}</div>
               {% if edit_form.equipment_type.errors %}<div class="field-error">{{ edit_form.equipment_type.errors|striptags }}</div>{% endif %}
             </div>
+            <div class="field field-span-2">
+              <label class="equipment-discount-toggle" for="{{ edit_form.track_serials.id_for_label }}">
+                {{ edit_form.track_serials }}
+                <span>
+                  <strong>{{ edit_form.track_serials.label }}</strong>
+                  <small>If enabled, stocking in and stocking out require a serial number for each unit</small>
+                </span>
+              </label>
+              {% if edit_form.track_serials.errors %}<div class="field-error">{{ edit_form.track_serials.errors|striptags }}</div>{% endif %}
+            </div>
             <div class="field">
               <label for="{{ edit_form.selling_price.id_for_label }}">{{ edit_form.selling_price.label }} *</label>
               {{ edit_form.selling_price }}
@@ -363,11 +395,10 @@
 >
   <div class="role-modal-backdrop" data-close-stock-modal></div>
   <div class="role-modal-panel pppoe-panel equipment-stock-panel" role="dialog" aria-modal="true" aria-labelledby="equipment-stock-title">
-    <header class="role-modal-head pppoe-head">
+    <header class="role-modal-head pppoe-head equipment-stock-head">
       <div class="pppoe-head-text">
         <p class="role-modal-kicker pppoe-kicker">Stock</p>
         <h2 id="equipment-stock-title">Update stock</h2>
-        <p class="role-modal-sub pppoe-sub">Add units in, or remove units from inventory.</p>
       </div>
       <button type="button" class="role-modal-close pppoe-close" data-close-stock-modal aria-label="Close">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
@@ -381,57 +412,46 @@
 
       <div class="pppoe-body equipment-stock-body">
         <div class="equipment-stock-summary">
-          <div class="equipment-stock-summary-item">
-            <span class="equipment-stock-summary-label">Equipment</span>
-            <strong id="equipment-stock-name">
-              {% if stock_equipment %}{{ stock_equipment.name }}{% else %}—{% endif %}
-            </strong>
-          </div>
-          <div class="equipment-stock-summary-item equipment-stock-summary-qty">
+          <strong id="equipment-stock-name" class="equipment-stock-summary-name">
+            {% if stock_equipment %}{{ stock_equipment.name }}{% else %}—{% endif %}
+          </strong>
+          <span class="equipment-stock-summary-qty-wrap">
             <span class="equipment-stock-summary-label">On hand</span>
             <strong id="equipment-stock-current">
               {% if stock_equipment %}{{ stock_equipment.quantity }}{% else %}0{% endif %}
             </strong>
-          </div>
+          </span>
         </div>
 
         <div class="equipment-stock-choice" role="radiogroup" aria-label="Stock movement">
           <label class="equipment-stock-choice-card{% if stock_direction != 'out' %} is-selected{% endif %}" id="stock-choice-in">
             <input type="radio" name="stock_direction" value="in" {% if stock_direction != 'out' %}checked{% endif %} id="stock-dir-in">
-            <span class="equipment-stock-choice-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M11 5v6H5v2h6v6h2v-6h6v-2h-6V5z"/></svg>
-            </span>
-            <span class="equipment-stock-choice-copy">
-              <strong>Stock in</strong>
-              <small>Receive units into inventory</small>
-            </span>
+            <strong>Stock in</strong>
           </label>
           <label class="equipment-stock-choice-card{% if stock_direction == 'out' %} is-selected{% endif %}" id="stock-choice-out">
             <input type="radio" name="stock_direction" value="out" {% if stock_direction == 'out' %}checked{% endif %} id="stock-dir-out">
-            <span class="equipment-stock-choice-icon equipment-stock-choice-icon-out" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 11h14v2H5z"/></svg>
-            </span>
-            <span class="equipment-stock-choice-copy">
-              <strong>Stock out</strong>
-              <small>Issue units from inventory</small>
-            </span>
+            <strong>Stock out</strong>
           </label>
         </div>
 
-        <div class="equipment-stock-track-block">
-          <label class="equipment-stock-track" for="stock-track-serials">
+        <div class="equipment-stock-track-block" id="equipment-stock-track-block" hidden>
+          <label class="equipment-stock-track" for="stock-track-serials" id="stock-track-serials-label" hidden>
             <input
               type="checkbox"
               name="track_serials"
               value="1"
               id="stock-track-serials"
-              {% if stock_track_serials %}checked{% endif %}
+              {% if stock_track_serials or stock_equipment.track_serials %}checked{% endif %}
             >
             <span>
-              <strong>Track serial numbers</strong>
-              <small>Turn on to scan units one by one. Each scan saves and updates quantity.</small>
+              <strong id="stock-track-serials-title">Track serial numbers</strong>
+              <small id="stock-track-serials-hint">Turn on to scan units one by one. Each scan saves and updates quantity.</small>
             </span>
           </label>
+
+          <p class="equipment-stock-serial-required" id="equipment-stock-serial-required" hidden>
+            Serial required for each unit
+          </p>
 
           <div class="equipment-stock-track-verify" id="equipment-stock-track-verify" hidden>
             <p class="equipment-stock-track-verify-title">Enter your account password to turn off serial tracking.</p>
@@ -451,16 +471,9 @@
           </div>
         </div>
 
-        <div class="equipment-stock-serials" id="equipment-stock-serials" {% if not stock_track_serials %}hidden{% endif %}>
+        <div class="equipment-stock-serials" id="equipment-stock-serials" hidden>
           <div class="equipment-stock-scan-loop" id="equipment-stock-scan-loop">
-            <div class="equipment-stock-scan-ready" id="equipment-stock-scan-ready">
-              <span class="equipment-stock-scan-ready-dot" aria-hidden="true"></span>
-              <strong id="equipment-stock-scan-ready-text">Ready to scan</strong>
-              <small id="equipment-stock-serials-hint">Scan a barcode or type a serial, then press Enter.</small>
-            </div>
-
             <div class="equipment-stock-serial-scan">
-              <label for="stock-serial-scan">Scan serial</label>
               <div class="equipment-stock-serial-scan-field">
                 <input
                   type="text"
@@ -469,7 +482,8 @@
                   autocomplete="off"
                   spellcheck="false"
                   enterkeyhint="done"
-                  placeholder="Waiting for next serial…"
+                  placeholder="Add serial…"
+                  aria-label="Serial number"
                 >
                 <button
                   type="button"
@@ -478,23 +492,28 @@
                   title="Open camera scanner"
                   aria-label="Open camera scanner"
                 >
-                  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                     <path fill="currentColor" d="M9 3L7.17 5H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3.17L15 3H9zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-2.2A2.8 2.8 0 1 0 12 9.2a2.8 2.8 0 0 0 0 5.6z"/>
                   </svg>
                 </button>
               </div>
-              <button type="button" class="btn btn-primary" id="stock-serial-save-btn">Save</button>
+              <button type="button" class="btn btn-primary" id="stock-serial-save-btn">Add</button>
             </div>
             <p class="equipment-stock-serial-status" id="equipment-stock-serial-status" hidden></p>
+            <p class="equipment-stock-scan-ready" id="equipment-stock-scan-ready" hidden>
+              <span class="equipment-stock-scan-ready-dot" aria-hidden="true"></span>
+              <strong id="equipment-stock-scan-ready-text">Ready</strong>
+              <small id="equipment-stock-serials-hint" hidden>Add serials, then stock in or out.</small>
+            </p>
           </div>
 
           <div class="equipment-stock-scanned-panel" id="equipment-stock-scanned-panel">
             <div class="equipment-stock-scanned-head">
-              <span>Scanned serials</span>
+              <span>Serials to move</span>
               <strong id="equipment-stock-scanned-count">0</strong>
             </div>
             <ul class="equipment-stock-serial-scanned" id="equipment-stock-serial-scanned">
-              <li class="equipment-stock-serial-empty" id="equipment-stock-serial-empty">No serials scanned yet. Start scanning above.</li>
+              <li class="equipment-stock-serial-empty" id="equipment-stock-serial-empty">Add serials above</li>
             </ul>
           </div>
         </div>
@@ -516,7 +535,7 @@
             >
             <button type="button" class="equipment-stock-step" id="stock-amount-inc" aria-label="Increase quantity">+</button>
           </div>
-          <p class="equipment-stock-hint" id="equipment-stock-hint">Adds to the current stock level.</p>
+          <p class="equipment-stock-hint" id="equipment-stock-hint" hidden>Adds to the current stock level.</p>
         </div>
       </div>
 
@@ -535,7 +554,7 @@
       <div>
         <p class="role-modal-kicker">Scanner</p>
         <h2 id="equipment-stock-camera-title">Scan serial with camera</h2>
-        <p class="role-modal-sub" id="equipment-stock-camera-sub">Keep the camera open and scan one serial after another — each read saves automatically.</p>
+        <p class="role-modal-sub" id="equipment-stock-camera-sub">Scan barcodes into the list. Close when finished, then stock in or out.</p>
       </div>
       <button type="button" class="role-modal-close" data-close-camera-modal aria-label="Close camera">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
@@ -590,6 +609,7 @@
   var stockName = document.getElementById("equipment-stock-name");
   var stockCurrent = document.getElementById("equipment-stock-current");
   var stockHint = document.getElementById("equipment-stock-hint");
+  var qtyField = document.getElementById("equipment-stock-qty-field");
   var stockAmount = document.getElementById("stock-amount");
   var dirIn = document.getElementById("stock-dir-in");
   var dirOut = document.getElementById("stock-dir-out");
@@ -599,6 +619,12 @@
   var decBtn = document.getElementById("stock-amount-dec");
   var incBtn = document.getElementById("stock-amount-inc");
   var trackSerials = document.getElementById("stock-track-serials");
+  var trackSerialsLabel = document.getElementById("stock-track-serials-label");
+  var trackBlock = document.getElementById("equipment-stock-track-block");
+  var trackSerialsTitle = document.getElementById("stock-track-serials-title");
+  var trackSerialsHint = document.getElementById("stock-track-serials-hint");
+  var serialRequiredNote = document.getElementById("equipment-stock-serial-required");
+  var equipmentRequiresSerials = false;
   var serialsWrap = document.getElementById("equipment-stock-serials");
   var serialsHint = document.getElementById("equipment-stock-serials-hint");
   var serialScanned = document.getElementById("equipment-stock-serial-scanned");
@@ -645,6 +671,7 @@
   var editId = document.getElementById("edit-equipment-id");
   var editName = document.getElementById("id_edit-name") || document.getElementById("id_equipment_edit_name");
   var editType = document.getElementById("id_edit-equipment_type") || document.getElementById("id_equipment_edit_type");
+  var editTrackSerials = document.getElementById("id_equipment_edit_track_serials");
   var editPrice = document.getElementById("id_equipment_edit_selling_price");
   var editDiscountEnabled = document.getElementById("id_equipment_edit_discount_enabled");
   var editDiscountPrice = document.getElementById("id_equipment_edit_discount_price");
@@ -812,12 +839,16 @@
     }
   }
 
-  function openEditModal(id, name, type, imageUrl, price, discountEnabled, discountPrice) {
+  function openEditModal(id, name, type, imageUrl, price, discountEnabled, discountPrice, trackSerialsFlag) {
     if (!editModal) return;
     if (editId) editId.value = id || "";
     if (editName && name != null) editName.value = name;
     if (editType && type != null) editType.value = type;
     if (editPrice) editPrice.value = price != null && price !== "" ? price : "0";
+    if (editTrackSerials) {
+      editTrackSerials.checked =
+        trackSerialsFlag === true || trackSerialsFlag === "1" || trackSerialsFlag === 1;
+    }
     if (editDiscountEnabled) {
       editDiscountEnabled.checked = discountEnabled === true || discountEnabled === "1" || discountEnabled === 1;
     }
@@ -855,7 +886,37 @@
   }
 
   function trackingEnabled() {
+    if (equipmentRequiresSerials) return true;
     return !!(trackSerials && trackSerials.checked);
+  }
+
+  function syncRequiredSerialMode() {
+    var required = !!equipmentRequiresSerials;
+    if (trackSerials) {
+      trackSerials.checked = required;
+    }
+    // Serial tracking is set on register/edit. Hide the stock toggle and
+    // the "Ready to scan" panel unless this equipment requires serials.
+    if (trackBlock) {
+      trackBlock.hidden = !required;
+      trackBlock.setAttribute("aria-hidden", required ? "false" : "true");
+    }
+    if (trackSerialsLabel) trackSerialsLabel.hidden = true;
+    if (serialRequiredNote) serialRequiredNote.hidden = !required;
+    if (trackSerialsTitle) {
+      trackSerialsTitle.textContent = "Serial numbers required";
+    }
+    if (trackSerialsHint) {
+      trackSerialsHint.textContent =
+        "This equipment was registered with serial tracking. Stock in and stock out need a serial for each unit.";
+    }
+    if (stockModal) {
+      stockModal.classList.toggle("is-serial-required", required);
+    }
+    if (serialsWrap) {
+      serialsWrap.hidden = !required;
+      serialsWrap.setAttribute("aria-hidden", required ? "false" : "true");
+    }
   }
 
   function setScanReady(state, message) {
@@ -864,10 +925,10 @@
       if (state) scanLoop.classList.add("is-" + state);
     }
     if (scanReadyText) {
-      if (state === "saving") scanReadyText.textContent = "Saving serial…";
-      else if (state === "error") scanReadyText.textContent = "Scan failed — try again";
-      else if (state === "success") scanReadyText.textContent = "Saved — ready for next scan";
-      else scanReadyText.textContent = message || "Ready to scan";
+      if (state === "saving") scanReadyText.textContent = "Saving…";
+      else if (state === "error") scanReadyText.textContent = "Try again";
+      else if (state === "success") scanReadyText.textContent = "Saved";
+      else scanReadyText.textContent = message || "Ready";
     }
   }
 
@@ -905,7 +966,7 @@
       var empty = document.createElement("li");
       empty.className = "equipment-stock-serial-empty";
       empty.id = "equipment-stock-serial-empty";
-      empty.textContent = "No serials scanned yet. Start scanning above.";
+      empty.textContent = "Add serials above";
       serialScanned.appendChild(empty);
       serialEmpty = empty;
     } else {
@@ -919,17 +980,46 @@
         var code = document.createElement("span");
         code.className = "equipment-stock-serial-code";
         code.textContent = serial;
-        var mark = document.createElement("span");
-        mark.className = "equipment-stock-serial-mark";
-        mark.textContent = "Saved";
+        var removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "equipment-stock-serial-remove";
+        removeBtn.textContent = "Remove";
+        removeBtn.setAttribute("aria-label", "Remove " + serial);
+        removeBtn.addEventListener("click", function () {
+          removeSerialFromBatch(index);
+        });
         item.appendChild(num);
         item.appendChild(code);
-        item.appendChild(mark);
+        item.appendChild(removeBtn);
         serialScanned.appendChild(item);
       });
       serialScanned.scrollTop = serialScanned.scrollHeight;
     }
     if (serialScannedCount) serialScannedCount.textContent = String(sessionSerials.length);
+    syncBatchSubmitLabel();
+  }
+
+  function removeSerialFromBatch(index) {
+    if (index < 0 || index >= sessionSerials.length) return;
+    sessionSerials.splice(index, 1);
+    sessionScanCount = sessionSerials.length;
+    if (stockAmount) stockAmount.value = String(sessionScanCount);
+    refreshScannedList();
+    setSerialStatus(sessionScanCount ? sessionScanCount + " serial(s) ready." : "");
+    setScanReady(sessionScanCount ? "success" : "", sessionScanCount ? "Ready" : "Ready");
+    focusScanInput();
+  }
+
+  function syncBatchSubmitLabel() {
+    if (!submitBtn) return;
+    var isOut = !!(dirOut && dirOut.checked);
+    var base = isOut ? "Stock out" : "Stock in";
+    if (trackingEnabled() && sessionScanCount > 0) {
+      submitBtn.textContent = base + " (" + sessionScanCount + ")";
+    } else {
+      submitBtn.textContent = base;
+    }
+    submitBtn.classList.toggle("btn-stock-out", !!isOut);
   }
 
   function resetScanSession() {
@@ -943,31 +1033,34 @@
     if (serialSaveBtn) serialSaveBtn.disabled = false;
     refreshScannedList();
     setSerialStatus("");
-    setScanReady("", "Ready to scan");
+    setScanReady("", "Ready");
   }
 
   function syncQuantityMode() {
     var enabled = trackingEnabled();
     var isOut = !!(dirOut && dirOut.checked);
     if (!stockAmount) return;
+    if (qtyField) qtyField.hidden = !!enabled;
     stockAmount.readOnly = enabled;
     if (decBtn) decBtn.disabled = enabled;
     if (incBtn) incBtn.disabled = enabled;
     if (amountLabel) {
-      amountLabel.textContent = enabled ? "Quantity this session" : "Quantity";
+      amountLabel.textContent = "Quantity";
     }
     if (enabled) {
       stockAmount.min = "0";
       stockAmount.value = String(sessionScanCount);
-      if (stockHint) {
-        stockHint.textContent = isOut
-          ? "Each successful scan stocks out 1 unit and updates on-hand stock."
-          : "Each successful scan stocks in 1 unit and updates on-hand stock.";
-      }
+      if (stockHint) stockHint.hidden = true;
     } else {
       stockAmount.min = "1";
       if (!stockAmount.value || parseInt(stockAmount.value, 10) < 1) {
         stockAmount.value = "1";
+      }
+      if (stockHint) {
+        stockHint.hidden = true;
+        stockHint.textContent = isOut
+          ? "Subtracts from on-hand stock."
+          : "Adds to on-hand stock.";
       }
     }
   }
@@ -997,9 +1090,15 @@
   function updateTrackSerialAttr(enabled) {
     var id = stockId && stockId.value;
     if (!id) return;
+    var flag = enabled ? "1" : "0";
     document.querySelectorAll('[data-open-stock-modal][data-equipment-id="' + id + '"]').forEach(function (btn) {
-      btn.setAttribute("data-equipment-track-serials", enabled ? "1" : "0");
+      btn.setAttribute("data-equipment-track-serials", flag);
     });
+    document.querySelectorAll('[data-open-edit-modal][data-equipment-id="' + id + '"]').forEach(function (btn) {
+      btn.setAttribute("data-equipment-track-serials", flag);
+    });
+    equipmentRequiresSerials = !!enabled;
+    syncRequiredSerialMode();
   }
 
   function saveTrackSerialsLive(enable, verificationCode) {
@@ -1031,8 +1130,8 @@
   }
 
   function confirmDisableSerialTracking() {
-    var entered = (trackVerifyCode && trackVerifyCode.value ? trackVerifyCode.value : "").replace(/\D/g, "");
-    if (entered.length !== 6) {
+    var entered = (trackVerifyCode && trackVerifyCode.value ? trackVerifyCode.value : "").trim();
+    if (!entered) {
       if (trackVerifyError) {
         trackVerifyError.textContent = "Enter your account password.";
         trackVerifyError.hidden = false;
@@ -1044,6 +1143,7 @@
     saveTrackSerialsLive(false, entered)
       .then(function () {
         if (trackSerials) trackSerials.checked = false;
+        equipmentRequiresSerials = false;
         hideTrackVerify();
         resetScanSession();
         syncSerialPanel();
@@ -1860,7 +1960,7 @@
     }
 
     if (cameraSub) {
-      cameraSub.textContent = "Keep scanning — each barcode/QR saves automatically. Close when finished.";
+      cameraSub.textContent = "Keep scanning — each barcode is added to the list. Close when finished.";
     }
     setCameraStatus("Opening camera…");
     // Camera button click is a user gesture — start immediately (no second Allow tap).
@@ -1880,36 +1980,69 @@
     }
     if (sessionSerials.indexOf(serial) !== -1) {
       setScanReady("error");
-      setSerialStatus("“" + serial + "” was already scanned in this session.", true);
+      setSerialStatus("“" + serial + "” is already in the list.", true);
       if (opts.fromCamera) {
-        setCameraStatus("“" + serial + "” already saved. Point at the next serial…");
+        setCameraStatus("“" + serial + "” already added. Point at the next serial…");
         resumeLiveScan(500);
       } else {
         focusScanInput();
       }
       return;
     }
+    sessionSerials.push(serial);
+    sessionScanCount = sessionSerials.length;
+    if (stockAmount) stockAmount.value = String(sessionScanCount);
+    refreshScannedList();
+    serialScan.value = "";
+    setScanReady("success");
+    setSerialStatus("Added “" + serial + "”. " + sessionScanCount + " ready — add more or stock.", false);
+    if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
+      setCameraStatus(
+        "Added “" + serial + "” (" + sessionScanCount + "). Point at the next serial…"
+      );
+      resumeLiveScan(500);
+    } else if (opts.fromPhoto && cameraModal && !cameraModal.hidden) {
+      setCameraStatus("Added “" + serial + "”. Take another photo or close when done.");
+      showCameraGate(
+        "Added “" + serial + "”. Take another photo, or close and stock in/out.",
+        canUseLiveCamera()
+      );
+      cameraPaused = false;
+    } else {
+      focusScanInput();
+    }
+  }
+
+  function submitSerialBatch() {
+    if (!trackingEnabled()) return;
+    if (!sessionSerials.length) {
+      setSerialStatus("Add at least one serial number first.", true);
+      focusScanInput();
+      return;
+    }
     var id = stockId && stockId.value;
     if (!id) {
-      setScanReady("error");
       setSerialStatus("Missing equipment.", true);
-      if (opts.fromCamera) resumeLiveScan(400);
       return;
     }
     var action = (dirOut && dirOut.checked) ? "stock_out" : "stock_in";
+    var amount = sessionSerials.length;
     scanBusy = true;
-    serialScan.disabled = true;
+    if (serialScan) serialScan.disabled = true;
     if (serialSaveBtn) serialSaveBtn.disabled = true;
+    if (submitBtn) submitBtn.disabled = true;
     setScanReady("saving");
-    setSerialStatus("Saving “" + serial + "”…");
+    setSerialStatus((action === "stock_out" ? "Stocking out" : "Stocking in") + " " + amount + "…");
     var body = new URLSearchParams();
     body.set("csrfmiddlewaretoken", csrfToken());
     body.set("action", action);
     body.set("equipment_id", id);
-    body.set("amount", "1");
+    body.set("amount", String(amount));
     body.set("track_serials", "1");
     body.set("stock_direction", action === "stock_out" ? "out" : "in");
-    body.append("serial_number", serial);
+    sessionSerials.forEach(function (serial) {
+      body.append("serial_number", serial);
+    });
     fetch(window.location.pathname, {
       method: "POST",
       headers: {
@@ -1922,82 +2055,56 @@
       .then(function (res) {
         return res.json().then(function (data) {
           if (!res.ok || !data.ok) {
-            throw new Error((data && data.error) || "Scan failed.");
+            throw new Error((data && data.error) || "Stock update failed.");
           }
           return data;
         });
       })
       .then(function (data) {
-        sessionSerials.push(serial);
-        sessionScanCount = sessionSerials.length;
-        if (stockAmount) stockAmount.value = String(sessionScanCount);
         updateEquipmentStockDisplay(data.quantity);
-        refreshScannedList();
-        serialScan.value = "";
         setScanReady("success");
-        setSerialStatus(
-          "“" + serial + "” saved. On hand: " + data.quantity + ". Scan the next serial.",
-          false
-        );
-        if (submitBtn) submitBtn.textContent = "Done";
-        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
-          setCameraStatus(
-            "Saved “" + serial + "” (" + sessionScanCount + "). Point at the next serial…"
-          );
-        }
-        if (opts.fromPhoto && cameraModal && !cameraModal.hidden) {
-          setCameraStatus(
-            "Saved “" + serial + "”. Take another photo or keep scanning."
-          );
-          showCameraGate(
-            "Saved “" + serial + "”. Take another photo for the next serial, or close when done.",
-            canUseLiveCamera()
-          );
-        }
+        setSerialStatus(data.message || ("Done. On hand: " + data.quantity + "."), false);
+        resetScanSession();
+        window.setTimeout(function () {
+          closeStockModal();
+        }, 700);
       })
       .catch(function (err) {
         setScanReady("error");
-        setSerialStatus((err && err.message) || "Scan failed.", true);
-        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
-          setCameraStatus((err && err.message) || "Save failed. Try the next serial…");
-        }
+        setSerialStatus((err && err.message) || "Stock update failed.", true);
+        focusScanInput();
       })
       .finally(function () {
         scanBusy = false;
-        serialScan.disabled = false;
+        if (serialScan) serialScan.disabled = false;
         if (serialSaveBtn) serialSaveBtn.disabled = false;
-        if (opts.fromCamera && cameraModal && !cameraModal.hidden) {
-          resumeLiveScan(700);
-        } else if (!opts.fromPhoto) {
-          focusScanInput();
-        } else {
-          cameraPaused = false;
-        }
+        if (submitBtn) submitBtn.disabled = false;
+        syncBatchSubmitLabel();
       });
   }
 
   function syncSerialPanel() {
+    syncRequiredSerialMode();
     var enabled = trackingEnabled();
     var isOut = !!(dirOut && dirOut.checked);
     if (serialsWrap) serialsWrap.hidden = !enabled;
     syncQuantityMode();
     if (enabled) {
       if (serialsHint) {
-        serialsHint.textContent = isOut
-          ? "Camera stays open for continuous stock-out scans. Or type/wedge a serial and press Enter."
-          : "Camera stays open for continuous scan-and-save. Or type/wedge a serial and press Enter.";
+        serialsHint.textContent = "Add serials, then stock";
       }
       if (serialScan) {
         serialScan.placeholder = isOut
-          ? "Scan serial to stock out…"
-          : "Scan serial to stock in…";
+          ? "Add serial to stock out…"
+          : "Add serial to stock in…";
       }
-      if (submitBtn) submitBtn.textContent = "Done";
-      setScanReady(sessionScanCount ? "success" : "", sessionScanCount ? "Saved — ready for next scan" : "Ready to scan");
+      syncBatchSubmitLabel();
+      setScanReady(sessionScanCount ? "success" : "", sessionScanCount ? "Ready" : "Ready");
     } else {
       setSerialStatus("");
       if (serialScan) serialScan.value = "";
       setScanReady("");
+      syncBatchSubmitLabel();
     }
   }
 
@@ -2007,20 +2114,7 @@
     if (choiceIn) choiceIn.classList.toggle("is-selected", !isOut);
     if (choiceOut) choiceOut.classList.toggle("is-selected", !!isOut);
     if (stockModal) stockModal.classList.toggle("is-stock-out", !!isOut);
-    if (trackingEnabled()) {
-      if (submitBtn) {
-        submitBtn.textContent = "Done";
-        submitBtn.classList.toggle("btn-stock-out", !!isOut);
-      }
-    } else if (submitBtn) {
-      submitBtn.textContent = isOut ? "Stock out" : "Stock in";
-      submitBtn.classList.toggle("btn-stock-out", !!isOut);
-    }
-    if (!trackingEnabled() && stockHint) {
-      stockHint.textContent = isOut
-        ? "Subtracts from the current stock level."
-        : "Adds to the current stock level.";
-    }
+    syncBatchSubmitLabel();
     syncSerialPanel();
   }
 
@@ -2030,11 +2124,13 @@
     if (stockName) stockName.textContent = name || "—";
     if (stockCurrent) stockCurrent.textContent = stock || "0";
     if (dirIn) dirIn.checked = true;
+    equipmentRequiresSerials = track === true || track === "1" || track === 1;
     if (trackSerials) {
-      trackSerials.checked = track === true || track === "1" || track === 1;
+      trackSerials.checked = equipmentRequiresSerials;
     }
     hideTrackVerify();
     resetScanSession();
+    syncRequiredSerialMode();
     if (stockAmount) {
       stockAmount.value = trackingEnabled() ? "0" : "1";
     }
@@ -2089,7 +2185,8 @@
         btn.getAttribute("data-equipment-image"),
         btn.getAttribute("data-equipment-price"),
         btn.getAttribute("data-equipment-discount-enabled"),
-        btn.getAttribute("data-equipment-discount-price")
+        btn.getAttribute("data-equipment-discount-price"),
+        btn.getAttribute("data-equipment-track-serials")
       );
     });
   });
@@ -2154,7 +2251,7 @@
     stockForm.addEventListener("submit", function (event) {
       if (!trackingEnabled()) return;
       event.preventDefault();
-      closeStockModal();
+      submitSerialBatch();
     });
   }
   if (trackSerials) {
@@ -2167,10 +2264,13 @@
         trackSerials.disabled = true;
         saveTrackSerialsLive(true)
           .then(function () {
+            equipmentRequiresSerials = true;
+            syncRequiredSerialMode();
             focusScanInput();
           })
           .catch(function () {
             trackSerials.checked = false;
+            equipmentRequiresSerials = false;
             syncSerialPanel();
             if (trackVerifyError) {
               trackVerifyError.textContent = "Could not save serial tracking. Try again.";
@@ -2196,7 +2296,6 @@
   }
   if (trackVerifyCode) {
     trackVerifyCode.addEventListener("input", function () {
-      trackVerifyCode.value = trackVerifyCode.value.replace(/\D/g, "").slice(0, 6);
       if (trackVerifyError) trackVerifyError.hidden = true;
     });
     trackVerifyCode.addEventListener("keydown", function (event) {
@@ -2236,7 +2335,9 @@
     stockModal.hidden = false;
     stockModal.setAttribute("aria-hidden", "false");
     document.body.classList.add("role-modal-open");
+    equipmentRequiresSerials = !!(trackSerials && trackSerials.checked);
     resetScanSession();
+    syncRequiredSerialMode();
     if (trackingEnabled() && stockAmount) stockAmount.value = "0";
     syncStockAction();
     if (trackingEnabled()) focusScanInput();

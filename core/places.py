@@ -363,6 +363,68 @@ def resolve_location(query: str = "", *, place_id: str = "") -> dict | None:
     return None
 
 
+def reverse_geocode(lat, lng) -> dict | None:
+    """Resolve coordinates to a place label (Google, then Nominatim)."""
+    lat_dec = _to_decimal(lat)
+    lng_dec = _to_decimal(lng)
+    if lat_dec is None or lng_dec is None:
+        return None
+
+    if _google_enabled():
+        params = urllib.parse.urlencode(
+            {
+                "latlng": f"{lat_dec},{lng_dec}",
+                "key": _google_key(),
+                "result_type": "premise|street_address|route|sublocality|locality",
+            }
+        )
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?{params}"
+        try:
+            data = _http_get_json(url, timeout=3.5)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+            data = None
+        if isinstance(data, dict):
+            status = (data.get("status") or "").strip().upper()
+            _note_google_status(status)
+            if status in _GOOGLE_OK:
+                results = data.get("results") or []
+                if results:
+                    row = results[0]
+                    item = _suggestion(
+                        row.get("formatted_address") or "",
+                        lat_dec,
+                        lng_dec,
+                        place_id=str(row.get("place_id") or ""),
+                        source="google",
+                    )
+                    if item:
+                        return item
+
+    params = urllib.parse.urlencode(
+        {
+            "lat": str(lat_dec),
+            "lon": str(lng_dec),
+            "format": "jsonv2",
+            "zoom": 18,
+            "addressdetails": 0,
+        }
+    )
+    url = f"https://nominatim.openstreetmap.org/reverse?{params}"
+    try:
+        data = _http_get_json(url, timeout=4.0)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _suggestion(
+        data.get("display_name") or "",
+        lat_dec,
+        lng_dec,
+        place_id=str(data.get("place_id") or data.get("osm_id") or ""),
+        source="nominatim",
+    )
+
+
 def apply_resolved_coords(location: str, lat, lng, *, place_id: str = "") -> tuple[str, Decimal | None, Decimal | None]:
     """Ensure location text has numeric coordinates, resolving via maps if needed."""
     location = (location or "").strip()

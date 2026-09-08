@@ -126,7 +126,9 @@ def resolve_usage_window(
     return now - timedelta(hours=hours), now, hours
 
 
-def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
+def parse_usage_filter(
+    request, *, default_time: str = "6", default_range: str = "month"
+) -> dict[str, Any]:
     """
     Build a usage window from GET params.
 
@@ -134,7 +136,7 @@ def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
       time   — last 1h / quarter / half / ¾ day
       day    — single calendar day
       period — inclusive start→end dates
-      month  — whole calendar month
+      month  — whole calendar month (default when no range is given)
       year   — whole calendar year
 
     Legacy ``?hours=N`` (without ``range``) remains a relative lookback.
@@ -170,6 +172,8 @@ def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
         default_time = "6"
     if time_raw not in _USAGE_TIME_PRESETS:
         time_raw = default_time
+    if default_range not in _USAGE_FILTER_RANGES:
+        default_range = "month"
 
     # Legacy bookmarks: ?hours=72 without range → keep relative window.
     if range_mode not in _USAGE_FILTER_RANGES:
@@ -199,7 +203,7 @@ def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
                 "relative": True,
                 "auto_widen": True,
             }
-        range_mode = "time"
+        range_mode = default_range
 
     since = None
     until = None
@@ -264,7 +268,7 @@ def parse_usage_filter(request, *, default_time: str = "6") -> dict[str, Any]:
 
 def usage_filter_querystring(filt: dict[str, Any], *, extra: dict | None = None) -> str:
     """Serialize a usage filter to a GET query string (no leading ?)."""
-    params: dict[str, str] = {"range": filt.get("range") or "time"}
+    params: dict[str, str] = {"range": filt.get("range") or "month"}
     mode = params["range"]
     if mode == "time":
         params["time"] = str(filt.get("time") or "6")

@@ -28,18 +28,23 @@ ROLE_SLUGS = {
 ROLE_NAV_ITEMS = {
     Employee.Role.SUPER_ADMIN: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:super_admin"},
+        {"key": "my_stock", "label": "My Stock", "url_name": "roles:super_admin_my_stock"},
     ],
     Employee.Role.ADMINISTRATOR: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:administrator"},
+        {"key": "my_stock", "label": "My Stock", "url_name": "roles:administrator_my_stock"},
     ],
     Employee.Role.MANAGER: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:customer_support"},
+        {"key": "my_stock", "label": "My Stock", "url_name": "roles:customer_support_my_stock"},
     ],
     Employee.Role.IT_SUPPORT: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:it_support"},
+        {"key": "my_stock", "label": "My Stock", "url_name": "roles:it_support_my_stock"},
     ],
     Employee.Role.SALES: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:sales"},
+        {"key": "my_stock", "label": "My Stock", "url_name": "roles:sales_my_stock"},
     ],
     Employee.Role.TECHNICIAN: [
         {"key": "dashboard", "label": "Dashboard", "url_name": "roles:technician"},
@@ -61,8 +66,8 @@ ROLE_DASHBOARD_ONLY_NAV = {
         {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
         {"key": "technician", "label": "Technician", "url_name": "roles:customer_support_technician"},
         {
-            "key": "network_equipment",
-            "label": "Network equipment",
+            "key": "stock_audit",
+            "label": "Stock Audit",
             "url_name": "roles:customer_support_network_equipment",
         },
     ],
@@ -110,39 +115,41 @@ ROLE_DASHBOARD_ONLY_NAV = {
         {
             "key": "tickets",
             "label": "Tickets",
-            "url_name": "roles:technician_tickets_pending_connections",
-        },
-        {
-            "key": "fault_tickets",
-            "label": "Fault Tickets",
-            "url_name": "roles:technician_fault_tickets",
-        },
-        {
-            "key": "network_equipment",
-            "label": "Network Equipment",
-            "url_name": "roles:technician_network_equipment",
+            "url_name": "roles:technician_tickets_hub",
         },
     ],
 }
 
-# Tickets section links (pending connection → activation → connected).
+# Tickets section links (queued → installed → connected → faults).
 TECHNICIAN_TICKETS_NAV = [
     {
         "key": "tickets_pending_connections",
-        "label": "Pending connections",
+        "label": "Queued for install",
         "url_name": "roles:technician_tickets_pending_connections",
     },
     {
         "key": "tickets",
-        "label": "Pending activation",
+        "label": "Installed",
         "url_name": "roles:technician_tickets",
     },
     {
         "key": "tickets_connected",
-        "label": "My connected tickets",
+        "label": "Activated",
         "url_name": "roles:technician_tickets_connected",
     },
+    {
+        "key": "fault_tickets",
+        "label": "Fault Tickets",
+        "url_name": "roles:technician_fault_tickets",
+    },
 ]
+
+TECHNICIAN_REGISTER_PPPOE_NAV = {
+    "key": "register_pppoe",
+    "label": "Register PPPoE",
+    "action": "open_modal",
+    "modal_id": "pppoe-register-modal",
+}
 
 # Sidebar links shown while inside IT Support company hub pages
 # (communications, payment gateway, commissions). Company profile lives under
@@ -204,42 +211,50 @@ SWITCHABLE_CLIENTS_TTL = 60
 CUSTOMER_SUPPORT_SALES_NAV = [
     {"key": "sales", "label": "Sales", "url_name": "roles:customer_support_sales"},
     {
-        "key": "approved_sales",
-        "label": "Approved sales",
-        "url_name": "roles:customer_support_approved_sales",
-    },
-    {
         "key": "technician",
         "label": "Technician",
         "url_name": "roles:customer_support_technician",
     },
-    {"key": "allocated", "label": "Allocated", "url_name": "roles:customer_support_allocated"},
-    {
-        "key": "allocate",
-        "label": "Allocate",
-        "url_name": "roles:customer_support_allocate",
-    },
 ]
 
+# Installed (approved-sales URL) is only shown on the Sales page (and itself).
+CUSTOMER_SUPPORT_APPROVED_SALES_NAV = {
+    "key": "approved_sales",
+    "label": "Installed",
+    "url_name": "roles:customer_support_approved_sales",
+}
+
 CUSTOMER_SUPPORT_SALES_PAGES = frozenset(
-    item["key"] for item in CUSTOMER_SUPPORT_SALES_NAV
+    {item["key"] for item in CUSTOMER_SUPPORT_SALES_NAV} | {"approved_sales"}
 )
 
 # Customer support equipment section links.
 CUSTOMER_SUPPORT_EQUIPMENT_NAV = [
     {
-        "key": "network_equipment",
-        "label": "Network equipment",
+        "key": "stock_audit",
+        "label": "Stock Audit",
         "url_name": "roles:customer_support_network_equipment",
     },
 ]
 
-CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV = {
-    "key": "register_equipment",
-    "label": "Register equipment",
-    "url_name": "roles:customer_support_network_equipment",
-    "query": "register=1",
-}
+CUSTOMER_SUPPORT_EQUIPMENT_PAGES = frozenset(
+    {
+        "stock_audit",
+        "network_equipment",
+        "register_equipment",
+        "allocate",
+    }
+)
+
+# Customer support technician page: raise fault tickets from the sidebar (desktop).
+CUSTOMER_SUPPORT_TECHNICIAN_NAV = [
+    {
+        "key": "raise_fault_ticket",
+        "label": "Fault tickets",
+        "action": "open_modal",
+        "modal_id": "fault-ticket-modal",
+    },
+]
 
 IT_SUPPORT_REGISTER_ISP_NAV = {
     "key": "register_isp",
@@ -265,24 +280,25 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
         items.extend(ROLE_DASHBOARD_ONLY_NAV.get(role, []))
     elif role == Employee.Role.TECHNICIAN and current_page in {
         "tickets",
+        "tickets_hub",
         "tickets_connected",
         "tickets_pending_connections",
+        "fault_tickets",
     }:
         items.extend(TECHNICIAN_TICKETS_NAV)
-    elif role == Employee.Role.MANAGER and (
-        current_page in CUSTOMER_SUPPORT_SALES_PAGES
-        or current_page == "technician"
-    ):
-        items.extend(CUSTOMER_SUPPORT_SALES_NAV)
+        if current_page == "tickets_hub":
+            items.append(TECHNICIAN_REGISTER_PPPOE_NAV)
     elif role == Employee.Role.MANAGER and current_page in {
-        "network_equipment",
-        "register_equipment",
+        "sales",
+        "approved_sales",
     }:
-        equipment_nav = list(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
-        # Register equipment is only shown on the network equipment page.
-        if current_page in {"network_equipment", "register_equipment"}:
-            equipment_nav.insert(1, CUSTOMER_SUPPORT_REGISTER_EQUIPMENT_NAV)
-        items.extend(equipment_nav)
+        sales_nav = list(CUSTOMER_SUPPORT_SALES_NAV)
+        sales_nav.insert(1, CUSTOMER_SUPPORT_APPROVED_SALES_NAV)
+        items.extend(sales_nav)
+    elif role == Employee.Role.MANAGER and current_page == "technician":
+        items.extend(CUSTOMER_SUPPORT_TECHNICIAN_NAV)
+    elif role == Employee.Role.MANAGER and current_page in CUSTOMER_SUPPORT_EQUIPMENT_PAGES:
+        items.extend(CUSTOMER_SUPPORT_EQUIPMENT_NAV)
     elif role == Employee.Role.IT_SUPPORT and current_page == "company_clients":
         items.extend(
             [
@@ -338,14 +354,18 @@ def page_key_from_path(path: str) -> str | None:
         return "tickets_connected"
     if "/tickets/pending-connections/" in path:
         return "tickets_pending_connections"
-    if "/tickets/" in path:
+    if "/tickets/installed/" in path:
         return "tickets"
+    if "/tickets/" in path:
+        return "tickets_hub"
     if "/fault-tickets/" in path:
         return "fault_tickets"
+    if "/my-stock/" in path:
+        return "my_stock"
     if "/network-equipment/" in path:
-        return "network_equipment"
+        return "stock_audit"
     if "/customer-support/allocate/" in path or "/manager/allocate/" in path:
-        return "allocate"
+        return "stock_audit"
     if "/lead-management/" in path or "/customer-registration/" in path:
         return "lead_management"
     if "/sales-orders/" in path:

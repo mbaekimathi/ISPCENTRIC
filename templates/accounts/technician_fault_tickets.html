@@ -16,14 +16,49 @@
       <p class="tech-install-lead">{{ page_subtitle }}</p>
     </div>
     <div class="tech-install-head-actions">
-      <a class="btn btn-ghost tech-fault-back" href="{% url 'roles:technician' %}">
-        ← Dashboard
+      <a class="btn btn-ghost tech-fault-back" href="{% url 'roles:technician_tickets_hub' %}">
+        ← Tickets
       </a>
     </div>
   </header>
 
+  <nav class="tech-tickets-tabs" aria-label="Ticket views">
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets_pending_connections' %}">
+      Queued for install
+      <span class="tech-tickets-tab-count">{{ pending_connections_count|default:0 }}</span>
+    </a>
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets' %}">
+      Installed
+      <span class="tech-tickets-tab-count">{{ pending_count|default:0 }}</span>
+    </a>
+    <a class="tech-tickets-tab" href="{% url 'roles:technician_tickets_connected' %}">
+      Activated
+      <span class="tech-tickets-tab-count">{{ connected_count|default:0 }}</span>
+    </a>
+    <a
+      class="tech-tickets-tab is-active{% if fault_count %} is-alert{% endif %}"
+      href="{% url 'roles:technician_fault_tickets' %}"
+    >
+      Fault Tickets
+      <span class="tech-tickets-tab-count{% if fault_count %} is-alert{% endif %}">
+        {{ fault_count|default:0 }}
+      </span>
+    </a>
+  </nav>
+
+  {% if fault_notice %}
+    <div class="cs-role-notice tech-fault-notice" role="status">
+      <span class="cs-role-notice-mark" aria-hidden="true">!</span>
+      <span class="cs-role-notice-copy">
+        <strong>Fault tickets need attention</strong>
+        <span>{{ fault_notice }}</span>
+      </span>
+      <span class="cs-role-notice-cta" aria-hidden="true">{{ fault_count }}</span>
+    </div>
+  {% endif %}
+
   <div class="tech-install-stats" aria-label="Fault ticket summary">
-    <div class="tech-install-stat">
+    <div class="tech-install-stat{% if fault_count %} is-alert{% endif %}">
       <strong>{{ tickets|length }}</strong>
       <span>Total</span>
     </div>
@@ -31,7 +66,7 @@
       <strong>{{ assigned_count|default:0 }}</strong>
       <span>Assigned to you</span>
     </div>
-    <div class="tech-install-stat is-open">
+    <div class="tech-install-stat is-open{% if open_count %} is-alert{% endif %}">
       <strong>{{ open_count|default:0 }}</strong>
       <span>Open</span>
     </div>
@@ -68,16 +103,46 @@
                   <span class="tech-install-meta-value">{{ ticket.issue }}</span>
                 </div>
               {% endif %}
-              {% if ticket.location %}
+              {% if ticket.building_name or ticket.address or ticket.house_number %}
                 <div class="tech-install-meta-item">
-                  <span class="tech-install-meta-label">Location</span>
-                  <span class="tech-install-meta-value">{{ ticket.location }}</span>
+                  <span class="tech-install-meta-label">Building</span>
+                  {% if ticket.location_lat and ticket.location_lng %}
+                    {% with maps_label=ticket.building_name|default:ticket.address %}
+                    <a
+                      class="lead-maps-link tech-fault-building-link"
+                      href="https://www.google.com/maps?q={% if maps_label %}{{ maps_label|urlencode }}@{% endif %}{{ ticket.location_lat }},{{ ticket.location_lng }}&amp;z=18"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% elif ticket.address %}{{ ticket.address }}{% else %}Open map{% endif %}
+                      {% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}
+                    </a>
+                    {% endwith %}
+                  {% elif ticket.building_name or ticket.address %}
+                    <a
+                      class="lead-maps-link tech-fault-building-link"
+                      href="https://www.google.com/maps/search/?api=1&amp;query={% if ticket.building_name %}{{ ticket.building_name|urlencode }}{% else %}{{ ticket.address|urlencode }}{% endif %}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {% if ticket.building_name %}{{ ticket.building_name }}{% else %}{{ ticket.address }}{% endif %}
+                      {% if ticket.house_number %} · {{ ticket.house_number }}{% endif %}
+                    </a>
+                  {% else %}
+                    <span class="tech-install-meta-value">{{ ticket.location }}</span>
+                  {% endif %}
                 </div>
               {% endif %}
-              {% if ticket.priority %}
+              {% if ticket.notes %}
                 <div class="tech-install-meta-item">
-                  <span class="tech-install-meta-label">Priority</span>
-                  <span class="tech-install-meta-value">{{ ticket.priority }}</span>
+                  <span class="tech-install-meta-label">Note</span>
+                  <span class="tech-install-meta-value">{{ ticket.notes }}</span>
+                </div>
+              {% endif %}
+              {% if ticket.created_at %}
+                <div class="tech-install-meta-item">
+                  <span class="tech-install-meta-label">Raised</span>
+                  <span class="tech-install-meta-value">{{ ticket.created_at|date:"d M Y H:i" }}</span>
                 </div>
               {% endif %}
             </div>

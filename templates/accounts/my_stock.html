@@ -1,0 +1,91 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="cs-list-page my-stock-list-page">
+  <header class="cs-list-head">
+    <div class="cs-list-head-copy">
+      <p class="cs-list-kicker">{{ page_kicker }}</p>
+      <h2 class="cs-list-title">My Stock</h2>
+      <p class="cs-list-lead">{{ page_subtitle }}</p>
+    </div>
+    <div class="cs-list-toolbar">
+      <div class="cs-list-count">
+        <strong>{{ assigned_count|default:0 }}</strong>
+        <span>{% if assigned_count == 1 %}item{% else %}items{% endif %}</span>
+      </div>
+      {% if qty_total %}
+        <div class="cs-list-count">
+          <strong>{{ qty_total }}</strong>
+          <span>units held</span>
+        </div>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if stock_rows %}
+  <div class="cs-list-shell">
+    <table class="cs-list-table equipment-allocated-table">
+      <colgroup>
+        <col class="col-employee">
+        <col class="col-qty">
+        <col class="col-action">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Qty</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in stock_rows %}
+          <tr>
+            <td class="is-primary-cell" data-label="Item">
+              <div class="cs-list-identity">
+                {% if row.equipment.image %}
+                  <img
+                    class="cs-list-thumb"
+                    src="{{ row.equipment.image.url }}"
+                    alt=""
+                    width="40"
+                    height="40"
+                    loading="lazy"
+                    decoding="async"
+                  >
+                {% else %}
+                  <span class="cs-list-thumb-empty" aria-hidden="true"></span>
+                {% endif %}
+                <div class="cs-list-primary">
+                  <strong>{{ row.equipment.name }}</strong>
+                  <small>{{ row.equipment.get_equipment_type_display }}</small>
+                </div>
+              </div>
+            </td>
+            <td data-label="Qty">{{ row.quantity }}</td>
+            <td class="is-actions-cell" data-label="Action">
+              {% if item_url_name %}
+                <a class="btn btn-secondary btn-sm" href="{% url item_url_name row.equipment.pk %}">
+                  View
+                </a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="cs-list-empty">
+    <strong>No equipment assigned</strong>
+    <p>{{ empty_text }}</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

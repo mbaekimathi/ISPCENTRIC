@@ -5,13 +5,13 @@
 {% block body %}
 <div class="auth-shell">
   <div class="auth-panel">
-    <div class="auth-role">Company owner</div>
+    <div class="auth-role">ISP client</div>
     <div class="auth-brand">ISP<span>CENTRIC</span></div>
-    <h1>Create your company account</h1>
-    <p class="lede">Register your ISP and open the operations workspace in under a minute.</p>
+    <h1>Register your ISP</h1>
+    <p class="lede">Create an ISP client account and get onboarded into the operations workspace.</p>
     {% if referrer_organization %}
       <p class="lede referral-invite-note">
-        Referred by <strong>{{ referrer_organization.name }}</strong>
+        Invited by <strong>{{ referrer_organization.name }}</strong> to onboard as an ISP client
         {% if referrer_organization.referral_code %}
           <span class="referral-invite-code">(code {{ referrer_organization.referral_code }})</span>
         {% endif %}
