@@ -1,0 +1,141 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="client-settings-page" data-google-login-settings-root>
+  <div class="cs-shell">
+    <header class="cs-hero">
+      <p class="cs-kicker">ISP client login</p>
+      <h2 class="cs-title">Google login settings</h2>
+      <p class="cs-lead">{{ page_subtitle }}</p>
+      <div class="cs-hero-meta">
+        {% if client_settings.google_login_enabled %}
+          <span class="cs-chip is-live">Google login on</span>
+        {% else %}
+          <span class="cs-chip is-muted">Google login off</span>
+        {% endif %}
+        {% if google_oauth_credentials_ready %}
+          <span class="cs-chip is-soft">OAuth credentials ready</span>
+        {% else %}
+          <span class="cs-chip is-muted">Add Google OAuth keys in .env</span>
+        {% endif %}
+        {% if client_settings.updated_at %}
+          <span class="cs-chip is-soft">Updated {{ client_settings.updated_at|date:"d M Y · H:i" }}</span>
+        {% endif %}
+      </div>
+    </header>
+
+    {% if not google_oauth_credentials_ready %}
+      <div class="notice notice-error" style="margin-bottom: 1rem;">
+        Set <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code>
+        in the server environment before Google login can work.
+      </div>
+    {% endif %}
+
+    <form method="post" class="cs-form" id="google-login-settings-form" novalidate>
+      {% csrf_token %}
+
+      {% if form.non_field_errors %}
+        <div class="notice notice-error">{{ form.non_field_errors }}</div>
+      {% endif %}
+
+      <div class="cs-grid" role="list">
+        <article class="cs-card{% if form.google_login_enabled.value %} is-on{% endif %}" role="listitem" data-client-toggle-panel data-toggle-input="id_google_login_enabled">
+          <div class="cs-card-glow" aria-hidden="true"></div>
+          <div class="cs-card-head">
+            <span class="cs-icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48" width="24" height="24" aria-hidden="true">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              </svg>
+            </span>
+            <label class="cs-switch cs-switch--solo" for="{{ form.google_login_enabled.id_for_label }}" title="Toggle Google login">
+              {{ form.google_login_enabled }}
+              <span class="cs-switch-track" aria-hidden="true"></span>
+              <span class="visually-hidden" data-toggle-label>
+                {% if form.google_login_enabled.value %}Google login on{% else %}Google login off{% endif %}
+              </span>
+            </label>
+          </div>
+          <div class="cs-card-body">
+            <span class="cs-state" data-toggle-pill>{% if form.google_login_enabled.value %}On{% else %}Off{% endif %}</span>
+            <h3 class="cs-card-title">Enable Google login</h3>
+            <p class="cs-card-copy">Turn on Google profile connect for ISP client login. Clients must connect Google first, then enter their 6-digit login code and password.</p>
+          </div>
+          {% if form.google_login_enabled.errors %}
+            <div class="field-error">{{ form.google_login_enabled.errors|striptags }}</div>
+          {% endif %}
+        </article>
+
+        <article class="cs-card{% if form.google_login_require_email_match.value %} is-on{% endif %}" role="listitem" data-client-toggle-panel data-toggle-input="id_google_login_require_email_match">
+          <div class="cs-card-glow" aria-hidden="true"></div>
+          <div class="cs-card-head">
+            <span class="cs-icon is-fee" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7">
+                <rect x="4" y="5" width="16" height="14" rx="2"/>
+                <path d="M8 10h8M8 14h5" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <label class="cs-switch cs-switch--solo" for="{{ form.google_login_require_email_match.id_for_label }}" title="Toggle email match">
+              {{ form.google_login_require_email_match }}
+              <span class="cs-switch-track" aria-hidden="true"></span>
+              <span class="visually-hidden" data-toggle-label>
+                {% if form.google_login_require_email_match.value %}Email match required{% else %}Email match off{% endif %}
+              </span>
+            </label>
+          </div>
+          <div class="cs-card-body">
+            <span class="cs-state" data-toggle-pill>{% if form.google_login_require_email_match.value %}On{% else %}Off{% endif %}</span>
+            <h3 class="cs-card-title">Require matching email</h3>
+            <p class="cs-card-copy">Require ISP clients to connect a Google profile that matches their account email before they can sign in with login code and password. Recommended: keep this on.</p>
+          </div>
+          {% if form.google_login_require_email_match.errors %}
+            <div class="field-error">{{ form.google_login_require_email_match.errors|striptags }}</div>
+          {% endif %}
+        </article>
+      </div>
+
+      <footer class="cs-actions">
+        <button type="submit" class="btn btn-primary cs-save">Save Google login settings</button>
+        <a class="btn btn-ghost" href="{% url 'roles:it_support_company_system_settings' %}">Back</a>
+      </footer>
+    </form>
+  </div>
+</section>
+
+<script>
+(function () {
+  function syncPanel(panel) {
+    var inputId = panel.getAttribute("data-toggle-input");
+    var input = inputId ? document.getElementById(inputId) : null;
+    if (!input) return;
+    var on = !!input.checked;
+    panel.classList.toggle("is-on", on);
+    var pill = panel.querySelector("[data-toggle-pill]");
+    if (pill) pill.textContent = on ? "On" : "Off";
+    var label = panel.querySelector("[data-toggle-label]");
+    if (label && inputId === "id_google_login_enabled") {
+      label.textContent = on ? "Google login on" : "Google login off";
+    }
+    if (label && inputId === "id_google_login_require_email_match") {
+      label.textContent = on ? "Email match required" : "Email match off";
+    }
+  }
+
+  document.querySelectorAll("[data-client-toggle-panel]").forEach(function (panel) {
+    syncPanel(panel);
+    var inputId = panel.getAttribute("data-toggle-input");
+    var input = inputId ? document.getElementById(inputId) : null;
+    if (input) input.addEventListener("change", function () { syncPanel(panel); });
+  });
+})();
+</script>
+{% endblock %}

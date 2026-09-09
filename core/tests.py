@@ -10042,6 +10042,43 @@ class MikroTikStatusOfflineTests(TestCase):
         confirmed = stabilize_live_status_row(self.org.pk, self.router.pk, fail_row)
         self.assertEqual(confirmed["status"], "disconnected")
 
+    def test_post_uplink_grace_holds_connected_after_combine(self):
+        from django.core.cache import cache
+
+        from core.mikrotik_status_samples import (
+            mark_mikrotik_post_uplink_grace,
+            stabilize_live_status_row,
+        )
+
+        cache.clear()
+        mark_mikrotik_post_uplink_grace(self.router.pk, mode="bond")
+        connected = {
+            "id": self.router.pk,
+            "status": "connected",
+            "online": True,
+            "error": "",
+        }
+        stabilize_live_status_row(self.org.pk, self.router.pk, connected)
+        # Same orange “reachable / API flaky” state seen after combining links.
+        fail_row = {
+            "id": self.router.pk,
+            "status": "reachable",
+            "online": True,
+            "error": (
+                "API probe failed but the WireGuard tunnel is up — "
+                "management may recover on the next check."
+            ),
+        }
+        for _ in range(4):
+            held = stabilize_live_status_row(
+                self.org.pk, self.router.pk, fail_row, tunnel=True
+            )
+            self.assertEqual(held["status"], "connected")
+        confirmed = stabilize_live_status_row(
+            self.org.pk, self.router.pk, fail_row, tunnel=True
+        )
+        self.assertEqual(confirmed["status"], "reachable")
+
     def test_off_lan_tunnel_holds_connected_when_cable_unplugged(self):
         from django.core.cache import cache
 

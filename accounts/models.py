@@ -1384,6 +1384,22 @@ class ClientSettings(models.Model):
         default=False,
         help_text="When enabled, client referral features are available on the platform.",
     )
+    google_login_enabled = models.BooleanField(
+        "Enable Google login",
+        default=False,
+        help_text=(
+            "When enabled, ISP clients can sign in with Google on the ISP client login page "
+            "(requires GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET)."
+        ),
+    )
+    google_login_require_email_match = models.BooleanField(
+        "Require matching email",
+        default=True,
+        help_text=(
+            "When enabled, Google sign-in only works if the Google account email matches "
+            "an existing ISP client account email."
+        ),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1399,7 +1415,9 @@ class ClientSettings(models.Model):
         super().save(*args, **kwargs)
         from django.core.cache import cache
 
+        cache_key = "client_settings:solo:v2"
         cache.delete("client_settings:solo:v1")
+        cache.delete(cache_key)
 
     def delete(self, *args, **kwargs):
         pass
@@ -1408,7 +1426,7 @@ class ClientSettings(models.Model):
     def get_solo(cls):
         from django.core.cache import cache
 
-        cache_key = "client_settings:solo:v1"
+        cache_key = "client_settings:solo:v2"
         obj = cache.get(cache_key)
         if obj is not None:
             return obj

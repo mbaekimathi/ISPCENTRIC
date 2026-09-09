@@ -438,6 +438,9 @@ else:
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 GOOGLE_MAPS_API_KEY = (os.getenv("GOOGLE_MAPS_API_KEY") or "").strip()
+GOOGLE_OAUTH_CLIENT_ID = (os.getenv("GOOGLE_OAUTH_CLIENT_ID") or "").strip()
+GOOGLE_OAUTH_CLIENT_SECRET = (os.getenv("GOOGLE_OAUTH_CLIENT_SECRET") or "").strip()
+GOOGLE_OAUTH_REDIRECT_URI = (os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or "").strip()
 
 LOGIN_URL = "accounts:login"
 LOGIN_REDIRECT_URL = "core:workspace"

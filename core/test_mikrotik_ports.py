@@ -414,7 +414,11 @@ class ListPortsApiRecoveryTests(SimpleTestCase):
     def test_build_api_enable_terminal_script_enables_service(self):
         script = build_api_enable_terminal_script()
         self.assertIn("disabled=no port=8728", script)
-        self.assertIn("ispcentric-api-lan-192", script)
+        self.assertIn("ispcentric-vpn-api-lan-192", script)
+        self.assertIn("ispcentric-vpn-api", script)
+        self.assertIn("ispcentric-vpn-api-net", script)
+        self.assertIn("Reconnect", script)
+        self.assertIn("ispcentric-vpn-hotspot-bypass", script)
 
 
 class FailoverUplinkTests(SimpleTestCase):
@@ -1027,6 +1031,66 @@ class CheckRouterTunnelManagementTests(SimpleTestCase):
         result = check_router_tunnel_management(router)
         self.assertTrue(result["verified"])
         self.assertTrue(result["api_ok"])
+
+    @patch("core.wireguard.inspect_server_peer")
+    @patch("core.mikrotik_connect._api_session", side_effect=OSError("refused"))
+    @patch("core.mikrotik_connect.on_router_lan", return_value=False)
+    def test_hosted_handshake_alone_not_enough_for_require_api(
+        self, _lan, _session, inspect_peer
+    ):
+        from core.mikrotik_connect import check_router_tunnel_management
+
+        inspect_peer.return_value = {"present": True, "handshake_age_sec": 12}
+        router = MikroTikRouter(
+            name="r",
+            host="10.9.0.20",
+            username="admin",
+            password="x",
+            vpn_address="10.9.0.20",
+            vpn_public_key="pk",
+        )
+        soft = check_router_tunnel_management(router, require_api=False)
+        self.assertTrue(soft["verified"])
+        self.assertTrue(soft["handshake_ok"])
+        self.assertFalse(soft["api_ok"])
+
+        hard = check_router_tunnel_management(router, require_api=True)
+        self.assertFalse(hard["verified"])
+        self.assertEqual(hard["reason"], "handshake_without_api")
+
+
+class BondCandidatePortTests(SimpleTestCase):
+    def test_auto_assign_bond_explains_bridged_ports(self):
+        from core.views import _auto_assign_bond_roles
+
+        router = MikroTikRouter(
+            name="r",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            uplink_mode=MikroTikRouter.UplinkMode.BOND,
+            port_roles={},
+        )
+        live = [
+            {
+                "name": "ether1",
+                "running": True,
+                "disabled": False,
+                "is_bridged": True,
+                "is_wireless": False,
+            },
+            {
+                "name": "ether2",
+                "running": True,
+                "disabled": False,
+                "is_bridged": True,
+                "is_wireless": False,
+            },
+        ]
+        result = _auto_assign_bond_roles(router, live)
+        self.assertFalse(result["ok"])
+        self.assertIn("LAN bridge", result.get("error") or "")
+        self.assertIn("ether1", result.get("error") or "")
 
 
 class UplinkPromptTests(SimpleTestCase):
@@ -2572,6 +2636,7 @@ class NoDropUplinkSimulationTests(SimpleTestCase):
             self.assertFalse(result.get("ok"), label)
             self.assertTrue(result.get("skipped"), label)
             self.assertIn("behind-provider", (result.get("error") or "").lower())
+            self.assertIn("dedicated WAN", result.get("error") or "")
 
     def test_balance_missing_gateway_restores_bridge(self):
         from core.mikrotik_connect import apply_mikrotik_uplink_balance

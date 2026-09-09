@@ -231,3 +231,33 @@ def owner_registration_open(*, referral_code: str = "") -> bool:
 
 def owner_invite_required() -> bool:
     return bool(getattr(settings, "OWNER_REGISTER_INVITE_KEY", ""))
+
+
+GOOGLE_VERIFIED_EMAIL_SESSION_KEY = "google_verified_email"
+
+
+def google_login_gate_required() -> bool:
+    """True when ISP client login must connect Google before code/password."""
+    client_id = (getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "") or "").strip()
+    client_secret = (getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or "").strip()
+    if not (client_id and client_secret):
+        return False
+    from accounts.models import ClientSettings
+
+    solo = ClientSettings.get_solo()
+    return bool(solo.google_login_enabled and solo.google_login_require_email_match)
+
+
+def google_verified_email_from_request(request) -> str:
+    if request is None:
+        return ""
+    return (request.session.get(GOOGLE_VERIFIED_EMAIL_SESSION_KEY) or "").strip().lower()
+
+
+def google_wrong_profile_message(
+    *,
+    connected_email: str = "",
+    account_email: str = "",
+) -> str:
+    """User-facing notice when the connected Google profile does not match the ISP account."""
+    return "Wrong Google account"

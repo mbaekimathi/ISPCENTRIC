@@ -179,6 +179,11 @@ IT_SUPPORT_COMPANY_SYSTEM_SETTINGS_NAV = [
         "url_name": "roles:it_support_isp_onboarding_settings",
     },
     {
+        "key": "google_login_settings",
+        "label": "Google login settings",
+        "url_name": "roles:it_support_google_login_settings",
+    },
+    {
         "key": "company_themes",
         "label": "Company themes",
         "url_name": "roles:it_support_company_themes",
@@ -329,6 +334,8 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
     elif role == Employee.Role.IT_SUPPORT and current_page == "payment_gateway":
         items = [item for item in items if item.get("key") != "my_stock"]
     elif role == Employee.Role.IT_SUPPORT and current_page == "isp_onboarding_settings":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    elif role == Employee.Role.IT_SUPPORT and current_page == "google_login_settings":
         items = [item for item in items if item.get("key") != "my_stock"]
     elif role == Employee.Role.IT_SUPPORT and current_page == "company_profile":
         items = [item for item in items if item.get("key") != "my_stock"]

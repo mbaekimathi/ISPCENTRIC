@@ -281,6 +281,45 @@ ISP_COMMUNICATION_EVENTS = (
         ),
     },
     {
+        "key": "isp_mikrotik_health_low",
+        "title": "MikroTik offline or health below 70%",
+        "when": "A MikroTik goes offline or its health score drops below 70%.",
+        "includes": "Router name, health score, status, and a short reason.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "page_link": {
+            "label": "MikroTik routers",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Alert: MikroTik “{router_name}” is {status_label} "
+            "(health {health_score}%). {status_reason} "
+            "Open MikroTik in ISPCENTRIC to investigate."
+        ),
+    },
+    {
+        "key": "isp_pppoe_connected_not_surfing",
+        "title": "PPPoE dialed but without internet",
+        "when": (
+            "PPPoE clients are dialed in with an active subscription but still "
+            "without internet."
+        ),
+        "includes": "Count and a list of affected client names / account numbers.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "page_link": {
+            "label": "My clients",
+            "url_name": "core:my_clients",
+        },
+        "default_message": (
+            "{affected_count} PPPoE client(s) are dialed with an active package "
+            "but without internet:\n{affected_clients}\n"
+            "Open My Clients to review and repair."
+        ),
+    },
+    {
         "key": "isp_stk_collection",
         "title": "Client payment collected",
         "when": "A subscriber STK Push succeeds into this ISP's Paybill or Till.",
@@ -1374,6 +1413,174 @@ def notify_org_event(key: str, **kwargs) -> dict:
     except Exception:
         logger.exception("Organization notification %s failed", key)
         return {"ok": False, "skipped": False, "error": "dispatch_failed"}
+
+
+def maybe_notify_mikrotik_health_low(
+    *,
+    organization,
+    router_id: int,
+    router_name: str = "",
+    status: str = "",
+    score: int = 0,
+    error: str = "",
+) -> dict:
+    """
+    Notify once per outage episode when a MikroTik is offline or health < 70%.
+
+    Clears the episode flag when health recovers to 70% or higher.
+    """
+    from django.core.cache import cache
+
+    if organization is None or not router_id:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+
+    try:
+        score_i = int(score)
+    except (TypeError, ValueError):
+        score_i = 0
+    status_key = (status or "").strip().lower() or "disconnected"
+    alert_key = f"comms:mikrotik_health:{organization.pk}:{int(router_id)}"
+
+    is_low = status_key == "disconnected" or score_i < 70
+    if not is_low:
+        # Healthy again — allow a future drop to notify.
+        cache.delete(alert_key)
+        return {"ok": False, "skipped": True, "reason": "healthy"}
+
+    # Combining links briefly flaps API while WireGuard stays warm — don't alert yet.
+    try:
+        from core.mikrotik_status_samples import is_mikrotik_post_uplink_grace
+
+        if is_mikrotik_post_uplink_grace(int(router_id)):
+            return {"ok": False, "skipped": True, "reason": "uplink_grace"}
+    except Exception:
+        pass
+
+    # One notification per degradation episode.
+    if not cache.add(alert_key, score_i, timeout=60 * 60 * 12):
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+
+    try:
+        from core.mikrotik_status_samples import status_reason
+    except Exception:
+        status_reason = None
+
+    reason = ""
+    if callable(status_reason):
+        try:
+            reason = status_reason(status_key) or ""
+        except Exception:
+            reason = ""
+    if not reason:
+        reason = (error or "").strip() or "Router health dropped."
+
+    status_label = {
+        "disconnected": "offline",
+        "limited": "limited",
+        "auth_failed": "unreachable (auth failed)",
+        "wrong_host": "wrong host",
+        "reachable": "degraded",
+        "connected": "online",
+    }.get(status_key, status_key.replace("_", " ") or "degraded")
+
+    return notify_org_event(
+        "isp_mikrotik_health_low",
+        organization=organization,
+        context={
+            "router_name": (router_name or "").strip() or f"Router #{router_id}",
+            "health_score": str(score_i),
+            "status": status_key,
+            "status_label": status_label,
+            "status_reason": reason,
+            "error": (error or "").strip(),
+        },
+        subject=f"MikroTik health alert — {router_name or router_id}",
+    )
+
+
+def format_pppoe_not_surfing_client_list(rows: list[dict], *, limit: int = 25) -> str:
+    """Build a readable list of affected PPPoE clients for notification bodies."""
+    lines: list[str] = []
+    for row in rows or []:
+        if not (
+            row.get("internet_allowed")
+            and row.get("connected")
+            and not row.get("surfing")
+        ):
+            continue
+        name = (row.get("full_name") or row.get("name") or "Client").strip()
+        account = (row.get("account_number") or "").strip()
+        phone = (row.get("phone") or "").strip()
+        bits = [name]
+        if account:
+            bits.append(f"({account})")
+        if phone:
+            bits.append(phone)
+        lines.append("- " + " ".join(bits))
+        if len(lines) >= limit:
+            remaining = sum(
+                1
+                for r in (rows or [])
+                if r.get("internet_allowed")
+                and r.get("connected")
+                and not r.get("surfing")
+            ) - len(lines)
+            if remaining > 0:
+                lines.append(f"- …and {remaining} more")
+            break
+    return "\n".join(lines) if lines else "- (none listed)"
+
+
+def maybe_notify_pppoe_connected_not_surfing(
+    *,
+    organization,
+    clients: list[dict],
+    newly_affected_ids: set[str] | None = None,
+) -> dict:
+    """
+    Notify the ISP owner with the list of dialed/paid PPPoE clients without internet.
+
+    Fires when new clients enter that state (deduped per new-id batch for 1 hour).
+    """
+    from django.core.cache import cache
+
+    if organization is None:
+        return {"ok": False, "skipped": True, "reason": "missing"}
+
+    affected = [
+        row
+        for row in (clients or [])
+        if row.get("internet_allowed")
+        and row.get("connected")
+        and not row.get("surfing")
+    ]
+    if not affected:
+        return {"ok": False, "skipped": True, "reason": "none_affected"}
+
+    new_ids = {
+        str(x)
+        for x in (newly_affected_ids or set())
+        if str(x or "").strip()
+    }
+    if not new_ids:
+        # No brand-new episodes this pass — do not re-spam the same outage.
+        return {"ok": False, "skipped": True, "reason": "no_new_episodes"}
+
+    fp = ",".join(sorted(new_ids))
+    dedupe_key = f"comms:pppoe_ns:{organization.pk}:{fp}"
+    if not cache.add(dedupe_key, 1, timeout=60 * 60):
+        return {"ok": False, "skipped": True, "reason": "already_alerted"}
+
+    listing = format_pppoe_not_surfing_client_list(affected)
+    return notify_org_event(
+        "isp_pppoe_connected_not_surfing",
+        organization=organization,
+        context={
+            "affected_count": str(len(affected)),
+            "affected_clients": listing,
+        },
+        subject=f"{len(affected)} PPPoE client(s) dialed without internet",
+    )
 
 
 def customer_notification_context(customer) -> dict:

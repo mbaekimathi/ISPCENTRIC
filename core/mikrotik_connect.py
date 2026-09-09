@@ -1122,7 +1122,9 @@ def _api_session_on_any(
     raise ConnectionError(last_error or "Could not sign in to the MikroTik API.")
 
 
-def check_router_tunnel_management(router, *, timeout: float = 4.0) -> dict[str, Any]:
+def check_router_tunnel_management(
+    router, *, timeout: float = 4.0, require_api: bool = False
+) -> dict[str, Any]:
     """
     True when billing can reach RouterOS API over the saved WireGuard peer IP.
 
@@ -1131,6 +1133,9 @@ def check_router_tunnel_management(router, *, timeout: float = 4.0) -> dict[str,
 
     On a LAN/dev billing PC, API may still dial the router LAN IP while the
     tunnel peer is configured — that counts as verified when keys are present.
+
+    When ``require_api`` is True (uplink auto-apply), a handshake alone is not
+    enough on hosted servers — unbridging would lock out management.
     """
     tunnel = (getattr(router, "vpn_address", None) or "").strip()
     host = (getattr(router, "host", None) or "").strip()
@@ -1186,12 +1191,15 @@ def check_router_tunnel_management(router, *, timeout: float = 4.0) -> dict[str,
     elif api_ok and on_router_lan() and tunnel:
         # Dev/LAN: tunnel peer is configured; billing may still dial the LAN IP.
         verified = True
-    elif not on_router_lan() and handshake_ok:
+    elif not require_api and not on_router_lan() and handshake_ok:
+        # Soft status: handshake without API is OK for UI hints, not for unbridge.
         verified = True
 
     reason = "tunnel_ok" if verified else "tunnel_unreachable"
     if not verified and tunnel and not api_ok and not handshake_ok:
         reason = "tunnel_not_ready"
+    elif not verified and require_api and handshake_ok and not api_ok:
+        reason = "handshake_without_api"
 
     return {
         "verified": verified,
@@ -1218,20 +1226,31 @@ def reconnect_after_uplink_apply(
     if not hosts or not username:
         return {"ok": False, "error": "Missing router credentials or dial hosts."}
 
+    # Combining links flaps WAN briefly — WireGuard handshake can stay warm while
+    # API :8728 login is still catching up. Wait longer and prefer tunnel hosts.
+    tunnel = (getattr(router, "vpn_address", None) or "").strip()
+    ordered: list[str] = []
+    for candidate in (tunnel, *hosts):
+        value = (candidate or "").strip()
+        if value and value not in ordered:
+            ordered.append(value)
+
     last_error = ""
-    for attempt in range(1, 4):
-        for host in hosts:
+    for attempt in range(1, 6):
+        for host in ordered:
             try:
+                login_timeout = max(timeout, mikrotik_login_timeout(host, base=4.0))
                 with _api_session(
-                    host, username, password, timeout=min(timeout, 6.0)
-                ):
-                    return {"ok": True, "host": host}
+                    host, username, password, timeout=min(login_timeout, 10.0)
+                ) as sock:
+                    ensure_routeros_api_enabled(sock)
+                    return {"ok": True, "host": host, "attempts": attempt}
             except Exception as exc:
                 last_error = str(exc) or last_error
-        if attempt < 3:
-            time.sleep(1.5 * attempt)
+        if attempt < 5:
+            time.sleep(2.0 * attempt)
             try:
-                _wait_for_api_any(hosts, connect_timeout=3.0, attempts=4)
+                _wait_for_api_any(ordered, connect_timeout=4.0, attempts=6, delay=1.5)
             except ConnectionError:
                 pass
     return {"ok": False, "error": last_error or "Could not reconnect to the MikroTik."}
@@ -21240,8 +21259,11 @@ def build_uplink_recovery_script(
     """
     RouterOS terminal script to undo a failed bond / failover / balance apply.
 
-    Restores bridge membership and removes ISPCENTRIC uplink leftovers.
+    Restores bridge membership, removes ISPCENTRIC uplink leftovers, and
+    re-opens API over LAN + WireGuard so hosted Reconnect can dial again.
     """
+    from core.wireguard import routeros_standalone_api_enable_script
+
     mode = (mode or "").strip().lower() or "uplink"
     members = [p.strip() for p in (members or []) if (p or "").strip()]
     bond_name = (bond_name or DEFAULT_BOND_NAME).strip() or DEFAULT_BOND_NAME
@@ -21254,14 +21276,19 @@ def build_uplink_recovery_script(
 
     lines = [
         f"# ISPCENTRIC — recovery after {mode} uplink change",
-        "# Winbox → New Terminal → paste all lines, press Enter",
+        "# Winbox → New Terminal → paste ALL lines once, press Enter",
+        "# Then click Reconnect on this MikroTik in ISPCENTRIC.",
         "",
-        "# Remove ISPCENTRIC bond / failover / balance leftovers",
+        "# 1) Open API + WireGuard management path",
+        routeros_standalone_api_enable_script(),
+        "",
+        "# 2) Remove ISPCENTRIC bond / failover / balance leftovers",
         f'/ip route remove [find comment~"{UPLINK_TAG}"]',
         f'/ip dhcp-client remove [find comment~"{UPLINK_TAG}"]',
         f'/interface list member remove [find comment~"{UPLINK_TAG}"]',
         f'/interface bonding remove [find comment~"{UPLINK_TAG}"]',
         f'/ip firewall mangle remove [find comment~"{UPLINK_TAG}"]',
+        f'/ip firewall filter remove [find comment~"{NO_BACKFLOW_TAG}"]',
         f'/routing table remove [find comment~"{UPLINK_TAG}"]',
         f'/system scheduler remove [find comment~"{UPLINK_TAG}"]',
         f'/system script remove [find comment~"{UPLINK_TAG}"]',
@@ -21286,14 +21313,34 @@ def build_uplink_recovery_script(
             [
                 f':local port{index} "{iface}"',
                 f':local br{index} "{bridge}"',
+                f":do {{ /interface enable $port{index} }} on-error={{}}",
                 f":if ([:len [/interface bridge port find interface=$port{index}]] = 0) do={{",
                 f"  /interface bridge port add bridge=$br{index} interface=$port{index}",
                 "}",
                 "",
             ]
         )
-    lines.append(
-        ':put ("ISPCENTRIC uplink recovery done — check bridge ports and default route.")'
+    if primary_port:
+        primary = (primary_port or "").strip()
+        if primary:
+            lines.extend(
+                [
+                    f':local primaryWan "{primary}"',
+                    ":do { /interface enable $primaryWan } on-error={}",
+                    (
+                        ":if ([:len [/ip dhcp-client find interface=$primaryWan]] > 0) do={"
+                        "  /ip dhcp-client set [find interface=$primaryWan] "
+                        "disabled=no add-default-route=yes default-route-distance=1"
+                        "}"
+                    ),
+                    "",
+                ]
+            )
+    lines.extend(
+        [
+            ':put ("ISPCENTRIC uplink recovery done — check bridge ports, then Reconnect.")',
+            ':put ("If health stays soft, wait 30s and click Reconnect again.")',
+        ]
     )
     return "\n".join(lines)
 
@@ -21810,7 +21857,7 @@ def _reject_behind_provider_unbridge(
             f"Cannot apply {mode_label} on behind-provider port(s) "
             f"{', '.join(blocked)} — unbridging would drop customers and "
             "MikroTik management. Use One internet link, or move the ISP "
-            "modem off the LAN bridge first."
+            "modem onto a dedicated WAN port (not the LAN bridge) first."
         ),
         "behind_provider_ports": blocked,
     }
@@ -22440,18 +22487,21 @@ def apply_mikrotik_uplink_bond(
             )
 
         if unbridged:
-            time.sleep(1.5)
+            # Unbridging flaps LAN management; tunnel peers need longer for WAN/API.
+            settle = 3.5 if any(_is_wireguard_tunnel_host(h) for h in dial_hosts) else 2.0
+            time.sleep(settle)
             try:
-                _wait_for_api_any(dial_hosts, port=port)
+                _wait_for_api_any(dial_hosts, port=port, attempts=12, delay=1.5)
             except ConnectionError:
                 pass
 
         last_error = ""
-        for attempt in range(1, 4):
+        for attempt in range(1, 5):
             try:
                 with _api_session_on_any(
-                    dial_hosts, username, password, port=port, timeout=timeout
+                    dial_hosts, username, password, port=port, timeout=max(timeout, 16.0)
                 ) as (sock, session_host):
+                    ensure_routeros_api_enabled(sock)
                     terminal, bond_mode = _create_bonding_interface(
                         sock,
                         bond_name=bond_name,
@@ -22537,11 +22587,11 @@ def apply_mikrotik_uplink_bond(
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
                 last_error = str(exc)
-                if attempt >= 3:
+                if attempt >= 4:
                     break
-                time.sleep(1.5 * attempt)
+                time.sleep(2.0 * attempt)
                 try:
-                    _wait_for_api_any(dial_hosts, port=port)
+                    _wait_for_api_any(dial_hosts, port=port, attempts=10, delay=1.5)
                 except ConnectionError:
                     pass
 

@@ -520,23 +520,103 @@ def _ros_api_enable_lines(*, verify: bool = True) -> list[str]:
 
 
 def routeros_standalone_api_enable_script() -> str:
-    """Winbox terminal paste when billing cannot reach RouterOS API :8728."""
+    """
+    Winbox terminal paste when billing cannot reach RouterOS API :8728.
+
+    Opens API for LAN *and* the ISPCENTRIC WireGuard tunnel (required for
+    hosted Connect/Reconnect). The previous LAN-only paste left tunnel
+    management blocked after uplink/bond flaps.
+    """
+    network = tunnel_network()
+    server = str(server_address())
+    mgmt_ports = "8728,8291,22"
     lines = [
-        "# Winbox -> New Terminal -> paste all lines, press Enter",
+        "# Winbox -> New Terminal -> paste ALL lines once, press Enter",
+        "# Then in ISPCENTRIC click Reconnect on this MikroTik.",
+        "# Opens RouterOS API :8728 for LAN + WireGuard tunnel management.",
+        "",
         *_ros_api_enable_lines(verify=True),
+        "",
+        "# Keep the billing WireGuard interface up (Combine links can flap WAN).",
+        ':do { /interface enable [find where name=ispcentric-vpn] } on-error={}',
+        ':do { /interface wireguard enable [find where name=ispcentric-vpn] } on-error={}',
+        "",
         "/ip firewall filter",
+        # Prefer tunnel + RFC1918 accepts near the top of input.
+        _ros_filter_add(
+            "action=accept protocol=tcp dst-port=8728 in-interface=ispcentric-vpn",
+            "ispcentric-vpn-api",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port=8728 src-address={network}",
+            "ispcentric-vpn-api-net",
+        ),
+        _ros_filter_add(
+            "action=accept protocol=icmp in-interface=ispcentric-vpn",
+            "ispcentric-vpn-icmp",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=icmp src-address={network}",
+            "ispcentric-vpn-icmp-net",
+        ),
         _ros_filter_add(
             "action=accept protocol=tcp dst-port=8728 src-address=10.0.0.0/8",
-            "ispcentric-api-lan-10",
+            "ispcentric-vpn-api-lan-10",
         ),
         _ros_filter_add(
             "action=accept protocol=tcp dst-port=8728 src-address=172.16.0.0/12",
-            "ispcentric-api-lan-172",
+            "ispcentric-vpn-api-lan-172",
         ),
         _ros_filter_add(
             "action=accept protocol=tcp dst-port=8728 src-address=192.168.0.0/16",
-            "ispcentric-api-lan-192",
+            "ispcentric-vpn-api-lan-192",
         ),
+        (
+            ':do { /ip firewall filter add chain=input action=accept protocol=tcp '
+            f'dst-port={mgmt_ports} comment="ispcentric-vpn-api-mgmt-input" '
+            "place-before=([find where chain=input and jump-target=hs-input]->0) } "
+            "on-error={ :do { /ip firewall filter add chain=input action=accept "
+            f'protocol=tcp dst-port={mgmt_ports} comment="ispcentric-vpn-api-mgmt-input" '
+            "} on-error={} }"
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port={mgmt_ports}",
+            "ispcentric-vpn-hs-input",
+            chain="hs-input",
+        ),
+        _ros_filter_add(
+            f"action=accept protocol=tcp dst-port={mgmt_ports}",
+            "ispcentric-vpn-hs-unauth",
+            chain="hs-unauth",
+        ),
+        "",
+        "# Do not NAT traffic toward the billing tunnel.",
+        "/ip firewall nat",
+        _ros_nat_add(
+            f"action=accept dst-address={network}",
+            "ispcentric-vpn-no-nat",
+        ),
+        "",
+        "# Hotspot must not captive the tunnel subnet.",
+        (
+            f':do {{ /ip hotspot ip-binding add type=bypassed address={network} '
+            f'comment="ispcentric-vpn-hotspot-bypass" }} on-error={{}}'
+        ),
+        "",
+        _ros_check(
+            '[:len [/ip firewall filter find where comment="ispcentric-vpn-api"]] > 0 '
+            'or [:len [/ip firewall filter find where comment="ispcentric-vpn-api-net"]] > 0 '
+            'or [:len [/interface wireguard find where name=ispcentric-vpn]] = 0',
+            "Tunnel API firewall ready (or WireGuard not installed yet)",
+            "Tunnel API firewall missing - re-paste this script",
+        ),
+        (
+            f':do {{ :if ([/ping {server} count=2] > 0) do={{ '
+            f'{_ros_ok(f"Tunnel reaches billing {server} — click Reconnect in ISPCENTRIC")} '
+            f'}} else={{ {_ros_warn(f"No ping to {server} yet — wait 10s then Reconnect")} }} }} '
+            f"on-error={{{_ros_warn('Ping check skipped')}}}"
+        ),
+        _ros_ok("Management recovery done — click Reconnect in ISPCENTRIC now"),
     ]
     return "\n".join(lines)
 

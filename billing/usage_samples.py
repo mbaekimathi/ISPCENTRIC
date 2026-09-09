@@ -2847,6 +2847,9 @@ def track_pppoe_connected_not_surfing_episodes(
             continue
         current_map[cid] = row
 
+    previously_open = set(open_eps.keys())
+    newly_affected = set(current_map.keys()) - previously_open
+
     # Close recovered clients.
     for cid in list(open_eps.keys()):
         if cid in current_map:
@@ -2869,6 +2872,18 @@ def track_pppoe_connected_not_surfing_episodes(
         else:
             if reason:
                 open_eps[cid]["reason"] = reason
+
+    if newly_affected:
+        try:
+            from accounts.communications import maybe_notify_pppoe_connected_not_surfing
+
+            maybe_notify_pppoe_connected_not_surfing(
+                organization=organization,
+                clients=current_rows,
+                newly_affected_ids=newly_affected,
+            )
+        except Exception:
+            pass
 
     # Prune closed episodes outside the window.
     pruned_closed: list[dict[str, Any]] = []

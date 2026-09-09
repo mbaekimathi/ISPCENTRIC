@@ -327,6 +327,21 @@ class EmployeeLoginEnumerationTests(TestCase):
 
 class IspClientLoginTests(TestCase):
     def setUp(self):
+        from django.core.cache import cache
+
+        from accounts.models import ClientSettings
+
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+        ClientSettings.objects.update_or_create(
+            pk=1,
+            defaults={
+                "google_login_enabled": False,
+                "google_login_require_email_match": True,
+            },
+        )
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
         self.owner = User.objects.create_user(
             "778899", email="isp@example.com", password=STRONG_PASSWORD
         )
@@ -373,6 +388,298 @@ class IspClientLoginTests(TestCase):
         self.assertContains(response, "ISP client login")
         self.assertContains(response, reverse("accounts:password_reset"))
         self.assertNotContains(response, reverse("accounts:employee_login"))
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="google-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="google-client-secret",
+)
+class GoogleOwnerLoginTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from accounts.models import ClientSettings
+
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+        ClientSettings.objects.update_or_create(
+            pk=1,
+            defaults={
+                "google_login_enabled": True,
+                "google_login_require_email_match": True,
+            },
+        )
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+        self.owner = User.objects.create_user(
+            "owner-internal", email="owner@example.com", password=STRONG_PASSWORD
+        )
+        Organization.objects.create(
+            name="Google ISP",
+            owner=self.owner,
+            join_code="112244",
+            login_code="778811",
+        )
+        self.callback_url = reverse("accounts:google_callback")
+
+    def test_login_page_shows_google_connect_when_not_connected(self):
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("accounts:google_login"))
+        self.assertContains(response, "Connect Google profile")
+        self.assertContains(response, "then enter login code")
+        self.assertContains(response, "btn-google")
+
+    def test_login_page_hides_google_button_when_disabled(self):
+        from django.core.cache import cache
+
+        from accounts.models import ClientSettings
+
+        ClientSettings.objects.filter(pk=1).update(google_login_enabled=False)
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Connect Google profile")
+        self.assertNotContains(response, "Continue with Google")
+
+    def test_google_start_redirects_to_google_oauth(self):
+        response = self.client.get(reverse("accounts:google_login"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("accounts.google.com/o/oauth2/v2/auth", response["Location"])
+        session = self.client.session
+        self.assertTrue(session.get("google_oauth_state"))
+
+    @patch("accounts.views.urlopen")
+    @patch("accounts.views._google_json_request")
+    def test_google_callback_connects_profile_without_logging_in(
+        self, mock_google_json_request, mock_urlopen
+    ):
+        mock_google_json_request.return_value = {"access_token": "token-123"}
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"email":"owner@example.com","email_verified":true}'
+        )
+        session = self.client.session
+        session["google_oauth_state"] = "state-123"
+        session.save()
+
+        response = self.client.get(
+            self.callback_url, {"state": "state-123", "code": "oauth-code"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], reverse("accounts:login"))
+        self.assertIsNone(self.client.session.get("_auth_user_id"))
+        self.assertEqual(
+            self.client.session.get("google_verified_email"), "owner@example.com"
+        )
+
+    @patch("accounts.views.urlopen")
+    @patch("accounts.views._google_json_request")
+    def test_google_callback_prefers_owner_when_staff_shares_email(
+        self, mock_google_json_request, mock_urlopen
+    ):
+        staff = User.objects.create_user(
+            "staff-shared", email="owner@example.com", password=STRONG_PASSWORD
+        )
+        Employee.objects.create(
+            user=staff,
+            organization=None,
+            login_code="556677",
+            status=Employee.Status.ACTIVE,
+            role=Employee.Role.IT_SUPPORT,
+        )
+        mock_google_json_request.return_value = {"access_token": "token-123"}
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"email":"owner@example.com","email_verified":true}'
+        )
+        session = self.client.session
+        session["google_oauth_state"] = "state-456"
+        session.save()
+
+        response = self.client.get(
+            self.callback_url, {"state": "state-456", "code": "oauth-code"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(self.client.session.get("_auth_user_id"))
+        self.assertEqual(
+            self.client.session.get("google_verified_email"), "owner@example.com"
+        )
+
+    @patch("accounts.views.urlopen")
+    @patch("accounts.views._google_json_request")
+    def test_google_callback_rejects_unregistered_profile(
+        self, mock_google_json_request, mock_urlopen
+    ):
+        mock_google_json_request.return_value = {"access_token": "token-123"}
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"email":"unknown@example.com","email_verified":true}'
+        )
+        session = self.client.session
+        session["google_oauth_state"] = "state-789"
+        session.save()
+
+        response = self.client.get(
+            self.callback_url, {"state": "state-789", "code": "oauth-code"}, follow=True
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.client.session.get("_auth_user_id"))
+        self.assertIsNone(self.client.session.get("google_verified_email"))
+        self.assertContains(response, "Wrong Google account")
+        self.assertNotContains(response, "which is not linked")
+
+    def test_code_login_requires_google_then_succeeds(self):
+        # Without Google connect, code login is blocked.
+        blocked = self.client.post(
+            reverse("accounts:login"),
+            {"username": "778811", "password": STRONG_PASSWORD},
+        )
+        self.assertEqual(blocked.status_code, 200)
+        self.assertIsNone(self.client.session.get("_auth_user_id"))
+        self.assertContains(blocked, "Connect your Google profile first")
+
+        session = self.client.session
+        session["google_verified_email"] = "owner@example.com"
+        session.save()
+
+        # After Google connect, code/password works.
+        response = self.client.post(
+            reverse("accounts:login"),
+            {"username": "778811", "password": STRONG_PASSWORD},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(int(self.client.session.get("_auth_user_id")), self.owner.pk)
+        self.assertIsNone(self.client.session.get("google_verified_email"))
+
+    def test_wrong_google_profile_blocks_other_account_login_code(self):
+        other = User.objects.create_user(
+            "other-owner", email="other@example.com", password=STRONG_PASSWORD
+        )
+        Organization.objects.create(
+            name="Other ISP",
+            owner=other,
+            join_code="998877",
+            login_code="998877",
+        )
+        session = self.client.session
+        session["google_verified_email"] = "owner@example.com"
+        session.save()
+
+        response = self.client.post(
+            reverse("accounts:login"),
+            {"username": "998877", "password": STRONG_PASSWORD},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.client.session.get("_auth_user_id"))
+        self.assertContains(response, "Wrong Google account")
+        self.assertNotContains(response, "but this ISP client account uses")
+        self.assertNotContains(response, "other@example.com")
+
+    def test_login_page_shows_code_form_when_google_already_connected(self):
+        session = self.client.session
+        session["google_verified_email"] = "owner@example.com"
+        session.save()
+        response = self.client.get(reverse("accounts:login"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "owner@example.com")
+        self.assertContains(response, "Only this Google profile")
+        self.assertNotContains(response, "Connect Google profile")
+        self.assertContains(response, "Use a different Google profile")
+
+
+@override_settings(
+    GOOGLE_OAUTH_CLIENT_ID="google-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET="google-client-secret",
+    OWNER_REGISTER_INVITE_KEY="",
+)
+class GoogleRegisterPrefillTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        from accounts.models import ClientSettings
+
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+        ClientSettings.objects.update_or_create(
+            pk=1,
+            defaults={
+                "landing_register_enabled": True,
+                "google_login_enabled": True,
+                "google_login_require_email_match": True,
+            },
+        )
+        cache.delete("client_settings:solo:v1")
+        cache.delete("client_settings:solo:v2")
+
+    def test_register_page_shows_google_signup_button(self):
+        response = self.client.get(reverse("accounts:register"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse("accounts:google_register"))
+        self.assertContains(response, "Sign up with Google")
+
+    def test_google_register_start_redirects_to_google(self):
+        response = self.client.get(reverse("accounts:google_register"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("accounts.google.com/o/oauth2/v2/auth", response["Location"])
+        self.assertEqual(self.client.session.get("google_oauth_intent"), "register")
+
+    @patch("accounts.views.urlopen")
+    @patch("accounts.views._google_json_request")
+    def test_google_register_callback_prefills_form(
+        self, mock_google_json_request, mock_urlopen
+    ):
+        mock_google_json_request.return_value = {"access_token": "token-123"}
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"email":"newowner@example.com","email_verified":true,'
+            b'"name":"New Owner ISP","given_name":"New","family_name":"Owner"}'
+        )
+        session = self.client.session
+        session["google_oauth_state"] = "reg-state"
+        session["google_oauth_intent"] = "register"
+        session.save()
+
+        response = self.client.get(
+            reverse("accounts:google_callback"),
+            {"state": "reg-state", "code": "oauth-code"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "newowner@example.com")
+        self.assertContains(response, "NEW OWNER ISP")
+        self.assertContains(response, "Google connected as")
+        profile = self.client.session.get("google_register_profile") or {}
+        self.assertEqual(profile.get("email"), "newowner@example.com")
+
+    @patch("accounts.views.urlopen")
+    @patch("accounts.views._google_json_request")
+    def test_google_register_rejects_existing_owner_email(
+        self, mock_google_json_request, mock_urlopen
+    ):
+        owner = User.objects.create_user(
+            "existing-owner", email="taken@example.com", password=STRONG_PASSWORD
+        )
+        Organization.objects.create(
+            name="Taken ISP",
+            owner=owner,
+            join_code="121212",
+            login_code="121212",
+        )
+        mock_google_json_request.return_value = {"access_token": "token-123"}
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = (
+            b'{"email":"taken@example.com","email_verified":true,"name":"Taken"}'
+        )
+        session = self.client.session
+        session["google_oauth_state"] = "reg-taken"
+        session["google_oauth_intent"] = "register"
+        session.save()
+
+        response = self.client.get(
+            reverse("accounts:google_callback"),
+            {"state": "reg-taken", "code": "oauth-code"},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "already uses this Google email")
+        self.assertIsNone(self.client.session.get("google_register_profile"))
 
 
 class LoginCodeNamespaceTests(TestCase):

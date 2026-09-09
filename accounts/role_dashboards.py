@@ -33,6 +33,7 @@ from accounts.forms import (
     OwnerProfileForm,
     ClientSettingsForm,
     CompanyProfileForm,
+    GoogleLoginSettingsForm,
     PaymentGatewayForm,
     PlatformCommunicationSettingsForm,
     RegisterForm,
@@ -3481,6 +3482,15 @@ def it_support_company_system_settings(request):
                     "url_name": "roles:it_support_isp_onboarding_settings",
                 },
                 {
+                    "key": "google_login_settings",
+                    "label": "Google login settings",
+                    "description": (
+                        "Enable Google sign-in for ISP clients and require Google email "
+                        "to match an existing ISP client account."
+                    ),
+                    "url_name": "roles:it_support_google_login_settings",
+                },
+                {
                     "key": "company_themes",
                     "label": "Company themes",
                     "description": "Preview pay/pause pages, and toggle Refer & earn for each ISP.",
@@ -3922,6 +3932,46 @@ def it_support_isp_onboarding_settings(request):
 
 # Backwards-compatible alias.
 it_support_client_settings = it_support_isp_onboarding_settings
+
+
+@role_required(Employee.Role.IT_SUPPORT)
+def it_support_google_login_settings(request):
+    _prepare_it_support_view(request)
+    settings_obj = ClientSettings.get_solo()
+
+    if request.method == "POST":
+        form = GoogleLoginSettingsForm(request.POST, instance=settings_obj)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Google login settings saved.")
+            return redirect("roles:it_support_google_login_settings")
+    else:
+        form = GoogleLoginSettingsForm(instance=settings_obj)
+
+    from django.conf import settings as django_settings
+
+    oauth_ready = bool(
+        (getattr(django_settings, "GOOGLE_OAUTH_CLIENT_ID", "") or "").strip()
+        and (getattr(django_settings, "GOOGLE_OAUTH_CLIENT_SECRET", "") or "").strip()
+    )
+
+    return render(
+        request,
+        "accounts/it_support_google_login_settings.html",
+        {
+            "page_title": "Google login settings",
+            "page_kicker": "Settings",
+            "page_subtitle": (
+                "Control Google sign-in for ISP clients. When email match is on, "
+                "only Google accounts whose email matches an existing ISP client can sign in."
+            ),
+            "current_page": "google_login_settings",
+            "dashboard_url_name": "roles:it_support",
+            "form": form,
+            "client_settings": settings_obj,
+            "google_oauth_credentials_ready": oauth_ready,
+        },
+    )
 
 
 @role_required(Employee.Role.SALES)

@@ -119,6 +119,8 @@ class ClientSettingsAdmin(admin.ModelAdmin):
         "onboarding_fee_enabled",
         "onboarding_fee_amount",
         "referral_enabled",
+        "google_login_enabled",
+        "google_login_require_email_match",
         "updated_at",
     )
     readonly_fields = ("updated_at",)
@@ -127,6 +129,8 @@ class ClientSettingsAdmin(admin.ModelAdmin):
         "onboarding_fee_enabled",
         "onboarding_fee_amount",
         "referral_enabled",
+        "google_login_enabled",
+        "google_login_require_email_match",
         "updated_at",
     )
 

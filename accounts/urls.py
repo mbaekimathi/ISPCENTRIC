@@ -6,6 +6,9 @@ from .views import (
     EmployeePendingView,
     EmployeeProfileView,
     EmployeeRegisterView,
+    GoogleLoginCallbackView,
+    GoogleLoginStartView,
+    GoogleRegisterStartView,
     OwnerPasswordResetCompleteView,
     OwnerPasswordResetConfirmView,
     OwnerPasswordResetDoneView,
@@ -19,7 +22,18 @@ app_name = "accounts"
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="register"),
+    path(
+        "register/google/",
+        GoogleRegisterStartView.as_view(),
+        name="google_register",
+    ),
     path("login/", UserLoginView.as_view(), name="login"),
+    path("login/google/", GoogleLoginStartView.as_view(), name="google_login"),
+    path(
+        "login/google/callback/",
+        GoogleLoginCallbackView.as_view(),
+        name="google_callback",
+    ),
     path("logout/", UserLogoutView.as_view(), name="logout"),
     path("password-reset/", OwnerPasswordResetView.as_view(), name="password_reset"),
     path(

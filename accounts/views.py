@@ -1,3 +1,11 @@
+import json
+import logging
+import secrets
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import login, update_session_auth_hash
 from django.contrib.auth.models import User
@@ -12,7 +20,7 @@ from django.contrib.auth.views import (
 )
 from django.http import JsonResponse
 from django.shortcuts import redirect, render
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
@@ -33,12 +41,209 @@ from .security import (
     assert_auth_allowed,
     clear_auth_failures,
     employee_login_code_taken,
+    google_login_gate_required,
+    google_verified_email_from_request,
+    GOOGLE_VERIFIED_EMAIL_SESSION_KEY,
     owner_invite_required,
     owner_registration_open,
     record_auth_failure,
 )
 
+logger = logging.getLogger(__name__)
+
 REFERRAL_SESSION_KEY = "referral_code"
+GOOGLE_OAUTH_STATE_SESSION_KEY = "google_oauth_state"
+GOOGLE_OAUTH_PROMPT_SESSION_KEY = "google_oauth_prompt"
+GOOGLE_OAUTH_INTENT_SESSION_KEY = "google_oauth_intent"
+GOOGLE_REGISTER_PROFILE_SESSION_KEY = "google_register_profile"
+
+
+def _google_oauth_enabled() -> bool:
+    client_id = getattr(settings, "GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = getattr(settings, "GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    if not (client_id and client_secret):
+        return False
+    try:
+        return bool(ClientSettings.get_solo().google_login_enabled)
+    except Exception:
+        return False
+
+
+def _google_require_email_match() -> bool:
+    try:
+        return bool(ClientSettings.get_solo().google_login_require_email_match)
+    except Exception:
+        return True
+
+
+def _google_verified_email(request) -> str:
+    return google_verified_email_from_request(request)
+
+
+def _set_google_verified_email(request, email: str) -> None:
+    request.session[GOOGLE_VERIFIED_EMAIL_SESSION_KEY] = (email or "").strip().lower()
+
+
+def _clear_google_verified_email(request) -> None:
+    request.session.pop(GOOGLE_VERIFIED_EMAIL_SESSION_KEY, None)
+
+
+def _google_gate_required() -> bool:
+    """When Google login is on, ISP clients must connect Google before code login."""
+    return google_login_gate_required()
+
+
+def _google_register_profile(request) -> dict:
+    raw = request.session.get(GOOGLE_REGISTER_PROFILE_SESSION_KEY) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _set_google_register_profile(request, profile: dict) -> None:
+    request.session[GOOGLE_REGISTER_PROFILE_SESSION_KEY] = {
+        "email": (profile.get("email") or "").strip().lower(),
+        "name": (profile.get("name") or "").strip(),
+        "given_name": (profile.get("given_name") or "").strip(),
+        "family_name": (profile.get("family_name") or "").strip(),
+    }
+
+
+def _clear_google_register_profile(request) -> None:
+    request.session.pop(GOOGLE_REGISTER_PROFILE_SESSION_KEY, None)
+
+
+def _start_google_oauth(request, *, intent: str):
+    state = secrets.token_urlsafe(24)
+    request.session[GOOGLE_OAUTH_STATE_SESSION_KEY] = state
+    request.session[GOOGLE_OAUTH_INTENT_SESSION_KEY] = intent
+    request.session[GOOGLE_OAUTH_PROMPT_SESSION_KEY] = bool(
+        request.GET.get("prompt_account")
+    )
+    params = {
+        "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+        "redirect_uri": _google_oauth_redirect_uri(request),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "include_granted_scopes": "true",
+    }
+    if request.GET.get("prompt_account"):
+        params["prompt"] = "select_account"
+    return redirect(
+        "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    )
+
+
+def _fetch_google_userinfo(request, code: str) -> dict:
+    token_data = _google_json_request(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
+            "client_secret": settings.GOOGLE_OAUTH_CLIENT_SECRET,
+            "redirect_uri": _google_oauth_redirect_uri(request),
+            "grant_type": "authorization_code",
+        },
+    )
+    access_token = (token_data.get("access_token") or "").strip()
+    if not access_token:
+        raise ValueError("missing_access_token")
+    req = Request(
+        "https://openidconnect.googleapis.com/v1/userinfo",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    with urlopen(req, timeout=10) as response:  # nosec B310
+        payload = response.read().decode("utf-8")
+    userinfo = json.loads(payload or "{}")
+    if not isinstance(userinfo, dict):
+        raise ValueError("invalid_userinfo")
+    return userinfo
+
+
+def _find_isp_owner_by_email(email: str):
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    user = (
+        User.objects.filter(
+            email__iexact=email,
+            is_active=True,
+            organization__isnull=False,
+        )
+        .select_related("organization")
+        .first()
+    )
+    if user is not None:
+        return user
+    org = (
+        Organization.objects.filter(
+            owner__email__iexact=email,
+            owner__is_active=True,
+        )
+        .select_related("owner")
+        .first()
+    )
+    return org.owner if org is not None else None
+
+
+def _google_oauth_redirect_uri(request) -> str:
+    configured = (getattr(settings, "GOOGLE_OAUTH_REDIRECT_URI", "") or "").strip()
+    if configured:
+        return configured
+    return request.build_absolute_uri(reverse("accounts:google_callback"))
+
+
+def _google_json_request(url: str, data: dict | None = None) -> dict:
+    body = None
+    headers = {"Accept": "application/json"}
+    method = "GET"
+    if data is not None:
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        body = urlencode(data).encode("utf-8")
+        method = "POST"
+    req = Request(url, data=body, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=10) as response:  # nosec B310
+            payload = response.read().decode("utf-8")
+    except HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = ""
+        logger.warning("Google OAuth HTTP %s for %s: %s", exc.code, url, err_body[:500])
+        try:
+            parsed_err = json.loads(err_body or "{}")
+        except json.JSONDecodeError:
+            parsed_err = {}
+        if isinstance(parsed_err, dict) and parsed_err.get("error"):
+            raise ValueError(str(parsed_err.get("error"))) from exc
+        raise
+    parsed = json.loads(payload or "{}")
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
+def _google_oauth_user_message(exc: Exception) -> str:
+    detail = str(exc or "").strip().lower()
+    if detail in {"invalid_client", "unauthorized_client"}:
+        return (
+            "Google client ID/secret is invalid. Reset the client secret in Google Cloud "
+            "and update GOOGLE_OAUTH_CLIENT_SECRET in .env."
+        )
+    if detail in {"redirect_uri_mismatch"}:
+        return (
+            "Google redirect URI mismatch. Use exactly "
+            "http://localhost:8000/accounts/login/google/callback/ in Google Cloud."
+        )
+    if detail in {"invalid_grant"}:
+        return "Google sign-in expired. Please try Continue with Google again."
+    return "Could not complete Google sign-in right now. Please try again."
 
 
 def _capture_referral_code(request):
@@ -70,6 +275,16 @@ def _register_form(request, data=None, files=None):
         "require_invite": owner_invite_required(),
         "initial_referral": initial_ref,
     }
+    profile = _google_register_profile(request)
+    google_email = (profile.get("email") or "").strip().lower()
+    if google_email:
+        kwargs["google_email"] = google_email
+        if data is None:
+            initial = {"email": google_email}
+            google_name = (profile.get("name") or "").strip()
+            if google_name:
+                initial["company_name"] = google_name.upper()
+            kwargs["initial_google"] = initial
     if data is not None:
         return RegisterForm(data, files, **kwargs)
     return RegisterForm(**kwargs)
@@ -133,6 +348,22 @@ class RegisterView(View):
             or (request.POST.get("referral_code") or "").strip()
         )
 
+    def _render(self, request, form, referrer=None, status=200):
+        profile = _google_register_profile(request)
+        google_email = (profile.get("email") or "").strip().lower()
+        return render(
+            request,
+            self.template_name,
+            {
+                "form": form,
+                "referrer_organization": referrer,
+                "google_oauth_enabled": _google_oauth_enabled(),
+                "google_register_connected": bool(google_email),
+                "google_register_email": google_email,
+            },
+            status=status,
+        )
+
     def get(self, request):
         if request.user.is_authenticated:
             return redirect(home_url_for_user(request.user))
@@ -151,14 +382,7 @@ class RegisterView(View):
             )
         form = _register_form(request)
         referrer = _resolve_referrer(request, form.initial.get("referral_code"))
-        return render(
-            request,
-            self.template_name,
-            {
-                "form": form,
-                "referrer_organization": referrer,
-            },
-        )
+        return self._render(request, form, referrer=referrer)
 
     def post(self, request):
         ref_hint = self._referral_hint(request)
@@ -178,6 +402,11 @@ class RegisterView(View):
         if form.is_valid():
             user = form.save(commit=False)
             user.email = form.cleaned_data["email"]
+            profile = _google_register_profile(request)
+            if profile.get("given_name"):
+                user.first_name = (profile.get("given_name") or "")[:150]
+            if profile.get("family_name"):
+                user.last_name = (profile.get("family_name") or "")[:150]
             user.save()
             referrer = getattr(form, "resolved_referrer", None)
             if referrer is None:
@@ -214,6 +443,9 @@ class RegisterView(View):
                 subject=f"New ISP registered — {org.name}",
             )
             request.session.pop(REFERRAL_SESSION_KEY, None)
+            if (user.email or "").strip():
+                _set_google_verified_email(request, user.email)
+            _clear_google_register_profile(request)
             clear_auth_failures("register", request)
             login(request, user)
             return redirect(home_url_for_user(user))
@@ -221,14 +453,7 @@ class RegisterView(View):
         referrer = getattr(form, "resolved_referrer", None) or _resolve_referrer(
             request, form.data.get("referral_code")
         )
-        return render(
-            request,
-            self.template_name,
-            {
-                "form": form,
-                "referrer_organization": referrer,
-            },
-        )
+        return self._render(request, form, referrer=referrer)
 
 
 class UserLoginView(LoginView):
@@ -241,7 +466,19 @@ class UserLoginView(LoginView):
         context["landing_register_enabled"] = bool(
             ClientSettings.get_solo().landing_register_enabled
         )
+        google_enabled = _google_oauth_enabled()
+        google_verified = _google_verified_email(self.request)
+        gate_required = _google_gate_required()
+        context["google_oauth_enabled"] = google_enabled
+        context["google_gate_required"] = gate_required
+        context["google_verified_email"] = google_verified
+        context["google_connected"] = bool(google_verified) if gate_required else True
         return context
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs["request"] = self.request
+        return kwargs
 
     def dispatch(self, request, *args, **kwargs):
         try:
@@ -257,6 +494,8 @@ class UserLoginView(LoginView):
         clear_auth_failures("login", self.request)
         clear_auth_failures("login_user", self.request, username)
         response = super().form_valid(form)
+        # Code/password completed — Google gate no longer needed this session.
+        _clear_google_verified_email(self.request)
         name = _user_session_name(self.request.user)
         messages.success(self.request, _login_greeting(name))
         return response
@@ -279,6 +518,135 @@ class UserLoginView(LoginView):
         return home_url_for_user(self.request.user)
 
 
+class GoogleLoginStartView(View):
+    def get(self, request):
+        if not _google_oauth_enabled():
+            messages.error(
+                request,
+                "Google sign-in is not configured yet. Please use login code and password.",
+            )
+            return redirect("accounts:login")
+        try:
+            assert_auth_allowed("google_login", request, limit=20, window=900)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(request, "accounts/login.html", LoginForm())
+        return _start_google_oauth(request, intent="login")
+
+
+class GoogleRegisterStartView(View):
+    def get(self, request):
+        if not _google_oauth_enabled():
+            messages.error(
+                request,
+                "Google sign-up is not configured yet. Please complete the form manually.",
+            )
+            return redirect("accounts:register")
+        ref_hint = (
+            (request.GET.get("ref") or "").strip()
+            or _session_referral_code(request)
+        )
+        if not owner_registration_open(referral_code=ref_hint):
+            return render(request, "accounts/register_closed.html", status=403)
+        try:
+            assert_auth_allowed("google_register", request, limit=20, window=900)
+        except AuthRateLimitExceeded:
+            return _rate_limited_response(
+                request, "accounts/register.html", _register_form(request)
+            )
+        return _start_google_oauth(request, intent="register")
+
+
+class GoogleLoginCallbackView(View):
+    def get(self, request):
+        intent = (request.session.pop(GOOGLE_OAUTH_INTENT_SESSION_KEY, "") or "login").strip()
+        expected_state = request.session.pop(GOOGLE_OAUTH_STATE_SESSION_KEY, "")
+        request.session.pop(GOOGLE_OAUTH_PROMPT_SESSION_KEY, None)
+        fail_url = "accounts:register" if intent == "register" else "accounts:login"
+        state = (request.GET.get("state") or "").strip()
+        if not expected_state or not state or state != expected_state:
+            messages.error(request, "Google sign-in failed. Please try again.")
+            return redirect(fail_url)
+
+        code = (request.GET.get("code") or "").strip()
+        if not code:
+            messages.error(request, "Google sign-in was cancelled.")
+            return redirect(fail_url)
+        try:
+            userinfo = _fetch_google_userinfo(request, code)
+        except (HTTPError, URLError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("Google OAuth callback failed: %s", exc)
+            messages.error(request, _google_oauth_user_message(exc))
+            return redirect(fail_url)
+
+        email = (userinfo.get("email") or "").strip().lower()
+        email_verified = bool(userinfo.get("email_verified"))
+        if not email or not email_verified:
+            messages.error(
+                request,
+                "Your Google account must have a verified email address.",
+            )
+            return redirect(fail_url)
+
+        if not _google_oauth_enabled():
+            messages.error(
+                request,
+                "Google sign-in is currently disabled.",
+            )
+            return redirect(fail_url)
+
+        if intent == "register":
+            existing = _find_isp_owner_by_email(email)
+            if existing is not None:
+                messages.error(
+                    request,
+                    "An ISP client account already uses this Google email. Sign in instead.",
+                )
+                return redirect("accounts:login")
+            clear_auth_failures("google_register", request)
+            _set_google_register_profile(
+                request,
+                {
+                    "email": email,
+                    "name": userinfo.get("name") or "",
+                    "given_name": userinfo.get("given_name") or "",
+                    "family_name": userinfo.get("family_name") or "",
+                },
+            )
+            messages.success(
+                request,
+                f"Google connected as {email}. Review the prefilled details, then finish registration.",
+            )
+            return redirect("accounts:register")
+
+        if not _google_require_email_match():
+            messages.error(
+                request,
+                "Google sign-in requires matching email. Ask IT Support to enable that setting.",
+            )
+            return redirect("accounts:login")
+
+        user = _find_isp_owner_by_email(email)
+        if not user or not hasattr(user, "organization"):
+            logger.info("Google connect rejected: no ISP owner for email %s", email)
+            _clear_google_verified_email(request)
+            from accounts.security import google_wrong_profile_message
+
+            messages.error(
+                request,
+                google_wrong_profile_message(connected_email=email),
+            )
+            return redirect("accounts:login")
+
+        clear_auth_failures("google_login", request)
+        _set_google_verified_email(request, email)
+        messages.success(
+            request,
+            f"Google connected as {email}. Only this profile can unlock login for that ISP account. "
+            "Now enter your 6-digit login code and password.",
+        )
+        return redirect("accounts:login")
+
+
 class UserLogoutView(LogoutView):
     next_page = reverse_lazy("core:landing")
 
@@ -286,6 +654,8 @@ class UserLogoutView(LogoutView):
         farewell = None
         if request.user.is_authenticated:
             farewell = _logout_farewell(_user_session_name(request.user))
+        _clear_google_verified_email(request)
+        _clear_google_register_profile(request)
         response = super().dispatch(request, *args, **kwargs)
         if farewell:
             messages.success(request, farewell)

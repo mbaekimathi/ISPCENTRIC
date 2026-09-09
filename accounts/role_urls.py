@@ -340,6 +340,11 @@ urlpatterns = [
         name="it_support_isp_onboarding_settings",
     ),
     path(
+        "it-support/google-login-settings/",
+        role_dashboards.it_support_google_login_settings,
+        name="it_support_google_login_settings",
+    ),
+    path(
         "it-support/company-system-settings/",
         role_dashboards.it_support_company_system_settings,
         name="it_support_company_system_settings",

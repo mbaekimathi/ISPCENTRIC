@@ -257,13 +257,26 @@ class RegisterForm(UserCreationForm):
         "invite_key",
     ]
 
-    def __init__(self, *args, require_invite: bool | None = None, initial_referral: str = "", **kwargs):
+    def __init__(
+        self,
+        *args,
+        require_invite: bool | None = None,
+        initial_referral: str = "",
+        google_email: str = "",
+        initial_google: dict | None = None,
+        **kwargs,
+    ):
         self.require_invite = (
             owner_invite_required() if require_invite is None else bool(require_invite)
         )
+        self.google_email = (google_email or "").strip().lower()
         initial = kwargs.setdefault("initial", {})
         if initial_referral and "referral_code" not in initial:
             initial["referral_code"] = initial_referral
+        if initial_google:
+            for key, value in initial_google.items():
+                if key not in initial and value:
+                    initial[key] = value
         super().__init__(*args, **kwargs)
         if not self.require_invite:
             self.fields.pop("invite_key", None)
@@ -315,6 +328,14 @@ class RegisterForm(UserCreationForm):
                 "class": "form-control join-code-input password-input",
             }
         )
+        if self.google_email:
+            self.fields["email"].initial = self.google_email
+            self.fields["email"].widget.attrs.update(
+                {
+                    "readonly": "readonly",
+                    "class": "form-control text-lower is-google-locked",
+                }
+            )
         self.country_options = get_country_options()
         selected = self.data.get("country_code") if self.is_bound else self.fields["country_code"].initial
         if self.prefix and self.is_bound:
@@ -370,7 +391,16 @@ class RegisterForm(UserCreationForm):
         return provided
 
     def clean_email(self):
-        return self.cleaned_data["email"].strip().lower()
+        email = (self.cleaned_data.get("email") or "").strip().lower()
+        if getattr(self, "google_email", ""):
+            email = self.google_email
+        if not email:
+            raise forms.ValidationError("Enter an email address.")
+        if Organization.objects.filter(owner__email__iexact=email).exists():
+            raise forms.ValidationError(
+                "An ISP client account already uses this email. Sign in instead."
+            )
+        return email
 
     def clean_company_name(self):
         return self.cleaned_data["company_name"].strip().upper()
@@ -451,6 +481,31 @@ class LoginForm(AuthenticationForm):
                 self.error_messages["invalid_login"],
                 code="invalid_login",
                 params={"username": self.username_field.verbose_name},
+            )
+        # When Google gate is on, code/password login requires a connected Google profile
+        # whose email matches this ISP client account.
+        from accounts.security import (
+            google_login_gate_required,
+            google_verified_email_from_request,
+            google_wrong_profile_message,
+        )
+
+        if not google_login_gate_required():
+            return
+        verified = google_verified_email_from_request(getattr(self, "request", None))
+        owner_email = (user.email or "").strip().lower()
+        if not verified:
+            raise forms.ValidationError(
+                "Connect your Google profile first, then sign in with your login code and password.",
+                code="google_required",
+            )
+        if not owner_email or verified != owner_email:
+            raise forms.ValidationError(
+                google_wrong_profile_message(
+                    connected_email=verified,
+                    account_email=owner_email,
+                ),
+                code="google_email_mismatch",
             )
 
 
@@ -1808,6 +1863,38 @@ class ClientSettingsForm(forms.ModelForm):
                 "Enter an amount greater than zero when onboarding fee is enabled.",
             )
         return cleaned
+
+
+class GoogleLoginSettingsForm(forms.ModelForm):
+    """Google sign-in switches for ISP client login (IT Support)."""
+
+    class Meta:
+        model = ClientSettings
+        fields = [
+            "google_login_enabled",
+            "google_login_require_email_match",
+        ]
+        labels = {
+            "google_login_enabled": "Enable Google login",
+            "google_login_require_email_match": "Require matching email",
+        }
+        help_texts = {
+            "google_login_enabled": (
+                "Show Continue with Google on the ISP client login page."
+            ),
+            "google_login_require_email_match": (
+                "Only sign in when the Google account email matches an existing "
+                "ISP client account email."
+            ),
+        }
+        widgets = {
+            "google_login_enabled": forms.CheckboxInput(
+                attrs={"id": "id_google_login_enabled"}
+            ),
+            "google_login_require_email_match": forms.CheckboxInput(
+                attrs={"id": "id_google_login_require_email_match"}
+            ),
+        }
 
 
 class CommunicationSettingsForm(forms.ModelForm):

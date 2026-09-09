@@ -213,6 +213,8 @@ class CommunicationSettingsViewTests(TestCase):
         self.assertContains(response, "Welcome / account created")
         self.assertContains(response, "Lead allocated to this ISP")
         self.assertContains(response, "MikroTik successfully onboarded")
+        self.assertContains(response, "MikroTik offline or health below 70%")
+        self.assertContains(response, "PPPoE dialed but without internet")
         self.assertContains(response, "When messages are sent")
         self.assertContains(response, "comms-event-table")
         self.assertContains(response, "data-comms-message-open")
@@ -497,7 +499,30 @@ class PlatformCommunicationSettingsTests(TestCase):
         self.assertContains(response, "/it-support/communications/")
         self.assertContains(response, "Communications")
         self.assertContains(response, "Company profile")
+        self.assertContains(response, "Google login settings")
+        self.assertContains(response, "/it-support/google-login-settings/")
         self.assertNotContains(response, "/app/account/communications/")
+
+    def test_google_login_settings_page_saves_toggles(self):
+        from accounts.models import ClientSettings
+
+        url = reverse("roles:it_support_google_login_settings")
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Enable Google login")
+        self.assertContains(response, "Require matching email")
+
+        response = self.client.post(
+            url,
+            {
+                "google_login_enabled": "on",
+                "google_login_require_email_match": "on",
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        settings_obj = ClientSettings.get_solo()
+        self.assertTrue(settings_obj.google_login_enabled)
+        self.assertTrue(settings_obj.google_login_require_email_match)
 
     def test_company_profile_sidebar_does_not_share_system_settings_links(self):
         response = self.client.get(self.company_profile_url)
@@ -505,6 +530,7 @@ class PlatformCommunicationSettingsTests(TestCase):
         self.assertNotContains(response, "Company communications settings")
         self.assertNotContains(response, "Company Payment Gateway")
         self.assertNotContains(response, "ISP onboarding settings")
+        self.assertNotContains(response, "Google login settings")
         self.assertNotContains(response, "Company themes")
         self.assertNotContains(response, "/app/account/communications/")
 
@@ -944,3 +970,167 @@ class OrgEventDispatchTests(TestCase):
         mock_notify.assert_called()
         self.assertEqual(mock_notify.call_args.args[0], "package_pause_resume")
         self.assertEqual(mock_notify.call_args.kwargs.get("client"), customer)
+
+
+class MikroTikHealthAndPppoeNotSurfingNotifyTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            "health-notify-owner",
+            password="x",
+            email="owner@example.com",
+        )
+        self.org = Organization.objects.create(
+            name="Health ISP",
+            owner=self.owner,
+            join_code="445566",
+            phone="0712345678",
+        )
+        self.comms = CommunicationSettings.for_organization(self.org)
+        self.comms.sms_enabled = True
+        self.comms.email_enabled = True
+        self.comms.sms_credential_source = CommunicationSettings.CredentialSource.OWN
+        self.comms.email_credential_source = CommunicationSettings.CredentialSource.OWN
+        self.comms.sms_provider = CommunicationSettings.SmsProvider.AFRICASTALKING
+        self.comms.sms_username = "sandbox"
+        self.comms.sms_api_key = "key"
+        self.comms.email_host = "smtp.example.com"
+        self.comms.email_host_user = "noreply@example.com"
+        self.comms.email_host_password = "secret"
+        self.comms.email_from_email = "noreply@example.com"
+        self.comms.enabled_messages = {
+            "isp_mikrotik_health_low": {
+                "message": (
+                    "Alert: MikroTik “{router_name}” is {status_label} "
+                    "(health {health_score}%)."
+                ),
+                "recipients": ["organization_owner"],
+                "channels": ["email", "sms"],
+                "include_link": False,
+            },
+            "isp_pppoe_connected_not_surfing": {
+                "message": (
+                    "{affected_count} PPPoE client(s) dialed without internet:\n"
+                    "{affected_clients}"
+                ),
+                "recipients": ["organization_owner"],
+                "channels": ["email"],
+                "include_link": False,
+            },
+        }
+        self.comms.save()
+
+    def test_mikrotik_health_low_notifies_once_per_outage(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_health_low
+
+        cache.clear()
+        with patch("accounts.communications.send_email") as mock_email, patch(
+            "accounts.communications.send_sms"
+        ) as mock_sms:
+            mock_email.return_value = {"ok": True}
+            mock_sms.return_value = {"ok": True}
+            first = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=9,
+                router_name="Edge-01",
+                status="disconnected",
+                score=0,
+            )
+            second = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=9,
+                router_name="Edge-01",
+                status="disconnected",
+                score=0,
+            )
+        self.assertTrue(first.get("ok"))
+        self.assertTrue(second.get("skipped"))
+        self.assertEqual(mock_email.call_count, 1)
+        self.assertEqual(mock_sms.call_count, 1)
+        self.assertIn("Edge-01", first.get("message") or "")
+
+    def test_mikrotik_health_recovers_then_can_alert_again(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_mikrotik_health_low
+
+        cache.clear()
+        with patch("accounts.communications.send_email") as mock_email, patch(
+            "accounts.communications.send_sms"
+        ) as mock_sms:
+            mock_email.return_value = {"ok": True}
+            mock_sms.return_value = {"ok": True}
+            maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=3,
+                router_name="Core",
+                status="limited",
+                score=55,
+            )
+            recovered = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=3,
+                router_name="Core",
+                status="connected",
+                score=100,
+            )
+            again = maybe_notify_mikrotik_health_low(
+                organization=self.org,
+                router_id=3,
+                router_name="Core",
+                status="disconnected",
+                score=0,
+            )
+        self.assertTrue(recovered.get("skipped"))
+        self.assertTrue(again.get("ok"))
+        self.assertEqual(mock_email.call_count, 2)
+
+    def test_pppoe_not_surfing_lists_affected_clients(self):
+        from django.core.cache import cache
+
+        from accounts.communications import maybe_notify_pppoe_connected_not_surfing
+
+        cache.clear()
+        clients = [
+            {
+                "id": 11,
+                "full_name": "Ann Dialed",
+                "account_number": "PPP-11",
+                "phone": "0711000011",
+                "internet_allowed": True,
+                "connected": True,
+                "surfing": False,
+            },
+            {
+                "id": 12,
+                "full_name": "Bob Ok",
+                "account_number": "PPP-12",
+                "internet_allowed": True,
+                "connected": True,
+                "surfing": True,
+            },
+            {
+                "id": 13,
+                "full_name": "Cara Dialed",
+                "account_number": "PPP-13",
+                "internet_allowed": True,
+                "connected": True,
+                "surfing": False,
+            },
+        ]
+        with patch("accounts.communications.send_email") as mock_email:
+            mock_email.return_value = {"ok": True}
+            result = maybe_notify_pppoe_connected_not_surfing(
+                organization=self.org,
+                clients=clients,
+                newly_affected_ids={"11", "13"},
+            )
+        self.assertTrue(result.get("ok"))
+        body = result.get("message") or ""
+        self.assertIn("2 PPPoE", body)
+        self.assertIn("Ann Dialed", body)
+        self.assertIn("PPP-11", body)
+        self.assertIn("Cara Dialed", body)
+        self.assertNotIn("Bob Ok", body)
+        mock_email.assert_called_once()

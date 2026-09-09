@@ -81,9 +81,11 @@ _LIVE_STABLE_TTL = 90  # hold last Connected row through flaky live polls
 _IMMEDIATE_LIVE_OUTAGE = frozenset({"auth_failed", "wrong_host"})
 _ONBOARDING_GUARD_TTL = 15 * 60  # pause fleet probes/auto-restore while onboarding
 _POST_ONBOARD_GRACE_TTL = 30 * 60  # after onboard: extra probe retries + hold Connected
+_POST_UPLINK_GRACE_TTL = 8 * 60  # after bond/failover/balance: WAN/API settle window
 _STABILIZE_FAILURES_DEFAULT = 2  # consecutive non-connected polls before UI drops
 _STABILIZE_FAILURES_TUNNEL = 3  # WireGuard peers need more tolerance
 _STABILIZE_FAILURES_GRACE = 4  # freshly onboarded routers
+_STABILIZE_FAILURES_UPLINK = 5  # after combine/failover/balance apply
 _AUTO_RESTORE_CONFIRM_TTL = 120  # require repeated outage before auto-restore runs
 _SOFT_LIVE_OUTAGE = frozenset({"disconnected", "reachable", "limited"})
 _HOSTED_AUTH_CACHE_TTL = 20  # seconds; short so password changes surface quickly
@@ -392,12 +394,43 @@ def is_mikrotik_post_onboard_grace(router_id: int) -> bool:
     return bool(cache.get(_post_onboard_grace_key(router_id)))
 
 
+def _post_uplink_grace_key(router_id: int) -> str:
+    return f"mikrotik_post_uplink_grace:{int(router_id)}"
+
+
+def mark_mikrotik_post_uplink_grace(
+    router_id: int,
+    *,
+    mode: str = "",
+    ttl: int = _POST_UPLINK_GRACE_TTL,
+) -> None:
+    """
+    After bond / failover / balance apply, tolerate brief API timeouts.
+
+    Combining same-ISP cables flaps the default route; WireGuard handshakes can
+    stay fresh while RouterOS API login is temporarily unreachable.
+    """
+    if not router_id:
+        return
+    cache.set(
+        _post_uplink_grace_key(router_id),
+        {"mode": (mode or "").strip()},
+        max(60, int(ttl or _POST_UPLINK_GRACE_TTL)),
+    )
+
+
+def is_mikrotik_post_uplink_grace(router_id: int) -> bool:
+    return bool(cache.get(_post_uplink_grace_key(router_id)))
+
+
 def _post_onboard_grace_meta(router_id: int) -> dict[str, Any]:
     raw = cache.get(_post_onboard_grace_key(router_id))
     return raw if isinstance(raw, dict) else {}
 
 
 def _stabilize_failures_required(router_id: int, *, tunnel: bool = False) -> int:
+    if is_mikrotik_post_uplink_grace(router_id):
+        return _STABILIZE_FAILURES_UPLINK
     if is_mikrotik_post_onboard_grace(router_id):
         return _STABILIZE_FAILURES_GRACE
     meta = _post_onboard_grace_meta(router_id)
@@ -581,6 +614,10 @@ def _confirmed_status_for_sample(
         cache.delete(pending_key)
         return status
 
+    # After combine/failover, soft API flaps should not paint the health chart down.
+    if is_mikrotik_post_uplink_grace(router_id) and status in _SOFT_LIVE_OUTAGE:
+        return None
+
     prev = (previous_status or "").strip().lower() or None
     if prev and prev != "connected" and status_score(prev) < 100:
         # Already degraded in the last recorded sample — record freely.
@@ -683,6 +720,33 @@ def record_mikrotik_status_samples(organization, routers: list[dict[str, Any]]) 
     ).delete()
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:24")
     cache.delete(f"mikrotik_perf_trend:{organization.pk}:6")
+
+    # Notify ISP account communications when a router goes offline / health < 70%.
+    try:
+        from accounts.communications import maybe_notify_mikrotik_health_low
+
+        names = {
+            int(r.pk): (r.name or r.host or f"Router #{r.pk}")
+            for r in MikroTikRouter.objects.filter(
+                organization=organization, pk__in=known
+            ).only("id", "name", "host")
+        }
+        for row, status in confirmed_rows:
+            rid = row.get("id")
+            if rid is None or int(rid) not in known:
+                continue
+            rid_int = int(rid)
+            maybe_notify_mikrotik_health_low(
+                organization=organization,
+                router_id=rid_int,
+                router_name=names.get(rid_int, row.get("name") or ""),
+                status=status,
+                score=status_score(status),
+                error=(row.get("error") or ""),
+            )
+    except Exception:
+        pass
+
     return len(rows)
 
 
@@ -957,6 +1021,9 @@ def maybe_auto_restore_router(router: MikroTikRouter, status_row: dict[str, Any]
 
     # Freshly onboarded routers: manual Reconnect is safer than auto WAN touches.
     if is_mikrotik_post_onboard_grace(router.pk):
+        return None
+
+    if is_mikrotik_post_uplink_grace(router.pk):
         return None
 
     if not getattr(settings, "MIKROTIK_AUTO_RESTORE", False):
