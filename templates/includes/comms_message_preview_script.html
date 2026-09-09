@@ -1,0 +1,201 @@
+<script>
+(function () {
+  var modal = document.getElementById("comms-message-modal");
+  var titleEl = document.getElementById("comms-message-title");
+  if (!modal || !titleEl) return;
+
+  var requireGateway = modal.getAttribute("data-preview-require-gateway") !== "0";
+  var gateway = {
+    email: modal.getAttribute("data-gateway-email") === "1",
+    sms: modal.getAttribute("data-gateway-sms") === "1",
+    whatsapp: modal.getAttribute("data-gateway-whatsapp") === "1"
+  };
+  var tabOrder = ["email", "sms", "whatsapp"];
+  var channelCopy = {
+    email: "Inbox preview — how the email arrives.",
+    sms: "Phone Messages preview — plain SMS text.",
+    whatsapp: "WhatsApp chat preview — business message bubble."
+  };
+  var shellEl = modal.querySelector("[data-comms-preview-shell]");
+  var subEl = modal.querySelector("[data-comms-preview-sub]");
+  var emailSubjectEl = document.getElementById("comms-preview-email-subject");
+  var emailBodyEl = document.getElementById("comms-preview-email-body");
+  var emailLinkEl = modal.querySelector("[data-comms-preview-link]");
+  var emailTimeEl = modal.querySelector("[data-comms-preview-email-time]");
+  var smsBodyEl = document.getElementById("comms-preview-sms-body");
+  var smsMetaEl = document.getElementById("comms-preview-sms-meta");
+  var smsTimeEl = modal.querySelector("[data-comms-preview-sms-time]");
+  var waBodyEl = document.getElementById("comms-preview-wa-body");
+  var waTimeEl = modal.querySelector("[data-comms-preview-wa-time]");
+  var emptyEl = modal.querySelector("[data-comms-preview-empty]");
+  var clockEls = modal.querySelectorAll("[data-comms-preview-clock]");
+  var activeChannel = "";
+
+  function formatClock(date) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  function smsSegments(text) {
+    var len = (text || "").length;
+    if (!len) return { chars: 0, segments: 0 };
+    var limit = len > 160 ? 153 : 160;
+    return { chars: len, segments: Math.ceil(len / limit) };
+  }
+
+  function buildMessage(base, includeLink, linkLabel, linkPath, linkNote) {
+    var text = (base || "").trim() || "No message configured.";
+    if (!includeLink) return text;
+    if (linkPath) {
+      var origin = window.location.origin || "";
+      var href = linkPath.indexOf("http") === 0 ? linkPath : (origin + linkPath);
+      return text + "\n\n" + (linkLabel ? linkLabel + ": " : "") + href;
+    }
+    if (linkNote) return text + "\n\n" + linkNote;
+    if (linkLabel) return text + "\n\n" + linkLabel + " link will be included when sent.";
+    return text;
+  }
+
+  function setActiveTab(channel) {
+    activeChannel = channel || "";
+    if (shellEl) {
+      shellEl.classList.remove("is-channel-email", "is-channel-sms", "is-channel-whatsapp");
+      if (activeChannel) shellEl.classList.add("is-channel-" + activeChannel);
+    }
+    if (subEl) {
+      subEl.textContent = channelCopy[activeChannel] || "How recipients will see this message.";
+    }
+    modal.querySelectorAll("[data-comms-preview-tab]").forEach(function (tab) {
+      var id = tab.getAttribute("data-comms-preview-tab");
+      var on = id === activeChannel && !tab.hidden;
+      tab.classList.toggle("is-active", on);
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    modal.querySelectorAll("[data-comms-preview-pane]").forEach(function (pane) {
+      var id = pane.getAttribute("data-comms-preview-pane");
+      pane.hidden = id !== activeChannel;
+    });
+  }
+
+  function openModal(opts) {
+    var title = opts.title || "Message";
+    var baseMessage = (opts.message || "").trim() || "No message configured.";
+    var linkedMessage = buildMessage(
+      baseMessage,
+      opts.includeLink,
+      opts.linkLabel,
+      opts.linkPath,
+      opts.linkNote
+    );
+    var eventChannels = (opts.eventChannels || []).filter(Boolean);
+    var selected = opts.selectedChannel || "";
+    var available = tabOrder.filter(function (channel) {
+      var allowed = !eventChannels.length || eventChannels.indexOf(channel) !== -1;
+      if (!allowed) return false;
+      if (!requireGateway) return true;
+      return !!gateway[channel];
+    });
+    var now = new Date();
+    var clock = formatClock(now);
+
+    titleEl.textContent = title;
+    clockEls.forEach(function (el) { el.textContent = clock; });
+    if (emailSubjectEl) emailSubjectEl.textContent = title;
+    if (emailBodyEl) emailBodyEl.textContent = baseMessage;
+    if (emailTimeEl) emailTimeEl.textContent = clock;
+    if (emailLinkEl) {
+      if (opts.includeLink && (opts.linkPath || opts.linkNote || opts.linkLabel)) {
+        emailLinkEl.hidden = false;
+        emailLinkEl.textContent = "";
+        if (opts.linkPath) {
+          var origin = window.location.origin || "";
+          var href = opts.linkPath.indexOf("http") === 0 ? opts.linkPath : (origin + opts.linkPath);
+          var anchor = document.createElement("a");
+          anchor.href = href;
+          anchor.textContent = opts.linkLabel || "Open in ISPCENTRIC";
+          emailLinkEl.appendChild(anchor);
+        } else {
+          var note = document.createElement("span");
+          note.textContent = opts.linkNote || ((opts.linkLabel || "Related page") + " link will be included when sent.");
+          emailLinkEl.appendChild(note);
+        }
+      } else {
+        emailLinkEl.hidden = true;
+        emailLinkEl.textContent = "";
+      }
+    }
+    if (smsBodyEl) smsBodyEl.textContent = linkedMessage;
+    if (smsTimeEl) smsTimeEl.textContent = clock;
+    if (smsMetaEl) {
+      var meta = smsSegments(linkedMessage);
+      smsMetaEl.textContent = meta.chars
+        ? meta.chars + " characters · " + meta.segments + (meta.segments === 1 ? " SMS segment" : " SMS segments")
+        : "";
+    }
+    if (waBodyEl) waBodyEl.textContent = linkedMessage;
+    if (waTimeEl) waTimeEl.textContent = clock;
+
+    modal.querySelectorAll("[data-comms-preview-tab]").forEach(function (tab) {
+      var id = tab.getAttribute("data-comms-preview-tab");
+      tab.hidden = available.indexOf(id) === -1;
+    });
+    if (emptyEl) emptyEl.hidden = available.length > 0;
+
+    var start = available.indexOf(selected) !== -1 ? selected : available[0] || "";
+    setActiveTab(start);
+
+    modal.hidden = false;
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("role-modal-open");
+  }
+
+  function closeModal() {
+    modal.hidden = true;
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("role-modal-open");
+    if (shellEl) {
+      shellEl.classList.remove("is-channel-email", "is-channel-sms", "is-channel-whatsapp");
+    }
+  }
+
+  modal.querySelectorAll("[data-comms-preview-tab]").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      if (tab.hidden) return;
+      setActiveTab(tab.getAttribute("data-comms-preview-tab"));
+    });
+  });
+
+  document.querySelectorAll("[data-comms-message-open]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var row = btn.closest(".comms-event-row, .comms-catalog-row, .comms-event-actions") || btn.parentElement;
+      var holder = row ? row.querySelector("[data-comms-message-text]") : null;
+      if (!holder && btn.parentElement) {
+        holder = btn.parentElement.querySelector("[data-comms-message-text]");
+      }
+      var channelSelect = row ? row.querySelector('select[name="channels"]') : null;
+      var linkSelect = row ? row.querySelector('select[name="include_link"]') : null;
+      var channels = (btn.getAttribute("data-channels") || "")
+        .split(",")
+        .map(function (v) { return v.trim(); })
+        .filter(Boolean);
+      openModal({
+        title: btn.getAttribute("data-title"),
+        message: holder ? holder.textContent : (btn.getAttribute("data-message") || ""),
+        eventChannels: channels,
+        selectedChannel: channelSelect ? channelSelect.value : (btn.getAttribute("data-selected-channel") || ""),
+        includeLink: !!(linkSelect && linkSelect.value),
+        linkLabel: btn.getAttribute("data-link-label") || "",
+        linkPath: btn.getAttribute("data-link-path") || "",
+        linkNote: btn.getAttribute("data-link-note") || ""
+      });
+    });
+  });
+
+  modal.querySelectorAll("[data-comms-message-close]").forEach(function (el) {
+    el.addEventListener("click", closeModal);
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape" && !modal.hidden) closeModal();
+  });
+})();
+</script>

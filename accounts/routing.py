@@ -77,6 +77,11 @@ ROLE_DASHBOARD_ONLY_NAV = {
             "label": "Company clients",
             "url_name": "roles:it_support_company_clients",
         },
+        {
+            "key": "company_communications",
+            "label": "Company communications",
+            "url_name": "roles:it_support_communications",
+        },
         {"key": "hr", "label": "Human resource", "url_name": "roles:it_support_hr"},
     ],
     Employee.Role.SALES: [
@@ -151,10 +156,13 @@ TECHNICIAN_REGISTER_PPPOE_NAV = {
     "modal_id": "pppoe-register-modal",
 }
 
-# Sidebar links shown while inside IT Support company hub pages
-# (communications, payment gateway, commissions). Company profile lives under
-# Company System Settings instead.
-IT_SUPPORT_COMPANY_SETTINGS_NAV = [
+# Module links for /it-support/company-system-settings/ only (not child pages).
+IT_SUPPORT_COMPANY_SYSTEM_SETTINGS_NAV = [
+    {
+        "key": "company_profile",
+        "label": "Company profile",
+        "url_name": "roles:it_support_company_profile",
+    },
     {
         "key": "company_communications",
         "label": "Company communications settings",
@@ -166,19 +174,25 @@ IT_SUPPORT_COMPANY_SETTINGS_NAV = [
         "url_name": "roles:it_support_payment_gateway",
     },
     {
-        "key": "commissions",
-        "label": "Commissions",
-        "url_name": "roles:it_support_commissions",
+        "key": "isp_onboarding_settings",
+        "label": "ISP onboarding settings",
+        "url_name": "roles:it_support_isp_onboarding_settings",
+    },
+    {
+        "key": "company_themes",
+        "label": "Company themes",
+        "url_name": "roles:it_support_company_themes",
     },
 ]
-
-IT_SUPPORT_COMPANY_SETTINGS_PAGES = frozenset(
-    item["key"] for item in IT_SUPPORT_COMPANY_SETTINGS_NAV
-)
 
 # Links pinned above the Signed in block (bottom of sidebar, above logout).
 ROLE_NAV_BEFORE_META = {
     Employee.Role.IT_SUPPORT: [
+        {
+            "key": "company_account_communications",
+            "label": "Communications",
+            "url_name": "roles:it_support_communications",
+        },
         {
             "key": "company_system_settings",
             "label": "Company System Settings",
@@ -269,7 +283,7 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
 
     Module links in ROLE_DASHBOARD_ONLY_NAV appear only on the dashboard page.
     They do not follow you onto other pages unless added to that page's nav.
-    Company settings sub-links (Payment Gateway, Commissions) are template-only.
+    Company System Settings module links appear only on that hub page.
     """
     items = list(ROLE_NAV_ITEMS.get(role, []))
     if not any(item.get("key") == "dashboard" for item in items):
@@ -310,9 +324,38 @@ def nav_items_for_role(role: str, current_page: str | None = None) -> dict:
                 IT_SUPPORT_REGISTER_ISP_NAV,
             ]
         )
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_system_settings":
+        items.extend(IT_SUPPORT_COMPANY_SYSTEM_SETTINGS_NAV)
+    elif role == Employee.Role.IT_SUPPORT and current_page == "payment_gateway":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    elif role == Employee.Role.IT_SUPPORT and current_page == "isp_onboarding_settings":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_profile":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_themes":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_communications":
+        items = [item for item in items if item.get("key") != "my_stock"]
+        items.append(
+            {
+                "key": "company_account_communications",
+                "label": "Communications",
+                "url_name": "roles:it_support_communications",
+            }
+        )
+    elif role == Employee.Role.IT_SUPPORT and current_page == "company_account_communications":
+        items = [item for item in items if item.get("key") != "my_stock"]
+    before_meta = list(ROLE_NAV_BEFORE_META.get(role, []))
+    if role == Employee.Role.IT_SUPPORT and current_page == "company_communications":
+        # Shown in main nav on this page; avoid a duplicate above Signed in.
+        before_meta = [
+            item
+            for item in before_meta
+            if item.get("key") != "company_account_communications"
+        ]
     return {
         "main": items,
-        "before_meta": list(ROLE_NAV_BEFORE_META.get(role, [])),
+        "before_meta": before_meta,
         "end": [{"key": "logout", "label": "Logout", "action": "logout"}],
     }
 
@@ -331,6 +374,8 @@ def page_key_from_path(path: str) -> str | None:
         return "payment_gateway"
     if "/company-settings/communications/" in path:
         return "company_communications"
+    if path.endswith("/it-support/communications/") or "/it-support/communications/" in path:
+        return "company_account_communications"
     if "/company-profile/" in path:
         return "company_profile"
     if "/company-settings/" in path:

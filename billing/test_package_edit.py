@@ -56,7 +56,8 @@ class PackageEditTests(TestCase):
                 "price": "1500.00",
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
-                "duration": BillingPlan.Duration.MONTHLY,
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                 "service_type": BillingPlan.ServiceType.HOTSPOT,
                 "max_devices": "1",
                 "is_active": "on",
@@ -90,7 +91,8 @@ class PackageEditTests(TestCase):
                     "price": "2500.00",
                     "download_speed_mbps": "20",
                     "upload_speed_mbps": "10",
-                    "duration": BillingPlan.Duration.MONTHLY,
+                    "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                     "service_type": BillingPlan.ServiceType.PPPOE,
                     "max_devices": "1",
                     "is_active": "on",
@@ -120,7 +122,8 @@ class PackageEditTests(TestCase):
                     "price": "1500.00",
                     "download_speed_mbps": "10",
                     "upload_speed_mbps": "5",
-                    "duration": BillingPlan.Duration.MONTHLY,
+                    "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                     "service_type": BillingPlan.ServiceType.PPPOE,
                     "is_active": "on",
                 },
@@ -141,7 +144,8 @@ class PackageEditTests(TestCase):
                 "price": "200.00",
                 "download_speed_mbps": "8",
                 "upload_speed_mbps": "4",
-                "duration": BillingPlan.Duration.DAILY,
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.DAYS,
                 "service_type": BillingPlan.ServiceType.HOTSPOT,
                 "is_active": "on",
             },
@@ -164,7 +168,8 @@ class PackageEditTests(TestCase):
                 "price": "1500.00",
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
-                "duration": BillingPlan.Duration.MONTHLY,
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                 "service_type": BillingPlan.ServiceType.PPPOE,
                 "is_active": "on",
             },
@@ -188,7 +193,8 @@ class PackageEditTests(TestCase):
                     "price": "1500.00",
                     "download_speed_mbps": "10",
                     "upload_speed_mbps": "5",
-                    "duration": BillingPlan.Duration.MONTHLY,
+                    "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                     "service_type": BillingPlan.ServiceType.PPPOE,
                     "max_devices": "3",
                     "is_active": "on",
@@ -210,7 +216,8 @@ class PackageEditTests(TestCase):
                 "price": "1500.00",
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
-                "duration": BillingPlan.Duration.MONTHLY,
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                 "service_type": BillingPlan.ServiceType.PPPOE,
                 "max_devices": "1",
             },
@@ -238,7 +245,8 @@ class PackageEditTests(TestCase):
                 "price": "1500.00",
                 "download_speed_mbps": "10",
                 "upload_speed_mbps": "5",
-                "duration": BillingPlan.Duration.MONTHLY,
+                "duration_value": "1",
+                "duration_unit": BillingPlan.DurationUnit.MONTHS,
                 "service_type": BillingPlan.ServiceType.PPPOE,
                 "max_devices": "1",
                 "is_active": "on",
@@ -323,3 +331,61 @@ class PackageEditTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(BillingPlan.objects.filter(pk=self.plan.id).exists())
         self.assertContains(res, "payment history")
+
+    def test_register_package_accepts_custom_billing_period(self):
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "register_package",
+                "name": "Three Day Pass",
+                "description": "",
+                "price": "250.00",
+                "download_speed_mbps": "10",
+                "upload_speed_mbps": "5",
+                "duration_value": "3",
+                "duration_unit": BillingPlan.DurationUnit.DAYS,
+                "service_type": BillingPlan.ServiceType.HOTSPOT,
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        plan = BillingPlan.objects.get(organization=self.org, name="THREE DAY PASS")
+        self.assertEqual(plan.duration_value, 3)
+        self.assertEqual(plan.duration_unit, BillingPlan.DurationUnit.DAYS)
+        self.assertEqual(plan.duration, BillingPlan.Duration.CUSTOM)
+        self.assertEqual(plan.get_duration_display(), "3 days")
+
+    def test_edit_package_can_set_custom_hours(self):
+        res = self.client.post(
+            reverse("billing:packages"),
+            {
+                "action": "edit_package",
+                "package_id": str(self.plan.id),
+                "name": "Home 10",
+                "description": "",
+                "price": "1500.00",
+                "download_speed_mbps": "10",
+                "upload_speed_mbps": "5",
+                "duration_value": "12",
+                "duration_unit": BillingPlan.DurationUnit.HOURS,
+                "service_type": BillingPlan.ServiceType.PPPOE,
+                "is_active": "on",
+            },
+        )
+        self.assertEqual(res.status_code, 302)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.duration_value, 12)
+        self.assertEqual(self.plan.duration_unit, BillingPlan.DurationUnit.HOURS)
+        self.assertEqual(self.plan.duration, BillingPlan.Duration.CUSTOM)
+        self.assertTrue(self.plan.uses_clock_time)
+        self.assertEqual(self.plan.get_duration_display(), "12 hours")
+
+    def test_packages_page_exposes_custom_duration_controls(self):
+        res = self.client.get(reverse("billing:packages"))
+        self.assertEqual(res.status_code, 200)
+        html = res.content.decode()
+        self.assertIn("package-duration-custom", html)
+        self.assertIn('name="duration_value"', html)
+        self.assertIn('name="duration_unit"', html)
+        self.assertIn('data-package-duration-value=', html)
+        self.assertIn('data-package-duration-unit=', html)

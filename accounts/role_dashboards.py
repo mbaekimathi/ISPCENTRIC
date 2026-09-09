@@ -12,7 +12,18 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from accounts.communications import fetch_provider_options
+from accounts.communications import (
+    CHANNEL_LABELS,
+    PLATFORM_TO_ISP_EVENTS,
+    PLATFORM_TO_STAFF_EVENTS,
+    RECIPIENT_OPTIONS,
+    fetch_provider_options,
+    normalize_enabled_messages,
+    notify_org_event,
+    notify_platform_event,
+    platform_event_catalog,
+    resolve_page_link_path,
+)
 from accounts.forms import (
     EmployeeAdminEditForm,
     LeadRegisterForm,
@@ -343,6 +354,15 @@ def super_admin_client_suspend(request, pk):
     else:
         client.status = Organization.Status.SUSPENDED
         client.save(update_fields=["status"])
+        notify_platform_event(
+            "platform_isp_status",
+            organization=client,
+            context={
+                "company_name": client.name,
+                "status": "suspended",
+            },
+            subject="ISP account suspended",
+        )
         messages.success(request, f"Suspended {client.name}.")
     return redirect("roles:super_admin_clients")
 
@@ -357,6 +377,15 @@ def super_admin_client_unsuspend(request, pk):
     else:
         client.status = Organization.Status.ACTIVE
         client.save(update_fields=["status"])
+        notify_platform_event(
+            "platform_isp_status",
+            organization=client,
+            context={
+                "company_name": client.name,
+                "status": "active",
+            },
+            subject="ISP account activated",
+        )
         messages.success(request, f"Unsuspended {client.name}.")
     return redirect("roles:super_admin_clients")
 
@@ -824,6 +853,19 @@ def manager_sales(request):
                     if customer.organization_id
                     else "ISP client"
                 )
+                if customer.organization_id:
+                    notify_org_event(
+                        "client_welcome",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="Welcome — account created",
+                    )
+                    notify_org_event(
+                        "isp_client_registered",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="New client registered",
+                    )
                 router_label = (
                     (customer.router.name or customer.router.host)
                     if customer.router_id
@@ -873,6 +915,28 @@ def manager_sales(request):
             form = LeadRegisterForm(request.POST, organization=organization)
             if form.is_valid():
                 lead = form.save(created_by=request.user)
+                target_org = (
+                    getattr(lead, "preferred_isp", None)
+                    or getattr(lead, "organization", None)
+                )
+                lead_ctx = {
+                    "client_name": lead.full_name or "",
+                    "phone": getattr(lead, "phone", "") or "",
+                    "location": getattr(lead, "location", "") or "",
+                }
+                if target_org is not None:
+                    notify_org_event(
+                        "isp_lead_open",
+                        organization=target_org,
+                        context=lead_ctx,
+                        subject="New open lead",
+                    )
+                notify_platform_event(
+                    "platform_staff_new_lead",
+                    organization=target_org,
+                    context=lead_ctx,
+                    subject="New sales lead",
+                )
                 messages.success(
                     request,
                     (
@@ -1074,6 +1138,8 @@ def manager_approved_sales(request):
                     "name": plan.name,
                     "price": str(plan.price),
                     "duration": plan.duration,
+                    "duration_value": plan.duration_value,
+                    "duration_unit": plan.duration_unit,
                 }
                 for plan in qs
             ]
@@ -1086,6 +1152,8 @@ def manager_approved_sales(request):
                     "name": ticket.plan.name,
                     "price": str(ticket.plan.price),
                     "duration": ticket.plan.duration,
+                    "duration_value": ticket.plan.duration_value,
+                    "duration_unit": ticket.plan.duration_unit,
                 },
             )
         activation_payload[str(ticket.pk)] = {
@@ -1287,6 +1355,25 @@ def manager_technician(request):
 
             tech_name = (
                 technician.user.get_full_name() or technician.user.username
+            )
+            notify_org_event(
+                "isp_technician_assigned",
+                organization=getattr(customer, "organization", None),
+                client=customer,
+                technician=technician,
+                context={
+                    "client_name": customer.full_name or "",
+                    "location": getattr(customer, "location", "") or "",
+                },
+                subject="Installation assigned",
+            )
+            notify_org_event(
+                "lead_installation",
+                organization=getattr(customer, "organization", None),
+                client=customer,
+                technician=technician,
+                context={"status": "assigned", "technician_name": tech_name},
+                subject="Installation update",
             )
             messages.success(
                 request,
@@ -2770,7 +2857,7 @@ def _create_isp_organization_from_register_form(register_form, *, registered_by)
     user = register_form.save(commit=False)
     user.email = register_form.cleaned_data["email"]
     user.save()
-    return Organization.objects.create(
+    org = Organization.objects.create(
         name=register_form.cleaned_data["company_name"],
         owner=user,
         login_code=register_form.cleaned_data["username"],
@@ -2779,6 +2866,22 @@ def _create_isp_organization_from_register_form(register_form, *, registered_by)
         status=Organization.Status.REGISTERED,
         registered_by=registered_by,
     )
+    notify_platform_event(
+        "platform_isp_welcome",
+        organization=org,
+        context={
+            "company_name": org.name,
+            "join_code": org.join_code or "",
+        },
+        subject=f"Welcome to ISPCENTRIC — {org.name}",
+    )
+    notify_platform_event(
+        "platform_staff_new_isp",
+        organization=org,
+        context={"company_name": org.name},
+        subject=f"New ISP registered — {org.name}",
+    )
+    return org
 
 
 @role_required(Employee.Role.IT_SUPPORT)
@@ -2883,6 +2986,15 @@ def it_support_company_client_suspend(request, pk):
         client.status = Organization.Status.SUSPENDED
         client.save(update_fields=["status"])
         _invalidate_it_support_list_caches()
+        notify_platform_event(
+            "platform_isp_status",
+            organization=client,
+            context={
+                "company_name": client.name,
+                "status": "suspended",
+            },
+            subject="ISP account suspended",
+        )
         messages.success(request, f"Suspended {client.name}.")
     return redirect("roles:it_support_company_clients")
 
@@ -2898,6 +3010,15 @@ def it_support_company_client_unsuspend(request, pk):
         client.status = Organization.Status.ACTIVE
         client.save(update_fields=["status"])
         _invalidate_it_support_list_caches()
+        notify_platform_event(
+            "platform_isp_status",
+            organization=client,
+            context={
+                "company_name": client.name,
+                "status": "active",
+            },
+            subject="ISP account activated",
+        )
         messages.success(request, f"Unsuspended {client.name}.")
     return redirect("roles:it_support_company_clients")
 
@@ -3340,8 +3461,11 @@ def it_support_company_system_settings(request):
                 },
                 {
                     "key": "company_communications",
-                    "label": "Company communications",
-                    "description": "SMS, email, and WhatsApp credentials used for platform messages.",
+                    "label": "Company communications settings",
+                    "description": (
+                        "SMS, email, and WhatsApp credentials for platform messages. "
+                        "See Communications in the sidebar for when those messages are sent."
+                    ),
                     "url_name": "roles:it_support_company_communications",
                 },
                 {
@@ -3513,6 +3637,169 @@ it_support_system_settings = it_support_company_system_settings
 
 
 @role_required(Employee.Role.IT_SUPPORT)
+def it_support_communications(request):
+    """Configure which platform actions send messages, to whom, and on which channels."""
+    _prepare_it_support_view(request)
+    comms = PlatformCommunicationSettings.get_solo()
+    catalog = platform_event_catalog()
+    catalog_by_key = {event["key"]: event for event in catalog}
+    statuses = comms.channel_statuses()
+    gateway_enabled = {
+        "sms": bool(comms.sms_enabled),
+        "email": bool(comms.email_enabled),
+        "whatsapp": bool(comms.whatsapp_enabled),
+    }
+
+    if request.method == "POST":
+        form_action = (request.POST.get("form_action") or "").strip()
+        if form_action == "save_enabled_messages":
+            prefs = normalize_enabled_messages(comms.enabled_messages or {})
+            remove_key = (request.POST.get("remove_event") or "").strip()
+            if remove_key:
+                prefs.pop(remove_key, None)
+            else:
+                event_key = (request.POST.get("event_key") or "").strip()
+                event = catalog_by_key.get(event_key)
+                if not event:
+                    messages.error(request, "Choose a valid trigger or action.")
+                    return redirect("roles:it_support_communications")
+
+                allowed_channels = set(event.get("channels") or ())
+                selected_channels = [
+                    channel
+                    for channel in request.POST.getlist("channels")
+                    if channel in allowed_channels and gateway_enabled.get(channel)
+                ]
+                if not selected_channels:
+                    # Back-compat with older checkbox field names.
+                    selected_channels = [
+                        channel
+                        for channel in ("sms", "email", "whatsapp")
+                        if request.POST.get(f"channel_{channel}")
+                        and channel in allowed_channels
+                        and gateway_enabled.get(channel)
+                    ]
+                allowed_recipients = set(event.get("recipient_options") or ())
+                selected_recipients = [
+                    rid
+                    for rid in request.POST.getlist("recipients")
+                    if rid in allowed_recipients
+                ]
+                message_body = (request.POST.get("message") or "").strip()
+                if not message_body:
+                    message_body = str(event.get("default_message") or "").strip()
+                if not selected_recipients:
+                    messages.error(request, "Choose at least one recipient.")
+                    return redirect("roles:it_support_communications")
+                if not selected_channels:
+                    messages.error(
+                        request,
+                        "Choose at least one enabled platform (SMS, Email, or WhatsApp).",
+                    )
+                    return redirect("roles:it_support_communications")
+                include_link = bool(
+                    event.get("page_link") and request.POST.get("include_link")
+                )
+                prefs[event_key] = {
+                    "message": message_body,
+                    "recipients": selected_recipients,
+                    "channels": selected_channels,
+                    "include_link": include_link,
+                }
+            comms.enabled_messages = normalize_enabled_messages(prefs)
+            comms.save(update_fields=["enabled_messages", "updated_at"])
+            messages.success(request, "Message settings saved.")
+            return redirect("roles:it_support_communications")
+        messages.error(request, "Unknown action.")
+        return redirect("roles:it_support_communications")
+
+    enabled = normalize_enabled_messages(comms.enabled_messages or {})
+
+    def _enrich_events(raw_events):
+        rows = []
+        for event in raw_events:
+            key = event["key"]
+            rule = enabled.get(key) or {}
+            selected_recipients = list(rule.get("recipients") or [])
+            selected_channels = list(rule.get("channels") or [])
+            recipient_options = list(event.get("recipient_options") or ())
+            if not selected_recipients and recipient_options:
+                selected_recipients = [recipient_options[0]]
+            # Channel stays single-select in the UI.
+            selected_channels = selected_channels[:1]
+            selected_recipient_set = set(selected_recipients)
+            selected_channel_set = set(selected_channels)
+            channel_choices = []
+            for channel in event.get("channels") or ():
+                usable = bool(gateway_enabled.get(channel))
+                channel_choices.append(
+                    {
+                        "id": channel,
+                        "label": CHANNEL_LABELS.get(channel, channel),
+                        "usable": usable,
+                        "selected": usable and channel in selected_channel_set,
+                    }
+                )
+            # Prefer a usable selected channel; otherwise leave blank for the placeholder.
+            if selected_channels and not any(c["selected"] for c in channel_choices):
+                selected_channels = []
+                selected_channel_set = set()
+            page_link = event.get("page_link")
+            page_link_path = resolve_page_link_path(page_link) if page_link else ""
+            recipient_choices = [
+                {
+                    "id": rid,
+                    "label": RECIPIENT_OPTIONS.get(rid, rid),
+                    "selected": rid in selected_recipient_set,
+                }
+                for rid in recipient_options
+            ]
+            rows.append(
+                {
+                    "key": key,
+                    "title": event["title"],
+                    "when": event.get("when") or "",
+                    "includes": event.get("includes") or "",
+                    "message": (rule.get("message") or event.get("default_message") or ""),
+                    "is_enabled": key in enabled,
+                    "include_link": bool(rule.get("include_link")),
+                    "page_link": page_link,
+                    "page_link_path": page_link_path,
+                    "recipient_choices": recipient_choices,
+                    "selected_recipient_labels": [
+                        item["label"] for item in recipient_choices if item["selected"]
+                    ],
+                    "channel_choices": channel_choices,
+                }
+            )
+        return rows
+
+    return render(
+        request,
+        "accounts/it_support_company_account_communications.html",
+        {
+            "page_title": "Communications",
+            "page_kicker": "Company",
+            "page_subtitle": (
+                "Choose ISP Client and/or employee roles for each trigger, then pick "
+                "the channel. Gateway credentials are under Company communications settings."
+            ),
+            "current_page": "company_account_communications",
+            "dashboard_url_name": "roles:it_support",
+            "comms": comms,
+            "company_profile": CompanyProfile.get_solo(),
+            "sms_status": statuses["sms"],
+            "email_status": statuses["email"],
+            "whatsapp_status": statuses["whatsapp"],
+            "gateway_enabled": gateway_enabled,
+            "isp_events": _enrich_events(PLATFORM_TO_ISP_EVENTS),
+            "staff_events": _enrich_events(PLATFORM_TO_STAFF_EVENTS),
+            "settings_url": reverse("roles:it_support_company_communications"),
+        },
+    )
+
+
+@role_required(Employee.Role.IT_SUPPORT)
 def it_support_company_communications(request):
     """Platform SMS / email / WhatsApp credentials (ISPCENTRIC → ISPs), not ISP client gateways."""
     _prepare_it_support_view(request)
@@ -3560,6 +3847,7 @@ def it_support_company_communications(request):
             "email_status": statuses["email"],
             "whatsapp_status": statuses["whatsapp"],
             "comms_fetch_url": reverse("roles:it_support_company_communications_fetch"),
+            "events_url": reverse("roles:it_support_communications"),
         },
     )
 
@@ -3748,6 +4036,19 @@ def sales_lead_management(request):
                         if customer.organization_id
                         else "no specific ISP provider"
                     )
+                    if customer.organization_id:
+                        notify_org_event(
+                            "client_welcome",
+                            organization=customer.organization,
+                            client=customer,
+                            subject="Welcome — account created",
+                        )
+                        notify_org_event(
+                            "isp_client_registered",
+                            organization=customer.organization,
+                            client=customer,
+                            subject="New client registered",
+                        )
                     messages.success(
                         request,
                         (
@@ -3784,6 +4085,28 @@ def sales_lead_management(request):
             form = LeadRegisterForm(request.POST, organization=organization)
             if form.is_valid():
                 lead = form.save(created_by=request.user)
+                target_org = (
+                    getattr(lead, "preferred_isp", None)
+                    or getattr(lead, "organization", None)
+                )
+                lead_ctx = {
+                    "client_name": lead.full_name or "",
+                    "phone": getattr(lead, "phone", "") or "",
+                    "location": getattr(lead, "location", "") or "",
+                }
+                if target_org is not None:
+                    notify_org_event(
+                        "isp_lead_open",
+                        organization=target_org,
+                        context=lead_ctx,
+                        subject="New open lead",
+                    )
+                notify_platform_event(
+                    "platform_staff_new_lead",
+                    organization=target_org,
+                    context=lead_ctx,
+                    subject="New sales lead",
+                )
                 messages.success(
                     request,
                     (
@@ -4091,6 +4414,19 @@ def technician_installations(request):
                 customer.registered_by = request.user
                 customer.assigned_technician = employee
                 customer.save()
+                if customer.organization_id:
+                    notify_org_event(
+                        "client_welcome",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="Welcome — account created",
+                    )
+                    notify_org_event(
+                        "isp_client_registered",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="New client registered",
+                    )
                 customer_pk = customer.pk
                 account_number = customer.account_number
                 full_name = customer.full_name
@@ -4341,6 +4677,22 @@ def technician_installation_accept(request, customer_id):
             customer=customer, technician=employee
         ).delete()
 
+    notify_org_event(
+        "isp_installation_result",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        technician=employee,
+        context={"status": "accepted"},
+        subject="Installation accepted",
+    )
+    notify_org_event(
+        "lead_installation",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        technician=employee,
+        context={"status": "accepted"},
+        subject="Installation update",
+    )
     messages.success(
         request,
         f"Accepted ticket {ticket}. Status is now Assigned.",
@@ -4467,6 +4819,22 @@ def technician_installation_reject(request, customer_id):
             reason=reason,
         )
 
+    notify_org_event(
+        "isp_installation_result",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        technician=employee,
+        context={"status": "declined", "reason": reason},
+        subject="Installation declined",
+    )
+    notify_org_event(
+        "lead_installation",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        technician=employee,
+        context={"status": "declined", "reason": reason},
+        subject="Installation update",
+    )
     messages.success(
         request,
         f"Rejected ticket {ticket} ({reason}). It is back in the open pool.",
@@ -5071,6 +5439,19 @@ def _technician_pppoe_register_bundle(request, employee, *, redirect_name: str):
                 customer.registered_by = request.user
                 customer.assigned_technician = employee
                 customer.save()
+                if customer.organization_id:
+                    notify_org_event(
+                        "client_welcome",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="Welcome — account created",
+                    )
+                    notify_org_event(
+                        "isp_client_registered",
+                        organization=customer.organization,
+                        client=customer,
+                        subject="New client registered",
+                    )
                 customer_pk = customer.pk
                 account_number = customer.account_number
                 full_name = customer.full_name

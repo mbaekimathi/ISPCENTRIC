@@ -19,6 +19,14 @@ class BillingPlan(models.Model):
         QUARTERLY = "quarterly", "Quarterly"
         SEMI_ANNUAL = "semi_annual", "Semi-annual"
         YEARLY = "yearly", "Yearly"
+        CUSTOM = "custom", "Custom"
+
+    class DurationUnit(models.TextChoices):
+        HOURS = "hours", "Hours"
+        DAYS = "days", "Days"
+        WEEKS = "weeks", "Weeks"
+        MONTHS = "months", "Months"
+        YEARS = "years", "Years"
 
     class ServiceType(models.TextChoices):
         PPPOE = "pppoe", "PPPoE"
@@ -26,6 +34,18 @@ class BillingPlan(models.Model):
 
     # Durations that use clock time (start/end times) instead of calendar days.
     CLOCK_TIME_DURATIONS = frozenset({Duration.HOURLY, Duration.SIX_HOURS})
+
+    LEGACY_DURATION_TO_PARTS = {
+        Duration.HOURLY: (1, DurationUnit.HOURS),
+        Duration.SIX_HOURS: (6, DurationUnit.HOURS),
+        Duration.DAILY: (1, DurationUnit.DAYS),
+        Duration.WEEKLY: (1, DurationUnit.WEEKS),
+        Duration.MONTHLY: (1, DurationUnit.MONTHS),
+        Duration.QUARTERLY: (3, DurationUnit.MONTHS),
+        Duration.SEMI_ANNUAL: (6, DurationUnit.MONTHS),
+        Duration.YEARLY: (1, DurationUnit.YEARS),
+    }
+    PARTS_TO_LEGACY_DURATION = {parts: key for key, parts in LEGACY_DURATION_TO_PARTS.items()}
 
     organization = models.ForeignKey(
         "accounts.Organization",
@@ -43,6 +63,19 @@ class BillingPlan(models.Model):
         help_text="Derived from download/upload speeds for summaries and legacy displays.",
     )
     duration = models.CharField(max_length=20, choices=Duration.choices, default=Duration.MONTHLY)
+    duration_value = models.PositiveIntegerField(
+        "Billing period length",
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(999)],
+        help_text="How many units (hours, days, weeks, months, or years) this package lasts.",
+    )
+    duration_unit = models.CharField(
+        "Billing period unit",
+        max_length=10,
+        choices=DurationUnit.choices,
+        default=DurationUnit.MONTHS,
+        help_text="Unit for the customizable billing period length.",
+    )
     service_type = models.CharField(
         max_length=20,
         choices=ServiceType.choices,
@@ -95,10 +128,96 @@ class BillingPlan(models.Model):
     def __str__(self):
         return f"{self.name} ({self.price})"
 
+    def duration_parts(self) -> tuple[int, str]:
+        """Return (length, unit) for this package, preferring custom fields."""
+        value = int(self.duration_value or 0)
+        unit = (self.duration_unit or "").strip().lower()
+        unit_ok = unit in {choice.value for choice in self.DurationUnit}
+        legacy_key = (self.duration or "").strip().lower()
+        legacy_parts = self.LEGACY_DURATION_TO_PARTS.get(legacy_key)
+
+        # Unsaved / legacy-only instances often keep default value/unit (1 month)
+        # while duration is e.g. hourly — prefer the legacy key in that case.
+        if (
+            legacy_parts
+            and (not unit_ok or (value, unit) == (1, self.DurationUnit.MONTHS))
+            and legacy_key not in {self.Duration.MONTHLY, self.Duration.CUSTOM, ""}
+            and (value, unit) != legacy_parts
+        ):
+            return legacy_parts
+
+        if value >= 1 and unit_ok:
+            return value, unit
+        if legacy_parts:
+            return legacy_parts
+        return 1, self.DurationUnit.MONTHS
+
+    def sync_duration_fields(self) -> None:
+        """Keep legacy duration key aligned with customizable value + unit."""
+        value = int(self.duration_value or 0)
+        unit = (self.duration_unit or "").strip().lower()
+        parts_valid = value >= 1 and unit in {choice.value for choice in self.DurationUnit}
+        legacy_key = (self.duration or "").strip().lower()
+        legacy_parts = self.LEGACY_DURATION_TO_PARTS.get(legacy_key)
+
+        # Old create(..., duration="hourly") paths still default value/unit to 1 month.
+        # Prefer the explicit legacy key in that case.
+        if (
+            parts_valid
+            and legacy_parts
+            and legacy_parts != (value, unit)
+            and (value, unit) == (1, self.DurationUnit.MONTHS)
+            and legacy_key not in {self.Duration.MONTHLY, self.Duration.CUSTOM, ""}
+        ):
+            self.duration_value, self.duration_unit = legacy_parts
+            return
+
+        if parts_valid:
+            self.duration_value = value
+            self.duration_unit = unit
+            self.duration = self.PARTS_TO_LEGACY_DURATION.get(
+                (value, unit),
+                self.Duration.CUSTOM,
+            )
+            return
+
+        if legacy_parts:
+            self.duration_value, self.duration_unit = legacy_parts
+            return
+
+        self.duration_value = max(value, 1)
+        self.duration_unit = (
+            unit if unit in {choice.value for choice in self.DurationUnit} else self.DurationUnit.MONTHS
+        )
+        self.duration = self.Duration.CUSTOM
+
+    def get_duration_display(self) -> str:
+        """Human label for package lists, portals, and messages."""
+        value, unit = self.duration_parts()
+        legacy_key = self.PARTS_TO_LEGACY_DURATION.get((value, unit))
+        if legacy_key:
+            return str(dict(self.Duration.choices).get(legacy_key, legacy_key))
+        labels = {
+            self.DurationUnit.HOURS: ("hour", "hours"),
+            self.DurationUnit.DAYS: ("day", "days"),
+            self.DurationUnit.WEEKS: ("week", "weeks"),
+            self.DurationUnit.MONTHS: ("month", "months"),
+            self.DurationUnit.YEARS: ("year", "years"),
+        }
+        singular, plural = labels.get(unit, ("unit", "units"))
+        noun = singular if value == 1 else plural
+        return f"{value} {noun}"
+
+    @property
+    def duration_group(self) -> str:
+        """Stable regroup key for pay-portal category headings."""
+        return self.get_duration_display()
+
     @property
     def uses_clock_time(self) -> bool:
         """True when package windows are measured in hours (not calendar days)."""
-        return self.duration in self.CLOCK_TIME_DURATIONS
+        _, unit = self.duration_parts()
+        return unit == self.DurationUnit.HOURS
 
     @property
     def speed_label(self) -> str:
@@ -168,6 +287,7 @@ class BillingPlan(models.Model):
         self.speed_mbps = self.download_speed_mbps or self.upload_speed_mbps or self.speed_mbps or 1
 
     def save(self, *args, **kwargs):
+        self.sync_duration_fields()
         self.sync_general_speed()
         self.image = maybe_optimize_image_field(self.image)
         super().save(*args, **kwargs)

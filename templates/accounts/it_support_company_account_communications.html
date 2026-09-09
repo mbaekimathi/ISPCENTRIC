@@ -1,0 +1,163 @@
+{% extends "accounts/role_base.html" %}
+
+{% block title %}{{ page_title }} — ISPCENTRIC{% endblock %}
+
+{% block topbar_title %}
+  <p class="staff-topbar-kicker">{{ page_kicker }}</p>
+  <h1 class="staff-topbar-heading">{{ page_title }}</h1>
+{% endblock %}
+
+{% block staff_content %}
+<section class="org-edit org-edit--settings company-settings-page">
+  <div class="account-page-shell account-page-shell--comms">
+    <div class="account-page" id="comms-page">
+      <header class="account-hero account-hero--comms">
+        <div class="account-hero-main">
+          <div class="account-hero-copy">
+            <p class="account-page-kicker">{{ page_kicker }}</p>
+            <h1 class="account-page-title">{{ page_title }}</h1>
+            <p class="account-hero-lead">{{ page_subtitle }}</p>
+          </div>
+        </div>
+        <a class="btn btn-ghost btn-sm" href="{{ settings_url }}">Gateway settings</a>
+      </header>
+
+      {% if sms_status or email_status or whatsapp_status %}
+        <section class="comms-channel-strip" aria-label="Channel status">
+          <div class="comms-channel-pill{% if sms_status.ready %} is-ready{% elif sms_status.enabled %} is-warn{% endif %}">
+            <span>SMS</span>
+            <strong>{% if sms_status.ready %}Ready{% elif sms_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+          <div class="comms-channel-pill{% if email_status.ready %} is-ready{% elif email_status.enabled %} is-warn{% endif %}">
+            <span>Email</span>
+            <strong>{% if email_status.ready %}Ready{% elif email_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+          <div class="comms-channel-pill{% if whatsapp_status.ready %} is-ready{% elif whatsapp_status.enabled %} is-warn{% endif %}">
+            <span>WhatsApp</span>
+            <strong>{% if whatsapp_status.ready %}Ready{% elif whatsapp_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+        </section>
+      {% endif %}
+
+      <section class="panel account-card comms-events-card" data-enabled-messages>
+        <header class="comms-panel-head">
+          <div>
+            <h2>Platform messages</h2>
+            <p>Assign recipients and channel for each trigger.</p>
+          </div>
+        </header>
+
+        <div class="comms-events-list-wrap">
+          {% if isp_events %}
+            <section class="comms-events-section">
+              <div class="comms-events-section-bar">
+                <h3>ISP companies</h3>
+              </div>
+              <div class="comms-event-table">
+                <div class="comms-event-table-head" aria-hidden="true">
+                  <span>Trigger</span>
+                  <span>To whom</span>
+                  <span>Channel</span>
+                  <span>Link</span>
+                  <span>Actions</span>
+                </div>
+                <ol class="comms-event-list">
+                  {% for event in isp_events %}
+                    {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                  {% endfor %}
+                </ol>
+              </div>
+            </section>
+          {% endif %}
+          {% if staff_events %}
+            <section class="comms-events-section">
+              <div class="comms-events-section-bar">
+                <h3>Platform staff</h3>
+              </div>
+              <div class="comms-event-table">
+                <div class="comms-event-table-head" aria-hidden="true">
+                  <span>Trigger</span>
+                  <span>To whom</span>
+                  <span>Channel</span>
+                  <span>Link</span>
+                  <span>Actions</span>
+                </div>
+                <ol class="comms-event-list">
+                  {% for event in staff_events %}
+                    {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                  {% endfor %}
+                </ol>
+              </div>
+            </section>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+  </div>
+</section>
+
+{% include "includes/comms_message_preview_modal.html" with preview_require_gateway=1 preview_empty_text="No platform channels are enabled. Turn on Email, SMS, or WhatsApp in gateway settings to preview how this message will look." %}
+
+<script>
+(function () {
+  function updateMultiSummary(root) {
+    var summary = root.querySelector("[data-comms-multi-summary]");
+    if (!summary) return;
+    var labels = [];
+    root.querySelectorAll("[data-comms-multi-option]:checked").forEach(function (input) {
+      labels.push(input.getAttribute("data-label") || input.value);
+    });
+    if (!labels.length) {
+      summary.textContent = "Select…";
+    } else if (labels.length === 1) {
+      summary.textContent = labels[0];
+    } else {
+      summary.textContent = labels[0] + " +" + (labels.length - 1);
+    }
+    root.classList.toggle("has-value", labels.length > 0);
+  }
+
+  function closeAllMulti(except) {
+    document.querySelectorAll("[data-comms-multi].is-open").forEach(function (root) {
+      if (except && root === except) return;
+      root.classList.remove("is-open");
+      var toggle = root.querySelector("[data-comms-multi-toggle]");
+      var panel = root.querySelector("[data-comms-multi-panel]");
+      if (toggle) toggle.setAttribute("aria-expanded", "false");
+      if (panel) panel.hidden = true;
+    });
+  }
+
+  document.querySelectorAll("[data-comms-multi]").forEach(function (root) {
+    updateMultiSummary(root);
+    var toggle = root.querySelector("[data-comms-multi-toggle]");
+    var panel = root.querySelector("[data-comms-multi-panel]");
+    if (!toggle || !panel) return;
+
+    toggle.addEventListener("click", function (event) {
+      event.preventDefault();
+      var willOpen = panel.hidden;
+      closeAllMulti(root);
+      panel.hidden = !willOpen;
+      root.classList.toggle("is-open", willOpen);
+      toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+
+    root.querySelectorAll("[data-comms-multi-option]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        updateMultiSummary(root);
+      });
+    });
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!event.target.closest("[data-comms-multi]")) closeAllMulti();
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeAllMulti();
+  });
+})();
+</script>
+{% include "includes/comms_message_preview_script.html" %}
+{% endblock %}

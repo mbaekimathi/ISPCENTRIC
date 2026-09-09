@@ -404,42 +404,34 @@
     return new Date(year, month, 0).getDate();
   }
 
-  function billingUnitSeconds(durationKey, refDate) {
-    if (durationKey === "hourly") return 3600;
-    if (durationKey === "six_hours") return 6 * 3600;
-    if (durationKey === "daily") return 86400;
-    if (durationKey === "weekly") return 7 * 86400;
+  function billingUnitSeconds(meta, refDate) {
+    var value = Math.max(1, Number(meta && meta.duration_value) || Number(meta && meta.value) || 1);
+    var unit = String((meta && (meta.duration_unit || meta.unit)) || "").toLowerCase();
+    var durationKey = String((meta && meta.duration) || "").toLowerCase();
+    if (!unit && durationKey) {
+      if (durationKey === "hourly") { value = 1; unit = "hours"; }
+      else if (durationKey === "six_hours") { value = 6; unit = "hours"; }
+      else if (durationKey === "daily") { value = 1; unit = "days"; }
+      else if (durationKey === "weekly") { value = 1; unit = "weeks"; }
+      else if (durationKey === "monthly") { value = 1; unit = "months"; }
+      else if (durationKey === "quarterly") { value = 3; unit = "months"; }
+      else if (durationKey === "semi_annual") { value = 6; unit = "months"; }
+      else if (durationKey === "yearly") { value = 1; unit = "years"; }
+    }
+    if (unit === "hours") return value * 3600;
+    if (unit === "days") return value * 86400;
+    if (unit === "weeks") return value * 7 * 86400;
     var y = refDate.getFullYear();
     var m = refDate.getMonth() + 1;
-    if (durationKey === "monthly") return daysInMonth(y, m) * 86400;
-    if (durationKey === "quarterly") {
-      var total = 0;
-      var cursor = new Date(y, m - 1, 1);
-      for (var i = 0; i < 3; i += 1) {
-        total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
-        cursor.setMonth(cursor.getMonth() + 1);
-      }
-      return total * 86400;
+    var monthCount = unit === "years" ? value * 12 : (unit === "months" ? value : 0);
+    if (!monthCount) return 0;
+    var total = 0;
+    var cursor = new Date(y, m - 1, 1);
+    for (var i = 0; i < monthCount; i += 1) {
+      total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
+      cursor.setMonth(cursor.getMonth() + 1);
     }
-    if (durationKey === "semi_annual") {
-      var totalSemi = 0;
-      var cursorSemi = new Date(y, m - 1, 1);
-      for (var j = 0; j < 6; j += 1) {
-        totalSemi += daysInMonth(cursorSemi.getFullYear(), cursorSemi.getMonth() + 1);
-        cursorSemi.setMonth(cursorSemi.getMonth() + 1);
-      }
-      return totalSemi * 86400;
-    }
-    if (durationKey === "yearly") {
-      var totalYear = 0;
-      var cursorYear = new Date(y, m - 1, 1);
-      for (var k = 0; k < 12; k += 1) {
-        totalYear += daysInMonth(cursorYear.getFullYear(), cursorYear.getMonth() + 1);
-        cursorYear.setMonth(cursorYear.getMonth() + 1);
-      }
-      return totalYear * 86400;
-    }
-    return 0;
+    return total * 86400;
   }
 
   function roundHalfUp(value) {
@@ -451,7 +443,6 @@
     var fromDate = parseDateInput(fromInput.value);
     var amount = Number(amountInput.value);
     var price = Number(meta.price);
-    var duration = String(meta.duration || "").toLowerCase();
     if (!planSelect.value || !fromDate || isNaN(price) || price <= 0) {
       if (daysSummary) daysSummary.hidden = true;
       return;
@@ -464,7 +455,7 @@
       }
       return;
     }
-    var unit = billingUnitSeconds(duration, fromDate);
+    var unit = billingUnitSeconds(meta, fromDate);
     if (!unit) {
       if (daysSummary) daysSummary.hidden = true;
       return;

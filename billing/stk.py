@@ -42,27 +42,53 @@ _STK_RAW_PRESERVE_KEYS = (
 )
 
 
-def _credential_meta_from_creds(creds: dict | None) -> dict:
-    """Snapshot which gateway initiated an STK (company vs ISP) for later queries."""
-    creds = creds or {}
-    source = (creds.get("source") or "").strip() or "unknown"
-    return {
-        "credential_source": source,
-        "credential_source_label": (creds.get("source_label") or "").strip(),
-    }
-
-
 def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
     """
     Credentials for STK Query / confirm — prefer the gateway that started the push.
 
-    Company Payment Gateway and ISP Payment Gateway are never mixed. When the ISP
-    later switches gateways, still query with the keys that issued CheckoutRequestID.
+    When the ISP later switches gateways, still query with the keys/shortcode that
+    issued CheckoutRequestID (company, ISP, or company keys + ISP shortcode).
     """
     stored = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
     source = (stored.get("credential_source") or "").strip()
     if source == "platform":
         return _platform_daraja_credentials()
+    if source == "platform_org_shortcode" and stk.organization_id:
+        org = stk.organization
+        platform = _platform_daraja_credentials()
+        if org is None:
+            return platform
+        payment_type = (org.mpesa_payment_type or "").strip()
+        shortcode = (stored.get("credential_shortcode") or org.mpesa_number or "").strip()
+        api_env = (platform.get("environment") or PaymentGateway.Environment.SANDBOX).strip().lower()
+        if shortcode and shortcode != "174379":
+            api_env = PaymentGateway.Environment.PRODUCTION
+        ready = bool(
+            platform.get("ready")
+            and payment_type
+            and shortcode
+            and (platform.get("consumer_key") or "").strip()
+            and (platform.get("consumer_secret") or "").strip()
+            and (platform.get("passkey") or "").strip()
+        )
+        return {
+            "enabled": True,
+            "ready": ready,
+            "source": "platform_org_shortcode",
+            "source_label": "Company keys + my shortcode",
+            "environment": api_env,
+            "payment_type": payment_type,
+            "shortcode": shortcode,
+            "consumer_key": (platform.get("consumer_key") or "").strip(),
+            "consumer_secret": (platform.get("consumer_secret") or "").strip(),
+            "passkey": (platform.get("passkey") or "").strip(),
+            "callback_url": platform.get("callback_url") or "",
+            "message": (
+                f"Using company keys with shortcode {shortcode}."
+                if ready
+                else "Company keys + ISP shortcode credentials are incomplete."
+            ),
+        }
     if source == "organization" and stk.organization_id:
         org = stk.organization
         if org is not None and org.has_own_daraja_credentials():
@@ -77,7 +103,7 @@ def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
                 "enabled": True,
                 "ready": ready,
                 "source": "organization",
-                "source_label": "ISP Payment Gateway",
+                "source_label": "Use My Gateway",
                 "environment": org.DarajaEnvironment.PRODUCTION,
                 "payment_type": payment_type,
                 "shortcode": shortcode,
@@ -86,15 +112,29 @@ def resolve_stk_daraja_credentials(stk: StkPushRequest) -> dict:
                 "passkey": passkey,
                 "callback_url": "",
                 "message": (
-                    f"Using this ISP's Payment Gateway with shortcode {shortcode}."
+                    f"Using this ISP's gateway with shortcode {shortcode}."
                     if ready
-                    else "ISP Payment Gateway credentials are incomplete."
+                    else "Use My Gateway credentials are incomplete."
                 ),
             }
     org = stk.organization
     if org is not None:
         return org.effective_daraja_credentials()
     return _platform_daraja_credentials()
+
+
+def _credential_meta_from_creds(creds: dict | None) -> dict:
+    """Snapshot which gateway initiated an STK (company vs ISP) for later queries."""
+    creds = creds or {}
+    source = (creds.get("source") or "").strip() or "unknown"
+    meta = {
+        "credential_source": source,
+        "credential_source_label": (creds.get("source_label") or "").strip(),
+    }
+    shortcode = (creds.get("shortcode") or "").strip()
+    if shortcode:
+        meta["credential_shortcode"] = shortcode
+    return meta
 
 
 def _merge_stk_raw_callback(existing, incoming) -> dict:
@@ -569,6 +609,28 @@ def start_subscription_stk_payment(
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
         )
+        from accounts.communications import notify_org_event, notify_platform_event
+
+        notify_org_event(
+            "isp_stk_failed",
+            organization=organization,
+            client=customer,
+            context={
+                "amount": str(amount),
+                "error": error,
+                "phone": msisdn,
+            },
+            subject="STK Push failed to send",
+        )
+        notify_platform_event(
+            "platform_staff_daraja_fail",
+            organization=organization,
+            context={
+                "company_name": getattr(organization, "name", "") or "",
+                "error": error,
+            },
+            subject="Daraja STK Push failed",
+        )
         return {"ok": False, "error": error, "stk_id": stk.pk}
 
     stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
@@ -586,6 +648,19 @@ def start_subscription_stk_payment(
             "result_desc",
             "raw_callback",
         ]
+    )
+    from accounts.communications import notify_org_event
+
+    notify_org_event(
+        "stk_prompt",
+        organization=organization,
+        client=customer,
+        context={
+            "amount": str(amount),
+            "package_name": getattr(plan, "name", "") or "",
+            "phone": msisdn,
+        },
+        subject="M-Pesa STK Push sent",
     )
     return {
         "ok": True,
@@ -903,6 +978,27 @@ def start_mikrotik_onboarding_stk_payment(
         stk.save(
             update_fields=["status", "result_desc", "completed_at", "raw_callback"]
         )
+        from accounts.communications import notify_org_event, notify_platform_event
+
+        notify_org_event(
+            "isp_stk_failed",
+            organization=organization,
+            context={
+                "amount": str(amount),
+                "error": error,
+                "router_name": site_label,
+            },
+            subject="MikroTik onboarding STK failed",
+        )
+        notify_platform_event(
+            "platform_staff_daraja_fail",
+            organization=organization,
+            context={
+                "company_name": getattr(organization, "name", "") or "",
+                "error": error,
+            },
+            subject="Daraja STK Push failed",
+        )
         return {"ok": False, "error": error, "stk_id": stk.pk}
 
     stk.merchant_request_id = (result.get("merchant_request_id") or "")[:64]
@@ -955,6 +1051,37 @@ def _fulfill_mikrotik_onboarding_stk(stk: StkPushRequest) -> dict:
             "subscription_applied",
             "completed_at",
         ]
+    )
+    from accounts.communications import notify_org_event, notify_platform_event
+
+    raw = stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+    meta = raw.get("mikrotik_onboarding") if isinstance(raw.get("mikrotik_onboarding"), dict) else {}
+    router_name = (meta.get("label") or "").strip() or "MikroTik"
+    org = stk.organization
+    ctx = {
+        "company_name": getattr(org, "name", "") or "your company",
+        "router_name": router_name,
+        "amount": str(stk.amount),
+        "mpesa_receipt": stk.mpesa_receipt or "",
+        "join_code": getattr(org, "join_code", "") or "",
+    }
+    notify_org_event(
+        "isp_mikrotik_onboarding",
+        organization=org,
+        context=ctx,
+        subject="MikroTik onboarding fee paid",
+    )
+    notify_platform_event(
+        "platform_onboarding_fee",
+        organization=org,
+        context=ctx,
+        subject="MikroTik onboarding fee paid",
+    )
+    notify_platform_event(
+        "platform_staff_onboarding_paid",
+        organization=org,
+        context=ctx,
+        subject="ISP paid MikroTik onboarding fee",
     )
     return {
         "ok": True,
@@ -1165,6 +1292,43 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
             "completed_at",
         ]
     )
+    from accounts.communications import notify_org_event
+
+    notify_org_event(
+        "isp_lead_allocated",
+        organization=stk.organization,
+        client=customer,
+        technician=technician,
+        context={
+            "amount": str(stk.amount),
+            "mpesa_receipt": stk.mpesa_receipt or "",
+            "client_name": customer.full_name or "",
+        },
+        subject="Lead allocated",
+    )
+    notify_org_event(
+        "lead_installation",
+        organization=stk.organization,
+        client=customer,
+        technician=technician,
+        context={
+            "client_name": customer.full_name or "",
+            "status": customer.get_status_display(),
+        },
+        subject="Installation update",
+    )
+    if technician is not None:
+        notify_org_event(
+            "isp_technician_assigned",
+            organization=stk.organization,
+            client=customer,
+            technician=technician,
+            context={
+                "client_name": customer.full_name or "",
+                "location": getattr(customer, "location", "") or "",
+            },
+            subject="Installation assigned",
+        )
     return {
         "ok": True,
         "already_applied": False,
@@ -1406,6 +1570,36 @@ def fulfill_successful_stk(
         vouchers[0] if vouchers else None,
     )
 
+    from accounts.communications import notify_org_event
+
+    pay_ctx = {
+        "amount": str(stk.amount),
+        "mpesa_receipt": stk.mpesa_receipt or "",
+        "invoice_number": invoice.invoice_number if invoice else "",
+        "package_name": getattr(paid_plan, "name", "") or "",
+    }
+    notify_org_event(
+        "payment_received",
+        organization=stk.organization,
+        client=customer,
+        context=pay_ctx,
+        subject="Payment received",
+    )
+    notify_org_event(
+        "invoice_receipt",
+        organization=stk.organization,
+        client=customer,
+        context=pay_ctx,
+        subject="Invoice / receipt",
+    )
+    notify_org_event(
+        "isp_stk_collection",
+        organization=stk.organization,
+        client=customer,
+        context=pay_ctx,
+        subject="Client payment collected",
+    )
+
     return {
         "ok": True,
         "already_applied": False,
@@ -1435,6 +1629,7 @@ def mark_stk_failed(
 ) -> StkPushRequest:
     if stk.status == StkPushRequest.Status.SUCCESS:
         return stk
+    first_terminal = stk.status == StkPushRequest.Status.PENDING
     stk.status = (
         StkPushRequest.Status.CANCELLED if cancelled else StkPushRequest.Status.FAILED
     )
@@ -1457,6 +1652,20 @@ def mark_stk_failed(
             "completed_at",
         ]
     )
+    if first_terminal and stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
+        from accounts.communications import notify_org_event
+
+        notify_org_event(
+            "payment_failed",
+            organization=stk.organization,
+            client=stk.customer,
+            context={
+                "amount": str(stk.amount),
+                "error": stk.result_desc or "",
+                "phone": stk.phone or "",
+            },
+            subject="Payment failed",
+        )
     return stk
 
 

@@ -71,6 +71,57 @@ class Command(BaseCommand):
             encoding = getattr(getattr(stream, "_out", None), "encoding", None) or "ascii"
             stream.write(text.encode(encoding, errors="replace").decode(encoding))
 
+    def _notify_package_lifecycle(self, customers) -> None:
+        """Send package_expired / renewal_reminder once per package window."""
+        from django.core.cache import cache
+        from django.utils import timezone
+
+        from accounts.communications import notify_org_event
+        from billing.services import customer_receives_internet
+
+        now = timezone.localtime()
+
+        def _local(dt):
+            if dt is None:
+                return None
+            if timezone.is_naive(dt):
+                return timezone.make_aware(dt, timezone.get_current_timezone())
+            return timezone.localtime(dt)
+
+        for customer in customers:
+            org = getattr(customer, "organization", None)
+            if org is None:
+                continue
+            start = _local(getattr(customer, "package_start", None))
+            end = _local(getattr(customer, "package_end", None))
+            if end is None:
+                continue
+            end_key = end.isoformat()
+            receives = customer_receives_internet(customer)
+            if not receives and end <= now:
+                cache_key = f"comms:pkg_expired:{customer.pk}:{end_key}"
+                if cache.add(cache_key, 1, timeout=60 * 60 * 24 * 45):
+                    notify_org_event(
+                        "package_expired",
+                        organization=org,
+                        client=customer,
+                        context={"package_end": end_key},
+                        subject="Package expired",
+                    )
+            elif receives and start is not None and end > now:
+                total = (end - start).total_seconds()
+                remaining = (end - now).total_seconds()
+                if total > 0 and remaining > 0 and remaining / total <= 0.25:
+                    cache_key = f"comms:renewal:{customer.pk}:{end_key}"
+                    if cache.add(cache_key, 1, timeout=60 * 60 * 24 * 45):
+                        notify_org_event(
+                            "renewal_reminder",
+                            organization=org,
+                            client=customer,
+                            context={"package_end": end_key},
+                            subject="Package expiring soon",
+                        )
+
     def handle(self, *args, **options):
         if bool(options.get("clear_lock")):
             release_subscription_sweep_lock()
@@ -115,6 +166,9 @@ class Command(BaseCommand):
             qs = qs.filter(organization_id=org_id)
 
         customers = list(qs)
+        if not dry_run:
+            self._notify_package_lifecycle(customers)
+
         if dry_run:
             allowed = blocked = 0
             for customer in customers:

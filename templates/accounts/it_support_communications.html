@@ -7,10 +7,6 @@
   <h1 class="staff-topbar-heading">{{ page_title }}</h1>
 {% endblock %}
 
-{% block staff_nav %}
-  {% include "accounts/includes/it_support_company_settings_nav.html" %}
-{% endblock %}
-
 {% block staff_content %}
 <section class="org-edit org-edit--settings company-settings-page">
   <div class="org-edit-intro">
@@ -30,12 +26,17 @@
           {% endif %}
         </div>
         <p class="org-edit-owner">{{ page_subtitle }}</p>
+        <p style="margin-top:0.75rem;">
+          <a class="btn btn-ghost btn-sm" href="{% url 'roles:it_support_communications' %}">Enabled messages</a>
+        </p>
       </div>
     </div>
   </div>
 
   <div class="settings-policy-banner">
     These credentials send messages <strong>from ISPCENTRIC to ISPs and platform staff</strong>.
+    Configure which actions send messages on
+    <a href="{% url 'roles:it_support_communications' %}"><strong>Communications</strong></a>.
     They are not the same as each ISP’s
     <a href="{% url 'core:settings_communications' %}"><strong>Communication settings</strong></a>
     (<code>/app/settings/communications/</code>).

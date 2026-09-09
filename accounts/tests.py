@@ -1786,6 +1786,7 @@ class DarajaGatewayIsolationTests(TestCase):
     def test_company_gateway_is_default_when_isp_has_no_own_app(self):
         creds = self.org.effective_daraja_credentials()
         self.assertTrue(self.org.uses_platform_daraja_credentials())
+        self.assertFalse(self.org.uses_company_keys_with_own_shortcode())
         self.assertEqual(creds["source"], "platform")
         self.assertEqual(creds["source_label"], "Company Payment Gateway")
         self.assertEqual(creds["shortcode"], "174379")
@@ -1806,14 +1807,33 @@ class DarajaGatewayIsolationTests(TestCase):
         creds = self.org.effective_daraja_credentials()
         self.assertFalse(self.org.uses_platform_daraja_credentials())
         self.assertTrue(self.org.has_own_daraja_credentials())
+        self.assertTrue(self.org.uses_own_daraja_gateway())
         self.assertEqual(creds["source"], "organization")
-        self.assertEqual(creds["source_label"], "ISP Payment Gateway")
+        self.assertEqual(creds["source_label"], "Use My Gateway")
         self.assertEqual(creds["shortcode"], "522522")
         self.assertEqual(creds["payment_type"], "paybill")
         self.assertEqual(creds["consumer_key"], "isp-key")
         self.assertEqual(creds["consumer_secret"], "isp-secret")
         self.assertEqual(creds["passkey"], "isp-pass")
         self.assertNotEqual(creds["consumer_key"], self.gateway.consumer_key)
+        self.assertNotEqual(creds["shortcode"], self.gateway.shortcode)
+        self.assertTrue(creds["ready"])
+
+    def test_company_keys_with_isp_shortcode(self):
+        self.org.daraja_environment = Organization.DarajaEnvironment.COMPANY_SHORTCODE
+        self.org.save(update_fields=["daraja_environment"])
+
+        creds = self.org.effective_daraja_credentials()
+        self.assertTrue(self.org.uses_platform_daraja_credentials())
+        self.assertTrue(self.org.uses_company_keys_with_own_shortcode())
+        self.assertFalse(self.org.uses_own_daraja_gateway())
+        self.assertEqual(creds["source"], "platform_org_shortcode")
+        self.assertEqual(creds["source_label"], "Company keys + my shortcode")
+        self.assertEqual(creds["shortcode"], "522522")
+        self.assertEqual(creds["payment_type"], "paybill")
+        self.assertEqual(creds["consumer_key"], "company-key")
+        self.assertEqual(creds["consumer_secret"], "company-secret")
+        self.assertEqual(creds["passkey"], "company-pass")
         self.assertNotEqual(creds["shortcode"], self.gateway.shortcode)
         self.assertTrue(creds["ready"])
 

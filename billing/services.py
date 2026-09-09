@@ -51,11 +51,21 @@ def plans_for_router(
 
 
 def plan_uses_clock_time(plan_or_duration) -> bool:
-    """True for hourly / 6-hour packages (time-of-day windows)."""
+    """True for hour-based packages (time-of-day windows)."""
     if plan_or_duration is None:
         return False
-    duration = getattr(plan_or_duration, "duration", plan_or_duration) or ""
-    return str(duration).strip().lower() in BillingPlan.CLOCK_TIME_DURATIONS
+    if hasattr(plan_or_duration, "uses_clock_time"):
+        return bool(plan_or_duration.uses_clock_time)
+    if hasattr(plan_or_duration, "duration_parts"):
+        _, unit = plan_or_duration.duration_parts()
+        return unit == BillingPlan.DurationUnit.HOURS
+    duration = str(getattr(plan_or_duration, "duration", plan_or_duration) or "").strip().lower()
+    if duration in BillingPlan.CLOCK_TIME_DURATIONS:
+        return True
+    if duration == BillingPlan.DurationUnit.HOURS:
+        return True
+    parts = BillingPlan.LEGACY_DURATION_TO_PARTS.get(duration)
+    return bool(parts and parts[1] == BillingPlan.DurationUnit.HOURS)
 
 
 def generate_customer_account_number(organization, *, prefix: str = "CLT") -> str:
@@ -406,6 +416,15 @@ def pause_customer_package(customer, *, now: datetime | None = None):
         invalidate_captive_redirect_cache_for_customer(customer)
     except Exception:
         pass
+    from accounts.communications import notify_org_event
+
+    notify_org_event(
+        "package_pause_resume",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        context={"status": "paused"},
+        subject="Package paused",
+    )
     return customer
 
 
@@ -440,6 +459,15 @@ def resume_customer_package(customer, *, now: datetime | None = None):
         invalidate_captive_redirect_cache_for_customer(customer)
     except Exception:
         pass
+    from accounts.communications import notify_org_event
+
+    notify_org_event(
+        "package_pause_resume",
+        organization=getattr(customer, "organization", None),
+        client=customer,
+        context={"status": "resumed"},
+        subject="Package resumed",
+    )
     return customer
 
 
@@ -784,51 +812,57 @@ PHONE_ALREADY_REGISTERED = (
 )
 
 
+def _resolve_duration_parts(
+    plan: BillingPlan | None = None,
+    *,
+    duration: str | None = None,
+    duration_value: int | None = None,
+    duration_unit: str | None = None,
+) -> tuple[int, str]:
+    """Normalize plan / legacy key / explicit parts into (value, unit)."""
+    if duration_value is not None and duration_unit:
+        value = int(duration_value)
+        unit = str(duration_unit).strip().lower()
+        if value >= 1 and unit in {choice.value for choice in BillingPlan.DurationUnit}:
+            return value, unit
+    if plan is not None and hasattr(plan, "duration_parts"):
+        return plan.duration_parts()
+    duration_key = str(duration or getattr(plan, "duration", None) or "").strip().lower()
+    parts = BillingPlan.LEGACY_DURATION_TO_PARTS.get(duration_key)
+    if parts:
+        return parts
+    raise ValueError("Unsupported package duration.")
+
+
 def plan_billing_unit_seconds(plan, *, reference: datetime | date | None = None) -> float:
     """Length of one billed plan unit in seconds (for proration)."""
     if plan is None:
         raise ValueError("Select a package.")
-    duration_key = (getattr(plan, "duration", None) or "").strip().lower()
-    if duration_key == BillingPlan.Duration.HOURLY:
-        return 3600.0
-    if duration_key == BillingPlan.Duration.SIX_HOURS:
-        return 6 * 3600.0
-    if duration_key == BillingPlan.Duration.DAILY:
-        return 86400.0
-    if duration_key == BillingPlan.Duration.WEEKLY:
-        return 7 * 86400.0
+    value, unit = _resolve_duration_parts(plan)
+    if unit == BillingPlan.DurationUnit.HOURS:
+        return float(value * 3600)
+    if unit == BillingPlan.DurationUnit.DAYS:
+        return float(value * 86400)
+    if unit == BillingPlan.DurationUnit.WEEKS:
+        return float(value * 7 * 86400)
     ref = reference or timezone.localtime()
     if isinstance(ref, datetime):
         ref_day = timezone.localtime(ref).date() if timezone.is_aware(ref) else ref.date()
     else:
         ref_day = ref
-    if duration_key == BillingPlan.Duration.MONTHLY:
-        return float(monthrange(ref_day.year, ref_day.month)[1] * 86400)
-    if duration_key == BillingPlan.Duration.QUARTERLY:
-        total = 0
-        cursor = ref_day
-        for _ in range(3):
-            days = monthrange(cursor.year, cursor.month)[1]
-            total += days
-            cursor = _add_months(cursor.replace(day=1), 1)
-        return float(total * 86400)
-    if duration_key == BillingPlan.Duration.SEMI_ANNUAL:
-        total = 0
-        cursor = ref_day
-        for _ in range(6):
-            days = monthrange(cursor.year, cursor.month)[1]
-            total += days
-            cursor = _add_months(cursor.replace(day=1), 1)
-        return float(total * 86400)
-    if duration_key == BillingPlan.Duration.YEARLY:
-        total = 0
-        cursor = ref_day
-        for _ in range(12):
-            days = monthrange(cursor.year, cursor.month)[1]
-            total += days
-            cursor = _add_months(cursor.replace(day=1), 1)
-        return float(total * 86400)
-    raise ValueError("Unsupported package duration for partial recharge.")
+    if unit == BillingPlan.DurationUnit.MONTHS:
+        month_count = value
+    elif unit == BillingPlan.DurationUnit.YEARS:
+        month_count = value * 12
+    else:
+        raise ValueError("Unsupported package duration for partial recharge.")
+    total = 0
+    cursor = ref_day
+    for _ in range(max(int(month_count), 1)):
+        days = monthrange(cursor.year, cursor.month)[1]
+        total += days
+        cursor = _add_months(cursor.replace(day=1), 1)
+    return float(total * 86400)
 
 
 def partial_recharge_window(
@@ -1261,6 +1295,28 @@ def recharge_customer_cash(
             )
 
     voucher_codes = [format_voucher_code(row.code) for row in vouchers]
+    from accounts.communications import notify_org_event
+
+    pay_ctx = {
+        "amount": str(amount),
+        "invoice_number": invoice.invoice_number if invoice else "",
+        "package_name": getattr(plan, "name", "") or "",
+        "reference": (reference or "")[:100],
+    }
+    notify_org_event(
+        "payment_received",
+        organization=organization,
+        client=customer,
+        context=pay_ctx,
+        subject="Payment received",
+    )
+    notify_org_event(
+        "invoice_receipt",
+        organization=organization,
+        client=customer,
+        context=pay_ctx,
+        subject="Invoice / receipt",
+    )
     return {
         "customer": customer,
         "invoice": invoice,
@@ -1460,57 +1516,46 @@ def compute_package_end(
     plan: BillingPlan | None = None,
     *,
     duration: str | None = None,
+    duration_value: int | None = None,
+    duration_unit: str | None = None,
 ) -> Optional[datetime]:
     """
     Derive package end from a start moment and billing plan duration.
 
-    hourly       → start + 1 hour
-    six_hours    → start + 6 hours
-    daily        → start + 1 day
-    weekly       → start + 7 days
-    monthly      → start + 1 calendar month
-    quarterly    → start + 3 calendar months
-    semi_annual  → start + 6 calendar months
-    yearly       → start + 1 calendar year
+    Supports legacy duration keys and customizable value + unit periods
+    (hours, days, weeks, months, years).
     """
     if start is None:
         return None
     start_dt = _as_local_datetime(start)
     if start_dt is None:
         return None
-    duration_key = (duration or getattr(plan, "duration", None) or "").strip().lower()
-    if not duration_key:
+    try:
+        value, unit = _resolve_duration_parts(
+            plan,
+            duration=duration,
+            duration_value=duration_value,
+            duration_unit=duration_unit,
+        )
+    except ValueError:
         return None
-    if duration_key == BillingPlan.Duration.HOURLY:
-        return start_dt + timedelta(hours=1)
-    if duration_key == BillingPlan.Duration.SIX_HOURS:
-        return start_dt + timedelta(hours=6)
-    if duration_key == BillingPlan.Duration.DAILY:
-        return start_dt + timedelta(days=1)
-    if duration_key == BillingPlan.Duration.WEEKLY:
-        return start_dt + timedelta(days=7)
-    if duration_key == BillingPlan.Duration.MONTHLY:
-        end_day = _add_months(timezone.localtime(start_dt).date(), 1)
+    if unit == BillingPlan.DurationUnit.HOURS:
+        return start_dt + timedelta(hours=value)
+    if unit == BillingPlan.DurationUnit.DAYS:
+        return start_dt + timedelta(days=value)
+    if unit == BillingPlan.DurationUnit.WEEKS:
+        return start_dt + timedelta(weeks=value)
+    local_start = timezone.localtime(start_dt)
+    if unit == BillingPlan.DurationUnit.MONTHS:
+        end_day = _add_months(local_start.date(), value)
         return timezone.make_aware(
-            datetime.combine(end_day, timezone.localtime(start_dt).time()),
+            datetime.combine(end_day, local_start.time()),
             timezone.get_current_timezone(),
         )
-    if duration_key == BillingPlan.Duration.QUARTERLY:
-        end_day = _add_months(timezone.localtime(start_dt).date(), 3)
+    if unit == BillingPlan.DurationUnit.YEARS:
+        end_day = _add_months(local_start.date(), value * 12)
         return timezone.make_aware(
-            datetime.combine(end_day, timezone.localtime(start_dt).time()),
-            timezone.get_current_timezone(),
-        )
-    if duration_key == BillingPlan.Duration.SEMI_ANNUAL:
-        end_day = _add_months(timezone.localtime(start_dt).date(), 6)
-        return timezone.make_aware(
-            datetime.combine(end_day, timezone.localtime(start_dt).time()),
-            timezone.get_current_timezone(),
-        )
-    if duration_key == BillingPlan.Duration.YEARLY:
-        end_day = _add_months(timezone.localtime(start_dt).date(), 12)
-        return timezone.make_aware(
-            datetime.combine(end_day, timezone.localtime(start_dt).time()),
+            datetime.combine(end_day, local_start.time()),
             timezone.get_current_timezone(),
         )
     return None

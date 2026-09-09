@@ -23,7 +23,22 @@
         {% endif %}
       </header>
 
-      {% if sms_status or email_status or whatsapp_status %}
+      {% if show_events and sms_status or show_events and email_status or show_events and whatsapp_status %}
+        <section class="comms-channel-strip" aria-label="Channel status">
+          <div class="comms-channel-pill{% if sms_status.ready %} is-ready{% elif sms_status.enabled %} is-warn{% endif %}">
+            <span>SMS</span>
+            <strong>{% if sms_status.ready %}Ready{% elif sms_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+          <div class="comms-channel-pill{% if email_status.ready %} is-ready{% elif email_status.enabled %} is-warn{% endif %}">
+            <span>Email</span>
+            <strong>{% if email_status.ready %}Ready{% elif email_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+          <div class="comms-channel-pill{% if whatsapp_status.ready %} is-ready{% elif whatsapp_status.enabled %} is-warn{% endif %}">
+            <span>WhatsApp</span>
+            <strong>{% if whatsapp_status.ready %}Ready{% elif whatsapp_status.enabled %}Setup{% else %}Off{% endif %}</strong>
+          </div>
+        </section>
+      {% elif sms_status or email_status or whatsapp_status %}
         <section class="panel account-card account-status-card" aria-label="Channel status">
           <header class="account-card-head">
             <div class="account-card-head-main">
@@ -72,56 +87,65 @@
       {% endif %}
 
       {% if show_events and client_events or show_events and isp_events %}
-        <section class="panel account-card comms-events-card">
-          <header class="account-card-head">
-            <div class="account-card-head-main">
-              <div>
-                <h2>When messages are sent</h2>
-                <p>Based on live ISPCENTRIC workflows. Change SMS, email, and WhatsApp gateways under Communication settings.</p>
-              </div>
+        <section class="panel account-card comms-events-card" data-enabled-messages>
+          <header class="comms-panel-head">
+            <div>
+              <h2>When messages are sent</h2>
+              <p>Pick recipients and a channel, then Save to turn the message on. Use Off to disable it.</p>
             </div>
           </header>
-          <div class="comms-events-grid">
+
+          {% if not can_edit %}
+            <p class="comms-preview-empty" style="margin-bottom:1rem;">
+              Read-only. Only the organization owner can enable or change message settings.
+            </p>
+          {% endif %}
+
+          <div class="comms-events-list-wrap">
             {% if client_events %}
-              <div class="comms-events-col">
-                <h3>Your clients</h3>
-                <p class="comms-events-lead">Subscribers on PPPoE, Hotspot, or Static — phone and email on the client record.</p>
-                <ol class="comms-event-list">
-                  {% for event in client_events %}
-                    <li class="comms-event">
-                      <strong>{{ event.title }}</strong>
-                      <span class="comms-event-when">{{ event.when }}</span>
-                      <span class="comms-event-includes">{{ event.includes }}</span>
-                      <span class="comms-event-channels">
-                        {% for channel in event.channels %}
-                          <span class="comms-channel-chip">{{ channel }}</span>
-                        {% endfor %}
-                      </span>
-                    </li>
-                  {% endfor %}
-                </ol>
-              </div>
+              <section class="comms-events-section">
+                <div class="comms-events-section-bar">
+                  <h3>Your clients</h3>
+                  <p>Subscribers on PPPoE, Hotspot, or Static — phone and email on the client record.</p>
+                </div>
+                <div class="comms-event-table">
+                  <div class="comms-event-table-head" aria-hidden="true">
+                    <span>Trigger</span>
+                    <span>To whom</span>
+                    <span>Channel</span>
+                    <span>Link</span>
+                    <span>Actions</span>
+                  </div>
+                  <ol class="comms-event-list">
+                    {% for event in client_events %}
+                      {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                    {% endfor %}
+                  </ol>
+                </div>
+              </section>
             {% endif %}
+
             {% if isp_events %}
-              <div class="comms-events-col">
-                <h3>This ISP account</h3>
-                <p class="comms-events-lead">Organization owner and staff — owner email/phone, or the assigned technician.</p>
-                <ol class="comms-event-list">
-                  {% for event in isp_events %}
-                    <li class="comms-event">
-                      <strong>{{ event.title }}</strong>
-                      {% if event.recipient %}<span class="comms-event-recipient">To: {{ event.recipient }}</span>{% endif %}
-                      <span class="comms-event-when">{{ event.when }}</span>
-                      <span class="comms-event-includes">{{ event.includes }}</span>
-                      <span class="comms-event-channels">
-                        {% for channel in event.channels %}
-                          <span class="comms-channel-chip">{{ channel }}</span>
-                        {% endfor %}
-                      </span>
-                    </li>
-                  {% endfor %}
-                </ol>
-              </div>
+              <section class="comms-events-section">
+                <div class="comms-events-section-bar">
+                  <h3>This ISP account</h3>
+                  <p>Organization owner and staff — owner email/phone, or the assigned technician.</p>
+                </div>
+                <div class="comms-event-table">
+                  <div class="comms-event-table-head" aria-hidden="true">
+                    <span>Trigger</span>
+                    <span>To whom</span>
+                    <span>Channel</span>
+                    <span>Link</span>
+                    <span>Actions</span>
+                  </div>
+                  <ol class="comms-event-list">
+                    {% for event in isp_events %}
+                      {% include "accounts/includes/comms_event_select_card.html" with event=event %}
+                    {% endfor %}
+                  </ol>
+                </div>
+              </section>
             {% endif %}
           </div>
         </section>
@@ -142,10 +166,78 @@
     </div>
   {% endif %}
 </div>
+
+{% if show_events %}
+  {% include "includes/comms_message_preview_modal.html" with preview_require_gateway=1 preview_empty_text="Turn on Email, SMS, or WhatsApp in gateway settings, then choose an enabled channel to preview." %}
+{% endif %}
 {% endblock %}
 
 {% block client_extra_js %}
 {% if show_config %}
 {% include "includes/comms_credentials_script.html" %}
+{% endif %}
+{% if show_events %}
+<script>
+(function () {
+  function updateMultiSummary(root) {
+    var summary = root.querySelector("[data-comms-multi-summary]");
+    if (!summary) return;
+    var labels = [];
+    root.querySelectorAll("[data-comms-multi-option]:checked").forEach(function (input) {
+      labels.push(input.getAttribute("data-label") || input.value);
+    });
+    if (!labels.length) {
+      summary.textContent = "Select…";
+    } else if (labels.length === 1) {
+      summary.textContent = labels[0];
+    } else {
+      summary.textContent = labels[0] + " +" + (labels.length - 1);
+    }
+    root.classList.toggle("has-value", labels.length > 0);
+  }
+
+  function closeAllMulti(except) {
+    document.querySelectorAll("[data-comms-multi].is-open").forEach(function (root) {
+      if (except && root === except) return;
+      root.classList.remove("is-open");
+      var toggle = root.querySelector("[data-comms-multi-toggle]");
+      var panel = root.querySelector("[data-comms-multi-panel]");
+      if (toggle) toggle.setAttribute("aria-expanded", "false");
+      if (panel) panel.hidden = true;
+    });
+  }
+
+  document.querySelectorAll("[data-comms-multi]").forEach(function (root) {
+    updateMultiSummary(root);
+    var toggle = root.querySelector("[data-comms-multi-toggle]");
+    var panel = root.querySelector("[data-comms-multi-panel]");
+    if (!toggle || !panel) return;
+
+    toggle.addEventListener("click", function (event) {
+      event.preventDefault();
+      var willOpen = panel.hidden;
+      closeAllMulti(root);
+      panel.hidden = !willOpen;
+      root.classList.toggle("is-open", willOpen);
+      toggle.setAttribute("aria-expanded", willOpen ? "true" : "false");
+    });
+
+    root.querySelectorAll("[data-comms-multi-option]").forEach(function (input) {
+      input.addEventListener("change", function () {
+        updateMultiSummary(root);
+      });
+    });
+  });
+
+  document.addEventListener("click", function (event) {
+    if (!event.target.closest("[data-comms-multi]")) closeAllMulti();
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") closeAllMulti();
+  });
+})();
+</script>
+{% include "includes/comms_message_preview_script.html" %}
 {% endif %}
 {% endblock %}

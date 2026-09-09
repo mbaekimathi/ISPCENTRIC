@@ -1811,10 +1811,10 @@
           <p class="section-label">Choose your access</p>
           <div class="plan-categories" data-plan-select>
             {% with hsel=hotspot_selected_plan_id|default:selected_plan_id %}
-            {% regroup hotspot_plans by duration as plan_groups %}
+            {% regroup hotspot_plans by duration_group as plan_groups %}
             {% for group in plan_groups %}
               <section class="plan-category">
-                <h2 class="category-label">{{ group.list.0.get_duration_display }}</h2>
+                <h2 class="category-label">{{ group.list.0.duration_group }}</h2>
                 <div class="plan-scroll" data-count="{{ group.list|length }}">
                   {% for plan in group.list %}
                     <label

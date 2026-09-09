@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 # Planned outbound events, derived from live ISPCENTRIC workflows.
 # Clients = subscribers of this ISP. ISP account = owner / staff on this workspace.
+CLIENT_EVENT_RECIPIENT_OPTIONS = ("client",)
+ORG_ISP_EVENT_RECIPIENT_OPTIONS = (
+    "organization_owner",
+    "assigned_technician",
+)
+
 CLIENT_COMMUNICATION_EVENTS = (
     {
         "key": "client_welcome",
@@ -26,6 +32,11 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "A PPPoE, Hotspot, or Static client is registered.",
         "includes": "Account number, PPPoE username/password or Hotspot login, and support contacts.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Welcome. Your internet account is ready. "
+            "Keep this message for your login details and support contacts."
+        ),
     },
     {
         "key": "hotspot_voucher",
@@ -33,6 +44,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "Staff generate or share a Hotspot voucher.",
         "includes": "Voucher code, validity, and speeds.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your Hotspot voucher is ready. Use the code in this message to connect."
+        ),
     },
     {
         "key": "lead_installation",
@@ -40,6 +55,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "A lead is allocated, a technician is assigned, or installation is accepted, declined, or marked not interested.",
         "includes": "Visit window, technician name, and next step.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Installation update: check the visit window and next step in this message."
+        ),
     },
     {
         "key": "stk_prompt",
@@ -47,6 +66,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "A subscription STK Push is sent to the client's phone.",
         "includes": "Amount, package name, and Paybill/Till reference. Daraja prompts the phone; SMS/WhatsApp can confirm it.",
         "channels": ("sms", "whatsapp"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "An M-Pesa STK Push was sent to your phone. Enter your PIN to complete payment."
+        ),
     },
     {
         "key": "payment_received",
@@ -54,6 +77,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "Cash recharge or M-Pesa STK succeeds and the package is extended.",
         "includes": "Receipt, amount, package, and new expiry.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Payment received. Your package has been extended. Details are in this message."
+        ),
     },
     {
         "key": "payment_failed",
@@ -61,6 +88,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "STK Push fails, expires, or the client cancels on the phone.",
         "includes": "Reason and how to retry payment.",
         "channels": ("sms", "whatsapp"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Payment was not completed. You can retry from your payment page or contact support."
+        ),
     },
     {
         "key": "renewal_reminder",
@@ -68,6 +99,14 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "The client has used about three-quarters of the current package window.",
         "includes": "Days or hours left and a renew link / Paybill instructions.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Renew package",
+            "url_name": "core:workspace",
+        },
+        "default_message": (
+            "Your package is expiring soon. Renew now to avoid interruption."
+        ),
     },
     {
         "key": "package_expired",
@@ -75,6 +114,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "The subscription sweep finds the package window has ended and access is blocked.",
         "includes": "Expiry time and how to recharge.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your package has expired and access is blocked. Recharge to restore service."
+        ),
     },
     {
         "key": "package_pause_resume",
@@ -82,6 +125,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "Staff freeze or restart the client's package clock.",
         "includes": "Whether surfing is blocked or restored, and remaining time.",
         "channels": ("sms", "whatsapp"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your package status changed. Check this message for whether surfing is paused or restored."
+        ),
     },
     {
         "key": "account_status",
@@ -89,6 +136,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "The client status changes to suspended, inactive, or active.",
         "includes": "New status and who to contact.",
         "channels": ("sms", "whatsapp", "email"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your account status changed. Contact support if you need help."
+        ),
     },
     {
         "key": "wifi_changed",
@@ -96,6 +147,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "CPE Wi‑Fi SSID or password is updated from the client page.",
         "includes": "New SSID and password.",
         "channels": ("sms", "whatsapp"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your Wi‑Fi details were updated. Use the new SSID and password in this message."
+        ),
     },
     {
         "key": "invoice_receipt",
@@ -103,6 +158,10 @@ CLIENT_COMMUNICATION_EVENTS = (
         "when": "A renewal invoice or payment receipt is created.",
         "includes": "Invoice number, amount, and period covered.",
         "channels": ("email", "whatsapp"),
+        "recipient_options": CLIENT_EVENT_RECIPIENT_OPTIONS,
+        "default_message": (
+            "Your invoice or receipt is ready. Details are included in this message."
+        ),
     },
 )
 
@@ -114,6 +173,17 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Reset link. Uses platform email, not this organization's SMS/WhatsApp gateway.",
         "channels": ("email",),
         "recipient": "Owner or staff login email",
+        "recipient_options": ("organization_owner",),
+        "page_link": {
+            "label": "Password reset link",
+            "url_name": "",
+            "system_generated": True,
+            "note": "System generates a one-time reset link when the message is sent.",
+        },
+        "default_message": (
+            "You requested a password reset for your ISPCENTRIC login. "
+            "Use the reset link in this message to choose a new password."
+        ),
     },
     {
         "key": "isp_employee_joined",
@@ -122,6 +192,11 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Name, role, and join code used.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "An employee joined your ISP using your join code. "
+            "Review their name and role in your workspace."
+        ),
     },
     {
         "key": "isp_lead_open",
@@ -130,6 +205,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Lead name, phone, location, and service type.",
         "channels": ("sms", "email"),
         "recipient": "Organization owner / sales",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "A new open lead is available. Review the lead details and allocate if ready."
+        ),
     },
     {
         "key": "isp_lead_allocated",
@@ -138,6 +217,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Lead details, amount paid, and assigned technician if any.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "A lead was allocated to your ISP. Check the client details and next installation step."
+        ),
     },
     {
         "key": "isp_technician_assigned",
@@ -146,6 +229,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Client name, location, and preferred installation date.",
         "channels": ("sms", "whatsapp"),
         "recipient": "Assigned technician",
+        "recipient_options": ("assigned_technician",),
+        "default_message": (
+            "An installation was assigned to you. Check the client name, location, and preferred date."
+        ),
     },
     {
         "key": "isp_installation_result",
@@ -154,6 +241,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Outcome and any decline reason.",
         "channels": ("sms", "email"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "Installation status updated. Review the outcome in your workspace."
+        ),
     },
     {
         "key": "isp_mikrotik_onboarding",
@@ -162,6 +253,32 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Router name, amount, and whether the script can be generated.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "page_link": {
+            "label": "MikroTik onboarding",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Your MikroTik onboarding fee payment was processed. "
+            "Check your workspace for the next onboarding step."
+        ),
+    },
+    {
+        "key": "isp_mikrotik_onboarded",
+        "title": "MikroTik successfully onboarded",
+        "when": "This ISP finishes onboarding a MikroTik router into ISPCENTRIC.",
+        "includes": "Router name and confirmation that the device is ready to manage.",
+        "channels": ("sms", "email", "whatsapp"),
+        "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "page_link": {
+            "label": "MikroTik routers",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Your MikroTik “{router_name}” was successfully onboarded for {company_name}. "
+            "Open MikroTik to manage the router."
+        ),
     },
     {
         "key": "isp_stk_collection",
@@ -170,6 +287,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Client name, account number, amount, and M-Pesa receipt.",
         "channels": ("sms", "email"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "A client payment was collected on your Paybill/Till. Receipt details are in this message."
+        ),
     },
     {
         "key": "isp_stk_failed",
@@ -178,6 +299,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Error from Daraja and which client/lead it was for.",
         "channels": ("email", "sms"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "An STK Push failed to send. Review Daraja credentials and the related client or lead."
+        ),
     },
     {
         "key": "isp_referral_active",
@@ -186,6 +311,10 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Referred company name and referral status change.",
         "channels": ("sms", "email", "whatsapp"),
         "recipient": "Referring ISP owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "A company you referred has onboarded their first MikroTik. Your referral is now active."
+        ),
     },
     {
         "key": "isp_client_registered",
@@ -194,8 +323,38 @@ ISP_COMMUNICATION_EVENTS = (
         "includes": "Client name, phone, account number, and service type.",
         "channels": ("email", "sms"),
         "recipient": "Organization owner",
+        "recipient_options": ("organization_owner",),
+        "default_message": (
+            "A new client was registered under your ISP. Review their account details in your workspace."
+        ),
     },
 )
+
+# Who can receive platform messages. Employee keys match Employee.Role values.
+RECIPIENT_OPTIONS = {
+    "isp_client": "ISP Client",
+    "client": "Client",
+    "organization_owner": "Organization owner",
+    "assigned_technician": "Assigned technician",
+    "super_admin": "Super admin",
+    "administrator": "Administrator",
+    "manager": "Customer support",
+    "it_support": "IT support",
+    "sales": "Sales",
+    "technician": "Technician",
+}
+
+PLATFORM_EVENT_RECIPIENT_OPTIONS = (
+    "isp_client",
+    "it_support",
+    "super_admin",
+    "administrator",
+    "manager",
+    "sales",
+    "technician",
+)
+ISP_EVENT_RECIPIENT_OPTIONS = PLATFORM_EVENT_RECIPIENT_OPTIONS
+STAFF_EVENT_RECIPIENT_OPTIONS = PLATFORM_EVENT_RECIPIENT_OPTIONS
 
 # ISPCENTRIC platform → ISPs / staff. Separate from each ISP's client credentials.
 PLATFORM_TO_ISP_EVENTS = (
@@ -205,7 +364,16 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "A company creates an ISPCENTRIC account.",
         "includes": "Welcome, join code, and how to onboard a MikroTik.",
         "channels": ("email", "sms", "whatsapp"),
-        "recipient": "New ISP owner",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "MikroTik onboarding",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Welcome to ISPCENTRIC. Your company account is ready. "
+            "Use your join code to invite staff and onboard your first MikroTik."
+        ),
     },
     {
         "key": "platform_isp_status",
@@ -213,7 +381,16 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "Staff change an organization status to active, registered, or suspended.",
         "includes": "New status and who to contact.",
         "channels": ("email", "sms", "whatsapp"),
-        "recipient": "ISP owner",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Workspace dashboard",
+            "url_name": "core:workspace",
+        },
+        "default_message": (
+            "Your ISPCENTRIC account status has changed. "
+            "Sign in to review details or contact support if you need help."
+        ),
     },
     {
         "key": "platform_password_reset",
@@ -221,7 +398,18 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "An ISP owner or staff requests a login reset.",
         "includes": "Reset link. Can use Django EMAIL_* if platform SMTP is off.",
         "channels": ("email",),
-        "recipient": "Login email on the account",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Password reset link",
+            "url_name": "",
+            "system_generated": True,
+            "note": "System generates a one-time reset link when the message is sent.",
+        },
+        "default_message": (
+            "You requested a password reset for your ISPCENTRIC login. "
+            "Use the reset link in this message to choose a new password."
+        ),
     },
     {
         "key": "platform_onboarding_fee",
@@ -229,7 +417,33 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "Platform onboarding-fee STK Push succeeds or fails (Company Payment Gateway).",
         "includes": "Amount, router, and whether the tunnel script can be generated.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "ISP owner",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "MikroTik onboarding",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Your MikroTik onboarding fee payment was processed. "
+            "Check your ISPCENTRIC workspace for the next onboarding step."
+        ),
+    },
+    {
+        "key": "platform_isp_mikrotik_onboarded",
+        "title": "MikroTik successfully onboarded",
+        "when": "An ISP finishes onboarding a MikroTik router into ISPCENTRIC.",
+        "includes": "Company name, router name, and link to MikroTik management.",
+        "channels": ("email", "sms", "whatsapp"),
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "MikroTik routers",
+            "url_name": "core:mikrotik",
+        },
+        "default_message": (
+            "Your MikroTik “{router_name}” was successfully onboarded on ISPCENTRIC "
+            "for {company_name}. Open MikroTik to manage the router."
+        ),
     },
     {
         "key": "platform_referral_active",
@@ -237,7 +451,16 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "An ISP referred through the platform onboards their first MikroTik.",
         "includes": "Referred company name and referral status.",
         "channels": ("sms", "email", "whatsapp"),
-        "recipient": "Referring ISP owner",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Referrals",
+            "url_name": "core:referrals",
+        },
+        "default_message": (
+            "A company you referred has onboarded their first MikroTik. "
+            "Your referral is now active in ISPCENTRIC."
+        ),
     },
     {
         "key": "platform_announcement",
@@ -245,7 +468,16 @@ PLATFORM_TO_ISP_EVENTS = (
         "when": "ISPCENTRIC sends a maintenance or product notice to ISPs.",
         "includes": "Announcement body and any action required.",
         "channels": ("email", "sms", "whatsapp"),
-        "recipient": "ISP owners",
+        "recipient": "Employee roles",
+        "recipient_options": ISP_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Workspace dashboard",
+            "url_name": "core:workspace",
+        },
+        "default_message": (
+            "ISPCENTRIC announcement: please review this notice in your workspace "
+            "and complete any required action."
+        ),
     },
 )
 
@@ -256,7 +488,16 @@ PLATFORM_TO_STAFF_EVENTS = (
         "when": "A company account is created on the platform.",
         "includes": "Company name, owner, and join code.",
         "channels": ("email", "sms"),
-        "recipient": "IT Support / Super Admin",
+        "recipient": "Employee roles",
+        "recipient_options": STAFF_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Company clients",
+            "url_name": "roles:it_support_company_clients",
+        },
+        "default_message": (
+            "A new ISP company registered on ISPCENTRIC. "
+            "Review the company name, owner, and join code in Company clients."
+        ),
     },
     {
         "key": "platform_staff_onboarding_paid",
@@ -264,7 +505,16 @@ PLATFORM_TO_STAFF_EVENTS = (
         "when": "A MikroTik onboarding STK Push succeeds on the platform gateway.",
         "includes": "ISP name, amount, and M-Pesa receipt.",
         "channels": ("email", "sms"),
-        "recipient": "IT Support",
+        "recipient": "Employee roles",
+        "recipient_options": STAFF_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Company clients",
+            "url_name": "roles:it_support_company_clients",
+        },
+        "default_message": (
+            "A MikroTik onboarding fee was collected on the Company Payment Gateway. "
+            "Check the ISP name, amount, and M-Pesa receipt."
+        ),
     },
     {
         "key": "platform_staff_daraja_fail",
@@ -272,7 +522,16 @@ PLATFORM_TO_STAFF_EVENTS = (
         "when": "Company Payment Gateway credentials fail or Safaricom rejects a platform STK.",
         "includes": "Error from Daraja and which ISP/lead it was for.",
         "channels": ("email", "sms"),
-        "recipient": "IT Support",
+        "recipient": "Employee roles",
+        "recipient_options": STAFF_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Company Payment Gateway",
+            "url_name": "roles:it_support_payment_gateway",
+        },
+        "default_message": (
+            "Company Payment Gateway STK/Daraja failed. "
+            "Review the error and the related ISP or lead in ISPCENTRIC."
+        ),
     },
     {
         "key": "platform_staff_new_lead",
@@ -280,7 +539,16 @@ PLATFORM_TO_STAFF_EVENTS = (
         "when": "Sales captures a lead that is not yet allocated to an ISP.",
         "includes": "Lead name, phone, location, and service type.",
         "channels": ("email", "sms"),
-        "recipient": "IT Support / Sales admin",
+        "recipient": "Employee roles",
+        "recipient_options": STAFF_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Sales leads",
+            "url_name": "roles:sales",
+        },
+        "default_message": (
+            "A new unassigned lead was captured. "
+            "Allocate the lead to an ISP from Sales / lead management."
+        ),
     },
     {
         "key": "platform_staff_employee_joined",
@@ -288,9 +556,844 @@ PLATFORM_TO_STAFF_EVENTS = (
         "when": "Someone registers using an ISP join code.",
         "includes": "Name, role, and company joined.",
         "channels": ("email", "sms"),
-        "recipient": "IT Support / HR",
+        "recipient": "Employee roles",
+        "recipient_options": STAFF_EVENT_RECIPIENT_OPTIONS,
+        "page_link": {
+            "label": "Human resource",
+            "url_name": "roles:it_support_hr",
+        },
+        "default_message": (
+            "An employee joined an ISP using a join code. "
+            "Review their name, role, and company in Human resource."
+        ),
     },
 )
+
+CHANNEL_LABELS = {
+    "sms": "SMS",
+    "email": "Email",
+    "whatsapp": "WhatsApp",
+}
+
+
+def preview_message_for_catalog_event(event: dict) -> str:
+    """Sample body used on ISP account communications previews."""
+    title = str(event.get("title") or "").strip()
+    includes = str(event.get("includes") or "").strip()
+    when = str(event.get("when") or "").strip()
+    custom = str(event.get("default_message") or "").strip()
+    if custom:
+        return custom
+    parts = []
+    if title:
+        parts.append(title + ".")
+    if includes:
+        parts.append(includes)
+    elif when:
+        parts.append(when)
+    return " ".join(parts).strip() or "Sample message preview."
+
+
+def enrich_catalog_events(raw_events) -> list[dict]:
+    """Attach display labels and preview copy for account communications UI."""
+    rows = []
+    for event in raw_events or ():
+        channels = tuple(event.get("channels") or ())
+        rows.append(
+            {
+                **dict(event),
+                "channels": channels,
+                "channel_choices": [
+                    {
+                        "id": channel,
+                        "label": CHANNEL_LABELS.get(channel, channel),
+                    }
+                    for channel in channels
+                ],
+                "preview_message": preview_message_for_catalog_event(event),
+            }
+        )
+    return rows
+
+
+def org_event_catalog() -> list[dict]:
+    """Merged client + ISP-account events for organization communications."""
+    catalog = []
+    for event in CLIENT_COMMUNICATION_EVENTS:
+        row = dict(event)
+        row["audience"] = "client"
+        row["channels"] = tuple(event.get("channels") or ())
+        row["recipient_options"] = tuple(
+            event.get("recipient_options") or CLIENT_EVENT_RECIPIENT_OPTIONS
+        )
+        row["default_message"] = str(
+            event.get("default_message") or preview_message_for_catalog_event(event)
+        ).strip()
+        row["page_link"] = _normalize_page_link(event.get("page_link"))
+        catalog.append(row)
+    for event in ISP_COMMUNICATION_EVENTS:
+        row = dict(event)
+        row["audience"] = "isp_account"
+        row["channels"] = tuple(event.get("channels") or ())
+        row["recipient_options"] = tuple(
+            event.get("recipient_options") or ("organization_owner",)
+        )
+        row["default_message"] = str(
+            event.get("default_message") or preview_message_for_catalog_event(event)
+        ).strip()
+        row["page_link"] = _normalize_page_link(event.get("page_link"))
+        catalog.append(row)
+    return catalog
+
+
+def _org_event_by_key() -> dict[str, dict]:
+    return {event["key"]: event for event in org_event_catalog()}
+
+
+def normalize_org_enabled_messages(raw) -> dict[str, dict]:
+    """Keep known org event keys with message, recipients, channels, and optional link."""
+    if not isinstance(raw, dict):
+        return {}
+    catalog = _org_event_by_key()
+    cleaned: dict[str, dict] = {}
+    for key, value in raw.items():
+        event = catalog.get(str(key or "").strip())
+        if not event:
+            continue
+        allowed_channels = set(event.get("channels") or ())
+        allowed_recipients = set(event.get("recipient_options") or ())
+        default_recipients = list(event.get("recipient_options") or ())[:1]
+        default_message = str(event.get("default_message") or "").strip()
+        has_page_link = bool(event.get("page_link"))
+        include_link = False
+
+        if isinstance(value, dict):
+            channels = _normalize_channel_list(value.get("channels"), allowed=allowed_channels)
+            message = str(value.get("message") or "").strip() or default_message
+            raw_recipients = value.get("recipients") or value.get("recipient") or []
+            if isinstance(raw_recipients, str):
+                raw_recipients = [raw_recipients]
+            recipients = []
+            seen = set()
+            for item in raw_recipients:
+                rid = str(item or "").strip()
+                if rid in allowed_recipients and rid not in seen:
+                    recipients.append(rid)
+                    seen.add(rid)
+            if not recipients:
+                recipients = list(default_recipients)
+            include_link = has_page_link and bool(value.get("include_link"))
+        elif isinstance(value, (list, tuple, set, str)):
+            channels = _normalize_channel_list(value, allowed=allowed_channels)
+            message = default_message
+            recipients = list(default_recipients)
+        else:
+            continue
+
+        if not channels:
+            continue
+        cleaned[event["key"]] = {
+            "message": message,
+            "recipients": recipients,
+            "channels": channels,
+            "include_link": include_link,
+        }
+    return cleaned
+
+
+def org_event_message_rule(settings, key: str) -> dict | None:
+    prefs = normalize_org_enabled_messages(getattr(settings, "enabled_messages", None) or {})
+    return prefs.get(str(key or "").strip())
+
+
+def enrich_org_enabled_events(raw_events, *, enabled: dict, gateway_enabled: dict) -> list[dict]:
+    """Rows for the ISP account enable/save communications UI."""
+    rows = []
+    for event in raw_events or ():
+        key = event["key"]
+        rule = enabled.get(key) or {}
+        selected_recipients = list(rule.get("recipients") or [])
+        selected_channels = list(rule.get("channels") or [])[:1]
+        recipient_options = list(event.get("recipient_options") or ())
+        if not selected_recipients and recipient_options:
+            selected_recipients = [recipient_options[0]]
+        selected_recipient_set = set(selected_recipients)
+        selected_channel_set = set(selected_channels)
+        channel_choices = []
+        for channel in event.get("channels") or ():
+            usable = bool(gateway_enabled.get(channel))
+            channel_choices.append(
+                {
+                    "id": channel,
+                    "label": CHANNEL_LABELS.get(channel, channel),
+                    "usable": usable,
+                    "selected": usable and channel in selected_channel_set,
+                }
+            )
+        if selected_channels and not any(c["selected"] for c in channel_choices):
+            selected_channels = []
+            selected_channel_set = set()
+        page_link = event.get("page_link")
+        page_link_path = resolve_page_link_path(page_link) if page_link else ""
+        recipient_choices = [
+            {
+                "id": rid,
+                "label": RECIPIENT_OPTIONS.get(rid, rid),
+                "selected": rid in selected_recipient_set,
+            }
+            for rid in recipient_options
+        ]
+        rows.append(
+            {
+                "key": key,
+                "title": event["title"],
+                "when": event.get("when") or "",
+                "includes": event.get("includes") or "",
+                "message": (
+                    rule.get("message")
+                    or event.get("default_message")
+                    or preview_message_for_catalog_event(event)
+                ),
+                "is_enabled": key in enabled,
+                "include_link": bool(rule.get("include_link")),
+                "page_link": page_link,
+                "page_link_path": page_link_path,
+                "recipient_choices": recipient_choices,
+                "selected_recipient_labels": [
+                    item["label"] for item in recipient_choices if item["selected"]
+                ],
+                "channel_choices": channel_choices,
+            }
+        )
+    return rows
+
+
+_CHANNEL_ORDER = ("sms", "email", "whatsapp")
+
+
+def _normalize_page_link(raw) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    label = str(raw.get("label") or "").strip()
+    url_name = str(raw.get("url_name") or "").strip()
+    note = str(raw.get("note") or "").strip()
+    system_generated = bool(raw.get("system_generated"))
+    if not label and not url_name and not system_generated:
+        return None
+    return {
+        "label": label or "Related page",
+        "url_name": url_name,
+        "note": note,
+        "system_generated": system_generated,
+    }
+
+
+def resolve_page_link_path(page_link: dict | None) -> str:
+    """Return a path for the optional page link, if resolvable."""
+    if not page_link:
+        return ""
+    if page_link.get("system_generated"):
+        return ""
+    url_name = str(page_link.get("url_name") or "").strip()
+    if not url_name:
+        return ""
+    try:
+        from django.urls import reverse
+
+        return reverse(url_name)
+    except Exception:
+        return ""
+
+
+def platform_event_catalog() -> list[dict]:
+    """Merged platform→ISP and platform→staff events with audience tags."""
+    catalog = []
+    for event in PLATFORM_TO_ISP_EVENTS:
+        row = dict(event)
+        row["audience"] = "isp"
+        row["channels"] = tuple(event.get("channels") or ())
+        row["recipient_options"] = tuple(event.get("recipient_options") or ())
+        row["default_message"] = str(event.get("default_message") or "").strip()
+        row["page_link"] = _normalize_page_link(event.get("page_link"))
+        catalog.append(row)
+    for event in PLATFORM_TO_STAFF_EVENTS:
+        row = dict(event)
+        row["audience"] = "staff"
+        row["channels"] = tuple(event.get("channels") or ())
+        row["recipient_options"] = tuple(event.get("recipient_options") or ())
+        row["default_message"] = str(event.get("default_message") or "").strip()
+        row["page_link"] = _normalize_page_link(event.get("page_link"))
+        catalog.append(row)
+    return catalog
+
+
+def _platform_event_by_key() -> dict[str, dict]:
+    return {event["key"]: event for event in platform_event_catalog()}
+
+
+def _normalize_channel_list(raw_channels, *, allowed: set[str]) -> list[str]:
+    if isinstance(raw_channels, str):
+        selected = [raw_channels]
+    elif isinstance(raw_channels, (list, tuple, set)):
+        selected = list(raw_channels)
+    else:
+        selected = []
+    seen = set()
+    for channel in selected:
+        name = str(channel or "").strip().lower()
+        if name in allowed and name not in seen:
+            seen.add(name)
+    return [c for c in _CHANNEL_ORDER if c in seen]
+
+
+def normalize_enabled_messages(raw) -> dict[str, dict]:
+    """Keep known event keys with message, recipients, channels, and optional link."""
+    if not isinstance(raw, dict):
+        return {}
+    catalog = _platform_event_by_key()
+    cleaned: dict[str, dict] = {}
+    for key, value in raw.items():
+        event = catalog.get(str(key or "").strip())
+        if not event:
+            continue
+        allowed_channels = set(event.get("channels") or ())
+        allowed_recipients = set(event.get("recipient_options") or ())
+        default_recipients = list(event.get("recipient_options") or ())[:1]
+        default_message = str(event.get("default_message") or "").strip()
+        has_page_link = bool(event.get("page_link"))
+        include_link = False
+
+        if isinstance(value, dict):
+            channels = _normalize_channel_list(value.get("channels"), allowed=allowed_channels)
+            message = str(value.get("message") or "").strip() or default_message
+            raw_recipients = value.get("recipients") or value.get("recipient") or []
+            if isinstance(raw_recipients, str):
+                raw_recipients = [raw_recipients]
+            recipients = []
+            seen = set()
+            for item in raw_recipients:
+                rid = str(item or "").strip()
+                if rid in allowed_recipients and rid not in seen:
+                    recipients.append(rid)
+                    seen.add(rid)
+            if not recipients:
+                recipients = list(default_recipients)
+            include_link = has_page_link and bool(value.get("include_link"))
+        elif isinstance(value, (list, tuple, set, str)):
+            channels = _normalize_channel_list(value, allowed=allowed_channels)
+            message = default_message
+            recipients = list(default_recipients)
+        else:
+            continue
+
+        if not channels:
+            continue
+        cleaned[event["key"]] = {
+            "message": message,
+            "recipients": recipients,
+            "channels": channels,
+            "include_link": include_link,
+        }
+    return cleaned
+
+
+def event_is_enabled(settings, key: str) -> bool:
+    """True when the platform event has at least one selected channel."""
+    prefs = normalize_enabled_messages(getattr(settings, "enabled_messages", None) or {})
+    rule = prefs.get(str(key or "").strip()) or {}
+    return bool(rule.get("channels"))
+
+
+def event_channels(settings, key: str) -> list[str]:
+    """Selected channels for a platform event (empty if disabled)."""
+    prefs = normalize_enabled_messages(getattr(settings, "enabled_messages", None) or {})
+    rule = prefs.get(str(key or "").strip()) or {}
+    return list(rule.get("channels") or [])
+
+
+def event_message_rule(settings, key: str) -> dict | None:
+    """Full saved rule for a platform event, or None."""
+    prefs = normalize_enabled_messages(getattr(settings, "enabled_messages", None) or {})
+    return prefs.get(str(key or "").strip())
+
+
+def _format_platform_message(template: str, context: dict | None = None) -> str:
+    text = str(template or "").strip()
+    if not text:
+        return ""
+    values = {str(k): str(v if v is not None else "") for k, v in (context or {}).items()}
+    try:
+        return text.format_map(_SafeFormatMap(values))
+    except Exception:
+        return text
+
+
+class _SafeFormatMap(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _absolute_page_link(page_link: dict | None, *, request=None) -> str:
+    path = resolve_page_link_path(page_link)
+    if not path:
+        note = str((page_link or {}).get("note") or "").strip()
+        return note
+    if request is not None:
+        try:
+            return request.build_absolute_uri(path)
+        except Exception:
+            pass
+    return path
+
+
+def _append_optional_link(message: str, *, include_link: bool, page_link: dict | None, request=None) -> str:
+    text = (message or "").strip()
+    if not include_link or not page_link:
+        return text
+    href = _absolute_page_link(page_link, request=request)
+    if not href:
+        return text
+    label = str(page_link.get("label") or "").strip()
+    if href.startswith("http") or href.startswith("/"):
+        suffix = f"{label}: {href}" if label else href
+    else:
+        suffix = href
+    if suffix and suffix not in text:
+        return f"{text}\n\n{suffix}" if text else suffix
+    return text
+
+
+def resolve_platform_event_contacts(
+    recipient_ids,
+    *,
+    organization=None,
+    audience: str = "isp",
+) -> list[dict]:
+    """Resolve email/phone contacts for platform message recipients."""
+    from .models import Employee
+
+    selected = []
+    seen = set()
+    for item in recipient_ids or []:
+        rid = str(item or "").strip()
+        if rid and rid not in seen:
+            selected.append(rid)
+            seen.add(rid)
+
+    contacts: list[dict] = []
+    seen_keys: set[str] = set()
+
+    def _add(*, name="", email="", phone=""):
+        email_v = (email or "").strip()
+        phone_v = (phone or "").strip()
+        if not email_v and not phone_v:
+            return
+        key = f"{email_v.lower()}|{normalize_msisdn(phone_v)}"
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        contacts.append(
+            {
+                "name": (name or "").strip(),
+                "email": email_v,
+                "phone": phone_v,
+            }
+        )
+
+    if "isp_client" in selected and organization is not None:
+        owner = getattr(organization, "owner", None)
+        owner_name = ""
+        owner_email = ""
+        if owner is not None:
+            owner_name = owner.get_full_name() or owner.username or ""
+            owner_email = (owner.email or "").strip()
+        _add(
+            name=owner_name or getattr(organization, "name", "") or "ISP Client",
+            email=owner_email,
+            phone=getattr(organization, "phone", "") or "",
+        )
+
+    role_ids = [rid for rid in selected if rid != "isp_client"]
+    if role_ids:
+        qs = (
+            Employee.objects.filter(
+                role__in=role_ids,
+                status=Employee.Status.ACTIVE,
+            )
+            .exclude(role=Employee.Role.PENDING)
+            .select_related("user")
+        )
+        if audience == "isp" and organization is not None:
+            qs = qs.filter(organization_id=organization.pk)
+        else:
+            qs = qs.filter(organization__isnull=True)
+        for member in qs:
+            user = member.user
+            _add(
+                name=user.get_full_name() or user.username or "",
+                email=(user.email or "").strip(),
+                phone=(member.phone or "").strip(),
+            )
+    return contacts
+
+
+def dispatch_platform_event(
+    key: str,
+    *,
+    organization=None,
+    context: dict | None = None,
+    request=None,
+    subject: str = "",
+) -> dict:
+    """
+    Send an enabled platform communications event using Company credentials.
+
+    Returns a summary dict with ok/skipped/sent/errors. Never raises for send failures.
+    """
+    event_key = str(key or "").strip()
+    catalog = _platform_event_by_key()
+    event = catalog.get(event_key)
+    if not event:
+        return {"ok": False, "skipped": True, "reason": "unknown_event"}
+
+    settings = platform_settings()
+    rule = event_message_rule(settings, event_key)
+    if not rule:
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    channels = list(rule.get("channels") or [])
+    recipients = list(rule.get("recipients") or [])
+    if not channels or not recipients:
+        return {"ok": False, "skipped": True, "reason": "incomplete_rule"}
+
+    ctx = {
+        "company_name": getattr(organization, "name", "") or "your company",
+        "router_name": "",
+        "join_code": getattr(organization, "join_code", "") or "",
+    }
+    if context:
+        ctx.update({str(k): v for k, v in context.items()})
+
+    body = _format_platform_message(rule.get("message") or event.get("default_message") or "", ctx)
+    body = _append_optional_link(
+        body,
+        include_link=bool(rule.get("include_link")),
+        page_link=event.get("page_link"),
+        request=request,
+    )
+    if not body:
+        return {"ok": False, "skipped": True, "reason": "empty_message"}
+
+    audience = str(event.get("audience") or "isp")
+    contacts = resolve_platform_event_contacts(
+        recipients,
+        organization=organization,
+        audience=audience,
+    )
+    if not contacts:
+        return {"ok": False, "skipped": True, "reason": "no_contacts"}
+
+    email_subject = (subject or "").strip() or str(event.get("title") or "ISPCENTRIC")
+    results = []
+    sent = 0
+    for contact in contacts:
+        for channel in channels:
+            if channel == "email":
+                to = contact.get("email") or ""
+                if not to:
+                    continue
+                result = send_email(
+                    organization=organization,
+                    to=to,
+                    subject=email_subject,
+                    body=body,
+                    credentials=settings,
+                )
+            elif channel == "sms":
+                to = contact.get("phone") or ""
+                if not to:
+                    continue
+                result = send_sms(
+                    organization=organization,
+                    to=to,
+                    message=body,
+                    credentials=settings,
+                )
+            elif channel == "whatsapp":
+                to = contact.get("phone") or ""
+                if not to:
+                    continue
+                result = send_whatsapp(
+                    organization=organization,
+                    to=to,
+                    message=body,
+                    credentials=settings,
+                )
+            else:
+                continue
+            entry = {
+                "channel": channel,
+                "to": to,
+                "ok": bool(result.get("ok")),
+                "error": result.get("error") or "",
+            }
+            results.append(entry)
+            if entry["ok"]:
+                sent += 1
+            else:
+                logger.warning(
+                    "Platform event %s %s to %s failed: %s",
+                    event_key,
+                    channel,
+                    to,
+                    entry["error"],
+                )
+
+    return {
+        "ok": sent > 0,
+        "skipped": False,
+        "event": event_key,
+        "sent": sent,
+        "results": results,
+        "message": body,
+    }
+
+
+def resolve_org_event_contacts(
+    recipient_ids,
+    *,
+    organization=None,
+    client=None,
+    technician=None,
+) -> list[dict]:
+    """Resolve email/phone contacts for organization-enabled messages."""
+    selected = []
+    seen = set()
+    for item in recipient_ids or []:
+        rid = str(item or "").strip()
+        if rid and rid not in seen:
+            selected.append(rid)
+            seen.add(rid)
+
+    contacts: list[dict] = []
+    seen_keys: set[str] = set()
+
+    def _add(*, name="", email="", phone=""):
+        email_v = (email or "").strip()
+        phone_v = (phone or "").strip()
+        if not email_v and not phone_v:
+            return
+        key = f"{email_v.lower()}|{normalize_msisdn(phone_v)}"
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        contacts.append(
+            {
+                "name": (name or "").strip(),
+                "email": email_v,
+                "phone": phone_v,
+            }
+        )
+
+    if "organization_owner" in selected and organization is not None:
+        owner = getattr(organization, "owner", None)
+        owner_name = ""
+        owner_email = ""
+        if owner is not None:
+            owner_name = owner.get_full_name() or owner.username or ""
+            owner_email = (owner.email or "").strip()
+        _add(
+            name=owner_name or getattr(organization, "name", "") or "Organization owner",
+            email=owner_email,
+            phone=getattr(organization, "phone", "") or "",
+        )
+
+    if "client" in selected and client is not None:
+        _add(
+            name=getattr(client, "full_name", "") or getattr(client, "name", "") or "Client",
+            email=(getattr(client, "email", "") or "").strip(),
+            phone=(getattr(client, "phone", "") or "").strip(),
+        )
+
+    if "assigned_technician" in selected and technician is not None:
+        user = getattr(technician, "user", None)
+        _add(
+            name=(
+                (user.get_full_name() or user.username)
+                if user is not None
+                else getattr(technician, "name", "") or "Technician"
+            ),
+            email=((user.email if user is not None else "") or "").strip(),
+            phone=(getattr(technician, "phone", "") or "").strip(),
+        )
+
+    return contacts
+
+
+def dispatch_org_event(
+    key: str,
+    *,
+    organization,
+    context: dict | None = None,
+    request=None,
+    subject: str = "",
+    client=None,
+    technician=None,
+) -> dict:
+    """
+    Send an enabled organization communications event using that ISP's gateway.
+
+    Uses CommunicationSettings for the organization (company or own credentials).
+    """
+    event_key = str(key or "").strip()
+    catalog = _org_event_by_key()
+    event = catalog.get(event_key)
+    if not event:
+        return {"ok": False, "skipped": True, "reason": "unknown_event"}
+    if organization is None:
+        return {"ok": False, "skipped": True, "reason": "no_organization"}
+
+    org_comms = settings_for(organization)
+    if org_comms is None:
+        return {"ok": False, "skipped": True, "reason": "no_settings"}
+
+    rule = org_event_message_rule(org_comms, event_key)
+    if not rule:
+        return {"ok": False, "skipped": True, "reason": "disabled"}
+
+    channels = list(rule.get("channels") or [])
+    recipients = list(rule.get("recipients") or [])
+    if not channels or not recipients:
+        return {"ok": False, "skipped": True, "reason": "incomplete_rule"}
+
+    ctx = {
+        "company_name": getattr(organization, "name", "") or "your company",
+        "router_name": "",
+        "join_code": getattr(organization, "join_code", "") or "",
+    }
+    if client is not None:
+        ctx.update(customer_notification_context(client))
+    if context:
+        ctx.update({str(k): v for k, v in context.items()})
+
+    body = _format_platform_message(rule.get("message") or event.get("default_message") or "", ctx)
+    body = _append_optional_link(
+        body,
+        include_link=bool(rule.get("include_link")),
+        page_link=event.get("page_link"),
+        request=request,
+    )
+    if not body:
+        return {"ok": False, "skipped": True, "reason": "empty_message"}
+
+    contacts = resolve_org_event_contacts(
+        recipients,
+        organization=organization,
+        client=client,
+        technician=technician,
+    )
+    if not contacts:
+        return {"ok": False, "skipped": True, "reason": "no_contacts"}
+
+    email_subject = (subject or "").strip() or str(event.get("title") or "ISPCENTRIC")
+    results = []
+    sent = 0
+    for contact in contacts:
+        for channel in channels:
+            if channel == "email":
+                to = contact.get("email") or ""
+                if not to:
+                    continue
+                result = send_email(
+                    organization=organization,
+                    to=to,
+                    subject=email_subject,
+                    body=body,
+                )
+            elif channel == "sms":
+                to = contact.get("phone") or ""
+                if not to:
+                    continue
+                result = send_sms(
+                    organization=organization,
+                    to=to,
+                    message=body,
+                )
+            elif channel == "whatsapp":
+                to = contact.get("phone") or ""
+                if not to:
+                    continue
+                result = send_whatsapp(
+                    organization=organization,
+                    to=to,
+                    message=body,
+                )
+            else:
+                continue
+            entry = {
+                "channel": channel,
+                "to": to,
+                "ok": bool(result.get("ok")),
+                "error": result.get("error") or "",
+            }
+            results.append(entry)
+            if entry["ok"]:
+                sent += 1
+            else:
+                logger.warning(
+                    "Org event %s %s to %s failed: %s",
+                    event_key,
+                    channel,
+                    to,
+                    entry["error"],
+                )
+
+    return {
+        "ok": sent > 0,
+        "skipped": False,
+        "event": event_key,
+        "sent": sent,
+        "results": results,
+        "message": body,
+    }
+
+
+def notify_platform_event(key: str, **kwargs) -> dict:
+    """Best-effort platform dispatch; never raises to callers."""
+    try:
+        return dispatch_platform_event(key, **kwargs)
+    except Exception:
+        logger.exception("Platform notification %s failed", key)
+        return {"ok": False, "skipped": False, "error": "dispatch_failed"}
+
+
+def notify_org_event(key: str, **kwargs) -> dict:
+    """Best-effort organization dispatch; never raises to callers."""
+    try:
+        return dispatch_org_event(key, **kwargs)
+    except Exception:
+        logger.exception("Organization notification %s failed", key)
+        return {"ok": False, "skipped": False, "error": "dispatch_failed"}
+
+
+def customer_notification_context(customer) -> dict:
+    """Common template values for client-facing messages."""
+    if customer is None:
+        return {}
+    plan = getattr(customer, "plan", None)
+    return {
+        "client_name": (
+            getattr(customer, "full_name", "")
+            or getattr(customer, "name", "")
+            or "customer"
+        ),
+        "account_number": getattr(customer, "account_number", "") or "",
+        "phone": getattr(customer, "phone", "") or "",
+        "email": getattr(customer, "email", "") or "",
+        "package_name": getattr(plan, "name", "") if plan is not None else "",
+        "pppoe_username": getattr(customer, "pppoe_username", "") or "",
+    }
+
 
 _AFRICASTALKING_SMS = "https://api.africastalking.com/version1/messaging"
 _AFRICASTALKING_SMS_SANDBOX = "https://api.sandbox.africastalking.com/version1/messaging"
@@ -414,14 +1517,21 @@ def _error_message(raw: str) -> str:
     return text[:300] if text else ""
 
 
-def send_sms(*, organization, to: str, message: str) -> dict:
-    """Send an SMS using the organization's configured gateway."""
-    comms = settings_for(organization)
-    if comms is None:
-        return {"ok": False, "error": "No organization communications settings."}
-    status = comms.sms_status()
-    if not status["ready"]:
-        return {"ok": False, "error": status["message"]}
+def send_sms(*, organization=None, to: str, message: str, credentials=None) -> dict:
+    """Send an SMS using organization or explicit gateway credentials."""
+    if credentials is None:
+        org_comms = settings_for(organization)
+        if org_comms is None:
+            return {"ok": False, "error": "No organization communications settings."}
+        status = org_comms.sms_status()
+        if not status["ready"]:
+            return {"ok": False, "error": status["message"]}
+        credentials = org_comms.effective_credentials("sms")
+    else:
+        status = credentials.sms_status()
+        if not status.get("ready"):
+            return {"ok": False, "error": status.get("message") or "SMS is not ready."}
+    comms = credentials
     to_digits = normalize_msisdn(to)
     if not to_digits:
         return {"ok": False, "error": "Enter a valid phone number."}
@@ -489,14 +1599,21 @@ def send_sms(*, organization, to: str, message: str) -> dict:
     return {"ok": True, "provider": provider, "data": result.get("data")}
 
 
-def send_email(*, organization, to: str, subject: str, body: str) -> dict:
-    """Send email using the organization's SMTP credentials."""
-    comms = settings_for(organization)
-    if comms is None:
-        return {"ok": False, "error": "No organization communications settings."}
-    status = comms.email_status()
-    if not status["ready"]:
-        return {"ok": False, "error": status["message"]}
+def send_email(*, organization=None, to: str, subject: str, body: str, credentials=None) -> dict:
+    """Send email using organization or explicit SMTP credentials."""
+    if credentials is None:
+        org_comms = settings_for(organization)
+        if org_comms is None:
+            return {"ok": False, "error": "No organization communications settings."}
+        status = org_comms.email_status()
+        if not status["ready"]:
+            return {"ok": False, "error": status["message"]}
+        credentials = org_comms.effective_credentials("email")
+    else:
+        status = credentials.email_status()
+        if not status.get("ready"):
+            return {"ok": False, "error": status.get("message") or "Email is not ready."}
+    comms = credentials
     recipient = (to or "").strip()
     if not recipient or "@" not in recipient:
         return {"ok": False, "error": "Enter a valid email address."}
@@ -527,14 +1644,21 @@ def send_email(*, organization, to: str, subject: str, body: str) -> dict:
     return {"ok": True, "provider": "smtp"}
 
 
-def send_whatsapp(*, organization, to: str, message: str) -> dict:
-    """Send a WhatsApp text message using the organization's provider."""
-    comms = settings_for(organization)
-    if comms is None:
-        return {"ok": False, "error": "No organization communications settings."}
-    status = comms.whatsapp_status()
-    if not status["ready"]:
-        return {"ok": False, "error": status["message"]}
+def send_whatsapp(*, organization=None, to: str, message: str, credentials=None) -> dict:
+    """Send a WhatsApp text message using organization or explicit credentials."""
+    if credentials is None:
+        org_comms = settings_for(organization)
+        if org_comms is None:
+            return {"ok": False, "error": "No organization communications settings."}
+        status = org_comms.whatsapp_status()
+        if not status["ready"]:
+            return {"ok": False, "error": status["message"]}
+        credentials = org_comms.effective_credentials("whatsapp")
+    else:
+        status = credentials.whatsapp_status()
+        if not status.get("ready"):
+            return {"ok": False, "error": status.get("message") or "WhatsApp is not ready."}
+    comms = credentials
     to_digits = normalize_msisdn(to)
     if not to_digits:
         return {"ok": False, "error": "Enter a valid phone number."}

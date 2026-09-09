@@ -133,6 +133,20 @@ def create_vouchers_for_stk(stk: StkPushRequest) -> list[AccessVoucher]:
                 subscription_applied=bool(getattr(stk, "subscription_applied", False)),
             )
         )
+    if len(created) > len(existing):
+        from accounts.communications import notify_org_event
+
+        codes = ", ".join(format_voucher_code(row.code) for row in created)
+        notify_org_event(
+            "hotspot_voucher",
+            organization=stk.organization,
+            client=customer,
+            context={
+                "voucher_code": codes,
+                "package_name": getattr(plan, "name", "") or "",
+            },
+            subject="Hotspot voucher issued",
+        )
     return created
 
 
@@ -184,6 +198,20 @@ def create_vouchers_for_cash_recharge(
                 payment=payment,
                 subscription_applied=True,
             )
+        )
+    if created:
+        from accounts.communications import notify_org_event
+
+        codes = ", ".join(format_voucher_code(row.code) for row in created)
+        notify_org_event(
+            "hotspot_voucher",
+            organization=organization,
+            client=customer,
+            context={
+                "voucher_code": codes,
+                "package_name": getattr(plan, "name", "") or "",
+            },
+            subject="Hotspot voucher issued",
         )
     return created
 

@@ -66,10 +66,16 @@
               {% if package_form.service_type.errors %}<div class="field-error">{{ package_form.service_type.errors|striptags }}</div>{% endif %}
               <p class="field-hint">Hotspot packages appear on captive portals; PPPoE packages on home/office clients.</p>
             </div>
-            <div class="field">
-              <label for="{{ package_form.duration.id_for_label }}">{{ package_form.duration.label }}</label>
-              <div class="pppoe-select">{{ package_form.duration }}</div>
-              {% if package_form.duration.errors %}<div class="field-error">{{ package_form.duration.errors|striptags }}</div>{% endif %}
+            <div class="field field-span-2">
+              <label for="{{ package_form.duration_value.id_for_label }}">{{ package_form.duration_value.label }}</label>
+              <div class="package-duration-custom">
+                <span class="package-duration-every">Every</span>
+                {{ package_form.duration_value }}
+                <div class="pppoe-select package-duration-unit">{{ package_form.duration_unit }}</div>
+              </div>
+              {% if package_form.duration_value.errors %}<div class="field-error">{{ package_form.duration_value.errors|striptags }}</div>{% endif %}
+              {% if package_form.duration_unit.errors %}<div class="field-error">{{ package_form.duration_unit.errors|striptags }}</div>{% endif %}
+              <p class="field-hint">Set any length you need — for example 3 days, 12 hours, or 2 months.</p>
             </div>
             <div class="field">
               <label for="{{ package_form.price.id_for_label }}">{{ package_form.price.label }}</label>

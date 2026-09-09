@@ -32,7 +32,12 @@ from django.views.decorators.http import require_GET, require_POST, require_http
 from accounts.communications import (
     CLIENT_COMMUNICATION_EVENTS,
     ISP_COMMUNICATION_EVENTS,
+    dispatch_org_event,
+    dispatch_platform_event,
+    enrich_org_enabled_events,
     fetch_provider_options,
+    normalize_org_enabled_messages,
+    org_event_catalog,
 )
 from accounts.forms import (
     CommunicationSettingsForm,
@@ -48,6 +53,7 @@ from accounts.models import (
     NetworkEquipment,
     Organization,
     PaymentGateway,
+    PlatformCommunicationSettings,
 )
 from accounts.routing import (
     can_access_client_portal,
@@ -5452,6 +5458,38 @@ def mikrotik(request):
             router.save()
             # If Connect used a reserved tunnel address, attach that WireGuard peer.
             wireguard.adopt_reservation_for_router(router)
+            try:
+                dispatch_platform_event(
+                    "platform_isp_mikrotik_onboarded",
+                    organization=org,
+                    request=request,
+                    context={
+                        "company_name": getattr(org, "name", "") or "your company",
+                        "router_name": router.name or "MikroTik",
+                        "join_code": getattr(org, "join_code", "") or "",
+                    },
+                    subject=f"MikroTik onboarded — {router.name or 'router'}",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to dispatch MikroTik onboarded platform notification"
+                )
+            try:
+                dispatch_org_event(
+                    "isp_mikrotik_onboarded",
+                    organization=org,
+                    request=request,
+                    context={
+                        "company_name": getattr(org, "name", "") or "your company",
+                        "router_name": router.name or "MikroTik",
+                        "join_code": getattr(org, "join_code", "") or "",
+                    },
+                    subject=f"MikroTik onboarded — {router.name or 'router'}",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to dispatch MikroTik onboarded organization notification"
+                )
             # First MikroTik for a referred ISP → active referral.
             if org and org.referred_by_id:
                 was_first = (
@@ -5465,6 +5503,29 @@ def mikrotik(request):
                         request,
                         "Referral marked active — your first MikroTik is onboarded.",
                     )
+                    referrer = getattr(org, "referred_by", None)
+                    if referrer is not None:
+                        from accounts.communications import (
+                            notify_org_event,
+                            notify_platform_event,
+                        )
+
+                        ctx = {
+                            "company_name": getattr(org, "name", "") or "",
+                            "referrer_name": getattr(referrer, "name", "") or "",
+                        }
+                        notify_org_event(
+                            "isp_referral_active",
+                            organization=referrer,
+                            context=ctx,
+                            subject="Referral became active",
+                        )
+                        notify_platform_event(
+                            "platform_referral_active",
+                            organization=org,
+                            context=ctx,
+                            subject="Referral became active",
+                        )
             router_pk = router.pk
 
             try:
@@ -10187,6 +10248,20 @@ def my_clients(request):
                 customer = pppoe_form.save()
                 account_number = customer.account_number
                 full_name = customer.full_name
+                from accounts.communications import notify_org_event
+
+                notify_org_event(
+                    "client_welcome",
+                    organization=org,
+                    client=customer,
+                    subject="Welcome — account created",
+                )
+                notify_org_event(
+                    "isp_client_registered",
+                    organization=org,
+                    client=customer,
+                    subject="New client registered",
+                )
                 messages.success(
                     request,
                     (
@@ -10501,6 +10576,9 @@ def client_detail(request, customer_id: int):
             "plan_speed": customer.plan.speed_label if customer.plan_id else "",
             "plan_duration": customer.plan.get_duration_display() if customer.plan_id else "",
             "package_duration": getattr(customer.plan, "duration", "") if customer.plan_id else "",
+            "package_uses_clock_time": plan_uses_clock_time(
+                getattr(customer, "plan", None)
+            ),
             "subscription_active": allowed,
             "subscription_expired": expired,
             "subscription_paused": paused,
@@ -10849,7 +10927,15 @@ def client_detail(request, customer_id: int):
         package_duration_label=(
             customer.plan.get_duration_display() if customer.plan_id else ""
         ),
-        plan_durations_map={str(p.pk): p.duration for p in client_plans},
+        package_uses_clock_time=plan_uses_clock_time(getattr(customer, "plan", None)),
+        plan_durations_map={
+            str(p.pk): {
+                "duration": p.duration,
+                "value": p.duration_value,
+                "unit": p.duration_unit,
+            }
+            for p in client_plans
+        },
         plan_prices_map={str(p.pk): str(p.price) for p in client_plans},
         subscription_active=customer_receives_internet(customer),
         subscription_expired=customer_subscription_expired(customer),
@@ -12189,7 +12275,7 @@ def client_subscription(request, customer_id: int):
     expired = customer_subscription_expired(customer)
     paused = customer_package_is_paused(customer)
     duration = getattr(customer.plan, "duration", "") or ""
-    is_hourly = duration in ("hourly", "six_hours")
+    is_hourly = plan_uses_clock_time(customer.plan)
     now = dj_tz.localtime()
 
     def _fmt(value):
@@ -12237,6 +12323,7 @@ def client_subscription(request, customer_id: int):
             "plan_speed": customer.plan.speed_label if customer.plan_id else "",
             "plan_duration": customer.plan.get_duration_display() if customer.plan_id else "",
             "package_duration": duration,
+            "package_uses_clock_time": is_hourly,
             "subscription_active": allowed,
             "subscription_expired": expired,
             "subscription_paused": paused,
@@ -14363,6 +14450,11 @@ def _theme_preview_demo_plans(*, service_type: str) -> list:
             self.name = name
             self.price = Decimal(price)
             self.duration = duration
+            parts = BillingPlan.LEGACY_DURATION_TO_PARTS.get(
+                duration,
+                (1, BillingPlan.DurationUnit.MONTHS),
+            )
+            self.duration_value, self.duration_unit = parts
             self.download_speed_mbps = download_speed_mbps
             self.upload_speed_mbps = upload_speed_mbps
             self.max_devices = max_devices
@@ -14378,6 +14470,17 @@ def _theme_preview_demo_plans(*, service_type: str) -> list:
 
         def get_duration_display(self) -> str:
             return dict(BillingPlan.Duration.choices).get(self.duration, self.duration)
+
+        @property
+        def duration_group(self) -> str:
+            return self.get_duration_display()
+
+        @property
+        def uses_clock_time(self) -> bool:
+            return self.duration_unit == BillingPlan.DurationUnit.HOURS
+
+        def duration_parts(self):
+            return int(self.duration_value), self.duration_unit
 
     if service_type == BillingPlan.ServiceType.HOTSPOT:
         return [
@@ -17216,7 +17319,7 @@ def system_settings(request):
 
 
 def _isp_communications_page(request, *, variant):
-    """Settings = credential config only; My account = when messages are sent."""
+    """Settings = credential config only; My account = enable when messages are sent."""
     org = resolve_organization(request.user, request)
     employee = getattr(request.user, "employee_profile", None)
     viewing_client = bool(employee and is_viewing_as_client(request, employee))
@@ -17249,9 +17352,78 @@ def _isp_communications_page(request, *, variant):
             )
             return redirect("core:settings_communications")
     elif not is_settings and request.method == "POST":
-        return redirect("core:settings_communications")
+        if not can_edit or not comms:
+            messages.error(request, "Only the organization owner can change message settings.")
+            return redirect("core:my_account_communications")
+        form_action = (request.POST.get("form_action") or "").strip()
+        if form_action != "save_enabled_messages":
+            messages.error(request, "Unknown action.")
+            return redirect("core:my_account_communications")
+
+        catalog = org_event_catalog()
+        catalog_by_key = {event["key"]: event for event in catalog}
+        gateway_enabled = {
+            "sms": bool(comms.sms_enabled),
+            "email": bool(comms.email_enabled),
+            "whatsapp": bool(comms.whatsapp_enabled),
+        }
+        prefs = normalize_org_enabled_messages(comms.enabled_messages or {})
+        remove_key = (request.POST.get("remove_event") or "").strip()
+        if remove_key:
+            prefs.pop(remove_key, None)
+        else:
+            event_key = (request.POST.get("event_key") or "").strip()
+            event = catalog_by_key.get(event_key)
+            if not event:
+                messages.error(request, "Choose a valid trigger or action.")
+                return redirect("core:my_account_communications")
+            allowed_channels = set(event.get("channels") or ())
+            selected_channels = [
+                channel
+                for channel in request.POST.getlist("channels")
+                if channel in allowed_channels and gateway_enabled.get(channel)
+            ]
+            allowed_recipients = set(event.get("recipient_options") or ())
+            selected_recipients = [
+                rid
+                for rid in request.POST.getlist("recipients")
+                if rid in allowed_recipients
+            ]
+            message_body = (request.POST.get("message") or "").strip()
+            if not message_body:
+                message_body = str(event.get("default_message") or "").strip()
+            if not selected_recipients:
+                messages.error(request, "Choose at least one recipient.")
+                return redirect("core:my_account_communications")
+            if not selected_channels:
+                messages.error(
+                    request,
+                    "Choose at least one enabled channel (SMS, Email, or WhatsApp).",
+                )
+                return redirect("core:my_account_communications")
+            include_link = bool(event.get("page_link") and request.POST.get("include_link"))
+            prefs[event_key] = {
+                "message": message_body,
+                "recipients": selected_recipients,
+                "channels": selected_channels,
+                "include_link": include_link,
+            }
+        comms.enabled_messages = normalize_org_enabled_messages(prefs)
+        comms.save(update_fields=["enabled_messages", "updated_at"])
+        messages.success(request, "Message settings saved.")
+        return redirect("core:my_account_communications")
 
     statuses = comms.channel_statuses() if comms else None
+    platform_comms = PlatformCommunicationSettings.get_solo() if is_settings else None
+    platform_statuses = platform_comms.channel_statuses() if platform_comms else None
+    gateway_enabled = {
+        "sms": bool(comms and comms.sms_enabled),
+        "email": bool(comms and comms.email_enabled),
+        "whatsapp": bool(comms and comms.whatsapp_enabled),
+    }
+    enabled = normalize_org_enabled_messages(
+        getattr(comms, "enabled_messages", None) or {}
+    ) if comms else {}
     context = {
         "form": form,
         "can_edit": can_edit,
@@ -17259,9 +17431,14 @@ def _isp_communications_page(request, *, variant):
         "sms_status": statuses["sms"] if statuses else None,
         "email_status": statuses["email"] if statuses else None,
         "whatsapp_status": statuses["whatsapp"] if statuses else None,
+        "platform_comms": platform_comms,
+        "platform_sms_ready": bool(platform_statuses and platform_statuses["sms"]["ready"]),
+        "platform_email_ready": bool(platform_statuses and platform_statuses["email"]["ready"]),
+        "platform_whatsapp_ready": bool(platform_statuses and platform_statuses["whatsapp"]["ready"]),
         "show_events": not is_settings,
         "show_config": is_settings,
         "save_label": "Save communication settings",
+        "gateway_enabled": gateway_enabled,
     }
     if is_settings:
         return render(
@@ -17274,8 +17451,8 @@ def _isp_communications_page(request, *, variant):
                 page_title="Communication settings",
                 page_kicker="Settings",
                 page_subtitle=(
-                    "Configure SMS, email, and WhatsApp credentials used to message "
-                    "your clients and this ISP account."
+                    "Turn on SMS, email, or WhatsApp, then choose Company communications "
+                    "or this ISP’s own credentials to message clients."
                 ),
                 comms_fetch_url=reverse("core:settings_communications_fetch"),
                 **context,
@@ -17291,11 +17468,19 @@ def _isp_communications_page(request, *, variant):
             page_title="Communications",
             page_kicker="My account",
             page_subtitle=(
-                "When this ISP sends messages to clients and to this account. "
-                "Gateway credentials are configured under Communication settings."
+                "Choose who gets each message and on which channel. "
+                "Gateway credentials are under Communication settings."
             ),
-            client_events=CLIENT_COMMUNICATION_EVENTS,
-            isp_events=ISP_COMMUNICATION_EVENTS,
+            client_events=enrich_org_enabled_events(
+                CLIENT_COMMUNICATION_EVENTS,
+                enabled=enabled,
+                gateway_enabled=gateway_enabled,
+            ),
+            isp_events=enrich_org_enabled_events(
+                ISP_COMMUNICATION_EVENTS,
+                enabled=enabled,
+                gateway_enabled=gateway_enabled,
+            ),
             **context,
         ),
     )
@@ -17381,7 +17566,7 @@ def settings_payments(request):
             page_kicker="Settings",
             page_subtitle=(
                 "Set this ISP's Paybill or Till for manual collections, then choose "
-                "Company Payment Gateway (default) or this ISP's own Daraja app for STK Push."
+                "Use Company, Use My Gateway, or company keys with this ISP's shortcode for STK Push."
             ),
             form=form,
             **extra,

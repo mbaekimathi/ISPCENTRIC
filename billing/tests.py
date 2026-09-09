@@ -10,6 +10,7 @@ from accounts.models import Organization
 from billing.models import BillingPlan, Customer
 from billing.services import (
     apply_subscription_renewal,
+    compute_package_end,
     compute_partial_recharge_amount,
     compute_partial_to_date_from_amount,
     customer_can_surf_via_hotspot,
@@ -25,6 +26,8 @@ from billing.services import (
     package_remaining_seconds,
     partial_recharge_window,
     pause_customer_package,
+    plan_billing_unit_seconds,
+    plan_uses_clock_time,
     recharge_customer_cash,
     resume_customer_package,
     subscription_access_deadline,
@@ -54,6 +57,37 @@ class SubscriptionRenewalTests(SimpleTestCase):
         self.assertEqual(customer.package_start, original_start)
         self.assertEqual(customer.package_end, original_end + timedelta(hours=1))
         self.assertEqual(customer.saved_fields, ["package_start", "package_end"])
+
+
+class CustomBillingPeriodTests(SimpleTestCase):
+    def test_compute_package_end_supports_custom_days(self):
+        start = timezone.localtime()
+        plan = BillingPlan(
+            duration=BillingPlan.Duration.CUSTOM,
+            duration_value=3,
+            duration_unit=BillingPlan.DurationUnit.DAYS,
+        )
+        end = compute_package_end(start, plan)
+        self.assertEqual(end, start + timedelta(days=3))
+        self.assertEqual(plan.get_duration_display(), "3 days")
+        self.assertFalse(plan_uses_clock_time(plan))
+
+    def test_compute_package_end_supports_custom_hours(self):
+        start = timezone.localtime()
+        plan = BillingPlan(
+            duration=BillingPlan.Duration.CUSTOM,
+            duration_value=12,
+            duration_unit=BillingPlan.DurationUnit.HOURS,
+        )
+        end = compute_package_end(start, plan)
+        self.assertEqual(end, start + timedelta(hours=12))
+        self.assertTrue(plan_uses_clock_time(plan))
+        self.assertEqual(plan_billing_unit_seconds(plan), 12 * 3600)
+
+    def test_legacy_hourly_key_still_resolves_without_parts(self):
+        plan = BillingPlan(duration=BillingPlan.Duration.HOURLY)
+        self.assertEqual(plan.duration_parts(), (1, BillingPlan.DurationUnit.HOURS))
+        self.assertTrue(plan_uses_clock_time(plan))
 
 
 class PrepaidAccessPolicyTests(TestCase):

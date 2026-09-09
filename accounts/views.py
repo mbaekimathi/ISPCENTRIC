@@ -195,7 +195,24 @@ class RegisterView(View):
             if referrer is not None:
                 org_kwargs["referred_by"] = referrer
                 org_kwargs["referral_status"] = Organization.ReferralStatus.PENDING
-            Organization.objects.create(**org_kwargs)
+            org = Organization.objects.create(**org_kwargs)
+            from accounts.communications import notify_platform_event
+
+            notify_platform_event(
+                "platform_isp_welcome",
+                organization=org,
+                context={
+                    "company_name": org.name,
+                    "join_code": org.join_code or "",
+                },
+                subject=f"Welcome to ISPCENTRIC — {org.name}",
+            )
+            notify_platform_event(
+                "platform_staff_new_isp",
+                organization=org,
+                context={"company_name": org.name},
+                subject=f"New ISP registered — {org.name}",
+            )
             request.session.pop(REFERRAL_SESSION_KEY, None)
             clear_auth_failures("register", request)
             login(request, user)
@@ -324,6 +341,31 @@ class EmployeeRegisterView(View):
                 profile_photo=form.cleaned_data.get("profile_photo") or None,
                 status=Employee.Status.PENDING_APPROVAL,
                 role=Employee.Role.PENDING,
+            )
+            from accounts.communications import notify_org_event, notify_platform_event
+
+            employee_name = (
+                f"{form.cleaned_data.get('first_name', '')} "
+                f"{form.cleaned_data.get('last_name', '')}"
+            ).strip() or user.username
+            if organization is not None:
+                notify_org_event(
+                    "isp_employee_joined",
+                    organization=organization,
+                    context={
+                        "employee_name": employee_name,
+                        "join_code": getattr(organization, "join_code", "") or "",
+                    },
+                    subject="Employee joined",
+                )
+            notify_platform_event(
+                "platform_staff_employee_joined",
+                organization=organization,
+                context={
+                    "employee_name": employee_name,
+                    "company_name": getattr(organization, "name", "") or "",
+                },
+                subject="Employee joined an ISP",
             )
             clear_auth_failures("employee_register", request)
             # Do not auto-login — account must be approved first.

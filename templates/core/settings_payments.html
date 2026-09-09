@@ -84,7 +84,7 @@
                 <span class="account-step" aria-hidden="true">1</span>
                 <div>
                   <h3>Receive subscription money</h3>
-                  <p>This ISP’s Paybill or Till for manual M-Pesa payments. It is never mixed into Company Payment Gateway STK.</p>
+                  <p>This ISP’s Paybill or Till for manual M-Pesa payments. Also used as the STK shortcode for Use My Gateway and Company keys + my shortcode.</p>
                 </div>
               </div>
             </header>
@@ -149,7 +149,7 @@
                 <span class="account-step" aria-hidden="true">2</span>
                 <div>
                   <h3>Daraja STK Push</h3>
-                  <p>Company Payment Gateway is the default. Switch to this ISP’s own Daraja app when it is ready.</p>
+                  <p>Choose Use Company, Use My Gateway (enter your Daraja app), or company secrets with this ISP’s shortcode.</p>
                 </div>
               </div>
               <span class="mikrotik-wifi-pill is-off" data-daraja-pill>Off</span>
@@ -167,18 +167,30 @@
             <div class="account-daraja-body" data-daraja-body hidden>
               <div class="account-subsection">
                 <h4>STK gateway</h4>
-                <div class="account-card-grid">
-                  <div class="field">
-                    <label for="{{ form.daraja_environment.id_for_label }}">{{ form.daraja_environment.label }}</label>
-                    {{ form.daraja_environment }}
-                    {% if form.daraja_environment.help_text %}<p class="field-hint">{{ form.daraja_environment.help_text }}</p>{% endif %}
-                    {% if form.daraja_environment.errors %}<div class="field-error">{{ form.daraja_environment.errors|striptags }}</div>{% endif %}
+                <div class="field">
+                  <span class="account-receive-label">{{ form.daraja_environment.label }}</span>
+                  {{ form.daraja_environment }}
+                  <div class="account-receive-options" role="radiogroup" aria-label="STK gateway">
+                    <button type="button" class="account-receive-option" data-gateway-value="sandbox" aria-pressed="false">
+                      <span class="account-receive-option-title">Use Company</span>
+                      <span class="account-receive-option-copy">Company consumer key, secret, passkey, and shortcode from IT Support.</span>
+                    </button>
+                    <button type="button" class="account-receive-option" data-gateway-value="production" aria-pressed="false">
+                      <span class="account-receive-option-title">Use My Gateway</span>
+                      <span class="account-receive-option-copy">Enter your own consumer key, secret, and passkey. STK uses your Paybill/Till above.</span>
+                    </button>
+                    <button type="button" class="account-receive-option" data-gateway-value="company_shortcode" aria-pressed="false">
+                      <span class="account-receive-option-title">Company keys + my shortcode</span>
+                      <span class="account-receive-option-copy">Company consumer key, secret, and passkey with this ISP’s Paybill/Till as the STK shortcode.</span>
+                    </button>
                   </div>
+                  {% if form.daraja_environment.help_text %}<p class="field-hint">{{ form.daraja_environment.help_text }}</p>{% endif %}
+                  {% if form.daraja_environment.errors %}<div class="field-error">{{ form.daraja_environment.errors|striptags }}</div>{% endif %}
                 </div>
               </div>
 
               <div class="account-subsection" data-sandbox-creds>
-                <h4>Company Payment Gateway (default)</h4>
+                <h4>Use Company</h4>
                 <div class="settings-policy-banner" style="margin:0;">
                   {% if platform_gateway_ready %}
                     STK Push uses <strong>IT Support → Payment Gateway</strong>
@@ -186,14 +198,30 @@
                     exclusively. This ISP’s Paybill/Till above is only for manual payments.
                   {% else %}
                     Company Payment Gateway is not ready yet.
-                    Ask IT Support to activate STK Push and save Daraja credentials, or switch to My own Payment Gateway.
+                    Ask IT Support to activate STK Push and save Daraja credentials, or switch to Use My Gateway.
                   {% endif %}
                 </div>
               </div>
 
+              <div class="account-subsection" data-company-shortcode-creds hidden>
+                <h4>Company keys + my shortcode</h4>
+                <div class="settings-policy-banner" style="margin:0;">
+                  {% if platform_gateway_ready %}
+                    STK Push uses the <strong>company consumer key, secret, and passkey</strong>
+                    with <strong>this ISP’s Paybill/Till</strong> (section 1) as the Lipa Na M-Pesa shortcode.
+                  {% else %}
+                    Company Payment Gateway credentials are not ready yet.
+                    Ask IT Support to save the company consumer key, secret, and passkey first.
+                  {% endif %}
+                </div>
+                <p class="field-hint" style="margin-top:0.75rem;">
+                  Set Paybill or Till in section 1 — that number is the STK shortcode for this mode.
+                </p>
+              </div>
+
               <div class="account-subsection" data-production-creds hidden>
-                <h4>My own Payment Gateway</h4>
-                <p>This ISP’s Safaricom Daraja app only. Company Payment Gateway credentials are not used.</p>
+                <h4>Use My Gateway</h4>
+                <p>Enter this ISP’s Safaricom Daraja app credentials. Company Payment Gateway credentials are not used. STK uses your Paybill/Till above as the shortcode.</p>
                 <div class="account-card-grid">
                   <div class="field">
                     <label for="{{ form.daraja_consumer_key.id_for_label }}">{{ form.daraja_consumer_key.label }}</label>
@@ -262,6 +290,7 @@
       var switchLabel = form.querySelector("[data-daraja-switch-label]");
       var blockedHint = form.querySelector("[data-daraja-blocked-hint]");
       var sandboxCreds = form.querySelector("[data-sandbox-creds]");
+      var companyShortcodeCreds = form.querySelector("[data-company-shortcode-creds]");
       var productionCreds = form.querySelector("[data-production-creds]");
       var receiveDetails = form.querySelector("[data-receive-details]");
       var accountField = form.querySelector("[data-mpesa-account-field]");
@@ -269,9 +298,15 @@
       var numberLabel = form.querySelector("[data-mpesa-number-label]");
       var receiveOptions = form.querySelectorAll("[data-receive-value]");
       var accountModeOptions = form.querySelectorAll("[data-account-mode]");
+      var gatewayOptions = form.querySelectorAll("[data-gateway-value]");
 
-      function ownGateway() {
-        return !!(envSelect && envSelect.value === "production");
+      function gatewayMode() {
+        return (envSelect && envSelect.value || "sandbox").trim();
+      }
+
+      function needsIspShortcode() {
+        var mode = gatewayMode();
+        return mode === "production" || mode === "company_shortcode";
       }
 
       function receiveReady() {
@@ -316,20 +351,28 @@
       }
 
       function syncEnvironment() {
-        var production = !!(envSelect && envSelect.value === "production");
-        if (sandboxCreds) sandboxCreds.hidden = production;
-        if (productionCreds) productionCreds.hidden = !production;
+        var mode = gatewayMode();
+        gatewayOptions.forEach(function (btn) {
+          var selected = btn.getAttribute("data-gateway-value") === mode;
+          btn.classList.toggle("is-selected", selected);
+          btn.setAttribute("aria-pressed", selected ? "true" : "false");
+        });
+        if (sandboxCreds) sandboxCreds.hidden = mode !== "sandbox";
+        if (companyShortcodeCreds) companyShortcodeCreds.hidden = mode !== "company_shortcode";
+        if (productionCreds) productionCreds.hidden = mode !== "production";
       }
 
       function syncDaraja() {
         var on = !!(enabled && enabled.checked);
-        var own = ownGateway();
-        var ready = !own || receiveReady();
+        var needsShortcode = needsIspShortcode();
+        var ready = !needsShortcode || receiveReady();
         if (blockedHint) {
           blockedHint.hidden = !on || ready;
           blockedHint.textContent = ready
             ? ""
-            : "My own Payment Gateway needs Paybill or Till above, then save.";
+            : gatewayMode() === "company_shortcode"
+              ? "Company keys + my shortcode needs Paybill or Till above, then save."
+              : "Use My Gateway needs Paybill or Till above, then save.";
         }
         if (body) body.hidden = !on;
         if (card) card.classList.toggle("is-daraja-on", on);
@@ -365,6 +408,14 @@
         });
       });
 
+      gatewayOptions.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          if (!envSelect) return;
+          envSelect.value = btn.getAttribute("data-gateway-value") || "sandbox";
+          envSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+      });
+
       if (typeSelect) typeSelect.addEventListener("change", syncReceive);
       if (accountModeSelect) accountModeSelect.addEventListener("change", syncAccountMode);
       if (numberInput) {
@@ -374,7 +425,7 @@
       if (enabled) {
         enabled.addEventListener("change", function () {
           syncDaraja();
-          if (enabled.checked && ownGateway() && !receiveReady() && receiveDetails) {
+          if (enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
             receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
           }
         });
@@ -382,6 +433,9 @@
       if (envSelect) envSelect.addEventListener("change", function () {
         syncEnvironment();
         syncDaraja();
+        if (enabled && enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
+          receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
       });
 
       syncReceive();

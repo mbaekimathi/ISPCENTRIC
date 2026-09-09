@@ -222,8 +222,9 @@ class Organization(models.Model):
         help_text="Optional Paybill account / reference clients should enter.",
     )
     class DarajaEnvironment(models.TextChoices):
-        SANDBOX = "sandbox", "Company Payment Gateway"
-        PRODUCTION = "production", "My own Payment Gateway"
+        SANDBOX = "sandbox", "Use Company"
+        PRODUCTION = "production", "Use My Gateway"
+        COMPANY_SHORTCODE = "company_shortcode", "Company keys + my shortcode"
 
     daraja_enabled = models.BooleanField(
         "Enable Daraja API",
@@ -232,7 +233,7 @@ class Organization(models.Model):
     )
     daraja_environment = models.CharField(
         "STK gateway",
-        max_length=20,
+        max_length=32,
         choices=DarajaEnvironment.choices,
         default=DarajaEnvironment.SANDBOX,
     )
@@ -592,22 +593,37 @@ class Organization(models.Model):
             and (self.mpesa_number or "").strip()
         )
 
-    def uses_platform_daraja_credentials(self) -> bool:
-        """Company Payment Gateway is the default when this ISP has no own Daraja app."""
+    def uses_own_daraja_gateway(self) -> bool:
+        """True when STK uses this ISP's own Daraja consumer key, secret, and passkey."""
         if not self.daraja_enabled:
             return False
         env = (self.daraja_environment or self.DarajaEnvironment.SANDBOX).strip().lower()
-        if env == self.DarajaEnvironment.PRODUCTION and self.has_own_daraja_credentials():
+        return (
+            env == self.DarajaEnvironment.PRODUCTION
+            and self.has_own_daraja_credentials()
+        )
+
+    def uses_company_keys_with_own_shortcode(self) -> bool:
+        """True when STK uses company Daraja keys with this ISP's Paybill/Till shortcode."""
+        if not self.daraja_enabled:
             return False
-        return True
+        env = (self.daraja_environment or self.DarajaEnvironment.SANDBOX).strip().lower()
+        return env == self.DarajaEnvironment.COMPANY_SHORTCODE
+
+    def uses_platform_daraja_credentials(self) -> bool:
+        """True when STK uses company consumer key/secret/passkey (full company or hybrid)."""
+        if not self.daraja_enabled:
+            return False
+        return not self.uses_own_daraja_gateway()
 
     def effective_daraja_credentials(self) -> dict:
         """
         Credentials used for ISP subscription STK Push.
 
-        Company Payment Gateway is the default when this ISP has no own Daraja app.
-        An ISP Payment Gateway uses only this organization's fields.
-        The two gateways are never mixed (no company keys + ISP shortcode, or vice versa).
+        Modes:
+        - Use Company: company keys + company shortcode
+        - Use My Gateway: this ISP's keys + this ISP's Paybill/Till
+        - Company keys + my shortcode: company keys/passkey with this ISP's shortcode
         """
         payment_type = (self.mpesa_payment_type or "").strip()
         shortcode = (self.mpesa_number or "").strip()
@@ -629,7 +645,7 @@ class Organization(models.Model):
                 "message": "STK Push is turned off for this ISP.",
             }
 
-        if not self.uses_platform_daraja_credentials():
+        if self.uses_own_daraja_gateway():
             key = (self.daraja_consumer_key or "").strip()
             secret = (self.daraja_consumer_secret or "").strip()
             passkey = (self.daraja_passkey or "").strip()
@@ -638,7 +654,7 @@ class Organization(models.Model):
                 "enabled": True,
                 "ready": ready,
                 "source": "organization",
-                "source_label": "ISP Payment Gateway",
+                "source_label": "Use My Gateway",
                 "environment": self.DarajaEnvironment.PRODUCTION,
                 "payment_type": payment_type,
                 "shortcode": shortcode,
@@ -647,24 +663,61 @@ class Organization(models.Model):
                 "passkey": passkey,
                 "callback_url": "",
                 "message": (
-                    f"Using this ISP's Payment Gateway with shortcode {shortcode}."
+                    f"Using this ISP's gateway with shortcode {shortcode}."
                     if ready
                     else "Add this ISP's Paybill/Till and Daraja consumer key, secret, and passkey."
                 ),
             }
 
-        creds = PaymentGateway.get_solo().as_stk_credentials()
+        platform = PaymentGateway.get_solo()
+        creds = platform.as_stk_credentials()
         creds["enabled"] = True
+
+        if self.uses_company_keys_with_own_shortcode():
+            api_env = (creds.get("environment") or platform.Environment.SANDBOX).strip().lower()
+            if shortcode and shortcode != "174379":
+                api_env = platform.Environment.PRODUCTION
+            ready = bool(
+                creds.get("ready")
+                and payment_type
+                and shortcode
+                and (creds.get("consumer_key") or "").strip()
+                and (creds.get("consumer_secret") or "").strip()
+                and (creds.get("passkey") or "").strip()
+            )
+            return {
+                "enabled": True,
+                "ready": ready,
+                "source": "platform_org_shortcode",
+                "source_label": "Company keys + my shortcode",
+                "environment": api_env,
+                "payment_type": payment_type,
+                "shortcode": shortcode,
+                "consumer_key": (creds.get("consumer_key") or "").strip(),
+                "consumer_secret": (creds.get("consumer_secret") or "").strip(),
+                "passkey": (creds.get("passkey") or "").strip(),
+                "callback_url": creds.get("callback_url") or "",
+                "message": (
+                    f"Using company consumer key, secret, and passkey with shortcode {shortcode}."
+                    if ready
+                    else (
+                        "Set this ISP's Paybill/Till above, and ask IT Support to activate "
+                        "Company Payment Gateway credentials."
+                        if not creds.get("ready")
+                        else "Set this ISP's Paybill or Till shortcode above."
+                    )
+                ),
+            }
+
         if creds.get("ready"):
             creds["message"] = (
                 f"Using Company Payment Gateway ({creds.get('environment')}) "
-                f"with shortcode {creds.get('shortcode')}. "
-                "This ISP has no own Payment Gateway yet."
+                f"with shortcode {creds.get('shortcode')}."
             )
         else:
             creds["message"] = (
-                "Company Payment Gateway is the default until this ISP adds its own. "
-                "IT Support must activate Payment Gateway first."
+                "Company Payment Gateway is not ready. "
+                "Ask IT Support to activate Payment Gateway, or switch to Use My Gateway."
             )
         return creds
 
@@ -1664,10 +1717,45 @@ class CommunicationCredentialsBase(models.Model):
 class CommunicationSettings(CommunicationCredentialsBase):
     """Per-ISP organization credentials used to message that ISP's subscribers."""
 
+    class CredentialSource(models.TextChoices):
+        COMPANY = "company", "Company communications"
+        OWN = "own", "My own credentials"
+
     organization = models.OneToOneField(
         Organization,
         on_delete=models.CASCADE,
         related_name="communications",
+    )
+    sms_credential_source = models.CharField(
+        "SMS credentials",
+        max_length=20,
+        choices=CredentialSource.choices,
+        default=CredentialSource.COMPANY,
+        help_text="Company communications is the default (IT Support). Switch to My own credentials when ready.",
+    )
+    email_credential_source = models.CharField(
+        "Email credentials",
+        max_length=20,
+        choices=CredentialSource.choices,
+        default=CredentialSource.COMPANY,
+        help_text="Company communications is the default (IT Support). Switch to My own credentials when ready.",
+    )
+    whatsapp_credential_source = models.CharField(
+        "WhatsApp credentials",
+        max_length=20,
+        choices=CredentialSource.choices,
+        default=CredentialSource.COMPANY,
+        help_text="Company communications is the default (IT Support). Switch to My own credentials when ready.",
+    )
+    enabled_messages = models.JSONField(
+        "Enabled messages",
+        default=dict,
+        blank=True,
+        help_text=(
+            "Map of organization event keys to rule objects with message, recipients, "
+            'and channels (e.g. {"client_welcome": {"message": "...", '
+            '"recipients": ["client"], "channels": ["sms"]}}).'
+        ),
     )
 
     class Meta:
@@ -1685,9 +1773,193 @@ class CommunicationSettings(CommunicationCredentialsBase):
         obj, _ = cls.objects.get_or_create(organization=organization)
         return obj
 
+    def _credential_source(self, channel: str) -> str:
+        field = {
+            "sms": "sms_credential_source",
+            "email": "email_credential_source",
+            "whatsapp": "whatsapp_credential_source",
+        }.get(channel)
+        if not field:
+            return self.CredentialSource.OWN
+        value = (getattr(self, field, "") or "").strip()
+        if value == self.CredentialSource.OWN:
+            return self.CredentialSource.OWN
+        return self.CredentialSource.COMPANY
+
+    def uses_company_credentials(self, channel: str) -> bool:
+        return self._credential_source(channel) == self.CredentialSource.COMPANY
+
+    def effective_credentials(self, channel: str):
+        """
+        Credential object used when sending on a channel.
+
+        Company communications uses PlatformCommunicationSettings only.
+        My own credentials uses this organization's fields only.
+        The two are never mixed.
+        """
+        if self.uses_company_credentials(channel):
+            return PlatformCommunicationSettings.get_solo()
+        return self
+
+    def sms_status(self) -> dict:
+        if not self.sms_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider": "",
+                "provider_label": "Off",
+                "source": "none",
+                "source_label": "Off",
+                "message": "SMS is turned off.",
+            }
+        if self.uses_company_credentials("sms"):
+            platform = PlatformCommunicationSettings.get_solo()
+            if not platform.sms_enabled:
+                return {
+                    "enabled": True,
+                    "ready": False,
+                    "provider": (platform.sms_provider or "").strip(),
+                    "provider_label": "Company communications",
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "message": (
+                        "Company SMS is the default until this ISP adds its own. "
+                        "IT Support must enable and complete Company communications first."
+                    ),
+                }
+            status = {**platform.sms_status(), "enabled": True}
+            provider_label = status.get("provider_label") or "SMS"
+            status.update(
+                {
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "provider_label": "Company communications",
+                    "message": (
+                        f"Using Company communications ({provider_label})."
+                        if status.get("ready")
+                        else (
+                            "Company SMS is not ready yet. Ask IT Support to finish "
+                            "Company communications, or switch to My own credentials."
+                        )
+                    ),
+                }
+            )
+            return status
+        status = super().sms_status()
+        status["source"] = "organization"
+        status["source_label"] = "My own credentials"
+        return status
+
+    def email_status(self) -> dict:
+        if not self.email_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider_label": "Off",
+                "source": "none",
+                "source_label": "Off",
+                "message": "Email is turned off.",
+            }
+        if self.uses_company_credentials("email"):
+            platform = PlatformCommunicationSettings.get_solo()
+            if not platform.email_enabled:
+                return {
+                    "enabled": True,
+                    "ready": False,
+                    "provider_label": "Company communications",
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "message": (
+                        "Company email is the default until this ISP adds its own. "
+                        "IT Support must enable and complete Company communications first."
+                    ),
+                }
+            status = {**platform.email_status(), "enabled": True}
+            host = (platform.email_host or "").strip() or "SMTP"
+            status.update(
+                {
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "provider_label": "Company communications",
+                    "message": (
+                        f"Using Company communications ({host})."
+                        if status.get("ready")
+                        else (
+                            "Company email is not ready yet. Ask IT Support to finish "
+                            "Company communications, or switch to My own credentials."
+                        )
+                    ),
+                }
+            )
+            return status
+        status = super().email_status()
+        status["source"] = "organization"
+        status["source_label"] = "My own credentials"
+        return status
+
+    def whatsapp_status(self) -> dict:
+        if not self.whatsapp_enabled:
+            return {
+                "enabled": False,
+                "ready": False,
+                "provider": "",
+                "provider_label": "Off",
+                "source": "none",
+                "source_label": "Off",
+                "message": "WhatsApp is turned off.",
+            }
+        if self.uses_company_credentials("whatsapp"):
+            platform = PlatformCommunicationSettings.get_solo()
+            if not platform.whatsapp_enabled:
+                return {
+                    "enabled": True,
+                    "ready": False,
+                    "provider": (platform.whatsapp_provider or "").strip(),
+                    "provider_label": "Company communications",
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "message": (
+                        "Company WhatsApp is the default until this ISP adds its own. "
+                        "IT Support must enable and complete Company communications first."
+                    ),
+                }
+            status = {**platform.whatsapp_status(), "enabled": True}
+            provider_label = status.get("provider_label") or "WhatsApp"
+            status.update(
+                {
+                    "source": "company",
+                    "source_label": "Company communications",
+                    "provider_label": "Company communications",
+                    "message": (
+                        f"Using Company communications ({provider_label})."
+                        if status.get("ready")
+                        else (
+                            "Company WhatsApp is not ready yet. Ask IT Support to finish "
+                            "Company communications, or switch to My own credentials."
+                        )
+                    ),
+                }
+            )
+            return status
+        status = super().whatsapp_status()
+        status["source"] = "organization"
+        status["source_label"] = "My own credentials"
+        return status
+
 
 class PlatformCommunicationSettings(CommunicationCredentialsBase):
     """ISPCENTRIC platform credentials (IT Support) used to message ISPs and staff."""
+
+    enabled_messages = models.JSONField(
+        "Enabled messages",
+        default=dict,
+        blank=True,
+        help_text=(
+            "Map of platform event keys to rule objects with message, recipients, "
+            'and channels (e.g. {"platform_isp_welcome": {"message": "...", '
+            '"recipients": ["new_isp_owner"], "channels": ["email", "sms"]}}).'
+        ),
+    )
 
     class Meta:
         db_table = "accounts_platform_communication_settings"

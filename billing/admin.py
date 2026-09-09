@@ -16,9 +16,9 @@ class BillingPlanAdmin(admin.ModelAdmin):
         "duration",
         "is_active",
     )
-    list_filter = ("duration", "service_type", "is_active")
+    list_filter = ("duration_unit", "duration", "service_type", "is_active")
     search_fields = ("name", "organization__name")
-    readonly_fields = ("created_at", "speed_mbps")
+    readonly_fields = ("created_at", "speed_mbps", "duration")
     fields = (
         "organization",
         "name",
@@ -28,6 +28,8 @@ class BillingPlanAdmin(admin.ModelAdmin):
         "download_speed_mbps",
         "upload_speed_mbps",
         "speed_mbps",
+        "duration_value",
+        "duration_unit",
         "duration",
         "max_devices",
         "service_type",

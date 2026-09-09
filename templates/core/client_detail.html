@@ -113,11 +113,11 @@
       <div class="account-session-row"><span>Billing period</span><strong>{{ package_duration_label|default:"—" }}</strong></div>
       <div class="account-session-row">
         <span>Package starts</span>
-        <strong data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+        <strong data-sub-start>{% if customer.package_start %}{% if package_uses_clock_time %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
       </div>
       <div class="account-session-row">
         <span>Package ends</span>
-        <strong data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
+        <strong data-sub-end>{% if customer.package_end %}{% if package_uses_clock_time %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</strong>
       </div>
       {% if can_access_wifi %}
         <div class="account-session-row"><span>Router admin</span><strong data-client-cpe-user>{{ customer.cpe_username|default:"admin" }}</strong></div>
@@ -328,6 +328,7 @@
     data-subscription-active="{% if subscription_active %}1{% else %}0{% endif %}"
     data-subscription-paused="{% if subscription_paused %}1{% else %}0{% endif %}"
     data-package-duration="{{ package_duration|default:'' }}"
+    data-package-uses-clock="{% if package_uses_clock_time %}1{% else %}0{% endif %}"
   >
     <header class="client-cmd-period-head">
       <div>
@@ -366,9 +367,9 @@
         <div>
           <span>Window</span>
           <strong>
-            <span data-sub-start>{% if customer.package_start %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
+            <span data-sub-start>{% if customer.package_start %}{% if package_uses_clock_time %}{{ customer.package_start|date:"M j, g:i A" }}{% else %}{{ customer.package_start|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
             →
-            <span data-sub-end>{% if customer.package_end %}{% if package_duration == "hourly" or package_duration == "six_hours" %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
+            <span data-sub-end>{% if customer.package_end %}{% if package_uses_clock_time %}{{ customer.package_end|date:"M j, g:i A" }}{% else %}{{ customer.package_end|date:"M j, Y" }}{% endif %}{% else %}—{% endif %}</span>
           </strong>
         </div>
         <div>
@@ -1309,9 +1310,10 @@
       });
     });
 
-    function fmtPeriodValue(value, duration) {
+    function fmtPeriodValue(value, duration, usesClock) {
       if (!value) return "—";
-      if ((duration || "").toLowerCase() === "hourly" || (duration || "").toLowerCase() === "six_hours") {
+      var clock = !!usesClock || (duration || "").toLowerCase() === "hourly" || (duration || "").toLowerCase() === "six_hours" || (duration || "").toLowerCase() === "hours";
+      if (clock) {
         // Accept "HH:MM" or already formatted strings / ISO.
         if (/^\d{1,2}:\d{2}/.test(String(value))) {
           var timeParts = String(value).split(":");
@@ -1337,16 +1339,18 @@
       var section = document.getElementById("client-package-period");
       if (!section) return;
       var duration = data.package_duration || "";
+      var usesClock = !!data.package_uses_clock_time;
       var paused = !!data.subscription_paused;
       section.setAttribute("data-package-duration", duration || "");
+      section.setAttribute("data-package-uses-clock", usesClock ? "1" : "0");
       section.setAttribute("data-subscription-active", data.subscription_active ? "1" : "0");
       section.setAttribute("data-subscription-paused", paused ? "1" : "0");
 
       document.querySelectorAll("[data-sub-start]").forEach(function (el) {
-        el.textContent = data.package_start || fmtPeriodValue(data.package_start, duration) || "—";
+        el.textContent = data.package_start || fmtPeriodValue(data.package_start, duration, usesClock) || "—";
       });
       document.querySelectorAll("[data-sub-end]").forEach(function (el) {
-        el.textContent = data.package_end || fmtPeriodValue(data.package_end, duration) || "—";
+        el.textContent = data.package_end || fmtPeriodValue(data.package_end, duration, usesClock) || "—";
       });
       var remainingEl = section.querySelector("[data-sub-remaining]");
       if (remainingEl) remainingEl.textContent = data.remaining_label || "—";
@@ -1487,9 +1491,30 @@
 
     function planMeta(planId) {
       var key = String(planId || "");
+      var raw = planDurations[key];
+      var duration = "";
+      var value = 1;
+      var unit = "months";
+      if (raw && typeof raw === "object") {
+        duration = String(raw.duration || "").toLowerCase();
+        value = Number(raw.value || 1);
+        unit = String(raw.unit || "months").toLowerCase();
+      } else {
+        duration = String(raw || "").toLowerCase();
+        if (duration === "hourly") { value = 1; unit = "hours"; }
+        else if (duration === "six_hours") { value = 6; unit = "hours"; }
+        else if (duration === "daily") { value = 1; unit = "days"; }
+        else if (duration === "weekly") { value = 1; unit = "weeks"; }
+        else if (duration === "monthly") { value = 1; unit = "months"; }
+        else if (duration === "quarterly") { value = 3; unit = "months"; }
+        else if (duration === "semi_annual") { value = 6; unit = "months"; }
+        else if (duration === "yearly") { value = 1; unit = "years"; }
+      }
       return {
         price: Number(planPrices[key]),
-        duration: (planDurations[key] || "").toLowerCase(),
+        duration: duration,
+        value: value,
+        unit: unit,
       };
     }
 
@@ -1497,42 +1522,34 @@
       return new Date(year, month, 0).getDate();
     }
 
-    function billingUnitSeconds(durationKey, refDate) {
-      if (durationKey === "hourly") return 3600;
-      if (durationKey === "six_hours") return 6 * 3600;
-      if (durationKey === "daily") return 86400;
-      if (durationKey === "weekly") return 7 * 86400;
+    function billingUnitSeconds(meta, refDate) {
+      var value = Math.max(1, Number(meta && meta.value) || 1);
+      var unit = String((meta && meta.unit) || "").toLowerCase();
+      var durationKey = String((meta && meta.duration) || "").toLowerCase();
+      if (!unit && durationKey) {
+        if (durationKey === "hourly") { value = 1; unit = "hours"; }
+        else if (durationKey === "six_hours") { value = 6; unit = "hours"; }
+        else if (durationKey === "daily") { value = 1; unit = "days"; }
+        else if (durationKey === "weekly") { value = 1; unit = "weeks"; }
+        else if (durationKey === "monthly") { value = 1; unit = "months"; }
+        else if (durationKey === "quarterly") { value = 3; unit = "months"; }
+        else if (durationKey === "semi_annual") { value = 6; unit = "months"; }
+        else if (durationKey === "yearly") { value = 1; unit = "years"; }
+      }
+      if (unit === "hours") return value * 3600;
+      if (unit === "days") return value * 86400;
+      if (unit === "weeks") return value * 7 * 86400;
       var y = refDate.getFullYear();
       var m = refDate.getMonth() + 1;
-      if (durationKey === "monthly") return daysInMonth(y, m) * 86400;
-      if (durationKey === "quarterly") {
-        var total = 0;
-        var cursor = new Date(y, m - 1, 1);
-        for (var i = 0; i < 3; i += 1) {
-          total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
-          cursor.setMonth(cursor.getMonth() + 1);
-        }
-        return total * 86400;
+      var monthCount = unit === "years" ? value * 12 : (unit === "months" ? value : 0);
+      if (!monthCount) return 0;
+      var total = 0;
+      var cursor = new Date(y, m - 1, 1);
+      for (var i = 0; i < monthCount; i += 1) {
+        total += daysInMonth(cursor.getFullYear(), cursor.getMonth() + 1);
+        cursor.setMonth(cursor.getMonth() + 1);
       }
-      if (durationKey === "semi_annual") {
-        var totalSemi = 0;
-        var cursorSemi = new Date(y, m - 1, 1);
-        for (var j = 0; j < 6; j += 1) {
-          totalSemi += daysInMonth(cursorSemi.getFullYear(), cursorSemi.getMonth() + 1);
-          cursorSemi.setMonth(cursorSemi.getMonth() + 1);
-        }
-        return totalSemi * 86400;
-      }
-      if (durationKey === "yearly") {
-        var totalYear = 0;
-        var cursorYear = new Date(y, m - 1, 1);
-        for (var k = 0; k < 12; k += 1) {
-          totalYear += daysInMonth(cursorYear.getFullYear(), cursorYear.getMonth() + 1);
-          cursorYear.setMonth(cursorYear.getMonth() + 1);
-        }
-        return totalYear * 86400;
-      }
-      return 0;
+      return total * 86400;
     }
 
     function parseDateInput(value) {
@@ -1583,7 +1600,7 @@
         }
         return;
       }
-      var unit = billingUnitSeconds(meta.duration, fromDate);
+      var unit = billingUnitSeconds(meta, fromDate);
       if (!unit) {
         if (daysSummary) daysSummary.hidden = true;
         return;
@@ -2177,7 +2194,8 @@
 
   refreshSubscription(false);
   var duration = (section.getAttribute("data-package-duration") || "").toLowerCase();
-  var intervalMs = (duration === "hourly" || duration === "six_hours") ? 5000 : 15000;
+  var usesClock = section.getAttribute("data-package-uses-clock") === "1" || duration === "hourly" || duration === "six_hours" || duration === "hours";
+  var intervalMs = usesClock ? 5000 : 15000;
   timer = setInterval(function () { refreshSubscription(false); }, intervalMs);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden) refreshSubscription(false);

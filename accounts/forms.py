@@ -1136,8 +1136,8 @@ class OrganizationEditForm(forms.ModelForm):
                 }
             ),
             "daraja_enabled": forms.CheckboxInput(attrs={"id": "id_daraja_enabled"}),
-            "daraja_environment": forms.Select(
-                attrs={"class": "form-control", "id": "id_daraja_environment"}
+            "daraja_environment": forms.HiddenInput(
+                attrs={"id": "id_daraja_environment"}
             ),
             "mpesa_payment_type": forms.HiddenInput(
                 attrs={
@@ -1202,11 +1202,12 @@ class OrganizationEditForm(forms.ModelForm):
         help_texts = {
             "daraja_enabled": (
                 "When on, clients can pay subscriptions with M-Pesa STK Push. "
-                "Company Payment Gateway is used until this ISP adds its own."
+                "Choose Use Company, Use My Gateway, or company keys with your shortcode."
             ),
             "daraja_environment": (
-                "Company Payment Gateway is the default (IT Support → Payment Gateway). "
-                "My own Payment Gateway uses only this ISP's Paybill/Till and Daraja app."
+                "Use Company: IT Support gateway (keys + shortcode). "
+                "Use My Gateway: enter your consumer key, secret, and passkey. "
+                "Company keys + my shortcode: company credentials with this ISP's Paybill/Till."
             ),
             "mpesa_payment_type": "Choose Paybill or Buy Goods Till to receive subscription money.",
             "mpesa_number": "Your Paybill or Till shortcode that receives M-Pesa payments.",
@@ -1214,9 +1215,9 @@ class OrganizationEditForm(forms.ModelForm):
                 "Enter the Account name clients should type for manual Paybill payments "
                 "(your name, company name, or any reference)."
             ),
-            "daraja_consumer_key": "Required for My own Payment Gateway only.",
-            "daraja_consumer_secret": "Required for My own Payment Gateway only.",
-            "daraja_passkey": "Required for My own Payment Gateway only.",
+            "daraja_consumer_key": "Required for Use My Gateway only.",
+            "daraja_consumer_secret": "Required for Use My Gateway only.",
+            "daraja_passkey": "Required for Use My Gateway only.",
         }
 
     def __init__(self, *args, section=SECTION_ALL, **kwargs):
@@ -1326,40 +1327,58 @@ class OrganizationEditForm(forms.ModelForm):
         environment = (
             cleaned.get("daraja_environment") or Organization.DarajaEnvironment.SANDBOX
         ).strip()
-        if environment != Organization.DarajaEnvironment.PRODUCTION:
-            cleaned["daraja_environment"] = Organization.DarajaEnvironment.SANDBOX
-            gateway = PaymentGateway.get_solo()
-            if not gateway.is_stk_ready():
+        gateway = PaymentGateway.get_solo()
+
+        if environment == Organization.DarajaEnvironment.PRODUCTION:
+            cleaned["daraja_environment"] = Organization.DarajaEnvironment.PRODUCTION
+            if not payment_type or not number:
                 self.add_error(
                     "daraja_enabled",
-                    "Company Payment Gateway is the default. "
-                    "Ask IT Support to activate Payment Gateway first, "
-                    "or switch to My own Payment Gateway.",
+                    "Use My Gateway needs Paybill or Till above.",
+                )
+                return
+
+            if not (cleaned.get("daraja_consumer_key") or "").strip():
+                self.add_error(
+                    "daraja_consumer_key",
+                    "Consumer key is required for Use My Gateway.",
+                )
+            if not (cleaned.get("daraja_consumer_secret") or "").strip():
+                self.add_error(
+                    "daraja_consumer_secret",
+                    "Consumer secret is required for Use My Gateway.",
+                )
+            if not (cleaned.get("daraja_passkey") or "").strip():
+                self.add_error(
+                    "daraja_passkey",
+                    "Passkey is required for Use My Gateway.",
                 )
             return
 
-        cleaned["daraja_environment"] = Organization.DarajaEnvironment.PRODUCTION
-        if not payment_type or not number:
-            self.add_error(
-                "daraja_enabled",
-                "My own Payment Gateway needs Paybill or Till above.",
+        if environment == Organization.DarajaEnvironment.COMPANY_SHORTCODE:
+            cleaned["daraja_environment"] = (
+                Organization.DarajaEnvironment.COMPANY_SHORTCODE
             )
+            if not gateway.is_stk_ready():
+                self.add_error(
+                    "daraja_enabled",
+                    "Company keys + my shortcode needs Company Payment Gateway "
+                    "credentials from IT Support first.",
+                )
+            if not payment_type or not number:
+                self.add_error(
+                    "daraja_enabled",
+                    "Company keys + my shortcode needs Paybill or Till above "
+                    "(that number is the STK shortcode).",
+                )
             return
 
-        if not (cleaned.get("daraja_consumer_key") or "").strip():
+        cleaned["daraja_environment"] = Organization.DarajaEnvironment.SANDBOX
+        if not gateway.is_stk_ready():
             self.add_error(
-                "daraja_consumer_key",
-                "Consumer key is required for My own Payment Gateway.",
-            )
-        if not (cleaned.get("daraja_consumer_secret") or "").strip():
-            self.add_error(
-                "daraja_consumer_secret",
-                "Consumer secret is required for My own Payment Gateway.",
-            )
-        if not (cleaned.get("daraja_passkey") or "").strip():
-            self.add_error(
-                "daraja_passkey",
-                "Passkey is required for My own Payment Gateway.",
+                "daraja_enabled",
+                "Use Company needs Company Payment Gateway from IT Support, "
+                "or switch to Use My Gateway / Company keys + my shortcode.",
             )
 
     def clean(self):
@@ -1369,18 +1388,21 @@ class OrganizationEditForm(forms.ModelForm):
 
         if self.section == self.SECTION_PAYMENTS:
             payment_type, number = self._validate_receive_method(cleaned)
-            own_gateway = (
+            needs_shortcode = (
                 self.instance.daraja_enabled
                 and (
                     self.instance.daraja_environment
                     or Organization.DarajaEnvironment.SANDBOX
                 )
-                == Organization.DarajaEnvironment.PRODUCTION
+                in (
+                    Organization.DarajaEnvironment.PRODUCTION,
+                    Organization.DarajaEnvironment.COMPANY_SHORTCODE,
+                )
             )
-            if own_gateway and (not payment_type or not number):
+            if needs_shortcode and (not payment_type or not number):
                 self.add_error(
                     "mpesa_payment_type",
-                    "My own Payment Gateway needs Paybill/Till set, or switch to Company Payment Gateway.",
+                    "This STK gateway mode needs Paybill/Till set, or switch to Use Company.",
                 )
             return cleaned
 
@@ -1795,6 +1817,7 @@ class CommunicationSettingsForm(forms.ModelForm):
         model = CommunicationSettings
         fields = [
             "sms_enabled",
+            "sms_credential_source",
             "sms_provider",
             "sms_username",
             "sms_api_key",
@@ -1802,6 +1825,7 @@ class CommunicationSettingsForm(forms.ModelForm):
             "sms_from_number",
             "sms_base_url",
             "email_enabled",
+            "email_credential_source",
             "email_host",
             "email_port",
             "email_use_tls",
@@ -1810,6 +1834,7 @@ class CommunicationSettingsForm(forms.ModelForm):
             "email_from_email",
             "email_from_name",
             "whatsapp_enabled",
+            "whatsapp_credential_source",
             "whatsapp_provider",
             "whatsapp_phone_number_id",
             "whatsapp_access_token",
@@ -1819,6 +1844,7 @@ class CommunicationSettingsForm(forms.ModelForm):
         ]
         labels = {
             "sms_enabled": "Enable SMS",
+            "sms_credential_source": "SMS gateway",
             "sms_provider": "SMS provider",
             "sms_username": "Username / Account SID",
             "sms_api_key": "API key / Auth token",
@@ -1826,6 +1852,7 @@ class CommunicationSettingsForm(forms.ModelForm):
             "sms_from_number": "From number",
             "sms_base_url": "API URL",
             "email_enabled": "Enable email",
+            "email_credential_source": "Email gateway",
             "email_host": "SMTP host",
             "email_port": "SMTP port",
             "email_use_tls": "Use TLS",
@@ -1834,6 +1861,7 @@ class CommunicationSettingsForm(forms.ModelForm):
             "email_from_email": "From email",
             "email_from_name": "From name",
             "whatsapp_enabled": "Enable WhatsApp",
+            "whatsapp_credential_source": "WhatsApp gateway",
             "whatsapp_provider": "WhatsApp provider",
             "whatsapp_phone_number_id": "Phone number ID",
             "whatsapp_access_token": "Access token",
@@ -1843,13 +1871,21 @@ class CommunicationSettingsForm(forms.ModelForm):
         }
         help_texts = {
             "sms_enabled": "Send SMS to clients from this organization.",
+            "sms_credential_source": (
+                "Company communications is the default (IT Support → Company communications). "
+                "My own credentials uses only this ISP's SMS gateway."
+            ),
             "sms_provider": "Gateway used to deliver SMS. After credentials are entered, available senders are fetched automatically.",
             "sms_username": "Africa's Talking username or Twilio Account SID.",
             "sms_api_key": "Africa's Talking API key, Twilio Auth Token, or custom API key.",
             "sms_sender_id": "Any sender ID, shortcode, or phone. Fetched automatically after you configure the provider.",
             "sms_from_number": "Phone or Messaging Service SID. Fetched automatically, or type any from value.",
             "sms_base_url": "HTTPS endpoint that accepts POST {to, message, from, api_key}.",
-            "email_enabled": "Send email using your mailbox or transactional SMTP.",
+            "email_enabled": "Send email using company SMTP or your own mailbox.",
+            "email_credential_source": (
+                "Company communications is the default (IT Support → Company communications). "
+                "My own credentials uses only this ISP's SMTP account."
+            ),
             "email_host": "Auto-filled from Gmail, Outlook, Yahoo, Zoho, or iCloud. Any other SMTP host also works.",
             "email_port": "587 for TLS, 465 for SSL.",
             "email_use_tls": "Recommended for port 587. Port 465 uses SSL automatically.",
@@ -1858,6 +1894,10 @@ class CommunicationSettingsForm(forms.ModelForm):
             "email_from_email": "Address clients see. Defaults to the SMTP username.",
             "email_from_name": "Display name, e.g. your company name.",
             "whatsapp_enabled": "Send WhatsApp messages from your business number.",
+            "whatsapp_credential_source": (
+                "Company communications is the default (IT Support → Company communications). "
+                "My own credentials uses only this ISP's WhatsApp Business API."
+            ),
             "whatsapp_provider": "Meta Cloud API, Twilio WhatsApp, or Africa's Talking. Senders are fetched after configuration.",
             "whatsapp_phone_number_id": "Fetched from Meta after the access token is entered, or paste any phone number ID.",
             "whatsapp_access_token": "Permanent or temporary Meta Cloud API token.",
@@ -1867,6 +1907,9 @@ class CommunicationSettingsForm(forms.ModelForm):
         }
         widgets = {
             "sms_enabled": forms.CheckboxInput(attrs={"id": "id_sms_enabled"}),
+            "sms_credential_source": forms.Select(
+                attrs={"class": "form-control", "id": "id_sms_credential_source"}
+            ),
             "sms_provider": forms.Select(
                 attrs={"class": "form-control", "id": "id_sms_provider"}
             ),
@@ -1911,6 +1954,9 @@ class CommunicationSettingsForm(forms.ModelForm):
                 }
             ),
             "email_enabled": forms.CheckboxInput(attrs={"id": "id_email_enabled"}),
+            "email_credential_source": forms.Select(
+                attrs={"class": "form-control", "id": "id_email_credential_source"}
+            ),
             "email_host": forms.TextInput(
                 attrs={
                     "class": "form-control",
@@ -1962,6 +2008,9 @@ class CommunicationSettingsForm(forms.ModelForm):
                 }
             ),
             "whatsapp_enabled": forms.CheckboxInput(attrs={"id": "id_whatsapp_enabled"}),
+            "whatsapp_credential_source": forms.Select(
+                attrs={"class": "form-control", "id": "id_whatsapp_credential_source"}
+            ),
             "whatsapp_provider": forms.Select(
                 attrs={"class": "form-control", "id": "id_whatsapp_provider"}
             ),
@@ -2009,7 +2058,12 @@ class CommunicationSettingsForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for name in list(self.fields):
-            if name not in {"sms_enabled", "email_enabled", "whatsapp_enabled", "email_use_tls"}:
+            if name not in {
+                "sms_enabled",
+                "email_enabled",
+                "whatsapp_enabled",
+                "email_use_tls",
+            }:
                 self.fields[name].required = False
 
     def clean_email_port(self):
@@ -2019,6 +2073,11 @@ class CommunicationSettingsForm(forms.ModelForm):
         if port < 1 or port > 65535:
             raise forms.ValidationError("Enter a valid SMTP port between 1 and 65535.")
         return port
+
+    def _uses_own_credentials(self, cleaned, channel: str) -> bool:
+        field = f"{channel}_credential_source"
+        value = (cleaned.get(field) or "").strip()
+        return value == CommunicationSettings.CredentialSource.OWN
 
     def clean(self):
         cleaned = super().clean()
@@ -2043,7 +2102,7 @@ class CommunicationSettingsForm(forms.ModelForm):
                 cleaned[name] = cleaned[name].strip()
 
         model = self._meta.model
-        if cleaned.get("sms_enabled"):
+        if cleaned.get("sms_enabled") and self._uses_own_credentials(cleaned, "sms"):
             provider = (cleaned.get("sms_provider") or "").strip()
             if not provider:
                 self.add_error("sms_provider", "Choose an SMS provider.")
@@ -2063,7 +2122,7 @@ class CommunicationSettingsForm(forms.ModelForm):
                 if not cleaned.get("sms_api_key"):
                     self.add_error("sms_api_key", "Enter the API key for the custom SMS gateway.")
 
-        if cleaned.get("email_enabled"):
+        if cleaned.get("email_enabled") and self._uses_own_credentials(cleaned, "email"):
             if not cleaned.get("email_host"):
                 self.add_error("email_host", "Enter the SMTP host.")
             if not cleaned.get("email_host_user"):
@@ -2073,7 +2132,7 @@ class CommunicationSettingsForm(forms.ModelForm):
             if not cleaned.get("email_from_email") and not cleaned.get("email_host_user"):
                 self.add_error("email_from_email", "Enter the from email address.")
 
-        if cleaned.get("whatsapp_enabled"):
+        if cleaned.get("whatsapp_enabled") and self._uses_own_credentials(cleaned, "whatsapp"):
             provider = (cleaned.get("whatsapp_provider") or "").strip()
             if not provider:
                 self.add_error("whatsapp_provider", "Choose a WhatsApp provider.")
@@ -2103,13 +2162,45 @@ class PlatformCommunicationSettingsForm(CommunicationSettingsForm):
 
     class Meta(CommunicationSettingsForm.Meta):
         model = PlatformCommunicationSettings
+        fields = [
+            "sms_enabled",
+            "sms_provider",
+            "sms_username",
+            "sms_api_key",
+            "sms_sender_id",
+            "sms_from_number",
+            "sms_base_url",
+            "email_enabled",
+            "email_host",
+            "email_port",
+            "email_use_tls",
+            "email_host_user",
+            "email_host_password",
+            "email_from_email",
+            "email_from_name",
+            "whatsapp_enabled",
+            "whatsapp_provider",
+            "whatsapp_phone_number_id",
+            "whatsapp_access_token",
+            "whatsapp_username",
+            "whatsapp_api_key",
+            "whatsapp_from_number",
+        ]
         help_texts = {
-            **CommunicationSettingsForm.Meta.help_texts,
+            **{
+                key: value
+                for key, value in CommunicationSettingsForm.Meta.help_texts.items()
+                if not key.endswith("_credential_source")
+            },
             "sms_enabled": "Send SMS from ISPCENTRIC to ISP owners and platform staff.",
             "email_enabled": "SMTP used for platform notices to ISPs. Password reset can also use Django EMAIL_*.",
             "email_from_name": "Display name, e.g. ISPCENTRIC.",
             "whatsapp_enabled": "Send WhatsApp from ISPCENTRIC to ISP owners and staff.",
         }
+
+    def _uses_own_credentials(self, cleaned, channel: str) -> bool:
+        # Platform settings always store their own credentials.
+        return True
 
 
 class RoleCommissionForm(forms.ModelForm):

@@ -1,0 +1,143 @@
+<div class="role-modal" id="comms-message-modal" hidden aria-hidden="true"
+     data-gateway-sms="{% if gateway_enabled.sms %}1{% else %}0{% endif %}"
+     data-gateway-email="{% if gateway_enabled.email %}1{% else %}0{% endif %}"
+     data-gateway-whatsapp="{% if gateway_enabled.whatsapp %}1{% else %}0{% endif %}"
+     {% if preview_require_gateway %}data-preview-require-gateway="1"{% else %}data-preview-require-gateway="0"{% endif %}>
+  <div class="role-modal-backdrop" data-comms-message-close></div>
+  <div class="role-modal-panel comms-message-panel" role="dialog" aria-modal="true" aria-labelledby="comms-message-title" data-comms-preview-shell>
+    <header class="role-modal-head comms-preview-head">
+      <div>
+        <p class="role-modal-kicker">Message preview</p>
+        <h2 id="comms-message-title">Trigger</h2>
+        <p class="role-modal-sub comms-preview-sub" data-comms-preview-sub>How recipients will see this message.</p>
+      </div>
+      <button type="button" class="role-modal-close" data-comms-message-close aria-label="Close">&times;</button>
+    </header>
+    <div class="role-modal-body">
+      <div class="comms-preview-tabs" role="tablist" aria-label="Channel preview" data-comms-preview-tabs>
+        <button type="button" class="comms-preview-tab" role="tab" data-comms-preview-tab="email" aria-selected="false" hidden>
+          <span class="comms-preview-tab-icon" aria-hidden="true">@</span>
+          Email
+        </button>
+        <button type="button" class="comms-preview-tab" role="tab" data-comms-preview-tab="sms" aria-selected="false" hidden>
+          <span class="comms-preview-tab-icon" aria-hidden="true">≡</span>
+          SMS
+        </button>
+        <button type="button" class="comms-preview-tab" role="tab" data-comms-preview-tab="whatsapp" aria-selected="false" hidden>
+          <span class="comms-preview-tab-icon" aria-hidden="true">◉</span>
+          WhatsApp
+        </button>
+      </div>
+      <p class="comms-preview-empty" data-comms-preview-empty hidden>
+        {% if preview_empty_text %}{{ preview_empty_text }}{% else %}No channels are available for this preview.{% endif %}
+      </p>
+
+      <div class="comms-preview-pane" data-comms-preview-pane="email" hidden>
+        <article class="comms-device comms-device--email" aria-label="Email preview">
+          <div class="comms-mail-chrome">
+            <div class="comms-mail-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div class="comms-mail-chrome-title">Inbox — ISPCENTRIC</div>
+          </div>
+          <div class="comms-mail-toolbar" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <div class="comms-mail-header">
+            <div class="comms-mail-avatar" aria-hidden="true">I</div>
+            <div class="comms-mail-meta">
+              <div class="comms-mail-from-row">
+                <strong>ISPCENTRIC</strong>
+                <time data-comms-preview-email-time></time>
+              </div>
+              <div class="comms-mail-address">&lt;noreply@ispcentric.com&gt;</div>
+              <div class="comms-mail-to">to me</div>
+            </div>
+          </div>
+          <h3 class="comms-mail-subject" id="comms-preview-email-subject"></h3>
+          <div class="comms-mail-card">
+            <div class="comms-mail-brand">ISPCENTRIC</div>
+            <p class="comms-message-body" id="comms-preview-email-body"></p>
+            <div class="comms-mail-cta" data-comms-preview-link hidden></div>
+            <div class="comms-mail-footer">Sent by ISPCENTRIC · Do not reply to this address</div>
+          </div>
+        </article>
+      </div>
+
+      <div class="comms-preview-pane" data-comms-preview-pane="sms" hidden>
+        <div class="comms-device-stage">
+          <div class="comms-device comms-device--phone comms-device--sms" aria-label="SMS preview">
+            <div class="comms-phone-bezel">
+              <div class="comms-phone-notch" aria-hidden="true"></div>
+              <div class="comms-phone-status" aria-hidden="true">
+                <span data-comms-preview-clock>9:41</span>
+                <span class="comms-phone-signal">LTE</span>
+              </div>
+              <header class="comms-sms-head">
+                <span class="comms-sms-back" aria-hidden="true">‹</span>
+                <div class="comms-sms-contact">
+                  <span class="comms-sms-avatar" aria-hidden="true">I</span>
+                  <strong>ISPCENTRIC</strong>
+                  <small>Text Message · SMS</small>
+                </div>
+                <span class="comms-sms-info" aria-hidden="true">ⓘ</span>
+              </header>
+              <div class="comms-sms-thread">
+                <p class="comms-sms-day">Today</p>
+                <div class="comms-sms-bubble">
+                  <p class="comms-message-body" id="comms-preview-sms-body"></p>
+                  <time data-comms-preview-sms-time></time>
+                </div>
+              </div>
+              <div class="comms-sms-composer" aria-hidden="true">
+                <span>Text Message</span>
+                <button type="button" tabindex="-1">↑</button>
+              </div>
+              <div class="comms-phone-home" aria-hidden="true"></div>
+            </div>
+          </div>
+          <p class="comms-preview-footnote" id="comms-preview-sms-meta"></p>
+        </div>
+      </div>
+
+      <div class="comms-preview-pane" data-comms-preview-pane="whatsapp" hidden>
+        <div class="comms-device-stage">
+          <div class="comms-device comms-device--phone comms-device--wa" aria-label="WhatsApp preview">
+            <div class="comms-phone-bezel">
+              <div class="comms-phone-notch" aria-hidden="true"></div>
+              <div class="comms-phone-status comms-phone-status--wa" aria-hidden="true">
+                <span data-comms-preview-clock>9:41</span>
+                <span class="comms-phone-signal">5G</span>
+              </div>
+              <header class="comms-wa-head">
+                <span class="comms-wa-back" aria-hidden="true">‹</span>
+                <span class="comms-wa-avatar" aria-hidden="true">I</span>
+                <div class="comms-wa-contact">
+                  <strong>ISPCENTRIC</strong>
+                  <small>Business account</small>
+                </div>
+                <div class="comms-wa-actions" aria-hidden="true">
+                  <span></span><span></span>
+                </div>
+              </header>
+              <div class="comms-wa-thread">
+                <p class="comms-wa-day"><span>Today</span></p>
+                <div class="comms-wa-bubble">
+                  <p class="comms-message-body" id="comms-preview-wa-body"></p>
+                  <div class="comms-wa-meta">
+                    <time data-comms-preview-wa-time></time>
+                    <span class="comms-wa-ticks" aria-hidden="true">✓✓</span>
+                  </div>
+                </div>
+              </div>
+              <div class="comms-wa-composer" aria-hidden="true">
+                <span class="comms-wa-plus">+</span>
+                <span class="comms-wa-input">Message</span>
+                <span class="comms-wa-mic"></span>
+              </div>
+              <div class="comms-phone-home" aria-hidden="true"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

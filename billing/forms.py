@@ -1650,7 +1650,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price",
             "download_speed_mbps",
             "upload_speed_mbps",
-            "duration",
+            "duration_value",
+            "duration_unit",
             "max_devices",
             "offer_enabled",
             "offer_pay_count",
@@ -1706,10 +1707,21 @@ class BillingPackageRegisterForm(forms.ModelForm):
                     "id": "id_package_upload_speed",
                 }
             ),
-            "duration": forms.Select(
+            "duration_value": forms.NumberInput(
                 attrs={
                     "class": "form-control",
-                    "id": "id_package_duration",
+                    "placeholder": "1",
+                    "min": "1",
+                    "max": "999",
+                    "step": "1",
+                    "inputmode": "numeric",
+                    "id": "id_package_duration_value",
+                }
+            ),
+            "duration_unit": forms.Select(
+                attrs={
+                    "class": "form-control",
+                    "id": "id_package_duration_unit",
                 }
             ),
             "max_devices": forms.NumberInput(
@@ -1756,7 +1768,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price": "Price",
             "download_speed_mbps": "Download speed (Mbps)",
             "upload_speed_mbps": "Upload speed (Mbps)",
-            "duration": "Billing period",
+            "duration_value": "Billing period",
+            "duration_unit": "Period unit",
             "max_devices": "Max devices",
             "offer_enabled": "Enable buy-X-get-1-free offer",
             "offer_pay_count": "Paid sessions before free one",
@@ -1786,11 +1799,21 @@ class BillingPackageRegisterForm(forms.ModelForm):
         self.fields["offer_pay_count"].help_text = (
             "Example: 5 means after every 5 paid sessions the customer gets one extra session free."
         )
-        self.fields["duration"].choices = BillingPlan.Duration.choices
-        # Default Active only for new packages — keep the saved value when editing.
+        self.fields["duration_value"].required = True
+        self.fields["duration_unit"].required = True
+        self.fields["duration_unit"].choices = BillingPlan.DurationUnit.choices
+        self.fields["duration_value"].help_text = (
+            "Set any length — e.g. 3 days, 12 hours, or 2 months."
+        )
         if not self.is_bound and not getattr(self.instance, "pk", None):
+            self.fields["duration_value"].initial = 1
+            self.fields["duration_unit"].initial = BillingPlan.DurationUnit.MONTHS
             self.fields["is_active"].initial = True
             self.fields["service_type"].initial = BillingPlan.ServiceType.PPPOE
+        elif getattr(self.instance, "pk", None):
+            value, unit = self.instance.duration_parts()
+            self.initial.setdefault("duration_value", value)
+            self.initial.setdefault("duration_unit", unit)
         if int(getattr(self.instance, "max_devices", 0) or 0) <= 0:
             self.initial["max_devices"] = None
         if self.organization is not None:
@@ -1806,7 +1829,8 @@ class BillingPackageRegisterForm(forms.ModelForm):
             "price": f"id_{self.id_prefix}_price",
             "download_speed_mbps": f"id_{self.id_prefix}_download_speed",
             "upload_speed_mbps": f"id_{self.id_prefix}_upload_speed",
-            "duration": f"id_{self.id_prefix}_duration",
+            "duration_value": f"id_{self.id_prefix}_duration_value",
+            "duration_unit": f"id_{self.id_prefix}_duration_unit",
             "max_devices": f"id_{self.id_prefix}_max_devices",
             "offer_enabled": f"id_{self.id_prefix}_offer_enabled",
             "offer_pay_count": f"id_{self.id_prefix}_offer_pay_count",
@@ -1881,6 +1905,24 @@ class BillingPackageRegisterForm(forms.ModelForm):
             raise forms.ValidationError("Image must be 5 MB or smaller.")
         return image
 
+    def clean_duration_value(self):
+        value = self.cleaned_data.get("duration_value")
+        if value in (None, ""):
+            raise forms.ValidationError("Enter how long this package lasts.")
+        value = int(value)
+        if value < 1:
+            raise forms.ValidationError("Billing period must be at least 1.")
+        if value > 999:
+            raise forms.ValidationError("Billing period cannot exceed 999.")
+        return value
+
+    def clean_duration_unit(self):
+        unit = (self.cleaned_data.get("duration_unit") or "").strip().lower()
+        valid = {choice.value for choice in BillingPlan.DurationUnit}
+        if unit not in valid:
+            raise forms.ValidationError("Choose hours, days, weeks, months, or years.")
+        return unit
+
     def clean_price(self):
         price = self.cleaned_data.get("price")
         if price is None:
@@ -1929,6 +1971,7 @@ class BillingPackageRegisterForm(forms.ModelForm):
         plan.organization = self.organization
         if self.cleaned_data.get("is_active") is None:
             plan.is_active = True
+        plan.sync_duration_fields()
         plan.sync_general_speed()
         if commit:
             plan.save()
