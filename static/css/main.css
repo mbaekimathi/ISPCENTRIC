@@ -21115,6 +21115,84 @@ a.packages-stat:focus-visible {
   margin: 0.75rem 0 0;
 }
 
+.mk-uplink-recommendation {
+  margin: 0.75rem 0 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.mk-uplink-recommendation-copy strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.mk-uplink-recommendation-copy p {
+  margin: 0;
+}
+
+.mk-uplink-recommendation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.mk-uplink-candidate-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.mk-uplink-candidate-list[hidden] {
+  display: none;
+}
+
+.mk-uplink-candidate {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.5rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.45rem;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font-size: 0.92rem;
+}
+
+.mk-uplink-candidate.is-ok {
+  color: #1f9d63;
+}
+
+.mk-uplink-candidate.is-wait {
+  color: #b7791f;
+}
+
+.mk-uplink-candidate.is-down {
+  color: #9b2c2c;
+}
+
+.mk-uplink-candidate-role {
+  font-weight: 600;
+}
+
+.mk-uplink-candidate-status {
+  opacity: 0.9;
+  font-size: 0.85em;
+}
+
+.mk-banner.mk-uplink-recommendation.is-ok {
+  border-color: color-mix(in srgb, #1f9d63 35%, transparent);
+  background: color-mix(in srgb, #1f9d63 12%, transparent);
+}
+
+.mk-banner.mk-uplink-recommendation.is-warn {
+  border-color: color-mix(in srgb, #b7791f 35%, transparent);
+  background: color-mix(in srgb, #b7791f 12%, transparent);
+}
+
 .mk-uplink-setup-status strong {
   display: block;
   margin-bottom: 0.25rem;

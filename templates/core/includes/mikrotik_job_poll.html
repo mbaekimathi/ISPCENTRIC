@@ -36,17 +36,29 @@
     hotspot_push: "Pushing Hotspot policy",
     nas_refresh: "Applying billing settings"
   };
-  var phaseText = {
+    phaseText = {
     queued: "Queued — waiting for background worker…",
     start: "Starting background push…",
+    prepare: "Preparing uplink on the MikroTik…",
+    unbridge: "Moving ISP cables off the LAN bridge…",
+    reconnect: "Waiting for management API (brief flap is normal)…",
+    configure: "Configuring uplink on the MikroTik…",
+    bond_wan: "Starting WAN on the bond interface…",
+    retire_members: "Retiring old member DHCP clients…",
+    pcc: "Installing share + failover routes…",
+    smart_monitor: "Installing slow-link monitor…",
+    working: "Still applying — keep this page open…",
     push: "Pushing PPPoE / Hotspot billing rules to the MikroTik…",
-    verify: "Verifying MikroTik management access…"
+    verify: "Verifying MikroTik management access…",
+    done: "Finishing up…"
   };
 
   var startedAt = Date.now();
   var unknownPolls = 0;
   var recoverAttempted = false;
-  var maxWaitMs = 240000;
+  var maxWaitMs = jobType.indexOf("uplink_") === 0 || jobType === "clean_uplink"
+    ? 600000
+    : 240000;
 
   function setBanner(kind, title, text) {
     banner.hidden = false;
@@ -60,7 +72,7 @@
     var phase = (job.phase || "").toLowerCase();
     if (job.message) return job.message;
     if (phase && phaseText[phase]) return phaseText[phase];
-    return "Working over the billing tunnel — this can take up to 3 minutes.";
+    return "Working over the billing tunnel — brief management flaps are normal for uplink changes.";
   }
 
   function poll(recover) {

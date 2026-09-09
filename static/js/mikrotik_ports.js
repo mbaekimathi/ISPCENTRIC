@@ -865,18 +865,100 @@
       var sub = "";
       if (p) {
         if (p.disabled) sub = "disabled";
+        else if (p.internet_verified) sub = "ISP online";
+        else if (p.running && (p.uplink_kind === "dhcp" || p.internet_level === "warn"))
+          sub = p.uplink_kind === "dhcp" ? "waiting DHCP" : "link up";
         else if (p.running) sub = "link up";
         else sub = "no link";
       }
       li.innerHTML =
         '<span class="mk-chip' +
         (chipClass ? " " + chipClass : "") +
+        (p && p.internet_verified ? " is-ok" : "") +
         '">' +
         esc(name) +
         (sub ? '<span class="mk-chip-sub">' + esc(sub) + "</span>" : "") +
         "</span>";
       ul.appendChild(li);
     });
+  }
+
+  function renderUplinkRecommendation(rec) {
+    var panel = root.querySelector("[data-uplink-recommendation]");
+    if (!panel) return;
+    if (!rec || !rec.applies) {
+      setHidden(panel, true);
+      return;
+    }
+    var titleEl = root.querySelector("[data-uplink-recommendation-title]");
+    var msgEl = root.querySelector("[data-uplink-recommendation-message]");
+    var listEl = root.querySelector("[data-uplink-candidate-list]");
+    var acceptBtn = root.querySelector("[data-uplink-recommendation-accept]");
+    var readyEl = root.querySelector("[data-uplink-recommendation-ready]");
+    if (titleEl) titleEl.textContent = rec.title || "Live link recommendation";
+    if (msgEl) msgEl.textContent = rec.message || "";
+    if (acceptBtn) {
+      acceptBtn.textContent = rec.accept_label || "Use recommendation";
+      acceptBtn.disabled = !rec.can_accept;
+      setHidden(acceptBtn, !rec.can_accept && !!rec.accepted);
+    }
+    if (readyEl) {
+      var readyText = "";
+      if (rec.ready_to_apply && !rec.can_accept) {
+        readyText = "Ready to apply — use the Apply button below.";
+      } else if (rec.phase === "applied" || (rec.can_proceed && rec.accepted && !rec.ready_to_apply)) {
+        readyText = "Setup looks good — you can advance.";
+      } else if (rec.accepted && rec.phase === "waiting") {
+        readyText = "Labels updated — waiting for ISP confirmation.";
+      } else if (rec.phase === "waiting" && (rec.waiting_ports || []).length) {
+        readyText = "Watching " + (rec.waiting_ports || []).join(", ") + " for ISP online…";
+      }
+      readyEl.textContent = readyText;
+      setHidden(readyEl, !readyText);
+      readyEl.className = "mk-help-note" + (rec.ready_to_apply || rec.phase === "applied" ? " is-ok" : "");
+    }
+    if (listEl) {
+      var candidates = rec.candidates || [];
+      var focusNames = {};
+      (rec.recommended_ports || []).forEach(function (n) {
+        focusNames[n] = true;
+      });
+      (rec.waiting_ports || []).forEach(function (n) {
+        focusNames[n] = true;
+      });
+      var show = candidates.filter(function (c) {
+        return focusNames[c.name] || c.verified || c.status === "link_up" ||
+          c.status === "waiting_dhcp" || c.status === "waiting_pppoe";
+      });
+      if (!show.length) show = candidates.slice(0, 4);
+      listEl.innerHTML = show
+        .map(function (c) {
+          var cls = "mk-uplink-candidate";
+          if (c.verified) cls += " is-ok";
+          else if (c.status === "down" || c.status === "disabled") cls += " is-down";
+          else cls += " is-wait";
+          var role = c.recommended_role
+            ? '<span class="mk-uplink-candidate-role">' + esc(c.recommended_role) + "</span>"
+            : "";
+          return (
+            "<li class=\"" +
+            cls +
+            "\"><strong>" +
+            esc(c.name) +
+            "</strong>" +
+            role +
+            '<span class="mk-uplink-candidate-status">' +
+            esc(c.status_label || "") +
+            "</span></li>"
+          );
+        })
+        .join("");
+      setHidden(listEl, !show.length);
+    }
+    panel.className =
+      "mk-banner mk-uplink-recommendation " +
+      (rec.level === "ok" ? "is-ok" : rec.level === "warn" ? "is-warn" : "is-info");
+    setHidden(panel, false);
   }
 
   function gcdTwo(a, b) {
@@ -1481,6 +1563,20 @@
   function apply(data) {
     setHidden(root.querySelector("[data-ports-loading-ui]"), true);
 
+    if (data && data.ok && data.applying_uplink) {
+      lastConnectOk = true;
+      setHidden(root.querySelector("[data-ports-error]"), true);
+      setPortsApiRecovery("");
+      var applyInfo = root.querySelector("[data-ports-info]");
+      if (applyInfo) {
+        applyInfo.textContent =
+          data.message ||
+          data.auto_assigned_message ||
+          "Uplink is applying in the background — keep this page open.";
+        setHidden(applyInfo, false);
+      }
+    }
+
     if (!data || !data.ok) {
       var err = root.querySelector("[data-ports-error]");
       var errText = root.querySelector("[data-ports-error-text]");
@@ -1704,11 +1800,13 @@
         var msgEl = setupStatusEl.querySelector("[data-uplink-setup-status-message]");
         var listEl = setupStatusEl.querySelector("[data-uplink-setup-status-problems]");
         if (titleEl) {
-          titleEl.textContent = status.ok
-            ? "All OK — you can proceed"
-            : status.ready
-              ? "Ready to apply"
-              : "Needs attention";
+          titleEl.textContent =
+            status.title ||
+            (status.ok
+              ? "All OK — you can proceed"
+              : status.ready
+                ? "Ready to apply"
+                : "Needs attention");
         }
         if (msgEl) msgEl.textContent = status.message || "";
         if (listEl) {
@@ -1731,6 +1829,8 @@
         setHidden(setupStatusEl, true);
       }
     }
+
+    renderUplinkRecommendation(data.uplink_recommendation);
 
     var healthBanner = root.querySelector("[data-ports-health]");
     if (healthBanner) {

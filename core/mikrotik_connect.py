@@ -14,7 +14,7 @@ import threading
 import time
 from contextlib import contextmanager
 from http.cookies import SimpleCookie
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 from django.conf import settings
@@ -1284,6 +1284,36 @@ def _phase1_prepare_uplink_ports(
             }
         _clear_tagged_uplink_hot(sock)
         return _unbridge_interfaces(sock, ordered), None
+
+
+def _settle_after_unbridge(
+    dial_hosts: list[str],
+    *,
+    port: int = 8728,
+    unbridged: list | None = None,
+) -> None:
+    """Wait for management API after unbridging WAN ports (tunnel peers need longer)."""
+    if not unbridged:
+        return
+    settle = 4.0 if any(_is_wireguard_tunnel_host(h) for h in dial_hosts) else 2.5
+    time.sleep(settle)
+    try:
+        _wait_for_api_any(dial_hosts, port=port, attempts=16, delay=1.5)
+    except ConnectionError:
+        pass
+
+
+def _uplink_progress(
+    progress: Callable[[str, str], None] | None,
+    message: str,
+    phase: str = "",
+) -> None:
+    if not progress:
+        return
+    try:
+        progress(message, phase)
+    except Exception:
+        pass
 
 
 def ensure_mikrotik_lan_passthrough(
@@ -22406,6 +22436,7 @@ def apply_mikrotik_uplink_bond(
     timeout: float = 12.0,
     api_hosts: list[str] | None = None,
     live_ports: list[dict] | None = None,
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """
     Bond two or more ports for the same provider.
@@ -22415,8 +22446,9 @@ def apply_mikrotik_uplink_bond(
     bond to the WAN interface list.
 
     Runs in phases and reconnects over alternate API hosts (WireGuard first) when
-    unbridging drops the LAN-management session. Keeps existing ISP DHCP clients
-    during hot re-apply so customers stay online.
+    unbridging drops the LAN-management session. Keeps member ISP DHCP clients
+    alive until the bond has its own WAN path so tunnel management does not die
+    mid-apply.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -22434,6 +22466,14 @@ def apply_mikrotik_uplink_bond(
         bond_name=bond_name,
     )
 
+    def _progress(message: str, phase: str = "") -> None:
+        if not progress:
+            return
+        try:
+            progress(message, phase)
+        except Exception:
+            pass
+
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
     if len(members) < 2:
@@ -22449,6 +22489,7 @@ def apply_mikrotik_uplink_bond(
 
     try:
         unbridged: list[dict[str, str]] = []
+        _progress("Preparing bond members on the MikroTik…", "prepare")
         with _api_session_on_any(
             dial_hosts, username, password, port=port, timeout=timeout
         ) as (sock, _phase_host):
@@ -22478,6 +22519,7 @@ def apply_mikrotik_uplink_bond(
                         ),
                     }
 
+            _progress("Moving ISP cables off the LAN bridge…", "unbridge")
             unbridged = _unbridge_interfaces(sock, members)
             recovery_script = build_uplink_recovery_script(
                 "bond",
@@ -22488,16 +22530,25 @@ def apply_mikrotik_uplink_bond(
 
         if unbridged:
             # Unbridging flaps LAN management; tunnel peers need longer for WAN/API.
-            settle = 3.5 if any(_is_wireguard_tunnel_host(h) for h in dial_hosts) else 2.0
+            # Do not disable member DHCP yet — that would black-hole WireGuard.
+            settle = 4.0 if any(_is_wireguard_tunnel_host(h) for h in dial_hosts) else 2.5
+            _progress(
+                "Waiting for management API after unbridging (customers stay online)…",
+                "reconnect",
+            )
             time.sleep(settle)
             try:
-                _wait_for_api_any(dial_hosts, port=port, attempts=12, delay=1.5)
+                _wait_for_api_any(dial_hosts, port=port, attempts=16, delay=1.5)
             except ConnectionError:
                 pass
 
         last_error = ""
-        for attempt in range(1, 5):
+        for attempt in range(1, 7):
             try:
+                _progress(
+                    f"Configuring bond interface (attempt {attempt}/6)…",
+                    "configure",
+                )
                 with _api_session_on_any(
                     dial_hosts, username, password, port=port, timeout=max(timeout, 16.0)
                 ) as (sock, session_host):
@@ -22520,14 +22571,15 @@ def apply_mikrotik_uplink_bond(
                             "recovery_script": recovery_script,
                         }
 
-                    disabled_dhcp = _disable_member_dhcp_clients(sock, members)
+                    # Keep member DHCP/PPPoE up until the bond has its own WAN path.
+                    # Disabling member DHCP first drops the default route and kills
+                    # WireGuard management mid-apply.
                     moved_pppoe = _move_member_pppoe_to_bond(sock, members, bond_name)
                     uplink_kind = "pppoe" if moved_pppoe else "dhcp"
                     if not moved_pppoe:
+                        _progress(f"Starting DHCP on {bond_name}…", "bond_wan")
                         dhcp = _ensure_bond_dhcp_client(sock, bond_name)
                         if dhcp.get("_reply") in {"!trap", "!fatal"}:
-                            # Roll back so customers / management are not left unbridged
-                            # without a working WAN.
                             for row in _print(
                                 sock, "/interface/bonding", props=".id,name,comment"
                             ):
@@ -22550,6 +22602,18 @@ def apply_mikrotik_uplink_bond(
                                 "unbridged": [],
                                 "recovery_script": recovery_script,
                             }
+                    else:
+                        _progress(
+                            f"PPPoE moved onto {bond_name} — waiting for dial…",
+                            "bond_wan",
+                        )
+
+                    # Brief settle so bond DHCP/PPPoE can obtain a route before we
+                    # tear down the member clients that still carry management.
+                    time.sleep(2.0)
+
+                    _progress("Retiring DHCP on bond member ports…", "retire_members")
+                    disabled_dhcp = _disable_member_dhcp_clients(sock, members)
 
                     _ensure_uplink_list_member(sock, bond_name)
                     for pppoe_name in moved_pppoe:
@@ -22560,6 +22624,7 @@ def apply_mikrotik_uplink_bond(
                         sock, [bond_name, *members]
                     )
 
+                    _progress("Bond applied — reconnecting management…", "done")
                     return {
                         "ok": True,
                         "mode": "bond",
@@ -22587,11 +22652,15 @@ def apply_mikrotik_uplink_bond(
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
                 last_error = str(exc)
-                if attempt >= 4:
+                _progress(
+                    "Management API flapped — retrying over tunnel/LAN…",
+                    "reconnect",
+                )
+                if attempt >= 6:
                     break
                 time.sleep(2.0 * attempt)
                 try:
-                    _wait_for_api_any(dial_hosts, port=port, attempts=10, delay=1.5)
+                    _wait_for_api_any(dial_hosts, port=port, attempts=12, delay=1.5)
                 except ConnectionError:
                     pass
 
@@ -22600,6 +22669,10 @@ def apply_mikrotik_uplink_bond(
             "error": last_error or "Connection timed out while configuring bonding.",
             "unbridged": unbridged,
             "recovery_script": recovery_script,
+            "hint": (
+                "Bonding may have partially applied. Open MikroTik → Reconnect, "
+                "or use Winbox on a customer LAN port and retry Apply bonding."
+            ),
         }
     except TimeoutError:
         return {
@@ -23191,6 +23264,7 @@ def apply_mikrotik_uplink_balance(
     timeout: float = 14.0,
     api_hosts: list[str] | None = None,
     live_ports: list[dict] | None = None,
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """
     PCC load-balance across different ISP uplinks.
@@ -23203,7 +23277,8 @@ def apply_mikrotik_uplink_balance(
     temporarily disables PCC slots for links that are slow or lossy.
 
     Phased apply reconnects over alternate API hosts when unbridging drops LAN API.
-    DHCP/PPPoE clients are preserved across re-apply (hot policy rebuild).
+    DHCP/PPPoE clients are preserved; client default-routes are only retired after
+    PCC routes are installed so management (WireGuard) stays up mid-apply.
     """
     host = (host or "").strip()
     username = (username or "").strip()
@@ -23214,6 +23289,7 @@ def apply_mikrotik_uplink_balance(
     dial_hosts = _api_hosts_for_uplink_apply(host, api_hosts=api_hosts)
     recovery_mode = "smart_balance" if smart_balance else "balance"
     recovery_script = build_uplink_recovery_script(recovery_mode, members=members)
+    mode_label = "smart balance" if smart_balance else "load balance"
 
     if not host or not username:
         return {"ok": False, "error": "Missing router credentials."}
@@ -23239,6 +23315,7 @@ def apply_mikrotik_uplink_balance(
             return 100
 
     try:
+        _uplink_progress(progress, f"Preparing {mode_label} on the MikroTik…", "prepare")
         unbridged, phase_error = _phase1_prepare_uplink_ports(
             dial_hosts,
             username,
@@ -23255,18 +23332,25 @@ def apply_mikrotik_uplink_balance(
         )
 
         if unbridged:
-            time.sleep(1.5)
-            try:
-                _wait_for_api_any(dial_hosts, port=port)
-            except ConnectionError:
-                pass
+            _uplink_progress(
+                progress,
+                "Waiting for management API after unbridging (customers stay online)…",
+                "reconnect",
+            )
+            _settle_after_unbridge(dial_hosts, port=port, unbridged=unbridged)
 
         last_error = ""
-        for attempt in range(1, 4):
+        for attempt in range(1, 7):
             try:
+                _uplink_progress(
+                    progress,
+                    f"Configuring {mode_label} (attempt {attempt}/6)…",
+                    "configure",
+                )
                 with _api_session_on_any(
-                    dial_hosts, username, password, port=port, timeout=timeout
+                    dial_hosts, username, password, port=port, timeout=max(timeout, 16.0)
                 ) as (sock, session_host):
+                    ensure_routeros_api_enabled(sock)
                     uplink_results: list[dict[str, str]] = []
                     for index, iface in enumerate(members):
                         terminal = _ensure_failover_uplink(
@@ -23312,12 +23396,8 @@ def apply_mikrotik_uplink_balance(
                         if not gateway:
                             missing_gw.append(iface)
                             continue
-                        _disable_client_default_route(
-                            sock,
-                            kind=kind,
-                            interface=iface,
-                            pppoe_name=pppoe_name or gateway,
-                        )
+                        # Keep client default routes until PCC is installed —
+                        # retiring them first black-holes WireGuard mid-apply.
                         balance_members.append(
                             {
                                 "interface": iface,
@@ -23326,6 +23406,7 @@ def apply_mikrotik_uplink_balance(
                                 "index": str(index),
                                 "kind": kind,
                                 "weight": str(_weight_for(iface)),
+                                "pppoe_name": pppoe_name or gateway,
                             }
                         )
 
@@ -23351,6 +23432,7 @@ def apply_mikrotik_uplink_balance(
                     # clients up so customers stay online while new routes install.
                     _clear_tagged_routing_policy(sock)
 
+                    _uplink_progress(progress, "Installing share + failover routes…", "pcc")
                     pcc = _install_balance_pcc(sock, balance_members)
                     if not pcc.get("ok"):
                         return {
@@ -23361,8 +23443,22 @@ def apply_mikrotik_uplink_balance(
                             "recovery_script": recovery_script,
                         }
 
+                    # PCC owns default routing now — safe to stop client defaults.
+                    for member in balance_members:
+                        _disable_client_default_route(
+                            sock,
+                            kind=member.get("kind") or "dhcp",
+                            interface=member.get("interface") or "",
+                            pppoe_name=member.get("pppoe_name")
+                            or member.get("gateway")
+                            or "",
+                        )
+
                     smart_status: dict[str, Any] = {}
                     if smart_balance:
+                        _uplink_progress(
+                            progress, "Installing slow-link monitor…", "smart_monitor"
+                        )
                         smart = _install_smart_balance_monitor(sock, balance_members)
                         if not smart.get("ok"):
                             return {
@@ -23421,6 +23517,9 @@ def apply_mikrotik_uplink_balance(
                         + [m.get("wan_iface") or "" for m in balance_members],
                     )
 
+                    _uplink_progress(
+                        progress, f"{mode_label.capitalize()} applied — reconnecting…", "done"
+                    )
                     return {
                         "ok": True,
                         "mode": "smart_balance" if smart_balance else "balance",
@@ -23456,11 +23555,16 @@ def apply_mikrotik_uplink_balance(
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
                 last_error = str(exc)
-                if attempt >= 3:
+                _uplink_progress(
+                    progress,
+                    "Management API flapped — retrying over tunnel/LAN…",
+                    "reconnect",
+                )
+                if attempt >= 6:
                     break
-                time.sleep(1.5 * attempt)
+                time.sleep(2.0 * attempt)
                 try:
-                    _wait_for_api_any(dial_hosts, port=port)
+                    _wait_for_api_any(dial_hosts, port=port, attempts=12, delay=1.5)
                 except ConnectionError:
                     pass
 
@@ -23470,6 +23574,10 @@ def apply_mikrotik_uplink_balance(
             or "Connection timed out while configuring load balance.",
             "unbridged": unbridged,
             "recovery_script": recovery_script,
+            "hint": (
+                f"{mode_label.capitalize()} may have partially applied. "
+                "Open MikroTik → Reconnect, then retry Apply."
+            ),
         }
     except TimeoutError:
         return {
@@ -23502,6 +23610,7 @@ def apply_mikrotik_uplink_failover(
     timeout: float = 12.0,
     api_hosts: list[str] | None = None,
     live_ports: list[dict] | None = None,
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
     """
     Configure primary + backup WAN ports for different providers.
@@ -23542,6 +23651,7 @@ def apply_mikrotik_uplink_failover(
         return blocked
 
     try:
+        _uplink_progress(progress, "Preparing failover on the MikroTik…", "prepare")
         unbridged, phase_error = _phase1_prepare_uplink_ports(
             dial_hosts,
             username,
@@ -23561,18 +23671,25 @@ def apply_mikrotik_uplink_failover(
         )
 
         if unbridged:
-            time.sleep(1.5)
-            try:
-                _wait_for_api_any(dial_hosts, port=port)
-            except ConnectionError:
-                pass
+            _uplink_progress(
+                progress,
+                "Waiting for management API after unbridging (customers stay online)…",
+                "reconnect",
+            )
+            _settle_after_unbridge(dial_hosts, port=port, unbridged=unbridged)
 
         last_error = ""
-        for attempt in range(1, 4):
+        for attempt in range(1, 7):
             try:
+                _uplink_progress(
+                    progress,
+                    f"Configuring failover (attempt {attempt}/6)…",
+                    "configure",
+                )
                 with _api_session_on_any(
-                    dial_hosts, username, password, port=port, timeout=timeout
+                    dial_hosts, username, password, port=port, timeout=max(timeout, 16.0)
                 ) as (sock, session_host):
+                    ensure_routeros_api_enabled(sock)
                     # Keep WAN clients; rebuild only tagged failover policy.
                     _clear_tagged_routing_policy(sock)
                     uplink_results: list[dict[str, str]] = []
@@ -23601,7 +23718,9 @@ def apply_mikrotik_uplink_failover(
                         if pppoe_name and pppoe_name != iface:
                             _ensure_uplink_list_member(sock, pppoe_name)
 
-                    checked_routes = _install_failover_gateway_checks(sock, uplink_results)
+                    checked_routes = _install_failover_gateway_checks(
+                        sock, uplink_results
+                    )
 
                     # Only touch tagged ispcentric defaults — never operator/static
                     # routes that could blackhole the whole network.
@@ -23629,6 +23748,9 @@ def apply_mikrotik_uplink_failover(
 
                     backflow = _ensure_uplink_no_backflow(sock, ordered)
 
+                    _uplink_progress(
+                        progress, "Failover applied — reconnecting…", "done"
+                    )
                     return {
                         "ok": True,
                         "mode": "failover",
@@ -23650,11 +23772,16 @@ def apply_mikrotik_uplink_failover(
                     }
             except (TimeoutError, ConnectionError, OSError) as exc:
                 last_error = str(exc)
-                if attempt >= 3:
+                _uplink_progress(
+                    progress,
+                    "Management API flapped — retrying over tunnel/LAN…",
+                    "reconnect",
+                )
+                if attempt >= 6:
                     break
-                time.sleep(1.5 * attempt)
+                time.sleep(2.0 * attempt)
                 try:
-                    _wait_for_api_any(dial_hosts, port=port)
+                    _wait_for_api_any(dial_hosts, port=port, attempts=12, delay=1.5)
                 except ConnectionError:
                     pass
 
@@ -23663,6 +23790,10 @@ def apply_mikrotik_uplink_failover(
             "error": last_error or "Connection timed out while configuring failover.",
             "unbridged": unbridged,
             "recovery_script": recovery_script,
+            "hint": (
+                "Failover may have partially applied. Open MikroTik → Reconnect, "
+                "then retry Apply."
+            ),
         }
     except TimeoutError:
         return {

@@ -577,6 +577,7 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
         names = {"ether1", "ether2", "bridgeLocal"}
         disabled: list[str] = []
         bond_creates: list[dict] = []
+        call_order: list[str] = []
 
         def fake_print(sock, path, **kwargs):
             if path == "/interface":
@@ -603,12 +604,16 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
 
         def fake_set(sock, path, item_id, **props):
             if path == "/ip/dhcp-client" and props.get("disabled") == "yes":
+                call_order.append("disable_member_dhcp")
                 disabled.append(item_id)
             return {"_reply": "!done"}
 
         def fake_add(sock, path, **props):
             if path == "/interface/bonding":
+                call_order.append("create_bond")
                 bond_creates.append(dict(props))
+            if path == "/ip/dhcp-client":
+                call_order.append("bond_dhcp")
             return {"_reply": "!done"}
 
         with (
@@ -631,6 +636,11 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
                 "core.mikrotik_connect._ensure_uplink_no_backflow",
                 return_value={"ok": True, "changed": True},
             ),
+            patch("core.mikrotik_connect.time.sleep", return_value=None),
+            patch(
+                "core.mikrotik_connect._wait_for_api_any",
+                return_value="10.9.0.3",
+            ),
         ):
             result = apply_mikrotik_uplink_bond(
                 "10.9.0.3",
@@ -644,6 +654,10 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
         self.assertEqual(sorted(disabled), ["*d1", "*d2"])
         self.assertTrue(bond_creates)
         self.assertEqual(bond_creates[0].get("link-monitoring"), "mii")
+        self.assertIn("create_bond", call_order)
+        self.assertIn("bond_dhcp", call_order)
+        self.assertLess(call_order.index("create_bond"), call_order.index("bond_dhcp"))
+        self.assertLess(call_order.index("bond_dhcp"), call_order.index("disable_member_dhcp"))
 
     def test_bond_moves_pppoe_to_bond(self):
         names = {"ether1", "ether2", "pppoe-out1", "bridgeLocal"}
@@ -696,6 +710,11 @@ class ApplyFailoverAndBondTests(SimpleTestCase):
             patch(
                 "core.mikrotik_connect._ensure_uplink_no_backflow",
                 return_value={"ok": True, "changed": True},
+            ),
+            patch("core.mikrotik_connect.time.sleep", return_value=None),
+            patch(
+                "core.mikrotik_connect._wait_for_api_any",
+                return_value="10.9.0.3",
             ),
         ):
             result = apply_mikrotik_uplink_bond(
@@ -2280,6 +2299,180 @@ class SimplifiedUplinkGoalTests(SimpleTestCase):
         self.assertTrue(
             any("every" in (a.get("message") or "").lower() for a in alerts if a["code"] == "failover_on_backup")
         )
+
+
+class UplinkRecommendationTests(SimpleTestCase):
+    def _router(self, **kwargs):
+        router = MikroTikRouter(
+            name="test",
+            host="192.168.88.1",
+            username="admin",
+            password="x",
+            wan_interface=kwargs.pop("wan_interface", ""),
+            uplink_mode=kwargs.pop(
+                "uplink_mode", MikroTikRouter.UplinkMode.SMART_BALANCE
+            ),
+            port_roles=kwargs.pop("port_roles", {}),
+            uplink_ports=kwargs.pop("uplink_ports", []),
+        )
+        for key, value in kwargs.items():
+            setattr(router, key, value)
+        return router
+
+    def test_ranks_verified_isp_above_link_up(self):
+        from core.views import _list_uplink_candidates
+
+        ports = [
+            _port("ether2", running=True, uplink_kind=""),
+            _port("ether1", running=True, uplink_kind="dhcp", uplink_active=True),
+        ]
+        ranked = _list_uplink_candidates(ports, suggested_wan="ether1")
+        self.assertEqual(ranked[0]["name"], "ether1")
+        self.assertTrue(ranked[0]["verified"])
+        self.assertEqual(ranked[0]["status"], "isp_online")
+        ether2 = next(c for c in ranked if c["name"] == "ether2")
+        self.assertEqual(ether2["status"], "link_up")
+        self.assertFalse(ether2["verified"])
+
+    def test_multi_waits_when_second_link_not_verified(self):
+        from core.views import _build_uplink_recommendation
+
+        router = self._router(
+            wan_interface="ether1",
+            port_roles={"ether1": MikroTikRouter.PortRole.WAN},
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", running=True, uplink_kind=""),
+        ]
+        rec = _build_uplink_recommendation(
+            router,
+            ports,
+            suggested_wan="ether1",
+            balance_ready=False,
+        )
+        self.assertEqual(rec["phase"], "waiting")
+        self.assertFalse(rec["can_accept"])
+        self.assertIn("ether2", rec["waiting_ports"])
+        self.assertTrue(
+            "wait" in rec["message"].lower() or "linked" in rec["message"].lower()
+        )
+
+    def test_multi_recommends_two_verified_links(self):
+        from core.views import _build_uplink_recommendation
+
+        router = self._router(port_roles={})
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", uplink_kind="pppoe", uplink_active=True),
+        ]
+        rec = _build_uplink_recommendation(
+            router,
+            ports,
+            suggested_wan="ether1",
+            balance_ready=False,
+        )
+        self.assertEqual(rec["phase"], "recommend")
+        self.assertTrue(rec["can_accept"])
+        self.assertEqual(rec["primary"], "ether1")
+        self.assertEqual(rec["backups"], ["ether2"])
+
+    def test_accept_multi_recommendation_labels_roles(self):
+        from core.views import apply_uplink_recommendation
+
+        router = self._router(port_roles={})
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", uplink_kind="dhcp", uplink_active=True),
+            _port("ether3", bridged=True, running=True),
+        ]
+        with patch.object(MikroTikRouter, "save"):
+            result = apply_uplink_recommendation(
+                router, ports, suggested_wan="ether1"
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(router.port_roles.get("ether1"), MikroTikRouter.PortRole.WAN)
+        self.assertEqual(
+            router.port_roles.get("ether2"), MikroTikRouter.PortRole.WAN_BACKUP
+        )
+
+    def test_auto_assign_clears_unverified_shared_isp(self):
+        from core.views import _auto_assign_multi_isp_roles
+
+        router = self._router(
+            wan_interface="ether1",
+            port_roles={
+                "ether1": MikroTikRouter.PortRole.WAN,
+                "ether2": MikroTikRouter.PortRole.WAN_BACKUP,
+            },
+            uplink_ports=["ether1", "ether2"],
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", running=True, uplink_kind=""),
+        ]
+        with patch.object(MikroTikRouter, "save"):
+            result = _auto_assign_multi_isp_roles(
+                router,
+                ports,
+                mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                suggested_wan="ether1",
+            )
+        self.assertTrue(result["changed"])
+        self.assertNotEqual(
+            router.port_roles.get("ether2"), MikroTikRouter.PortRole.WAN_BACKUP
+        )
+        self.assertIn("ether2", result.get("message") or result.get("error") or "")
+
+    def test_setup_status_title_ready_to_apply(self):
+        from core.views import _build_uplink_setup_status
+
+        ports = [
+            _port("ether1", uplink_kind="dhcp"),
+            _port("ether2", uplink_kind="dhcp"),
+        ]
+        status = _build_uplink_setup_status(
+            uplink_mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+            primary_wan_ports=["ether1"],
+            backup_wan_ports=["ether2"],
+            bond_member_ports=[],
+            physical_ports=ports,
+            dual_wan_ready=True,
+            bond_ready=False,
+            balance_ready=True,
+            balance_router_applied=False,
+            smart_balance_applied=False,
+            uplink_live={},
+            health_alerts=[],
+            recommendation={
+                "title": "Ready to apply multi-ISP",
+                "message": "Apply now",
+                "waiting_ports": [],
+            },
+        )
+        self.assertEqual(status["title"], "Ready to apply")
+        self.assertEqual(status["phase"], "ready_to_apply")
+        self.assertTrue(status["can_proceed"])
+
+
+class UplinkJobStaleMessageTests(SimpleTestCase):
+    def test_bond_stale_message_is_not_billing_push(self):
+        from core.mikrotik_jobs import stale_error_for_job, stale_max_age_for_job
+
+        err, hint = stale_error_for_job("uplink_bond")
+        self.assertIn("Bond", err)
+        self.assertNotIn("Billing settings push", err)
+        self.assertTrue(hint)
+        self.assertGreaterEqual(stale_max_age_for_job("uplink_bond"), 600)
+
+    def test_multi_isp_stale_message_is_specific(self):
+        from core.mikrotik_jobs import stale_error_for_job
+
+        err, _hint = stale_error_for_job("uplink_smart_balance")
+        self.assertIn("Multi-ISP", err)
+        self.assertNotIn("Billing settings push", err)
+        err2, _ = stale_error_for_job("uplink_failover")
+        self.assertIn("Failover", err2)
 
 
 class HotMultiUplinkApplySimulationTests(SimpleTestCase):

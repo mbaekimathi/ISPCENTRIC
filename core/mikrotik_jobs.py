@@ -23,6 +23,17 @@ NAS_REFRESH_VERIFY_DELAY_SEC = 3.0
 NAS_REFRESH_POST_PUSH_SETTLE_SEC = 2.0
 NAS_REFRESH_HARD_TIMEOUT_SEC = 180.0
 NAS_REFRESH_STALE_SEC = 120.0
+# Bond/failover/balance can flap WAN + tunnel for several minutes while reconnecting.
+UPLINK_JOB_STALE_SEC = 600.0
+UPLINK_JOB_TYPES = frozenset(
+    {
+        "uplink_bond",
+        "uplink_failover",
+        "uplink_balance",
+        "uplink_smart_balance",
+        "clean_uplink",
+    }
+)
 
 JOB_TYPES = (
     "credentials",
@@ -69,6 +80,62 @@ def is_job_stale(job: dict[str, Any] | None, *, max_age_sec: float = NAS_REFRESH
     if stamp is None:
         return True
     return (timezone.now() - stamp).total_seconds() > max_age_sec
+
+
+def stale_max_age_for_job(job_type: str) -> float:
+    if (job_type or "").strip() in UPLINK_JOB_TYPES:
+        return UPLINK_JOB_STALE_SEC
+    return NAS_REFRESH_STALE_SEC
+
+
+def stale_error_for_job(job_type: str) -> tuple[str, str]:
+    """Operator-facing (error, hint) when a background job stops updating."""
+    kind = (job_type or "").strip()
+    if kind == "uplink_bond":
+        return (
+            "Bond apply is taking longer than expected or the worker stopped updating. "
+            "Management often flaps briefly while cables leave the LAN bridge — "
+            "wait, then open MikroTik → Reconnect and retry Apply bonding if needed.",
+            "Keep this page open. If the router stays offline, use Winbox on a customer LAN port.",
+        )
+    if kind in {"uplink_failover", "uplink_balance", "uplink_smart_balance"}:
+        label = {
+            "uplink_failover": "Failover",
+            "uplink_balance": "Load balance",
+            "uplink_smart_balance": "Multi-ISP",
+        }.get(kind, "Uplink")
+        return (
+            f"{label} apply is taking longer than expected or the worker stopped updating. "
+            "Management often flaps briefly while ISP cables leave the LAN bridge — "
+            "wait, then open MikroTik → Reconnect and retry Apply if needed.",
+            "Keep this page open. If the router stays offline, use Winbox on a customer LAN port.",
+        )
+    if kind in UPLINK_JOB_TYPES:
+        return (
+            "Uplink apply stopped responding. The MikroTik may still be reconnecting "
+            "after changing WAN ports.",
+            "Open MikroTik → Reconnect, then retry the uplink apply.",
+        )
+    return (
+        "Billing settings push stopped responding. "
+        "The MikroTik may be offline or the dev server reloaded mid-push.",
+        "Open MikroTik → Reconnect, then retry onboarding or push Hotspot again.",
+    )
+
+
+def active_uplink_apply_job(router_id: int) -> dict[str, Any] | None:
+    """Return the running uplink/bond job, if any (without marking it stale)."""
+    for job_type in UPLINK_JOB_TYPES:
+        payload = _jobs_cache.get(job_cache_key(router_id, job_type))
+        if not isinstance(payload, dict):
+            continue
+        status = (payload.get("status") or "").lower()
+        if status not in {"pending", "running"}:
+            continue
+        if is_job_stale(payload, max_age_sec=stale_max_age_for_job(job_type)):
+            continue
+        return {"job_type": job_type, **payload}
+    return None
 
 
 def set_job(
@@ -129,17 +196,14 @@ def get_job(router_id: int, job_type: str) -> dict[str, Any] | None:
     payload = _jobs_cache.get(job_cache_key(router_id, job_type))
     if not isinstance(payload, dict):
         return None
-    if is_job_stale(payload):
-        stale_error = (
-            "Billing settings push stopped responding. "
-            "The MikroTik may be offline or the dev server reloaded mid-push."
-        )
+    if is_job_stale(payload, max_age_sec=stale_max_age_for_job(job_type)):
+        stale_error, stale_hint = stale_error_for_job(job_type)
         set_job(
             router_id,
             job_type,
             "failed",
             error=stale_error,
-            hint="Open MikroTik → Reconnect, then retry onboarding or push Hotspot again.",
+            hint=stale_hint,
             phase="stale",
         )
         return get_job(router_id, job_type)
@@ -201,6 +265,20 @@ def schedule_mikrotik_job(
         from django.db import close_old_connections, connection
 
         close_old_connections()
+        stop_heartbeat = threading.Event()
+        heartbeat: threading.Thread | None = None
+
+        def _heartbeat_loop() -> None:
+            while not stop_heartbeat.wait(25.0):
+                if not router_id or not job_type:
+                    return
+                touch_job(
+                    router_id,
+                    job_type,
+                    message="Still applying on the MikroTik — keep this page open…",
+                    phase="working",
+                )
+
         if router_id and job_type:
             touch_job(
                 router_id,
@@ -208,6 +286,13 @@ def schedule_mikrotik_job(
                 message="Starting background push…",
                 phase="start",
             )
+            if job_type in UPLINK_JOB_TYPES:
+                heartbeat = threading.Thread(
+                    target=_heartbeat_loop,
+                    name=f"{name}-heartbeat",
+                    daemon=True,
+                )
+                heartbeat.start()
         try:
             result = target()
             if router_id and job_type:
@@ -242,6 +327,7 @@ def schedule_mikrotik_job(
                     phase="failed",
                 )
         finally:
+            stop_heartbeat.set()
             connection.close()
 
     threading.Thread(target=_runner, name=name, daemon=True).start()

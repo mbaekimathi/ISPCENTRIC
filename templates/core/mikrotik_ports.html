@@ -327,6 +327,23 @@
         </select>
       </label>
       <p class="mk-help-note mk-goal-select-hint" data-goal-select-hint></p>
+      <div class="mk-banner mk-uplink-recommendation" data-uplink-recommendation hidden role="status">
+        <div class="mk-uplink-recommendation-copy">
+          <strong data-uplink-recommendation-title></strong>
+          <p data-uplink-recommendation-message></p>
+          <ul class="mk-uplink-candidate-list" data-uplink-candidate-list hidden></ul>
+        </div>
+        <div class="mk-uplink-recommendation-actions">
+          <form method="post" class="mk-inline-form" data-uplink-recommendation-form>
+            {% csrf_token %}
+            <input type="hidden" name="action" value="accept_uplink_recommendation">
+            <button type="submit" class="btn btn-primary btn-sm" data-uplink-recommendation-accept disabled>
+              Use recommendation
+            </button>
+          </form>
+          <p class="mk-help-note" data-uplink-recommendation-ready hidden></p>
+        </div>
+      </div>
       <div class="mk-banner mk-uplink-setup-status" data-uplink-setup-status hidden role="status">
         <strong data-uplink-setup-status-title></strong>
         <p data-uplink-setup-status-message></p>
