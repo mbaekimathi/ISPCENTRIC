@@ -2396,7 +2396,7 @@ class UplinkRecommendationTests(SimpleTestCase):
             router.port_roles.get("ether2"), MikroTikRouter.PortRole.WAN_BACKUP
         )
 
-    def test_auto_assign_clears_unverified_shared_isp(self):
+    def test_auto_assign_keeps_unverified_shared_isp(self):
         from core.views import _auto_assign_multi_isp_roles
 
         router = self._router(
@@ -2418,11 +2418,37 @@ class UplinkRecommendationTests(SimpleTestCase):
                 mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
                 suggested_wan="ether1",
             )
-        self.assertTrue(result["changed"])
-        self.assertNotEqual(
+        self.assertFalse(result.get("changed"))
+        self.assertEqual(
             router.port_roles.get("ether2"), MikroTikRouter.PortRole.WAN_BACKUP
         )
-        self.assertIn("ether2", result.get("message") or result.get("error") or "")
+
+    def test_auto_assign_soft_labels_waiting_shared_isp(self):
+        from core.views import _auto_assign_multi_isp_roles
+
+        router = self._router(
+            wan_interface="ether1",
+            port_roles={"ether1": MikroTikRouter.PortRole.WAN},
+            uplink_ports=["ether1"],
+        )
+        ports = [
+            _port("ether1", uplink_kind="dhcp", uplink_active=True),
+            _port("ether2", running=True, uplink_kind=""),
+        ]
+        with patch.object(MikroTikRouter, "save"):
+            result = _auto_assign_multi_isp_roles(
+                router,
+                ports,
+                mode=MikroTikRouter.UplinkMode.SMART_BALANCE,
+                suggested_wan="ether1",
+            )
+        self.assertTrue(result.get("ok"))
+        self.assertTrue(result.get("changed"))
+        self.assertEqual(result.get("primary"), "ether1")
+        self.assertEqual(result.get("backups"), ["ether2"])
+        self.assertEqual(
+            router.port_roles.get("ether2"), MikroTikRouter.PortRole.WAN_BACKUP
+        )
 
     def test_setup_status_title_ready_to_apply(self):
         from core.views import _build_uplink_setup_status

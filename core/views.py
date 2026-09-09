@@ -3451,85 +3451,99 @@ def _auto_assign_multi_isp_roles(
     )
     primary, backups = _failover_ports_from_roles(router)
     if len(members) < 2:
+        # Keep operator-assigned Shared ISP labels even while DHCP/PPPoE is still
+        # binding — Apply stays blocked until verified, but roles must stick.
         if primary and backups:
-            # Drop Shared ISP labels that are only link-up (not ISP online yet)
-            # so Apply is not blocked on half-ready cables; keep watching them.
-            live_set = set(members)
-            stale = [
-                name
-                for name in backups
-                if name not in live_set
-                and not _port_has_verified_internet(name, live_ports)
-            ]
-            if stale:
-                roles = (
-                    dict(router.port_roles)
-                    if isinstance(router.port_roles, dict)
-                    else {}
-                )
-                by_name = {
-                    (p.get("name") or "").strip(): p
-                    for p in live_ports
-                    if (p.get("name") or "").strip()
-                }
-                for name in stale:
-                    row = by_name.get(name) or {}
-                    roles[name] = (
-                        MikroTikRouter.PortRole.LAN
-                        if row.get("is_bridged") or row.get("is_wireless")
-                        else MikroTikRouter.PortRole.NONE
-                    )
-                kept_backups = [b for b in backups if b not in stale]
-                router.port_roles = roles
-                router.uplink_ports = [primary, *kept_backups] if primary else kept_backups
-                update_fields = ["port_roles", "uplink_ports", "updated_at"]
-                router.save(update_fields=update_fields)
-                waiting = [
-                    c["name"]
-                    for c in _list_uplink_candidates(
-                        live_ports,
-                        suggested_wan=suggested_wan,
-                        saved_wan=router.wan_interface or "",
-                    )
-                    if not c.get("verified")
-                    and c.get("status")
-                    in {"link_up", "waiting_dhcp", "waiting_pppoe"}
-                ]
-                note = (
-                    f"Cleared Shared ISP on {', '.join(stale)} until ISP is online. "
-                    + (
-                        f"Watching {', '.join(waiting[:3])} — will auto-update when ready."
-                        if waiting
-                        else "Plug in a second ISP and wait for DHCP/PPPoE."
-                    )
-                )
-                return {
-                    "ok": False,
-                    "changed": True,
-                    "primary": primary,
-                    "backups": kept_backups,
-                    "message": note,
-                    "error": note,
-                }
             return {
                 "ok": True,
                 "changed": False,
                 "primary": primary,
                 "backups": backups,
             }
+
         waiting = [
             c["name"]
             for c in _list_uplink_candidates(
-                live_ports, suggested_wan=suggested_wan, saved_wan=router.wan_interface or ""
+                live_ports,
+                suggested_wan=suggested_wan,
+                saved_wan=router.wan_interface or "",
             )
             if not c.get("verified")
             and c.get("status") in {"link_up", "waiting_dhcp", "waiting_pppoe"}
         ]
-        verified = _live_isp_member_ports(
-            live_ports,
-            suggested_wan=suggested_wan,
-            saved_wan=router.wan_interface or "",
-        )
+        verified = list(members)
+        if not verified:
+            verified = _live_isp_member_ports(
+                live_ports,
+                suggested_wan=suggested_wan,
+                saved_wan=router.wan_interface or "",
+            )
+
+        # Soft-label: Internet (verified) + best waiting link as Shared ISP so
+        # Step 2 can advance past "set Shared ISP" while we wait for ISP online.
+        soft_primary = (primary or (verified[0] if verified else "")).strip()
+        soft_backup = ""
+        if soft_primary and waiting:
+            soft_backup = next(
+                (name for name in waiting if name != soft_primary),
+                "",
+            )
+        if soft_primary and soft_backup and not backups:
+            roles = (
+                dict(router.port_roles)
+                if isinstance(router.port_roles, dict)
+                else {}
+            )
+            by_name = {
+                (p.get("name") or "").strip(): p
+                for p in live_ports
+                if (p.get("name") or "").strip()
+            }
+            roles[soft_primary] = MikroTikRouter.PortRole.WAN
+            roles[soft_backup] = MikroTikRouter.PortRole.WAN_BACKUP
+            for name, existing in list(roles.items()):
+                if name in {soft_primary, soft_backup}:
+                    continue
+                role = (existing or "").strip().lower()
+                if role in {
+                    MikroTikRouter.PortRole.WAN,
+                    MikroTikRouter.PortRole.WAN_PRIMARY,
+                    MikroTikRouter.PortRole.WAN_BACKUP,
+                    MikroTikRouter.PortRole.BOND,
+                }:
+                    row = by_name.get(name) or {}
+                    roles[name] = (
+                        MikroTikRouter.PortRole.LAN
+                        if row.get("is_bridged") or row.get("is_wireless")
+                        else MikroTikRouter.PortRole.UNUSED
+                    )
+            roles = _fill_non_uplink_customer_roles(
+                roles, live_ports, uplink_names=[soft_primary, soft_backup]
+            )
+            router.port_roles = roles
+            router.wan_interface = soft_primary
+            router.uplink_ports = [soft_primary, soft_backup]
+            router.uplink_mode = mode
+            router.save(
+                update_fields=[
+                    "port_roles",
+                    "wan_interface",
+                    "uplink_ports",
+                    "uplink_mode",
+                    "updated_at",
+                ]
+            )
+            return {
+                "ok": True,
+                "changed": True,
+                "primary": soft_primary,
+                "backups": [soft_backup],
+                "message": (
+                    f"Labeled {soft_primary} as Internet and {soft_backup} as Shared ISP. "
+                    f"Waiting for ISP online on {soft_backup} before Apply."
+                ),
+            }
+
         if verified and waiting:
             return {
                 "ok": False,
@@ -3537,7 +3551,7 @@ def _auto_assign_multi_isp_roles(
                 "error": (
                     f"{verified[0]} is ISP online. "
                     f"{', '.join(waiting[:3])} is linked but waiting for DHCP/PPPoE — "
-                    "we will auto-update when the second ISP is ready."
+                    "set Shared ISP on that port, or wait and we will label it."
                 ),
             }
         return {
@@ -7811,9 +7825,9 @@ def mikrotik_ports(request, router_id: int):
                     if _is_primary_wan_role(existing):
                         if uplink_mode in {
                             MikroTikRouter.UplinkMode.FAILOVER,
-                            MikroTikRouter.UplinkMode.BALANCE,
+                            *_weighted_share_uplink_modes(),
                         }:
-                            # Swap: previous Internet becomes Backup internet.
+                            # Swap: previous Internet becomes Shared ISP / Backup.
                             roles[name] = MikroTikRouter.PortRole.WAN_BACKUP
                             demoted_to_backup.append(name)
                         else:
@@ -7831,7 +7845,7 @@ def mikrotik_ports(request, router_id: int):
 
                 if uplink_mode in {
                     MikroTikRouter.UplinkMode.FAILOVER,
-                    MikroTikRouter.UplinkMode.BALANCE,
+                    *_weighted_share_uplink_modes(),
                 }:
                     backup_ports = [
                         key
@@ -7840,11 +7854,12 @@ def mikrotik_ports(request, router_id: int):
                         == MikroTikRouter.PortRole.WAN_BACKUP
                     ]
                     router.uplink_ports = [port_name, *backup_ports]
-                else:
-                    router.uplink_mode = MikroTikRouter.UplinkMode.SINGLE
+                    update_fields.extend(["wan_interface", "uplink_ports"])
+                elif uplink_mode == MikroTikRouter.UplinkMode.SINGLE:
                     router.uplink_ports = [port_name]
-                    update_fields.append("uplink_mode")
-                update_fields.extend(["wan_interface", "uplink_ports"])
+                    update_fields.extend(["wan_interface", "uplink_ports"])
+                else:
+                    update_fields.append("wan_interface")
 
                 if uplink_mode == MikroTikRouter.UplinkMode.SINGLE and port_name != old_wan:
                     _store_wan_switch_rollback(router, old_wan=old_wan, new_wan=port_name)
@@ -7889,7 +7904,16 @@ def mikrotik_ports(request, router_id: int):
                     if demoted_to_backup:
                         swap_note = (
                             f" Previous Internet ({', '.join(demoted_to_backup)}) "
-                            "moved to Backup internet."
+                            "moved to Shared ISP."
+                            if uplink_mode
+                            in {
+                                MikroTikRouter.UplinkMode.BALANCE,
+                                MikroTikRouter.UplinkMode.SMART_BALANCE,
+                            }
+                            else (
+                                f" Previous Internet ({', '.join(demoted_to_backup)}) "
+                                "moved to Backup internet."
+                            )
                         )
                     apply_mode = (
                         "failover"
