@@ -1147,12 +1147,41 @@ def heal_payment_mpesa_reference(payment) -> str:
     return display_ref
 
 
+def heal_payment_mpesa_phone(payment) -> str:
+    """
+    Resolve the M-Pesa payer phone and persist it onto payment.phone.
+
+    Prefers Payment.phone, then linked STK.phone / callback PhoneNumber.
+    Works for Company Payment Gateway and ISP-owned gateways alike.
+    """
+    from billing.stk import resolve_stk_mpesa_phone
+
+    current = format_customer_phone_display(getattr(payment, "phone", "") or "").strip()
+    if current:
+        return current[:30]
+
+    found = ""
+    for stk in payment.stk_push_requests.all():
+        found = resolve_stk_mpesa_phone(stk)
+        if found:
+            break
+    if not found:
+        return ""
+
+    display = format_customer_phone_display(found)[:30]
+    if display and (payment.phone or "").strip() != display:
+        payment.phone = display
+        payment.save(update_fields=["phone"])
+    return display
+
+
 def create_renewal_invoice_and_payment(
     *,
     customer,
     organization,
     amount,
     reference: str = "",
+    phone: str = "",
     recorded_by=None,
     notes: str = "M-Pesa STK Push subscription renewal",
     invoice_prefix: str = "REN",
@@ -1178,12 +1207,14 @@ def create_renewal_invoice_and_payment(
         paid_at=now,
         notes=notes,
     )
+    paid_phone = format_customer_phone_display(phone or "")[:30]
     payment = Payment.objects.create(
         organization=organization,
         invoice=invoice,
         amount=amount,
         method=payment_method,
         reference=(reference or "")[:100],
+        phone=paid_phone,
         received_at=now,
         recorded_by=recorded_by,
     )

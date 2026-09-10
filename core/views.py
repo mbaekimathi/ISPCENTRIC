@@ -5404,10 +5404,11 @@ def _workspace_day_snapshot(org, *, force: bool = False) -> dict:
         .prefetch_related("stk_push_requests")
         .order_by("-received_at")[:8]
     )
-    from billing.services import heal_payment_mpesa_reference
+    from billing.services import heal_payment_mpesa_phone, heal_payment_mpesa_reference
 
     for pay in recent_payments:
         pay.display_reference = heal_payment_mpesa_reference(pay)
+        pay.display_phone = heal_payment_mpesa_phone(pay)
     attention = customers_needing_renewal_attention(org)
     expired_rows = [row for row in attention if row["attention"] == "expired"]
     expiring_rows = [
@@ -14136,6 +14137,7 @@ def clients_general_usage(request):
             trends_json=json.dumps(trends),
             top_users=trends.get("top_users") or [],
             trends_url=reverse("core:clients_general_usage_trends"),
+            surfing_url=reverse("core:clients_surfing"),
             **router_ctx,
         ),
     )
@@ -14372,10 +14374,11 @@ def client_billing(request, customer_id: int):
         if org
         else []
     )
-    from billing.services import heal_payment_mpesa_reference
+    from billing.services import heal_payment_mpesa_phone, heal_payment_mpesa_reference
 
     for pay in payments:
         pay.display_reference = heal_payment_mpesa_reference(pay)
+        pay.display_phone = heal_payment_mpesa_phone(pay)
     invoice_stats = (
         Invoice.objects.filter(customer=customer, organization=org).aggregate(
             total=Count("id"),
@@ -18873,10 +18876,53 @@ def settings_payments(request):
             page_title="STK Payment Settings",
             page_kicker="Settings",
             page_subtitle=(
-                "Set this ISP's Paybill or Till for manual collections, then choose "
-                "Use Company, Use My Gateway, or company keys with this ISP's shortcode for STK Push."
+                "Set the Paybill or Till shortcode used by Daraja STK Push "
+                "(and manual collections), then choose Use Company, Use My Gateway, "
+                "or company keys with this ISP's shortcode."
             ),
             form=form,
+            stk_status_url=reverse("core:settings_payments_status"),
             **extra,
         ),
     )
+
+
+@client_workspace_required
+@require_http_methods(["GET", "POST"])
+def settings_payments_status(request):
+    """Live-check whether this ISP's STK credentials are accepted by Safaricom."""
+    from accounts.mpesa_daraja import check_stk_configuration, stk_values_for_organization
+
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse(
+            {
+                "ok": False,
+                "configured": False,
+                "status": "error",
+                "summary": "No organization is linked to this account.",
+                "safaricom_verified": False,
+                "checks": [],
+                "checked_live": False,
+            },
+            status=400,
+        )
+
+    draft = None
+    if request.method == "POST":
+        draft = {
+            "daraja_enabled": request.POST.get("daraja_enabled"),
+            "daraja_environment": request.POST.get("daraja_environment"),
+            "mpesa_payment_type": request.POST.get("mpesa_payment_type"),
+            "mpesa_number": request.POST.get("mpesa_number"),
+            "daraja_consumer_key": request.POST.get("daraja_consumer_key"),
+            "daraja_consumer_secret": request.POST.get("daraja_consumer_secret"),
+            "daraja_passkey": request.POST.get("daraja_passkey"),
+        }
+    values = stk_values_for_organization(org, draft=draft, request=request)
+    live = str(request.GET.get("live") or request.POST.get("live") or "1") != "0"
+    result = check_stk_configuration(values, live=live)
+    result["source"] = values.get("source") or ""
+    result["source_label"] = values.get("source_label") or ""
+    result["shortcode"] = values.get("shortcode") or ""
+    return JsonResponse(result)

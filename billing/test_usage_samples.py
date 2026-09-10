@@ -1041,6 +1041,8 @@ class HotspotMergeTests(TestCase):
         self.assertEqual(first["bytes_in"], 1000)
         self.assertEqual(first["bytes_out"], 5000)
         self.assertEqual(first["download_bps"], 3000)
+        self.assertEqual(first["gadgets_connected"], 2)
+        self.assertEqual(first["active_sessions"], 2)
 
         second = merge_hotspot_session_payloads(
             self.customer.pk,
@@ -1069,6 +1071,70 @@ class HotspotMergeTests(TestCase):
         self.assertEqual(second["bytes_in"], 2000)
         self.assertEqual(second["bytes_out"], 8000)
         self.assertEqual(second["download_bps"], 4000)
+
+    def test_live_usage_overlay_marks_active_clients(self):
+        from django.core.cache import cache
+
+        from billing.usage_samples import (
+            _org_live_usage_cache_key,
+            apply_live_usage_overlay,
+            org_usage_payload,
+        )
+
+        cache.set(
+            _org_live_usage_cache_key(self.org.pk),
+            {
+                "ok": True,
+                "at": timezone.now().isoformat(),
+                "pppoe": {},
+                "hotspot": {
+                    self.customer.pk: {
+                        "session_active": True,
+                        "download_bps": 2_500_000,
+                        "upload_bps": 120_000,
+                        "gadgets": 2,
+                    }
+                },
+            },
+            60,
+        )
+        payload = org_usage_payload(
+            self.org,
+            hours=6,
+            service="hotspot",
+            top_n=0,
+            use_cache=False,
+            auto_widen=False,
+        )
+        row = next(
+            u for u in payload["top_users"] if u["customer_id"] == self.customer.pk
+        )
+        self.assertTrue(row["live_active"])
+        self.assertTrue(row["latest_active"])
+        self.assertEqual(row["gadgets_connected"], 2)
+        self.assertEqual(row["live_download_bps"], 2_500_000)
+        self.assertEqual(payload["live"]["clients_online"], 1)
+        self.assertEqual(payload["summary"]["gadgets_online"], 2)
+
+        offline = apply_live_usage_overlay(
+            {
+                "ok": True,
+                "service": "hotspot",
+                "top_users": [
+                    {
+                        "customer_id": self.customer.pk,
+                        "latest_active": True,
+                        "gadgets_connected": 3,
+                        "devices_connected": 3,
+                    }
+                ],
+                "summary": {"clients_online": 1, "gadgets_online": 3},
+            },
+            self.org,
+            service="hotspot",
+        )
+        # Fresh live map with only this customer online keeps them online.
+        self.assertTrue(offline["top_users"][0]["live_active"])
 
     def test_stale_sample_detection(self):
         from billing.usage_samples import client_usage_sample_is_stale

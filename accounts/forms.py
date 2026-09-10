@@ -1248,7 +1248,7 @@ class OrganizationEditForm(forms.ModelForm):
             "daraja_enabled": "Enable Daraja STK Push",
             "daraja_environment": "STK gateway",
             "mpesa_payment_type": "Receive via",
-            "mpesa_number": "Paybill / Till number",
+            "mpesa_number": "Paybill / Till / STK shortcode",
             "mpesa_account": "Custom account value",
             "daraja_consumer_key": "Consumer key",
             "daraja_consumer_secret": "Consumer secret",
@@ -1264,8 +1264,14 @@ class OrganizationEditForm(forms.ModelForm):
                 "Use My Gateway: enter your consumer key, secret, and passkey. "
                 "Company keys + my shortcode: company credentials with this ISP's Paybill/Till."
             ),
-            "mpesa_payment_type": "Choose Paybill or Buy Goods Till to receive subscription money.",
-            "mpesa_number": "Your Paybill or Till shortcode that receives M-Pesa payments.",
+            "mpesa_payment_type": (
+                "Choose Paybill or Buy Goods Till. With Use Company, this follows "
+                "the Company Payment Gateway shortcode used by Daraja STK Push."
+            ),
+            "mpesa_number": (
+                "Daraja STK Push Business Shortcode. Use My Gateway and Company keys + "
+                "my shortcode use this number; Use Company uses the company gateway shortcode."
+            ),
             "mpesa_account": (
                 "Enter the Account name clients should type for manual Paybill payments "
                 "(your name, company name, or any reference)."
@@ -1435,6 +1441,16 @@ class OrganizationEditForm(forms.ModelForm):
                 "Use Company needs Company Payment Gateway from IT Support, "
                 "or switch to Use My Gateway / Company keys + my shortcode.",
             )
+            return
+
+        # Use Company STK shortcode is the company gateway shortcode — keep
+        # Paybill/Till in sync so manual receive matches Daraja STK Push.
+        platform_type = (gateway.payment_type or "").strip()
+        platform_shortcode = (gateway.shortcode or "").strip()
+        if platform_type:
+            cleaned["mpesa_payment_type"] = platform_type
+        if platform_shortcode:
+            cleaned["mpesa_number"] = platform_shortcode
 
     def clean(self):
         cleaned = super().clean()

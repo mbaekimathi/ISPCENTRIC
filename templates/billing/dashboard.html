@@ -379,6 +379,7 @@
               <col class="col-service">
               <col class="col-amount">
               <col class="col-method">
+              <col class="col-phone">
               <col class="col-ref">
               <col class="col-invoice">
             </colgroup>
@@ -389,6 +390,7 @@
                 <th scope="col">Service</th>
                 <th scope="col">Amount</th>
                 <th scope="col">Method</th>
+                <th scope="col">Paid from</th>
                 <th scope="col">M-Pesa / Ref</th>
                 <th scope="col">Invoice</th>
               </tr>
@@ -406,7 +408,15 @@
                     {% if pay.invoice and pay.invoice.customer %}
                       <a class="billing-dash-client" href="{% url 'core:client_detail' pay.invoice.customer.pk %}">
                         <strong class="billing-dash-cell-primary">{{ pay.invoice.customer.full_name }}</strong>
-                        <small class="billing-dash-cell-secondary">{{ pay.invoice.customer.account_number }}</small>
+                        {% if pay.invoice.customer.service_type == "pppoe" %}
+                          <small class="billing-dash-cell-secondary billing-dash-account">
+                            {{ pay.invoice.customer.phone|default:pay.invoice.customer.account_number }}
+                          </small>
+                        {% else %}
+                          <small class="billing-dash-cell-secondary billing-dash-account">
+                            {{ pay.invoice.customer.account_number }}
+                          </small>
+                        {% endif %}
                       </a>
                     {% else %}
                       <span class="billing-dash-muted">—</span>
@@ -431,6 +441,15 @@
                         <span class="billing-dash-cell-secondary">by {{ pay.recorder_label }}</span>
                       {% endif %}
                     </div>
+                  </td>
+                  <td data-label="Paid from" class="billing-dash-col-phone">
+                    {% if pay.method == "mpesa" and pay.display_phone %}
+                      <span class="billing-dash-account">{{ pay.display_phone }}</span>
+                    {% elif pay.method == "mpesa" %}
+                      <span class="billing-dash-muted">—</span>
+                    {% else %}
+                      <span class="billing-dash-muted">—</span>
+                    {% endif %}
                   </td>
                   <td data-label="M-Pesa / Ref" class="billing-dash-col-ref">
                     {% if pay.method == "cash" %}

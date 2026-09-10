@@ -23,9 +23,9 @@
         </div>
         <p class="clients-usage-workspace-lead">
           {% if active_tab == 'hotspot' %}
-            Hotspot traffic, presence, and top users for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+            Live Hotspot surfing plus traffic history for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
           {% else %}
-            PPPoE traffic, presence, and top users for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
+            Live PPPoE sessions plus traffic history for {{ range_label|default:trend_hours }}{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %}.
           {% endif %}
         </p>
         <p class="clients-usage-workspace-summary">
@@ -163,7 +163,7 @@
           </p>
           <h2>{% if active_tab == 'hotspot' %}Hotspot summary{% else %}PPPoE summary{% endif %}</h2>
           <p class="clients-usage-section-meta" data-usage-summary-copy>
-            Live and sampled totals for the selected window.
+            Live MikroTik presence plus sampled totals for the selected window.
           </p>
         </div>
       </header>
@@ -173,9 +173,13 @@
           <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2.25c-3.6 0-8.25 1.8-8.25 5.4V21h16.5v-1.35c0-3.6-4.65-5.4-8.25-5.4Z"/></svg></span>Clients</dt>
           <dd><strong data-sum="clients">—</strong><span><span data-sum="clients-tracked">—</span> with samples in this window</span></dd>
         </div>
+        <div class="client-kv client-usage-stat" data-ico="surf">
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Surfing now</dt>
+          <dd><strong data-sum="surfing-now">—</strong><span><span data-sum="online-now">—</span> dialed on MikroTik</span></dd>
+        </div>
         <div class="client-kv client-usage-stat" data-ico="uptime">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Online now</dt>
-          <dd><strong data-sum="online-now">—</strong><span><span data-sum="online">—</span> of meaningful samples online</span></dd>
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm1 10.6 3.5 2-.8 1.4L11 13V7h2Z"/></svg></span>Window uptime</dt>
+          <dd><strong data-sum="online">—</strong><span>of meaningful samples online</span></dd>
         </div>
         <div class="client-kv client-usage-stat" data-ico="down">
           <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 4h2v10.2l3.3-3.3 1.4 1.4L12 19l-5.7-5.7 1.4-1.4L11 14.2Z"/></svg></span>Peak download</dt>
@@ -191,8 +195,8 @@
         </div>
         {% if active_tab == 'hotspot' %}
         <div class="client-kv client-usage-stat" data-ico="gadgets">
-          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets online</dt>
-          <dd><strong data-sum="gadgets">—</strong><span>Connected right now</span></dd>
+          <dt><span class="client-row-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M4 6h16v12H4Zm2 2v8h12V8Z"/></svg></span>Gadgets surfing</dt>
+          <dd><strong data-sum="gadgets">—</strong><span>Active Hotspot sessions now</span></dd>
         </div>
         {% endif %}
       </dl>
@@ -280,7 +284,7 @@
           </span>
           <div class="clients-usage-users-copy">
             <h2>{% if active_tab == 'hotspot' %}Hotspot users{% else %}PPPoE users{% endif %} <span class="clients-usage-users-count" data-users-count>{% if trends.users_total_count %}{{ trends.users_total_count }}{% else %}{{ top_users|length }}{% endif %}</span></h2>
-            <p class="panel-sub" data-users-sort-copy>Highest data usage first{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %} — peak/low times, downtime events{% if active_tab == 'hotspot' %}, and gadgets online{% endif %}.</p>
+            <p class="panel-sub" data-users-sort-copy>Highest data usage first{% if router_filter_label %} on {{ router_filter_label }}{% elif clients_router_param == "none" %} for unassigned clients{% endif %} — live surfing status, peak/low times, downtime events{% if active_tab == 'hotspot' %}, and gadgets surfing now{% endif %}.</p>
           </div>
         </div>
         <div class="clients-usage-users-sort" role="group" aria-label="Sort users">
@@ -290,7 +294,7 @@
             <option value="data-asc">Lowest usage first</option>
             <option value="name-asc">Client A–Z</option>
             <option value="name-desc">Client Z–A</option>
-            <option value="online-desc">Online first</option>
+            <option value="online-desc">Surfing first</option>
             <option value="downtime-desc">Most downtimes</option>
           </select>
         </div>
@@ -312,6 +316,7 @@
               Data used <span class="clients-usage-sort-ind" aria-hidden="true">↓</span>
             </button>
           </th>
+          <th scope="col">Live rate</th>
           <th scope="col">Peak</th>
           <th scope="col">Lowest</th>
           <th scope="col">
@@ -330,7 +335,7 @@
       </thead>
       <tbody data-top-users-body data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
         {% for user in top_users %}
-          <tr class="clients-usage-user-row" data-level="{{ user.usage_level|default:'Idle'|lower }}" style="--i:{{ forloop.counter0 }}">
+          <tr class="clients-usage-user-row" data-customer-id="{{ user.customer_id }}" data-level="{{ user.usage_level|default:'Idle'|lower }}" style="--i:{{ forloop.counter0 }}">
             <td data-label="#">
               <span class="clients-usage-rank{% if user.rank == 1 %} is-top-1{% elif user.rank == 2 %} is-top-2{% elif user.rank == 3 %} is-top-3{% endif %}">{{ user.rank }}</span>
             </td>
@@ -359,6 +364,12 @@
                 <span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>
               </div>
             </td>
+            <td data-label="Live rate">
+              <div class="clients-usage-rate-cell clients-usage-live-rate" data-live-rate>
+                <strong data-live-down data-bps="{{ user.live_download_bps|default:0 }}">{% if user.live_active %}—{% else %}—{% endif %}</strong>
+                <small data-live-up data-bps="{{ user.live_upload_bps|default:0 }}"></small>
+              </div>
+            </td>
             <td data-label="Peak">
               <div class="clients-usage-rate-cell">
                 <strong>{% if user.prime_at_label %}{{ user.prime_at_label }}{% else %}—{% endif %}</strong>
@@ -376,18 +387,22 @@
             </td>
             {% if active_tab == 'hotspot' %}
               <td data-label="Gadgets">
-                <span class="clients-usage-gadgets{% if user.gadgets_connected %} is-active{% endif %}">{{ user.gadgets_connected|default:0 }}</span>
+                <span class="clients-usage-gadgets{% if user.gadgets_connected %} is-active{% endif %}" data-gadgets>{{ user.gadgets_connected|default:0 }}</span>
               </td>
             {% endif %}
             <td data-label="Status">
-              <span class="clients-usage-online{% if user.latest_active %} is-on{% else %} is-off{% endif %}">
+              <span
+                class="clients-usage-online clients-surf-badge {% if user.access_state %}is-{{ user.access_state }}{% elif user.live_active or user.latest_active %}is-surfing{% else %}is-disconnected{% endif %}"
+                data-usage-status
+                title="{{ user.access_label|default:user.live_label|default:'' }}"
+              >
                 <span class="clients-usage-online-dot" aria-hidden="true"></span>
-                {% if user.latest_active %}Online{% else %}Offline{% endif %}
+                <span data-usage-status-label>{% if user.access_label %}{{ user.access_label }}{% elif user.live_active or user.latest_active %}Surfing{% else %}Offline{% endif %}</span>
               </span>
               <small class="clients-usage-online-ratio">{{ user.online_ratio|default:0 }}% uptime</small>
             </td>
             <td data-label="">
-              <a class="clients-usage-view-btn" href="{% url 'core:client_usage_analysis' user.customer_id %}">
+              <a class="clients-usage-view-btn" href="{% url 'core:client_usage_analysis' user.customer_id %}?{{ usage_filter_qs }}">
                 <span>Usage</span>
                 <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
               </a>
@@ -395,7 +410,7 @@
           </tr>
         {% empty %}
           <tr data-empty-row>
-            <td colspan="{% if active_tab == 'hotspot' %}10{% else %}9{% endif %}">
+            <td colspan="{% if active_tab == 'hotspot' %}11{% else %}10{% endif %}">
               <div class="clients-usage-users-empty">
                 <span class="clients-usage-users-empty-ico" aria-hidden="true">
                   {% if active_tab == 'hotspot' %}
@@ -431,6 +446,7 @@
   var tab = root.getAttribute("data-tab") || "pppoe";
   var routerFilter = root.getAttribute("data-router") || "";
   var rangeLabel = root.getAttribute("data-range-label") || "";
+  var surfingUrl = "{{ surfing_url|default:'/app/clients/surfing/'|escapejs }}";
   var showGadgets = tab === "hotspot";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
@@ -440,6 +456,7 @@
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
+  var surfInFlight = false;
   var renderToken = 0;
   var FIRST_PAINT = 20;
   var CHUNK = 30;
@@ -447,15 +464,26 @@
   var usersTotalHint = 0;
   var usersExpectMore = false;
   var sortMode = "data-desc";
+  var surfById = {};
 
   var SORT_COPY = {
     "data-desc": "Highest data usage first",
     "data-asc": "Lowest data usage first",
     "name-asc": "Clients A–Z",
     "name-desc": "Clients Z–A",
-    "online-desc": "Online clients first",
+    "online-desc": "Surfing clients first",
     "downtime-desc": "Most downtimes first"
   };
+
+  function accessRank(user) {
+    var state = String((user && (user.access_state || user.live_state)) || "").toLowerCase();
+    if (user && user.access_state === "surfing") return 3;
+    if (state === "surfing") return 3;
+    if (user && user.latest_active) return 2;
+    if (state === "not_surfing") return 1;
+    if (state === "expired") return 0;
+    return user && user.live_active ? 2 : 0;
+  }
 
   function applySort(users) {
     var list = (users || []).slice();
@@ -467,8 +495,8 @@
       var bn = String((b && b.full_name) || "").toLowerCase();
       var ad = Number((a && a.downtime_count) || 0);
       var bd = Number((b && b.downtime_count) || 0);
-      var ao = (a && a.latest_active) ? 1 : 0;
-      var bo = (b && b.latest_active) ? 1 : 0;
+      var ao = accessRank(a);
+      var bo = accessRank(b);
       if (mode === "data-asc") {
         if (ab !== bb) return ab - bb;
         return an.localeCompare(bn);
@@ -485,7 +513,6 @@
         if (ab !== bb) return bb - ab;
         return an.localeCompare(bn);
       }
-      // data-desc (default): highest usage first
       if (ab !== bb) return bb - ab;
       return an.localeCompare(bn);
     });
@@ -593,12 +620,34 @@
     if (countEl && n != null) countEl.textContent = String(n);
   }
 
+  function statusMeta(user) {
+    var state = String((user && (user.access_state || user.live_state)) || "").toLowerCase();
+    var label = (user && (user.access_label || user.live_label)) || "";
+    if (user && user.access_state) {
+      state = String(user.access_state).toLowerCase();
+      label = user.access_label || label;
+    } else if (user && (user.live_active || user.latest_active)) {
+      state = "surfing";
+      label = label || "Surfing";
+    } else {
+      state = state === "offline" ? "disconnected" : (state || "disconnected");
+      label = label || "Offline";
+    }
+    if (!label) {
+      if (state === "surfing") label = "Surfing";
+      else if (state === "not_surfing") label = "Not surfing";
+      else if (state === "expired") label = "Expired";
+      else label = "Offline";
+    }
+    return { state: state, label: label, title: (user && user.access_reason) || label };
+  }
+
   function rowHtml(user, idx) {
     var bytes = user.data_used_bytes || user.peak_session_bytes || 0;
     var level = user.usage_level || "Idle";
     var levelKey = String(level).toLowerCase();
     var detail = "/app/clients/" + user.customer_id + "/";
-    var usage = "/app/clients/" + user.customer_id + "/usage-analysis/";
+    var usage = "/app/clients/" + user.customer_id + "/usage-analysis/" + (filterQs ? ("?" + filterQs) : "");
     var rankClass = user.rank === 1 ? " is-top-1" : user.rank === 2 ? " is-top-2" : user.rank === 3 ? " is-top-3" : "";
     var initialLetter = esc((user.full_name || "?").slice(0, 1).toUpperCase());
     var meta = '<span class="clients-usage-user-account">' + esc(user.account_number || "") + "</span>";
@@ -610,8 +659,11 @@
       '<span class="clients-usage-user-devices' + (deviceCount ? " is-active" : "") + '">' +
       esc(deviceCount) + " device" + (deviceCount === 1 ? "" : "s") +
       "</span>";
+    var status = statusMeta(user);
+    var liveDown = Number(user.live_download_bps || 0) || 0;
+    var liveUp = Number(user.live_upload_bps || 0) || 0;
     return (
-      '<tr class="clients-usage-user-row" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
+      '<tr class="clients-usage-user-row" data-customer-id="' + esc(user.customer_id) + '" data-level="' + esc(levelKey) + '" style="--i:' + idx + '">' +
         '<td data-label="#"><span class="clients-usage-rank' + rankClass + '">' + esc(user.rank) + "</span></td>" +
         '<td data-label="Client"><a class="clients-usage-user-link" href="' + detail + '">' +
           '<span class="clients-avatar" aria-hidden="true">' + initialLetter + "</span>" +
@@ -624,6 +676,9 @@
           '<strong class="clients-usage-data-value" data-bytes="' + esc(bytes) + '">—</strong>' +
           '<span class="clients-usage-data-bar" aria-hidden="true"><span class="clients-usage-data-bar-fill"></span></span>' +
         "</div></td>" +
+        '<td data-label="Live rate"><div class="clients-usage-rate-cell clients-usage-live-rate" data-live-rate>' +
+          '<strong data-live-down data-bps="' + esc(liveDown) + '">—</strong>' +
+          '<small data-live-up data-bps="' + esc(liveUp) + '"></small></div></td>' +
         '<td data-label="Peak"><div class="clients-usage-rate-cell">' +
           "<strong>" + esc(user.prime_at_label || "—") + "</strong>" +
           '<small data-bps="' + esc(user.prime_download_bps || 0) + '">—</small></div></td>' +
@@ -632,12 +687,12 @@
           '<small data-bps="' + esc(user.lowest_download_bps || 0) + '">—</small></div></td>' +
         '<td data-label="Downtimes"><span class="clients-usage-downtime' + (user.downtime_count ? " is-warn" : "") + '">' + esc(user.downtime_count || 0) + "</span></td>" +
         (showGadgets
-          ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '">' + esc(user.gadgets_connected || 0) + "</span></td>")
+          ? ('<td data-label="Gadgets"><span class="clients-usage-gadgets' + (user.gadgets_connected ? " is-active" : "") + '" data-gadgets">' + esc(user.gadgets_connected || 0) + "</span></td>")
           : "") +
         '<td data-label="Status">' +
-          '<span class="clients-usage-online' + (user.latest_active ? " is-on" : " is-off") + '">' +
+          '<span class="clients-usage-online clients-surf-badge is-' + esc(status.state) + '" data-usage-status title="' + esc(status.title) + '">' +
             '<span class="clients-usage-online-dot" aria-hidden="true"></span>' +
-            (user.latest_active ? "Online" : "Offline") +
+            '<span data-usage-status-label>' + esc(status.label) + "</span>" +
           "</span>" +
           '<small class="clients-usage-online-ratio">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "% uptime</small>" +
         "</td>" +
@@ -665,7 +720,7 @@
     if (!body) return;
     opts = opts || {};
     users = applySort(users || []);
-    var cols = showGadgets ? 10 : 9;
+    var cols = showGadgets ? 11 : 10;
     var token = ++renderToken;
     var totalHint = opts.totalHint != null ? opts.totalHint : users.length;
 
@@ -737,13 +792,40 @@
     });
     document.querySelectorAll("[data-bps]").forEach(function (el) {
       var n = Number(el.getAttribute("data-bps")) || 0;
+      if (el.hasAttribute("data-live-down")) {
+        el.textContent = n > 0 ? ("↓ " + fmtBps(n)) : "—";
+        return;
+      }
+      if (el.hasAttribute("data-live-up")) {
+        el.textContent = n > 0 ? ("↑ " + fmtBps(n)) : "";
+        return;
+      }
       el.textContent = n > 0 ? fmtBps(n) : "";
     });
+  }
+
+  function applySurfOverlay(users) {
+    if (!users || !users.length) return users;
+    users.forEach(function (user) {
+      var row = surfById[user.customer_id] || surfById[String(user.customer_id)];
+      if (!row) return;
+      user.access_state = row.state || "";
+      user.access_label = row.label || "";
+      user.access_reason = row.reason || "";
+      user.live_active = !!row.session_online;
+      if (row.surfing) {
+        user.latest_active = true;
+      } else if (row.state === "disconnected" || row.state === "expired" || !row.session_online) {
+        user.latest_active = false;
+      }
+    });
+    return users;
   }
 
   function applySummary(data, opts) {
     opts = opts || {};
     var summary = (data && data.summary) || {};
+    var live = (data && data.live) || {};
     var summaryCopy = document.querySelector("[data-usage-summary-copy]");
     var serviceLabel = showGadgets ? "Hotspot" : "PPPoE";
     var routerName = (data && data.router_name) || "";
@@ -752,16 +834,19 @@
       : ((data && data.router_filter === "none") ? " for unassigned clients" : "");
     if (summaryCopy) {
       summaryCopy.textContent =
-        serviceLabel + " analytics for the last " + (data.range_label || rangeLabel) + routerSuffix + ".";
+        serviceLabel + " live surfing + analytics for " + (data.range_label || rangeLabel) + routerSuffix + ".";
     }
     setSum("clients", summary.clients_total != null ? summary.clients_total : (summary.clients_tracked || "0"));
     setSum("clients-tracked", summary.clients_tracked != null ? summary.clients_tracked : "0");
-    setSum("online-now", summary.clients_online != null ? summary.clients_online : "0");
+    var dialed = live.clients_online != null ? live.clients_online : (summary.clients_online != null ? summary.clients_online : 0);
+    var surfingNow = summary.clients_surfing != null ? summary.clients_surfing : dialed;
+    setSum("surfing-now", surfingNow);
+    setSum("online-now", dialed);
     setSum("online", (summary.online_ratio != null ? summary.online_ratio : 0) + "%");
     setSum("peak-down", fmtBps(summary.peak_download_bps));
     setSum("data", fmtBytes(summary.data_used_bytes));
     if (showGadgets) {
-      setSum("gadgets", summary.gadgets_online != null ? summary.gadgets_online : "0");
+      setSum("gadgets", live.gadgets_online != null ? live.gadgets_online : (summary.gadgets_online != null ? summary.gadgets_online : "0"));
     }
     setSum("top-user", summary.top_user_name || "—");
     setSum("top-user-data", summary.top_user_name
@@ -905,10 +990,17 @@
     charts.throughput.update("none");
     charts.data.update("none");
     charts.top.update("none");
+    var users = applySurfOverlay(((data && data.top_users) || []).slice());
+    var surfingCount = 0;
+    users.forEach(function (u) {
+      if (u.access_state === "surfing" || (!u.access_state && u.latest_active)) surfingCount += 1;
+    });
+    if (data && data.summary) {
+      data.summary.clients_surfing = surfingCount;
+    }
     applySummary(data, opts);
-    var users = (data && data.top_users) || [];
     var totalHint = (data && (data.users_total_count || (data.summary && data.summary.clients_total))) || users.length;
-    usersCache = users.slice();
+    usersCache = users;
     usersTotalHint = totalHint;
     usersExpectMore = !!opts.expectMore;
     renderUsers(usersCache, {
@@ -916,6 +1008,42 @@
       expectMore: usersExpectMore,
       totalHint: usersTotalHint
     });
+  }
+
+  function loadSurfing(forceRefresh) {
+    if (!surfingUrl || surfInFlight) return Promise.resolve(null);
+    surfInFlight = true;
+    var url = surfingUrl + "?service=" + encodeURIComponent(tab);
+    if (forceRefresh) url += "&refresh=1";
+    return fetch(url, {
+      headers: { "Accept": "application/json", "X-Requested-With": "XMLHttpRequest" },
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        surfById = {};
+        ((data && data.clients) || []).forEach(function (row) {
+          if (!row || row.id == null) return;
+          surfById[row.id] = row;
+        });
+        if (usersCache.length) {
+          usersCache = applySurfOverlay(usersCache);
+          var surfingCount = 0;
+          usersCache.forEach(function (u) {
+            if (u.access_state === "surfing") surfingCount += 1;
+          });
+          setSum("surfing-now", surfingCount);
+          renderUsers(usersCache, {
+            progressive: false,
+            expectMore: usersExpectMore,
+            totalHint: usersTotalHint || usersCache.length
+          });
+        }
+        return data;
+      })
+      .catch(function () { return null; })
+      .finally(function () { surfInFlight = false; });
   }
 
   function loadTrends(forceRefresh, opts) {
@@ -940,7 +1068,7 @@
           loading: false,
           keepStamp: !!opts.keepStampAfter
         });
-        return data;
+        return loadSurfing(!!forceRefresh).then(function () { return data; });
       })
       .catch(function () { return null; })
       .finally(function () { inFlight = false; });
@@ -957,6 +1085,7 @@
       loading: true
     });
     formatTableCells();
+    loadSurfing(false);
 
     var chain = Promise.resolve();
     if (partial) {
@@ -1012,8 +1141,12 @@
     });
   }
   setInterval(function () { loadTrends(false); }, 60000);
+  setInterval(function () { loadSurfing(false); }, 15000);
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) loadTrends(false);
+    if (!document.hidden) {
+      loadTrends(false);
+      loadSurfing(false);
+    }
   });
 })();
 </script>

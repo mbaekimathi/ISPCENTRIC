@@ -16,7 +16,7 @@ from core.views import client_page_context, resolve_organization
 
 from .forms import BillingPackageRegisterForm
 from .models import BillingPlan, Customer, Invoice, Payment, StkPushRequest
-from .services import customers_needing_renewal_attention, heal_payment_mpesa_reference
+from .services import customers_needing_renewal_attention, heal_payment_mpesa_phone, heal_payment_mpesa_reference
 from .stk import refresh_stk_status, start_subscription_stk_payment
 
 _REVENUE_RANGE_CHOICES = ("time", "day", "period", "month", "year")
@@ -631,6 +631,7 @@ def dashboard(request):
         )
         for pay in payments:
             pay.display_reference = heal_payment_mpesa_reference(pay)
+            pay.display_phone = heal_payment_mpesa_phone(pay)
             recorder = pay.recorded_by
             if recorder is not None:
                 pay.recorder_label = (

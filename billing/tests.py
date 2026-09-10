@@ -2778,6 +2778,68 @@ class BillingDashboardPaymentDisplayTests(TestCase):
         pay_row = response.context["payments"][0]
         self.assertEqual(pay_row.display_reference, "REALDASH01")
         self.assertEqual(pay_row.invoice.invoice_number, "REN-DASH-MPESA-1")
+        from billing.services import format_customer_phone_display
+
+        expected_phone = format_customer_phone_display(self.customer.phone)
+        self.assertEqual(pay_row.display_phone, expected_phone)
+        self.assertContains(response, "Paid from")
+        payment.refresh_from_db()
+        self.assertEqual(payment.phone, expected_phone)
+
+    def test_billing_dashboard_shows_full_hotspot_account_and_pppoe_phone(self):
+        from datetime import date
+
+        from billing.models import Customer, Invoice, Payment
+
+        hotspot = Customer.objects.create(
+            organization=self.org,
+            full_name="Hotspot device AA:BB",
+            phone="",
+            account_number="HOT-3-B83A08682888",
+            service_type=Customer.ServiceType.HOTSPOT,
+            status=Customer.Status.ACTIVE,
+            plan=self.plan,
+        )
+        inv_h = Invoice.objects.create(
+            organization=self.org,
+            customer=hotspot,
+            invoice_number="REN-DASH-HOT-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        Payment.objects.create(
+            organization=self.org,
+            invoice=inv_h,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="HOTREF01",
+            phone="0712345678",
+        )
+        inv_p = Invoice.objects.create(
+            organization=self.org,
+            customer=self.customer,
+            invoice_number="REN-DASH-PPP-1",
+            amount=self.plan.price,
+            status=Invoice.Status.PAID,
+            due_date=date.today(),
+        )
+        Payment.objects.create(
+            organization=self.org,
+            invoice=inv_p,
+            amount=self.plan.price,
+            method=Payment.Method.MPESA,
+            reference="PPPREF01",
+            phone="0799887766",
+        )
+
+        self.client.force_login(self.owner)
+        response = self.client.get("/billing/dashboard/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "HOT-3-B83A08682888")
+        self.assertContains(response, self.customer.phone)
+        self.assertContains(response, "0712345678")
+        self.assertContains(response, "0799887766")
 
     def test_billing_dashboard_heals_receipt_from_raw_callback(self):
         """Dashboard must persist M-Pesa refs recovered from STK raw (any gateway)."""

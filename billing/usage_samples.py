@@ -6,6 +6,7 @@ import math
 import re
 from calendar import monthrange
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from datetime import date, datetime, time, timedelta, timezone as dt_timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -20,7 +21,9 @@ _SAMPLE_MIN_INTERVAL = 25  # seconds between persisted samples per client
 _OFFLINE_SAMPLE_MIN_INTERVAL = 300  # avoid flooding zeros when clients are offline
 _ORG_SAMPLE_TTL = 45  # seconds between org-wide MikroTik sweeps
 _ORG_PAYLOAD_TTL = 20  # seconds for aggregated chart payloads
-_ORG_PAYLOAD_CACHE_VERSION = "v6"  # bump when payload shape / sampling changes
+_ORG_PAYLOAD_CACHE_VERSION = "v7"  # bump when payload shape / sampling changes
+_ORG_LIVE_USAGE_TTL = 120  # NAS presence snapshot after each org sweep
+_ORG_DEVICE_TOUCH_TTL = 60  # throttle CustomerDevice last_seen updates
 _CLIENT_TREND_TTL = 20  # short cache for per-client chart payloads
 _CLIENT_TREND_CACHE_VERSION = "v5"  # bump when payload shape changes
 _CLIENT_TREND_MAX_POINTS = 48  # hard cap on chart buckets
@@ -570,6 +573,7 @@ def merge_hotspot_session_payloads(
     cache.set(
         synth_key, {"bytes_in": synth_in, "bytes_out": synth_out}, _HOTSPOT_SYNTH_TTL
     )
+    active_sessions = len(active)
     return {
         "ok": True,
         "session_active": True,
@@ -579,7 +583,142 @@ def merge_hotspot_session_payloads(
         "upload_bps": peak_up or None,
         "address": address,
         "uptime_raw": uptime_raw,
+        "active_sessions": active_sessions,
+        "gadgets_connected": active_sessions,
     }
+
+
+def _org_live_usage_cache_key(organization_id: int) -> str:
+    return f"org_live_usage:v1:{int(organization_id)}"
+
+
+def get_org_live_usage(organization) -> dict[str, Any]:
+    """Latest NAS presence snapshot from sample_organization_usage (cache)."""
+    if not organization or not getattr(organization, "pk", None):
+        return {"ok": False, "at": "", "pppoe": {}, "hotspot": {}}
+    cached = cache.get(_org_live_usage_cache_key(organization.pk))
+    if isinstance(cached, dict):
+        return cached
+    return {"ok": False, "at": "", "pppoe": {}, "hotspot": {}}
+
+
+def _touch_hotspot_devices_from_sessions(
+    organization, mac_to_customer: dict[str, Customer]
+) -> None:
+    """Refresh CustomerDevice.last_seen_at for MACs currently on /ip/hotspot/active."""
+    if not organization or not mac_to_customer:
+        return
+    touch_key = f"org_device_touch:{organization.pk}"
+    if cache.get(touch_key):
+        return
+    cache.set(touch_key, 1, _ORG_DEVICE_TOUCH_TTL)
+    try:
+        from billing.devices import ensure_customer_device, normalize_device_mac
+    except Exception:
+        return
+    for mac, customer in mac_to_customer.items():
+        try:
+            ensure_customer_device(customer, normalize_device_mac(mac))
+        except Exception:
+            continue
+
+
+def apply_live_usage_overlay(
+    payload: dict[str, Any],
+    organization,
+    *,
+    service: str = "",
+    override_status: bool = True,
+    override_gadgets: bool = True,
+) -> dict[str, Any]:
+    """
+    Merge the latest MikroTik presence snapshot into an org usage payload.
+
+    Historical charts/bytes stay sample-based; Status / live rates reflect who
+    is actually dialed or on Hotspot right now. Gadgets use live active-session
+    counts when a client is online; otherwise historical linked/seen counts stay.
+    """
+    if not isinstance(payload, dict) or not organization:
+        return payload
+    service = _normalize_usage_service(service or payload.get("service") or "")
+    live = get_org_live_usage(organization)
+    service_key = service or "pppoe"
+    live_map = live.get(service_key) if isinstance(live.get(service_key), dict) else {}
+    if not isinstance(live_map, dict):
+        live_map = {}
+    has_live = bool(live.get("ok"))
+
+    surfing_now = 0
+    gadgets_now = 0
+    top_users = payload.get("top_users") or []
+    for user in top_users:
+        if not isinstance(user, dict):
+            continue
+        cid = int(user.get("customer_id") or 0)
+        entry = live_map.get(cid) or live_map.get(str(cid)) or {}
+        if not isinstance(entry, dict):
+            entry = {}
+        # Without a fresh NAS snapshot, keep historical sample status.
+        if not has_live:
+            user.setdefault("live_active", bool(user.get("latest_active")))
+            user.setdefault("live_download_bps", 0)
+            user.setdefault("live_upload_bps", 0)
+            user.setdefault(
+                "live_state", "online" if user.get("latest_active") else "offline"
+            )
+            user.setdefault(
+                "live_label", "Online" if user.get("latest_active") else "Offline"
+            )
+            if user.get("latest_active"):
+                surfing_now += 1
+                gadgets_now += int(user.get("gadgets_connected") or 0) or 1
+            continue
+        active = bool(entry.get("session_active"))
+        gadgets = int(entry.get("gadgets") or 0)
+        down = int(entry.get("download_bps") or 0)
+        up = int(entry.get("upload_bps") or 0)
+        user["live_active"] = active
+        user["live_download_bps"] = down
+        user["live_upload_bps"] = up
+        if active:
+            surfing_now += 1
+            if override_status:
+                user["latest_active"] = True
+            if service_key == Customer.ServiceType.HOTSPOT:
+                if gadgets <= 0:
+                    gadgets = 1
+                if override_gadgets:
+                    user["gadgets_connected"] = gadgets
+                    user["devices_connected"] = gadgets
+                gadgets_now += gadgets
+            else:
+                gadgets_now += 1
+            user["live_state"] = "online"
+            user["live_label"] = "Online"
+        else:
+            if override_status:
+                user["latest_active"] = False
+            user["live_state"] = "offline"
+            user["live_label"] = "Offline"
+
+    summary = payload.setdefault("summary", {})
+    if isinstance(summary, dict) and has_live:
+        summary["clients_online"] = surfing_now
+        summary["clients_surfing_session"] = surfing_now
+        summary["gadgets_online"] = gadgets_now
+        summary["live_at"] = live.get("at") or ""
+    payload["live"] = {
+        "ok": has_live,
+        "at": live.get("at") or "",
+        "clients_online": surfing_now if has_live else int(
+            (summary or {}).get("clients_online") or 0
+        ),
+        "gadgets_online": gadgets_now if has_live else int(
+            (summary or {}).get("gadgets_online") or 0
+        ),
+        "source": "mikrotik_sample" if has_live else "samples",
+    }
+    return payload
 
 
 def client_usage_sample_is_stale(customer: Customer, *, max_age_sec: int | None = None) -> bool:
@@ -745,6 +884,9 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
     # Aggregate multi-MAC Hotspot clients (synthetic monotonic counters).
     hotspot_agg: dict[int, dict[str, Any]] = {}
     reachable_hotspot_routers: set[int] = set()
+    live_pppoe: dict[int, dict[str, Any]] = {}
+    live_hotspot: dict[int, dict[str, Any]] = {}
+    seen_hotspot_macs: dict[str, Customer] = {}
     workers = min(_ORG_SAMPLE_WORKERS, len(routers))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(_probe, router) for router in routers]
@@ -770,6 +912,21 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                     except Exception:
                         pass
                     matched.add(customer.pk)
+                    # Keep the busiest live rate if the same client appears on
+                    # more than one NAS (rare; unassigned / migrated accounts).
+                    down = _as_int((payload or {}).get("download_bps"))
+                    up = _as_int((payload or {}).get("upload_bps"))
+                    prev = live_pppoe.get(customer.pk)
+                    if not prev or (down + up) >= (
+                        int(prev.get("download_bps") or 0)
+                        + int(prev.get("upload_bps") or 0)
+                    ):
+                        live_pppoe[customer.pk] = {
+                            "session_active": True,
+                            "download_bps": down,
+                            "upload_bps": up,
+                            "gadgets": 1,
+                        }
                 offline = _offline_usage_payload()
                 for customer in pppoe_map.values():
                     if customer.pk in matched:
@@ -783,25 +940,44 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
             if hotspot_ok:
                 reachable_hotspot_routers.add(router_id)
                 for mac, payload in hotspot_sessions.items():
-                    customer = hotspot_by_mac.get((mac or "").strip().upper())
+                    compact = (mac or "").strip().upper()
+                    customer = hotspot_by_mac.get(compact)
                     if not customer:
                         continue
                     matched_hotspot.add(customer.pk)
+                    seen_hotspot_macs[compact] = customer
                     entry = dict(payload or {})
                     entry["ok"] = True
                     entry["session_active"] = True
-                    entry["hotspot_mac"] = (mac or "").strip().upper()
+                    entry["hotspot_mac"] = compact
                     hotspot_agg.setdefault(customer.pk, {"customer": customer, "payloads": []})
                     hotspot_agg[customer.pk]["payloads"].append(entry)
 
     for stats in hotspot_agg.values():
         customer = stats["customer"]
-        payload = merge_hotspot_session_payloads(customer.pk, stats.get("payloads") or [])
+        payloads = stats.get("payloads") or []
+        payload = merge_hotspot_session_payloads(customer.pk, payloads)
         try:
             if record_customer_usage_sample(customer, payload):
                 sampled += 1
         except Exception:
             pass
+        live_hotspot[customer.pk] = {
+            "session_active": True,
+            "download_bps": _as_int(payload.get("download_bps")),
+            "upload_bps": _as_int(payload.get("upload_bps")),
+            "gadgets": int(
+                payload.get("gadgets_connected")
+                or payload.get("active_sessions")
+                or len(payloads)
+                or 1
+            ),
+            "macs": [
+                str(p.get("hotspot_mac") or "")
+                for p in payloads
+                if isinstance(p, dict) and p.get("hotspot_mac")
+            ],
+        }
 
     # Offline markers only for Hotspot clients assigned to a router we reached —
     # unassigned clients simply stay silent when offline (no false presence).
@@ -818,6 +994,22 @@ def sample_organization_usage(organization, *, force: bool = False) -> dict[str,
                         sampled += 1
                 except Exception:
                     pass
+
+    try:
+        _touch_hotspot_devices_from_sessions(organization, seen_hotspot_macs)
+    except Exception:
+        pass
+
+    cache.set(
+        _org_live_usage_cache_key(organization.pk),
+        {
+            "ok": True,
+            "at": timezone.now().isoformat(),
+            "pppoe": live_pppoe,
+            "hotspot": live_hotspot,
+        },
+        _ORG_LIVE_USAGE_TTL,
+    )
 
     # Invalidate payload caches so the next read includes fresh samples.
     router_keys = ["all", "none"]
@@ -2397,6 +2589,13 @@ def _build_org_usage_payload(
                 "gadgets_connected": gadgets,
                 "devices_connected": gadgets,
                 "devices_linked": linked,
+                "live_active": bool(item["latest_active"]),
+                "live_download_bps": 0,
+                "live_upload_bps": 0,
+                "live_state": "online" if item["latest_active"] else "offline",
+                "live_label": "Online" if item["latest_active"] else "Offline",
+                "access_state": "",
+                "access_label": "",
             }
         )
 
@@ -2502,6 +2701,7 @@ def _build_org_usage_payload(
             "clients_tracked": clients_with_samples,
             "clients_total": clients_total,
             "clients_online": online_now,
+            "clients_surfing_session": online_now,
             "gadgets_online": gadgets_online,
             "online_ratio": (
                 round((online_samples / meaningful_samples) * 100, 1)
@@ -2519,7 +2719,9 @@ def _build_org_usage_payload(
             )
             if top_users
             else 0,
+            "live_at": "",
         },
+        "live": {"ok": False, "at": "", "clients_online": 0, "gadgets_online": 0},
     }
 
 
@@ -3308,7 +3510,11 @@ def org_usage_payload(
     if use_cache:
         cached = cache.get(cache_key)
         if cached is not None:
-            return cached
+            return apply_live_usage_overlay(
+                deepcopy(cached),
+                organization,
+                service=service,
+            )
 
     payload = _build_org_usage_payload(
         organization,
@@ -3368,5 +3574,6 @@ def org_usage_payload(
     payload["service"] = service or "all"
 
     if use_cache:
+        # Cache historical aggregates only; live overlay is applied per read.
         cache.set(cache_key, payload, _ORG_PAYLOAD_TTL)
-    return payload
+    return apply_live_usage_overlay(deepcopy(payload), organization, service=service)

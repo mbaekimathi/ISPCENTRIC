@@ -206,6 +206,7 @@
               <th>Date</th>
               <th>Amount</th>
               <th>Method</th>
+              <th>Paid from</th>
               <th>M-Pesa / Ref</th>
               <th>Invoice</th>
             </tr>
@@ -222,6 +223,13 @@
                 <td data-label="Amount"><strong class="client-billing-amount">KES {{ pay.amount }}</strong></td>
                 <td data-label="Method">
                   <span class="client-billing-method">{{ pay.get_method_display }}</span>
+                </td>
+                <td data-label="Paid from">
+                  {% if pay.method == "mpesa" and pay.display_phone %}
+                    <span class="org-code">{{ pay.display_phone }}</span>
+                  {% else %}
+                    —
+                  {% endif %}
                 </td>
                 <td data-label="M-Pesa / Ref"><span class="org-code">{{ pay.display_reference|default:"—" }}</span></td>
                 <td data-label="Invoice">

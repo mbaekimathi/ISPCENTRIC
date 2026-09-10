@@ -693,6 +693,12 @@ class Payment(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     method = models.CharField(max_length=20, choices=Method.choices, default=Method.MPESA)
     reference = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(
+        "M-Pesa paid-from phone",
+        max_length=30,
+        blank=True,
+        help_text="MSISDN that completed the M-Pesa payment (STK Push payer).",
+    )
     received_at = models.DateTimeField(default=timezone.now)
     recorded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

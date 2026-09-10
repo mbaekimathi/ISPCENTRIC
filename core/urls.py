@@ -350,4 +350,9 @@ urlpatterns = [
         views.settings_payments,
         name="settings_payments",
     ),
+    path(
+        "app/settings/payments/status/",
+        views.settings_payments_status,
+        name="settings_payments_status",
+    ),
 ]

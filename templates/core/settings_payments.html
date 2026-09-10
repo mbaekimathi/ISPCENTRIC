@@ -15,7 +15,23 @@
     </section>
   {% else %}
     <div class="account-page" id="account-page"
-         data-platform-ready="{{ platform_gateway_ready|yesno:'1,0' }}">
+         data-platform-ready="{{ platform_gateway_ready|yesno:'1,0' }}"
+         data-platform-shortcode="{{ platform_gateway.shortcode|default:'' }}"
+         data-platform-payment-type="{{ platform_gateway.payment_type|default:'' }}"
+         data-stk-live-root
+         data-status-url="{% if stk_status_url %}{{ stk_status_url }}{% else %}{% url 'core:settings_payments_status' %}{% endif %}">
+
+      <div class="stk-live-panel account-card" data-stk-live-panel data-status="checking" aria-live="polite">
+        <div class="stk-live-panel-head">
+          <div>
+            <p class="account-page-kicker" style="margin:0;">Safaricom verification</p>
+            <h3 data-stk-live-summary>Checking Daraja credentials…</h3>
+          </div>
+          <span class="mikrotik-wifi-pill is-off" data-stk-live-pill>Checking</span>
+        </div>
+        <p class="stk-live-meta" data-stk-live-meta>Contacting Safaricom Daraja…</p>
+        <ul class="stk-live-checks" data-stk-live-checks></ul>
+      </div>
 
       {% if daraja_status %}
         <section class="panel account-card account-status-card" data-account-status
@@ -65,6 +81,10 @@
               <span>STK Push</span>
               <strong>{% if daraja_status.ready %}Ready{% else %}Not ready{% endif %}</strong>
             </div>
+            <div class="account-summary-item">
+              <span>Safaricom verified</span>
+              <strong data-stk-verified-label>Checking…</strong>
+            </div>
           </div>
         </section>
       {% endif %}
@@ -84,7 +104,7 @@
                 <span class="account-step" aria-hidden="true">1</span>
                 <div>
                   <h3>Receive subscription money</h3>
-                  <p>This ISP’s Paybill or Till for manual M-Pesa payments. Also used as the STK shortcode for Use My Gateway and Company keys + my shortcode.</p>
+                  <p>Paybill or Till shortcode used by Daraja STK Push. With Use Company this follows the company gateway shortcode; with Use My Gateway or Company keys + my shortcode you set it here.</p>
                 </div>
               </div>
             </header>
@@ -109,7 +129,9 @@
               <div class="field">
                 <label for="{{ form.mpesa_number.id_for_label }}" data-mpesa-number-label>{{ form.mpesa_number.label }}</label>
                 {{ form.mpesa_number }}
-                {% if form.mpesa_number.help_text %}<p class="field-hint">{{ form.mpesa_number.help_text }}</p>{% endif %}
+                <p class="field-hint" data-mpesa-number-hint>
+                  {% if form.mpesa_number.help_text %}{{ form.mpesa_number.help_text }}{% endif %}
+                </p>
                 {% if form.mpesa_number.errors %}<div class="field-error">{{ form.mpesa_number.errors|striptags }}</div>{% endif %}
               </div>
               <div class="field" data-mpesa-account-field hidden style="grid-column: 1 / -1;">
@@ -195,7 +217,7 @@
                   {% if platform_gateway_ready %}
                     STK Push uses <strong>IT Support → Payment Gateway</strong>
                     ({{ platform_gateway.get_environment_display }} · shortcode {{ platform_gateway.shortcode|default:"—" }})
-                    exclusively. This ISP’s Paybill/Till above is only for manual payments.
+                    exclusively. Section 1 shows that same company shortcode for Paybill/Till.
                   {% else %}
                     Company Payment Gateway is not ready yet.
                     Ask IT Support to activate STK Push and save Daraja credentials, or switch to Use My Gateway.
@@ -272,176 +294,414 @@
       {% endif %}
     </div>
 
-    {% if form and can_edit %}
     <script>
     (function () {
+      var root = document.getElementById("account-page");
       var form = document.getElementById("org-account-form");
-      if (!form) return;
+      var statusUrl = root ? (root.getAttribute("data-status-url") || "") : "";
+      var livePanel = document.querySelector("[data-stk-live-panel]");
+      var liveSummary = document.querySelector("[data-stk-live-summary]");
+      var liveMeta = document.querySelector("[data-stk-live-meta]");
+      var livePill = document.querySelector("[data-stk-live-pill]");
+      var liveChecks = document.querySelector("[data-stk-live-checks]");
+      var verifiedLabel = document.querySelector("[data-stk-verified-label]");
+      var csrfInput = form ? form.querySelector("input[name=csrfmiddlewaretoken]") : null;
+      var checkTimer = null;
+      var pollTimer = null;
+      var requestSeq = 0;
 
-      var enabled = document.getElementById("id_daraja_enabled");
-      var envSelect = document.getElementById("id_daraja_environment");
-      var typeSelect = document.getElementById("id_mpesa_payment_type");
-      var numberInput = document.getElementById("id_mpesa_number");
-      var accountInput = document.getElementById("id_mpesa_account");
-      var accountModeSelect = document.getElementById("id_mpesa_account_mode");
-      var card = form.querySelector("[data-daraja-card]");
-      var body = form.querySelector("[data-daraja-body]");
-      var pill = form.querySelector("[data-daraja-pill]");
-      var switchLabel = form.querySelector("[data-daraja-switch-label]");
-      var blockedHint = form.querySelector("[data-daraja-blocked-hint]");
-      var sandboxCreds = form.querySelector("[data-sandbox-creds]");
-      var companyShortcodeCreds = form.querySelector("[data-company-shortcode-creds]");
-      var productionCreds = form.querySelector("[data-production-creds]");
-      var receiveDetails = form.querySelector("[data-receive-details]");
-      var accountField = form.querySelector("[data-mpesa-account-field]");
-      var accountCustom = form.querySelector("[data-mpesa-account-custom]");
-      var numberLabel = form.querySelector("[data-mpesa-number-label]");
-      var receiveOptions = form.querySelectorAll("[data-receive-value]");
-      var accountModeOptions = form.querySelectorAll("[data-account-mode]");
-      var gatewayOptions = form.querySelectorAll("[data-gateway-value]");
-
-      function gatewayMode() {
-        return (envSelect && envSelect.value || "sandbox").trim();
+      function statusLabel(status, verified) {
+        if (verified) return "Verified";
+        if (status === "ok") return "Configured";
+        if (status === "inactive") return "Inactive";
+        if (status === "incomplete") return "Incomplete";
+        if (status === "invalid") return "Not verified";
+        if (status === "unreachable") return "Unreachable";
+        if (status === "checking") return "Checking";
+        return "Error";
       }
 
-      function needsIspShortcode() {
-        var mode = gatewayMode();
-        return mode === "production" || mode === "company_shortcode";
-      }
-
-      function receiveReady() {
-        var type = (typeSelect && typeSelect.value || "").trim();
-        var number = (numberInput && numberInput.value || "").trim();
-        return !!(type && number);
-      }
-
-      function syncAccountMode() {
-        var mode = (accountModeSelect && accountModeSelect.value || "client").toLowerCase();
-        accountModeOptions.forEach(function (btn) {
-          var selected = btn.getAttribute("data-account-mode") === mode;
-          btn.classList.toggle("is-selected", selected);
-          btn.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
-        if (accountCustom) accountCustom.hidden = mode !== "custom";
-      }
-
-      function syncReceive() {
-        var type = (typeSelect && typeSelect.value || "").toLowerCase();
-        receiveOptions.forEach(function (btn) {
-          var selected = btn.getAttribute("data-receive-value") === type;
-          btn.classList.toggle("is-selected", selected);
-          btn.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
-        if (receiveDetails) receiveDetails.hidden = !type;
-        if (numberLabel) {
-          numberLabel.textContent = type === "till"
-            ? "Buy Goods Till number"
-            : type === "paybill"
-              ? "Paybill number"
-              : "Paybill / Till number";
+      function renderLive(data) {
+        if (!livePanel) return;
+        var status = (data && data.status) || "error";
+        var verified = !!(data && data.safaricom_verified);
+        livePanel.setAttribute("data-status", status);
+        if (liveSummary) {
+          liveSummary.textContent = (data && data.summary) || "Could not verify credentials with Safaricom.";
         }
-        if (accountField) {
-          accountField.hidden = type !== "paybill";
-          if (type !== "paybill" && accountModeSelect) {
-            accountModeSelect.value = "client";
+        if (livePill) {
+          livePill.textContent = statusLabel(status, verified);
+          livePill.classList.toggle("is-on", verified || status === "ok");
+          livePill.classList.toggle("is-off", !(verified || status === "ok"));
+        }
+        if (verifiedLabel) {
+          verifiedLabel.textContent = verified
+            ? "Yes"
+            : status === "checking"
+              ? "Checking…"
+              : status === "inactive"
+                ? "Off"
+                : "No";
+        }
+        if (liveMeta) {
+          var env = (data && data.environment) || "sandbox";
+          var source = (data && data.source_label) || "";
+          var live = data && data.checked_live ? "Live Daraja check" : "Local checks only";
+          var parts = [
+            env.charAt(0).toUpperCase() + env.slice(1),
+            source,
+            live,
+            "updated just now"
+          ].filter(Boolean);
+          liveMeta.textContent = parts.join(" · ");
+        }
+        if (liveChecks) {
+          liveChecks.innerHTML = "";
+          ((data && data.checks) || []).forEach(function (item) {
+            var li = document.createElement("li");
+            li.className = item.ok ? "is-ok" : "is-bad";
+            li.innerHTML = "<strong>" + (item.label || item.key || "Check") + "</strong> " + (item.message || "");
+            liveChecks.appendChild(li);
+          });
+        }
+      }
+
+      function setChecking() {
+        renderLive({
+          status: "checking",
+          summary: "Checking Daraja credentials with Safaricom…",
+          environment: form && form.querySelector("#id_daraja_environment")
+            ? form.querySelector("#id_daraja_environment").value
+            : "sandbox",
+          checked_live: true,
+          safaricom_verified: false,
+          checks: []
+        });
+        if (liveMeta) liveMeta.textContent = "Contacting Safaricom Daraja…";
+      }
+
+      function formPayload() {
+        var body = new FormData();
+        if (csrfInput) body.append("csrfmiddlewaretoken", csrfInput.value);
+        body.append("live", "1");
+        if (form) {
+          var enabled = form.querySelector("#id_daraja_enabled");
+          body.append("daraja_enabled", enabled && enabled.checked ? "on" : "");
+          [
+            "daraja_environment",
+            "mpesa_payment_type",
+            "mpesa_number",
+            "daraja_consumer_key",
+            "daraja_consumer_secret",
+            "daraja_passkey"
+          ].forEach(function (name) {
+            var el = form.querySelector("[name='" + name + "']");
+            body.append(name, el ? el.value : "");
+          });
+        }
+        return body;
+      }
+
+      function runLiveCheck() {
+        if (!statusUrl) return;
+        var seq = ++requestSeq;
+        setChecking();
+        var opts = {
+          credentials: "same-origin",
+          headers: { "X-Requested-With": "XMLHttpRequest" }
+        };
+        if (form) {
+          opts.method = "POST";
+          opts.body = formPayload();
+        } else {
+          opts.method = "GET";
+        }
+        fetch(statusUrl, opts)
+          .then(function (res) {
+            if (!res.ok) throw new Error("Status " + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            if (seq !== requestSeq) return;
+            renderLive(data || {});
+          })
+          .catch(function () {
+            if (seq !== requestSeq) return;
+            renderLive({
+              status: "error",
+              summary: "Could not run the Safaricom verification check.",
+              checked_live: false,
+              safaricom_verified: false,
+              checks: [{
+                key: "network",
+                ok: false,
+                label: "Live check",
+                message: "Request failed. Try again."
+              }]
+            });
+          });
+      }
+
+      function scheduleLiveCheck(delay) {
+        if (checkTimer) window.clearTimeout(checkTimer);
+        checkTimer = window.setTimeout(runLiveCheck, typeof delay === "number" ? delay : 700);
+      }
+
+      if (form) {
+        var enabled = document.getElementById("id_daraja_enabled");
+        var envSelect = document.getElementById("id_daraja_environment");
+        var typeSelect = document.getElementById("id_mpesa_payment_type");
+        var numberInput = document.getElementById("id_mpesa_number");
+        var accountInput = document.getElementById("id_mpesa_account");
+        var accountModeSelect = document.getElementById("id_mpesa_account_mode");
+        var card = form.querySelector("[data-daraja-card]");
+        var body = form.querySelector("[data-daraja-body]");
+        var pill = form.querySelector("[data-daraja-pill]");
+        var switchLabel = form.querySelector("[data-daraja-switch-label]");
+        var blockedHint = form.querySelector("[data-daraja-blocked-hint]");
+        var sandboxCreds = form.querySelector("[data-sandbox-creds]");
+        var companyShortcodeCreds = form.querySelector("[data-company-shortcode-creds]");
+        var productionCreds = form.querySelector("[data-production-creds]");
+        var receiveDetails = form.querySelector("[data-receive-details]");
+        var accountField = form.querySelector("[data-mpesa-account-field]");
+        var accountCustom = form.querySelector("[data-mpesa-account-custom]");
+        var numberLabel = form.querySelector("[data-mpesa-number-label]");
+        var numberHint = form.querySelector("[data-mpesa-number-hint]");
+        var receiveOptions = form.querySelectorAll("[data-receive-value]");
+        var accountModeOptions = form.querySelectorAll("[data-account-mode]");
+        var gatewayOptions = form.querySelectorAll("[data-gateway-value]");
+        var platformShortcode = (root && root.getAttribute("data-platform-shortcode") || "").trim();
+        var platformPaymentType = (root && root.getAttribute("data-platform-payment-type") || "").trim();
+        var defaultNumberHint = numberHint ? (numberHint.textContent || "").trim() : "";
+        var ispShortcodeCache = numberInput ? (numberInput.value || "").trim() : "";
+        var ispTypeCache = typeSelect ? (typeSelect.value || "").trim() : "";
+        var usingCompanyShortcode = false;
+
+        function gatewayMode() {
+          return (envSelect && envSelect.value || "sandbox").trim();
+        }
+
+        function usesCompanyStkShortcode() {
+          return !!(enabled && enabled.checked && gatewayMode() === "sandbox");
+        }
+
+        function needsIspShortcode() {
+          var mode = gatewayMode();
+          return mode === "production" || mode === "company_shortcode";
+        }
+
+        function receiveReady() {
+          var type = (typeSelect && typeSelect.value || "").trim();
+          var number = (numberInput && numberInput.value || "").trim();
+          return !!(type && number);
+        }
+
+        function syncAccountMode() {
+          var mode = (accountModeSelect && accountModeSelect.value || "client").toLowerCase();
+          accountModeOptions.forEach(function (btn) {
+            var selected = btn.getAttribute("data-account-mode") === mode;
+            btn.classList.toggle("is-selected", selected);
+            btn.setAttribute("aria-pressed", selected ? "true" : "false");
+          });
+          if (accountCustom) accountCustom.hidden = mode !== "custom";
+        }
+
+        function syncReceiveUi() {
+          var type = (typeSelect && typeSelect.value || "").toLowerCase();
+          var companyLock = usesCompanyStkShortcode();
+          receiveOptions.forEach(function (btn) {
+            var selected = btn.getAttribute("data-receive-value") === type;
+            btn.classList.toggle("is-selected", selected);
+            btn.setAttribute("aria-pressed", selected ? "true" : "false");
+            btn.disabled = companyLock;
+          });
+          if (receiveDetails) receiveDetails.hidden = !type;
+          if (numberLabel) {
+            if (type === "till") {
+              numberLabel.textContent = companyLock
+                ? "Buy Goods Till number (company STK shortcode)"
+                : "Buy Goods Till / STK shortcode";
+            } else if (type === "paybill") {
+              numberLabel.textContent = companyLock
+                ? "Paybill number (company STK shortcode)"
+                : "Paybill / STK shortcode";
+            } else {
+              numberLabel.textContent = "Paybill / Till / STK shortcode";
+            }
+          }
+          if (accountField) {
+            accountField.hidden = type !== "paybill";
+            if (type !== "paybill" && accountModeSelect) {
+              accountModeSelect.value = "client";
+            }
+          }
+          syncAccountMode();
+        }
+
+        function syncStkShortcodeIntoReceive() {
+          var lockToCompany = usesCompanyStkShortcode();
+          if (lockToCompany) {
+            if (!usingCompanyShortcode) {
+              ispShortcodeCache = numberInput ? (numberInput.value || "").trim() : "";
+              ispTypeCache = typeSelect ? (typeSelect.value || "").trim() : "";
+            }
+            usingCompanyShortcode = true;
+            if (typeSelect && platformPaymentType) {
+              typeSelect.value = platformPaymentType;
+            }
+            if (numberInput) {
+              numberInput.value = platformShortcode;
+              numberInput.readOnly = true;
+            }
+            if (numberHint) {
+              numberHint.textContent = platformShortcode
+                ? ("Using Company Payment Gateway shortcode " + platformShortcode +
+                   " — the same shortcode Daraja STK Push uses.")
+                : "Company Payment Gateway has no shortcode yet. Ask IT Support to set it under Payment Gateway.";
+            }
+          } else {
+            if (usingCompanyShortcode) {
+              usingCompanyShortcode = false;
+              if (typeSelect) typeSelect.value = ispTypeCache || typeSelect.value;
+              if (numberInput) numberInput.value = ispShortcodeCache;
+            }
+            if (numberInput) numberInput.readOnly = false;
+            if (numberHint) numberHint.textContent = defaultNumberHint;
           }
         }
-        syncAccountMode();
-        syncDaraja();
-      }
 
-      function syncEnvironment() {
-        var mode = gatewayMode();
-        gatewayOptions.forEach(function (btn) {
-          var selected = btn.getAttribute("data-gateway-value") === mode;
-          btn.classList.toggle("is-selected", selected);
-          btn.setAttribute("aria-pressed", selected ? "true" : "false");
-        });
-        if (sandboxCreds) sandboxCreds.hidden = mode !== "sandbox";
-        if (companyShortcodeCreds) companyShortcodeCreds.hidden = mode !== "company_shortcode";
-        if (productionCreds) productionCreds.hidden = mode !== "production";
-      }
-
-      function syncDaraja() {
-        var on = !!(enabled && enabled.checked);
-        var needsShortcode = needsIspShortcode();
-        var ready = !needsShortcode || receiveReady();
-        if (blockedHint) {
-          blockedHint.hidden = !on || ready;
-          blockedHint.textContent = ready
-            ? ""
-            : gatewayMode() === "company_shortcode"
-              ? "Company keys + my shortcode needs Paybill or Till above, then save."
-              : "Use My Gateway needs Paybill or Till above, then save.";
-        }
-        if (body) body.hidden = !on;
-        if (card) card.classList.toggle("is-daraja-on", on);
-        if (pill) {
-          pill.textContent = on ? "On" : "Off";
-          pill.classList.toggle("is-on", on);
-          pill.classList.toggle("is-off", !on);
-        }
-        if (switchLabel) switchLabel.textContent = on ? "Daraja enabled" : "Daraja disabled";
-        syncEnvironment();
-      }
-
-      receiveOptions.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!typeSelect) return;
-          typeSelect.value = btn.getAttribute("data-receive-value") || "";
-          typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-          if (receiveDetails) {
-            receiveDetails.hidden = false;
-            if (numberInput) numberInput.focus();
-          }
-        });
-      });
-
-      accountModeOptions.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!accountModeSelect) return;
-          accountModeSelect.value = btn.getAttribute("data-account-mode") || "client";
-          accountModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
-          if (accountModeSelect.value === "custom" && accountInput) {
-            accountInput.focus();
-          }
-        });
-      });
-
-      gatewayOptions.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          if (!envSelect) return;
-          envSelect.value = btn.getAttribute("data-gateway-value") || "sandbox";
-          envSelect.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-      });
-
-      if (typeSelect) typeSelect.addEventListener("change", syncReceive);
-      if (accountModeSelect) accountModeSelect.addEventListener("change", syncAccountMode);
-      if (numberInput) {
-        numberInput.addEventListener("input", syncDaraja);
-        numberInput.addEventListener("change", syncDaraja);
-      }
-      if (enabled) {
-        enabled.addEventListener("change", function () {
+        function syncReceive() {
+          syncReceiveUi();
           syncDaraja();
-          if (enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
+        }
+
+        function syncEnvironment() {
+          var mode = gatewayMode();
+          gatewayOptions.forEach(function (btn) {
+            var selected = btn.getAttribute("data-gateway-value") === mode;
+            btn.classList.toggle("is-selected", selected);
+            btn.setAttribute("aria-pressed", selected ? "true" : "false");
+          });
+          if (sandboxCreds) sandboxCreds.hidden = mode !== "sandbox";
+          if (companyShortcodeCreds) companyShortcodeCreds.hidden = mode !== "company_shortcode";
+          if (productionCreds) productionCreds.hidden = mode !== "production";
+        }
+
+        function syncDaraja() {
+          var on = !!(enabled && enabled.checked);
+          syncStkShortcodeIntoReceive();
+          var needsShortcode = needsIspShortcode();
+          var ready = !needsShortcode || receiveReady();
+          if (blockedHint) {
+            blockedHint.hidden = !on || ready;
+            blockedHint.textContent = ready
+              ? ""
+              : gatewayMode() === "company_shortcode"
+                ? "Company keys + my shortcode needs Paybill or Till above, then save."
+                : "Use My Gateway needs Paybill or Till above, then save.";
+          }
+          if (body) body.hidden = !on;
+          if (card) card.classList.toggle("is-daraja-on", on);
+          if (pill) {
+            pill.textContent = on ? "On" : "Off";
+            pill.classList.toggle("is-on", on);
+            pill.classList.toggle("is-off", !on);
+          }
+          if (switchLabel) switchLabel.textContent = on ? "Daraja enabled" : "Daraja disabled";
+          syncEnvironment();
+          syncReceiveUi();
+        }
+
+        receiveOptions.forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            if (!typeSelect || usesCompanyStkShortcode()) return;
+            typeSelect.value = btn.getAttribute("data-receive-value") || "";
+            typeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+            if (receiveDetails) {
+              receiveDetails.hidden = false;
+              if (numberInput) numberInput.focus();
+            }
+          });
+        });
+
+        accountModeOptions.forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            if (!accountModeSelect) return;
+            accountModeSelect.value = btn.getAttribute("data-account-mode") || "client";
+            accountModeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+            if (accountModeSelect.value === "custom" && accountInput) {
+              accountInput.focus();
+            }
+          });
+        });
+
+        gatewayOptions.forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            if (!envSelect) return;
+            envSelect.value = btn.getAttribute("data-gateway-value") || "sandbox";
+            envSelect.dispatchEvent(new Event("change", { bubbles: true }));
+          });
+        });
+
+        if (typeSelect) typeSelect.addEventListener("change", function () {
+          if (usesCompanyStkShortcode()) {
+            syncDaraja();
+            return;
+          }
+          syncReceive();
+          scheduleLiveCheck(300);
+        });
+        if (accountModeSelect) accountModeSelect.addEventListener("change", syncAccountMode);
+        if (numberInput) {
+          numberInput.addEventListener("input", function () {
+            if (numberInput.readOnly) return;
+            ispShortcodeCache = numberInput.value || "";
+            syncDaraja();
+            scheduleLiveCheck(800);
+          });
+          numberInput.addEventListener("change", function () {
+            if (numberInput.readOnly) return;
+            ispShortcodeCache = numberInput.value || "";
+            syncDaraja();
+            scheduleLiveCheck(300);
+          });
+        }
+        if (enabled) {
+          enabled.addEventListener("change", function () {
+            syncDaraja();
+            scheduleLiveCheck(250);
+            if (enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
+              receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+          });
+        }
+        if (envSelect) envSelect.addEventListener("change", function () {
+          syncEnvironment();
+          syncDaraja();
+          scheduleLiveCheck(250);
+          if (enabled && enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
             receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
           }
         });
-      }
-      if (envSelect) envSelect.addEventListener("change", function () {
-        syncEnvironment();
-        syncDaraja();
-        if (enabled && enabled.checked && needsIspShortcode() && !receiveReady() && receiveDetails) {
-          receiveDetails.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
-      });
 
-      syncReceive();
+        form.querySelectorAll(
+          "#id_daraja_consumer_key, #id_daraja_consumer_secret, #id_daraja_passkey"
+        ).forEach(function (el) {
+          el.addEventListener("input", function () { scheduleLiveCheck(800); });
+          el.addEventListener("change", function () { scheduleLiveCheck(300); });
+        });
+
+        syncReceive();
+      }
+
+      runLiveCheck();
+      pollTimer = window.setInterval(runLiveCheck, 20000);
+      window.addEventListener("beforeunload", function () {
+        if (checkTimer) window.clearTimeout(checkTimer);
+        if (pollTimer) window.clearInterval(pollTimer);
+      });
     })();
     </script>
-    {% endif %}
   {% endif %}
 </div>
 {% endblock %}

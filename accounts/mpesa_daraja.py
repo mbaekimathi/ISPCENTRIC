@@ -650,6 +650,127 @@ def normalize_gateway_values(raw: dict[str, Any] | None = None, gateway=None) ->
     return values
 
 
+def _truthy_flag(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def stk_values_for_organization(
+    org,
+    draft: dict[str, Any] | None = None,
+    request=None,
+) -> dict[str, Any]:
+    """
+    Build STK check values for an ISP from saved settings and optional form draft.
+
+    Modes mirror Organization.DarajaEnvironment:
+    - sandbox → Use Company (platform keys + shortcode)
+    - production → Use My Gateway (ISP keys + ISP shortcode)
+    - company_shortcode → company keys + ISP shortcode
+    """
+    from accounts.models import Organization
+
+    draft = draft or {}
+
+    def _pick_text(draft_key: str, attr: str, default: str = "") -> str:
+        if draft_key in draft and draft.get(draft_key) is not None:
+            return str(draft.get(draft_key) or "").strip()
+        return (getattr(org, attr, None) or default or "").strip()
+
+    if "daraja_enabled" in draft and draft.get("daraja_enabled") is not None:
+        enabled = _truthy_flag(draft.get("daraja_enabled"))
+    else:
+        enabled = bool(getattr(org, "daraja_enabled", False))
+
+    mode = _pick_text(
+        "daraja_environment",
+        "daraja_environment",
+        Organization.DarajaEnvironment.SANDBOX,
+    ).lower()
+    if mode not in {
+        Organization.DarajaEnvironment.SANDBOX,
+        Organization.DarajaEnvironment.PRODUCTION,
+        Organization.DarajaEnvironment.COMPANY_SHORTCODE,
+    }:
+        mode = Organization.DarajaEnvironment.SANDBOX
+
+    payment_type = _pick_text("mpesa_payment_type", "mpesa_payment_type")
+    shortcode = _pick_text("mpesa_number", "mpesa_number")
+    org_key = _pick_text("daraja_consumer_key", "daraja_consumer_key")
+    org_secret = _pick_text("daraja_consumer_secret", "daraja_consumer_secret")
+    org_passkey = _pick_text("daraja_passkey", "daraja_passkey")
+
+    if not enabled:
+        return {
+            "enabled": False,
+            "environment": PaymentGateway.Environment.SANDBOX,
+            "payment_type": payment_type,
+            "shortcode": shortcode,
+            "consumer_key": "",
+            "consumer_secret": "",
+            "passkey": "",
+            "callback_url": "",
+            "source": "none",
+            "source_label": "Off",
+        }
+
+    platform = PaymentGateway.get_solo()
+    platform_creds = platform.as_stk_credentials()
+
+    if mode == Organization.DarajaEnvironment.PRODUCTION:
+        api_env = resolve_daraja_api_environment(
+            shortcode, PaymentGateway.Environment.PRODUCTION
+        )
+        callback = PaymentGateway.default_callback_url(api_env, request)
+        if not callback and request is not None:
+            try:
+                callback = request.build_absolute_uri(PaymentGateway.STK_CALLBACK_PATH)
+            except Exception:
+                callback = ""
+        return {
+            "enabled": True,
+            "environment": api_env,
+            "payment_type": payment_type,
+            "shortcode": shortcode,
+            "consumer_key": org_key,
+            "consumer_secret": org_secret,
+            "passkey": org_passkey,
+            "callback_url": callback,
+            "source": "organization",
+            "source_label": "Use My Gateway",
+        }
+
+    if mode == Organization.DarajaEnvironment.COMPANY_SHORTCODE:
+        api_env = (platform_creds.get("environment") or PaymentGateway.Environment.SANDBOX)
+        if shortcode and shortcode != SANDBOX_TEST_SHORTCODE:
+            api_env = PaymentGateway.Environment.PRODUCTION
+        callback = (platform_creds.get("callback_url") or "").strip()
+        if not callback:
+            callback = PaymentGateway.default_callback_url(api_env, request)
+        return {
+            "enabled": True,
+            "environment": api_env,
+            "payment_type": payment_type,
+            "shortcode": shortcode,
+            "consumer_key": (platform_creds.get("consumer_key") or "").strip(),
+            "consumer_secret": (platform_creds.get("consumer_secret") or "").strip(),
+            "passkey": (platform_creds.get("passkey") or "").strip(),
+            "callback_url": callback,
+            "source": "platform_org_shortcode",
+            "source_label": "Company keys + my shortcode",
+        }
+
+    # Use Company — platform keys and shortcode exclusively.
+    values = normalize_gateway_values(None, platform)
+    # ISP Daraja is on; verify company credentials even if the company
+    # gateway toggle is off (so the page can show why STK is not ready).
+    values["enabled"] = True
+    values["source"] = "platform"
+    values["source_label"] = "Use Company"
+    return values
+
+
 def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dict[str, Any]:
     """
     Validate STK Push setup.
@@ -686,6 +807,7 @@ def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dic
             "environment": environment or PaymentGateway.Environment.SANDBOX,
             "checks": checks,
             "checked_live": False,
+            "safaricom_verified": False,
         }
 
     checks.append(
@@ -829,10 +951,18 @@ def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dic
         summary = live_result.get("message") or "Daraja rejected the credentials."
     elif configured:
         status = "ok"
-        summary = "STK Push is well configured."
+        summary = (
+            "STK credentials verified by Safaricom Daraja."
+            if live and live_result and live_result.get("ok")
+            else "STK Push is well configured."
+        )
     else:
         status = "incomplete"
         summary = "Configuration is incomplete."
+
+    safaricom_verified = bool(
+        live and live_result and live_result.get("ok") and configured
+    )
 
     return {
         "ok": configured,
@@ -842,4 +972,5 @@ def check_stk_configuration(values: dict[str, Any], *, live: bool = True) -> dic
         "environment": environment or PaymentGateway.Environment.SANDBOX,
         "checks": checks,
         "checked_live": bool(live and live_result is not None),
+        "safaricom_verified": safaricom_verified,
     }

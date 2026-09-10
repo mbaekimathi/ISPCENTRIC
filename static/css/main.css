@@ -11249,7 +11249,7 @@ button.clients-list-table-action {
 .billing-dash-table-payments .col-date,
 .billing-dash-table-payments th:nth-child(1),
 .billing-dash-table-payments td:nth-child(1) {
-  width: 12%;
+  width: 11%;
 }
 
 .billing-dash-table-payments .col-customer,
@@ -11261,31 +11261,60 @@ button.clients-list-table-action {
 .billing-dash-table-payments .col-service,
 .billing-dash-table-payments th:nth-child(3),
 .billing-dash-table-payments td:nth-child(3) {
-  width: 10%;
+  width: 9%;
 }
 
 .billing-dash-table-payments .col-amount,
 .billing-dash-table-payments th:nth-child(4),
 .billing-dash-table-payments td:nth-child(4) {
-  width: 11%;
+  width: 10%;
 }
 
 .billing-dash-table-payments .col-method,
 .billing-dash-table-payments th:nth-child(5),
 .billing-dash-table-payments td:nth-child(5) {
+  width: 10%;
+}
+
+.billing-dash-table-payments .col-phone,
+.billing-dash-table-payments th:nth-child(6),
+.billing-dash-table-payments td:nth-child(6) {
   width: 12%;
 }
 
 .billing-dash-table-payments .col-ref,
-.billing-dash-table-payments th:nth-child(6),
-.billing-dash-table-payments td:nth-child(6) {
-  width: 16%;
+.billing-dash-table-payments th:nth-child(7),
+.billing-dash-table-payments td:nth-child(7) {
+  width: 14%;
 }
 
 .billing-dash-table-payments .col-invoice,
-.billing-dash-table-payments th:nth-child(7),
-.billing-dash-table-payments td:nth-child(7) {
-  width: 21%;
+.billing-dash-table-payments th:nth-child(8),
+.billing-dash-table-payments td:nth-child(8) {
+  width: 16%;
+}
+
+.billing-dash-account {
+  display: block;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+  word-break: break-all;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.billing-dash-cell-secondary.billing-dash-account {
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+}
+
+.billing-dash-col-phone .billing-dash-account {
+  color: var(--ink);
 }
 
 .billing-dash-empty {
@@ -27665,6 +27694,50 @@ a.packages-stat:focus-visible {
 
 .clients-usage-online.is-off .clients-usage-online-dot {
   background: #94a3b8;
+}
+
+.clients-general-usage-page .clients-usage-online.clients-surf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.clients-general-usage-page .clients-usage-online.clients-surf-badge.is-surfing {
+  color: #047857;
+  background: rgba(46, 204, 113, 0.16);
+}
+
+.clients-general-usage-page .clients-usage-online.clients-surf-badge.is-not-surfing {
+  color: #b45309;
+  background: rgba(232, 163, 23, 0.16);
+}
+
+.clients-general-usage-page .clients-usage-online.clients-surf-badge.is-disconnected,
+.clients-general-usage-page .clients-usage-online.clients-surf-badge.is-offline {
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--ink-soft) 12%, transparent);
+}
+
+.clients-general-usage-page .clients-usage-online.clients-surf-badge.is-expired {
+  color: #b91c1c;
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.clients-general-usage-page .clients-usage-live-rate strong {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.clients-general-usage-page .clients-usage-live-rate small {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
 }
 
 .clients-usage-online-ratio {

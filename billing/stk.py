@@ -200,6 +200,20 @@ def _receipt_from_mapping(data) -> str:
     ).strip()
 
 
+def _phone_from_mapping(data) -> str:
+    """Pull PhoneNumber / MSISDN from a flat mapping (callback or query)."""
+    if not isinstance(data, dict):
+        return ""
+    return str(
+        data.get("PhoneNumber")
+        or data.get("phone")
+        or data.get("MSISDN")
+        or data.get("msisdn")
+        or data.get("callback_phone")
+        or ""
+    ).strip()
+
+
 def extract_mpesa_receipt_from_raw(raw) -> str:
     """Find a real M-Pesa SMS receipt buried in stored STK raw_callback JSON."""
     if not isinstance(raw, dict):
@@ -235,6 +249,58 @@ def extract_mpesa_receipt_from_raw(raw) -> str:
             return from_query
 
     return ""
+
+
+def extract_mpesa_phone_from_raw(raw) -> str:
+    """Find the paying MSISDN buried in stored STK raw_callback JSON."""
+    if not isinstance(raw, dict):
+        return ""
+
+    direct = _phone_from_mapping(raw)
+    if direct:
+        return direct
+
+    nested_callback = raw.get("callback")
+    if isinstance(nested_callback, dict):
+        nested = extract_mpesa_phone_from_raw(nested_callback)
+        if nested:
+            return nested
+
+    body = raw.get("Body") if isinstance(raw.get("Body"), dict) else {}
+    stk_callback = body.get("stkCallback") if isinstance(body.get("stkCallback"), dict) else {}
+    if stk_callback:
+        meta = stk_callback.get("CallbackMetadata") or {}
+        if isinstance(meta, dict):
+            from_meta = _phone_from_mapping(_callback_metadata_map(meta.get("Item")))
+            if from_meta:
+                return from_meta
+        from_cb = _phone_from_mapping(stk_callback)
+        if from_cb:
+            return from_cb
+
+    query = raw.get("query")
+    if isinstance(query, dict):
+        from_query = _phone_from_mapping(query)
+        if from_query:
+            return from_query
+
+    return ""
+
+
+def resolve_stk_mpesa_phone(stk: StkPushRequest, explicit: str = "") -> str:
+    """Best-known payer phone: explicit, STK.phone, then raw callback PhoneNumber."""
+    from billing.services import format_customer_phone_display
+
+    phone = (explicit or "").strip()
+    if not phone:
+        phone = (stk.phone or "").strip()
+    if not phone:
+        phone = extract_mpesa_phone_from_raw(
+            stk.raw_callback if isinstance(stk.raw_callback, dict) else {}
+        )
+    if not phone:
+        return ""
+    return format_customer_phone_display(phone)[:30]
 
 
 def resolve_stk_mpesa_receipt(stk: StkPushRequest, explicit: str = "") -> str:
@@ -297,6 +363,54 @@ def ensure_stk_payment_receipt(
                 payment.reference = found[:100]
                 payment.save(update_fields=["reference"])
     return found
+
+
+def ensure_stk_payment_phone(
+    stk: StkPushRequest,
+    *,
+    phone: str = "",
+    raw: dict | None = None,
+) -> str:
+    """
+    Persist the paying M-Pesa MSISDN onto the STK row and linked Payment.
+
+    Prefer callback PhoneNumber when present (actual payer), otherwise the
+    number used to initiate the STK. Works for company and ISP gateways.
+    """
+    from billing.models import Payment
+    from billing.services import format_customer_phone_display
+
+    if raw is not None:
+        stk.raw_callback = _merge_stk_raw_callback(stk.raw_callback, raw)
+
+    found = ""
+    if raw is not None:
+        found = extract_mpesa_phone_from_raw(raw)
+    if not found:
+        found = resolve_stk_mpesa_phone(stk, explicit=phone)
+    if not found:
+        if raw is not None:
+            stk.save(update_fields=["raw_callback"])
+        return ""
+
+    display = format_customer_phone_display(found)[:30]
+    update_fields: list[str] = []
+    if raw is not None:
+        update_fields.append("raw_callback")
+    # StkPushRequest.phone is max_length=20; store compact local form.
+    stk_phone = display[:20]
+    if stk_phone and (stk.phone or "").strip() != stk_phone:
+        stk.phone = stk_phone
+        update_fields.append("phone")
+    if update_fields:
+        stk.save(update_fields=list(dict.fromkeys(update_fields)))
+
+    if stk.payment_id:
+        payment = Payment.objects.filter(pk=stk.payment_id).first()
+        if payment is not None and (payment.phone or "").strip() != display:
+            payment.phone = display
+            payment.save(update_fields=["phone"])
+    return display
 
 
 def redact_stk_callback_for_log(payload) -> dict:
@@ -1267,6 +1381,7 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
             organization=stk.organization,
             amount=stk.amount,
             reference=(stk.mpesa_receipt or "").strip(),
+            phone=(stk.phone or "").strip(),
             recorded_by=stk.initiated_by,
             notes="M-Pesa STK Push lead allocation",
             invoice_prefix="LEAD",
@@ -1275,6 +1390,7 @@ def _fulfill_lead_allocation_stk(stk: StkPushRequest) -> dict:
         stk.payment = payment
 
     ensure_stk_payment_receipt(stk, receipt=(stk.mpesa_receipt or ""))
+    ensure_stk_payment_phone(stk, phone=(stk.phone or "").strip())
 
     stk.status = StkPushRequest.Status.SUCCESS
     stk.subscription_applied = True
@@ -1496,6 +1612,8 @@ def fulfill_successful_stk(
     from billing.devices import maybe_set_customer_phone
 
     maybe_set_customer_phone(customer, stk.phone)
+    # Always keep Payment.phone in sync (company or ISP gateway).
+    ensure_stk_payment_phone(stk, phone=(stk.phone or "").strip(), raw=raw)
 
     from billing.vouchers import create_vouchers_for_stk, voucher_payload
 
@@ -1538,6 +1656,7 @@ def fulfill_successful_stk(
             organization=stk.organization,
             amount=stk.amount,
             reference=(stk.mpesa_receipt or "").strip(),
+            phone=(stk.phone or "").strip(),
             recorded_by=stk.initiated_by,
         )
         stk.invoice = invoice
@@ -1545,6 +1664,11 @@ def fulfill_successful_stk(
 
     # Always copy a known receipt onto Payment.reference (company or ISP gateway).
     ensure_stk_payment_receipt(stk, receipt=receipt or (stk.mpesa_receipt or ""))
+    ensure_stk_payment_phone(
+        stk,
+        phone=(stk.phone or "").strip(),
+        raw=raw if isinstance(raw, dict) else None,
+    )
 
     # Payment is recorded; package + MikroTik activate only after voucher redeem.
     stk.status = StkPushRequest.Status.SUCCESS
@@ -1716,6 +1840,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
             or metadata.get("MpesaReceiptNo")
             or ""
         ).strip()
+        payer_phone = str(metadata.get("PhoneNumber") or "").strip()
 
         amount_ok, amount_error = _callback_amount_matches(stk, metadata)
         if not amount_ok:
@@ -1749,6 +1874,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                 raw={
                     "callback": payload,
                     "callback_receipt": receipt,
+                    "callback_phone": payer_phone,
                 },
             )
 
@@ -1761,6 +1887,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
                     "callback": payload,
                     "awaiting_daraja_confirm": True,
                     "callback_receipt": receipt,
+                    "callback_phone": payer_phone,
                 },
             )
             stk.result_desc = (
@@ -1770,10 +1897,18 @@ def process_stk_callback_payload(payload: dict) -> dict:
             if receipt:
                 stk.mpesa_receipt = receipt[:64]
                 update_fields.append("mpesa_receipt")
+            if payer_phone:
+                from billing.services import format_customer_phone_display
+
+                display_phone = format_customer_phone_display(payer_phone)[:20]
+                if display_phone and (stk.phone or "").strip() != display_phone:
+                    stk.phone = display_phone
+                    update_fields.append("phone")
             stk.save(update_fields=update_fields)
             if receipt:
                 # Payment may already exist if a parallel poll fulfilled first.
                 ensure_stk_payment_receipt(stk, receipt=receipt)
+            ensure_stk_payment_phone(stk, phone=payer_phone or (stk.phone or ""))
             logger.info(
                 "STK callback deferred pending Daraja confirm stk_id=%s checkout=%s",
                 stk.pk,
@@ -1837,6 +1972,7 @@ def process_stk_callback_payload(payload: dict) -> dict:
             raw={
                 "callback": payload,
                 "callback_receipt": receipt,
+                "callback_phone": payer_phone,
             },
         )
         if result.get("ok"):
@@ -2048,6 +2184,7 @@ def refresh_stk_status(stk: StkPushRequest, *, wait_for_nas: bool = False) -> di
             recovered = ensure_stk_payment_receipt(stk)
             if recovered:
                 base["mpesa_receipt"] = recovered
+            ensure_stk_payment_phone(stk)
             if stk.purpose == StkPushRequest.Purpose.SUBSCRIPTION:
                 _apply_paid_subscription_to_status(base, stk, wait_for_nas=wait_for_nas)
         return base
