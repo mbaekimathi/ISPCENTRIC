@@ -181,18 +181,20 @@ class Command(BaseCommand):
         for round_idx in range(loops):
             host_sessions = _sessions_for_round(round_idx)
 
-            def _pppoe(host, *_a, **_k):
+            def _live(host, *_a, **_k):
                 return {
                     "ok": True,
-                    "sessions": host_sessions.get(host, {}),
+                    "pppoe": host_sessions.get(host, {}),
+                    "hotspot": {},
                     "error": "",
                 }
 
             with patch(
-                "core.mikrotik_connect.fetch_router_bulk_pppoe_usage", side_effect=_pppoe
+                "core.mikrotik_connect.is_mikrotik_host_cooling_down",
+                return_value=False,
             ), patch(
-                "core.mikrotik_connect.fetch_router_bulk_hotspot_usage",
-                return_value={"ok": True, "sessions": {}, "error": ""},
+                "core.mikrotik_connect.fetch_router_bulk_live_usage",
+                side_effect=_live,
             ):
                 from django.core.cache import cache
 

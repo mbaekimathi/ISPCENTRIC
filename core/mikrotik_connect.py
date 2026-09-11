@@ -6814,14 +6814,15 @@ def _hotspot_rates_from_bytes(
     previous = cache.get(cache_key)
     bi = max(0, int(bytes_in or 0))
     bo = max(0, int(bytes_out or 0))
-    cache.set(cache_key, {"t": now, "bi": bi, "bo": bo}, 150)
+    # Keep previous long enough for 60–90s org sweeps (and brief misses).
+    cache.set(cache_key, {"t": now, "bi": bi, "bo": bo}, 300)
     if not isinstance(previous, dict) or previous.get("t") is None:
         return empty
     try:
         dt = max(0.0, now - float(previous["t"]))
     except (TypeError, ValueError):
         return empty
-    if dt < 0.5 or dt > 120.0:
+    if dt < 0.5 or dt > 210.0:
         return empty
     prev_bi = max(0, _parse_int(previous.get("bi")))
     prev_bo = max(0, _parse_int(previous.get("bo")))
@@ -6869,7 +6870,7 @@ def _speed_from_byte_delta(
     cache.set(
         cache_key,
         {"t": now, "rx": int(rx_bytes), "tx": int(tx_bytes)},
-        45,
+        180,
     )
     if not isinstance(previous, dict) or previous.get("t") is None:
         return None
@@ -8221,6 +8222,240 @@ def fetch_customer_hotspot_usage(
         }
 
 
+def _pppoe_interface_counters(sock: socket.socket, active_names: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    Fetch rx/tx for PPPoE server interfaces without dumping the whole interface list.
+
+    Full ``/interface print`` on busy boards is a common 10–20s stall; prefer
+    ``type=pppoe-in`` then fall back to exact name lookups for active sessions.
+    """
+    by_name: dict[str, dict[str, Any]] = {}
+    try:
+        rows = _print(
+            sock,
+            "/interface",
+            props="name,type,rx-byte,tx-byte,running",
+            query={"type": "pppoe-in"},
+        )
+    except Exception:
+        rows = []
+    for row in rows or []:
+        name = (row.get("name") or "").strip()
+        if name:
+            by_name[name] = row
+    missing = []
+    for pppoe_name in active_names:
+        key = (pppoe_name or "").strip()
+        if not key:
+            continue
+        candidates = (f"<pppoe-{key}>", f"<pppoe-{key.lower()}>", key)
+        if any(candidate in by_name for candidate in candidates):
+            continue
+        missing.append(key)
+    for key in missing[:80]:
+        for candidate in (f"<pppoe-{key}>", f"<pppoe-{key.lower()}>"):
+            try:
+                found = _print(
+                    sock,
+                    "/interface",
+                    props="name,type,rx-byte,tx-byte,running",
+                    query={"name": candidate},
+                )
+            except Exception:
+                found = []
+            for row in found or []:
+                name = (row.get("name") or "").strip()
+                if name:
+                    by_name[name] = row
+            if any(candidate in by_name for candidate in (f"<pppoe-{key}>", f"<pppoe-{key.lower()}>")):
+                break
+    return by_name
+
+
+def _build_pppoe_bulk_sessions(
+    host: str,
+    active_rows: list[dict[str, str]],
+    by_name: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    sessions: dict[str, dict[str, Any]] = {}
+    for row in active_rows:
+        pppoe_name = (row.get("name") or "").strip()
+        if not pppoe_name:
+            continue
+        key = pppoe_name.lower()
+        iface_name = ""
+        for candidate in (
+            f"<pppoe-{pppoe_name}>",
+            f"<pppoe-{key}>",
+            pppoe_name,
+        ):
+            if candidate in by_name:
+                iface_name = candidate
+                break
+        if not iface_name:
+            for iface_row in by_name.values():
+                name = (iface_row.get("name") or "").strip()
+                lower = name.lower()
+                if key in lower and "pppoe" in lower:
+                    iface_name = name
+                    break
+        bytes_in = 0
+        bytes_out = 0
+        if iface_name and iface_name in by_name:
+            iface = by_name[iface_name]
+            bytes_in = _parse_int(iface.get("rx-byte"))
+            bytes_out = _parse_int(iface.get("tx-byte"))
+        uptime_raw = (row.get("uptime") or "").strip()
+        sessions[key] = {
+            "session_active": True,
+            "pppoe_username": pppoe_name,
+            "address": (row.get("address") or "").strip(),
+            "caller_id": (row.get("caller-id") or "").strip(),
+            "uptime": _human_uptime(uptime_raw),
+            "uptime_raw": uptime_raw,
+            "bytes_in": bytes_in,
+            "bytes_out": bytes_out,
+            "download_bps": None,
+            "upload_bps": None,
+            "interface": iface_name,
+        }
+        if iface_name and (bytes_in or bytes_out):
+            rates = _hotspot_rates_from_bytes(
+                f"pppoe-bulk:{host}:{key}",
+                bytes_in,
+                bytes_out,
+            )
+            sessions[key]["download_bps"] = rates.get("download_bps")
+            sessions[key]["upload_bps"] = rates.get("upload_bps")
+    return sessions
+
+
+def _build_hotspot_bulk_sessions(
+    host: str, active_rows: list[dict[str, str]]
+) -> dict[str, dict[str, Any]]:
+    sessions: dict[str, dict[str, Any]] = {}
+    for row in active_rows:
+        mac_compact = _mac_compact(row.get("mac-address") or row.get("user") or "")
+        if len(mac_compact) != 12:
+            continue
+        uptime_raw = (row.get("uptime") or "").strip()
+        bytes_in = _parse_int(row.get("bytes-in"))
+        bytes_out = _parse_int(row.get("bytes-out"))
+        rates = _hotspot_rates_from_bytes(
+            f"{host}:{mac_compact}",
+            bytes_in,
+            bytes_out,
+        )
+        sessions[mac_compact] = {
+            "ok": True,
+            "session_active": True,
+            "hotspot_mac": mac_compact,
+            "address": (row.get("address") or "").strip(),
+            "uptime": _human_uptime(uptime_raw),
+            "uptime_raw": uptime_raw,
+            "bytes_in": bytes_in,
+            "bytes_out": bytes_out,
+            "download_bps": rates.get("download_bps"),
+            "upload_bps": rates.get("upload_bps"),
+            "interface": (row.get("server") or "").strip(),
+        }
+    return sessions
+
+
+def fetch_router_bulk_live_usage(
+    host: str,
+    username: str,
+    password: str,
+    *,
+    port: int = 8728,
+    timeout: float = 4.0,
+    want_pppoe: bool = True,
+    want_hotspot: bool = True,
+) -> dict[str, Any]:
+    """
+    One API session: PPPoE + Hotspot live sessions for org usage sampling.
+
+    Skips hosts that recently timed out so dead routers cannot stall the fleet.
+    """
+    host = (host or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if not host or not username:
+        return {
+            "ok": False,
+            "pppoe": {},
+            "hotspot": {},
+            "error": "Router host or username missing.",
+        }
+    if is_mikrotik_host_cooling_down(host):
+        return {
+            "ok": False,
+            "pppoe": {},
+            "hotspot": {},
+            "error": "Router recently unreachable — cooling down.",
+            "cooling_down": True,
+        }
+    try:
+        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
+            pppoe_sessions: dict[str, dict[str, Any]] = {}
+            hotspot_sessions: dict[str, dict[str, Any]] = {}
+            if want_pppoe:
+                active_rows = _print(
+                    sock,
+                    "/ppp/active",
+                    props="name,service,caller-id,address,uptime",
+                )
+                names = [
+                    (row.get("name") or "").strip()
+                    for row in active_rows
+                    if (row.get("name") or "").strip()
+                ]
+                by_name = _pppoe_interface_counters(sock, names) if names else {}
+                pppoe_sessions = _build_pppoe_bulk_sessions(host, active_rows, by_name)
+            if want_hotspot:
+                hotspot_rows = _print(
+                    sock,
+                    "/ip/hotspot/active",
+                    props=(
+                        "mac-address,user,address,uptime,bytes-in,bytes-out,"
+                        "login-by,server"
+                    ),
+                )
+                hotspot_sessions = _build_hotspot_bulk_sessions(host, hotspot_rows)
+            clear_mikrotik_host_cooldown(host)
+            return {
+                "ok": True,
+                "pppoe": pppoe_sessions,
+                "hotspot": hotspot_sessions,
+                "error": "",
+            }
+    except TimeoutError:
+        mark_mikrotik_host_unreachable(host)
+        return {
+            "ok": False,
+            "pppoe": {},
+            "hotspot": {},
+            "error": "Connection timed out.",
+            "timeout": True,
+        }
+    except OSError as exc:
+        mark_mikrotik_host_unreachable(host, ttl=60)
+        return {
+            "ok": False,
+            "pppoe": {},
+            "hotspot": {},
+            "error": f"Could not reach {host}:8728.",
+            "detail": str(exc),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "pppoe": {},
+            "hotspot": {},
+            "error": str(exc) or "Could not read live sessions.",
+        }
+
+
 def fetch_router_bulk_pppoe_usage(
     host: str,
     username: str,
@@ -8236,95 +8471,23 @@ def fetch_router_bulk_pppoe_usage(
     ``sessions`` keyed by lowercased PPPoE username with byte counters from
     the matching ``<pppoe-…>`` interface when present.
     """
-    host = (host or "").strip()
-    username = (username or "").strip()
-    password = password or ""
-    if not host or not username:
-        return {"ok": False, "sessions": {}, "error": "Router host or username missing."}
-    try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            active_rows = _print(
-                sock,
-                "/ppp/active",
-                props="name,service,caller-id,address,uptime",
-            )
-            try:
-                interfaces = _print(
-                    sock,
-                    "/interface",
-                    props="name,type,rx-byte,tx-byte,running",
-                )
-            except Exception:
-                interfaces = []
-            by_name = {(row.get("name") or "").strip(): row for row in interfaces}
-
-            sessions: dict[str, dict[str, Any]] = {}
-            for row in active_rows:
-                pppoe_name = (row.get("name") or "").strip()
-                if not pppoe_name:
-                    continue
-                key = pppoe_name.lower()
-                iface_name = ""
-                for candidate in (
-                    f"<pppoe-{ppoe_name}>",
-                    f"<pppoe-{key}>",
-                    pppoe_name,
-                ):
-                    if candidate in by_name:
-                        iface_name = candidate
-                        break
-                if not iface_name:
-                    for iface_row in interfaces:
-                        name = (iface_row.get("name") or "").strip()
-                        lower = name.lower()
-                        if key in lower and "pppoe" in lower:
-                            iface_name = name
-                            break
-                bytes_in = 0
-                bytes_out = 0
-                if iface_name and iface_name in by_name:
-                    iface = by_name[iface_name]
-                    bytes_in = _parse_int(iface.get("rx-byte"))
-                    bytes_out = _parse_int(iface.get("tx-byte"))
-                uptime_raw = (row.get("uptime") or "").strip()
-                sessions[key] = {
-                    "session_active": True,
-                    "pppoe_username": pppoe_name,
-                    "address": (row.get("address") or "").strip(),
-                    "caller_id": (row.get("caller-id") or "").strip(),
-                    "uptime": _human_uptime(uptime_raw),
-                    "uptime_raw": uptime_raw,
-                    "bytes_in": bytes_in,
-                    "bytes_out": bytes_out,
-                    "download_bps": None,
-                    "upload_bps": None,
-                    "interface": iface_name,
-                }
-                # Poll-to-poll rates (same direction rules as Hotspot / live PPPoE).
-                if iface_name and (bytes_in or bytes_out):
-                    rates = _hotspot_rates_from_bytes(
-                        f"pppoe-bulk:{host}:{key}",
-                        bytes_in,
-                        bytes_out,
-                    )
-                    sessions[key]["download_bps"] = rates.get("download_bps")
-                    sessions[key]["upload_bps"] = rates.get("upload_bps")
-            return {"ok": True, "sessions": sessions, "error": ""}
-    except TimeoutError:
-        return {"ok": False, "sessions": {}, "error": "Connection timed out."}
-    except OSError as exc:
-        return {
-            "ok": False,
-            "sessions": {},
-            "error": f"Could not reach {host}:8728.",
-            "detail": str(exc),
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "sessions": {},
-            "error": str(exc) or "Could not read PPPoE sessions.",
-        }
+    result = fetch_router_bulk_live_usage(
+        host,
+        username,
+        password,
+        port=port,
+        timeout=timeout,
+        want_pppoe=True,
+        want_hotspot=False,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "sessions": result.get("pppoe") or {},
+        "error": result.get("error") or "",
+        "cooling_down": bool(result.get("cooling_down")),
+        "timeout": bool(result.get("timeout")),
+        "detail": result.get("detail") or "",
+    }
 
 
 def fetch_router_bulk_hotspot_usage(
@@ -8336,65 +8499,23 @@ def fetch_router_bulk_hotspot_usage(
     timeout: float = 4.0,
 ) -> dict[str, Any]:
     """One API session: usage snapshot for every active Hotspot session by MAC."""
-    host = (host or "").strip()
-    username = (username or "").strip()
-    password = password or ""
-    if not host or not username:
-        return {"ok": False, "sessions": {}, "error": "Router host or username missing."}
-    try:
-        with _api_session(host, username, password, port=port, timeout=timeout) as sock:
-            active_rows = _print(
-                sock,
-                "/ip/hotspot/active",
-                props=(
-                    "mac-address,user,address,uptime,bytes-in,bytes-out,"
-                    "login-by,server"
-                ),
-            )
-            sessions: dict[str, dict[str, Any]] = {}
-            for row in active_rows:
-                mac_compact = _mac_compact(
-                    row.get("mac-address") or row.get("user") or ""
-                )
-                if len(mac_compact) != 12:
-                    continue
-                uptime_raw = (row.get("uptime") or "").strip()
-                bytes_in = _parse_int(row.get("bytes-in"))
-                bytes_out = _parse_int(row.get("bytes-out"))
-                rates = _hotspot_rates_from_bytes(
-                    f"{host}:{mac_compact}",
-                    bytes_in,
-                    bytes_out,
-                )
-                sessions[mac_compact] = {
-                    "ok": True,
-                    "session_active": True,
-                    "hotspot_mac": mac_compact,
-                    "address": (row.get("address") or "").strip(),
-                    "uptime": _human_uptime(uptime_raw),
-                    "uptime_raw": uptime_raw,
-                    "bytes_in": bytes_in,
-                    "bytes_out": bytes_out,
-                    "download_bps": rates.get("download_bps"),
-                    "upload_bps": rates.get("upload_bps"),
-                    "interface": (row.get("server") or "").strip(),
-                }
-            return {"ok": True, "sessions": sessions, "error": ""}
-    except TimeoutError:
-        return {"ok": False, "sessions": {}, "error": "Connection timed out."}
-    except OSError as exc:
-        return {
-            "ok": False,
-            "sessions": {},
-            "error": f"Could not reach {host}:8728.",
-            "detail": str(exc),
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "ok": False,
-            "sessions": {},
-            "error": str(exc) or "Could not read Hotspot sessions.",
-        }
+    result = fetch_router_bulk_live_usage(
+        host,
+        username,
+        password,
+        port=port,
+        timeout=timeout,
+        want_pppoe=False,
+        want_hotspot=True,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "sessions": result.get("hotspot") or {},
+        "error": result.get("error") or "",
+        "cooling_down": bool(result.get("cooling_down")),
+        "timeout": bool(result.get("timeout")),
+        "detail": result.get("detail") or "",
+    }
 
 
 def _find_cpe_wan_interface(sock: socket.socket) -> str:
@@ -9156,6 +9277,14 @@ def fetch_active_pppoe_usernames(
             "blocked": [],
             "error": "Router host or username missing.",
         }
+    if is_mikrotik_host_cooling_down(host):
+        return {
+            "ok": False,
+            "usernames": [],
+            "blocked": [],
+            "error": "Router recently unreachable — cooling down.",
+            "cooling_down": True,
+        }
     try:
         with _api_session(host, username, password, port=port, timeout=timeout) as sock:
             rows = _print(sock, "/ppp/active", props="name,service")
@@ -9178,13 +9307,16 @@ def fetch_active_pppoe_usernames(
                 profile = (row.get("profile") or "").strip()
                 if profile == PPPOE_BLOCKED_PROFILE_NAME or _is_disabled(row):
                     blocked.append(name.lower())
+            clear_mikrotik_host_cooldown(host)
             return {"ok": True, "usernames": names, "blocked": blocked, "error": ""}
     except TimeoutError:
+        mark_mikrotik_host_unreachable(host)
         return {
             "ok": False,
             "usernames": [],
             "blocked": [],
             "error": "Connection timed out.",
+            "timeout": True,
         }
     except ConnectionError as exc:
         return {
@@ -9195,6 +9327,7 @@ def fetch_active_pppoe_usernames(
             "auth_error": True,
         }
     except OSError as exc:
+        mark_mikrotik_host_unreachable(host, ttl=60)
         return {
             "ok": False,
             "usernames": [],
@@ -9230,6 +9363,14 @@ def fetch_hotspot_client_macs(
             "connected_macs": [],
             "error": "Router host or username missing.",
         }
+    if is_mikrotik_host_cooling_down(host):
+        return {
+            "ok": False,
+            "active_macs": [],
+            "connected_macs": [],
+            "error": "Router recently unreachable — cooling down.",
+            "cooling_down": True,
+        }
 
     def _mac(value: str) -> str:
         compact = "".join(ch for ch in (value or "") if ch.isalnum()).upper()
@@ -9256,6 +9397,7 @@ def fetch_hotspot_client_macs(
                 if (mac := _mac(row.get("mac-address") or ""))
             }
             connected_macs.update(active_macs)
+            clear_mikrotik_host_cooldown(host)
             return {
                 "ok": True,
                 "active_macs": sorted(active_macs),
@@ -9263,10 +9405,12 @@ def fetch_hotspot_client_macs(
                 "error": "",
             }
     except TimeoutError:
+        mark_mikrotik_host_unreachable(host)
         error = "Connection timed out."
     except ConnectionError as exc:
         error = str(exc) or "Login failed."
     except OSError as exc:
+        mark_mikrotik_host_unreachable(host, ttl=60)
         error = f"Could not reach {host}:8728. {exc}"
     except Exception as exc:  # noqa: BLE001
         error = str(exc) or "Could not read Hotspot sessions."
@@ -13591,6 +13735,49 @@ def dial_host(host: str) -> str:
     if not host or on_router_lan():
         return host
     return _tunnel_hosts().get(host, host)
+
+
+def _mikrotik_dead_host_key(host: str) -> str:
+    dial = dial_host(host) or (host or "").strip()
+    return f"mikrotik_dead_host:v1:{dial}"
+
+
+def is_mikrotik_host_cooling_down(host: str) -> bool:
+    """True when a recent timeout/unreachable marked this host for a short skip."""
+    host = (host or "").strip()
+    if not host:
+        return False
+    try:
+        from django.core.cache import cache
+
+        return bool(cache.get(_mikrotik_dead_host_key(host)))
+    except Exception:
+        return False
+
+
+def mark_mikrotik_host_unreachable(host: str, *, ttl: int = 90) -> None:
+    """Skip repeated dials to a dead MikroTik for a short window."""
+    host = (host or "").strip()
+    if not host:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.set(_mikrotik_dead_host_key(host), 1, max(30, int(ttl or 90)))
+    except Exception:
+        pass
+
+
+def clear_mikrotik_host_cooldown(host: str) -> None:
+    host = (host or "").strip()
+    if not host:
+        return
+    try:
+        from django.core.cache import cache
+
+        cache.delete(_mikrotik_dead_host_key(host))
+    except Exception:
+        pass
 
 
 def mikrotik_probe_timeout(host: str, *, base: float = 1.2) -> float:

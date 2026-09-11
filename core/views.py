@@ -82,8 +82,10 @@ from billing.services import (
     plan_uses_clock_time,
     plans_for_router,
     recharge_customer_cash,
+    reset_customer_usage_tracking,
     resolve_lead_allocation_fee,
     resume_customer_package,
+    set_customer_package_renewed,
     subscription_access_deadline,
 )
 from billing.stk import (
@@ -11501,11 +11503,13 @@ def my_clients(request):
                 customer.package_end = compute_package_end(start, customer.plan)
             else:
                 customer.package_end = None
+            customer.usage_tracking_since = start
             customer.save(
                 update_fields=[
                     "status",
                     "package_start",
                     "package_end",
+                    "usage_tracking_since",
                 ]
             )
             customer_pk = customer.pk
@@ -14138,6 +14142,8 @@ def clients_general_usage(request):
             top_users=trends.get("top_users") or [],
             trends_url=reverse("core:clients_general_usage_trends"),
             surfing_url=reverse("core:clients_surfing"),
+            usage_reset_url=reverse("core:clients_usage_reset"),
+            usage_set_renewed_url=reverse("core:clients_usage_set_renewed"),
             **router_ctx,
         ),
     )
@@ -14185,6 +14191,199 @@ def clients_general_usage_trends(request):
             router_id=router_ctx["clients_router_id"],
             unassigned_only=router_ctx["clients_router_unassigned"],
         )
+    )
+
+
+def _parse_usage_tracking_datetime(raw: str):
+    """Parse date or datetime-local input into an aware local datetime."""
+    from datetime import date as date_cls
+    from datetime import datetime as datetime_cls
+    from datetime import time as time_cls
+
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        if "T" in text:
+            stamp = datetime_cls.fromisoformat(text)
+        else:
+            day = date_cls.fromisoformat(text)
+            stamp = datetime_cls.combine(day, time_cls.min)
+    except ValueError:
+        return None
+    if timezone.is_naive(stamp):
+        stamp = timezone.make_aware(stamp, timezone.get_current_timezone())
+    return timezone.localtime(stamp)
+
+
+def _clients_usage_tracking_queryset(request, org, *, service: str = ""):
+    """Customers targeted by usage reset / package-renewed actions."""
+    qs = Customer.objects.filter(organization=org).select_related("plan", "router")
+    tab = (service or request.POST.get("tab") or request.GET.get("tab") or "pppoe").strip().lower()
+    if tab == "hotspot":
+        qs = qs.filter(service_type=Customer.ServiceType.HOTSPOT)
+    elif tab == "pppoe":
+        qs = qs.filter(
+            service_type__in=[Customer.ServiceType.PPPOE, Customer.ServiceType.STATIC]
+        )
+    router_raw = (request.POST.get("router") or request.GET.get("router") or "").strip()
+    if router_raw == "none":
+        qs = qs.filter(router__isnull=True)
+    elif router_raw.isdigit():
+        qs = qs.filter(router_id=int(router_raw))
+    customer_raw = (request.POST.get("customer_id") or "").strip()
+    if customer_raw.isdigit():
+        qs = qs.filter(pk=int(customer_raw))
+    return qs, tab, router_raw
+
+
+@client_workspace_required
+@require_POST
+def clients_usage_reset(request):
+    """Reset data-used tracking for one client or all on a MikroTik filter."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+
+    qs, tab, router_raw = _clients_usage_tracking_queryset(request, org)
+    customer_raw = (request.POST.get("customer_id") or "").strip()
+    scope = (request.POST.get("scope") or "").strip().lower()
+    if not customer_raw and scope != "router":
+        return JsonResponse(
+            {"ok": False, "error": "Choose a client, or reset everyone on this MikroTik."},
+            status=400,
+        )
+    if scope == "router" and not router_raw:
+        return JsonResponse(
+            {"ok": False, "error": "Filter by a MikroTik before resetting everyone on it."},
+            status=400,
+        )
+
+    stamp = _parse_usage_tracking_datetime(request.POST.get("at") or "") or timezone.localtime()
+    customers = list(qs)
+    if not customers:
+        return JsonResponse({"ok": False, "error": "No matching clients found."}, status=404)
+
+    from billing.usage_samples import (
+        _invalidate_client_usage_trend_cache,
+        invalidate_org_usage_caches,
+    )
+
+    for customer in customers:
+        reset_customer_usage_tracking(customer, at=stamp)
+        _invalidate_client_usage_trend_cache(customer.pk)
+    invalidate_org_usage_caches(org)
+
+    label = timezone.localtime(stamp).strftime("%b %d, %Y · %H:%M")
+    return JsonResponse(
+        {
+            "ok": True,
+            "updated": len(customers),
+            "usage_tracking_since": timezone.localtime(stamp).isoformat(),
+            "usage_tracking_label": label,
+            "message": (
+                f"Data used reset for {len(customers)} client"
+                f"{'' if len(customers) == 1 else 's'} from {label}."
+            ),
+            "tab": tab,
+            "router": router_raw,
+        }
+    )
+
+
+@client_workspace_required
+@require_POST
+def clients_usage_set_renewed(request):
+    """Set package renewal date (+ usage baseline) for one client or a MikroTik filter."""
+    org = resolve_organization(request.user, request)
+    if not org:
+        return JsonResponse({"ok": False, "error": "No organization."}, status=400)
+
+    qs, tab, router_raw = _clients_usage_tracking_queryset(request, org)
+    customer_raw = (request.POST.get("customer_id") or "").strip()
+    scope = (request.POST.get("scope") or "").strip().lower()
+    if not customer_raw and scope != "router":
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Choose a client, or set the renewal date for everyone on this MikroTik.",
+            },
+            status=400,
+        )
+    if scope == "router" and not router_raw:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": "Filter by a MikroTik before applying a renewal date to everyone on it.",
+            },
+            status=400,
+        )
+
+    renewed_at = _parse_usage_tracking_datetime(request.POST.get("renewed_at") or "")
+    if renewed_at is None:
+        return JsonResponse(
+            {"ok": False, "error": "Choose a valid package renewal date."},
+            status=400,
+        )
+    from datetime import timedelta
+
+    if renewed_at > timezone.localtime() + timedelta(days=1):
+        return JsonResponse(
+            {"ok": False, "error": "Renewal date cannot be far in the future."},
+            status=400,
+        )
+
+    customers = list(qs)
+    if not customers:
+        return JsonResponse({"ok": False, "error": "No matching clients found."}, status=404)
+
+    from billing.usage_samples import (
+        _invalidate_client_usage_trend_cache,
+        invalidate_org_usage_caches,
+    )
+
+    updated = 0
+    errors = []
+    for customer in customers:
+        try:
+            set_customer_package_renewed(customer, renewed_at=renewed_at)
+            _invalidate_client_usage_trend_cache(customer.pk)
+            updated += 1
+        except ValueError as exc:
+            errors.append(f"{customer.full_name}: {exc}")
+    invalidate_org_usage_caches(org)
+
+    if not updated:
+        return JsonResponse(
+            {
+                "ok": False,
+                "error": errors[0] if errors else "Could not update package renewal.",
+                "errors": errors,
+            },
+            status=400,
+        )
+
+    label = timezone.localtime(renewed_at).strftime("%b %d, %Y · %H:%M")
+    message = (
+        f"Package renewed on {label} for {updated} client"
+        f"{'' if updated == 1 else 's'}. Data used now tracks from that date."
+    )
+    if errors:
+        message += f" Skipped {len(errors)} without a usable plan."
+    return JsonResponse(
+        {
+            "ok": True,
+            "updated": updated,
+            "skipped": len(errors),
+            "errors": errors[:8],
+            "package_start": timezone.localtime(renewed_at).isoformat(),
+            "package_start_label": timezone.localtime(renewed_at).strftime("%b %d, %Y"),
+            "usage_tracking_since": timezone.localtime(renewed_at).isoformat(),
+            "usage_tracking_label": label,
+            "message": message,
+            "tab": tab,
+            "router": router_raw,
+        }
     )
 
 
@@ -14641,7 +14840,7 @@ def clients_surfing_status(request):
         else Customer.ServiceType.PPPOE
     )
     force = (request.GET.get("refresh") or "").strip() in {"1", "true", "yes"}
-    cache_key = f"clients_surfing:{org.pk}:{service}:v4"
+    cache_key = f"clients_surfing:{org.pk}:{service}:v5"
     if not force:
         cached = cache.get(cache_key)
         if cached is not None:
@@ -14655,6 +14854,28 @@ def clients_surfing_status(request):
         .select_related("router", "organization", "plan")
         .order_by("id")
     )
+
+    from billing.usage_samples import (
+        get_org_live_usage,
+        org_live_usage_is_fresh,
+        sample_organization_usage,
+    )
+
+    live_map: dict = {}
+    use_live_snapshot = False
+    if force:
+        try:
+            sample_organization_usage(org, force=True)
+        except Exception:
+            pass
+        live = get_org_live_usage(org)
+        if live.get("ok"):
+            live_map = live.get(service) if isinstance(live.get(service), dict) else {}
+            use_live_snapshot = True
+    elif org_live_usage_is_fresh(org):
+        live = get_org_live_usage(org)
+        live_map = live.get(service) if isinstance(live.get(service), dict) else {}
+        use_live_snapshot = True
 
     assigned_router_ids = {c.router_id for c in customers if c.router_id}
     has_unassigned = any(not c.router_id for c in customers)
@@ -14677,9 +14898,13 @@ def clients_surfing_status(request):
     router_errors: dict[int, str] = {}
 
     def _probe_router(router) -> tuple[int, set[str], set[str], set[str], str]:
+        from core.mikrotik_connect import is_mikrotik_host_cooling_down
+
         router_id = router.pk
         if router.account_status == MikroTikRouter.AccountStatus.SUSPENDED:
             return router_id, set(), set(), set(), "Router suspended"
+        if is_mikrotik_host_cooling_down(router.host):
+            return router_id, set(), set(), set(), "Router recently unreachable"
         if service == "hotspot":
             result = fetch_hotspot_client_macs(
                 router.host,
@@ -14710,7 +14935,7 @@ def clients_surfing_status(request):
             result.get("error") or "Could not reach router",
         )
 
-    if routers_by_id:
+    if not use_live_snapshot and routers_by_id:
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         workers = min(8, len(routers_by_id))
@@ -14720,7 +14945,12 @@ def clients_surfing_status(request):
                 for router in routers_by_id.values()
             ]
             for future in as_completed(futures):
-                router_id, active, connected, nas_blocked, error = future.result()
+                try:
+                    router_id, active, connected, nas_blocked, error = future.result(
+                        timeout=12.0
+                    )
+                except Exception:
+                    continue
                 active_by_router[router_id] = active
                 connected_by_router[router_id] = connected
                 nas_blocked_by_router[router_id] = nas_blocked
@@ -14774,6 +15004,19 @@ def clients_surfing_status(request):
         if not identity:
             reason = "No device MAC" if service == "hotspot" else "No PPPoE username"
             connection_reason = reason
+        elif use_live_snapshot:
+            entry = live_map.get(customer.pk) or live_map.get(str(customer.pk)) or {}
+            if not isinstance(entry, dict):
+                entry = {}
+            session_online = bool(entry.get("session_active"))
+            connected = session_online
+            if not session_online:
+                reason = (
+                    "No active Hotspot session"
+                    if service == "hotspot"
+                    else "Router not dialed — no active PPPoE session"
+                )
+                connection_reason = reason
         elif not customer.router_id:
             # Older/imported customers may not be assigned to a router. The
             # live NAS session is still authoritative, so match their unique
@@ -18514,7 +18757,6 @@ def shop(request):
         status=NetworkEquipment.Status.ACTIVE
     ).aggregate(
         total=Count("id"),
-        in_stock=Count("id", filter=Q(quantity__gt=0)),
         on_sale=Count(
             "id",
             filter=Q(discount_enabled=True, discount_price__gt=0),
@@ -18535,7 +18777,6 @@ def shop(request):
             categories=categories,
             active_category=category,
             shop_query=q,
-            in_stock_count=catalog_stats["in_stock"] or 0,
             on_sale_count=catalog_stats["on_sale"] or 0,
             total_active=catalog_stats["total"] or 0,
         ),

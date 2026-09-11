@@ -155,6 +155,46 @@ class UsageTrendPayloadTests(TestCase):
         self.assertIsNotNone(lowest)
         self.assertEqual(lowest["download_bps"], 1000)
 
+    def test_usage_tracking_since_ignores_earlier_data(self):
+        now = timezone.now()
+        self.customer.usage_tracking_since = now - timezone.timedelta(minutes=90)
+        self.customer.save(update_fields=["usage_tracking_since"])
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=120),
+            session_active=True,
+            bytes_in=1_000,
+            bytes_out=500,
+            download_bps=1000,
+            upload_bps=500,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=60),
+            session_active=True,
+            bytes_in=10_000,
+            bytes_out=2_000,
+            download_bps=2000,
+            upload_bps=800,
+        )
+        CustomerUsageSample.objects.create(
+            customer=self.customer,
+            organization=self.org,
+            sampled_at=now - timezone.timedelta(minutes=30),
+            session_active=True,
+            bytes_in=16_000,
+            bytes_out=4_000,
+            download_bps=2500,
+            upload_bps=900,
+        )
+        payload = usage_trend_payload(self.customer, hours=24, use_cache=False)
+        self.assertTrue(payload["ok"])
+        # Baseline at 60m sample; only the 30m delta counts (6k + 2k).
+        self.assertEqual(payload["summary"]["data_used_bytes"], 8_000)
+        self.assertTrue(payload["summary"]["usage_tracking_since"])
+
     def test_plain_language_story_fields(self):
         now = timezone.now()
         CustomerUsageSample.objects.create(
@@ -688,12 +728,12 @@ class SampleOrganizationUsageTests(TestCase):
             pppoe_username="none1",
         )
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
-    def test_records_online_and_offline_clients(self, mock_pppoe, mock_hotspot):
-        mock_pppoe.return_value = {
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_records_online_and_offline_clients(self, mock_live, _mock_cool):
+        mock_live.return_value = {
             "ok": True,
-            "sessions": {
+            "pppoe": {
                 "online1": {
                     "session_active": True,
                     "bytes_in": 5000,
@@ -702,9 +742,9 @@ class SampleOrganizationUsageTests(TestCase):
                     "address": "10.10.0.5",
                 }
             },
+            "hotspot": {},
             "error": "",
         }
-        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
 
         result = sample_organization_usage(self.org, force=True)
         self.assertTrue(result["ok"])
@@ -735,13 +775,13 @@ class SampleOrganizationUsageTests(TestCase):
         self.assertIsNotNone(unassigned_sample)
         self.assertFalse(unassigned_sample.session_active)
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
-    def test_records_unassigned_pppoe_live_session(self, mock_pppoe, mock_hotspot):
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_records_unassigned_pppoe_live_session(self, mock_live, _mock_cool):
         """Unassigned PPPoE clients must still map to the NAS that has their session."""
-        mock_pppoe.return_value = {
+        mock_live.return_value = {
             "ok": True,
-            "sessions": {
+            "pppoe": {
                 "none1": {
                     "session_active": True,
                     "bytes_in": 12_000,
@@ -750,9 +790,9 @@ class SampleOrganizationUsageTests(TestCase):
                     "address": "10.10.0.77",
                 }
             },
+            "hotspot": {},
             "error": "",
         }
-        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
 
         result = sample_organization_usage(self.org, force=True)
         self.assertTrue(result["ok"])
@@ -767,9 +807,9 @@ class SampleOrganizationUsageTests(TestCase):
         self.assertEqual(sample.bytes_out, 3_000)
         self.assertEqual(sample.address, "10.10.0.77")
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
-    def test_records_unassigned_hotspot_by_mac(self, mock_pppoe, mock_hotspot):
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_records_unassigned_hotspot_by_mac(self, mock_live, _mock_cool):
         hotspot = Customer.objects.create(
             organization=self.org,
             full_name="Hotspot Roamer",
@@ -778,10 +818,10 @@ class SampleOrganizationUsageTests(TestCase):
             service_type=Customer.ServiceType.HOTSPOT,
             hotspot_mac="AA:BB:CC:DD:EE:01",
         )
-        mock_pppoe.return_value = {"ok": True, "sessions": {}, "error": ""}
-        mock_hotspot.return_value = {
+        mock_live.return_value = {
             "ok": True,
-            "sessions": {
+            "pppoe": {},
+            "hotspot": {
                 "AABBCCDDEE01": {
                     "session_active": True,
                     "bytes_in": 4000,
@@ -805,27 +845,27 @@ class SampleOrganizationUsageTests(TestCase):
         self.assertTrue(sample.session_active)
         self.assertEqual(sample.bytes_out, 9000)
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
-    def test_failed_probe_does_not_mark_everyone_offline(self, mock_pppoe, mock_hotspot):
-        mock_pppoe.return_value = {
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_failed_probe_does_not_mark_everyone_offline(self, mock_live, _mock_cool):
+        mock_live.return_value = {
             "ok": False,
-            "sessions": {},
+            "pppoe": {},
+            "hotspot": {},
             "error": "Connection timed out.",
         }
-        mock_hotspot.return_value = {"ok": False, "sessions": {}, "error": "timeout"}
 
         result = sample_organization_usage(self.org, force=True)
         self.assertTrue(result["ok"])
         self.assertEqual(result["sampled"], 0)
         self.assertEqual(CustomerUsageSample.objects.count(), 0)
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
-    def test_org_payload_lists_all_clients_after_sweep(self, mock_pppoe, mock_hotspot):
-        mock_pppoe.return_value = {
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
+    def test_org_payload_lists_all_clients_after_sweep(self, mock_live, _mock_cool):
+        mock_live.return_value = {
             "ok": True,
-            "sessions": {
+            "pppoe": {
                 "online1": {
                     "session_active": True,
                     "bytes_in": 9000,
@@ -833,9 +873,9 @@ class SampleOrganizationUsageTests(TestCase):
                     "uptime_raw": "30m",
                 }
             },
+            "hotspot": {},
             "error": "",
         }
-        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
         sample_organization_usage(self.org, force=True)
 
         payload = org_usage_payload(
@@ -1313,18 +1353,18 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
         resolved = resolve_client_usage_router(self.unassigned, self.org)
         self.assertEqual(resolved.pk, self.router_b.pk)
 
-    @patch("core.mikrotik_connect.fetch_router_bulk_hotspot_usage")
-    @patch("core.mikrotik_connect.fetch_router_bulk_pppoe_usage")
+    @patch("core.mikrotik_connect.is_mikrotik_host_cooling_down", return_value=False)
+    @patch("core.mikrotik_connect.fetch_router_bulk_live_usage")
     def test_multi_router_simulation_attributes_sessions_accurately(
-        self, mock_pppoe, mock_hotspot
+        self, mock_live, _mock_cool
     ):
         """Each client's traffic must land on the correct CustomerUsageSample."""
 
-        def _pppoe_for_host(host, *_args, **_kwargs):
+        def _live_for_host(host, *_args, **_kwargs):
             if host == self.router_a.host:
                 return {
                     "ok": True,
-                    "sessions": {
+                    "pppoe": {
                         "assigned1": {
                             "session_active": True,
                             "bytes_in": 1000,
@@ -1333,12 +1373,13 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
                             "address": "10.10.0.1",
                         }
                     },
+                    "hotspot": {},
                     "error": "",
                 }
             if host == self.router_b.host:
                 return {
                     "ok": True,
-                    "sessions": {
+                    "pppoe": {
                         "roamer1": {
                             "session_active": True,
                             "bytes_in": 2000,
@@ -1347,12 +1388,12 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
                             "address": "10.20.0.2",
                         }
                     },
+                    "hotspot": {},
                     "error": "",
                 }
-            return {"ok": False, "sessions": {}, "error": "unknown host"}
+            return {"ok": False, "pppoe": {}, "hotspot": {}, "error": "unknown host"}
 
-        mock_pppoe.side_effect = _pppoe_for_host
-        mock_hotspot.return_value = {"ok": True, "sessions": {}, "error": ""}
+        mock_live.side_effect = _live_for_host
 
         result = sample_organization_usage(self.org, force=True)
         self.assertTrue(result["ok"])
@@ -1382,11 +1423,11 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
 
         cache.clear()
 
-        def _pppoe_for_host_t2(host, *_args, **_kwargs):
+        def _live_for_host_t2(host, *_args, **_kwargs):
             if host == self.router_a.host:
                 return {
                     "ok": True,
-                    "sessions": {
+                    "pppoe": {
                         "assigned1": {
                             "session_active": True,
                             "bytes_in": 1500,
@@ -1395,12 +1436,13 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
                             "address": "10.10.0.1",
                         }
                     },
+                    "hotspot": {},
                     "error": "",
                 }
             if host == self.router_b.host:
                 return {
                     "ok": True,
-                    "sessions": {
+                    "pppoe": {
                         "roamer1": {
                             "session_active": True,
                             "bytes_in": 2500,
@@ -1409,11 +1451,12 @@ class UsageRouterResolutionAndSimulationTests(TestCase):
                             "address": "10.20.0.2",
                         }
                     },
+                    "hotspot": {},
                     "error": "",
                 }
-            return {"ok": False, "sessions": {}, "error": "unknown host"}
+            return {"ok": False, "pppoe": {}, "hotspot": {}, "error": "unknown host"}
 
-        mock_pppoe.side_effect = _pppoe_for_host_t2
+        mock_live.side_effect = _live_for_host_t2
         sample_organization_usage(self.org, force=True)
 
         trends_a = usage_trend_payload(self.assigned, hours=6, use_cache=False)

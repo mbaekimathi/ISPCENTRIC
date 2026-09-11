@@ -990,7 +990,8 @@ def apply_subscription_period(customer, *, plan=None, start=None, end=None):
         raise ValueError("The to date must be on or after the from date.")
     customer.package_start = start_dt
     customer.package_end = end_dt
-    update_fields = ["package_start", "package_end"]
+    customer.usage_tracking_since = start_dt
+    update_fields = ["package_start", "package_end", "usage_tracking_since"]
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)
@@ -1063,6 +1064,7 @@ def apply_subscription_renewal(customer, *, plan=None):
     # Calendar packages stay active until local midnight after the end day —
     # do not treat an afternoon package_end clock time as already expired.
     active_until = subscription_access_deadline(customer) or current_end
+    fresh_start = True
     if active_until is not None and active_until > now:
         # Stack the purchased duration onto the current expiry, but preserve
         # the start of the active access window. Moving package_start to the
@@ -1070,6 +1072,7 @@ def apply_subscription_renewal(customer, *, plan=None):
         # the first package ends.
         calculation_start = current_end or active_until
         access_start = current_start if current_start and current_start <= now else now
+        fresh_start = False
     else:
         calculation_start = now
         access_start = now
@@ -1079,6 +1082,51 @@ def apply_subscription_renewal(customer, *, plan=None):
     customer.package_start = access_start
     customer.package_end = end
     update_fields = ["package_start", "package_end"]
+    # Fresh renewals restart data-used tracking; stacked renewals keep the
+    # current package window's counter so mid-period top-ups stay continuous.
+    if fresh_start or getattr(customer, "usage_tracking_since", None) is None:
+        customer.usage_tracking_since = access_start
+        update_fields.append("usage_tracking_since")
+    if clear_customer_package_pause(customer, save=False):
+        update_fields.append("package_paused_at")
+    customer.save(update_fields=update_fields)
+    return customer
+
+
+def reset_customer_usage_tracking(customer, *, at=None):
+    """
+    Restart data-used tracking from ``at`` (default: now).
+
+    Keeps historical usage samples; charts/totals simply ignore traffic before
+    the new baseline so operators can monitor the current package window.
+    """
+    stamp = _as_local_datetime(at) or timezone.localtime()
+    customer.usage_tracking_since = stamp
+    customer.save(update_fields=["usage_tracking_since"])
+    return customer
+
+
+def set_customer_package_renewed(customer, *, renewed_at, plan=None):
+    """
+    Record when the client's package was renewed and restart usage tracking.
+
+    Sets ``package_start`` to the renewal moment, recomputes ``package_end``
+    from the plan duration when a plan is available, and aligns
+    ``usage_tracking_since`` so data-used totals match that package window.
+    """
+    plan = plan or getattr(customer, "plan", None)
+    start_dt = _as_local_datetime(renewed_at)
+    if start_dt is None:
+        raise ValueError("Choose a valid package renewal date.")
+    customer.package_start = start_dt
+    update_fields = ["package_start", "usage_tracking_since"]
+    if plan is not None:
+        end = compute_package_end(start_dt, plan)
+        if end is None:
+            raise ValueError("Could not compute the package end from the plan duration.")
+        customer.package_end = end
+        update_fields.append("package_end")
+    customer.usage_tracking_since = start_dt
     if clear_customer_package_pause(customer, save=False):
         update_fields.append("package_paused_at")
     customer.save(update_fields=update_fields)

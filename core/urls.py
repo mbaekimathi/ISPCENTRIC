@@ -131,6 +131,16 @@ urlpatterns = [
         views.clients_general_usage_trends,
         name="clients_general_usage_trends",
     ),
+    path(
+        "app/clients/usage/reset/",
+        views.clients_usage_reset,
+        name="clients_usage_reset",
+    ),
+    path(
+        "app/clients/usage/set-renewed/",
+        views.clients_usage_set_renewed,
+        name="clients_usage_set_renewed",
+    ),
     path("app/clients/<int:customer_id>/", views.client_detail, name="client_detail"),
     path(
         "app/clients/<int:customer_id>/delete/",

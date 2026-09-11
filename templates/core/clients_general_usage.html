@@ -123,6 +123,36 @@
       </p>
     {% endif %}
 
+    <section class="clients-usage-tracking-panel" data-usage-tracking-panel aria-label="Usage tracking controls">
+      <div class="clients-usage-tracking-copy">
+        <p class="clients-usage-tracking-kicker">Package data tracking</p>
+        <h2>Reset usage &amp; renewal date</h2>
+        <p class="clients-usage-tracking-lead">
+          Restart data-used counters after a package renewal, or set the renewal date so totals stay accurate per MikroTik.
+          {% if router_filter_label %}
+            Bulk actions apply to clients on <strong>{{ router_filter_label }}</strong>.
+          {% elif clients_router_param == "none" %}
+            Bulk actions apply to unassigned clients.
+          {% else %}
+            Filter by MikroTik to reset or set renewal for everyone on that router, or use the row actions below.
+          {% endif %}
+        </p>
+      </div>
+      <div class="clients-usage-tracking-actions">
+        {% if clients_router_param %}
+          <button type="button" class="btn btn-ghost btn-sm" data-usage-reset-router>
+            Reset all on this MikroTik
+          </button>
+          <button type="button" class="btn btn-primary btn-sm" data-usage-renew-router>
+            Set renewed date for MikroTik
+          </button>
+        {% else %}
+          <p class="clients-usage-tracking-hint">Select a MikroTik above for bulk actions, or use Track on each client row.</p>
+        {% endif %}
+      </div>
+      <p class="clients-usage-tracking-status" data-usage-tracking-status hidden role="status"></p>
+    </section>
+
     <div class="clients-usage-range-wrap">
       {% include "core/includes/usage_range_filter.html" with usage_filter=usage_filter usage_filter_id="clients-usage-range-filter" usage_filter_action="" %}
     </div>
@@ -330,7 +360,8 @@
               Status <span class="clients-usage-sort-ind" aria-hidden="true"></span>
             </button>
           </th>
-          <th scope="col"></th>
+          <th scope="col">Tracking</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
         </tr>
       </thead>
       <tbody data-top-users-body data-show-gadgets="{% if active_tab == 'hotspot' %}1{% else %}0{% endif %}">
@@ -401,16 +432,30 @@
               </span>
               <small class="clients-usage-online-ratio">{{ user.online_ratio|default:0 }}% uptime</small>
             </td>
-            <td data-label="">
-              <a class="clients-usage-view-btn" href="{% url 'core:client_usage_analysis' user.customer_id %}?{{ usage_filter_qs }}">
-                <span>Usage</span>
-                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
-              </a>
+            <td data-label="Tracking">
+              <div class="clients-usage-track-cell" data-usage-track-cell>
+                <strong data-track-renewed>{% if user.package_start_label %}{{ user.package_start_label }}{% else %}—{% endif %}</strong>
+                <small data-track-since>{% if user.usage_tracking_label %}Since {{ user.usage_tracking_label }}{% else %}Full window{% endif %}</small>
+              </div>
+            </td>
+            <td data-label="Actions">
+              <div class="clients-usage-row-actions">
+                <a class="clients-usage-view-btn" href="{% url 'core:client_usage_analysis' user.customer_id %}?{{ usage_filter_qs }}">
+                  <span>Usage</span>
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+                </a>
+                <button type="button" class="btn btn-ghost btn-sm clients-usage-track-btn" data-usage-reset-one data-customer-id="{{ user.customer_id }}" data-customer-name="{{ user.full_name }}">
+                  Reset
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm clients-usage-track-btn" data-usage-renew-one data-customer-id="{{ user.customer_id }}" data-customer-name="{{ user.full_name }}" data-package-start="{{ user.package_start|default:'' }}">
+                  Renewed
+                </button>
+              </div>
             </td>
           </tr>
         {% empty %}
           <tr data-empty-row>
-            <td colspan="{% if active_tab == 'hotspot' %}11{% else %}10{% endif %}">
+            <td colspan="{% if active_tab == 'hotspot' %}13{% else %}12{% endif %}">
               <div class="clients-usage-users-empty">
                 <span class="clients-usage-users-empty-ico" aria-hidden="true">
                   {% if active_tab == 'hotspot' %}
@@ -432,6 +477,24 @@
 
   </section>
 </div>
+
+<dialog class="clients-usage-renew-dialog" data-usage-renew-dialog>
+  <form method="dialog" class="clients-usage-renew-form" data-usage-renew-form>
+    {% csrf_token %}
+    <header class="clients-usage-renew-head">
+      <h3 data-usage-renew-title>Set package renewed date</h3>
+      <p data-usage-renew-copy>Data used will restart from this date, and the package window will be recalculated from the plan duration.</p>
+    </header>
+    <label class="clients-usage-renew-field">
+      <span>Renewed on</span>
+      <input type="datetime-local" name="renewed_at" data-usage-renew-input required>
+    </label>
+    <footer class="clients-usage-renew-foot">
+      <button type="button" class="btn btn-ghost btn-sm" data-usage-renew-cancel>Cancel</button>
+      <button type="submit" class="btn btn-primary btn-sm" data-usage-renew-submit>Save renewal</button>
+    </footer>
+  </form>
+</dialog>
 {% endblock %}
 
 {% block client_extra_js %}
@@ -447,12 +510,24 @@
   var routerFilter = root.getAttribute("data-router") || "";
   var rangeLabel = root.getAttribute("data-range-label") || "";
   var surfingUrl = "{{ surfing_url|default:'/app/clients/surfing/'|escapejs }}";
+  var resetUrl = "{{ usage_reset_url|default:'/app/clients/usage/reset/'|escapejs }}";
+  var setRenewedUrl = "{{ usage_set_renewed_url|default:'/app/clients/usage/set-renewed/'|escapejs }}";
   var showGadgets = tab === "hotspot";
   var stamp = document.querySelector("[data-usage-stamp]");
   var refreshBtn = document.querySelector("[data-usage-refresh]");
   var countEl = document.querySelector("[data-users-count]");
   var sortSelect = document.querySelector("[data-users-sort]");
   var sortCopy = document.querySelector("[data-users-sort-copy]");
+  var trackStatus = document.querySelector("[data-usage-tracking-status]");
+  var renewDialog = document.querySelector("[data-usage-renew-dialog]");
+  var renewForm = document.querySelector("[data-usage-renew-form]");
+  var renewInput = document.querySelector("[data-usage-renew-input]");
+  var renewTitle = document.querySelector("[data-usage-renew-title]");
+  var renewCopy = document.querySelector("[data-usage-renew-copy]");
+  var csrfToken = renewForm
+    ? ((renewForm.querySelector("input[name=csrfmiddlewaretoken]") || {}).value || "")
+    : "";
+  var renewTarget = null;
   var initial = {{ trends_json|safe }};
   var charts = {};
   var inFlight = false;
@@ -696,10 +771,18 @@
           "</span>" +
           '<small class="clients-usage-online-ratio">' + esc(user.online_ratio != null ? user.online_ratio : 0) + "% uptime</small>" +
         "</td>" +
-        '<td data-label=""><a class="clients-usage-view-btn" href="' + usage + '">' +
-          "<span>Usage</span>" +
-          '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>' +
-        "</a></td>" +
+        '<td data-label="Tracking"><div class="clients-usage-track-cell" data-usage-track-cell>' +
+          "<strong data-track-renewed>" + esc(user.package_start_label || "—") + "</strong>" +
+          "<small data-track-since>" + esc(user.usage_tracking_label ? ("Since " + user.usage_tracking_label) : "Full window") + "</small>" +
+        "</div></td>" +
+        '<td data-label="Actions"><div class="clients-usage-row-actions">' +
+          '<a class="clients-usage-view-btn" href="' + usage + '">' +
+            "<span>Usage</span>" +
+            '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>' +
+          "</a>" +
+          '<button type="button" class="btn btn-ghost btn-sm clients-usage-track-btn" data-usage-reset-one data-customer-id="' + esc(user.customer_id) + '" data-customer-name="' + esc(user.full_name) + '">Reset</button>' +
+          '<button type="button" class="btn btn-ghost btn-sm clients-usage-track-btn" data-usage-renew-one data-customer-id="' + esc(user.customer_id) + '" data-customer-name="' + esc(user.full_name) + '" data-package-start="' + esc(user.package_start || "") + '">Renewed</button>' +
+        "</div></td>" +
       "</tr>"
     );
   }
@@ -720,7 +803,7 @@
     if (!body) return;
     opts = opts || {};
     users = applySort(users || []);
-    var cols = showGadgets ? 11 : 10;
+    var cols = showGadgets ? 13 : 12;
     var token = ++renderToken;
     var totalHint = opts.totalHint != null ? opts.totalHint : users.length;
 
@@ -1140,6 +1223,157 @@
       loadTrends(true, { stampText: "Refreshing…" });
     });
   }
+
+  function setTrackStatus(message, isError) {
+    if (!trackStatus) return;
+    if (!message) {
+      trackStatus.hidden = true;
+      trackStatus.textContent = "";
+      trackStatus.classList.remove("is-error");
+      return;
+    }
+    trackStatus.hidden = false;
+    trackStatus.textContent = message;
+    trackStatus.classList.toggle("is-error", !!isError);
+  }
+
+  function toLocalInputValue(isoOrDate) {
+    var d = isoOrDate ? new Date(isoOrDate) : new Date();
+    if (isNaN(d.getTime())) d = new Date();
+    var pad = function (n) { return String(n).padStart(2, "0"); };
+    return (
+      d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      "T" + pad(d.getHours()) + ":" + pad(d.getMinutes())
+    );
+  }
+
+  function postTracking(url, fields) {
+    var body = new FormData();
+    if (csrfToken) body.append("csrfmiddlewaretoken", csrfToken);
+    body.append("tab", tab);
+    if (routerFilter) body.append("router", routerFilter);
+    Object.keys(fields || {}).forEach(function (key) {
+      if (fields[key] != null && fields[key] !== "") body.append(key, fields[key]);
+    });
+    return fetch(url, {
+      method: "POST",
+      body: body,
+      credentials: "same-origin",
+      headers: {
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRFToken": csrfToken
+      }
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok || !data || !data.ok) {
+          var err = new Error((data && data.error) || "Request failed");
+          err.payload = data;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function openRenewDialog(target) {
+    renewTarget = target || null;
+    if (!renewDialog || !renewInput) return;
+    var name = (target && target.name) || (routerFilter ? "this MikroTik" : "selected clients");
+    if (renewTitle) {
+      renewTitle.textContent = target && target.customerId
+        ? ("Set renewed date — " + name)
+        : "Set renewed date for MikroTik";
+    }
+    if (renewCopy) {
+      renewCopy.textContent = target && target.customerId
+        ? ("Package start and data-used tracking for " + name + " will restart from this date.")
+        : ("Applies to every listed client on the selected MikroTik. Package windows and data-used totals restart from this date.");
+    }
+    renewInput.value = toLocalInputValue(target && target.packageStart);
+    if (typeof renewDialog.showModal === "function") renewDialog.showModal();
+    else renewDialog.setAttribute("open", "open");
+  }
+
+  function closeRenewDialog() {
+    renewTarget = null;
+    if (!renewDialog) return;
+    if (typeof renewDialog.close === "function") renewDialog.close();
+    else renewDialog.removeAttribute("open");
+  }
+
+  function afterTrackingChange(data) {
+    setTrackStatus((data && data.message) || "Updated.", false);
+    loadTrends(true, { stampText: "Updating usage…" });
+  }
+
+  function resetUsage(opts) {
+    opts = opts || {};
+    var label = opts.customerName || (routerFilter ? "everyone on this MikroTik" : "these clients");
+    if (!window.confirm("Reset data used for " + label + "? Totals will restart from now. History is kept.")) {
+      return;
+    }
+    setTrackStatus("Resetting data used…", false);
+    postTracking(resetUrl, {
+      customer_id: opts.customerId || "",
+      scope: opts.scope || ""
+    })
+      .then(afterTrackingChange)
+      .catch(function (err) {
+        setTrackStatus((err && err.message) || "Could not reset usage.", true);
+      });
+  }
+
+  document.addEventListener("click", function (ev) {
+    var resetOne = ev.target.closest("[data-usage-reset-one]");
+    if (resetOne) {
+      resetUsage({
+        customerId: resetOne.getAttribute("data-customer-id"),
+        customerName: resetOne.getAttribute("data-customer-name") || "this client"
+      });
+      return;
+    }
+    var renewOne = ev.target.closest("[data-usage-renew-one]");
+    if (renewOne) {
+      openRenewDialog({
+        customerId: renewOne.getAttribute("data-customer-id"),
+        name: renewOne.getAttribute("data-customer-name") || "client",
+        packageStart: renewOne.getAttribute("data-package-start") || ""
+      });
+      return;
+    }
+    if (ev.target.closest("[data-usage-reset-router]")) {
+      resetUsage({ scope: "router" });
+      return;
+    }
+    if (ev.target.closest("[data-usage-renew-router]")) {
+      openRenewDialog({ scope: "router", name: "this MikroTik" });
+      return;
+    }
+    if (ev.target.closest("[data-usage-renew-cancel]")) {
+      closeRenewDialog();
+    }
+  });
+
+  if (renewForm) {
+    renewForm.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      if (!renewInput || !renewInput.value) return;
+      setTrackStatus("Saving package renewal…", false);
+      postTracking(setRenewedUrl, {
+        customer_id: (renewTarget && renewTarget.customerId) || "",
+        scope: (renewTarget && renewTarget.scope) || (renewTarget && renewTarget.customerId ? "" : "router"),
+        renewed_at: renewInput.value
+      })
+        .then(function (data) {
+          closeRenewDialog();
+          afterTrackingChange(data);
+        })
+        .catch(function (err) {
+          setTrackStatus((err && err.message) || "Could not save renewal date.", true);
+        });
+    });
+  }
+
   setInterval(function () { loadTrends(false); }, 60000);
   setInterval(function () { loadSurfing(false); }, 15000);
   document.addEventListener("visibilitychange", function () {

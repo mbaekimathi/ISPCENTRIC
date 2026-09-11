@@ -18,6 +18,8 @@ from billing.services import (
     customer_needs_nas_provision,
     customer_package_is_paused,
     customer_pppoe_secret_disabled,
+    reset_customer_usage_tracking,
+    set_customer_package_renewed,
     customer_receives_internet,
     customer_subscription_expired,
     end_customer_subscription,
@@ -43,6 +45,8 @@ class SubscriptionRenewalTests(SimpleTestCase):
             plan = None
             package_start = now - timedelta(minutes=10)
             package_end = now + timedelta(minutes=50)
+            usage_tracking_since = now - timedelta(minutes=10)
+            package_paused_at = None
 
             def save(self, **kwargs):
                 self.saved_fields = kwargs["update_fields"]
@@ -51,12 +55,62 @@ class SubscriptionRenewalTests(SimpleTestCase):
         plan = BillingPlan(duration=BillingPlan.Duration.HOURLY)
         original_start = customer.package_start
         original_end = customer.package_end
+        original_tracking = customer.usage_tracking_since
 
         apply_subscription_renewal(customer, plan=plan)
 
         self.assertEqual(customer.package_start, original_start)
         self.assertEqual(customer.package_end, original_end + timedelta(hours=1))
+        self.assertEqual(customer.usage_tracking_since, original_tracking)
         self.assertEqual(customer.saved_fields, ["package_start", "package_end"])
+
+    def test_fresh_renewal_restarts_usage_tracking(self):
+        now = timezone.localtime()
+
+        class FakeCustomer:
+            plan = None
+            package_start = now - timedelta(days=3)
+            package_end = now - timedelta(days=2)
+            usage_tracking_since = now - timedelta(days=3)
+            package_paused_at = None
+
+            def save(self, **kwargs):
+                self.saved_fields = kwargs["update_fields"]
+
+        customer = FakeCustomer()
+        plan = BillingPlan(duration=BillingPlan.Duration.HOURLY)
+
+        apply_subscription_renewal(customer, plan=plan)
+
+        self.assertEqual(customer.usage_tracking_since, customer.package_start)
+        self.assertIn("usage_tracking_since", customer.saved_fields)
+
+    def test_reset_and_set_package_renewed(self):
+        now = timezone.localtime()
+
+        class FakeCustomer:
+            plan = None
+            package_start = now - timedelta(days=5)
+            package_end = now - timedelta(days=1)
+            usage_tracking_since = None
+            package_paused_at = None
+
+            def save(self, **kwargs):
+                self.saved_fields = kwargs["update_fields"]
+
+        customer = FakeCustomer()
+        plan = BillingPlan(duration=BillingPlan.Duration.DAILY)
+        renewed = now - timedelta(days=1)
+
+        set_customer_package_renewed(customer, renewed_at=renewed, plan=plan)
+        self.assertEqual(customer.package_start, renewed)
+        self.assertEqual(customer.usage_tracking_since, renewed)
+        self.assertEqual(customer.package_end, renewed + timedelta(days=1))
+
+        reset_at = now
+        reset_customer_usage_tracking(customer, at=reset_at)
+        self.assertEqual(customer.usage_tracking_since, reset_at)
+        self.assertEqual(customer.saved_fields, ["usage_tracking_since"])
 
 
 class CustomBillingPeriodTests(SimpleTestCase):

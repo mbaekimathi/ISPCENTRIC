@@ -445,6 +445,15 @@ class Customer(models.Model):
             "remaining period is preserved until resume."
         ),
     )
+    usage_tracking_since = models.DateTimeField(
+        "Usage tracking since",
+        null=True,
+        blank=True,
+        help_text=(
+            "When set, data-used totals ignore traffic before this moment "
+            "(package renewal or manual reset). Historical samples are kept."
+        ),
+    )
     router = models.ForeignKey(
         "core.MikroTikRouter",
         on_delete=models.SET_NULL,
